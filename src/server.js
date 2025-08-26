@@ -1,33 +1,19 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import cors from 'cors'; 
+// hr-service/server.js
+import express from "express";
+import dotenv from "dotenv";
+import cors from "cors";
+import hrRoutes from "./routes/hr.routes.js";
 
 dotenv.config();
-
 const app = express();
+
 app.use(express.json());
+app.use(cors({ origin: "*", credentials: true }));
 
-// ✅ CORS Setup
-const allowedOrigins = process.env.ALLOWED_DOMAINS?.split(",") || [];
-app.use(cors({
-    origin: (origin, callback) => {
-        // allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
-        } else {
-            return callback(new Error("Not allowed by CORS"));
-        }
-    },
-    credentials: true,
-}));
+// HR routes
+app.use("/employees", hrRoutes);
 
-// ✅ Test route
-app.get('/', (req, res) => {
-    res.send('hr Server Running');
-});
+app.get("/", (req, res) => res.json({message: "HR Service Running 🏢"}));
 
-const PORT = process.env.PORT || 3100;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3002;
+app.listen(PORT, () => console.log(`HR Service running on port ${PORT}`));
