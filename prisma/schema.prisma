@@ -6,7 +6,7 @@
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma"
+ // output   = "../generated/prisma"
 }
 
 datasource db {
@@ -22,7 +22,46 @@ model Employee {
   job_title  String
   hire_date  DateTime
   status     String
-  userId     Int
+  userId     Int?
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
+
+  attendance   Attendance[]
+  leaves       Leave[]
+}
+
+// 🕒 Attendance model
+model Attendance {
+  id            Int       @id @default(autoincrement())
+  employeeId    Int
+  date          DateTime  @default(now())
+  check_in      DateTime?
+  check_out     DateTime?
+  total_hours   Float?    // computed at checkout time
+  status        String?   // Present, Absent, Late, Half Day, etc.
+  remarks       String?
+
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  employee      Employee  @relation(fields: [employeeId], references: [id])
+}
+
+// 🏖️ Leave model
+model Leave {
+  id            Int        @id @default(autoincrement())
+  employeeId    Int
+  type          String     // e.g. Sick, Casual, Vacation
+  start_date    DateTime
+  end_date      DateTime
+  total_days    Int
+  reason        String?
+  status        String     @default("Pending") // Pending, Approved, Rejected
+  approved_by   Int?       // admin/manager userId if applicable
+  approved_at   DateTime?
+
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @updatedAt
+
+  employee      Employee   @relation(fields: [employeeId], references: [id])
 }

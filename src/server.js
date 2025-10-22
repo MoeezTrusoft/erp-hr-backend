@@ -13,7 +13,7 @@ app.use(express.json());
 app.use(cors({ origin: "*", credentials: true }));
 
 // HR routes
-app.use("/employees", hrRoutes);
+app.use("/api/employee", hrRoutes);
 
 // Metrics endpoint
 app.get("/metrics", async (req, res) => {
