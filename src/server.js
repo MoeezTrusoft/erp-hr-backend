@@ -13,7 +13,7 @@ app.use(cors({ origin: "*", credentials: true }));
 // HR routes
 app.use("/employees", hrRoutes);
 
-app.get("/", (req, res) => res.json({message: "HR Service Running 🏢"}));
+app.get("/", (req, res) => res.json({message: "HR Service Running"}));
 
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => console.log(`HR Service running on port ${PORT}`));
