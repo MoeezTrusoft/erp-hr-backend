@@ -4,10 +4,10 @@ const prisma = new PrismaClient();
 
 // ✅ Create Employee
 export const createEmployeeService = async (data) => {
-  const { first_name, last_name, gender, job_title, hire_date, status } = data;
-console.log(data);
+  const { first_name, last_name, gender, job_title, hire_date, status, positionId } = data;
+  console.log(data);
 
-  if (!job_title || !hire_date || !status) {
+  if (!job_title || !hire_date || !status || !positionId) {
     throw new Error("job_title, hire_date, and status are required fields");
   }
 
@@ -19,6 +19,7 @@ console.log(data);
       job_title,
       hire_date: new Date(hire_date),
       status,
+      positionId,
     },
   });
 
@@ -29,6 +30,15 @@ console.log(data);
 export const getAllEmployeesService = async () => {
   const employees = await prisma.employee.findMany({
     orderBy: { created_at: "desc" },
+    include: {
+      Position:true,
+      attendance: {
+        orderBy: { date: "desc" },
+      },
+      leaves: {
+        orderBy: { start_date: "desc" },
+      },
+    },
   });
   return employees;
 };
@@ -36,8 +46,28 @@ export const getAllEmployeesService = async () => {
 // ✅ Get Employee By ID
 export const getEmployeeByIdService = async (id) => {
   const employee = await prisma.employee.findUnique({
-    where: { id: parseInt(id) },
-  });
+  where: { id: parseInt(id) },
+  include: {
+    Position: true,
+    attendance: {
+      orderBy: { date: "desc" },
+    },
+    leaves: {
+      orderBy: { start_date: "desc" },
+    },
+    reviewsReceived: {
+      include: {
+        reviewer: true,
+        feedbacks: {
+          include: {
+            reviewer: true,
+          },
+        },
+      },
+      orderBy: { updated_at: "desc" },
+    },
+  },
+});
   if (!employee) throw new Error("Employee not found");
   return employee;
 };
@@ -59,6 +89,7 @@ export const updateEmployeeService = async (id, data) => {
       hire_date: data.hire_date ? new Date(data.hire_date) : employee.hire_date,
       status: data.status ?? employee.status,
       userId: data.userId ?? employee.userId,
+      positionId: data.positionId ?? employee.positionId
     },
   });
 
@@ -71,6 +102,15 @@ export const deleteEmployeeService = async (id) => {
     where: { id: parseInt(id) },
   });
   if (!employee) throw new Error("Employee not found");
+
+  await prisma.attendance.deleteMany({
+    where: { id },
+  });
+
+  await prisma.leave.deleteMany({
+    where: { id },
+  });
+
 
   await prisma.employee.delete({ where: { id: parseInt(id) } });
   return { message: "Employee deleted successfully" };

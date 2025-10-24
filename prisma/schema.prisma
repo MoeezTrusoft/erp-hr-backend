@@ -6,12 +6,59 @@
 
 generator client {
   provider = "prisma-client-js"
- // output   = "../generated/prisma"
+  // output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum StatusAttandance {
+  PRESENT
+  ABSENT
+  LATE
+}
+
+enum LeaveStatus {
+  PENDING
+  REJECTED
+  APPROVED
+}
+
+enum ReviewStatus {
+  IN_PROGRESS
+  FINALIZED
+  DRAFT
+}
+
+enum RequisitionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  POSTED
+  CLOSED
+}
+
+enum CourseMode {
+  ONLINE
+  OFFLINE
+  HYBRID
+}
+
+enum CourseStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum EnrollmentStatus {
+  ENROLLED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
 }
 
 model Employee {
@@ -26,42 +73,220 @@ model Employee {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  attendance   Attendance[]
-  leaves       Leave[]
+  attendance      Attendance[]
+  leaves          Leave[]
+  // ✅ Review Relations
+  reviewsGiven    PerformanceReview[] @relation("Reviewer")
+  reviewsReceived PerformanceReview[] @relation("EmployeeReviews")
+
+  // ✅ Feedback Relation
+  feedbackGiven         ReviewFeedback[]      @relation("FeedbackByEmployee")
+  Position              Position?             @relation(fields: [positionId], references: [id])
+  positionId            Int?
+  // ✅ Job Requisition Relations
+  requisitionsRequested JobRequisition[]      @relation("RequestedBy") // Requisitions created by this employee
+  requisitionsApproved  JobRequisition[]      @relation("ApprovedBy") // Requisitions approved by this employee
+  approvals             RequisitionApproval[] // Approvals performed by this employee
+  JobRequisition        JobRequisition[]
+  TrainingCourse        TrainingCourse[]
+  TrainingEnrollment    TrainingEnrollment[]
 }
 
 // 🕒 Attendance model
 model Attendance {
-  id            Int       @id @default(autoincrement())
-  employeeId    Int
-  date          DateTime  @default(now())
-  check_in      DateTime?
-  check_out     DateTime?
-  total_hours   Float?    // computed at checkout time
-  status        String?   // Present, Absent, Late, Half Day, etc.
-  remarks       String?
+  id          Int              @id @default(autoincrement())
+  employeeId  Int
+  date        DateTime         @default(now())
+  check_in    DateTime?
+  check_out   DateTime?
+  total_hours Float? // computed at checkout time
+  status      StatusAttandance @default(ABSENT)
+  remarks     String?
 
-  created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  employee      Employee  @relation(fields: [employeeId], references: [id])
+  employee Employee @relation(fields: [employeeId], references: [id])
 }
 
 // 🏖️ Leave model
 model Leave {
-  id            Int        @id @default(autoincrement())
-  employeeId    Int
-  type          String     // e.g. Sick, Casual, Vacation
-  start_date    DateTime
-  end_date      DateTime
-  total_days    Int
-  reason        String?
-  status        String     @default("Pending") // Pending, Approved, Rejected
-  approved_by   Int?       // admin/manager userId if applicable
-  approved_at   DateTime?
+  id          Int         @id @default(autoincrement())
+  employeeId  Int
+  type        String // e.g. Sick, Casual, Vacation
+  start_date  DateTime
+  end_date    DateTime
+  total_days  Int
+  reason      String?
+  status      LeaveStatus @default(PENDING)
+  approved_by Int? // admin/manager userId if applicable
+  approved_at DateTime?
 
-  created_at    DateTime   @default(now())
-  updated_at    DateTime   @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  employee      Employee   @relation(fields: [employeeId], references: [id])
+  employee Employee @relation(fields: [employeeId], references: [id])
+}
+
+model Holiday {
+  id          Int      @id @default(autoincrement())
+  name        String
+  date        DateTime
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+}
+
+model PerformanceReview {
+  id             Int          @id @default(autoincrement())
+  employeeId     Int
+  reviewerId     Int?
+  period_start   DateTime
+  period_end     DateTime
+  overall_rating Float?
+  comments       String?
+  status         ReviewStatus @default(IN_PROGRESS)
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @updatedAt
+
+  // ✅ Relations
+  employee  Employee         @relation("EmployeeReviews", fields: [employeeId], references: [id])
+  reviewer  Employee?        @relation("Reviewer", fields: [reviewerId], references: [id])
+  feedbacks ReviewFeedback[]
+}
+
+model ReviewFeedback {
+  id         Int      @id @default(autoincrement())
+  reviewId   Int
+  reviewerId Int
+  feedback   String
+  rating     Float?
+  created_at DateTime @default(now())
+
+  // ✅ Relations
+  review   PerformanceReview @relation(fields: [reviewId], references: [id])
+  reviewer Employee          @relation("FeedbackByEmployee", fields: [reviewerId], references: [id])
+}
+
+model Position {
+  id             Int              @id @default(autoincrement())
+  title          String
+  description    String?
+  isActive       Boolean          @default(true)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  employees      Employee[] // One position can have multiple employees
+  JobRequisition JobRequisition[]
+}
+
+// model JobRequisition {
+//   id            Int               @id @default(autoincrement())
+//   title         String
+//   description   String?
+//   departmentId  Int?
+//   positionId    Int?
+//   requestedById Int
+//   approvedById  Int?
+//   openings      Int               @default(1)
+//   status        RequisitionStatus @default(DRAFT)
+//   createdAt     DateTime          @default(now())
+//   updatedAt     DateTime          @updatedAt
+
+//   // Relations
+//   // department  Department?           @relation(fields: [departmentId], references: [id])
+//   position    Position?             @relation(fields: [positionId], references: [id])
+//   requestedBy Employee              @relation("RequestedBy", fields: [requestedById], references: [id])
+//   approvedBy  Employee?             @relation("ApprovedBy", fields: [approvedById], references: [id])
+//   approvals   RequisitionApproval[]
+//   postings    JobPosting[]
+//   Employee    Employee?             @relation(fields: [employeeId], references: [id])
+//   employeeId  Int?
+// }
+
+model JobRequisition {
+  id            Int               @id @default(autoincrement())
+  title         String
+  description   String?
+  departmentId  Int?
+  positionId    Int?
+  requestedById Int
+  approvedById  Int?
+  employeeId    Int? // Optional link to an employee (e.g., replacement for existing staff)
+  openings      Int               @default(1)
+  status        RequisitionStatus @default(DRAFT)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  // ✅ Relations
+  // department  Department?           @relation(fields: [departmentId], references: [id])
+  position    Position?             @relation(fields: [positionId], references: [id])
+  requestedBy Employee              @relation("RequestedBy", fields: [requestedById], references: [id])
+  approvedBy  Employee?             @relation("ApprovedBy", fields: [approvedById], references: [id])
+  approvals   RequisitionApproval[]
+  postings    JobPosting[]
+  employee    Employee?             @relation(fields: [employeeId], references: [id])
+}
+
+model RequisitionApproval {
+  id            Int       @id @default(autoincrement())
+  requisitionId Int
+  approverId    Int
+  status        String    @default("PENDING")
+  comments      String?
+  decidedAt     DateTime?
+
+  // Relations
+  requisition JobRequisition @relation(fields: [requisitionId], references: [id])
+  approver    Employee       @relation(fields: [approverId], references: [id])
+}
+
+model JobPosting {
+  id            Int      @id @default(autoincrement())
+  requisitionId Int
+  externalUrl   String?
+  isActive      Boolean  @default(true)
+  postedAt      DateTime @default(now())
+
+  // Relations
+  requisition JobRequisition @relation(fields: [requisitionId], references: [id])
+}
+
+model TrainingCategory {
+  id          Int              @id @default(autoincrement())
+  name        String
+  description String?
+  courses     TrainingCourse[]
+}
+
+model TrainingCourse {
+  id            Int          @id @default(autoincrement())
+  title         String
+  description   String?
+  categoryId    Int
+  instructorId  Int?
+  durationHours Int?
+  location      String?
+  mode          CourseMode   @default(ONLINE)
+  startDate     DateTime?
+  endDate       DateTime?
+  status        CourseStatus @default(DRAFT)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  category    TrainingCategory     @relation(fields: [categoryId], references: [id])
+  instructor  Employee?            @relation(fields: [instructorId], references: [id])
+  enrollments TrainingEnrollment[]
+}
+
+model TrainingEnrollment {
+  id             Int              @id @default(autoincrement())
+  courseId       Int
+  employeeId     Int
+  enrollmentDate DateTime         @default(now())
+  progress       Float            @default(0)
+  status         EnrollmentStatus @default(ENROLLED)
+  completionDate DateTime?
+
+  course   TrainingCourse @relation(fields: [courseId], references: [id])
+  employee Employee       @relation(fields: [employeeId], references: [id])
 }
