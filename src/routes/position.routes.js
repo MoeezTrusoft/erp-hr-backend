@@ -9,7 +9,7 @@ import {
 
 const router = express.Router();
 
-router.post("/create", createPositionController);
+router.post("/", createPositionController);
 router.get("/", getPositionsController);
 router.get("/:id", getPositionByIdController);
 router.put("/:id", updatePositionController);

@@ -4,7 +4,7 @@ import { createHoliday, deleteHoliday, getAllHolidays, getHolidayById, updateHol
 const router = express.Router();
 
 
-router.post("/create", createHoliday);
+router.post("/", createHoliday);
 router.get("/all", getAllHolidays);
 router.get("/:id", getHolidayById);
 router.put("/:id", updateHoliday);

@@ -3,13 +3,13 @@ import { addFeedback, createPerformanceReview, deleteFeedback, getAllReviews, ge
 
 const router = express.Router();
 
-router.post("/create", createPerformanceReview);
-router.get("/all", getAllReviews);
-router.get("/employee/:employeeId", getReviewsByEmployee);
+router.post("/", createPerformanceReview);
+router.get("/", getAllReviews);
+router.get("/employeeId", getReviewsByEmployee);
 router.put("/:id", updateReview);
 
-router.post("/feedback", addFeedback);
-router.put("/update-feedback/:id", updateFeedback);
-router.delete("/delete-feedback/:id", deleteFeedback);
+router.post("/", addFeedback);
+router.put("/:id", updateFeedback);
+router.delete("/:id", deleteFeedback);
 
 export default router;
