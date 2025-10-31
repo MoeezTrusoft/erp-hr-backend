@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
-
 
 
 export const requestLeaveService = async (data) => {
@@ -38,7 +38,7 @@ export const requestLeaveService = async (data) => {
   }
 
   // ✅ Create leave record
-  return prisma.leave.create({
+ const leave= await prisma.leave.create({
     data: {
       employeeId,
       type,
@@ -49,11 +49,20 @@ export const requestLeaveService = async (data) => {
       status: "PENDING",
     },
   });
+ // Log the update action
+  await logAction({
+    employeeId: employeeId,
+    type: "Leave request", // 👈 changed from CREATE to UPDATE
+    module: "Leave",
+    result: "SUCCESS",
+    notes: `Leave "${employeeId}" Requested successfully`,
+  });
+
 };
 export const approveLeaveService = async (id, data) => {
     const { approved_by, status } = data;
 
-    return prisma.leave.update({
+    const updateLeave = await prisma.leave.update({
         where: { id: Number(id) },
         data: {
             status,
@@ -61,6 +70,17 @@ export const approveLeaveService = async (id, data) => {
             approved_at: new Date(),
         },
     });
+
+     // Log the update action
+  await logAction({
+    employeeId: 1,
+    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    module: "Leave",
+    result: "SUCCESS",
+    notes: `Leave "${id}" updated successfully`,
+  });
+
+  return updateLeave;
 };
 
 export const getLeaveByEmployee = async (employeeId) => {

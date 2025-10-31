@@ -1,4 +1,6 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
+
 
 const prisma = new PrismaClient();
 
@@ -6,7 +8,16 @@ export const createCourse = async (data) => {
   if (!data.title) throw new Error("Course title is required");
   if (!data.categoryId) throw new Error("Category ID is required");
 
-  return prisma.trainingCourse.create({ data });
+  const create = await prisma.trainingCourse.create({ data });
+    await logAction({
+    employeeId: 1,
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Training Course",
+    result: "SUCCESS",
+    notes: `Training Course"${create.id}" created successfully`,
+  });
+
+  return create;
 };
 
 export const getAllCourses = async () => {
@@ -34,14 +45,36 @@ export const getCourseById = async (id) => {
 };
 
 export const updateCourse = async (id, data) => {
-  return prisma.trainingCourse.update({
+  const update = await prisma.trainingCourse.update({
     where: { id: Number(id) },
     data,
   });
+
+    await logAction({
+    employeeId: 1,
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Training Course",
+    result: "SUCCESS",
+    notes: `Training Course"${id}" Updated successfully`,
+  });
+
+  return update
 };
 
 export const deleteCourse = async (id) => {
-  return prisma.trainingCourse.delete({ where: { id: Number(id) } });
+  const existing = await prisma.trainingCourse.findUnique({ where: { id: Number(id) } });
+  if(!existing) throw new Error(`Course not found Id${id}`);
+  
+  const deleted = await prisma.trainingCourse.delete({ where: { id: Number(id) } });
+
+    await logAction({
+    employeeId: 1,
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Training Course",
+    result: "SUCCESS",
+    notes: `Training Course"${id}}" Deleted successfully`,
+  });
+  return deleted;
 };
 
 /**

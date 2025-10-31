@@ -1,11 +1,22 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
+
 
 const prisma = new PrismaClient();
 
 export const createCategory = async (data) => {
   if (!data.name) throw new Error("Category name is required");
 
-  return prisma.trainingCategory.create({ data });
+  const create= await prisma.trainingCategory.create({ data });
+    await logAction({
+    employeeId: 1,
+    type: "Create Category", // 👈 changed from CREATE to UPDATE
+    module: "Training Category",
+    result: "SUCCESS",
+    notes: `Training Category "${create.id}" created successfully`,
+  });
+
+  return create;
 };
 
 export const getAllCategories = async () => {
@@ -25,14 +36,31 @@ export const getCategoryById = async (id) => {
 };
 
 export const updateCategory = async (id, data) => {
-  return prisma.trainingCategory.update({
+  const update = await prisma.trainingCategory.update({
     where: { id: Number(id) },
     data,
   });
+  await logAction({
+    employeeId: 1,
+    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    module: "Training Category",
+    result: "SUCCESS",
+    notes: `Training Category "${id}" Updated successfully`,
+  });
+
+  return update;
 };
 
 export const deleteCategory = async (id) => {
    const category = await prisma.trainingCategory.findUnique({ where: { id: Number(id) } });
   if (!category) throw new Error("Category not found");
-  return prisma.trainingCategory.delete({ where: { id: Number(id) } });
+  const deleted = await prisma.trainingCategory.delete({ where: { id: Number(id) } });
+  await logAction({
+    employeeId: 1,
+    type: "Deleted", // 👈 changed from CREATE to UPDATE
+    module: "Training Category",
+    result: "SUCCESS",
+    notes: `Training Category "${id}" Deleted successfully`,
+  });
+  return deleted;
 };

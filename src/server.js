@@ -2,6 +2,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
+import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
 import attendanceRoutes from "./routes/attendance.routes.js";
 import leaveRoutes from "./routes/leave.routes.js";
@@ -12,7 +13,14 @@ import requisitionRoutes from "./routes/requisition.routes.js";
 import traningCategoryRoutes from "./routes/trainingCategory.routes.js";
 import traningCourseRoutes from "./routes/trainingCourse.routes.js";
 import traningEnrollmentRoutes from "./routes/trainingEnrollment.routes.js";
-
+import performanceCycleRoutes from "./routes/performanceCycleRoutes.js";
+import performanceTemplateRoutes from "./routes/performanceTemplateRoutes.js";
+import goalsRoutes from "./routes/goal.routes.js";
+import goalAllignmentRoutes from "./routes/goalAlignment.routes.js";
+import performanceReviewRoutes from "./routes/performanceReview.routes.js"
+import { startReviewReminderScheduler } from "./services/reminderScheduler.service.js";
+import calibrationRoutes from "./routes/calibration.routes.js";
+import calibrationReportRoutes from "./routes/calibrationReport.routes.js";
 import client from "prom-client";
 
 dotenv.config();
@@ -33,6 +41,18 @@ app.use("/api/requisitions", requisitionRoutes);
 app.use("/api/train_cat", traningCategoryRoutes);
 app.use("/api/course", traningCourseRoutes);
 app.use("/api/enrollment", traningEnrollmentRoutes);
+app.use("/api/log", logRoutes);
+app.use("/api/performance/cycles", performanceCycleRoutes);
+app.use("/api/performance/templates", performanceTemplateRoutes);
+app.use("/api/goals",goalsRoutes)
+app.use("/api/goal-alignments", goalAllignmentRoutes)
+app.use("/api/PerformanceReview", performanceReviewRoutes)
+app.use("/api/calibration", calibrationRoutes);
+app.use("/api/calibration/reports", calibrationReportRoutes);
+
+
+
+  startReviewReminderScheduler();
 // Metrics endpoint
 app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", register.contentType);

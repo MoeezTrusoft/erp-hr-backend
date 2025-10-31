@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
 
@@ -6,7 +7,16 @@ export const enrollEmployee = async (data) => {
   if (!data.courseId || !data.employeeId)
     throw new Error("Course ID and Employee ID are required");
 
-  return prisma.trainingEnrollment.create({ data });
+  const create = await prisma.trainingEnrollment.create({ data });
+  await logAction({
+    employeeId: 1,
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment"${create.id}" Created successfully`,
+  });
+
+  return create;
 };
 
 export const getEnrollments = async () => {
@@ -26,14 +36,39 @@ export const getEnrollmentById = async (id) => {
 };
 
 export const updateEnrollment = async (id, data) => {
-  return prisma.trainingEnrollment.update({
+  const existing = await prisma.trainingEnrollment.findUnique({where: {id: Number(id)}})
+  if(!existing) throw new Error(`Enrollment not Found ${id}`);
+  
+  const update = await prisma.trainingEnrollment.update({
     where: { id: Number(id) },
     data,
   });
+  await logAction({
+    employeeId: 1,
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment"${id}" Updated successfully`,
+  });
+
+
+  return update
 };
 
 export const deleteEnrollment = async (id) => {
-  return prisma.trainingEnrollment.delete({ where: { id: Number(id) } });
+  const existing = await prisma.trainingEnrollment.findUnique({where: {id: Number(id)}})
+  if(!existing) throw new Error(`Enrollment not Fount ${id}`);
+  
+  const deleted= await prisma.trainingEnrollment.delete({ where: { id: Number(id) } });
+     await logAction({
+    employeeId: 1,
+    type: "Deleted", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment"${id}" Deleted Successfully`,
+  });
+
+  return deleted;
 };
 
 

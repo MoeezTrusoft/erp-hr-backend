@@ -1,4 +1,6 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
+
 
 const prisma = new PrismaClient();
 // ✅ Create a new requisition
@@ -6,7 +8,7 @@ export const createRequisition = async (data) => {
   const { title, description, departmentId, positionId, requestedById, openings } = data;
   if (!title || !requestedById) throw new Error("Title and requestedById are required");
 
-  return prisma.jobRequisition.create({
+  const createRequi = await prisma.jobRequisition.create({
     data: {
       title,
       description,
@@ -14,16 +16,26 @@ export const createRequisition = async (data) => {
       positionId: positionId ? Number(positionId) : null,
       requestedById: Number(requestedById),
       openings: openings ? Number(openings) : 1,
-   //   status: "PENDING_APPROVAL",
+      //   status: "PENDING_APPROVAL",
     },
   });
+  await logAction({
+    employeeId: 1,
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Create Requisition",
+    result: "SUCCESS",
+    notes: `Create Requisition"${createRequi.id}" Created successfully`,
+  });
+
+
+  return createRequi;
 };
 
 // ✅ Get all requisitions
 export const getAllRequisitions = async () => {
   return prisma.jobRequisition.findMany({
     include: {
-     // department: true,
+      // department: true,
       position: true,
       requestedBy: true,
       approvedBy: true,
@@ -33,26 +45,35 @@ export const getAllRequisitions = async () => {
 };
 
 export const getByIdRequisitions = async (id) => {
-  const getByID= prisma.jobRequisition.findUnique({
-     where: { id: Number(id) },
+  const getByID = prisma.jobRequisition.findUnique({
+    where: { id: Number(id) },
     include: {
-     // department: true,
+      // department: true,
       position: true,
       requestedBy: true,
       approvedBy: true,
     },
   });
-  if(!getByID)throw new Error("Job Requisition");
+  if (!getByID) throw new Error("Job Requisition");
   return getByID;
 };
 
 export const deleteRequisitions = async (id) => {
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
   if (!requisition) throw new Error("Requisition not found");
-  
-  return prisma.jobRequisition.delete({
+
+  const deleted = await prisma.jobRequisition.delete({
     where: { id: Number(id) }
   });
+  // Log the update action
+  await logAction({
+    employeeId: 1,
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Requisition",
+    result: "SUCCESS",
+    notes: `Requisition Position  "${id}" Deleted successfully`,
+  });
+  return deleted;
 };
 
 // ✅ Approve or reject requisition
@@ -72,13 +93,22 @@ export const approveRequisition = async (id, approverId, status, comments) => {
     },
   });
 
-  return prisma.jobRequisition.update({
+  const update = await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: {
       status,
       approvedById: Number(approverId),
     },
   });
+  // Log the update action
+  await logAction({
+    employeeId: approverId,
+    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    module: "Requisition Approve",
+    result: "SUCCESS",
+    notes: `Requisition approve "${id}" updated successfully`,
+  });
+  return update;
 };
 
 // ✅ Post approved job externally
@@ -95,8 +125,17 @@ export const postRequisition = async (id, externalUrl) => {
     },
   });
 
-  return prisma.jobRequisition.update({
+  const jobPosted = await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: { status: "POSTED" },
   });
+
+  await logAction({
+    employeeId: 1,
+    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    module: "Requisition Post",
+    result: "SUCCESS",
+    notes: `Post Requisition "${id}" Posted successfully`,
+  });
+  return jobPosted;
 };

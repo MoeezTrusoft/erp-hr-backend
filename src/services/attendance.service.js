@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
 
@@ -21,7 +22,7 @@ export const createAttendanceService = async (data) => {
   const parsedCheckIn = new Date(`${date} ${check_in}`);
 
   // ✅ Create attendance record
-  const attendance = await prisma.attendance.create({
+  const attendanceIn = await prisma.attendance.create({
     data: {
       employeeId: empId,
       date: new Date(date),
@@ -30,11 +31,21 @@ export const createAttendanceService = async (data) => {
     },
   });
 
-  return attendance;
+   // Log the update action
+    await logAction({
+      employeeId: 1,
+      type: "Check In", // 👈 changed from CREATE to UPDATE
+      module: "Attandance",
+      result: "SUCCESS",
+      notes: `Attandance check In "${empId}" successfully`,
+    });
+  return attendanceIn;
 };
 export const checkOutService = async (employeeId) => {
+
+   const empId = Number(employeeId);
   const attendance = await prisma.attendance.findFirst({
-    where: { employeeId },
+    where: { empId },
     orderBy: { date: "desc" }
   });
 
@@ -45,10 +56,20 @@ export const checkOutService = async (employeeId) => {
   const totalHours =
     (checkOutTime - attendance.check_in) / (1000 * 60 * 60);
 
-  return await prisma.attendance.update({
+  const checkOut=  await prisma.attendance.update({
     where: { id: attendance.id },
     data: { check_out: checkOutTime, total_hours: totalHours }
   });
+
+   // Log the update action
+    await logAction({
+      employeeId: 1,
+      type: "Check Out", // 👈 changed from CREATE to UPDATE
+      module: "Attandance",
+      result: "SUCCESS",
+      notes: `CHeck Out "${1}" updated successfully`,
+    });
+return checkOut;
 };
 
 export const getAttendanceByEmployee = async (employeeId) => {

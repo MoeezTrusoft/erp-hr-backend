@@ -61,6 +61,59 @@ enum EnrollmentStatus {
   CANCELLED
 }
 
+enum CycleStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+enum GoalStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  APPROVED
+  REJECTED
+}
+
+enum ReminderType {
+  PENDING_REVIEW
+  LATE_SUBMISSION
+  FEEDBACK_REQUEST
+}
+
+enum ReviewType {
+  SELF
+  MANAGER
+  PEER
+  HR
+}
+
+enum CalibrationStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+model Log {
+  id          Int       @id @default(autoincrement())
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  employeeId  Int?
+  type        String
+  action_type String
+  module      String
+  ip          String
+  os          String
+  result      String
+  action_by   Employee? @relation("ActionBy", fields: [actionById], references: [id])
+  actionById  Int?
+  notes       String
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  attandaceId Int?
+  attandance  Attendance? @relation("AttandanceMark", fields: [attandaceId], references: [id])
+}
+
 model Employee {
   id         Int      @id @default(autoincrement())
   first_name String?
@@ -90,6 +143,15 @@ model Employee {
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
   TrainingEnrollment    TrainingEnrollment[]
+  positionCreatedBy     Position[]            @relation("CreatedBy")
+  actionBy              Log[]                 @relation("ActionBy")
+  logs                  Log[]
+  goalCreatedBy         Goal[]                @relation("GoalCreatedBy")
+  approvedBy            Goal[]                @relation("GoalApprover")
+  goalProgress          GoalProgress[]        @relation("Goal progress")
+  feedBackBy            ReviewFeedback[]      @relation("FeedbackBy")
+  ReviewReminder        ReviewReminder[]
+  calibratedBy          RatingAdjustment[]    @relation("CalibratedBy")
 }
 
 // 🕒 Attendance model
@@ -107,6 +169,7 @@ model Attendance {
   updated_at DateTime @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
+  logs     Log[]    @relation("AttandanceMark")
 }
 
 // 🏖️ Leave model
@@ -139,44 +202,57 @@ model Holiday {
 
 model PerformanceReview {
   id             Int          @id @default(autoincrement())
-  employeeId     Int
+  employeeId     Int?
   reviewerId     Int?
-  period_start   DateTime
-  period_end     DateTime
+  cycleId        Int? // ✅ NEW
+  period_start   DateTime?
+  period_end     DateTime?
   overall_rating Float?
   comments       String?
+  submittedAt    DateTime?
   status         ReviewStatus @default(IN_PROGRESS)
+  type           ReviewType   @default(SELF)
   created_at     DateTime     @default(now())
   updated_at     DateTime     @updatedAt
 
   // ✅ Relations
-  employee  Employee         @relation("EmployeeReviews", fields: [employeeId], references: [id])
-  reviewer  Employee?        @relation("Reviewer", fields: [reviewerId], references: [id])
+  employee  Employee?         @relation("EmployeeReviews", fields: [employeeId], references: [id])
+  reviewer  Employee?         @relation("Reviewer", fields: [reviewerId], references: [id])
   feedbacks ReviewFeedback[]
+  cycle     PerformanceCycle? @relation(fields: [cycleId], references: [id])
+
+  reminders            ReviewReminder[] // link to reminder model
+  CalibrationSession   CalibrationSession? @relation("Calibration Perdformance Reviews", fields: [calibrationSessionId], references: [id])
+  calibrationSessionId Int?
+  RatingAdjustment     RatingAdjustment[]  @relation("Rating Performance Review")
 }
 
 model ReviewFeedback {
-  id         Int      @id @default(autoincrement())
-  reviewId   Int
-  reviewerId Int
-  feedback   String
-  rating     Float?
-  created_at DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  reviewId     Int
+  reviewerId   Int // by employee
+  feedbackById Int?
+  feedback     String
+  rating       Float?
+  created_at   DateTime @default(now())
 
   // ✅ Relations
-  review   PerformanceReview @relation(fields: [reviewId], references: [id])
-  reviewer Employee          @relation("FeedbackByEmployee", fields: [reviewerId], references: [id])
+  review     PerformanceReview @relation(fields: [reviewId], references: [id])
+  reviewer   Employee          @relation("FeedbackByEmployee", fields: [reviewerId], references: [id])
+  feedbackBy Employee?         @relation("FeedbackBy", fields: [feedbackById], references: [id])
 }
 
 model Position {
   id             Int              @id @default(autoincrement())
   title          String
   description    String?
+  createdById    Int?
   isActive       Boolean          @default(true)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   employees      Employee[] // One position can have multiple employees
   JobRequisition JobRequisition[]
+  createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
 }
 
 // model JobRequisition {
@@ -289,4 +365,125 @@ model TrainingEnrollment {
 
   course   TrainingCourse @relation(fields: [courseId], references: [id])
   employee Employee       @relation(fields: [employeeId], references: [id])
+}
+
+model PerformanceCycle {
+  id          Int         @id @default(autoincrement())
+  name        String
+  description String?
+  start_date  DateTime
+  end_date    DateTime
+  status      CycleStatus @default(DRAFT)
+  created_at  DateTime    @default(now())
+  updated_at  DateTime    @updatedAt
+
+  template           PerformanceTemplate? @relation(fields: [templateId], references: [id])
+  templateId         Int?
+  reviews            PerformanceReview[]
+  CalibrationSession CalibrationSession[] @relation("Calibration Performance Cyclce")
+}
+
+model PerformanceTemplate {
+  id             Int      @id @default(autoincrement())
+  name           String
+  description    String?
+  criteria       Json? // e.g. ["Teamwork", "Communication", "Problem Solving"]
+  overall_rating Float?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  cycles PerformanceCycle[]
+}
+
+model Goal {
+  id            Int        @id @default(autoincrement())
+  employeeId    Int?
+  title         String
+  description   String?
+  category      String? // e.g. "Personal", "Team", "Company"
+  start_date    DateTime
+  end_date      DateTime
+  target_value  Float?
+  current_value Float?     @default(0)
+  progress      Float?     @default(0)
+  status        GoalStatus @default(PENDING)
+  approvedById  Int?
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @updatedAt
+
+  // Relations
+  employee        Employee?       @relation("GoalCreatedBy", fields: [employeeId], references: [id])
+  approvedBy      Employee?       @relation("GoalApprover", fields: [approvedById], references: [id])
+  progressUpdates GoalProgress[]
+  parentGoal      GoalAlignment[] @relation("GoalAlignmentsParent")
+  alignedGoal     GoalAlignment[] @relation("GoalAlignmentsChild")
+  goal            GoalAlignment[]
+}
+
+model GoalProgress {
+  id          Int      @id @default(autoincrement())
+  goalId      Int?
+  update_date DateTime @default(now())
+  comment     String?
+  progress    Float
+  created_by  Int
+
+  // Relations
+  goal      Goal?     @relation(fields: [goalId], references: [id])
+  createdBy Employee? @relation("Goal progress", fields: [created_by], references: [id])
+}
+
+model GoalAlignment {
+  id            Int  @id @default(autoincrement())
+  parentGoalId  Int?
+  alignedGoalId Int?
+
+  // Relations
+  parentGoal  Goal? @relation("GoalAlignmentsParent", fields: [parentGoalId], references: [id])
+  alignedGoal Goal? @relation("GoalAlignmentsChild", fields: [alignedGoalId], references: [id])
+  Goal        Goal? @relation(fields: [goalId], references: [id])
+  goalId      Int?
+}
+
+model ReviewReminder {
+  id       Int          @id @default(autoincrement())
+  reviewId Int
+  sentToId Int
+  sentAt   DateTime     @default(now())
+  type     ReminderType @default(PENDING_REVIEW)
+
+  review PerformanceReview @relation(fields: [reviewId], references: [id])
+  sentTo Employee          @relation(fields: [sentToId], references: [id])
+}
+
+model CalibrationSession {
+  id           Int               @id @default(autoincrement())
+  name         String
+  cycleId      Int?
+  started_at   DateTime?         @default(now())
+  completed_at DateTime?
+  status       CalibrationStatus @default(PENDING)
+  created_at   DateTime          @default(now())
+  updated_at   DateTime          @updatedAt
+
+  // Relations
+  performance_reviews PerformanceReview[] @relation("Calibration Perdformance Reviews")
+  ratingAdjustments   RatingAdjustment[]  @relation("CalibrationSessions")
+  cycle               PerformanceCycle?   @relation("Calibration Performance Cyclce", fields: [cycleId], references: [id])
+}
+
+model RatingAdjustment {
+  id                        Int      @id @default(autoincrement())
+  reviewId                  Int?
+  calibrationSessionId      Int?
+  old_rating                Float
+  new_rating                Float
+  justification             String?
+  calibrated_by_employee_id Int?
+  created_at                DateTime @default(now())
+
+  // Relations
+  calibrationSession CalibrationSession? @relation("CalibrationSessions", fields: [calibrationSessionId], references: [id])
+  performance_review PerformanceReview?  @relation("Rating Performance Review", fields: [reviewId], references: [id])
+  calibratedBy       Employee?           @relation("CalibratedBy", fields: [calibrated_by_employee_id], references: [id])
 }

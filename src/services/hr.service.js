@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
 
@@ -21,6 +22,15 @@ export const createEmployeeService = async (data) => {
       status,
       positionId,
     },
+  });
+
+   // Log the update action
+  await logAction({
+    employeeId: 1,
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Employee",
+    result: "SUCCESS",
+    notes: `Employee "${employee.id}" created successfully`,
   });
 
   return employee;
@@ -93,6 +103,15 @@ export const updateEmployeeService = async (id, data) => {
     },
   });
 
+   // Log the update action
+  await logAction({
+    employeeId: 1,
+    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    module: "Emplyee",
+    result: "SUCCESS",
+    notes: `Employee "${id}" updated successfully`,
+  });
+
   return updatedEmployee;
 };
 
@@ -112,6 +131,14 @@ export const deleteEmployeeService = async (id) => {
   });
 
 
-  await prisma.employee.delete({ where: { id: parseInt(id) } });
-  return { message: "Employee deleted successfully" };
+ const deleted = await prisma.employee.delete({ where: { id: parseInt(id) } });
+   // Log the update action
+  await logAction({
+    employeeId: 1,
+    type: "Deleted", // 👈 changed from CREATE to UPDATE
+    module: "Employee",
+    result: "SUCCESS",
+    notes: `Employee "${id}" Deleted successfully`,
+  });
+  return deleted;
 };
