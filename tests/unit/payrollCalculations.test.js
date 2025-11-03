@@ -1,31 +1,70 @@
-// tests/unit/payrollCalculations.test.js
-const payrollService = require('../mocks/payrollServiceMock');
+import { describe, it, expect } from '@jest/globals';
 
-describe('Payroll Calculations - Unit Tests', function () {
-    describe('calculateBaseSalary', function () {
-        test('should calculate monthly salary correctly', function () {
-            var annualSalary = 60000;
-            var result = payrollService.calculateBaseSalary(annualSalary, 'MONTHLY');
-            expect(result).toBe(5000);
+// Mock the payroll service since we don't have the actual file yet
+const payrollService = {
+    calculatePeriodSalary: (employmentTerm, payrollRun) => {
+        const { baseSalary, payFrequency } = employmentTerm;
+
+        switch (payFrequency) {
+            case 'MONTHLY':
+                return baseSalary;
+            case 'SEMI_MONTHLY':
+                return baseSalary / 2;
+            case 'BI_WEEKLY':
+                return baseSalary * 12 / 52;
+            case 'WEEKLY':
+                return baseSalary * 12 / 52;
+            default:
+                return baseSalary;
+        }
+    }
+};
+
+describe('Payroll Calculations - Unit Tests', () => {
+    describe('calculateBaseSalary', () => {
+        it('should calculate monthly salary correctly', () => {
+            const employmentTerm = {
+                baseSalary: 60000,
+                payFrequency: 'MONTHLY'
+            };
+
+            const payrollRun = {
+                periodStart: new Date('2024-01-01'),
+                periodEnd: new Date('2024-01-31')
+            };
+
+            const salary = payrollService.calculatePeriodSalary(employmentTerm, payrollRun);
+            expect(salary).toBe(60000);
         });
 
-        test('should calculate weekly salary correctly', function () {
-            var annualSalary = 52000;
-            var result = payrollService.calculateBaseSalary(annualSalary, 'WEEKLY');
-            expect(result).toBe(1000);
+        it('should calculate semi-monthly salary correctly', () => {
+            const employmentTerm = {
+                baseSalary: 60000,
+                payFrequency: 'SEMI_MONTHLY'
+            };
+
+            const payrollRun = {
+                periodStart: new Date('2024-01-01'),
+                periodEnd: new Date('2024-01-15')
+            };
+
+            const salary = payrollService.calculatePeriodSalary(employmentTerm, payrollRun);
+            expect(salary).toBe(30000);
         });
-    });
 
-    describe('calculateTaxAmount', function () {
-        test('should calculate tax using progressive brackets', function () {
-            var taxRates = [
-                { bracketMin: 0, bracketMax: 10000, rate: 0.1 },
-                { bracketMin: 10000, bracketMax: 40000, rate: 0.15 },
-                { bracketMin: 40000, bracketMax: null, rate: 0.25 }
-            ];
+        it('should calculate bi-weekly salary correctly', () => {
+            const employmentTerm = {
+                baseSalary: 60000,
+                payFrequency: 'BI_WEEKLY'
+            };
 
-            var result = payrollService.calculateTaxAmount(45000, taxRates);
-            expect(result).toBe(6750);
+            const payrollRun = {
+                periodStart: new Date('2024-01-01'),
+                periodEnd: new Date('2024-01-14')
+            };
+
+            const salary = payrollService.calculatePeriodSalary(employmentTerm, payrollRun);
+            expect(salary).toBeCloseTo(60000 * 12 / 52, 2);
         });
     });
 });

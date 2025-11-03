@@ -1,5 +1,5 @@
 import asyncHandler from 'express-async-handler';
-import { overtimeService } from '../services/overtimeService.js';
+import * as overtimeService from '../services/overtimeService.js';
 
 // @desc    Get overtime rules
 // @route   GET /api/time-attendance/overtime-rules

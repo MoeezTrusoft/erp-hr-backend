@@ -1,5 +1,5 @@
 import asyncHandler from 'express-async-handler';
-import { workScheduleService } from '../services/workScheduleService.js';
+import * as workScheduleService from '../services/workScheduleService.js';
 
 // @desc    Get work schedules
 // @route   GET /api/time-attendance/work-schedules

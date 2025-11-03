@@ -1,81 +1,37 @@
-// validations/payrollValidation.js
-const Joi = require('joi');
+const { body, param, query } = require('express-validator');
 
-const createPayrollRun = {
-    body: Joi.object({
-        periodStart: Joi.date().required(),
-        periodEnd: Joi.date().required().greater(Joi.ref('periodStart')),
-        countryCode: Joi.string().length(2).required(),
-        currencyCode: Joi.string().length(3).required()
-    })
+const payrollValidation = {
+    createPayrollRun: [
+        body('periodStart').isISO8601().withMessage('Valid period start date is required'),
+        body('periodEnd').isISO8601().withMessage('Valid period end date is required'),
+        body('countryCode').isLength({ min: 2, max: 2 }).withMessage('Valid country code is required'),
+        body('currencyCode').isLength({ min: 3, max: 3 }).withMessage('Valid currency code is required')
+    ],
+
+    createEarningType: [
+        body('code').notEmpty().withMessage('Code is required'),
+        body('name').notEmpty().withMessage('Name is required'),
+        body('type').isIn(['EARNING', 'DEDUCTION']).withMessage('Valid type is required')
+    ],
+
+    createDeductionType: [
+        body('code').notEmpty().withMessage('Code is required'),
+        body('name').notEmpty().withMessage('Name is required'),
+        body('type').isIn(['EARNING', 'DEDUCTION']).withMessage('Valid type is required')
+    ],
+
+    createEmploymentTerms: [
+        body('baseSalary').isFloat({ min: 0 }).withMessage('Valid base salary is required'),
+        body('payFrequency').isIn(['WEEKLY', 'BI_WEEKLY', 'SEMI_MONTHLY', 'MONTHLY']).withMessage('Valid pay frequency is required'),
+        body('effectiveFrom').isISO8601().withMessage('Valid effective from date is required')
+    ],
+
+    createTaxRate: [
+        body('countryCode').isLength({ min: 2, max: 2 }).withMessage('Valid country code is required'),
+        body('bracketMin').isFloat({ min: 0 }).withMessage('Valid bracket minimum is required'),
+        body('rate').isFloat({ min: 0, max: 1 }).withMessage('Valid rate between 0 and 1 is required'),
+        body('effectiveFrom').isISO8601().withMessage('Valid effective from date is required')
+    ]
 };
 
-const updatePayrollRun = {
-    params: Joi.object({
-        id: Joi.number().integer().required()
-    }),
-    body: Joi.object({
-        status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'CANCELLED', 'FAILED')
-    })
-};
-
-const updatePayslip = {
-    params: Joi.object({
-        id: Joi.number().integer().required()
-    }),
-    body: Joi.object({
-        status: Joi.string().valid('DRAFT', 'FINALIZED', 'DISTRIBUTED')
-    })
-};
-
-const createEarningType = {
-    body: Joi.object({
-        code: Joi.string().required(),
-        name: Joi.string().required(),
-        description: Joi.string().allow('', null),
-        type: Joi.string().valid('EARNING', 'DEDUCTION').default('EARNING'),
-        isTaxable: Joi.boolean().default(true)
-    })
-};
-
-const updateEarningType = {
-    params: Joi.object({
-        id: Joi.number().integer().required()
-    }),
-    body: Joi.object({
-        name: Joi.string(),
-        description: Joi.string().allow('', null),
-        isTaxable: Joi.boolean()
-    })
-};
-
-const createDeductionType = {
-    body: Joi.object({
-        code: Joi.string().required(),
-        name: Joi.string().required(),
-        description: Joi.string().allow('', null),
-        type: Joi.string().valid('EARNING', 'DEDUCTION').default('DEDUCTION'),
-        rate: Joi.number().min(0).max(100).allow(null)
-    })
-};
-
-const updateDeductionType = {
-    params: Joi.object({
-        id: Joi.number().integer().required()
-    }),
-    body: Joi.object({
-        name: Joi.string(),
-        description: Joi.string().allow('', null),
-        rate: Joi.number().min(0).max(100).allow(null)
-    })
-};
-
-module.exports = {
-    createPayrollRun,
-    updatePayrollRun,
-    updatePayslip,
-    createEarningType,
-    updateEarningType,
-    createDeductionType,
-    updateDeductionType
-};
+module.exports = payrollValidation;

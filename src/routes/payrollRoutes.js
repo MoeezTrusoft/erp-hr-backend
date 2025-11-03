@@ -1,63 +1,42 @@
-// tests/integration/payrollRoutes.test.js
-const request = require('supertest');
-const app = require('../../app.js');
-const { prisma } = require('../setup.js');
-const testHelpers = require('../testHelpers.js');
+import express from 'express';
+import payrollController from '../controllers/payrollController.js';
 
-describe('Payroll Routes - Integration Tests', function () {
-    var authToken;
-    var testUser;
-    var testEmployee;
-    var testPayrollRun;
 
-    beforeAll(function (done) {
-        testUser = testHelpers.createTestUser();
-        authToken = testHelpers.createTestToken(testUser);
+const router = express.Router();
 
-        prisma.employee.create({
-            data: testHelpers.createTestEmployee()
-        }).then(function (employee) {
-            testEmployee = employee;
-            done();
-        }).catch(done);
-    });
+// Payroll Runs
+router.get('/runs', payrollController.getPayrollRuns);
+router.get('/runs/:id', payrollController.getPayrollRunById);
+router.post('/runs', payrollController.createPayrollRun);
+router.put('/runs/:id/process', payrollController.processPayrollRun);
+router.put('/runs/:id/finalize', payrollController.finalizePayrollRun);
+router.delete('/runs/:id', payrollController.cancelPayrollRun);
 
-    beforeEach(function (done) {
-        prisma.payrollRun.create({
-            data: testHelpers.createTestPayrollRun()
-        }).then(function (payrollRun) {
-            testPayrollRun = payrollRun;
-            return Promise.all([
-                prisma.employmentTerms.create({
-                    data: testHelpers.createTestEmploymentTerms(testEmployee.id)
-                }),
-                prisma.payrollEarningType.create({
-                    data: testHelpers.createTestEarningType()
-                }),
-                prisma.payrollDeductionType.create({
-                    data: testHelpers.createTestDeductionType()
-                }),
-                prisma.taxRate.create({
-                    data: testHelpers.createTestTaxRate()
-                })
-            ]);
-        }).then(function () {
-            done();
-        }).catch(done);
-    });
+// Payroll Configuration
+router.get('/earning-types', payrollController.getEarningTypes);
+router.post('/earning-types', payrollController.createEarningType);
+router.put('/earning-types/:id', payrollController.updateEarningType);
 
-    describe('GET /api/payroll/runs', function () {
-        test('should return list of payroll runs', function (done) {
-            request(app)
-                .get('/api/payroll/runs')
-                .set('Authorization', 'Bearer ' + authToken)
-                .expect(200)
-                .end(function (err, response) {
-                    if (err) return done(err);
-                    expect(response.body.success).toBe(true);
-                    expect(response.body.data.runs).toHaveLength(1);
-                    done();
-                });
-        });
-    });
-});
+router.get('/deduction-types', payrollController.getDeductionTypes);
+router.post('/deduction-types', payrollController.createDeductionType);
+router.put('/deduction-types/:id', payrollController.updateDeductionType);
+
+// Employee Payroll Data
+router.get('/employees/:employeeId/payroll-data', payrollController.getEmployeePayrollData);
+router.post('/employees/:employeeId/employment-terms', payrollController.createEmploymentTerms);
+router.post('/employees/:employeeId/payroll-assignments', payrollController.createPayrollAssignment);
+
+// Payslips
+router.get('/payslips', payrollController.getPayslips);
+router.get('/payslips/:id', payrollController.getPayslipById);
+router.post('/payslips/:id/distribute', payrollController.distributePayslip);
+router.get('/employees/:employeeId/payslips', payrollController.getEmployeePayslips);
+
+// Tax Configuration
+router.get('/tax-rates', payrollController.getTaxRates);
+router.post('/tax-rates', payrollController.createTaxRate);
+
+// Audit Logs
+router.get('/audit-logs', payrollController.getAuditLogs);
+
+export default router;

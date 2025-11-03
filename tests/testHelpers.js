@@ -1,92 +1,87 @@
-// tests/testHelpers.js
-const jwt = require('jsonwebtoken');
+import { PrismaClient } from '@prisma/client';
 
-function createTestUser(overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        id: 1,
-        email: 'test@example.com',
-        first_name: 'Test',
-        last_name: 'User',
-        role: 'PAYROLL_ADMIN'
-    }, overrides);
-}
+const prisma = new PrismaClient();
 
-function createTestToken(user) {
-    return jwt.sign(user, process.env.JWT_SECRET || 'test-secret');
-}
-
-function createTestEmployee(overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        first_name: 'John',
-        last_name: 'Doe',
-        job_title: 'Software Engineer',
-        hire_date: new Date('2020-01-01'),
-        status: 'ACTIVE'
-    }, overrides);
-}
-
-function createTestPayrollRun(overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        periodStart: new Date('2024-01-01'),
-        periodEnd: new Date('2024-01-31'),
-        countryCode: 'US',
-        currencyCode: 'USD',
-        status: 'PENDING'
-    }, overrides);
-}
-
-function createTestEmploymentTerms(employeeId, overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        employeeId: employeeId,
-        baseSalary: 60000,
-        currency: 'USD',
-        payFrequency: 'MONTHLY',
-        effectiveFrom: new Date('2024-01-01')
-    }, overrides);
-}
-
-function createTestEarningType(overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        code: 'BASE_SALARY',
-        name: 'Base Salary',
-        type: 'EARNING',
-        isTaxable: true
-    }, overrides);
-}
-
-function createTestDeductionType(overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        code: 'INCOME_TAX',
-        name: 'Income Tax',
-        type: 'DEDUCTION',
-        rate: 20.0
-    }, overrides);
-}
-
-function createTestTaxRate(overrides) {
-    if (overrides === void 0) { overrides = {}; }
-    return Object.assign({
-        countryCode: 'US',
-        bracketMin: 0,
-        bracketMax: 10000,
-        rate: 0.1,
-        effectiveFrom: new Date('2024-01-01')
-    }, overrides);
-}
-
-module.exports = {
-    createTestUser: createTestUser,
-    createTestToken: createTestToken,
-    createTestEmployee: createTestEmployee,
-    createTestPayrollRun: createTestPayrollRun,
-    createTestEmploymentTerms: createTestEmploymentTerms,
-    createTestEarningType: createTestEarningType,
-    createTestDeductionType: createTestDeductionType,
-    createTestTaxRate: createTestTaxRate
+export const createTestEmployee = async (employeeData = {}) => {
+    return prisma.employee.create({
+        data: {
+            first_name: 'Test',
+            last_name: 'Employee',
+            job_title: 'Test Position',
+            hire_date: new Date(),
+            status: 'active',
+            ...employeeData
+        }
+    });
 };
+
+export const createTestPayrollRun = async (payrollRunData = {}) => {
+    return prisma.payrollRun.create({
+        data: {
+            periodStart: new Date('2024-01-01'),
+            periodEnd: new Date('2024-01-31'),
+            countryCode: 'US',
+            currencyCode: 'USD',
+            status: 'PENDING',
+            ...payrollRunData
+        }
+    });
+};
+
+export const createTestEmploymentTerms = async (employeeId, termsData = {}) => {
+    return prisma.employmentTerms.create({
+        data: {
+            employeeId,
+            baseSalary: 60000,
+            payFrequency: 'MONTHLY',
+            effectiveFrom: new Date('2024-01-01'),
+            currency: 'USD',
+            ...termsData
+        }
+    });
+};
+
+export const createTestEarningType = async (earningTypeData = {}) => {
+    return prisma.payrollEarningType.create({
+        data: {
+            code: 'TEST_EARNING',
+            name: 'Test Earning',
+            type: 'EARNING',
+            isTaxable: true,
+            ...earningTypeData
+        }
+    });
+};
+
+export const createTestDeductionType = async (deductionTypeData = {}) => {
+    return prisma.payrollDeductionType.create({
+        data: {
+            code: 'TEST_DEDUCTION',
+            name: 'Test Deduction',
+            type: 'DEDUCTION',
+            ...deductionTypeData
+        }
+    });
+};
+
+export const cleanupTestData = async () => {
+    try {
+        await prisma.payrollAuditLog.deleteMany({});
+        await prisma.payrollPayslip.deleteMany({});
+        await prisma.payrollRun.deleteMany({});
+        await prisma.payrollAssignment.deleteMany({});
+        await prisma.employmentTerms.deleteMany({});
+        await prisma.bankDetail.deleteMany({});
+        await prisma.payrollEarningType.deleteMany({});
+        await prisma.payrollDeductionType.deleteMany({});
+        await prisma.taxRate.deleteMany({});
+    } catch (error) {
+        console.log('Cleanup warning:', error.message);
+    }
+};
+
+export const waitForProcessing = (ms = 1000) => {
+    return new Promise(resolve => setTimeout(resolve, ms));
+};
+
+export { prisma };

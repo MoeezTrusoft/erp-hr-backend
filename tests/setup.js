@@ -1,31 +1,37 @@
-// tests/setup.js
-const { PrismaClient } = require('@prisma/client');
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-beforeAll(function () {
-    return prisma.$connect();
+// Global test setup
+beforeAll(async () => {
+    // Ensure database is clean before tests
+    await cleanupTestData();
 });
 
-afterAll(function () {
-    return prisma.$disconnect();
+afterAll(async () => {
+    await prisma.$disconnect();
 });
 
-beforeEach(function () {
-    return Promise.all([
-        prisma.payrollAuditLog.deleteMany(),
-        prisma.payrollDeduction.deleteMany(),
-        prisma.payrollEarning.deleteMany(),
-        prisma.payrollPayslip.deleteMany(),
-        prisma.payrollRun.deleteMany(),
-        prisma.payrollAssignment.deleteMany(),
-        prisma.employmentTerms.deleteMany(),
-        prisma.bankDetail.deleteMany(),
-        prisma.payrollDeductionType.deleteMany(),
-        prisma.payrollEarningType.deleteMany(),
-        prisma.taxRate.deleteMany(),
-        prisma.employee.deleteMany()
-    ]);
+// Global test teardown
+afterEach(async () => {
+    await cleanupTestData();
 });
 
-module.exports = { prisma };
+async function cleanupTestData() {
+    try {
+        await prisma.payrollAuditLog.deleteMany({});
+        await prisma.payrollPayslip.deleteMany({});
+        await prisma.payrollRun.deleteMany({});
+        await prisma.payrollAssignment.deleteMany({});
+        await prisma.employmentTerms.deleteMany({});
+        await prisma.bankDetail.deleteMany({});
+        await prisma.payrollEarningType.deleteMany({});
+        await prisma.payrollDeductionType.deleteMany({});
+        await prisma.taxRate.deleteMany({});
+        await prisma.employee.deleteMany({});
+    } catch (error) {
+        console.log('Cleanup warning:', error.message);
+    }
+}
+
+global.prisma = prisma;

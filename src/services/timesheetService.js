@@ -3,7 +3,8 @@ import { AppError } from '../utils/AppError.js';
 
 const prisma = new PrismaClient();
 
-export async function getTimesheets({ employeeId, periodStart, periodEnd, status }) {
+// Export as named exports (current approach - just fix the import)
+export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status }) => {
     const where = { employeeId: parseInt(employeeId) };
 
     if (periodStart && periodEnd) {
@@ -48,9 +49,9 @@ export async function getTimesheets({ employeeId, periodStart, periodEnd, status
         },
         orderBy: { period_start: 'desc' }
     });
-}
+};
 
-export async function getTimesheetById(id, userId) {
+export const getTimesheetById = async (id, userId) => {
     const timesheet = await prisma.timesheet.findFirst({
         where: { id: parseInt(id) },
         include: {
@@ -92,9 +93,9 @@ export async function getTimesheetById(id, userId) {
     }
 
     return timesheet;
-}
+};
 
-export async function createTimesheet(data) {
+export const createTimesheet = async (data) => {
     const { employeeId, period_start, period_end } = data;
 
     // Check for existing timesheet for the same period
@@ -160,9 +161,9 @@ export async function createTimesheet(data) {
     }
 
     return getTimesheetById(timesheet.id, parseInt(employeeId));
-}
+};
 
-export async function submitTimesheet(id, userId) {
+export const submitTimesheet = async (id, userId) => {
     const timesheet = await prisma.timesheet.findFirst({
         where: { id: parseInt(id) },
         include: { employee: true }
@@ -205,9 +206,9 @@ export async function submitTimesheet(id, userId) {
             timeEntries: true
         }
     });
-}
+};
 
-export async function approveTimesheet(id, approverId, comments = '') {
+export const approveTimesheet = async (id, approverId, comments = '') => {
     const timesheet = await prisma.timesheet.findFirst({
         where: { id: parseInt(id) },
         include: { employee: true }
@@ -256,9 +257,9 @@ export async function approveTimesheet(id, approverId, comments = '') {
             }
         }
     });
-}
+};
 
-export async function rejectTimesheet(id, approverId, comments = '') {
+export const rejectTimesheet = async (id, approverId, comments = '') => {
     const timesheet = await prisma.timesheet.findFirst({
         where: { id: parseInt(id) },
         include: { employee: true }
@@ -310,4 +311,4 @@ export async function rejectTimesheet(id, approverId, comments = '') {
             }
         }
     });
-}
+};

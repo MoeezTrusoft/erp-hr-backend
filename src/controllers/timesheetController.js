@@ -1,5 +1,5 @@
 import asyncHandler from 'express-async-handler';
-import { timesheetService } from '../services/timesheetService.js';
+import * as timesheetService from '../services/timesheetService.js';
 
 // @desc    Get timesheets for employee
 // @route   GET /api/time-attendance/timesheets

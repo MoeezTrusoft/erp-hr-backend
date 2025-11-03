@@ -1,261 +1,275 @@
-import { createPayrollRunService, distributePayslipService, finalizePayrollRunService, getEarningTypesService, getEmployeePayslipsService, getPayrollRunService, getPayrollRunsService, getPayslipService, getPayslipsService, processPayrollRunService, updateEarningTypeService, updatePayrollRunService, updatePayslipService, createEarningTypeService, getDeductionTypesService, createDeductionTypeService, updateDeductionTypeService, getTaxRatesService, getPayrollSummaryService, getPayrollRegisterService, getTaxReportService, getAuditLogsService } from "../services/payrollService";
-import { errorResponse, successResponse } from "../utils/response";
 
-
-
-
-// Payroll Run Controllers
-export const createPayrollRun = async (req, res) => {
-    try {
-        const payrollRun = await createPayrollRunService(req.body, req.user);
-        successResponse(res, payrollRun, 'Payroll run created successfully', 201);
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
+import payrollService from '../services/payrollService.js';
 
 export const getPayrollRuns = async (req, res) => {
     try {
-        const { page = 1, limit = 10, status, period } = req.query;
-        const payrollRuns = await getPayrollRunsService({
-            page: parseInt(page),
-            limit: parseInt(limit),
-            status,
-            period
-        });
-        successResponse(res, payrollRuns, 'Payroll runs retrieved successfully');
+        const { page = 1, limit = 10, status } = req.query;
+        const result = await payrollService.getPayrollRuns({ page, limit, status });
+        res.json(result);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(500).json({ error: error.message });
     }
 };
 
-export const getPayrollRun = async (req, res) => {
+export const getPayrollRunById = async (req, res) => {
     try {
-        const payrollRun = await getPayrollRunService(parseInt(req.params.id));
-        successResponse(res, payrollRun, 'Payroll run retrieved successfully');
+        const { id } = req.params;
+        const payrollRun = await payrollService.getPayrollRunById(parseInt(id));
+        if (!payrollRun) {
+            return res.status(404).json({ error: 'Payroll run not found' });
+        }
+        res.json(payrollRun);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(500).json({ error: error.message });
     }
 };
 
-export const updatePayrollRun = async (req, res) => {
+export const createPayrollRun = async (req, res) => {
     try {
-        const payrollRun = await updatePayrollRunService(
-            parseInt(req.params.id),
-            req.body,
-            req.user
-        );
-        successResponse(res, payrollRun, 'Payroll run updated successfully');
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const payrollRun = await payrollService.createPayrollRun(req.body);
+        res.status(201).json(payrollRun);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
 export const processPayrollRun = async (req, res) => {
     try {
-        const result = await processPayrollRunService(parseInt(req.params.id), req.user);
-        successResponse(res, result, 'Payroll run processed successfully');
+        const { id } = req.params;
+        const result = await payrollService.processPayrollRun(parseInt(id));
+        res.json(result);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
 export const finalizePayrollRun = async (req, res) => {
     try {
-        const result = await finalizePayrollRunService(parseInt(req.params.id), req.user);
-        successResponse(res, result, 'Payroll run finalized successfully');
+        const { id } = req.params;
+        const result = await payrollService.finalizePayrollRun(parseInt(id));
+        res.json(result);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
-// Payslip Controllers
-export const getPayslips = async (req, res) => {
+export const cancelPayrollRun = async (req, res) => {
     try {
-        const { page = 1, limit = 10, payrollRunId, employeeId, status } = req.query;
-        const payslips = await getPayslipsService({
-            page: parseInt(page),
-            limit: parseInt(limit),
-            payrollRunId: payrollRunId ? parseInt(payrollRunId) : undefined,
-            employeeId: employeeId ? parseInt(employeeId) : undefined,
-            status
-        });
-        successResponse(res, payslips, 'Payslips retrieved successfully');
+        const { id } = req.params;
+        await payrollService.cancelPayrollRun(parseInt(id));
+        res.json({ message: 'Payroll run cancelled successfully' });
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
-export const getPayslip = async (req, res) => {
-    try {
-        const payslip = await getPayslipService(parseInt(req.params.id));
-        successResponse(res, payslip, 'Payslip retrieved successfully');
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
-
-export const updatePayslip = async (req, res) => {
-    try {
-        const payslip = await updatePayslipService(
-            parseInt(req.params.id),
-            req.body,
-            req.user
-        );
-        successResponse(res, payslip, 'Payslip updated successfully');
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
-
-export const distributePayslip = async (req, res) => {
-    try {
-        const result = await distributePayslipService(parseInt(req.params.id), req.user);
-        successResponse(res, result, 'Payslip distributed successfully');
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
-
-export const getEmployeePayslips = async (req, res) => {
-    try {
-        const { page = 1, limit = 10 } = req.query;
-        const payslips = await getEmployeePayslipsService({
-            employeeId: parseInt(req.params.employeeId),
-            page: parseInt(page),
-            limit: parseInt(limit)
-        });
-        successResponse(res, payslips, 'Employee payslips retrieved successfully');
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
-
-// Configuration Controllers
+// Earning Types
 export const getEarningTypes = async (req, res) => {
     try {
-        const earningTypes = await getEarningTypesService();
-        successResponse(res, earningTypes, 'Earning types retrieved successfully');
+        const earningTypes = await payrollService.getEarningTypes();
+        res.json(earningTypes);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(500).json({ error: error.message });
     }
 };
 
 export const createEarningType = async (req, res) => {
     try {
-        const earningType = await createEarningTypeService(req.body);
-        successResponse(res, earningType, 'Earning type created successfully', 201);
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const earningType = await payrollService.createEarningType(req.body);
+        res.status(201).json(earningType);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
 export const updateEarningType = async (req, res) => {
     try {
-        const earningType = await updateEarningTypeService(
-            parseInt(req.params.id),
-            req.body
-        );
-        successResponse(res, earningType, 'Earning type updated successfully');
+        const { id } = req.params;
+        const earningType = await payrollService.updateEarningType(parseInt(id), req.body);
+        res.json(earningType);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
+// Deduction Types
 export const getDeductionTypes = async (req, res) => {
     try {
-        const deductionTypes = await getDeductionTypesService();
-        successResponse(res, deductionTypes, 'Deduction types retrieved successfully');
+        const deductionTypes = await payrollService.getDeductionTypes();
+        res.json(deductionTypes);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(500).json({ error: error.message });
     }
 };
 
 export const createDeductionType = async (req, res) => {
     try {
-        const deductionType = await createDeductionTypeService(req.body);
-        successResponse(res, deductionType, 'Deduction type created successfully', 201);
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const deductionType = await payrollService.createDeductionType(req.body);
+        res.status(201).json(deductionType);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
 export const updateDeductionType = async (req, res) => {
     try {
-        const deductionType = await updateDeductionTypeService(
-            parseInt(req.params.id),
-            req.body
-        );
-        successResponse(res, deductionType, 'Deduction type updated successfully');
+        const { id } = req.params;
+        const deductionType = await payrollService.updateDeductionType(parseInt(id), req.body);
+        res.json(deductionType);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
-// Tax Configuration Controllers
+// Employee Payroll Data
+export const getEmployeePayrollData = async (req, res) => {
+    try {
+        const { employeeId } = req.params;
+        const data = await payrollService.getEmployeePayrollData(parseInt(employeeId));
+        res.json(data);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+export const createEmploymentTerms = async (req, res) => {
+    try {
+        const { employeeId } = req.params;
+        const employmentTerms = await payrollService.createEmploymentTerms({
+            ...req.body,
+            employeeId: parseInt(employeeId)
+        });
+        res.status(201).json(employmentTerms);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+};
+
+export const createPayrollAssignment = async (req, res) => {
+    try {
+        const { employeeId } = req.params;
+        const assignment = await payrollService.createPayrollAssignment({
+            ...req.body,
+            employeeId: parseInt(employeeId)
+        });
+        res.status(201).json(assignment);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+};
+
+// Payslips
+export const getPayslips = async (req, res) => {
+    try {
+        const { page = 1, limit = 10, payrollRunId, employeeId } = req.query;
+        const result = await payrollService.getPayslips({ page, limit, payrollRunId, employeeId });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+export const getPayslipById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const payslip = await payrollService.getPayslipById(parseInt(id));
+        if (!payslip) {
+            return res.status(404).json({ error: 'Payslip not found' });
+        }
+        res.json(payslip);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+export const distributePayslip = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const payslip = await payrollService.distributePayslip(parseInt(id));
+        res.json(payslip);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+};
+
+export const getEmployeePayslips = async (req, res) => {
+    try {
+        const { employeeId } = req.params;
+        const { page = 1, limit = 10 } = req.query;
+        const result = await payrollService.getEmployeePayslips(parseInt(employeeId), { page, limit });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// Tax Rates
 export const getTaxRates = async (req, res) => {
     try {
-        const { countryCode, effectiveDate } = req.query;
-        const taxRates = await getTaxRatesService({ countryCode, effectiveDate });
-        successResponse(res, taxRates, 'Tax rates retrieved successfully');
+        const { countryCode } = req.query;
+        const taxRates = await payrollService.getTaxRates(countryCode);
+        res.json(taxRates);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(500).json({ error: error.message });
     }
 };
 
-// Report Controllers
-export const getPayrollSummary = async (req, res) => {
+export const createTaxRate = async (req, res) => {
     try {
-        const { payrollRunId, periodStart, periodEnd } = req.query;
-        const summary = await getPayrollSummaryService({
-            payrollRunId: payrollRunId ? parseInt(payrollRunId) : undefined,
-            periodStart,
-            periodEnd
-        });
-        successResponse(res, summary, 'Payroll summary retrieved successfully');
+        const taxRate = await payrollService.createTaxRate(req.body);
+        res.status(201).json(taxRate);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(400).json({ error: error.message });
     }
 };
 
-export const getPayrollRegister = async (req, res) => {
-    try {
-        const { payrollRunId } = req.query;
-        const register = await getPayrollRegisterService(parseInt(payrollRunId));
-        successResponse(res, register, 'Payroll register retrieved successfully');
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
-
-export const getTaxReport = async (req, res) => {
-    try {
-        const { periodStart, periodEnd, countryCode } = req.query;
-        const report = await getTaxReportService({
-            periodStart,
-            periodEnd,
-            countryCode
-        });
-        successResponse(res, report, 'Tax report retrieved successfully');
-    } catch (error) {
-        errorResponse(res, error.message);
-    }
-};
-
-// Audit Controllers
+// Audit Logs
 export const getAuditLogs = async (req, res) => {
     try {
-        const { page = 1, limit = 10, action, startDate, endDate } = req.query;
-        const auditLogs = await getAuditLogsService({
-            page: parseInt(page),
-            limit: parseInt(limit),
-            action,
-            startDate,
-            endDate
-        });
-        successResponse(res, auditLogs, 'Audit logs retrieved successfully');
+        const { page = 1, limit = 10, payrollRunId, payslipId } = req.query;
+        const result = await payrollService.getAuditLogs({ page, limit, payrollRunId, payslipId });
+        res.json(result);
     } catch (error) {
-        errorResponse(res, error.message);
+        res.status(500).json({ error: error.message });
     }
 };
 
+export default {
+    getPayrollRuns,
+    getPayrollRunById,
+    createPayrollRun,
+    processPayrollRun,
+    finalizePayrollRun,
+    cancelPayrollRun,
+    getEarningTypes,
+    createEarningType,
+    updateEarningType,
+    getDeductionTypes,
+    createDeductionType,
+    updateDeductionType,
+    getEmployeePayrollData,
+    createEmploymentTerms,
+    createPayrollAssignment,
+    getPayslips,
+    getPayslipById,
+    distributePayslip,
+    getEmployeePayslips,
+    getTaxRates,
+    createTaxRate,
+    getAuditLogs
+};

@@ -5,8 +5,6 @@ import cors from "cors";
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
 import attendanceRoutes from "./routes/attendance.routes.js";
-import leaveRoutes from "./routes/leave.routes.js";
-import holidayRoutes from "./routes/holiday.routes.js";
 import performanceRoutes from "./routes/performance.routes.js";
 import positionRoutes from "./routes/position.routes.js";
 import requisitionRoutes from "./routes/requisition.routes.js";
@@ -23,7 +21,9 @@ import calibrationRoutes from "./routes/calibration.routes.js";
 import calibrationReportRoutes from "./routes/calibrationReport.routes.js";
 import client from "prom-client";
 import timeAttendanceRoutes from './routes/timeAttendanceRoutes.js';
-
+import leaveRoutes from './routes/leave.routes.js';
+import holidayRoutes from './routes/holiday.routes.js';
+import payrollRoutes from './routes/payrollRoutes.js';
 
 dotenv.config();
 const app = express();
@@ -35,8 +35,6 @@ app.use(cors({ origin: "*", credentials: true }));
 // HR routes
 app.use("/api/employee", hrRoutes);
 app.use("/api/attendance", attendanceRoutes);
-app.use("/api/leave", leaveRoutes);
-app.use("/api/holidays", holidayRoutes);
 app.use("/api/performance", performanceRoutes);
 app.use("/api/positions", positionRoutes);
 app.use("/api/requisitions", requisitionRoutes);
@@ -53,7 +51,10 @@ app.use("/api/calibration", calibrationRoutes);
 app.use("/api/calibration/reports", calibrationReportRoutes);
 
 app.use('/api/time-attendance', timeAttendanceRoutes);
+app.use('/api/leaves', leaveRoutes);
+app.use('/api/holidays', holidayRoutes);
 
+app.use('/api/payroll', payrollRoutes);
 
 startReviewReminderScheduler();
 // Metrics endpoint
