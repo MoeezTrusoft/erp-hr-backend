@@ -14,6 +14,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ==================== EXISTING ENUMS ====================
 enum StatusAttandance {
   PRESENT
   ABSENT
@@ -94,6 +95,34 @@ enum CalibrationStatus {
   COMPLETED
 }
 
+// ==================== NEW PAYROLL ENUMS ====================
+enum PayrollRunStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum PayslipStatus {
+  DRAFT
+  FINALIZED
+  DISTRIBUTED
+}
+
+enum PayElementType {
+  EARNING
+  DEDUCTION
+}
+
+enum PayFrequency {
+  WEEKLY
+  BI_WEEKLY
+  SEMI_MONTHLY
+  MONTHLY
+}
+
+// ==================== EXISTING MODELS ====================
 model Log {
   id          Int       @id @default(autoincrement())
   employee    Employee? @relation(fields: [employeeId], references: [id])
@@ -112,6 +141,12 @@ model Log {
 
   attandaceId Int?
   attandance  Attendance? @relation("AttandanceMark", fields: [attandaceId], references: [id])
+
+  // New payroll relations
+  payrollRun   PayrollRun?     @relation(fields: [payrollRunId], references: [id])
+  payrollRunId Int?
+  payslip      PayrollPayslip? @relation(fields: [payslipId], references: [id])
+  payslipId    Int?
 }
 
 model Employee {
@@ -126,20 +161,17 @@ model Employee {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  attendance      Attendance[]
-  leaves          Leave[]
-  // ✅ Review Relations
-  reviewsGiven    PerformanceReview[] @relation("Reviewer")
-  reviewsReceived PerformanceReview[] @relation("EmployeeReviews")
-
-  // ✅ Feedback Relation
+  // Existing relations
+  attendance            Attendance[]
+  leaves                Leave[]
+  reviewsGiven          PerformanceReview[]   @relation("Reviewer")
+  reviewsReceived       PerformanceReview[]   @relation("EmployeeReviews")
   feedbackGiven         ReviewFeedback[]      @relation("FeedbackByEmployee")
   Position              Position?             @relation(fields: [positionId], references: [id])
   positionId            Int?
-  // ✅ Job Requisition Relations
-  requisitionsRequested JobRequisition[]      @relation("RequestedBy") // Requisitions created by this employee
-  requisitionsApproved  JobRequisition[]      @relation("ApprovedBy") // Requisitions approved by this employee
-  approvals             RequisitionApproval[] // Approvals performed by this employee
+  requisitionsRequested JobRequisition[]      @relation("RequestedBy")
+  requisitionsApproved  JobRequisition[]      @relation("ApprovedBy")
+  approvals             RequisitionApproval[]
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
   TrainingEnrollment    TrainingEnrollment[]
@@ -152,6 +184,13 @@ model Employee {
   feedBackBy            ReviewFeedback[]      @relation("FeedbackBy")
   ReviewReminder        ReviewReminder[]
   calibratedBy          RatingAdjustment[]    @relation("CalibratedBy")
+
+  // New payroll relations
+  payrollPayslips    PayrollPayslip[]
+  employmentTerms    EmploymentTerms[]
+  payrollAssignments PayrollAssignment[]
+  bankDetails        BankDetail[]
+  PayrollAuditLog    PayrollAuditLog[]
 }
 
 // 🕒 Attendance model
@@ -254,30 +293,6 @@ model Position {
   JobRequisition JobRequisition[]
   createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
 }
-
-// model JobRequisition {
-//   id            Int               @id @default(autoincrement())
-//   title         String
-//   description   String?
-//   departmentId  Int?
-//   positionId    Int?
-//   requestedById Int
-//   approvedById  Int?
-//   openings      Int               @default(1)
-//   status        RequisitionStatus @default(DRAFT)
-//   createdAt     DateTime          @default(now())
-//   updatedAt     DateTime          @updatedAt
-
-//   // Relations
-//   // department  Department?           @relation(fields: [departmentId], references: [id])
-//   position    Position?             @relation(fields: [positionId], references: [id])
-//   requestedBy Employee              @relation("RequestedBy", fields: [requestedById], references: [id])
-//   approvedBy  Employee?             @relation("ApprovedBy", fields: [approvedById], references: [id])
-//   approvals   RequisitionApproval[]
-//   postings    JobPosting[]
-//   Employee    Employee?             @relation(fields: [employeeId], references: [id])
-//   employeeId  Int?
-// }
 
 model JobRequisition {
   id            Int               @id @default(autoincrement())
@@ -486,4 +501,214 @@ model RatingAdjustment {
   calibrationSession CalibrationSession? @relation("CalibrationSessions", fields: [calibrationSessionId], references: [id])
   performance_review PerformanceReview?  @relation("Rating Performance Review", fields: [reviewId], references: [id])
   calibratedBy       Employee?           @relation("CalibratedBy", fields: [calibrated_by_employee_id], references: [id])
+}
+
+// ==================== NEW PAYROLL MODELS ====================
+
+// Core Payroll Entities
+model PayrollRun {
+  id              Int              @id @default(autoincrement())
+  periodStart     DateTime
+  periodEnd       DateTime
+  countryCode     String           @db.Char(2)
+  currencyCode    String           @db.Char(3)
+  status          PayrollRunStatus @default(PENDING)
+  totalGross      Float?           @default(0)
+  totalDeductions Float?           @default(0)
+  totalNet        Float?           @default(0)
+  employeeCount   Int?             @default(0)
+  processedAt     DateTime?
+  created_at      DateTime         @default(now())
+  updated_at      DateTime         @updatedAt
+
+  // Relations
+  payslips        PayrollPayslip[]
+  logs            Log[]
+  PayrollAuditLog PayrollAuditLog[]
+
+  @@unique([periodStart, periodEnd])
+  @@map("payroll_runs")
+}
+
+model PayrollPayslip {
+  id              Int           @id @default(autoincrement())
+  payrollRunId    Int
+  employeeId      Int
+  grossAmount     Float
+  totalDeductions Float
+  netAmount       Float
+  distributedAt   DateTime?
+  status          PayslipStatus @default(DRAFT)
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  // Relations
+  payrollRun      PayrollRun         @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee        Employee           @relation(fields: [employeeId], references: [id])
+  earnings        PayrollEarning[]
+  deductions      PayrollDeduction[]
+  logs            Log[]
+  PayrollAuditLog PayrollAuditLog[]
+
+  @@unique([payrollRunId, employeeId])
+  @@map("payroll_payslips")
+}
+
+model PayrollEarning {
+  id            Int      @id @default(autoincrement())
+  payslipId     Int
+  earningTypeId Int
+  amount        Float
+  description   String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  // Relations
+  payslip     PayrollPayslip     @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  earningType PayrollEarningType @relation(fields: [earningTypeId], references: [id])
+
+  @@map("payroll_earnings")
+}
+
+model PayrollDeduction {
+  id              Int      @id @default(autoincrement())
+  payslipId       Int
+  deductionTypeId Int
+  amount          Float
+  description     String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  // Relations
+  payslip       PayrollPayslip       @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  deductionType PayrollDeductionType @relation(fields: [deductionTypeId], references: [id])
+
+  @@map("payroll_deductions")
+}
+
+// Configuration Tables
+model PayrollEarningType {
+  id          Int            @id @default(autoincrement())
+  code        String         @unique
+  name        String
+  description String?
+  type        PayElementType @default(EARNING)
+  isTaxable   Boolean        @default(true)
+  created_at  DateTime       @default(now())
+  updated_at  DateTime       @updatedAt
+
+  // Relations
+  earnings    PayrollEarning[]
+  assignments PayrollAssignment[]
+
+  @@map("payroll_earning_types")
+}
+
+model PayrollDeductionType {
+  id          Int            @id @default(autoincrement())
+  code        String         @unique
+  name        String
+  description String?
+  type        PayElementType @default(DEDUCTION)
+  rate        Float? // Percentage rate for calculations
+  created_at  DateTime       @default(now())
+  updated_at  DateTime       @updatedAt
+
+  // Relations
+  deductions  PayrollDeduction[]
+  assignments PayrollAssignment[]
+
+  @@map("payroll_deduction_types")
+}
+
+// Employee Payroll Data
+model EmploymentTerms {
+  id            Int          @id @default(autoincrement())
+  employeeId    Int
+  baseSalary    Float
+  currency      String       @default("USD")
+  payFrequency  PayFrequency
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  created_at    DateTime     @default(now())
+  updated_at    DateTime     @updatedAt
+
+  // Relations
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@map("employment_terms")
+}
+
+model PayrollAssignment {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int
+  earningTypeId   Int?
+  deductionTypeId Int?
+  amount          Float?
+  rate            Float?
+  effectiveFrom   DateTime
+  effectiveTo     DateTime?
+  isActive        Boolean   @default(true)
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  // Relations
+  employee      Employee              @relation(fields: [employeeId], references: [id])
+  earningType   PayrollEarningType?   @relation(fields: [earningTypeId], references: [id])
+  deductionType PayrollDeductionType? @relation(fields: [deductionTypeId], references: [id])
+
+  @@map("payroll_assignments")
+}
+
+model BankDetail {
+  id            Int      @id @default(autoincrement())
+  employeeId    Int
+  bankName      String
+  accountNumber String
+  routingNumber String?
+  accountType   String   @default("CHECKING")
+  isPrimary     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  // Relations
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([employeeId, accountNumber])
+  @@map("bank_details")
+}
+
+// Tax Configuration (Simplified)
+model TaxRate {
+  id            Int       @id @default(autoincrement())
+  countryCode   String    @db.Char(2)
+  bracketMin    Float
+  bracketMax    Float?
+  rate          Float
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@map("tax_rates")
+}
+
+// Audit Log for Payroll
+model PayrollAuditLog {
+  id           Int      @id @default(autoincrement())
+  action       String
+  details      String?
+  payrollRunId Int?
+  payslipId    Int?
+  employeeId   Int?
+  oldValues    Json?
+  newValues    Json?
+  created_at   DateTime @default(now())
+
+  // Relations
+  payrollRun PayrollRun?     @relation(fields: [payrollRunId], references: [id])
+  payslip    PayrollPayslip? @relation(fields: [payslipId], references: [id])
+  employee   Employee?       @relation(fields: [employeeId], references: [id])
+
+  @@map("payroll_audit_logs")
 }

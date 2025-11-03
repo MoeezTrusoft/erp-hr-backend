@@ -22,6 +22,8 @@ import { startReviewReminderScheduler } from "./services/reminderScheduler.servi
 import calibrationRoutes from "./routes/calibration.routes.js";
 import calibrationReportRoutes from "./routes/calibrationReport.routes.js";
 import client from "prom-client";
+import timeAttendanceRoutes from './routes/timeAttendanceRoutes.js';
+
 
 dotenv.config();
 const app = express();
@@ -44,22 +46,23 @@ app.use("/api/enrollment", traningEnrollmentRoutes);
 app.use("/api/log", logRoutes);
 app.use("/api/performance/cycles", performanceCycleRoutes);
 app.use("/api/performance/templates", performanceTemplateRoutes);
-app.use("/api/goals",goalsRoutes)
+app.use("/api/goals", goalsRoutes)
 app.use("/api/goal-alignments", goalAllignmentRoutes)
 app.use("/api/PerformanceReview", performanceReviewRoutes)
 app.use("/api/calibration", calibrationRoutes);
 app.use("/api/calibration/reports", calibrationReportRoutes);
 
+app.use('/api/time-attendance', timeAttendanceRoutes);
 
 
-  startReviewReminderScheduler();
+startReviewReminderScheduler();
 // Metrics endpoint
 app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", register.contentType);
   res.end(await register.metrics());
 });
 
-app.get("/", (req, res) => res.json({message: "HR Service Running 🏢"}));
+app.get("/", (req, res) => res.json({ message: "HR Service Running 🏢" }));
 
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => console.log(`HR Service running on port ${PORT}`));
