@@ -1,37 +1,59 @@
-import { PrismaClient } from '@prisma/client';
+// tests/setup.js
+import { jest } from '@jest/globals';
 
-const prisma = new PrismaClient();
+// Global test timeout
+jest.setTimeout(30000);
 
-// Global test setup
-beforeAll(async () => {
-    // Ensure database is clean before tests
-    await cleanupTestData();
-});
+// Create mock functions
+const mockCreate = jest.fn();
+const mockFindMany = jest.fn();
+const mockFindUnique = jest.fn();
+const mockUpdate = jest.fn();
+const mockDelete = jest.fn();
+const mockCount = jest.fn();
+const mockFindFirst = jest.fn();
+const mockTransaction = jest.fn();
 
-afterAll(async () => {
-    await prisma.$disconnect();
-});
-
-// Global test teardown
-afterEach(async () => {
-    await cleanupTestData();
-});
-
-async function cleanupTestData() {
-    try {
-        await prisma.payrollAuditLog.deleteMany({});
-        await prisma.payrollPayslip.deleteMany({});
-        await prisma.payrollRun.deleteMany({});
-        await prisma.payrollAssignment.deleteMany({});
-        await prisma.employmentTerms.deleteMany({});
-        await prisma.bankDetail.deleteMany({});
-        await prisma.payrollEarningType.deleteMany({});
-        await prisma.payrollDeductionType.deleteMany({});
-        await prisma.taxRate.deleteMany({});
-        await prisma.employee.deleteMany({});
-    } catch (error) {
-        console.log('Cleanup warning:', error.message);
+// Mock Prisma client - use relative path from setup.js location
+jest.unstable_mockModule('../src/config/prisma.js', () => ({
+    default: {
+        trainingCourse: {
+            create: mockCreate,
+            findMany: mockFindMany,
+            findUnique: mockFindUnique,
+            update: mockUpdate,
+            delete: mockDelete,
+            count: mockCount
+        },
+        trainingCategory: {
+            create: mockCreate,
+            findMany: mockFindMany
+        },
+        trainingEnrollment: {
+            create: mockCreate,
+            findMany: mockFindMany,
+            findFirst: mockFindFirst,
+            update: mockUpdate,
+            delete: mockDelete,
+            count: mockCount
+        },
+        employee: {
+            create: mockCreate,
+            findMany: mockFindMany,
+            findUnique: mockFindUnique
+        },
+        $transaction: mockTransaction
     }
-}
+}));
 
-global.prisma = prisma;
+// Export the mock functions so tests can use them
+export {
+    mockCreate,
+    mockFindMany,
+    mockFindUnique,
+    mockUpdate,
+    mockDelete,
+    mockCount,
+    mockFindFirst,
+    mockTransaction
+};

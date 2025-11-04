@@ -11,40 +11,13 @@
     "test:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
-    "test:performance:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/performance",
-    "test:performance:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration/performance",
-    "test:performance:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e/performanceManagement.e2e.test.js",
-    "test:performance:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/performance tests/integration/performance tests/e2e/performanceManagement.e2e.test.js"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "setupFilesAfterEnv": [
-      "<rootDir>/tests/setup.js"
-    ],
-    "testMatch": [
-      "**/tests/**/*.test.js"
-    ],
-    "collectCoverageFrom": [
-      "services/**/*.js",
-      "controllers/**/*.js",
-      "utils/**/*.js",
-      "middleware/**/*.js",
-      "!**/node_modules/**",
-      "!**/tests/**"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "branches": 70,
-        "functions": 70,
-        "lines": 70,
-        "statements": 70
-      }
-    },
-    "testTimeout": 30000,
-    "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
-    },
-    "transform": {}
+    "test:training:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js",
+    "test:training:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration/training.integration.test.js",
+    "test:training:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e/training.e2e.test.js",
+    "test:training:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js tests/integration/training.integration.test.js tests/e2e/training.e2e.test.js",
+    "test:sprint8": "npm run test:training:all",
+    "test:analytics:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/analyticsService.final.test.js tests/unit/analyticsController.test.js tests/integration/analytics.integration.test.js",
+    "test:sprint9": "npm run test:analytics:all"
   },
   "keywords": [],
   "author": "",

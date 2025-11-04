@@ -1,0 +1,359 @@
+// src/services/enrollmentService.js
+import { PrismaClient } from "@prisma/client";
+
+
+const prisma = new PrismaClient();
+export const enrollUser = async (enrollmentData) => {
+    try {
+        if (!enrollmentData.courseId || !enrollmentData.employeeId) {
+            throw new Error('Course ID and Employee ID are required');
+        }
+
+        // Check if user is already enrolled
+        const existingEnrollment = await prisma.trainingEnrollment.findFirst({
+            where: {
+                courseId: parseInt(enrollmentData.courseId),
+                employeeId: parseInt(enrollmentData.employeeId),
+                status: {
+                    in: ['ENROLLED', 'IN_PROGRESS']
+                }
+            }
+        });
+
+        if (existingEnrollment) {
+            throw new Error('User is already enrolled in this course');
+        }
+
+        const enrollment = await prisma.trainingEnrollment.create({
+            data: {
+                courseId: parseInt(enrollmentData.courseId),
+                employeeId: parseInt(enrollmentData.employeeId),
+                status: 'ENROLLED'
+            },
+            include: {
+                course: {
+                    include: {
+                        category: true
+                    }
+                },
+                employee: {
+                    select: {
+                        id: true,
+                        first_name: true,
+                        last_name: true
+                    }
+                }
+            }
+        });
+
+        return enrollment;
+    } catch (error) {
+        throw new Error(`Failed to enroll user: ${error.message}`);
+    }
+};
+
+export const bulkEnrollUsers = async (courseId, employeeIds) => {
+    try {
+        if (!courseId || !employeeIds || !Array.isArray(employeeIds)) {
+            throw new Error('Course ID and Employee IDs array are required');
+        }
+
+        const enrollments = await prisma.$transaction(
+            employeeIds.map(employeeId =>
+                prisma.trainingEnrollment.create({
+                    data: {
+                        courseId: parseInt(courseId),
+                        employeeId: parseInt(employeeId),
+                        status: 'ENROLLED'
+                    },
+                    include: {
+                        employee: {
+                            select: {
+                                id: true,
+                                first_name: true,
+                                last_name: true
+                            }
+                        }
+                    }
+                })
+            )
+        );
+
+        return enrollments;
+    } catch (error) {
+        throw new Error(`Failed to bulk enroll users: ${error.message}`);
+    }
+};
+
+export const getUserEnrollments = async (employeeId, filters = {}) => {
+    try {
+        if (!employeeId) {
+            throw new Error('Employee ID is required');
+        }
+
+        const { status, page = 1, limit = 10 } = filters;
+        const skip = (page - 1) * limit;
+
+        const where = { employeeId: parseInt(employeeId) };
+        if (status) where.status = status;
+
+        const [enrollments, total] = await Promise.all([
+            prisma.trainingEnrollment.findMany({
+                where,
+                include: {
+                    course: {
+                        include: {
+                            category: true,
+                            instructor: {
+                                select: {
+                                    id: true,
+                                    first_name: true,
+                                    last_name: true
+                                }
+                            }
+                        }
+                    }
+                },
+                skip,
+                take: parseInt(limit),
+                orderBy: { enrollmentDate: 'desc' }
+            }),
+            prisma.trainingEnrollment.count({ where })
+        ]);
+
+        return {
+            enrollments,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total,
+                pages: Math.ceil(total / limit)
+            }
+        };
+    } catch (error) {
+        throw new Error(`Failed to fetch user enrollments: ${error.message}`);
+    }
+};
+
+export const getCourseEnrollments = async (courseId, filters = {}) => {
+    try {
+        if (!courseId) {
+            throw new Error('Course ID is required');
+        }
+
+        const { status, page = 1, limit = 10 } = filters;
+        const skip = (page - 1) * limit;
+
+        const where = { courseId: parseInt(courseId) };
+        if (status) where.status = status;
+
+        const [enrollments, total] = await Promise.all([
+            prisma.trainingEnrollment.findMany({
+                where,
+                include: {
+                    employee: {
+                        select: {
+                            id: true,
+                            first_name: true,
+                            last_name: true,
+                            job_title: true
+                        }
+                    }
+                },
+                skip,
+                take: parseInt(limit),
+                orderBy: { enrollmentDate: 'desc' }
+            }),
+            prisma.trainingEnrollment.count({ where })
+        ]);
+
+        return {
+            enrollments,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total,
+                pages: Math.ceil(total / limit)
+            }
+        };
+    } catch (error) {
+        throw new Error(`Failed to fetch course enrollments: ${error.message}`);
+    }
+};
+
+export const updateEnrollmentStatus = async (enrollmentId, status) => {
+    try {
+        if (!enrollmentId || !status) {
+            throw new Error('Enrollment ID and status are required');
+        }
+
+        const updateData = { status };
+        if (status === 'COMPLETED') {
+            updateData.completionDate = new Date();
+            updateData.progress = 100;
+        }
+
+        const enrollment = await prisma.trainingEnrollment.update({
+            where: { id: parseInt(enrollmentId) },
+            data: updateData,
+            include: {
+                course: true,
+                employee: {
+                    select: {
+                        id: true,
+                        first_name: true,
+                        last_name: true
+                    }
+                }
+            }
+        });
+
+        return enrollment;
+    } catch (error) {
+        if (error.code === 'P2025') {
+            throw new Error('Enrollment not found');
+        }
+        throw new Error(`Failed to update enrollment status: ${error.message}`);
+    }
+};
+
+export const updateProgress = async (enrollmentId, progress) => {
+    try {
+        if (!enrollmentId || progress === undefined) {
+            throw new Error('Enrollment ID and progress are required');
+        }
+
+        const enrollment = await prisma.trainingEnrollment.update({
+            where: { id: parseInt(enrollmentId) },
+            data: {
+                progress: Math.min(parseFloat(progress), 100),
+                status: parseFloat(progress) === 100 ? 'COMPLETED' : 'IN_PROGRESS'
+            },
+            include: {
+                course: true,
+                employee: {
+                    select: {
+                        id: true,
+                        first_name: true,
+                        last_name: true
+                    }
+                }
+            }
+        });
+
+        return enrollment;
+    } catch (error) {
+        if (error.code === 'P2025') {
+            throw new Error('Enrollment not found');
+        }
+        throw new Error(`Failed to update progress: ${error.message}`);
+    }
+};
+
+export const getEmployeeTranscript = async (employeeId) => {
+    try {
+        if (!employeeId) {
+            throw new Error('Employee ID is required');
+        }
+
+        const enrollments = await prisma.trainingEnrollment.findMany({
+            where: {
+                employeeId: parseInt(employeeId),
+                status: 'COMPLETED'
+            },
+            include: {
+                course: {
+                    include: {
+                        category: true,
+                        instructor: {
+                            select: {
+                                id: true,
+                                first_name: true,
+                                last_name: true
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: { completionDate: 'desc' }
+        });
+
+        return enrollments;
+    } catch (error) {
+        throw new Error(`Failed to fetch transcript: ${error.message}`);
+    }
+};
+export const cancelEnrollment = async (enrollmentId) => {
+    try {
+        if (!enrollmentId) {
+            throw new Error('Enrollment ID is required');
+        }
+
+        const enrollment = await prisma.trainingEnrollment.update({
+            where: { id: parseInt(enrollmentId) },
+            data: { status: 'CANCELLED' },
+            include: {
+                course: true,
+                employee: {
+                    select: {
+                        id: true,
+                        first_name: true,
+                        last_name: true
+                    }
+                }
+            }
+        });
+
+        return enrollment;
+    } catch (error) {
+        if (error.code === 'P2025') {
+            throw new Error('Enrollment not found');
+        }
+        throw new Error(`Failed to cancel enrollment: ${error.message}`);
+    }
+};
+
+export const getComplianceStatus = async (employeeId) => {
+    try {
+        if (!employeeId) {
+            throw new Error('Employee ID is required');
+        }
+
+        // Get all mandatory courses (you can define criteria for mandatory courses)
+        const mandatoryCourses = await prisma.trainingCourse.findMany({
+            where: {
+                status: 'ACTIVE'
+                // Add additional criteria for mandatory courses if needed
+                // e.g., category: { name: 'Compliance' }
+            }
+        });
+
+        const completedCourses = await prisma.trainingEnrollment.findMany({
+            where: {
+                employeeId: parseInt(employeeId),
+                status: 'COMPLETED'
+            },
+            select: { courseId: true }
+        });
+
+        const completedCourseIds = new Set(completedCourses.map(c => c.courseId));
+
+        const complianceStatus = mandatoryCourses.map(course => ({
+            courseId: course.id,
+            courseTitle: course.title,
+            completed: completedCourseIds.has(course.id),
+            dueDate: null // You can calculate based on company policy
+        }));
+
+        return {
+            employeeId: parseInt(employeeId),
+            totalMandatory: mandatoryCourses.length,
+            completed: completedCourseIds.size,
+            complianceRate: mandatoryCourses.length > 0 ?
+                (completedCourseIds.size / mandatoryCourses.length) * 100 : 100,
+            courses: complianceStatus
+        };
+    } catch (error) {
+        throw new Error(`Failed to fetch compliance status: ${error.message}`);
+    }
+};

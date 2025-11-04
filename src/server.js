@@ -24,6 +24,9 @@ import timeAttendanceRoutes from './routes/timeAttendanceRoutes.js';
 import leaveRoutes from './routes/leave.routes.js';
 import holidayRoutes from './routes/holiday.routes.js';
 import payrollRoutes from './routes/payrollRoutes.js';
+import trainingRoutes from './routes/trainingRoutes.js';
+import { analyticsRoutes } from './routes/analytics.js';
+
 
 dotenv.config();
 const app = express();
@@ -55,6 +58,8 @@ app.use('/api/leaves', leaveRoutes);
 app.use('/api/holidays', holidayRoutes);
 
 app.use('/api/payroll', payrollRoutes);
+app.use('/api/training', trainingRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 startReviewReminderScheduler();
 // Metrics endpoint
