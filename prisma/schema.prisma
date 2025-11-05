@@ -6,7 +6,6 @@
 
 generator client {
   provider = "prisma-client-js"
-  // output   = "../generated/prisma"
 }
 
 datasource db {
@@ -14,8 +13,22 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ==================== EXISTING ENUMS ====================
-enum StatusAttandance {
+// ==================== ENUMS ====================
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum LeaveAccrualPeriod {
+  NONE
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+enum StatusAttendance {
   PRESENT
   ABSENT
   LATE
@@ -95,7 +108,6 @@ enum CalibrationStatus {
   COMPLETED
 }
 
-// ==================== NEW PAYROLL ENUMS ====================
 enum PayrollRunStatus {
   PENDING
   PROCESSING
@@ -122,32 +134,35 @@ enum PayFrequency {
   MONTHLY
 }
 
-// ==================== EXISTING MODELS ====================
-model Log {
-  id          Int       @id @default(autoincrement())
-  employee    Employee? @relation(fields: [employeeId], references: [id])
-  employeeId  Int?
-  type        String
-  action_type String
-  module      String
-  ip          String
-  os          String
-  result      String
-  action_by   Employee? @relation("ActionBy", fields: [actionById], references: [id])
-  actionById  Int?
-  notes       String
-  created_at  DateTime  @default(now())
-  updated_at  DateTime  @updatedAt
-
-  attandaceId Int?
-  attandance  Attendance? @relation("AttandanceMark", fields: [attandaceId], references: [id])
-
-  // New payroll relations
-  payrollRun   PayrollRun?     @relation(fields: [payrollRunId], references: [id])
-  payrollRunId Int?
-  payslip      PayrollPayslip? @relation(fields: [payslipId], references: [id])
-  payslipId    Int?
+enum TimeEntryType {
+  CLOCK_IN
+  CLOCK_OUT
+  BREAK_START
+  BREAK_END
+  MANUAL_ENTRY
 }
+
+enum WorkType {
+  REGULAR
+  OVERTIME
+  HOLIDAY
+  VACATION
+  SICK
+}
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+// ==================== MODELS ====================
 
 model Employee {
   id         Int      @id @default(autoincrement())
@@ -180,48 +195,100 @@ model Employee {
   logs                  Log[]
   goalCreatedBy         Goal[]                @relation("GoalCreatedBy")
   approvedBy            Goal[]                @relation("GoalApprover")
-  goalProgress          GoalProgress[]        @relation("Goal progress")
+  goalProgress          GoalProgress[]        @relation("GoalProgressCreatedBy")
   feedBackBy            ReviewFeedback[]      @relation("FeedbackBy")
   ReviewReminder        ReviewReminder[]
   calibratedBy          RatingAdjustment[]    @relation("CalibratedBy")
 
-  // New payroll relations
+  // Payroll relations
   payrollPayslips    PayrollPayslip[]
   employmentTerms    EmploymentTerms[]
   payrollAssignments PayrollAssignment[]
   bankDetails        BankDetail[]
   PayrollAuditLog    PayrollAuditLog[]
+  TimeEntry          TimeEntry[]
+  Timesheet          Timesheet[]
+  TimeApproval       TimeApproval[]
+  WorkSchedule       WorkSchedule[]
+
+  // Leave Management relations
+  leavePoliciesCreated     LeavePolicy[]             @relation("LeavePolicyCreatedBy")
+  leavePoliciesUpdated     LeavePolicy[]             @relation("LeavePolicyUpdatedBy")
+  leaveRequestsCreated     LeaveRequest[]            @relation("LeaveRequestCreatedBy")
+  leaveRequestsUpdated     LeaveRequest[]            @relation("LeaveRequestUpdatedBy")
+  approvalWorkflowsCreated ApprovalWorkflow[]        @relation("ApprovalWorkflowCreatedBy")
+  approvalWorkflowsUpdated ApprovalWorkflow[]        @relation("ApprovalWorkflowUpdatedBy")
+  holidayCalendarsCreated  HolidayCalendar[]         @relation("HolidayCalendarCreatedBy")
+  holidayCalendarsUpdated  HolidayCalendar[]         @relation("HolidayCalendarUpdatedBy")
+  holidaysCreated          Holiday[]                 @relation("HolidayCreatedBy")
+  holidaysUpdated          Holiday[]                 @relation("HolidayUpdatedBy")
+  leaveBalancesUpdated     LeaveBalance[]            @relation("LeaveBalanceUpdatedBy")
+  leaveRequestApprovals    LeaveRequestApproval[]    @relation("LeaveRequestApprovalCreatedBy")
+  employeeHolidayCalendars EmployeeHolidayCalendar[]
+
+  // Direct relations for leave management
+  leaveRequests         LeaveRequest[]
+  leaveBalances         LeaveBalance[]
+  approvedLeaveRequests LeaveRequestApproval[]
+  region                Region?                @relation(fields: [regionId], references: [id])
+  regionId              Int?
+  regionsCreated        Region[]               @relation("RegionCreatedBy")
+  regionsUpdated        Region[]               @relation("RegionUpdatedBy")
 }
 
-// 🕒 Attendance model
+model Log {
+  id          Int       @id @default(autoincrement())
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  employeeId  Int?
+  type        String
+  action_type String
+  module      String
+  ip          String
+  os          String
+  result      String
+  action_by   Employee? @relation("ActionBy", fields: [actionById], references: [id])
+  actionById  Int?
+  notes       String
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  attendanceId Int?
+  attendance   Attendance? @relation("AttendanceMark", fields: [attendanceId], references: [id])
+
+  // Payroll relations
+  payrollRun   PayrollRun?     @relation(fields: [payrollRunId], references: [id])
+  payrollRunId Int?
+  payslip      PayrollPayslip? @relation(fields: [payslipId], references: [id])
+  payslipId    Int?
+}
+
 model Attendance {
   id          Int              @id @default(autoincrement())
   employeeId  Int
   date        DateTime         @default(now())
   check_in    DateTime?
   check_out   DateTime?
-  total_hours Float? // computed at checkout time
-  status      StatusAttandance @default(ABSENT)
+  total_hours Float?
+  status      StatusAttendance @default(ABSENT)
   remarks     String?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
-  logs     Log[]    @relation("AttandanceMark")
+  logs     Log[]    @relation("AttendanceMark")
 }
 
-// 🏖️ Leave model
 model Leave {
   id          Int         @id @default(autoincrement())
   employeeId  Int
-  type        String // e.g. Sick, Casual, Vacation
+  type        String
   start_date  DateTime
   end_date    DateTime
   total_days  Int
   reason      String?
   status      LeaveStatus @default(PENDING)
-  approved_by Int? // admin/manager userId if applicable
+  approved_by Int?
   approved_at DateTime?
 
   created_at DateTime @default(now())
@@ -230,20 +297,354 @@ model Leave {
   employee Employee @relation(fields: [employeeId], references: [id])
 }
 
-model Holiday {
-  id          Int      @id @default(autoincrement())
-  name        String
-  date        DateTime
-  description String?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+// ==================== LEAVE MANAGEMENT MODELS ====================
+
+model LeavePolicy {
+  id                  Int                @id @default(autoincrement())
+  name                String
+  description         String?
+  leaveTypeCode       String?
+  accrualRate         Float              @default(0.0)
+  accrualPeriod       LeaveAccrualPeriod @default(NONE)
+  carryForwardAllowed Boolean            @default(false)
+  maxCarryForward     Float              @default(0.0)
+  minServiceMonths    Int                @default(0)
+  active              Boolean            @default(true)
+
+  // Relations
+  approvalWorkflow   ApprovalWorkflow? @relation(fields: [approvalWorkflowId], references: [id])
+  approvalWorkflowId Int?
+  leaveRequests      LeaveRequest[]
+  leaveBalances      LeaveBalance[]
+
+  // Audit
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  createdBy   Employee  @relation("LeavePolicyCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+  updatedBy   Employee? @relation("LeavePolicyUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  @@unique([name])
+  @@map("leave_policies")
 }
+
+model LeaveRequest {
+  id            Int                @id @default(autoincrement())
+  employeeId    Int
+  leavePolicyId Int
+  startDate     DateTime
+  endDate       DateTime
+  totalDays     Float
+  reason        String?
+  notes         String?
+  status        LeaveRequestStatus @default(PENDING)
+
+  // Relations
+  employee    Employee               @relation(fields: [employeeId], references: [id])
+  leavePolicy LeavePolicy            @relation(fields: [leavePolicyId], references: [id])
+  approvals   LeaveRequestApproval[]
+
+  // Audit
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  createdBy   Employee  @relation("LeaveRequestCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+  updatedBy   Employee? @relation("LeaveRequestUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  @@index([employeeId])
+  @@index([status])
+  @@index([startDate, endDate])
+  @@map("leave_requests")
+}
+
+model LeaveRequestApproval {
+  id             Int              @id @default(autoincrement())
+  leaveRequestId Int
+  approverId     Int
+  approverRole   String
+  decision       ApprovalDecision
+  comments       String?
+  decision_date  DateTime         @default(now())
+
+  // Relations
+  leaveRequest LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+  approver     Employee     @relation(fields: [approverId], references: [id])
+
+  // Audit
+  created_at  DateTime @default(now())
+  createdBy   Employee @relation("LeaveRequestApprovalCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+
+  @@index([leaveRequestId])
+  @@index([approverId])
+  @@map("leave_request_approvals")
+}
+
+model LeaveBalance {
+  employeeId       Int
+  leavePolicyId    Int
+  balance          Float    @default(0.0)
+  carryOverBalance Float    @default(0.0)
+  lastUpdated      DateTime @default(now())
+
+  // Relations
+  employee    Employee    @relation(fields: [employeeId], references: [id])
+  leavePolicy LeavePolicy @relation(fields: [leavePolicyId], references: [id])
+
+  // Audit
+  updatedBy   Employee? @relation("LeaveBalanceUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  @@id([employeeId, leavePolicyId])
+  @@map("leave_balances")
+}
+
+model ApprovalWorkflow {
+  id          Int     @id @default(autoincrement())
+  name        String
+  description String?
+
+  // Relations
+  steps         ApprovalWorkflowStep[]
+  leavePolicies LeavePolicy[]
+
+  // Audit
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  createdBy   Employee  @relation("ApprovalWorkflowCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+  updatedBy   Employee? @relation("ApprovalWorkflowUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  @@unique([name])
+  @@map("approval_workflows")
+}
+
+model ApprovalWorkflowStep {
+  approvalWorkflowId Int
+  stepOrder          Int
+  approverRole       String
+
+  // Relations
+  approvalWorkflow ApprovalWorkflow @relation(fields: [approvalWorkflowId], references: [id], onDelete: Cascade)
+
+  @@id([approvalWorkflowId, stepOrder])
+  @@map("approval_workflow_steps")
+}
+
+model Region {
+  id          Int     @id @default(autoincrement())
+  name        String
+  code        String?
+  description String?
+
+  // Relations
+  holidayCalendars HolidayCalendar[]
+
+  // Audit
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+  createdBy   Employee   @relation("RegionCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+  updatedBy   Employee?  @relation("RegionUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+  Employee    Employee[]
+
+  @@unique([name])
+  @@map("regions")
+}
+
+model HolidayCalendar {
+  id          Int     @id @default(autoincrement())
+  name        String
+  description String?
+  year        Int?
+  regionId    Int?
+
+  // Relations
+  region                   Region?                   @relation(fields: [regionId], references: [id])
+  holidays                 Holiday[]
+  employeeHolidayCalendars EmployeeHolidayCalendar[]
+
+  // Audit
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  createdBy   Employee  @relation("HolidayCalendarCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+  updatedBy   Employee? @relation("HolidayCalendarUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  @@map("holiday_calendars")
+}
+
+model Holiday {
+  id                Int      @id @default(autoincrement())
+  holidayCalendarId Int
+  date              DateTime
+  name              String
+  description       String?
+  fullDay           Boolean  @default(true)
+
+  // Relations
+  holidayCalendar HolidayCalendar @relation(fields: [holidayCalendarId], references: [id], onDelete: Cascade)
+
+  // Audit
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  createdBy   Employee  @relation("HolidayCreatedBy", fields: [createdById], references: [id])
+  createdById Int
+  updatedBy   Employee? @relation("HolidayUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  @@unique([holidayCalendarId, date])
+  @@map("holidays")
+}
+
+model EmployeeHolidayCalendar {
+  employeeId        Int
+  holidayCalendarId Int
+  effectiveFrom     DateTime  @default(now())
+  effectiveTo       DateTime?
+
+  // Relations
+  employee        Employee        @relation(fields: [employeeId], references: [id])
+  holidayCalendar HolidayCalendar @relation(fields: [holidayCalendarId], references: [id])
+
+  @@id([employeeId, holidayCalendarId, effectiveFrom])
+  @@map("employee_holiday_calendars")
+}
+
+// ==================== TIME ATTENDANCE MODELS ====================
+
+model TimeEntry {
+  id               Int           @id @default(autoincrement())
+  employeeId       Int
+  start_time       DateTime
+  end_time         DateTime?
+  work_date        DateTime
+  duration_minutes Int?
+  work_type        WorkType      @default(REGULAR)
+  entry_type       TimeEntryType
+  note             String?
+
+  // Relations
+  employee    Employee   @relation(fields: [employeeId], references: [id])
+  source      Source?    @relation(fields: [sourceId], references: [id])
+  sourceId    Int?
+  timesheet   Timesheet? @relation(fields: [timesheetId], references: [id])
+  timesheetId Int?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([employeeId, work_date])
+  @@index([timesheetId])
+}
+
+model Timesheet {
+  id           Int             @id @default(autoincrement())
+  employeeId   Int
+  period_start DateTime
+  period_end   DateTime
+  total_hours  Float
+  status       TimesheetStatus @default(DRAFT)
+  submitted_at DateTime?
+  approved_at  DateTime?
+
+  // Relations
+  employee    Employee       @relation(fields: [employeeId], references: [id])
+  timeEntries TimeEntry[]
+  approvals   TimeApproval[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([employeeId, period_start, period_end])
+  @@index([employeeId, status])
+}
+
+model TimeApproval {
+  id          Int              @id @default(autoincrement())
+  timesheetId Int
+  approverId  Int
+  decision    ApprovalDecision
+  comments    String?
+  decided_at  DateTime         @default(now())
+
+  // Relations
+  timesheet Timesheet @relation(fields: [timesheetId], references: [id])
+  approver  Employee  @relation(fields: [approverId], references: [id])
+
+  created_at DateTime @default(now())
+
+  @@index([timesheetId])
+}
+
+model OvertimeRule {
+  id                     Int     @id @default(autoincrement())
+  name                   String
+  description            String?
+  daily_hours_threshold  Float   @default(8.0)
+  weekly_hours_threshold Float   @default(40.0)
+  daily_overtime_rate    Float   @default(1.5)
+  weekly_overtime_rate   Float   @default(1.5)
+  max_hours_per_day      Float?
+  max_hours_per_week     Float?
+  is_active              Boolean @default(true)
+
+  // Relations
+  workSchedules WorkSchedule[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("overtime_rules")
+}
+
+model WorkSchedule {
+  id                   Int       @id @default(autoincrement())
+  employeeId           Int
+  schedule_name        String
+  effective_start_date DateTime
+  effective_end_date   DateTime?
+  total_hours_per_week Float
+  schedule_pattern     Json?
+
+  // Relations
+  employee       Employee      @relation(fields: [employeeId], references: [id])
+  overtimeRule   OvertimeRule? @relation(fields: [overtimeRuleId], references: [id])
+  overtimeRuleId Int?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([employeeId, effective_start_date])
+  @@map("work_schedules")
+}
+
+model Source {
+  id          Int     @id @default(autoincrement())
+  name        String
+  type        String
+  description String?
+  is_active   Boolean @default(true)
+
+  // Relations
+  timeEntries TimeEntry[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+
+// ==================== PERFORMANCE MANAGEMENT MODELS ====================
 
 model PerformanceReview {
   id             Int          @id @default(autoincrement())
   employeeId     Int?
   reviewerId     Int?
-  cycleId        Int? // ✅ NEW
+  cycleId        Int?
   period_start   DateTime?
   period_end     DateTime?
   overall_rating Float?
@@ -254,28 +655,28 @@ model PerformanceReview {
   created_at     DateTime     @default(now())
   updated_at     DateTime     @updatedAt
 
-  // ✅ Relations
+  // Relations
   employee  Employee?         @relation("EmployeeReviews", fields: [employeeId], references: [id])
   reviewer  Employee?         @relation("Reviewer", fields: [reviewerId], references: [id])
   feedbacks ReviewFeedback[]
   cycle     PerformanceCycle? @relation(fields: [cycleId], references: [id])
 
-  reminders            ReviewReminder[] // link to reminder model
-  CalibrationSession   CalibrationSession? @relation("Calibration Perdformance Reviews", fields: [calibrationSessionId], references: [id])
+  reminders            ReviewReminder[]
+  CalibrationSession   CalibrationSession? @relation("CalibrationPerformanceReviews", fields: [calibrationSessionId], references: [id])
   calibrationSessionId Int?
-  RatingAdjustment     RatingAdjustment[]  @relation("Rating Performance Review")
+  RatingAdjustment     RatingAdjustment[]  @relation("RatingPerformanceReview")
 }
 
 model ReviewFeedback {
   id           Int      @id @default(autoincrement())
   reviewId     Int
-  reviewerId   Int // by employee
+  reviewerId   Int
   feedbackById Int?
   feedback     String
   rating       Float?
   created_at   DateTime @default(now())
 
-  // ✅ Relations
+  // Relations
   review     PerformanceReview @relation(fields: [reviewId], references: [id])
   reviewer   Employee          @relation("FeedbackByEmployee", fields: [reviewerId], references: [id])
   feedbackBy Employee?         @relation("FeedbackBy", fields: [feedbackById], references: [id])
@@ -289,7 +690,7 @@ model Position {
   isActive       Boolean          @default(true)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
-  employees      Employee[] // One position can have multiple employees
+  employees      Employee[]
   JobRequisition JobRequisition[]
   createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
 }
@@ -302,14 +703,13 @@ model JobRequisition {
   positionId    Int?
   requestedById Int
   approvedById  Int?
-  employeeId    Int? // Optional link to an employee (e.g., replacement for existing staff)
+  employeeId    Int?
   openings      Int               @default(1)
   status        RequisitionStatus @default(DRAFT)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
-  // ✅ Relations
-  // department  Department?           @relation(fields: [departmentId], references: [id])
+  // Relations
   position    Position?             @relation(fields: [positionId], references: [id])
   requestedBy Employee              @relation("RequestedBy", fields: [requestedById], references: [id])
   approvedBy  Employee?             @relation("ApprovedBy", fields: [approvedById], references: [id])
@@ -395,14 +795,14 @@ model PerformanceCycle {
   template           PerformanceTemplate? @relation(fields: [templateId], references: [id])
   templateId         Int?
   reviews            PerformanceReview[]
-  CalibrationSession CalibrationSession[] @relation("Calibration Performance Cyclce")
+  CalibrationSession CalibrationSession[] @relation("CalibrationPerformanceCycle")
 }
 
 model PerformanceTemplate {
   id             Int      @id @default(autoincrement())
   name           String
   description    String?
-  criteria       Json? // e.g. ["Teamwork", "Communication", "Problem Solving"]
+  criteria       Json?
   overall_rating Float?
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
@@ -415,7 +815,7 @@ model Goal {
   employeeId    Int?
   title         String
   description   String?
-  category      String? // e.g. "Personal", "Team", "Company"
+  category      String?
   start_date    DateTime
   end_date      DateTime
   target_value  Float?
@@ -445,7 +845,7 @@ model GoalProgress {
 
   // Relations
   goal      Goal?     @relation(fields: [goalId], references: [id])
-  createdBy Employee? @relation("Goal progress", fields: [created_by], references: [id])
+  createdBy Employee? @relation("GoalProgressCreatedBy", fields: [created_by], references: [id])
 }
 
 model GoalAlignment {
@@ -482,9 +882,9 @@ model CalibrationSession {
   updated_at   DateTime          @updatedAt
 
   // Relations
-  performance_reviews PerformanceReview[] @relation("Calibration Perdformance Reviews")
+  performance_reviews PerformanceReview[] @relation("CalibrationPerformanceReviews")
   ratingAdjustments   RatingAdjustment[]  @relation("CalibrationSessions")
-  cycle               PerformanceCycle?   @relation("Calibration Performance Cyclce", fields: [cycleId], references: [id])
+  cycle               PerformanceCycle?   @relation("CalibrationPerformanceCycle", fields: [cycleId], references: [id])
 }
 
 model RatingAdjustment {
@@ -499,13 +899,12 @@ model RatingAdjustment {
 
   // Relations
   calibrationSession CalibrationSession? @relation("CalibrationSessions", fields: [calibrationSessionId], references: [id])
-  performance_review PerformanceReview?  @relation("Rating Performance Review", fields: [reviewId], references: [id])
+  performance_review PerformanceReview?  @relation("RatingPerformanceReview", fields: [reviewId], references: [id])
   calibratedBy       Employee?           @relation("CalibratedBy", fields: [calibrated_by_employee_id], references: [id])
 }
 
-// ==================== NEW PAYROLL MODELS ====================
+// ==================== PAYROLL MODELS ====================
 
-// Core Payroll Entities
 model PayrollRun {
   id              Int              @id @default(autoincrement())
   periodStart     DateTime
@@ -586,7 +985,6 @@ model PayrollDeduction {
   @@map("payroll_deductions")
 }
 
-// Configuration Tables
 model PayrollEarningType {
   id          Int            @id @default(autoincrement())
   code        String         @unique
@@ -610,7 +1008,7 @@ model PayrollDeductionType {
   name        String
   description String?
   type        PayElementType @default(DEDUCTION)
-  rate        Float? // Percentage rate for calculations
+  rate        Float?
   created_at  DateTime       @default(now())
   updated_at  DateTime       @updatedAt
 
@@ -621,7 +1019,6 @@ model PayrollDeductionType {
   @@map("payroll_deduction_types")
 }
 
-// Employee Payroll Data
 model EmploymentTerms {
   id            Int          @id @default(autoincrement())
   employeeId    Int
@@ -678,7 +1075,6 @@ model BankDetail {
   @@map("bank_details")
 }
 
-// Tax Configuration (Simplified)
 model TaxRate {
   id            Int       @id @default(autoincrement())
   countryCode   String    @db.Char(2)
@@ -693,7 +1089,6 @@ model TaxRate {
   @@map("tax_rates")
 }
 
-// Audit Log for Payroll
 model PayrollAuditLog {
   id           Int      @id @default(autoincrement())
   action       String

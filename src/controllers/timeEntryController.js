@@ -1,12 +1,12 @@
 import asyncHandler from 'express-async-handler';
-
+import * as timeEntryService from '../services/timeEntryService.js';
 
 // @desc    Get time entries for employee
 // @route   GET /api/time-attendance/entries
 // @access  Private
-const getTimeEntries = asyncHandler(async (req, res) => {
+export const getTimeEntries = asyncHandler(async (req, res) => {
     const { startDate, endDate, employeeId } = req.query;
-    const entries = await getTimeEntries({
+    const entries = await timeEntryService.getTimeEntries({
         employeeId: employeeId || req.user.id,
         startDate,
         endDate
@@ -21,13 +21,13 @@ const getTimeEntries = asyncHandler(async (req, res) => {
 // @desc    Create time entry
 // @route   POST /api/time-attendance/entries
 // @access  Private
-const createTimeEntry = asyncHandler(async (req, res) => {
+export const createTimeEntry = asyncHandler(async (req, res) => {
     const entryData = {
         ...req.body,
         employeeId: req.body.employeeId || req.user.id
     };
 
-    const entry = await createTimeEntry(entryData);
+    const entry = await timeEntryService.createTimeEntry(entryData);
 
     res.status(201).json({
         success: true,
@@ -38,8 +38,8 @@ const createTimeEntry = asyncHandler(async (req, res) => {
 // @desc    Update time entry
 // @route   PUT /api/time-attendance/entries/:id
 // @access  Private
-const updateTimeEntry = asyncHandler(async (req, res) => {
-    const entry = await updateTimeEntry(req.params.id, req.body, req.user.id);
+export const updateTimeEntry = asyncHandler(async (req, res) => {
+    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, req.user.id);
 
     res.json({
         success: true,
@@ -50,8 +50,8 @@ const updateTimeEntry = asyncHandler(async (req, res) => {
 // @desc    Delete time entry
 // @route   DELETE /api/time-attendance/entries/:id
 // @access  Private
-const deleteTimeEntry = asyncHandler(async (req, res) => {
-    await deleteTimeEntry(req.params.id, req.user.id);
+export const deleteTimeEntry = asyncHandler(async (req, res) => {
+    await timeEntryService.deleteTimeEntry(req.params.id, req.user.id);
 
     res.json({
         success: true,
@@ -62,10 +62,10 @@ const deleteTimeEntry = asyncHandler(async (req, res) => {
 // @desc    Clock in
 // @route   POST /api/time-attendance/clock-in
 // @access  Private
-const clockIn = asyncHandler(async (req, res) => {
+export const clockIn = asyncHandler(async (req, res) => {
     const { location, note, sourceId } = req.body;
 
-    const entry = await clockIn({
+    const entry = await timeEntryService.clockIn({
         employeeId: req.user.id,
         location,
         note,
@@ -82,10 +82,10 @@ const clockIn = asyncHandler(async (req, res) => {
 // @desc    Clock out
 // @route   POST /api/time-attendance/clock-out
 // @access  Private
-const clockOut = asyncHandler(async (req, res) => {
+export const clockOut = asyncHandler(async (req, res) => {
     const { location, note, sourceId } = req.body;
 
-    const entry = await clockOut({
+    const entry = await timeEntryService.clockOut({
         employeeId: req.user.id,
         location,
         note,
@@ -102,10 +102,10 @@ const clockOut = asyncHandler(async (req, res) => {
 // @desc    Start break
 // @route   POST /api/time-attendance/break-start
 // @access  Private
-const startBreak = asyncHandler(async (req, res) => {
+export const startBreak = asyncHandler(async (req, res) => {
     const { note, sourceId } = req.body;
 
-    const entry = await startBreak({
+    const entry = await timeEntryService.startBreak({
         employeeId: req.user.id,
         note,
         sourceId
@@ -121,10 +121,10 @@ const startBreak = asyncHandler(async (req, res) => {
 // @desc    End break
 // @route   POST /api/time-attendance/break-end
 // @access  Private
-const endBreak = asyncHandler(async (req, res) => {
+export const endBreak = asyncHandler(async (req, res) => {
     const { note, sourceId } = req.body;
 
-    const entry = await endBreak({
+    const entry = await timeEntryService.endBreak({
         employeeId: req.user.id,
         note,
         sourceId
@@ -140,23 +140,11 @@ const endBreak = asyncHandler(async (req, res) => {
 // @desc    Get current clock status
 // @route   GET /api/time-attendance/current-status
 // @access  Private
-const getCurrentStatus = asyncHandler(async (req, res) => {
-    const status = await getCurrentStatus(req.user.id);
+export const getCurrentStatus = asyncHandler(async (req, res) => {
+    const status = await timeEntryService.getCurrentStatus(req.user.id);
 
     res.json({
         success: true,
         data: status
     });
 });
-
-export {
-    getTimeEntries,
-    createTimeEntry,
-    updateTimeEntry,
-    deleteTimeEntry,
-    clockIn,
-    clockOut,
-    startBreak,
-    endBreak,
-    getCurrentStatus
-};

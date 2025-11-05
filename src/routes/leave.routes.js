@@ -1,7 +1,9 @@
 import express from 'express';
 import * as leaveController from '../controllers/leave.controller.js';
 
+
 const router = express.Router();
+
 
 // Leave Policies
 router.get('/policies', leaveController.getLeavePolicies);
@@ -14,21 +16,26 @@ router.delete('/policies/:id', leaveController.deleteLeavePolicy);
 router.get('/requests', leaveController.getLeaveRequests);
 router.get('/requests/:id', leaveController.getLeaveRequestById);
 router.post('/requests', leaveController.createLeaveRequest);
-router.put('/requests/:id', leaveController.updateLeaveRequest);
-router.delete('/requests/:id', leaveController.deleteLeaveRequest);
+router.put('/requests/:id/cancel', leaveController.cancelLeaveRequest);
 
 // Leave Approvals
+router.get('/approvals/pending', leaveController.getPendingApprovals);
 router.get('/requests/:id/approvals', leaveController.getLeaveRequestApprovals);
 router.post('/requests/:id/approve', leaveController.approveLeaveRequest);
 router.post('/requests/:id/reject', leaveController.rejectLeaveRequest);
 
 // Leave Balances
 router.get('/balances', leaveController.getLeaveBalances);
-router.get('/balances/:employeeId', leaveController.getEmployeeLeaveBalances);
+router.get('/balances/employee/:employeeId', leaveController.getEmployeeLeaveBalances);
 router.put('/balances/:employeeId', leaveController.updateLeaveBalance);
 
 // Leave Accruals
 router.post('/accruals/run', leaveController.runLeaveAccruals);
 router.get('/accruals/history', leaveController.getAccrualHistory);
+
+// Holidays
+router.get('/holidays', leaveController.getHolidays);
+router.get('/holidays/calendar', leaveController.getHolidayCalendar);
+router.post('/holidays', leaveController.createHoliday);
 
 export default router;

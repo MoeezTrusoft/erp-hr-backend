@@ -3,7 +3,6 @@ import { AppError } from '../utils/AppError.js';
 
 const prisma = new PrismaClient();
 
-// Export as named exports (current approach - just fix the import)
 export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status }) => {
     const where = { employeeId: parseInt(employeeId) };
 

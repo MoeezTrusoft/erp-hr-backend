@@ -2,28 +2,160 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
+// Helper Functions
+const calculateWorkingDays = async (employeeId, startDate, endDate) => {
+  let count = 0;
+  const current = new Date(startDate);
+  const end = new Date(endDate);
+
+  // Get employee's holiday calendar
+  const employeeCalendar = await prisma.employeeHolidayCalendar.findFirst({
+    where: {
+      employeeId,
+      OR: [
+        { effectiveTo: null },
+        { effectiveTo: { gte: current } }
+      ]
+    },
+    include: {
+      holidayCalendar: {
+        include: {
+          holidays: {
+            where: {
+              date: {
+                gte: current,
+                lte: end
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  const holidays = employeeCalendar?.holidayCalendar?.holidays || [];
+
+  while (current <= end) {
+    const dayOfWeek = current.getDay();
+    // Skip weekends (Sunday = 0, Saturday = 6)
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      // Check if it's a holiday
+      const isHoliday = holidays.some(holiday =>
+        holiday.date.toDateString() === current.toDateString()
+      );
+      if (!isHoliday) {
+        count++;
+      }
+    }
+    current.setDate(current.getDate() + 1);
+  }
+
+  return count;
+};
+
+const calculateAccrualAmount = async (policy, employee, date) => {
+  const hireDate = new Date(employee.hire_date);
+  const accrualDate = new Date(date);
+
+  // Check if employee meets minimum service requirement
+  const monthsOfService = (accrualDate.getFullYear() - hireDate.getFullYear()) * 12 +
+    (accrualDate.getMonth() - hireDate.getMonth());
+
+  if (monthsOfService < policy.minServiceMonths) {
+    return 0;
+  }
+
+  switch (policy.accrualPeriod) {
+    case 'MONTHLY':
+      return policy.accrualRate;
+    case 'QUARTERLY':
+      // Only accrue on quarter boundaries
+      const currentQuarter = Math.floor(accrualDate.getMonth() / 3);
+      const lastAccrualQuarter = await getLastAccrualQuarter(employee.id, policy.id);
+      if (currentQuarter !== lastAccrualQuarter) {
+        return policy.accrualRate * 3;
+      }
+      return 0;
+    case 'ANNUAL':
+      // Only accrue on anniversary
+      if (accrualDate.getMonth() === hireDate.getMonth() &&
+        accrualDate.getDate() === hireDate.getDate()) {
+        return policy.accrualRate;
+      }
+      return 0;
+    default:
+      return 0;
+  }
+};
+
+const getLastAccrualQuarter = async (employeeId, policyId) => {
+  // This would typically query an accrual history table
+  // For now, return null to always accrue
+  return null;
+};
+
+const getEmployeeManager = async (employeeId) => {
+  // This should be implemented based on your organization structure
+  // For now, return a default manager or HR user
+  const manager = await prisma.employee.findFirst({
+    where: {
+      job_title: {
+        contains: 'Manager',
+        mode: 'insensitive'
+      }
+    }
+  });
+  return manager;
+};
+
 // Leave Policy Services
 export const getLeavePolicies = async (filters = {}) => {
-  const { active, search } = filters;
+  const { active, search, includeInactive } = filters;
 
   const where = {};
 
-  if (active !== undefined) {
+  if (active !== undefined && active !== 'false') {
     where.active = active === 'true';
+  }
+
+  if (includeInactive !== 'true') {
+    where.active = true;
   }
 
   if (search) {
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
-      { description: { contains: search, mode: 'insensitive' } }
+      { description: { contains: search, mode: 'insensitive' } },
+      { leaveTypeCode: { contains: search, mode: 'insensitive' } }
     ];
   }
 
   return await prisma.leavePolicy.findMany({
     where,
     include: {
-      approvalWorkflow: true
-    }
+      approvalWorkflow: {
+        include: {
+          steps: {
+            orderBy: { stepOrder: 'asc' }
+          }
+        }
+      },
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    },
+    orderBy: { name: 'asc' }
   });
 };
 
@@ -37,6 +169,33 @@ export const getLeavePolicyById = async (id) => {
             orderBy: { stepOrder: 'asc' }
           }
         }
+      },
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      leaveRequests: {
+        include: {
+          employee: {
+            select: {
+              id: true,
+              first_name: true,
+              last_name: true
+            }
+          }
+        },
+        take: 10,
+        orderBy: { created_at: 'desc' }
       }
     }
   });
@@ -53,13 +212,23 @@ export const createLeavePolicy = async (data) => {
     maxCarryForward,
     minServiceMonths,
     active = true,
-    approvalWorkflowId
+    approvalWorkflowId,
+    createdById
   } = data;
 
   // Validate accrual period
   const validAccrualPeriods = ['NONE', 'MONTHLY', 'QUARTERLY', 'ANNUAL'];
   if (!validAccrualPeriods.includes(accrualPeriod)) {
-    throw new Error('Invalid accrual period');
+    throw new Error('Invalid accrual period. Must be one of: NONE, MONTHLY, QUARTERLY, ANNUAL');
+  }
+
+  // Validate carry forward settings
+  if (carryForwardAllowed && (!maxCarryForward || maxCarryForward <= 0)) {
+    throw new Error('Max carry forward must be greater than 0 when carry forward is allowed');
+  }
+
+  if (!carryForwardAllowed && maxCarryForward > 0) {
+    throw new Error('Max carry forward must be 0 when carry forward is not allowed');
   }
 
   return await prisma.leavePolicy.create({
@@ -70,18 +239,62 @@ export const createLeavePolicy = async (data) => {
       accrualRate: parseFloat(accrualRate),
       accrualPeriod,
       carryForwardAllowed: Boolean(carryForwardAllowed),
-      maxCarryForward: parseFloat(maxCarryForward),
-      minServiceMonths: parseInt(minServiceMonths),
+      maxCarryForward: parseFloat(maxCarryForward || 0),
+      minServiceMonths: parseInt(minServiceMonths || 0),
       active: Boolean(active),
-      approvalWorkflowId: approvalWorkflowId ? parseInt(approvalWorkflowId) : null
+      approvalWorkflowId: approvalWorkflowId ? parseInt(approvalWorkflowId) : null,
+      createdById: parseInt(createdById)
+    },
+    include: {
+      approvalWorkflow: {
+        include: {
+          steps: {
+            orderBy: { stepOrder: 'asc' }
+          }
+        }
+      },
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
     }
   });
 };
 
 export const updateLeavePolicy = async (id, data) => {
+  const existingPolicy = await prisma.leavePolicy.findUnique({
+    where: { id }
+  });
+
+  if (!existingPolicy) {
+    throw new Error('Leave policy not found');
+  }
+
   return await prisma.leavePolicy.update({
     where: { id },
-    data
+    data: {
+      ...data,
+      updated_at: new Date()
+    },
+    include: {
+      approvalWorkflow: {
+        include: {
+          steps: {
+            orderBy: { stepOrder: 'asc' }
+          }
+        }
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    }
   });
 };
 
@@ -95,6 +308,15 @@ export const deleteLeavePolicy = async (id) => {
     throw new Error('Cannot delete leave policy that has associated leave requests');
   }
 
+  // Check if policy is being used by any leave balances
+  const existingBalances = await prisma.leaveBalance.count({
+    where: { leavePolicyId: id }
+  });
+
+  if (existingBalances > 0) {
+    throw new Error('Cannot delete leave policy that has associated leave balances');
+  }
+
   return await prisma.leavePolicy.delete({
     where: { id }
   });
@@ -102,9 +324,19 @@ export const deleteLeavePolicy = async (id) => {
 
 // Leave Request Services
 export const getLeaveRequests = async (filters = {}) => {
-  const { employeeId, status, leavePolicyId, startDate, endDate } = filters;
+  const {
+    employeeId,
+    status,
+    leavePolicyId,
+    startDate,
+    endDate,
+    department,
+    page = 1,
+    limit = 20
+  } = filters;
 
   const where = {};
+  const skip = (parseInt(page) - 1) * parseInt(limit);
 
   if (employeeId) {
     where.employeeId = parseInt(employeeId);
@@ -125,6 +357,320 @@ export const getLeaveRequests = async (filters = {}) => {
         endDate: { gte: new Date(startDate) }
       }
     ];
+  }
+
+  const [requests, total] = await Promise.all([
+    prisma.leaveRequest.findMany({
+      where,
+      include: {
+        employee: {
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true,
+            job_title: true,
+            position: {
+              include: {
+                department: true
+              }
+            }
+          }
+        },
+        leavePolicy: true,
+        approvals: {
+          include: {
+            approver: {
+              select: {
+                id: true,
+                first_name: true,
+                last_name: true
+              }
+            }
+          },
+          orderBy: { decision_date: 'asc' }
+        },
+        createdBy: {
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true
+          }
+        }
+      },
+      orderBy: { created_at: 'desc' },
+      skip,
+      take: parseInt(limit)
+    }),
+    prisma.leaveRequest.count({ where })
+  ]);
+
+  return {
+    data: requests,
+    pagination: {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      total,
+      pages: Math.ceil(total / parseInt(limit))
+    }
+  };
+};
+
+export const getLeaveRequestById = async (id) => {
+  return await prisma.leaveRequest.findUnique({
+    where: { id },
+    include: {
+      employee: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true,
+          job_title: true,
+          position: {
+            include: {
+              department: true
+            }
+          }
+        }
+      },
+      leavePolicy: {
+        include: {
+          approvalWorkflow: {
+            include: {
+              steps: {
+                orderBy: { stepOrder: 'asc' }
+              }
+            }
+          }
+        }
+      },
+      approvals: {
+        include: {
+          approver: {
+            select: {
+              id: true,
+              first_name: true,
+              last_name: true,
+              job_title: true
+            }
+          }
+        },
+        orderBy: { decision_date: 'asc' }
+      },
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    }
+  });
+};
+
+export const createLeaveRequest = async (data) => {
+  const {
+    employeeId,
+    leavePolicyId,
+    startDate,
+    endDate,
+    reason,
+    notes,
+    createdById
+  } = data;
+
+  // Validate dates
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const today = new Date();
+
+  if (start > end) {
+    throw new Error('Start date cannot be after end date');
+  }
+
+  if (start < today) {
+    throw new Error('Cannot request leave for past dates');
+  }
+
+  // Check for overlapping leave requests
+  const overlappingLeaves = await prisma.leaveRequest.count({
+    where: {
+      employeeId: parseInt(employeeId),
+      status: { in: ['PENDING', 'APPROVED'] },
+      OR: [
+        {
+          startDate: { lte: end },
+          endDate: { gte: start }
+        }
+      ]
+    }
+  });
+
+  if (overlappingLeaves > 0) {
+    throw new Error('You have an overlapping leave request during this period');
+  }
+
+  // Calculate duration (excluding weekends and holidays)
+  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end);
+
+  if (durationDays <= 0) {
+    throw new Error('No working days in the selected date range');
+  }
+
+  // Check leave balance
+  const balance = await prisma.leaveBalance.findUnique({
+    where: {
+      employeeId_leavePolicyId: {
+        employeeId: parseInt(employeeId),
+        leavePolicyId: parseInt(leavePolicyId)
+      }
+    }
+  });
+
+  if (!balance || balance.balance < durationDays) {
+    throw new Error(`Insufficient leave balance. Available: ${balance?.balance || 0} days, Requested: ${durationDays} days`);
+  }
+
+  // Get leave policy to check approval workflow
+  const leavePolicy = await prisma.leavePolicy.findUnique({
+    where: { id: parseInt(leavePolicyId) },
+    include: {
+      approvalWorkflow: {
+        include: {
+          steps: {
+            orderBy: { stepOrder: 'asc' }
+          }
+        }
+      }
+    }
+  });
+
+  return await prisma.leaveRequest.create({
+    data: {
+      employeeId: parseInt(employeeId),
+      leavePolicyId: parseInt(leavePolicyId),
+      startDate: start,
+      endDate: end,
+      totalDays: durationDays,
+      reason,
+      notes,
+      status: 'PENDING',
+      createdById: parseInt(createdById)
+    },
+    include: {
+      employee: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      leavePolicy: {
+        include: {
+          approvalWorkflow: {
+            include: {
+              steps: {
+                orderBy: { stepOrder: 'asc' }
+              }
+            }
+          }
+        }
+      },
+      approvals: true
+    }
+  });
+};
+
+export const cancelLeaveRequest = async (id, employeeId) => {
+  const existingRequest = await prisma.leaveRequest.findUnique({
+    where: { id }
+  });
+
+  if (!existingRequest) {
+    throw new Error('Leave request not found');
+  }
+
+  if (existingRequest.employeeId !== employeeId) {
+    throw new Error('You can only cancel your own leave requests');
+  }
+
+  if (existingRequest.status !== 'PENDING') {
+    throw new Error('Cannot cancel non-pending leave requests');
+  }
+
+  return await prisma.leaveRequest.update({
+    where: { id },
+    data: { status: 'CANCELLED' },
+    include: {
+      employee: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      leavePolicy: true
+    }
+  });
+};
+
+export const updateLeaveRequest = async (id, data) => {
+  const existingRequest = await prisma.leaveRequest.findUnique({
+    where: { id }
+  });
+
+  if (!existingRequest) {
+    throw new Error('Leave request not found');
+  }
+
+  if (existingRequest.status !== 'PENDING') {
+    throw new Error('Cannot modify non-pending leave requests');
+  }
+
+  return await prisma.leaveRequest.update({
+    where: { id },
+    data: {
+      ...data,
+      updated_at: new Date()
+    },
+    include: {
+      employee: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      leavePolicy: true
+    }
+  });
+};
+
+// Leave Approval Services
+export const getPendingApprovals = async (userId, userRole) => {
+  const where = {
+    status: 'PENDING'
+  };
+
+  // If user is a manager, show their team's requests
+  if (userRole === 'MANAGER') {
+    // Get manager's team members
+    const teamMembers = await prisma.employee.findMany({
+      where: {
+        // This would depend on your organization structure
+        // For now, return all employees for managers
+      },
+      select: { id: true }
+    });
+
+    const teamMemberIds = teamMembers.map(member => member.id);
+    where.employeeId = { in: teamMemberIds };
   }
 
   return await prisma.leaveRequest.findMany({
@@ -151,15 +697,15 @@ export const getLeaveRequests = async (filters = {}) => {
         }
       }
     },
-    orderBy: { created_at: 'desc' }
+    orderBy: { created_at: 'asc' }
   });
 };
 
-export const getLeaveRequestById = async (id) => {
-  return await prisma.leaveRequest.findUnique({
-    where: { id },
+export const getLeaveRequestApprovals = async (leaveRequestId) => {
+  return await prisma.leaveRequestApproval.findMany({
+    where: { leaveRequestId },
     include: {
-      employee: {
+      approver: {
         select: {
           id: true,
           first_name: true,
@@ -167,144 +713,7 @@ export const getLeaveRequestById = async (id) => {
           job_title: true
         }
       },
-      leavePolicy: true,
-      approvals: {
-        include: {
-          approver: {
-            select: {
-              id: true,
-              first_name: true,
-              last_name: true
-            }
-          }
-        },
-        orderBy: { decision_date: 'asc' }
-      }
-    }
-  });
-};
-
-export const createLeaveRequest = async (data) => {
-  const {
-    employeeId,
-    leavePolicyId,
-    startDate,
-    endDate,
-    reason,
-    notes
-  } = data;
-
-  // Validate dates
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-
-  if (start > end) {
-    throw new Error('Start date cannot be after end date');
-  }
-
-  // Check for overlapping leave requests
-  const overlappingLeaves = await prisma.leaveRequest.count({
-    where: {
-      employeeId: parseInt(employeeId),
-      status: { in: ['PENDING', 'APPROVED'] },
-      OR: [
-        {
-          startDate: { lte: end },
-          endDate: { gte: start }
-        }
-      ]
-    }
-  });
-
-  if (overlappingLeaves > 0) {
-    throw new Error('Overlapping leave request exists');
-  }
-
-  // Calculate duration (excluding weekends - basic implementation)
-  const durationDays = calculateWorkingDays(start, end);
-
-  // Check leave balance
-  const balance = await prisma.leaveBalance.findFirst({
-    where: {
-      employeeId: parseInt(employeeId),
-      leavePolicyId: parseInt(leavePolicyId)
-    }
-  });
-
-  if (!balance || balance.balance < durationDays) {
-    throw new Error('Insufficient leave balance');
-  }
-
-  return await prisma.leaveRequest.create({
-    data: {
-      employeeId: parseInt(employeeId),
-      leavePolicyId: parseInt(leavePolicyId),
-      startDate: start,
-      endDate: end,
-      totalDays: durationDays,
-      reason,
-      notes,
-      status: 'PENDING'
-    },
-    include: {
-      employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true
-    }
-  });
-};
-
-export const updateLeaveRequest = async (id, data) => {
-  // Prevent updates to approved/rejected requests unless specific conditions
-  const existingRequest = await prisma.leaveRequest.findUnique({
-    where: { id }
-  });
-
-  if (existingRequest.status !== 'PENDING') {
-    throw new Error('Cannot modify non-pending leave requests');
-  }
-
-  return await prisma.leaveRequest.update({
-    where: { id },
-    data,
-    include: {
-      employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true
-    }
-  });
-};
-
-export const deleteLeaveRequest = async (id) => {
-  const existingRequest = await prisma.leaveRequest.findUnique({
-    where: { id }
-  });
-
-  if (existingRequest.status !== 'PENDING') {
-    throw new Error('Cannot delete non-pending leave requests');
-  }
-
-  return await prisma.leaveRequest.delete({
-    where: { id }
-  });
-};
-
-// Leave Approval Services
-export const getLeaveRequestApprovals = async (leaveRequestId) => {
-  return await prisma.leaveRequestApproval.findMany({
-    where: { leaveRequestId },
-    include: {
-      approver: {
+      createdBy: {
         select: {
           id: true,
           first_name: true,
@@ -317,7 +726,7 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
 };
 
 export const approveLeaveRequest = async (leaveRequestId, data) => {
-  const { approverId, approverRole, comments } = data;
+  const { approverId, approverRole, comments, createdById } = data;
 
   const leaveRequest = await prisma.leaveRequest.findUnique({
     where: { id: leaveRequestId },
@@ -332,7 +741,8 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
             }
           }
         }
-      }
+      },
+      approvals: true
     }
   });
 
@@ -344,6 +754,18 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
     throw new Error('Leave request is not pending approval');
   }
 
+  // Check if approver has already approved this request
+  const existingApproval = await prisma.leaveRequestApproval.findFirst({
+    where: {
+      leaveRequestId,
+      approverId: parseInt(approverId)
+    }
+  });
+
+  if (existingApproval) {
+    throw new Error('You have already acted on this leave request');
+  }
+
   // Record approval
   await prisma.leaveRequestApproval.create({
     data: {
@@ -352,7 +774,8 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
       approverRole,
       decision: 'APPROVED',
       comments,
-      decision_date: new Date()
+      decision_date: new Date(),
+      createdById: parseInt(createdById)
     }
   });
 
@@ -365,7 +788,7 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
 
   let newStatus = leaveRequest.status;
 
-  if (approvalsCount >= totalSteps) {
+  if (approvalsCount >= totalSteps || !workflow) {
     // Final approval - update status and deduct leave balance
     newStatus = 'APPROVED';
 
@@ -379,9 +802,13 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
       data: {
         balance: {
           decrement: leaveRequest.totalDays
-        }
+        },
+        lastUpdated: new Date()
       }
     });
+
+    // Create attendance records for the leave period
+    await createLeaveAttendanceRecords(leaveRequest);
   }
 
   return await prisma.leaveRequest.update({
@@ -412,7 +839,7 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
 };
 
 export const rejectLeaveRequest = async (leaveRequestId, data) => {
-  const { approverId, approverRole, comments } = data;
+  const { approverId, approverRole, comments, createdById } = data;
 
   const leaveRequest = await prisma.leaveRequest.findUnique({
     where: { id: leaveRequestId }
@@ -434,7 +861,8 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
       approverRole,
       decision: 'REJECTED',
       comments,
-      decision_date: new Date()
+      decision_date: new Date(),
+      createdById: parseInt(createdById)
     }
   });
 
@@ -467,7 +895,7 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
 
 // Leave Balance Services
 export const getLeaveBalances = async (filters = {}) => {
-  const { employeeId, leavePolicyId } = filters;
+  const { employeeId, leavePolicyId, department, lowBalance } = filters;
 
   const where = {};
 
@@ -479,7 +907,11 @@ export const getLeaveBalances = async (filters = {}) => {
     where.leavePolicyId = parseInt(leavePolicyId);
   }
 
-  return await prisma.leaveBalance.findMany({
+  if (lowBalance === 'true') {
+    where.balance = { lte: 5 }; // Show balances with 5 days or less
+  }
+
+  const balances = await prisma.leaveBalance.findMany({
     where,
     include: {
       employee: {
@@ -487,27 +919,55 @@ export const getLeaveBalances = async (filters = {}) => {
           id: true,
           first_name: true,
           last_name: true,
-          job_title: true
+          job_title: true,
+          position: {
+            include: {
+              department: true
+            }
+          }
         }
       },
-      leavePolicy: true
-    }
+      leavePolicy: true,
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    },
+    orderBy: [
+      { employee: { first_name: 'asc' } },
+      { leavePolicy: { name: 'asc' } }
+    ]
   });
+
+  return balances;
 };
 
 export const getEmployeeLeaveBalances = async (employeeId) => {
   return await prisma.leaveBalance.findMany({
-    where: { employeeId },
+    where: { employeeId: parseInt(employeeId) },
     include: {
       leavePolicy: true
-    }
+    },
+    orderBy: { leavePolicy: { name: 'asc' } }
   });
 };
 
 export const updateLeaveBalance = async (employeeId, data) => {
-  const { leavePolicyId, balance, carryOverBalance } = data;
+  const { leavePolicyId, balance, carryOverBalance, updatedById, notes } = data;
 
-  return await prisma.leaveBalance.upsert({
+  const existingBalance = await prisma.leaveBalance.findUnique({
+    where: {
+      employeeId_leavePolicyId: {
+        employeeId: parseInt(employeeId),
+        leavePolicyId: parseInt(leavePolicyId)
+      }
+    }
+  });
+
+  const result = await prisma.leaveBalance.upsert({
     where: {
       employeeId_leavePolicyId: {
         employeeId: parseInt(employeeId),
@@ -516,33 +976,75 @@ export const updateLeaveBalance = async (employeeId, data) => {
     },
     update: {
       balance: parseFloat(balance),
-      carryOverBalance: parseFloat(carryOverBalance),
-      lastUpdated: new Date()
+      carryOverBalance: parseFloat(carryOverBalance || 0),
+      lastUpdated: new Date(),
+      updatedById: updatedById ? parseInt(updatedById) : null
     },
     create: {
       employeeId: parseInt(employeeId),
       leavePolicyId: parseInt(leavePolicyId),
       balance: parseFloat(balance),
-      carryOverBalance: parseFloat(carryOverBalance),
-      lastUpdated: new Date()
+      carryOverBalance: parseFloat(carryOverBalance || 0),
+      lastUpdated: new Date(),
+      updatedById: updatedById ? parseInt(updatedById) : null
     },
     include: {
-      leavePolicy: true
+      leavePolicy: true,
+      employee: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
     }
   });
+
+  // Log the balance adjustment
+  if (existingBalance) {
+    await prisma.log.create({
+      data: {
+        type: 'LEAVE_BALANCE_ADJUSTMENT',
+        action_type: 'UPDATE',
+        module: 'Leave Management',
+        ip: 'SYSTEM',
+        os: 'SYSTEM',
+        result: 'SUCCESS',
+        notes: `Leave balance adjusted for employee ${employeeId}. Policy: ${leavePolicyId}. New balance: ${balance}. Notes: ${notes || 'No notes provided'}`,
+        employeeId: parseInt(employeeId),
+        actionById: updatedById ? parseInt(updatedById) : null
+      }
+    });
+  }
+
+  return result;
 };
 
 // Accrual Services
 export const runLeaveAccruals = async (data) => {
-  const { accrualDate = new Date() } = data;
+  const { accrualDate = new Date(), policyIds = [] } = data;
   const date = new Date(accrualDate);
+
+  // Build where clause for policies
+  const policyWhere = {
+    active: true,
+    accrualPeriod: { not: 'NONE' }
+  };
+
+  if (policyIds.length > 0) {
+    policyWhere.id = { in: policyIds.map(id => parseInt(id)) };
+  }
 
   // Get all active leave policies with accrual
   const policies = await prisma.leavePolicy.findMany({
-    where: {
-      active: true,
-      accrualPeriod: { not: 'NONE' }
-    }
+    where: policyWhere
   });
 
   const results = {
@@ -556,15 +1058,15 @@ export const runLeaveAccruals = async (data) => {
       // Find eligible employees for this policy
       const eligibleEmployees = await prisma.employee.findMany({
         where: {
-          status: 'ACTIVE', // Assuming active employees
-          hire_date: { lte: date } // Hired before accrual date
+          status: 'ACTIVE',
+          hire_date: { lte: date }
         }
       });
 
       for (const employee of eligibleEmployees) {
         try {
           // Calculate accrual based on policy
-          const accrualAmount = calculateAccrualAmount(policy, employee, date);
+          const accrualAmount = await calculateAccrualAmount(policy, employee, date);
 
           if (accrualAmount > 0) {
             await prisma.leaveBalance.upsert({
@@ -591,7 +1093,9 @@ export const runLeaveAccruals = async (data) => {
 
             results.details.push({
               employeeId: employee.id,
+              employeeName: `${employee.first_name} ${employee.last_name}`,
               policyId: policy.id,
+              policyName: policy.name,
               accrualAmount,
               status: 'SUCCESS'
             });
@@ -607,41 +1111,334 @@ export const runLeaveAccruals = async (data) => {
     }
   }
 
+  // Log the accrual run
+  await prisma.log.create({
+    data: {
+      type: 'LEAVE_ACCRUAL_RUN',
+      action_type: 'SYSTEM',
+      module: 'Leave Management',
+      ip: 'SYSTEM',
+      os: 'SYSTEM',
+      result: results.errors.length === 0 ? 'SUCCESS' : 'PARTIAL_SUCCESS',
+      notes: `Leave accrual run completed. Processed: ${results.processed}, Errors: ${results.errors.length}`,
+      actionById: null
+    }
+  });
+
   return results;
 };
 
 export const getAccrualHistory = async (filters = {}) => {
   // This would typically query an accrual history table
-  // For now, return empty array as placeholder
-  return [];
+  // For now, return logs related to accruals
+  const { startDate, endDate, page = 1, limit = 20 } = filters;
+
+  const where = {
+    type: 'LEAVE_ACCRUAL_RUN'
+  };
+
+  if (startDate && endDate) {
+    where.created_at = {
+      gte: new Date(startDate),
+      lte: new Date(endDate)
+    };
+  }
+
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const [logs, total] = await Promise.all([
+    prisma.log.findMany({
+      where,
+      include: {
+        action_by: {
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true
+          }
+        }
+      },
+      orderBy: { created_at: 'desc' },
+      skip,
+      take: parseInt(limit)
+    }),
+    prisma.log.count({ where })
+  ]);
+
+  return {
+    data: logs,
+    pagination: {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      total,
+      pages: Math.ceil(total / parseInt(limit))
+    }
+  };
 };
 
-// Helper Functions
-const calculateWorkingDays = (start, end) => {
-  let count = 0;
+// Holiday Services
+export const getHolidays = async (filters = {}) => {
+  const { year, holidayCalendarId, startDate, endDate } = filters;
+
+  const where = {};
+
+  if (year) {
+    const start = new Date(`${year}-01-01`);
+    const end = new Date(`${year}-12-31`);
+    where.date = {
+      gte: start,
+      lte: end
+    };
+  }
+
+  if (startDate && endDate) {
+    where.date = {
+      gte: new Date(startDate),
+      lte: new Date(endDate)
+    };
+  }
+
+  if (holidayCalendarId) {
+    where.holidayCalendarId = parseInt(holidayCalendarId);
+  }
+
+  return await prisma.holiday.findMany({
+    where,
+    include: {
+      holidayCalendar: true,
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    },
+    orderBy: { date: 'asc' }
+  });
+};
+
+export const getHolidayCalendar = async (employeeId) => {
+  // Get employee's assigned holiday calendar
+  const employeeCalendar = await prisma.employeeHolidayCalendar.findFirst({
+    where: {
+      employeeId: parseInt(employeeId),
+      OR: [
+        { effectiveTo: null },
+        { effectiveTo: { gte: new Date() } }
+      ]
+    },
+    include: {
+      holidayCalendar: {
+        include: {
+          holidays: {
+            where: {
+              date: { gte: new Date() }
+            },
+            orderBy: { date: 'asc' }
+          }
+        }
+      }
+    }
+  });
+
+  return employeeCalendar?.holidayCalendar || null;
+};
+
+export const createHoliday = async (data) => {
+  const {
+    holidayCalendarId,
+    date,
+    name,
+    description,
+    fullDay = true,
+    createdById
+  } = data;
+
+  // Check if holiday already exists for this date in the calendar
+  const existingHoliday = await prisma.holiday.findFirst({
+    where: {
+      holidayCalendarId: parseInt(holidayCalendarId),
+      date: new Date(date)
+    }
+  });
+
+  if (existingHoliday) {
+    throw new Error('Holiday already exists for this date in the selected calendar');
+  }
+
+  return await prisma.holiday.create({
+    data: {
+      holidayCalendarId: parseInt(holidayCalendarId),
+      date: new Date(date),
+      name,
+      description,
+      fullDay: Boolean(fullDay),
+      createdById: parseInt(createdById)
+    },
+    include: {
+      holidayCalendar: true,
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    }
+  });
+};
+
+// Additional Helper Functions
+const createLeaveAttendanceRecords = async (leaveRequest) => {
+  const { employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
+  const start = new Date(startDate);
+  const end = new Date(endDate);
   const current = new Date(start);
 
   while (current <= end) {
     const dayOfWeek = current.getDay();
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Skip Sunday (0) and Saturday (6)
-      count++;
+    // Only create records for weekdays
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      await prisma.attendance.upsert({
+        where: {
+          employeeId_date: {
+            employeeId,
+            date: new Date(current)
+          }
+        },
+        update: {
+          status: 'ABSENT',
+          remarks: `On ${(await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave'}`
+        },
+        create: {
+          employeeId,
+          date: new Date(current),
+          status: 'ABSENT',
+          remarks: `On ${(await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave'}`
+        }
+      });
     }
     current.setDate(current.getDate() + 1);
   }
-
-  return count;
 };
 
-const calculateAccrualAmount = (policy, employee, date) => {
-  // Basic accrual calculation - extend based on your business rules
-  switch (policy.accrualPeriod) {
-    case 'MONTHLY':
-      return policy.accrualRate;
-    case 'QUARTERLY':
-      return policy.accrualRate * 3;
-    case 'ANNUAL':
-      return policy.accrualRate;
-    default:
-      return 0;
+// Carry Over Processing
+export const processCarryOver = async (data) => {
+  const { effectiveDate = new Date(), policyIds = [] } = data;
+  const date = new Date(effectiveDate);
+
+  const policyWhere = {
+    active: true,
+    carryForwardAllowed: true
+  };
+
+  if (policyIds.length > 0) {
+    policyWhere.id = { in: policyIds.map(id => parseInt(id)) };
   }
+
+  const policies = await prisma.leavePolicy.findMany({
+    where: policyWhere
+  });
+
+  const results = {
+    processed: 0,
+    errors: [],
+    details: []
+  };
+
+  for (const policy of policies) {
+    try {
+      const balances = await prisma.leaveBalance.findMany({
+        where: { leavePolicyId: policy.id },
+        include: {
+          employee: {
+            select: {
+              id: true,
+              first_name: true,
+              last_name: true,
+              status: true
+            }
+          }
+        }
+      });
+
+      for (const balance of balances) {
+        try {
+          if (balance.employee.status !== 'ACTIVE') {
+            continue;
+          }
+
+          const carryOverAmount = Math.min(balance.balance, policy.maxCarryForward);
+
+          if (carryOverAmount > 0) {
+            await prisma.leaveBalance.update({
+              where: {
+                employeeId_leavePolicyId: {
+                  employeeId: balance.employeeId,
+                  leavePolicyId: policy.id
+                }
+              },
+              data: {
+                carryOverBalance: carryOverAmount,
+                balance: 0, // Reset balance, carry over will be added in next accrual
+                lastUpdated: new Date()
+              }
+            });
+
+            results.details.push({
+              employeeId: balance.employeeId,
+              employeeName: `${balance.employee.first_name} ${balance.employee.last_name}`,
+              policyId: policy.id,
+              policyName: policy.name,
+              carryOverAmount,
+              status: 'SUCCESS'
+            });
+          }
+        } catch (error) {
+          results.errors.push(`Employee ${balance.employeeId}: ${error.message}`);
+        }
+      }
+
+      results.processed += balances.length;
+    } catch (error) {
+      results.errors.push(`Policy ${policy.id}: ${error.message}`);
+    }
+  }
+
+  return results;
+};
+
+// Export for use in other modules
+export default {
+  getLeavePolicies,
+  getLeavePolicyById,
+  createLeavePolicy,
+  updateLeavePolicy,
+  deleteLeavePolicy,
+  getLeaveRequests,
+  getLeaveRequestById,
+  createLeaveRequest,
+  cancelLeaveRequest,
+  updateLeaveRequest,
+  getPendingApprovals,
+  getLeaveRequestApprovals,
+  approveLeaveRequest,
+  rejectLeaveRequest,
+  getLeaveBalances,
+  getEmployeeLeaveBalances,
+  updateLeaveBalance,
+  runLeaveAccruals,
+  getAccrualHistory,
+  getHolidays,
+  getHolidayCalendar,
+  createHoliday,
+  processCarryOver
 };

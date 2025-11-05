@@ -3,7 +3,7 @@ import { AppError } from '../utils/AppError.js';
 
 const prisma = new PrismaClient();
 
-export async function getTimeEntries({ employeeId, startDate, endDate }) {
+export const getTimeEntries = async ({ employeeId, startDate, endDate }) => {
     const where = { employeeId: parseInt(employeeId) };
 
     if (startDate && endDate) {
@@ -28,9 +28,9 @@ export async function getTimeEntries({ employeeId, startDate, endDate }) {
         },
         orderBy: { start_time: 'desc' }
     });
-}
+};
 
-export async function createTimeEntry(data) {
+export const createTimeEntry = async (data) => {
     const { employeeId, start_time, end_time, work_type, note, sourceId } = data;
 
     // Validate time range
@@ -61,9 +61,9 @@ export async function createTimeEntry(data) {
             }
         }
     });
-}
+};
 
-export async function updateTimeEntry(id, data, userId) {
+export const updateTimeEntry = async (id, data, userId) => {
     const entry = await prisma.timeEntry.findFirst({
         where: { id: parseInt(id) },
         include: { employee: true }
@@ -106,9 +106,9 @@ export async function updateTimeEntry(id, data, userId) {
             }
         }
     });
-}
+};
 
-export async function deleteTimeEntry(id, userId) {
+export const deleteTimeEntry = async (id, userId) => {
     const entry = await prisma.timeEntry.findFirst({
         where: { id: parseInt(id) },
         include: { employee: true }
@@ -125,9 +125,9 @@ export async function deleteTimeEntry(id, userId) {
     await prisma.timeEntry.delete({
         where: { id: parseInt(id) }
     });
-}
+};
 
-export async function clockIn({ employeeId, location, note, sourceId }) {
+export const clockIn = async ({ employeeId, location, note, sourceId }) => {
     // Check if already clocked in
     const activeEntry = await prisma.timeEntry.findFirst({
         where: {
@@ -162,9 +162,9 @@ export async function clockIn({ employeeId, location, note, sourceId }) {
             }
         }
     });
-}
+};
 
-export async function clockOut({ employeeId, location, note, sourceId }) {
+export const clockOut = async ({ employeeId, location, note, sourceId }) => {
     // Find active clock-in entry
     const activeEntry = await prisma.timeEntry.findFirst({
         where: {
@@ -197,9 +197,9 @@ export async function clockOut({ employeeId, location, note, sourceId }) {
             }
         }
     });
-}
+};
 
-export async function startBreak({ employeeId, note, sourceId }) {
+export const startBreak = async ({ employeeId, note, sourceId }) => {
     const now = new Date();
 
     return await prisma.timeEntry.create({
@@ -221,9 +221,9 @@ export async function startBreak({ employeeId, note, sourceId }) {
             }
         }
     });
-}
+};
 
-export async function endBreak({ employeeId, note, sourceId }) {
+export const endBreak = async ({ employeeId, note, sourceId }) => {
     const activeBreak = await prisma.timeEntry.findFirst({
         where: {
             employeeId: parseInt(employeeId),
@@ -255,9 +255,9 @@ export async function endBreak({ employeeId, note, sourceId }) {
             }
         }
     });
-}
+};
 
-export async function getCurrentStatus(employeeId) {
+export const getCurrentStatus = async (employeeId) => {
     const activeEntry = await prisma.timeEntry.findFirst({
         where: {
             employeeId: parseInt(employeeId),
@@ -295,4 +295,4 @@ export async function getCurrentStatus(employeeId) {
         todayEntries,
         totalHoursToday: (totalMinutes / 60).toFixed(2)
     };
-}
+};
