@@ -5,8 +5,8 @@ import * as analyticsService from '../services/analyticsService.js';
  */
 export const getHeadcountReport = async (req, res) => {
     try {
-        const { startDate, endDate, departmentId, location } = req.query;
-        const user = req.user; // Assuming user is attached by auth middleware
+        const { startDate, endDate, positionId, location } = req.query;
+        const user = req.user;
 
         // Validate required parameters
         if (!startDate || !endDate) {
@@ -20,7 +20,7 @@ export const getHeadcountReport = async (req, res) => {
             tenantId: user.tenantId,
             startDate,
             endDate,
-            departmentId,
+            positionId,
             location,
             userRole: user.role
         });
@@ -30,7 +30,7 @@ export const getHeadcountReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { startDate, endDate, departmentId, location }
+                filters: { startDate, endDate, positionId, location }
             }
         });
     } catch (error) {
@@ -44,7 +44,7 @@ export const getHeadcountReport = async (req, res) => {
 
 export const getTurnoverReport = async (req, res) => {
     try {
-        const { startDate, endDate, departmentId, terminationType } = req.query;
+        const { startDate, endDate, positionId, terminationType } = req.query;
         const user = req.user;
 
         // Validate required parameters
@@ -59,7 +59,7 @@ export const getTurnoverReport = async (req, res) => {
             tenantId: user.tenantId,
             startDate,
             endDate,
-            departmentId,
+            positionId,
             terminationType,
             userRole: user.role
         });
@@ -69,7 +69,7 @@ export const getTurnoverReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { startDate, endDate, departmentId, terminationType }
+                filters: { startDate, endDate, positionId, terminationType }
             }
         });
     } catch (error) {
@@ -83,7 +83,7 @@ export const getTurnoverReport = async (req, res) => {
 
 export const getSalaryReport = async (req, res) => {
     try {
-        const { departmentId, jobGrade, location } = req.query;
+        const { positionId, jobGrade, location } = req.query;
         const user = req.user;
 
         // Check permissions for salary data
@@ -96,7 +96,7 @@ export const getSalaryReport = async (req, res) => {
 
         const result = await analyticsService.generateSalaryReport({
             tenantId: user.tenantId,
-            departmentId,
+            positionId,
             jobGrade,
             location,
             userRole: user.role
@@ -107,7 +107,7 @@ export const getSalaryReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { departmentId, jobGrade, location }
+                filters: { positionId, jobGrade, location }
             }
         });
     } catch (error) {
@@ -121,12 +121,12 @@ export const getSalaryReport = async (req, res) => {
 
 export const getLeaveBalancesReport = async (req, res) => {
     try {
-        const { departmentId, employeeId } = req.query;
+        const { positionId, employeeId } = req.query;
         const user = req.user;
 
         const result = await analyticsService.generateLeaveBalancesReport({
             tenantId: user.tenantId,
-            departmentId,
+            positionId,
             employeeId,
             userRole: user.role
         });
@@ -136,7 +136,7 @@ export const getLeaveBalancesReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { departmentId, employeeId }
+                filters: { positionId, employeeId }
             }
         });
     } catch (error) {
@@ -150,7 +150,7 @@ export const getLeaveBalancesReport = async (req, res) => {
 
 export const getAbsenceReport = async (req, res) => {
     try {
-        const { startDate, endDate, departmentId, absenceType } = req.query;
+        const { startDate, endDate, positionId, absenceType } = req.query;
         const user = req.user;
 
         // Validate required parameters
@@ -165,7 +165,7 @@ export const getAbsenceReport = async (req, res) => {
             tenantId: user.tenantId,
             startDate,
             endDate,
-            departmentId,
+            positionId,
             absenceType,
             userRole: user.role
         });
@@ -175,7 +175,7 @@ export const getAbsenceReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { startDate, endDate, departmentId, absenceType }
+                filters: { startDate, endDate, positionId, absenceType }
             }
         });
     } catch (error) {
@@ -189,12 +189,12 @@ export const getAbsenceReport = async (req, res) => {
 
 export const getEEOReport = async (req, res) => {
     try {
-        const { departmentId, location } = req.query;
+        const { positionId, location } = req.query;
         const user = req.user;
 
         const result = await analyticsService.generateEEOReport({
             tenantId: user.tenantId,
-            departmentId,
+            positionId,
             location,
             userRole: user.role
         });
@@ -204,7 +204,7 @@ export const getEEOReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { departmentId, location }
+                filters: { positionId, location }
             }
         });
     } catch (error) {
@@ -218,13 +218,13 @@ export const getEEOReport = async (req, res) => {
 
 export const getRecruitmentPipelineReport = async (req, res) => {
     try {
-        const { status, departmentId, hiringManagerId } = req.query;
+        const { status, positionId, hiringManagerId } = req.query;
         const user = req.user;
 
         const result = await analyticsService.generateRecruitmentPipelineReport({
             tenantId: user.tenantId,
             status,
-            departmentId,
+            positionId,
             hiringManagerId,
             userRole: user.role
         });
@@ -234,7 +234,7 @@ export const getRecruitmentPipelineReport = async (req, res) => {
             data: result,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                filters: { status, departmentId, hiringManagerId }
+                filters: { status, positionId, hiringManagerId }
             }
         });
     } catch (error) {
@@ -277,22 +277,22 @@ export const getDashboardKPIs = async (req, res) => {
     }
 };
 
-export const getDepartmentDashboard = async (req, res) => {
+export const getPositionDashboard = async (req, res) => {
     try {
-        const { departmentId, timeframe = 'current_quarter' } = req.query;
+        const { positionId, timeframe = 'current_quarter' } = req.query;
         const user = req.user;
 
-        // Validate departmentId for department managers
-        if (user.role === 'DEPARTMENT_MANAGER' && !departmentId) {
+        // Validate positionId for position managers
+        if (user.role === 'DEPARTMENT_MANAGER' && !positionId) {
             return res.status(400).json({
                 success: false,
-                error: 'departmentId is required for department managers'
+                error: 'positionId is required for position managers'
             });
         }
 
-        const dashboard = await analyticsService.getDepartmentDashboard({
+        const dashboard = await analyticsService.getPositionDashboard({
             tenantId: user.tenantId,
-            departmentId: departmentId || user.departmentId,
+            positionId: positionId || user.positionId,
             timeframe,
             userRole: user.role
         });
@@ -306,7 +306,7 @@ export const getDepartmentDashboard = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Department Dashboard Error:', error);
+        console.error('Position Dashboard Error:', error);
         res.status(500).json({
             success: false,
             error: error.message

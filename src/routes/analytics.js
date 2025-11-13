@@ -8,7 +8,7 @@ import {
     getEEOReport,
     getRecruitmentPipelineReport,
     getDashboardKPIs,
-    getDepartmentDashboard,
+    getPositionDashboard,
     getRecruitmentDashboard,
     getPerformanceDashboard,
     exportReport,
@@ -28,7 +28,7 @@ router.get('/reports/recruitment-pipeline', getRecruitmentPipelineReport);
 
 // Dashboards
 router.get('/dashboards/overview', getDashboardKPIs);
-router.get('/dashboards/department', getDepartmentDashboard);
+router.get('/dashboards/position', getPositionDashboard); // Changed from department to position
 router.get('/dashboards/recruitment', getRecruitmentDashboard);
 router.get('/dashboards/performance', getPerformanceDashboard);
 
