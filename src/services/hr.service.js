@@ -4,12 +4,18 @@ import { logAction } from "../utils/logs.js";
 const prisma = new PrismaClient();
 
 // ✅ Create Employee
-export const createEmployeeService = async (data) => {
+export const createEmployeeService = async (data, createdBy) => {
   const { first_name, last_name, gender, job_title, hire_date, status, positionId } = data;
   console.log(data);
 
   if (!job_title || !hire_date || !status || !positionId) {
     throw new Error("job_title, hire_date, and status are required fields");
+  }
+
+  const position_exs = await prisma.position.findUnique({where: {id : Number(positionId)}})
+  if(!position_exs){
+    throw new Error(`Position Id ${positionId} does not exist`);
+    
   }
 
   const employee = await prisma.employee.create({
@@ -21,12 +27,22 @@ export const createEmployeeService = async (data) => {
       hire_date: new Date(hire_date),
       status,
       positionId,
+      createdByID: Number(createdBy)
     },
+    include: {
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      }
+    }
   });
 
-   // Log the update action
+  // Log the update action
   await logAction({
-    employeeId: 1,
+    employeeId: Number(createdBy),
     type: "Create", // 👈 changed from CREATE to UPDATE
     module: "Employee",
     result: "SUCCESS",
@@ -41,7 +57,7 @@ export const getAllEmployeesService = async () => {
   const employees = await prisma.employee.findMany({
     orderBy: { created_at: "desc" },
     include: {
-      Position:true,
+      Position: true,
       attendance: {
         orderBy: { date: "desc" },
       },
@@ -56,34 +72,34 @@ export const getAllEmployeesService = async () => {
 // ✅ Get Employee By ID
 export const getEmployeeByIdService = async (id) => {
   const employee = await prisma.employee.findUnique({
-  where: { id: parseInt(id) },
-  include: {
-    Position: true,
-    attendance: {
-      orderBy: { date: "desc" },
-    },
-    leaves: {
-      orderBy: { start_date: "desc" },
-    },
-    reviewsReceived: {
-      include: {
-        reviewer: true,
-        feedbacks: {
-          include: {
-            reviewer: true,
+    where: { id: parseInt(id) },
+    include: {
+      Position: true,
+      attendance: {
+        orderBy: { date: "desc" },
+      },
+      leaves: {
+        orderBy: { start_date: "desc" },
+      },
+      reviewsReceived: {
+        include: {
+          reviewer: true,
+          feedbacks: {
+            include: {
+              reviewer: true,
+            },
           },
         },
+        orderBy: { updated_at: "desc" },
       },
-      orderBy: { updated_at: "desc" },
     },
-  },
-});
+  });
   if (!employee) throw new Error("Employee not found");
   return employee;
 };
 
 // ✅ Update Employee
-export const updateEmployeeService = async (id, data) => {
+export const updateEmployeeService = async (id, data, updatedBy) => {
   const employee = await prisma.employee.findUnique({
     where: { id: parseInt(id) },
   });
@@ -99,13 +115,21 @@ export const updateEmployeeService = async (id, data) => {
       hire_date: data.hire_date ? new Date(data.hire_date) : employee.hire_date,
       status: data.status ?? employee.status,
       userId: data.userId ?? employee.userId,
-      positionId: data.positionId ?? employee.positionId
+      positionId: data.positionId ?? employee.positionId,
+      updatedById: Number(updatedBy)
     },
+    updatedBy: {
+      select: {
+        id: true,
+        first_name: true,
+        last_name: true
+      }
+    }
   });
 
-   // Log the update action
+  // Log the update action
   await logAction({
-    employeeId: 1,
+    employeeId: updatedBy,
     type: "UPDATE", // 👈 changed from CREATE to UPDATE
     module: "Emplyee",
     result: "SUCCESS",
@@ -116,7 +140,7 @@ export const updateEmployeeService = async (id, data) => {
 };
 
 // ✅ Delete Employee
-export const deleteEmployeeService = async (id) => {
+export const deleteEmployeeService = async (id, deletedBy) => {
   const employee = await prisma.employee.findUnique({
     where: { id: parseInt(id) },
   });
@@ -131,10 +155,10 @@ export const deleteEmployeeService = async (id) => {
   });
 
 
- const deleted = await prisma.employee.delete({ where: { id: parseInt(id) } });
-   // Log the update action
+  const deleted = await prisma.employee.delete({ where: { id: parseInt(id) } });
+  // Log the update action
   await logAction({
-    employeeId: 1,
+    employeeId: deletedBy,
     type: "Deleted", // 👈 changed from CREATE to UPDATE
     module: "Employee",
     result: "SUCCESS",

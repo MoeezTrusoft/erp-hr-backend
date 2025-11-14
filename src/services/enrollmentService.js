@@ -1,9 +1,9 @@
 // src/services/enrollmentService.js
 import { PrismaClient } from "@prisma/client";
-
+import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
-export const enrollUser = async (enrollmentData) => {
+export const enrollUser = async (enrollmentData, createdBy) => {
     try {
         if (!enrollmentData.courseId || !enrollmentData.employeeId) {
             throw new Error('Course ID and Employee ID are required');
@@ -46,13 +46,21 @@ export const enrollUser = async (enrollmentData) => {
             }
         });
 
+   await logAction({
+    employeeId: Number(createdBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment "${enrollment.id}" Created successfully`,
+  });
+
         return enrollment;
     } catch (error) {
         throw new Error(`Failed to enroll user: ${error.message}`);
     }
 };
 
-export const bulkEnrollUsers = async (courseId, employeeIds) => {
+export const bulkEnrollUsers = async (courseId, employeeIds,createdBy) => {
     try {
         if (!courseId || !employeeIds || !Array.isArray(employeeIds)) {
             throw new Error('Course ID and Employee IDs array are required');
@@ -79,6 +87,15 @@ export const bulkEnrollUsers = async (courseId, employeeIds) => {
             )
         );
 
+ await logAction({
+    employeeId: Number(createdBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment "${enrollments.id}" Created successfully`,
+  });
+
+
         return enrollments;
     } catch (error) {
         throw new Error(`Failed to bulk enroll users: ${error.message}`);
@@ -87,6 +104,7 @@ export const bulkEnrollUsers = async (courseId, employeeIds) => {
 
 export const getUserEnrollments = async (employeeId, filters = {}) => {
     try {
+
         if (!employeeId) {
             throw new Error('Employee ID is required');
         }
@@ -181,7 +199,7 @@ export const getCourseEnrollments = async (courseId, filters = {}) => {
     }
 };
 
-export const updateEnrollmentStatus = async (enrollmentId, status) => {
+export const updateEnrollmentStatus = async (enrollmentId, status, updatedBy) => {
     try {
         if (!enrollmentId || !status) {
             throw new Error('Enrollment ID and status are required');
@@ -208,6 +226,15 @@ export const updateEnrollmentStatus = async (enrollmentId, status) => {
             }
         });
 
+         await logAction({
+    employeeId: Number(updatedBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment "${enrollmentId}" Updated successfully`,
+  });
+
+
         return enrollment;
     } catch (error) {
         if (error.code === 'P2025') {
@@ -217,7 +244,7 @@ export const updateEnrollmentStatus = async (enrollmentId, status) => {
     }
 };
 
-export const updateProgress = async (enrollmentId, progress) => {
+export const updateProgress = async (enrollmentId, progress, updatedBy) => {
     try {
         if (!enrollmentId || progress === undefined) {
             throw new Error('Enrollment ID and progress are required');
@@ -240,6 +267,14 @@ export const updateProgress = async (enrollmentId, progress) => {
                 }
             }
         });
+
+         await logAction({
+    employeeId: Number(updatedBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment "${enrollmentId}" Updated successfully`,
+  });
 
         return enrollment;
     } catch (error) {
@@ -283,7 +318,7 @@ export const getEmployeeTranscript = async (employeeId) => {
         throw new Error(`Failed to fetch transcript: ${error.message}`);
     }
 };
-export const cancelEnrollment = async (enrollmentId) => {
+export const cancelEnrollment = async (enrollmentId, cancelledBy) => {
     try {
         if (!enrollmentId) {
             throw new Error('Enrollment ID is required');
@@ -303,6 +338,13 @@ export const cancelEnrollment = async (enrollmentId) => {
                 }
             }
         });
+ await logAction({
+    employeeId: Number(cancelledBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Training Enrollment",
+    result: "SUCCESS",
+    notes: `Training Enrollment "${enrollmentId}" Cancelled successfully`,
+  });
 
         return enrollment;
     } catch (error) {

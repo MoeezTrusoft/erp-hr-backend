@@ -2,7 +2,9 @@ import * as service from "../services/performanceCycleService.js";
 
 export const createCycle = async (req, res) => {
   try {
-    const data = await service.createPerformanceCycle(req.body);
+         const createdBy = req.headers['employee-id'];
+
+    const data = await service.createPerformanceCycle(req.body, createdBy);
     res.status(201).json({
       success: true,
       message: "Performance cycle created successfully",
@@ -52,7 +54,9 @@ export const getCycleById = async (req, res) => {
 export const updateCycle = async (req, res) => {
   try {
     const { id } = req.params;
-    const data = await service.updatePerformanceCycle(id, req.body);
+         const updatedBy = req.headers['employee-id'];
+
+    const data = await service.updatePerformanceCycle(id, req.body,updatedBy);
     res.status(200).json({
       success: true,
       message: "Performance cycle updated successfully",
@@ -69,7 +73,8 @@ export const updateCycle = async (req, res) => {
 export const deleteCycle = async (req, res) => {
   try {
     const { id } = req.params;
-    await service.deletePerformanceCycle(id);
+    const deletedBy = req.headers['employee-id'];
+    await service.deletePerformanceCycle(id,deletedBy);
     res.status(200).json({
       success: true,
       message: "Performance cycle deleted successfully",

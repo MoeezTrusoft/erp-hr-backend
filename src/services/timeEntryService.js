@@ -38,7 +38,7 @@ export const createTimeEntry = async (data) => {
         throw new AppError('End time must be after start time', 400);
     }
 
-    return await prisma.timeEntry.create({
+    const create =  await prisma.timeEntry.create({
         data: {
             employeeId: parseInt(employeeId),
             start_time: new Date(start_time),
@@ -61,6 +61,15 @@ export const createTimeEntry = async (data) => {
             }
         }
     });
+
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `Time Entry "${create.id}" Created successfully`,
+  });
+    return create;
 };
 
 export const updateTimeEntry = async (id, data, userId) => {
@@ -94,7 +103,7 @@ export const updateTimeEntry = async (id, data, userId) => {
             : null;
     }
 
-    return await prisma.timeEntry.update({
+    const update =  await prisma.timeEntry.update({
         where: { id: parseInt(id) },
         data: updateData,
         include: {
@@ -106,6 +115,15 @@ export const updateTimeEntry = async (id, data, userId) => {
             }
         }
     });
+
+      await logAction({
+    employeeId: Number(userId),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `Time Entry "${id}" Updated successfully`,
+  });
+    return update;
 };
 
 export const deleteTimeEntry = async (id, userId) => {
@@ -122,9 +140,19 @@ export const deleteTimeEntry = async (id, userId) => {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
 
-    await prisma.timeEntry.delete({
+    const deleted =  prisma.timeEntry.delete({
         where: { id: parseInt(id) }
     });
+    
+      await logAction({
+    employeeId: Number(userId),
+    type: "Deleted", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `Time Entry "${id}" Deleted successfully`,
+  });
+
+    return deleted
 };
 
 export const clockIn = async ({ employeeId, location, note, sourceId }) => {
@@ -143,7 +171,7 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
 
     const now = new Date();
 
-    return await prisma.timeEntry.create({
+    const create =  await prisma.timeEntry.create({
         data: {
             employeeId: parseInt(employeeId),
             start_time: now,
@@ -162,6 +190,16 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
             }
         }
     });
+
+    
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `Clock In "${create.id}" Created successfully`,
+  });
+    return create;
 };
 
 export const clockOut = async ({ employeeId, location, note, sourceId }) => {
@@ -181,7 +219,7 @@ export const clockOut = async ({ employeeId, location, note, sourceId }) => {
     const now = new Date();
     const durationMinutes = Math.round((now - activeEntry.start_time) / (1000 * 60));
 
-    return await prisma.timeEntry.update({
+    const clockOut = await prisma.timeEntry.update({
         where: { id: activeEntry.id },
         data: {
             end_time: now,
@@ -197,12 +235,22 @@ export const clockOut = async ({ employeeId, location, note, sourceId }) => {
             }
         }
     });
+
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `Clock Out "${activeEntry.id}" Updated successfully`,
+  });
+
+    return clockOut;
 };
 
 export const startBreak = async ({ employeeId, note, sourceId }) => {
     const now = new Date();
 
-    return await prisma.timeEntry.create({
+    const breakStart = await prisma.timeEntry.create({
         data: {
             employeeId: parseInt(employeeId),
             start_time: now,
@@ -221,6 +269,16 @@ export const startBreak = async ({ employeeId, note, sourceId }) => {
             }
         }
     });
+
+
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `Break Started "${breakStart.id}" Created successfully`,
+  });
+    return breakStart;
 };
 
 export const endBreak = async ({ employeeId, note, sourceId }) => {
@@ -239,7 +297,7 @@ export const endBreak = async ({ employeeId, note, sourceId }) => {
     const now = new Date();
     const durationMinutes = Math.round((now - activeBreak.start_time) / (1000 * 60));
 
-    return await prisma.timeEntry.update({
+    const endBreak = await prisma.timeEntry.update({
         where: { id: activeBreak.id },
         data: {
             end_time: now,
@@ -255,6 +313,15 @@ export const endBreak = async ({ employeeId, note, sourceId }) => {
             }
         }
     });
+
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Entry",
+    result: "SUCCESS",
+    notes: `End Break "${activeBreak.id}" Created successfully`,
+  });
+    return endBreak;
 };
 
 export const getCurrentStatus = async (employeeId) => {

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
 
 const prisma = new PrismaClient();
@@ -54,7 +55,7 @@ export const createWorkSchedule = async (data) => {
         }
     }
 
-    return await prisma.workSchedule.create({
+    const create = await prisma.workSchedule.create({
         data: {
             employeeId: parseInt(employeeId),
             schedule_name: data.schedule_name,
@@ -74,9 +75,19 @@ export const createWorkSchedule = async (data) => {
             overtimeRule: true
         }
     });
+
+        await logAction({
+    employeeId: Number(employeeId),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Work Schedule",
+    result: "SUCCESS",
+    notes: `Work Schedule "${create.id}" Created successfully`,
+  });
+
+    return create;
 };
 
-export const updateWorkSchedule = async (id, data) => {
+export const updateWorkSchedule = async (id, data,updatedBy) => {
     const schedule = await prisma.workSchedule.findUnique({
         where: { id: parseInt(id) }
     });
@@ -96,7 +107,7 @@ export const updateWorkSchedule = async (id, data) => {
         }
     }
 
-    return await prisma.workSchedule.update({
+    const update =  await prisma.workSchedule.update({
         where: { id: parseInt(id) },
         data: {
             ...data,
@@ -114,9 +125,19 @@ export const updateWorkSchedule = async (id, data) => {
             overtimeRule: true
         }
     });
+
+    await logAction({
+    employeeId: Number(createdBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Work Scheduler ",
+    result: "SUCCESS",
+    notes: `Work Schedule "${id}" Updated successfully`,
+  });
+
+    return update;
 };
 
-export const deleteWorkSchedule = async (id) => {
+export const deleteWorkSchedule = async (id,deletedBy) => {
     const schedule = await prisma.workSchedule.findUnique({
         where: { id: parseInt(id) }
     });
@@ -125,7 +146,16 @@ export const deleteWorkSchedule = async (id) => {
         throw new AppError('Work schedule not found', 404);
     }
 
-    await prisma.workSchedule.delete({
+    const deleted = await prisma.workSchedule.delete({
         where: { id: parseInt(id) }
     });
+  await logAction({
+    employeeId: Number(createdBy), 
+    type: "Deleted", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Work Scheduler ",
+    result: "SUCCESS",
+    notes: `Work Schedule "${id}" Deleted successfully`,
+  });
+
+    return deleted;
 };

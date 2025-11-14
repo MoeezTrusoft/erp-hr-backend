@@ -37,13 +37,13 @@ app.use(cors({ origin: "*", credentials: true }));
 
 // HR routes
 app.use("/api/employee", hrRoutes);
-app.use("/api/attendance", attendanceRoutes);
+app.use("/api/attendance", attendanceRoutes);//no
 app.use("/api/performance", performanceRoutes);
 app.use("/api/positions", positionRoutes);
 app.use("/api/requisitions", requisitionRoutes);
-app.use("/api/train_cat", traningCategoryRoutes);
-app.use("/api/course", traningCourseRoutes);
-app.use("/api/enrollment", traningEnrollmentRoutes);
+app.use("/api/train_cat", traningCategoryRoutes);//no
+app.use("/api/course", traningCourseRoutes);//no
+app.use("/api/enrollment", traningEnrollmentRoutes);//no
 app.use("/api/log", logRoutes);
 app.use("/api/performance/cycles", performanceCycleRoutes);
 app.use("/api/performance/templates", performanceTemplateRoutes);
@@ -51,15 +51,15 @@ app.use("/api/goals", goalsRoutes)
 app.use("/api/goal-alignments", goalAllignmentRoutes)
 app.use("/api/PerformanceReview", performanceReviewRoutes)
 app.use("/api/calibration", calibrationRoutes);
-app.use("/api/calibration/reports", calibrationReportRoutes);
+app.use("/api/calibration/reports", calibrationReportRoutes);//done
 
-app.use('/api/time-attendance', timeAttendanceRoutes);
-app.use('/api/leaves', leaveRoutes);
-app.use('/api/holidays', holidayRoutes);
+app.use('/api/time-attendance', timeAttendanceRoutes);//done
+app.use('/api/leaves', leaveRoutes);//done
+app.use('/api/holidays', holidayRoutes);//done
 
-app.use('/api/payroll', payrollRoutes);
-app.use('/api/training', trainingRoutes);
-app.use('/api/analytics', analyticsRoutes);
+app.use('/api/payroll', payrollRoutes);//done
+app.use('/api/training', trainingRoutes);//done
+app.use('/api/analytics', analyticsRoutes); //done
 
 startReviewReminderScheduler();
 // Metrics endpoint

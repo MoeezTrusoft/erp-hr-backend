@@ -2,7 +2,9 @@ import *as goalService from "../services/goal.service.js";
 
 export const createGoal = async (req, res) => {
   try {
-    const goal = await goalService.createGoalService(req.body);
+         const createdBy = req.headers['employee-id'];
+
+    const goal = await goalService.createGoalService(req.body,createdBy);
     res.status(201).json({ success: true, goal });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -22,7 +24,9 @@ export const getGoals = async (req, res) => {
 export const updateGoal = async (req, res) => {
   try {
     const { id } = req.params;
-    const updated = await goalService.updateGoalService(id, req.body);
+         const updatedBy = req.headers['employee-id'];
+
+    const updated = await goalService.updateGoalService(id, req.body, updatedBy);
     res.status(200).json({ success: true, goal: updated });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -32,8 +36,10 @@ export const updateGoal = async (req, res) => {
 export const approveGoal = async (req, res) => {
   try {
     const { id } = req.params;
-    const { approverId, status } = req.body;
-    const goal = await goalService.approveGoalService(id, approverId, status);
+         const approvedBy = req.headers['employee-id'];
+
+    const {status } = req.body;
+    const goal = await goalService.approveGoalService(id, status, approvedBy);
     res.status(200).json({ success: true, goal });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -42,7 +48,9 @@ export const approveGoal = async (req, res) => {
 
 export const addGoalProgress = async (req, res) => {
   try {
-    const progress = await goalService.addGoalProgressService(req.body);
+         const createdBy = req.headers['employee-id'];
+
+    const progress = await goalService.addGoalProgressService(req.body,createdBy);
     res.status(201).json({ success: true, progress });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
 
 const prisma = new PrismaClient();
@@ -158,6 +159,14 @@ export const createTimesheet = async (data) => {
             data: { timesheetId: timesheet.id }
         });
     }
+    
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Sheet",
+    result: "SUCCESS",
+    notes: `Time Sheet "${timesheet.id}" Created successfully`,
+  });
 
     return getTimesheetById(timesheet.id, parseInt(employeeId));
 };
@@ -189,7 +198,7 @@ export const submitTimesheet = async (id, userId) => {
         throw new AppError('Cannot submit empty timesheet', 400);
     }
 
-    return await prisma.timesheet.update({
+    const update = await prisma.timesheet.update({
         where: { id: parseInt(id) },
         data: {
             status: 'SUBMITTED',
@@ -205,6 +214,15 @@ export const submitTimesheet = async (id, userId) => {
             timeEntries: true
         }
     });
+
+      await logAction({
+    employeeId: Number(userId),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Sheet",
+    result: "SUCCESS",
+    notes: `Time Sheet "${id}" Submitted successfully`,
+  });
+    return update;
 };
 
 export const approveTimesheet = async (id, approverId, comments = '') => {
@@ -231,7 +249,7 @@ export const approveTimesheet = async (id, approverId, comments = '') => {
         }
     });
 
-    return await prisma.timesheet.update({
+    const update =  await prisma.timesheet.update({
         where: { id: parseInt(id) },
         data: {
             status: 'APPROVED',
@@ -256,6 +274,16 @@ export const approveTimesheet = async (id, approverId, comments = '') => {
             }
         }
     });
+
+
+      await logAction({
+    employeeId: Number(approverId),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Sheet",
+    result: "SUCCESS",
+    notes: `Time Sheet "${id}" Approved successfully`,
+  });
+    return update;
 };
 
 export const rejectTimesheet = async (id, approverId, comments = '') => {
@@ -286,7 +314,7 @@ export const rejectTimesheet = async (id, approverId, comments = '') => {
         }
     });
 
-    return await prisma.timesheet.update({
+    const reject = await prisma.timesheet.update({
         where: { id: parseInt(id) },
         data: {
             status: 'REJECTED'
@@ -310,4 +338,14 @@ export const rejectTimesheet = async (id, approverId, comments = '') => {
             }
         }
     });
+
+
+      await logAction({
+    employeeId: Number(employeeId),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Time Sheet",
+    result: "SUCCESS",
+    notes: `Time Sheet "${id}" Rejected successfully`,
+  });
+    return reject;
 };

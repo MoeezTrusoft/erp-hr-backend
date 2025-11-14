@@ -4,7 +4,7 @@ const prisma = new PrismaClient();
 
 
 // ✅ Create position
-export const createPosition = async (data) => {
+export const createPosition = async (data,createdBy) => {
   const { title, description,createdById, isActive } = data;
   if (!title) throw new Error("Title is required");
 
@@ -13,8 +13,15 @@ export const createPosition = async (data) => {
       title,
       description,
       isActive,
-     createdById,
+     createdById: Number(createdBy),
     },
+     createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
   });
     await logAction({
     employeeId: createdById, // 👈 correct field name that matches the Log model
@@ -50,14 +57,14 @@ export const getPositionById = async (id) => {
 };
 
 // ✅ Update position
-export const updatePosition = async (id, data) => {
+export const updatePosition = async (id, data, updatedBy) => {
   const existing = await prisma.position.findUnique({
     where: { id: Number(id) },
   });
 
   if (!existing) throw new Error("Position not found");
 
-  const { title, description, createdById, isActive } = data;
+  const { title, description, isActive } = data;
 
   // ✅ Correctly use the `data` field for Prisma update
   const updated = await prisma.position.update({
@@ -66,13 +73,20 @@ export const updatePosition = async (id, data) => {
       title,
       description,
       isActive,
-      createdById,
+      updatedByById : Number(updatedBy),
     },
+     updatedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
   });
 
   // Log the update action
   await logAction({
-    employeeId: 1,
+    employeeId: updatedBy,
     type: "UPDATE", // 👈 changed from CREATE to UPDATE
     module: "Position",
     result: "SUCCESS",
@@ -82,7 +96,7 @@ export const updatePosition = async (id, data) => {
   return updated;
 };
 // ✅ Delete position
-export const deletePosition = async (id) => {
+export const deletePosition = async (id,deletedBy) => {
   const existing = await prisma.position.findUnique({ where: { id: Number(id) } });
   if (!existing) throw new Error("Position not found");
 
@@ -92,7 +106,7 @@ export const deletePosition = async (id) => {
 
    // Log the update action
   await logAction({
-    employeeId: 1,
+    employeeId: deletedBy,
     type: "Delete", // 👈 changed from CREATE to UPDATE
     module: "Position",
     result: "SUCCESS",

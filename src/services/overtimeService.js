@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
 
 const prisma = new PrismaClient();
@@ -9,13 +10,23 @@ export const getOvertimeRules = async () => {
     });
 };
 
-export const createOvertimeRule = async (data) => {
-    return await prisma.overtimeRule.create({
+export const createOvertimeRule = async (data, createdBy) => {
+    const create =  await prisma.overtimeRule.create({
         data
     });
+
+    
+      await logAction({
+    employeeId: Number(createdBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Over Time",
+    result: "SUCCESS",
+    notes: `Over Time "${create.id}" Created successfully`,
+  });
+    return create;
 };
 
-export const updateOvertimeRule = async (id, data) => {
+export const updateOvertimeRule = async (id, data,updatedBy) => {
     const rule = await prisma.overtimeRule.findUnique({
         where: { id: parseInt(id) }
     });
@@ -24,13 +35,22 @@ export const updateOvertimeRule = async (id, data) => {
         throw new AppError('Overtime rule not found', 404);
     }
 
-    return await prisma.overtimeRule.update({
+    const update =  await prisma.overtimeRule.update({
         where: { id: parseInt(id) },
         data
     });
+    await logAction({
+    employeeId: Number(updatedBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Over Time",
+    result: "SUCCESS",
+    notes: `Over Time "${cid}" Updated successfully`,
+  });
+
+    return update;
 };
 
-export const deleteOvertimeRule = async (id) => {
+export const deleteOvertimeRule = async (id,deletedBy) => {
     const rule = await prisma.overtimeRule.findUnique({
         where: { id: parseInt(id) }
     });
@@ -48,9 +68,19 @@ export const deleteOvertimeRule = async (id) => {
         throw new AppError('Cannot delete overtime rule that is in use by work schedules', 400);
     }
 
-    await prisma.overtimeRule.delete({
+    const deleted = await prisma.overtimeRule.delete({
         where: { id: parseInt(id) }
     });
+
+        await logAction({
+    employeeId: Number(deletedBy),
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Attanace - Over Time",
+    result: "SUCCESS",
+    notes: `Over Time "${id}" Deleted successfully`,
+  });
+
+    return deleted;
 };
 
 export const calculateOvertime = async ({ employeeId, periodStart, periodEnd }) => {

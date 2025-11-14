@@ -8,7 +8,8 @@ import {
 // ➕ Create calibration session
 export const createCalibrationSession = async (req, res) => {
   try {
-    const session = await createCalibrationSessionService(req.body);
+    const createdBy = req.headers['employee-id'];
+    const session = await createCalibrationSessionService(req.body, createdBy);
     res.status(201).json({ success: true, data: session });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -18,7 +19,8 @@ export const createCalibrationSession = async (req, res) => {
 // 🧾 Adjust rating
 export const adjustRating = async (req, res) => {
   try {
-    const adjustment = await adjustRatingService(req.body);
+    const calibrated_by_employee_id = req.headers['employee-id'];
+    const adjustment = await adjustRatingService(req.body,calibrated_by_employee_id);
     res.status(200).json({ success: true, data: adjustment });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -38,7 +40,8 @@ export const getAllCalibrationSessions = async (req, res) => {
 // 🔒 Finalize calibration
 export const finalizeCalibration = async (req, res) => {
   try {
-    const result = await finalizeCalibrationService(req.params.id);
+    const finalizedBy = req.headers['employee-id'];
+    const result = await finalizeCalibrationService(req.params.id,finalizedBy);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

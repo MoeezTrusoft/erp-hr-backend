@@ -22,9 +22,11 @@ export const getTimeEntries = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/entries
 // @access  Private
 export const createTimeEntry = asyncHandler(async (req, res) => {
+
+    const employeeId = req.headers['employee-id'];
     const entryData = {
         ...req.body,
-        employeeId: req.body.employeeId || req.user.id
+        employeeId: employeeId
     };
 
     const entry = await timeEntryService.createTimeEntry(entryData);
@@ -39,7 +41,8 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
 // @route   PUT /api/time-attendance/entries/:id
 // @access  Private
 export const updateTimeEntry = asyncHandler(async (req, res) => {
-    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, req.user.id);
+   const  userId = req.headers['employee-id'];
+    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, userId);
 
     res.json({
         success: true,
@@ -51,7 +54,8 @@ export const updateTimeEntry = asyncHandler(async (req, res) => {
 // @route   DELETE /api/time-attendance/entries/:id
 // @access  Private
 export const deleteTimeEntry = asyncHandler(async (req, res) => {
-    await timeEntryService.deleteTimeEntry(req.params.id, req.user.id);
+    const userId = req.headers['employee-id'];
+    await timeEntryService.deleteTimeEntry(req.params.id, userId);
 
     res.json({
         success: true,
@@ -63,10 +67,12 @@ export const deleteTimeEntry = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/clock-in
 // @access  Private
 export const clockIn = asyncHandler(async (req, res) => {
+
+    const employeeId = req.headers['employee-id'];
     const { location, note, sourceId } = req.body;
 
     const entry = await timeEntryService.clockIn({
-        employeeId: req.user.id,
+        employeeId:employeeId,
         location,
         note,
         sourceId
@@ -83,10 +89,11 @@ export const clockIn = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/clock-out
 // @access  Private
 export const clockOut = asyncHandler(async (req, res) => {
+    const employeeId = req.headers['employee-id'];
     const { location, note, sourceId } = req.body;
 
     const entry = await timeEntryService.clockOut({
-        employeeId: req.user.id,
+        employeeId: employeeId,
         location,
         note,
         sourceId
@@ -103,10 +110,11 @@ export const clockOut = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/break-start
 // @access  Private
 export const startBreak = asyncHandler(async (req, res) => {
+    const employeeId = req.headers['employee-id'];
     const { note, sourceId } = req.body;
 
     const entry = await timeEntryService.startBreak({
-        employeeId: req.user.id,
+        employeeId: employeeId,
         note,
         sourceId
     });
@@ -122,10 +130,11 @@ export const startBreak = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/break-end
 // @access  Private
 export const endBreak = asyncHandler(async (req, res) => {
+    const employeeId = req.headers['employee-id'];
     const { note, sourceId } = req.body;
 
     const entry = await timeEntryService.endBreak({
-        employeeId: req.user.id,
+        employeeId: employeeId,
         note,
         sourceId
     });

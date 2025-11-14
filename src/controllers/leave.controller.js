@@ -1,4 +1,5 @@
 import * as leaveService from '../services/leave.service.js';
+import { createRequisitionController } from './requisition.controller.js';
 
 export const getLeavePolicies = async (req, res) => {
   try {
@@ -23,11 +24,20 @@ export const getLeavePolicyById = async (req, res) => {
 
 export const createLeavePolicy = async (req, res) => {
   try {
+
+     const employeeId = req.headers['employee-id'];
+    console.log(req.headers, "user id req");
+     console.log("user Id", req.user);
     const policy = await leaveService.createLeavePolicy({
+      
       ...req.body,
-      createdById: req.user.id
-    });
-    res.status(201).json({ success: true, data: policy });
+      createdById: employeeId
+  });
+  //  console.log("user Id", createdById);
+    
+      console.log("📥 HR service received headers:", req.headers);
+  console.log("📥 HR service received body:", req.body);
+    res.status(201).json({ success: true,message:policy,  receivedUserId: req.headers["x-user-id"] });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -35,9 +45,10 @@ export const createLeavePolicy = async (req, res) => {
 
 export const updateLeavePolicy = async (req, res) => {
   try {
+    const employeeId = req.headers['employee-id'];
     const policy = await leaveService.updateLeavePolicy(
       parseInt(req.params.id),
-      { ...req.body, updatedById: req.user.id }
+      { ...req.body, updatedById: parseInt(employeeId)}
     );
     res.json({ success: true, data: policy });
   } catch (error) {
@@ -47,7 +58,8 @@ export const updateLeavePolicy = async (req, res) => {
 
 export const deleteLeavePolicy = async (req, res) => {
   try {
-    await leaveService.deleteLeavePolicy(parseInt(req.params.id));
+    const deletedBy = req.headers['employee-id'];
+    await leaveService.deleteLeavePolicy(parseInt(req.params.id), deletedBy);
     res.json({ success: true, message: 'Leave policy deleted successfully' });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -88,10 +100,12 @@ export const getLeaveRequestById = async (req, res) => {
 
 export const createLeaveRequest = async (req, res) => {
   try {
+    
+    const employeeId = req.headers['employee-id'];
     const request = await leaveService.createLeaveRequest({
       ...req.body,
-      employeeId: req.user.id,
-      createdById: req.user.id
+     // employeeId: req.user.id,
+      createdById: employeeId
     });
     res.status(201).json({ success: true, data: request });
   } catch (error) {
@@ -101,10 +115,12 @@ export const createLeaveRequest = async (req, res) => {
 
 export const cancelLeaveRequest = async (req, res) => {
   try {
-    const request = await leaveService.cancelLeaveRequest(
-      parseInt(req.params.id),
-      req.user.id
-    );
+    const leaveRequestId = Number(req.params.id);
+     const updatedById = req.headers['employee-id'];
+    const request = await leaveService.cancelLeaveRequest({
+     id: leaveRequestId,
+    employeeId: Number(updatedById)
+  });
     res.json({ success: true, data: request });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -131,12 +147,13 @@ export const getLeaveRequestApprovals = async (req, res) => {
 
 export const approveLeaveRequest = async (req, res) => {
   try {
+    const employeeId = req.headers['employee-id'];
     const result = await leaveService.approveLeaveRequest(
       parseInt(req.params.id),
       {
         ...req.body,
-        approverId: req.user.id,
-        createdById: req.user.id
+        approverId: employeeId,
+        createdById: employeeId
       }
     );
     res.json({ success: true, data: result });
@@ -147,12 +164,13 @@ export const approveLeaveRequest = async (req, res) => {
 
 export const rejectLeaveRequest = async (req, res) => {
   try {
+    const createdBy = req.headers['employee-id'];
     const result = await leaveService.rejectLeaveRequest(
       parseInt(req.params.id),
       {
         ...req.body,
-        approverId: req.user.id,
-        createdById: req.user.id
+        approverId:  createdBy,
+        createdById:  createdBy
       }
     );
     res.json({ success: true, data: result });
@@ -186,9 +204,10 @@ export const getEmployeeLeaveBalances = async (req, res) => {
 
 export const updateLeaveBalance = async (req, res) => {
   try {
+    const UpdatedBy = req.headers['employee-id'];
     const balance = await leaveService.updateLeaveBalance(
       parseInt(req.params.employeeId),
-      { ...req.body, updatedById: req.user.id }
+      { ...req.body, updatedById: UpdatedBy}
     );
     res.json({ success: true, data: balance });
   } catch (error) {
@@ -234,9 +253,10 @@ export const getHolidayCalendar = async (req, res) => {
 
 export const createHoliday = async (req, res) => {
   try {
+    const employeeId = req.headers['employee-id'];
     const holiday = await leaveService.createHoliday({
       ...req.body,
-      createdById: req.user.id
+      createdById: employeeId
     });
     res.status(201).json({ success: true, data: holiday });
   } catch (error) {

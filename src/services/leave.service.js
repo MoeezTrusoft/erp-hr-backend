@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-
+import { logAction } from "../utils/logs.js";
 const prisma = new PrismaClient();
 
 // Helper Functions
@@ -201,7 +201,7 @@ export const getLeavePolicyById = async (id) => {
   });
 };
 
-export const createLeavePolicy = async (data) => {
+export const createLeavePolicy = async (data,createdById) => {
   const {
     name,
     description,
@@ -213,7 +213,7 @@ export const createLeavePolicy = async (data) => {
     minServiceMonths,
     active = true,
     approvalWorkflowId,
-    createdById
+    
   } = data;
 
   // Validate accrual period
@@ -231,7 +231,7 @@ export const createLeavePolicy = async (data) => {
     throw new Error('Max carry forward must be 0 when carry forward is not allowed');
   }
 
-  return await prisma.leavePolicy.create({
+  const create = await prisma.leavePolicy.create({
     data: {
       name,
       description,
@@ -262,9 +262,20 @@ export const createLeavePolicy = async (data) => {
       }
     }
   });
+
+  await logAction({
+    employeeId: Number(createdById),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Leave Policy",
+    result: "SUCCESS",
+    notes: `Leave Policy "${create.id}" Created successfully`,
+  });
+
+  return create;
+
 };
 
-export const updateLeavePolicy = async (id, data) => {
+export const updateLeavePolicy = async (id, data,updatedById) => {
   const existingPolicy = await prisma.leavePolicy.findUnique({
     where: { id }
   });
@@ -273,10 +284,11 @@ export const updateLeavePolicy = async (id, data) => {
     throw new Error('Leave policy not found');
   }
 
-  return await prisma.leavePolicy.update({
+  const update = await prisma.leavePolicy.update({
     where: { id },
     data: {
       ...data,
+      updatedById: updatedById,
       updated_at: new Date()
     },
     include: {
@@ -296,9 +308,17 @@ export const updateLeavePolicy = async (id, data) => {
       }
     }
   });
+ await logAction({
+    employeeId: Number(updatedById),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Leave Policy",
+    result: "SUCCESS",
+    notes: `Leave Policy "${id}" Updated successfully`,
+  });
+  return update
 };
 
-export const deleteLeavePolicy = async (id) => {
+export const deleteLeavePolicy = async (id, deletedBy) => {
   // Check if policy is being used by any leave requests
   const existingRequests = await prisma.leaveRequest.count({
     where: { leavePolicyId: id }
@@ -317,9 +337,18 @@ export const deleteLeavePolicy = async (id) => {
     throw new Error('Cannot delete leave policy that has associated leave balances');
   }
 
-  return await prisma.leavePolicy.delete({
+  const deleted =  await prisma.leavePolicy.delete({
     where: { id }
   });
+ await logAction({
+    employeeId: Number(deletedBy),
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Leave Policy",
+    result: "SUCCESS",
+    notes: `Leave Policy "${id}" Deleted successfully`,
+  });
+
+  return deleted
 };
 
 // Leave Request Services
@@ -474,7 +503,7 @@ export const getLeaveRequestById = async (id) => {
   });
 };
 
-export const createLeaveRequest = async (data) => {
+export const createLeaveRequest = async (data,createdById) => {
   const {
     employeeId,
     leavePolicyId,
@@ -482,7 +511,6 @@ export const createLeaveRequest = async (data) => {
     endDate,
     reason,
     notes,
-    createdById
   } = data;
 
   // Validate dates
@@ -551,7 +579,7 @@ export const createLeaveRequest = async (data) => {
     }
   });
 
-  return await prisma.leaveRequest.create({
+  const create = await prisma.leaveRequest.create({
     data: {
       employeeId: parseInt(employeeId),
       leavePolicyId: parseInt(leavePolicyId),
@@ -585,6 +613,15 @@ export const createLeaveRequest = async (data) => {
       approvals: true
     }
   });
+   await logAction({
+    employeeId: Number(createdById),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Leave Request",
+    result: "SUCCESS",
+    notes: `Leave Request "${create.id}" Created successfully`,
+  });
+
+  return create;
 };
 
 export const cancelLeaveRequest = async (id, employeeId) => {
@@ -604,11 +641,11 @@ export const cancelLeaveRequest = async (id, employeeId) => {
     throw new Error('Cannot cancel non-pending leave requests');
   }
 
-  return await prisma.leaveRequest.update({
+  const update = await prisma.leaveRequest.update({
     where: { id },
     data: { status: 'CANCELLED' },
     include: {
-      employee: {
+      updatedBy: {
         select: {
           id: true,
           first_name: true,
@@ -618,6 +655,15 @@ export const cancelLeaveRequest = async (id, employeeId) => {
       leavePolicy: true
     }
   });
+
+    await logAction({
+    employeeId: Number(employeeId),
+    type: "Updated", // 👈 changed from CREATE to UPDATE
+    module: "Leave Request",
+    result: "SUCCESS",
+    notes: `Leave Request "${id}" Cancelled successfully`,
+  });
+  return update;
 };
 
 export const updateLeaveRequest = async (id, data) => {
@@ -725,7 +771,7 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
   });
 };
 
-export const approveLeaveRequest = async (leaveRequestId, data) => {
+export const approveLeaveRequest = async (leaveRequestId, data,) => {
   const { approverId, approverRole, comments, createdById } = data;
 
   const leaveRequest = await prisma.leaveRequest.findUnique({
@@ -811,7 +857,7 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
     await createLeaveAttendanceRecords(leaveRequest);
   }
 
-  return await prisma.leaveRequest.update({
+  const update = await prisma.leaveRequest.update({
     where: { id: leaveRequestId },
     data: { status: newStatus },
     include: {
@@ -836,6 +882,15 @@ export const approveLeaveRequest = async (leaveRequestId, data) => {
       }
     }
   });
+    await logAction({
+      employeeId: Number(createdById),
+      type: 'Update',
+      module: 'Leave Request',
+      result: 'SUCCESS',
+      notes: `Leave request ID ${leaveRequestId} approved successfully by employee ID ${createdById}.`,
+    });
+
+  return update;
 };
 
 export const rejectLeaveRequest = async (leaveRequestId, data) => {
@@ -866,7 +921,7 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
     }
   });
 
-  return await prisma.leaveRequest.update({
+  const update = await prisma.leaveRequest.update({
     where: { id: leaveRequestId },
     data: { status: 'REJECTED' },
     include: {
@@ -891,6 +946,14 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
       }
     }
   });
+  await logAction({
+    employeeId: Number(createdById),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Leave Request",
+    result: "SUCCESS",
+    notes: `Leave Request "${leaveRequestId}" Rejected successfully`,
+  });
+  return update;
 };
 
 // Leave Balance Services
@@ -1008,21 +1071,13 @@ export const updateLeaveBalance = async (employeeId, data) => {
   });
 
   // Log the balance adjustment
-  if (existingBalance) {
-    await prisma.log.create({
-      data: {
-        type: 'LEAVE_BALANCE_ADJUSTMENT',
-        action_type: 'UPDATE',
-        module: 'Leave Management',
-        ip: 'SYSTEM',
-        os: 'SYSTEM',
-        result: 'SUCCESS',
-        notes: `Leave balance adjusted for employee ${employeeId}. Policy: ${leavePolicyId}. New balance: ${balance}. Notes: ${notes || 'No notes provided'}`,
-        employeeId: parseInt(employeeId),
-        actionById: updatedById ? parseInt(updatedById) : null
-      }
-    });
-  }
+  await logAction({
+    employeeId: Number(updatedById),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Leave Balance",
+    result: "SUCCESS",
+    notes: `Leave Balance "${employeeId}" Updated successfully`,
+  });
 
   return result;
 };
@@ -1274,7 +1329,7 @@ export const createHoliday = async (data) => {
     throw new Error('Holiday already exists for this date in the selected calendar');
   }
 
-  return await prisma.holiday.create({
+  const create =  await prisma.holiday.create({
     data: {
       holidayCalendarId: parseInt(holidayCalendarId),
       date: new Date(date),
@@ -1294,6 +1349,15 @@ export const createHoliday = async (data) => {
       }
     }
   });
+  await logAction({
+    employeeId: Number(createdById),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Leave (Holiday)",
+    result: "SUCCESS",
+    notes: `Leave Holiday "${create.id}" Created successfully`,
+  });
+
+  return create;
 };
 
 // Additional Helper Functions

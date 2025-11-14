@@ -1,9 +1,10 @@
 // src/services/trainingService.js
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
 
 
 const prisma = new PrismaClient();
-export const createCourse = async (courseData) => {
+export const createCourse = async (courseData, createdBy) => {
     try {
         if (!courseData.title || !courseData.categoryId) {
             throw new Error('Title and categoryId are required');
@@ -32,6 +33,13 @@ export const createCourse = async (courseData) => {
                     }
                 }
             }
+        });
+        await logAction({
+            employeeId: Number(createdBy),
+            type: "Create", // 👈 changed from CREATE to UPDATE
+            module: "Training Course",
+            result: "SUCCESS",
+            notes: `Training Course "${course.id}" Created successfully`,
         });
 
         return course;
@@ -101,7 +109,8 @@ export const getCourses = async (filters = {}) => {
 
 export const getCourseById = async (courseId) => {
     try {
-        if (!courseId) {
+        const existing = await prisma.trainingCourse.findUnique({  where: { id: parseInt(courseId) },})
+        if (!existing) {
             throw new Error('Course ID is required');
         }
 
@@ -140,11 +149,13 @@ export const getCourseById = async (courseId) => {
     }
 };
 
-export const updateCourse = async (courseId, updateData) => {
+export const updateCourse = async (courseId, updateData, updatedBy) => {
     try {
-        if (!courseId) {
+       const existing = await prisma.trainingCourse.findUnique({  where: { id: parseInt(courseId) },})
+        if (!existing) {
             throw new Error('Course ID is required');
         }
+
 
         const course = await prisma.trainingCourse.update({
             where: { id: parseInt(courseId) },
@@ -153,6 +164,13 @@ export const updateCourse = async (courseId, updateData) => {
                 category: true,
                 instructor: true
             }
+        });
+        await logAction({
+            employeeId: Number(updatedBy),
+            type: "Update", // 👈 changed from CREATE to UPDATE
+            module: "Training Course",
+            result: "SUCCESS",
+            notes: `Training Course "${id}" Updated successfully`,
         });
 
         return course;
@@ -164,11 +182,13 @@ export const updateCourse = async (courseId, updateData) => {
     }
 };
 
-export const deleteCourse = async (courseId) => {
+export const deleteCourse = async (courseId, deletedBy) => {
     try {
-        if (!courseId) {
+       const existing = await prisma.trainingCourse.findUnique({  where: { id: parseInt(courseId) },})
+        if (!existing) {
             throw new Error('Course ID is required');
         }
+
 
         // Check if there are enrollments
         const enrollments = await prisma.trainingEnrollment.count({
@@ -179,11 +199,18 @@ export const deleteCourse = async (courseId) => {
             throw new Error('Cannot delete course with existing enrollments');
         }
 
-        await prisma.trainingCourse.delete({
+        const deleted = await prisma.trainingCourse.delete({
             where: { id: parseInt(courseId) }
         });
+        await logAction({
+            employeeId: Number(deletedBy),
+            type: "Delete", // 👈 changed from CREATE to UPDATE
+            module: "Training Course",
+            result: "SUCCESS",
+            notes: `Training Course "${id}" Delete successfully`,
+        });
 
-        return { message: 'Course deleted successfully' };
+        return deleted
     } catch (error) {
         if (error.code === 'P2025') {
             throw new Error('Course not found');
@@ -192,7 +219,7 @@ export const deleteCourse = async (courseId) => {
     }
 };
 
-export const createCategory = async (categoryData) => {
+export const createCategory = async (categoryData, createdBy) => {
     try {
         if (!categoryData.name) {
             throw new Error('Category name is required');
@@ -205,6 +232,13 @@ export const createCategory = async (categoryData) => {
             }
         });
 
+        await logAction({
+            employeeId: Number(createdBy),
+            type: "Create", // 👈 changed from CREATE to UPDATE
+            module: "Training Category",
+            result: "SUCCESS",
+            notes: `Training Category "${id}" Created successfully`,
+        });
         return category;
     } catch (error) {
         throw new Error(`Failed to create category: ${error.message}`);

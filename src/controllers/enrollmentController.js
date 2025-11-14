@@ -3,7 +3,8 @@ import * as enrollmentService from '../services/enrollmentService.js';
 
 export const enrollUser = async (req, res) => {
     try {
-        const enrollment = await enrollmentService.enrollUser(req.body);
+        const createdBy = req.headers['employee-id'];
+        const enrollment = await enrollmentService.enrollUser(req.body,createdBy);
         return res.status(201).json({
             success: true,
             message: 'User enrolled successfully',
@@ -19,8 +20,9 @@ export const enrollUser = async (req, res) => {
 
 export const bulkEnrollUsers = async (req, res) => {
     try {
+        const createdBy = req.headers['employee-id'];
         const { courseId, employeeIds } = req.body;
-        const enrollments = await enrollmentService.bulkEnrollUsers(courseId, employeeIds);
+        const enrollments = await enrollmentService.bulkEnrollUsers(courseId, employeeIds, createdBy);
         return res.status(201).json({
             success: true,
             message: 'Users enrolled successfully',
@@ -69,7 +71,8 @@ export const getCourseEnrollments = async (req, res) => {
 export const updateEnrollmentStatus = async (req, res) => {
     try {
         const { status } = req.body;
-        const enrollment = await enrollmentService.updateEnrollmentStatus(req.params.id, status);
+const updatedBy = req.headers['employee-id'];
+        const enrollment = await enrollmentService.updateEnrollmentStatus(req.params.id, status,updatedBy);
         return res.status(200).json({
             success: true,
             message: 'Enrollment status updated successfully',
@@ -92,7 +95,8 @@ export const updateEnrollmentStatus = async (req, res) => {
 export const updateProgress = async (req, res) => {
     try {
         const { progress } = req.body;
-        const enrollment = await enrollmentService.updateProgress(req.params.id, progress);
+        const updatedBy = req.headers['employee-id'];
+        const enrollment = await enrollmentService.updateProgress(req.params.id, progress, updatedBy);
         return res.status(200).json({
             success: true,
             message: 'Progress updated successfully',
@@ -114,7 +118,8 @@ export const updateProgress = async (req, res) => {
 
 export const cancelEnrollment = async (req, res) => {
     try {
-        const enrollment = await enrollmentService.cancelEnrollment(req.params.id);
+        const cancelledBy = req.headers['employee-id'];
+        const enrollment = await enrollmentService.cancelEnrollment(req.params.id,cancelledBy);
         return res.status(200).json({
             success: true,
             message: 'Enrollment cancelled successfully',

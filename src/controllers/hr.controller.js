@@ -9,7 +9,10 @@ import {
 // ✅ Create
 export const createEmployee = async (req, res) => {
   try {
-    const newEmployee = await createEmployeeService(req.body);
+    const createdBy = req.headers['employee-id'];
+    console.log("employee", createdBy);
+
+    const newEmployee = await createEmployeeService(req.body, createdBy);
     res.status(201).json({ success: true, data: newEmployee });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -39,7 +42,8 @@ export const getEmployeeById = async (req, res) => {
 // ✅ Update
 export const updateEmployee = async (req, res) => {
   try {
-    const updated = await updateEmployeeService(req.params.id, req.body);
+    const updatedBy = req.headers['employee-id'];
+    const updated = await updateEmployeeService(req.params.id, req.body, updatedBy);
     res.status(200).json({ success: true, data: updated });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -49,7 +53,9 @@ export const updateEmployee = async (req, res) => {
 // ✅ Delete
 export const deleteEmployee = async (req, res) => {
   try {
-    const result = await deleteEmployeeService(req.params.id);
+    const deletedBy = req.headers['employee-id'];
+
+    const result = await deleteEmployeeService(req.params.id, deletedBy);
     res.status(200).json({ success: true, message: result.message });
   } catch (error) {
     res.status(404).json({ success: false, message: error.message });

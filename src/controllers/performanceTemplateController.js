@@ -2,7 +2,9 @@ import * as templateService from "../services/performanceTemplateService.js";
 
 export const createTemplate = async (req, res) => {
   try {
-    const data = await templateService.createPerformanceTemplate(req.body);
+         const createdBy = req.headers['employee-id'];
+
+    const data = await templateService.createPerformanceTemplate(req.body,createdBy);
     res.status(201).json({
       success: true,
       message: "Performance template created successfully",
@@ -52,7 +54,9 @@ export const getTemplateById = async (req, res) => {
 export const updateTemplate = async (req, res) => {
   try {
     const { id } = req.params;
-    const data = await templateService.updatePerformanceTemplate(id, req.body);
+         const updatedBy = req.headers['employee-id'];
+
+    const data = await templateService.updatePerformanceTemplate(id, req.body,updatedBy);
     res.status(200).json({
       success: true,
       message: "Performance template updated successfully",
@@ -69,7 +73,8 @@ export const updateTemplate = async (req, res) => {
 export const deleteTemplate = async (req, res) => {
   try {
     const { id } = req.params;
-    await templateService.deletePerformanceTemplate(id);
+const deletedBy = req.headers['employee-id'];
+    await templateService.deletePerformanceTemplate(id,deletedBy);
     res.status(200).json({
       success: true,
       message: "Performance template deleted successfully",

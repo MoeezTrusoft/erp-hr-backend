@@ -4,9 +4,9 @@ import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
 // ✅ Create a new requisition
-export const createRequisition = async (data) => {
-  const { title, description, departmentId, positionId, requestedById, openings } = data;
-  if (!title || !requestedById) throw new Error("Title and requestedById are required");
+export const createRequisition = async (data, requestedBy) => {
+  const { title, description, departmentId, positionId, openings } = data;
+  if (!title) throw new Error("Title  are required");
 
   const createRequi = await prisma.jobRequisition.create({
     data: {
@@ -14,13 +14,20 @@ export const createRequisition = async (data) => {
       description,
       departmentId: departmentId ? Number(departmentId) : null,
       positionId: positionId ? Number(positionId) : null,
-      requestedById: Number(requestedById),
+      requestedById: Number(requestedBy),
       openings: openings ? Number(openings) : 1,
       //   status: "PENDING_APPROVAL",
     },
+    requestedBy: {
+      select: {
+        id: true,
+        first_name: true,
+        last_name: true
+      }
+    }
   });
   await logAction({
-    employeeId: 1,
+    employeeId: requestedBy,
     type: "Create", // 👈 changed from CREATE to UPDATE
     module: "Create Requisition",
     result: "SUCCESS",
@@ -58,7 +65,7 @@ export const getByIdRequisitions = async (id) => {
   return getByID;
 };
 
-export const deleteRequisitions = async (id) => {
+export const deleteRequisitions = async (id, deletedBy) => {
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
   if (!requisition) throw new Error("Requisition not found");
 
@@ -67,7 +74,7 @@ export const deleteRequisitions = async (id) => {
   });
   // Log the update action
   await logAction({
-    employeeId: 1,
+    employeeId: deletedBy,
     type: "Delete", // 👈 changed from CREATE to UPDATE
     module: "Requisition",
     result: "SUCCESS",
@@ -77,16 +84,17 @@ export const deleteRequisitions = async (id) => {
 };
 
 // ✅ Approve or reject requisition
-export const approveRequisition = async (id, approverId, status, comments) => {
+export const approveRequisition = async (id, status, comments, approvedBy) => {
   if (!["APPROVED", "REJECTED"].includes(status)) throw new Error("Invalid status");
 
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
   if (!requisition) throw new Error("Requisition not found");
 
   await prisma.requisitionApproval.create({
+    
     data: {
       requisitionId: Number(id),
-      approverId: Number(approverId),
+      approverId: Number(approvedBy),
       status,
       comments,
       decidedAt: new Date(),
@@ -97,12 +105,19 @@ export const approveRequisition = async (id, approverId, status, comments) => {
     where: { id: Number(id) },
     data: {
       status,
-      approvedById: Number(approverId),
+      approvedById: Number(approvedBy),
     },
+    approvedBy: {
+      select: {
+        id: true,
+        first_name: true,
+        last_name: true
+      }
+    }
   });
   // Log the update action
   await logAction({
-    employeeId: approverId,
+    employeeId: approvedBy,
     type: "UPDATE", // 👈 changed from CREATE to UPDATE
     module: "Requisition Approve",
     result: "SUCCESS",
@@ -112,7 +127,7 @@ export const approveRequisition = async (id, approverId, status, comments) => {
 };
 
 // ✅ Post approved job externally
-export const postRequisition = async (id, externalUrl) => {
+export const postRequisition = async (id, externalUrl, createdBy) => {
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
   if (!requisition) throw new Error("Requisition not found");
   if (requisition.status !== "APPROVED") throw new Error("Only approved requisitions can be posted");
@@ -122,7 +137,16 @@ export const postRequisition = async (id, externalUrl) => {
       requisitionId: Number(id),
       externalUrl,
       isActive: true,
+      createdById: Number(createdBy),
     },
+    createdBy: {
+      select: {
+        id: true,
+        first_name: true,
+        last_name: true
+      }
+    },
+
   });
 
   const jobPosted = await prisma.jobRequisition.update({
@@ -131,7 +155,7 @@ export const postRequisition = async (id, externalUrl) => {
   });
 
   await logAction({
-    employeeId: 1,
+    employeeId: createdBy,
     type: "UPDATE", // 👈 changed from CREATE to UPDATE
     module: "Requisition Post",
     result: "SUCCESS",

@@ -2,7 +2,9 @@ import *as goalAlignmentService from "../services/goalAlignment.service.js";
 
 export const createGoalAlignment = async (req, res) => {
   try {
-    const alignment = await goalAlignmentService.createGoalAlignmentService(req.body);
+    const createdBy = req.headers['employee-id'];
+
+    const alignment = await goalAlignmentService.createGoalAlignmentService(req.body, createdBy);
     res.status(201).json({ success: true, alignment });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -22,7 +24,8 @@ export const getGoalAlignments = async (req, res) => {
 export const deleteGoalAlignment = async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await goalAlignmentService.deleteGoalAlignmentService(id);
+    const deletedBy = req.headers['employee-id'];
+    const result = await goalAlignmentService.deleteGoalAlignmentService(id, deletedBy);
     res.status(200).json({ success: true, message: result.message });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

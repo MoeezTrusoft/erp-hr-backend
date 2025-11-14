@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
 
@@ -89,7 +90,7 @@ export const getRegionById = async (id) => {
   });
 };
 
-export const createRegion = async (data) => {
+export const createRegion = async (data, createdBy) => {
   const { name, code, description, createdById } = data;
 
   // Check if region with same name or code already exists
@@ -106,7 +107,7 @@ export const createRegion = async (data) => {
     throw new Error('Region with this name or code already exists');
   }
 
-  return await prisma.region.create({
+  const create = await prisma.region.create({
     data: {
       name,
       code,
@@ -123,9 +124,19 @@ export const createRegion = async (data) => {
       }
     }
   });
+
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Holiday Region",
+    result: "SUCCESS",
+    notes: `Holiday Region  "${create.id}" Created successfully`,
+  });
+
+  return create;
 };
 
-export const updateRegion = async (id, data) => {
+export const updateRegion = async (id, updatedById, data) => {
   const existingRegion = await prisma.region.findUnique({
     where: { id }
   });
@@ -151,10 +162,11 @@ export const updateRegion = async (id, data) => {
     }
   }
 
-  return await prisma.region.update({
+  const update = await prisma.region.update({
     where: { id },
     data: {
       ...data,
+      updatedById: updatedById,
       updated_at: new Date()
     },
     include: {
@@ -174,9 +186,18 @@ export const updateRegion = async (id, data) => {
       }
     }
   });
+await logAction({
+    employeeId: Number(assignBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Holiday Region",
+    result: "SUCCESS",
+    notes: `Holiday Region "${id}" Updated successfully`,
+  });
+
+  return update;
 };
 
-export const deleteRegion = async (id) => {
+export const deleteRegion = async (id, deletedBy) => {
   // Check if region has associated calendars
   const existingCalendars = await prisma.holidayCalendar.count({
     where: { regionId: id }
@@ -195,9 +216,18 @@ export const deleteRegion = async (id) => {
     throw new Error('Cannot delete region that has assigned employees');
   }
 
-  return await prisma.region.delete({
+  const deleted = await prisma.region.delete({
     where: { id }
   });
+
+  await logAction({
+    employeeId: Number(deletedBy),
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Holiday Region",
+    result: "SUCCESS",
+    notes: `Holiday Assign "${id}" Deleted successfully`,
+  });
+  return deleted;
 };
 
 // Holiday Calendar Services
@@ -296,8 +326,8 @@ export const getHolidayCalendarById = async (id) => {
   });
 };
 
-export const createHolidayCalendar = async (data) => {
-  const { regionId, name, description, year, createdById } = data;
+export const createHolidayCalendar = async (data,createdById) => {
+  const { regionId, name, description, year } = data;
 
   // Check if calendar already exists for this region and year
   const existingCalendar = await prisma.holidayCalendar.findFirst({
@@ -312,7 +342,7 @@ export const createHolidayCalendar = async (data) => {
     throw new Error('Holiday calendar with this name already exists for the selected region and year');
   }
 
-  return await prisma.holidayCalendar.create({
+  const create = await prisma.holidayCalendar.create({
     data: {
       regionId: regionId ? parseInt(regionId) : null,
       name,
@@ -331,9 +361,19 @@ export const createHolidayCalendar = async (data) => {
       }
     }
   });
+
+await logAction({
+    employeeId: Number(createdById),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Holiday Calender",
+    result: "SUCCESS",
+    notes: `Holiday Calender "${create.id}" Created successfully`,
+  });
+
+  return create;
 };
 
-export const updateHolidayCalendar = async (id, data) => {
+export const updateHolidayCalendar = async (id, data, updatedById) => {
   const existingCalendar = await prisma.holidayCalendar.findUnique({
     where: { id }
   });
@@ -342,10 +382,11 @@ export const updateHolidayCalendar = async (id, data) => {
     throw new Error('Holiday calendar not found');
   }
 
-  return await prisma.holidayCalendar.update({
+  const update = await prisma.holidayCalendar.update({
     where: { id },
     data: {
       ...data,
+      updatedById: Number(updatedById),
       updated_at: new Date()
     },
     include: {
@@ -362,9 +403,19 @@ export const updateHolidayCalendar = async (id, data) => {
       }
     }
   });
+
+await logAction({
+    employeeId: Number(assignBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Holiday Calender",
+    result: "SUCCESS",
+    notes: `Holiday Calender "${id}" Updated successfully`,
+  });
+
+  return update;
 };
 
-export const deleteHolidayCalendar = async (id) => {
+export const deleteHolidayCalendar = async (id,deletedBy) => {
   // Check if calendar has associated holidays
   const holidayCount = await prisma.holiday.count({
     where: { holidayCalendarId: id }
@@ -383,9 +434,18 @@ export const deleteHolidayCalendar = async (id) => {
     throw new Error('Cannot delete holiday calendar that has employee assignments. Remove assignments first.');
   }
 
-  return await prisma.holidayCalendar.delete({
+  const deleted =  await prisma.holidayCalendar.delete({
     where: { id }
   });
+
+await logAction({
+    employeeId: Number(deletedBy),
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Holiday Calender",
+    result: "SUCCESS",
+    notes: `Holiday Calender "${id}" Deleted successfully`,
+  });
+  return deleted
 };
 
 // Holiday Services
@@ -504,7 +564,7 @@ export const getHolidaysByCalendar = async (calendarId, filters = {}) => {
   });
 };
 
-export const createHoliday = async (data) => {
+export const createHoliday = async (data,createdById) => {
   const {
     holidayCalendarId,
     name,
@@ -513,7 +573,6 @@ export const createHoliday = async (data) => {
     fullDay = true,
     startTime,
     endTime,
-    createdById
   } = data;
 
   const holidayDate = new Date(date);
@@ -542,7 +601,7 @@ export const createHoliday = async (data) => {
     throw new Error('Start time and end time are required for partial day holidays');
   }
 
-  return await prisma.holiday.create({
+  const create = await prisma.holiday.create({
     data: {
       holidayCalendarId: parseInt(holidayCalendarId),
       name,
@@ -568,9 +627,18 @@ export const createHoliday = async (data) => {
       }
     }
   });
+
+await logAction({
+    employeeId: Number(assignBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Holiday ",
+    result: "SUCCESS",
+    notes: `Holiday "${create.id}" Created successfully`,
+  });
+return create;
 };
 
-export const updateHoliday = async (calendarId, date, data) => {
+export const updateHoliday = async (calendarId, date, data,updatedById) => {
   const holidayDate = new Date(date);
 
   const existingHoliday = await prisma.holiday.findUnique({
@@ -606,7 +674,7 @@ export const updateHoliday = async (calendarId, date, data) => {
     }
   }
 
-  return await prisma.holiday.update({
+  const update = await prisma.holiday.update({
     where: {
       holidayCalendarId_date: {
         holidayCalendarId: parseInt(calendarId),
@@ -615,6 +683,7 @@ export const updateHoliday = async (calendarId, date, data) => {
     },
     data: {
       ...data,
+      updatedById: Number(updatedById),
       updated_at: new Date()
     },
     include: {
@@ -632,9 +701,18 @@ export const updateHoliday = async (calendarId, date, data) => {
       }
     }
   });
+
+  await logAction({
+    employeeId: Number(assignBy),
+    type: "Update", // 👈 changed from CREATE to UPDATE
+    module: "Holiday",
+    result: "SUCCESS",
+    notes: `Holiday  "${calendarId}" updated successfully`,
+  });
+  return update;
 };
 
-export const deleteHoliday = async (calendarId, date) => {
+export const deleteHoliday = async (calendarId, date, deletedBy) => {
   const holidayDate = new Date(date);
 
   const existingHoliday = await prisma.holiday.findUnique({
@@ -657,7 +735,7 @@ export const deleteHoliday = async (calendarId, date) => {
     throw new Error('Cannot delete past holidays');
   }
 
-  return await prisma.holiday.delete({
+  const deleted = await prisma.holiday.delete({
     where: {
       holidayCalendarId_date: {
         holidayCalendarId: parseInt(calendarId),
@@ -665,6 +743,15 @@ export const deleteHoliday = async (calendarId, date) => {
       }
     }
   });
+await logAction({
+    employeeId: Number(assignBy),
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Holiday",
+    result: "SUCCESS",
+    notes: `Holiday  "${calendarId}" Deleted successfully`,
+  });
+
+  return deleted;
 };
 
 export const getEmployeeHolidays = async (employeeId, filters = {}) => {
@@ -815,8 +902,8 @@ export const isHoliday = async (date, regionId = null) => {
 };
 
 // Employee Calendar Assignment Services
-export const assignEmployeeToCalendar = async (employeeId, calendarId, effectiveFrom = new Date(), effectiveTo = null) => {
-  return await prisma.employeeHolidayCalendar.upsert({
+export const assignEmployeeToCalendar = async (employeeId, calendarId, effectiveFrom = new Date(), effectiveTo = null, assignBy) => {
+  const assignment =  await prisma.employeeHolidayCalendar.upsert({
     where: {
       employeeId_holidayCalendarId_effectiveFrom: {
         employeeId: parseInt(employeeId),
@@ -848,6 +935,16 @@ export const assignEmployeeToCalendar = async (employeeId, calendarId, effective
       }
     }
   });
+ await logAction({
+    employeeId: Number(assignBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Holiday",
+    result: "SUCCESS",
+    notes: `Holiday Assign "${employeeId}""${calendarId}" Created successfully`,
+  });
+
+
+  return assignment
 };
 
 export const getEmployeeCalendarAssignments = async (employeeId) => {

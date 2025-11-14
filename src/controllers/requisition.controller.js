@@ -9,7 +9,8 @@ import {
 
 export const createRequisitionController = async (req, res) => {
   try {
-    const result = await createRequisition(req.body);
+    const requestedBy = req.headers['employee-id'];
+    const result = await createRequisition(req.body, requestedBy);
     res.status(201).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -36,7 +37,8 @@ export const getByIdRequisitionsController = async (req, res) => {
 
 export const deletRequisitionsController = async (req, res) => {
   try {
-    const result = await deleteRequisitions(req.params.id);
+    const deletedBy = req.headers['employee-id'];
+    const result = await deleteRequisitions(req.params.id,deletedBy);
     res.status(200).json({ success: true, message: "deleted SuccessFully" });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -46,8 +48,9 @@ export const deletRequisitionsController = async (req, res) => {
 export const approveRequisitionController = async (req, res) => {
   try {
     const { id } = req.params;
-    const { approverId, status, comments } = req.body;
-    const result = await approveRequisition(id, approverId, status, comments);
+    const approvedBy = req.headers['employee-id'];
+    const { status, comments } = req.body;
+    const result = await approveRequisition(id, status, comments, approvedBy);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -57,8 +60,9 @@ export const approveRequisitionController = async (req, res) => {
 export const postRequisitionController = async (req, res) => {
   try {
     const { id } = req.params;
+    const createdBy = req.headers['employee-id'];
     const { externalUrl } = req.body;
-    const result = await postRequisition(id, externalUrl);
+    const result = await postRequisition(id, externalUrl, createdBy);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

@@ -2,8 +2,9 @@
 import * as trainingService from '../services/trainingService.js';
 
 export const createCourse = async (req, res) => {
-    try {
-        const course = await trainingService.createCourse(req.body);
+    try {    
+        const createdBy = req.headers['employee-id'];
+        const course = await trainingService.createCourse(req.body, createdBy);
         return res.status(201).json({
             success: true,
             message: 'Course created successfully',
@@ -57,7 +58,8 @@ export const getCourse = async (req, res) => {
 
 export const updateCourse = async (req, res) => {
     try {
-        const course = await trainingService.updateCourse(req.params.id, req.body);
+        const updatedBy = req.headers['employee-id'];
+        const course = await trainingService.updateCourse(req.params.id, req.body,updatedBy);
         return res.status(200).json({
             success: true,
             message: 'Course updated successfully',
@@ -79,7 +81,8 @@ export const updateCourse = async (req, res) => {
 
 export const deleteCourse = async (req, res) => {
     try {
-        const result = await trainingService.deleteCourse(req.params.id);
+        const deletedBy = req.headers['employee-id'];
+        const result = await trainingService.deleteCourse(req.params.id, deletedBy);
         return res.status(200).json({
             success: true,
             message: result.message
@@ -100,7 +103,9 @@ export const deleteCourse = async (req, res) => {
 
 export const createCategory = async (req, res) => {
     try {
-        const category = await trainingService.createCategory(req.body);
+
+        const createdBy = req.headers['employee-id'];
+        const category = await trainingService.createCategory(req.body,createdBy);
         return res.status(201).json({
             success: true,
             message: 'Category created successfully',

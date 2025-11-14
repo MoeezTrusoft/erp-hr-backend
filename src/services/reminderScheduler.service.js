@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { PrismaClient } from "@prisma/client";
 
+
 const prisma = new PrismaClient();
 
 // 🕒 Runs every day at 9 AM

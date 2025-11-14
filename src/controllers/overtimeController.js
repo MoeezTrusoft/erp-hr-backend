@@ -17,7 +17,8 @@ const getOvertimeRules = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/overtime-rules
 // @access  Private
 const createOvertimeRule = asyncHandler(async (req, res) => {
-    const rule = await overtimeService.createOvertimeRule(req.body);
+    const createdBy = req.headers['employee-id'];
+    const rule = await overtimeService.createOvertimeRule(req.body, createdBy);
 
     res.status(201).json({
         success: true,
@@ -29,7 +30,8 @@ const createOvertimeRule = asyncHandler(async (req, res) => {
 // @route   PUT /api/time-attendance/overtime-rules/:id
 // @access  Private
 const updateOvertimeRule = asyncHandler(async (req, res) => {
-    const rule = await overtimeService.updateOvertimeRule(req.params.id, req.body);
+    const updatedBy = req.headers['employee-id'];
+    const rule = await overtimeService.updateOvertimeRule(req.params.id, req.body,updatedBy);
 
     res.json({
         success: true,
@@ -41,7 +43,8 @@ const updateOvertimeRule = asyncHandler(async (req, res) => {
 // @route   DELETE /api/time-attendance/overtime-rules/:id
 // @access  Private
 const deleteOvertimeRule = asyncHandler(async (req, res) => {
-    await overtimeService.deleteOvertimeRule(req.params.id);
+    const deletedBy = req.headers['employee-id'];
+    await overtimeService.deleteOvertimeRule(req.params.id, deletedBy);
 
     res.json({
         success: true,

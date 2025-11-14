@@ -1,8 +1,9 @@
 import { PrismaClient } from "@prisma/client";
+import { logAction } from "../utils/logs.js";
 const prisma = new PrismaClient();
 
 // ✅ Create alignment between two goals
-export const createGoalAlignmentService = async (data) => {
+export const createGoalAlignmentService = async (data, createdBy) => {
   const { parentGoalId, alignedGoalId } = data;
 
   if (!parentGoalId || !alignedGoalId)
@@ -26,12 +27,29 @@ export const createGoalAlignmentService = async (data) => {
   });
   if (existing) throw new Error("These goals are already aligned");
 
-  return prisma.goalAlignment.create({
+  const create = await prisma.goalAlignment.create({
     data: {
       parentGoalId: Number(parentGoalId),
       alignedGoalId: Number(alignedGoalId),
+      createdById: Number(createdBy),
+    },
+    createdBy: {
+      select: {
+        id: true,
+        first_name: true,
+        last_name: true
+      }
     },
   });
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create", // 👈 changed from CREATE to UPDATE
+    module: "Goal Allignment",
+    result: "SUCCESS",
+    notes: `Goal Allignment "${create.id}" Create successfully`,
+  });
+
+  return create
 };
 
 // ✅ Get all alignments for a goal (both parent & children)
@@ -51,10 +69,19 @@ export const getGoalAlignmentsService = async (goalId) => {
 };
 
 // ✅ Remove alignment
-export const deleteGoalAlignmentService = async (id) => {
+export const deleteGoalAlignmentService = async (id, deletedBy) => {
   const existing = await prisma.goalAlignment.findUnique({ where: { id: Number(id) } });
   if (!existing) throw new Error("Alignment not found");
 
-  await prisma.goalAlignment.delete({ where: { id: Number(id) } });
-  return { message: "Goal alignment removed successfully" };
+  const deleted = await prisma.goalAlignment.delete({ where: { id: Number(id) } });
+
+  await logAction({
+    employeeId: Number(deletedBy),
+    type: "Delete", // 👈 changed from CREATE to UPDATE
+    module: "Goal Allignment",
+    result: "SUCCESS",
+    notes: `Goal Allignment "${id}" Deleted successfully`,
+  });
+
+  return deleted
 };

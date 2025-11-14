@@ -1,3 +1,4 @@
+import { logAction } from "../utils/logs.js";
 import { PrismaClient } from '@prisma/client';
 import * as utils from '../utils/analyticsUtils.js';
 

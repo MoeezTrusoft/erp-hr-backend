@@ -36,9 +36,10 @@ const getTimesheetById = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets
 // @access  Private
 const createTimesheet = asyncHandler(async (req, res) => {
+    const employeeId = req.headers['employee-id'];
     const timesheetData = {
         ...req.body,
-        employeeId: req.body.employeeId || req.user.id
+        employeeId: employeeId
     };
 
     const timesheet = await timesheetService.createTimesheet(timesheetData);
@@ -53,7 +54,8 @@ const createTimesheet = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets/:id/submit
 // @access  Private
 const submitTimesheet = asyncHandler(async (req, res) => {
-    const timesheet = await timesheetService.submitTimesheet(req.params.id, req.user.id);
+    const userId = req.headers['employee-id'];
+    const timesheet = await timesheetService.submitTimesheet(req.params.id, userId);
 
     res.json({
         success: true,
@@ -66,11 +68,12 @@ const submitTimesheet = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets/:id/approve
 // @access  Private
 const approveTimesheet = asyncHandler(async (req, res) => {
+    const approverId = req.headers['employee-id'];
     const { comments } = req.body;
 
     const timesheet = await timesheetService.approveTimesheet(
         req.params.id,
-        req.user.id,
+       approverId,
         comments
     );
 
@@ -85,11 +88,12 @@ const approveTimesheet = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets/:id/reject
 // @access  Private
 const rejectTimesheet = asyncHandler(async (req, res) => {
+    const approverId = req.headers['employee-id'];
     const { comments } = req.body;
 
     const timesheet = await timesheetService.rejectTimesheet(
         req.params.id,
-        req.user.id,
+       approverId,
         comments
     );
 

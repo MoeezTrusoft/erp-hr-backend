@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { logAction } from "../utils/logs.js";
 const prisma = new PrismaClient();
 
 // Payroll Run Operations
@@ -61,32 +62,41 @@ export const getPayrollRunById = async (id) => {
     });
 };
 
-export const createPayrollRun = async (data) => {
-    // Check for overlapping payroll runs
-    const existingRun = await prisma.payrollRun.findFirst({
-        where: {
-            OR: [
-                {
-                    periodStart: { lte: data.periodEnd },
-                    periodEnd: { gte: data.periodStart }
-                }
-            ]
+export const createPayrollRun = async (data, createdBy) => {
+  const existingRun = await prisma.payrollRun.findFirst({
+    where: {
+      OR: [
+        {
+          periodStart: { lte: data.periodEnd },
+          periodEnd: { gte: data.periodStart }
         }
-    });
-
-    if (existingRun) {
-        throw new Error('Payroll run already exists for the specified period');
+      ]
     }
+  });
 
-    return prisma.payrollRun.create({
-        data: {
-            ...data,
-            status: 'PENDING'
-        }
-    });
+  if (existingRun) {
+    throw new Error('Payroll run already exists for the specified period');
+  }
+
+  const create = await prisma.payrollRun.create({
+    data: {
+      ...data,
+      status: 'PENDING'
+    }
+  });
+
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create",
+    module: "Payroll Run",
+    result: "SUCCESS",
+    notes: `Payroll run "${create.id}" created successfully`
+  });
+
+  return create;
 };
 
-export const processPayrollRun = async (id) => {
+export const processPayrollRun = async (id,updatedBy) => {
     const payrollRun = await prisma.payrollRun.findUnique({
         where: { id },
         include: {
@@ -103,7 +113,7 @@ export const processPayrollRun = async (id) => {
     }
 
     // Update status to PROCESSING
-    await prisma.payrollRun.update({
+    const update = await prisma.payrollRun.update({
         where: { id },
         data: { status: 'PROCESSING' }
     });
@@ -351,68 +361,70 @@ const getOrCreateDeductionType = async (code, name) => {
     return deductionType.id;
 };
 
-export const finalizePayrollRun = async (id) => {
-    const payrollRun = await prisma.payrollRun.findUnique({
-        where: { id }
-    });
+export const finalizePayrollRun = async (id, updatedBy) => {
+  const payrollRun = await prisma.payrollRun.findUnique({ where: { id } });
+  if (!payrollRun) throw new Error('Payroll run not found');
 
-    if (!payrollRun) {
-        throw new Error('Payroll run not found');
+  if (payrollRun.status !== 'COMPLETED') {
+    throw new Error('Only completed payroll runs can be finalized');
+  }
+
+  await prisma.payrollPayslip.updateMany({
+    where: { payrollRunId: id },
+    data: { status: 'FINALIZED' }
+  });
+
+  await prisma.payrollAuditLog.create({
+    data: {
+      action: 'PAYROLL_FINALIZED',
+      details: 'Payroll run finalized and ready for distribution',
+      payrollRunId: id
     }
+  });
 
-    if (payrollRun.status !== 'COMPLETED') {
-        throw new Error('Only completed payroll runs can be finalized');
+  await logAction({
+    employeeId: Number(updatedBy),
+    type: "Update",
+    module: "Payroll Run",
+    result: "SUCCESS",
+    notes: `Payroll run "${id}" finalized successfully`
+  });
+
+  return getPayrollRunById(id);
+};
+export const cancelPayrollRun = async (id, deletedBy) => {
+  const payrollRun = await prisma.payrollRun.findUnique({ where: { id } });
+  if (!payrollRun) throw new Error('Payroll run not found');
+
+  if (payrollRun.status === 'COMPLETED') {
+    throw new Error('Cannot cancel a completed payroll run');
+  }
+
+  await prisma.payrollPayslip.deleteMany({
+    where: { payrollRunId: id }
+  });
+
+  await prisma.payrollRun.delete({
+    where: { id }
+  });
+
+  await prisma.payrollAuditLog.create({
+    data: {
+      action: 'PAYROLL_CANCELLED',
+      details: 'Payroll run cancelled',
+      payrollRunId: id
     }
+  });
 
-    // Update all payslips to FINALIZED
-    await prisma.payrollPayslip.updateMany({
-        where: { payrollRunId: id },
-        data: { status: 'FINALIZED' }
-    });
-
-    // Create audit log
-    await prisma.payrollAuditLog.create({
-        data: {
-            action: 'PAYROLL_FINALIZED',
-            details: 'Payroll run finalized and ready for distribution',
-            payrollRunId: id
-        }
-    });
-
-    return getPayrollRunById(id);
+  await logAction({
+    employeeId: Number(deletedBy),
+    type: "Delete",
+    module: "Payroll Run",
+    result: "SUCCESS",
+    notes: `Payroll run "${id}" cancelled and deleted`
+  });
 };
 
-export const cancelPayrollRun = async (id) => {
-    const payrollRun = await prisma.payrollRun.findUnique({
-        where: { id }
-    });
-
-    if (!payrollRun) {
-        throw new Error('Payroll run not found');
-    }
-
-    if (payrollRun.status === 'COMPLETED') {
-        throw new Error('Cannot cancel a completed payroll run');
-    }
-
-    // Delete associated payslips and their earnings/deductions
-    await prisma.payrollPayslip.deleteMany({
-        where: { payrollRunId: id }
-    });
-
-    await prisma.payrollRun.delete({
-        where: { id }
-    });
-
-    // Create audit log
-    await prisma.payrollAuditLog.create({
-        data: {
-            action: 'PAYROLL_CANCELLED',
-            details: 'Payroll run cancelled',
-            payrollRunId: id
-        }
-    });
-};
 
 // Earning Type Operations
 export const getEarningTypes = async () => {
@@ -421,19 +433,37 @@ export const getEarningTypes = async () => {
     });
 };
 
-export const createEarningType = async (data) => {
-    return prisma.payrollEarningType.create({
-        data
-    });
+export const createEarningType = async (data, createdBy) => {
+  const create = await prisma.payrollEarningType.create({ data });
+
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create",
+    module: "Earning Type",
+    result: "SUCCESS",
+    notes: `Earning Type "${create.name}" created`
+  });
+
+  return create;
 };
 
-export const updateEarningType = async (id, data) => {
-    return prisma.payrollEarningType.update({
-        where: { id },
-        data
-    });
-};
 
+export const updateEarningType = async (id, data, updatedBy) => {
+  const update = await prisma.payrollEarningType.update({
+    where: { id },
+    data
+  });
+
+  await logAction({
+    employeeId: Number(updatedBy),
+    type: "Update",
+    module: "Earning Type",
+    result: "SUCCESS",
+    notes: `Earning Type "${update.name}" updated`
+  });
+
+  return update;
+};
 // Deduction Type Operations
 export const getDeductionTypes = async () => {
     return prisma.payrollDeductionType.findMany({
@@ -441,17 +471,35 @@ export const getDeductionTypes = async () => {
     });
 };
 
-export const createDeductionType = async (data) => {
-    return prisma.payrollDeductionType.create({
-        data
-    });
+export const createDeductionType = async (data, createdBy) => {
+  const create = await prisma.payrollDeductionType.create({ data });
+
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create",
+    module: "Deduction Type",
+    result: "SUCCESS",
+    notes: `Deduction Type "${create.name}" created`
+  });
+
+  return create;
 };
 
-export const updateDeductionType = async (id, data) => {
-    return prisma.payrollDeductionType.update({
-        where: { id },
-        data
-    });
+export const updateDeductionType = async (id, data, updatedBy) => {
+  const update = await prisma.payrollDeductionType.update({
+    where: { id },
+    data
+  });
+
+  await logAction({
+    employeeId: Number(updatedBy),
+    type: "Update",
+    module: "Deduction Type",
+    result: "SUCCESS",
+    notes: `Deduction Type "${update.name}" updated`
+  });
+
+  return update;
 };
 
 // Employee Payroll Data Operations
@@ -499,20 +547,41 @@ export const getEmployeePayrollData = async (employeeId) => {
     };
 };
 
-export const createEmploymentTerms = async (data) => {
-    return prisma.employmentTerms.create({
-        data
-    });
+
+export const createEmploymentTerms = async (data, createdBy) => {
+  const create = await prisma.employmentTerms.create({
+    data
+  });
+
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create",
+    module: "Employment Terms",
+    result: "SUCCESS",
+    notes: `Employment terms created for employee ID: ${create.employeeId || "N/A"}`
+  });
+
+  return create;
 };
 
-export const createPayrollAssignment = async (data) => {
-    return prisma.payrollAssignment.create({
-        data,
-        include: {
-            earningType: true,
-            deductionType: true
-        }
-    });
+export const createPayrollAssignment = async (data, createdBy) => {
+  const create = await prisma.payrollAssignment.create({
+    data,
+    include: {
+      earningType: true,
+      deductionType: true
+    }
+  });
+
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create",
+    module: "Payroll Assignment",
+    result: "SUCCESS",
+    notes: `Payroll assignment created for employee ID: ${create.employeeId} (EarningType: ${create.earningTypeId || "N/A"}, DeductionType: ${create.deductionTypeId || "N/A"})`
+  });
+
+  return create;
 };
 
 // Payslip Operations
@@ -587,38 +656,37 @@ export const getPayslipById = async (id) => {
     });
 };
 
-export const distributePayslip = async (id) => {
-    const payslip = await prisma.payrollPayslip.findUnique({
-        where: { id }
-    });
+export const distributePayslip = async (id, createdBy) => {
+  const payslip = await prisma.payrollPayslip.findUnique({
+    where: { id }
+  });
 
-    if (!payslip) {
-        throw new Error('Payslip not found');
+  if (!payslip) {
+    throw new Error("Payslip not found");
+  }
+
+  if (payslip.status !== "FINALIZED") {
+    throw new Error("Only finalized payslips can be distributed");
+  }
+
+  const updatedPayslip = await prisma.payrollPayslip.update({
+    where: { id },
+    data: {
+      status: "DISTRIBUTED",
+      distributedAt: new Date()
     }
+  });
 
-    if (payslip.status !== 'FINALIZED') {
-        throw new Error('Only finalized payslips can be distributed');
-    }
+  // ✅ Centralized audit log entry
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Distribute",
+    module: "Payslip",
+    result: "SUCCESS",
+    notes: `Payslip (ID: ${id}) distributed to employee ID: ${payslip.employeeId}`
+  });
 
-    const updatedPayslip = await prisma.payrollPayslip.update({
-        where: { id },
-        data: {
-            status: 'DISTRIBUTED',
-            distributedAt: new Date()
-        }
-    });
-
-    // Create audit log
-    await prisma.payrollAuditLog.create({
-        data: {
-            action: 'PAYSLIP_DISTRIBUTED',
-            details: 'Payslip distributed to employee',
-            payslipId: id,
-            employeeId: payslip.employeeId
-        }
-    });
-
-    return updatedPayslip;
+  return updatedPayslip;
 };
 
 export const getEmployeePayslips = async (employeeId, { page, limit }) => {
@@ -667,12 +735,21 @@ export const getTaxRates = async (countryCode) => {
     });
 };
 
-export const createTaxRate = async (data) => {
-    return prisma.taxRate.create({
-        data
-    });
-};
+export const createTaxRate = async (data, createdBy) => {
+  const create = await prisma.taxRate.create({
+    data
+  });
 
+  await logAction({
+    employeeId: Number(createdBy),
+    type: "Create",
+    module: "Tax Rate",
+    result: "SUCCESS",
+    notes: `Tax rate for country "${create.countryCode}" and bracket "${create.bracketMin} - ${create.bracketMax}" created successfully`
+  });
+
+  return create;
+};
 // Audit Log Operations
 export const getAuditLogs = async ({ page, limit, payrollRunId, payslipId }) => {
     const skip = (page - 1) * limit;

@@ -29,7 +29,8 @@ export const getPayrollRunById = async (req, res) => {
 
 export const createPayrollRun = async (req, res) => {
     try {
-        const payrollRun = await payrollService.createPayrollRun(req.body);
+        const createdBy = req.headers['employee-id'];
+        const payrollRun = await payrollService.createPayrollRun(req.body, createdBy);
         res.status(201).json({ success: true, data: payrollRun });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -39,7 +40,8 @@ export const createPayrollRun = async (req, res) => {
 export const processPayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await payrollService.processPayrollRun(parseInt(id));
+        const updatedBy = req.headers['employee-id'];
+        const result = await payrollService.processPayrollRun(parseInt(id),updatedBy);
         res.json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -49,7 +51,8 @@ export const processPayrollRun = async (req, res) => {
 export const finalizePayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await payrollService.finalizePayrollRun(parseInt(id));
+        const finalizedBy = req.headers['employee-id'];
+        const result = await payrollService.finalizePayrollRun(parseInt(id),finalizedBy);
         res.json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -59,7 +62,8 @@ export const finalizePayrollRun = async (req, res) => {
 export const cancelPayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
-        await payrollService.cancelPayrollRun(parseInt(id));
+        const cancelledBy = req.headers['employee-id'];
+        await payrollService.cancelPayrollRun(parseInt(id),cancelledBy);
         res.json({ success: true, message: 'Payroll run cancelled successfully' });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -78,7 +82,8 @@ export const getEarningTypes = async (req, res) => {
 
 export const createEarningType = async (req, res) => {
     try {
-        const earningType = await payrollService.createEarningType(req.body);
+        const createdBy = req.headers['employee-id'];
+        const earningType = await payrollService.createEarningType(req.body, createdBy);
         res.status(201).json({ success: true, data: earningType });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -88,7 +93,8 @@ export const createEarningType = async (req, res) => {
 export const updateEarningType = async (req, res) => {
     try {
         const { id } = req.params;
-        const earningType = await payrollService.updateEarningType(parseInt(id), req.body);
+        const updatedBy = req.headers['employee-id'];
+        const earningType = await payrollService.updateEarningType(parseInt(id), req.body, updatedBy);
         res.json({ success: true, data: earningType });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -107,7 +113,8 @@ export const getDeductionTypes = async (req, res) => {
 
 export const createDeductionType = async (req, res) => {
     try {
-        const deductionType = await payrollService.createDeductionType(req.body);
+        const createdBy = req.headers['employee-id'];
+        const deductionType = await payrollService.createDeductionType(req.body,createdBy);
         res.status(201).json({ success: true, data: deductionType });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -117,7 +124,8 @@ export const createDeductionType = async (req, res) => {
 export const updateDeductionType = async (req, res) => {
     try {
         const { id } = req.params;
-        const deductionType = await payrollService.updateDeductionType(parseInt(id), req.body);
+        const updatedBy = req.headers['employee-id'];
+        const deductionType = await payrollService.updateDeductionType(parseInt(id), req.body, updatedBy);
         res.json({ success: true, data: deductionType });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -144,9 +152,11 @@ export const getEmployeePayrollData = async (req, res) => {
 export const createEmploymentTerms = async (req, res) => {
     try {
         const { employeeId } = req.params;
+        const createdBy = req.headers['employee-id'];
         const employmentTerms = await payrollService.createEmploymentTerms({
             ...req.body,
-            employeeId: parseInt(employeeId)
+            employeeId: parseInt(employeeId),
+            createdBy
         });
         res.status(201).json({ success: true, data: employmentTerms });
     } catch (error) {
@@ -157,9 +167,11 @@ export const createEmploymentTerms = async (req, res) => {
 export const createPayrollAssignment = async (req, res) => {
     try {
         const { employeeId } = req.params;
+        const createdBy = req.headers['employee-id'];
         const assignment = await payrollService.createPayrollAssignment({
             ...req.body,
-            employeeId: parseInt(employeeId)
+            employeeId: parseInt(employeeId),
+            createdBy
         });
         res.status(201).json({ success: true, data: assignment });
     } catch (error) {
@@ -205,7 +217,8 @@ export const getPayslipById = async (req, res) => {
 export const distributePayslip = async (req, res) => {
     try {
         const { id } = req.params;
-        const payslip = await payrollService.distributePayslip(parseInt(id));
+        const createdBy = req.headers['employee-id'];
+        const payslip = await payrollService.distributePayslip(parseInt(id),createdBy);
         res.json({ success: true, data: payslip });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -245,7 +258,8 @@ export const getTaxRates = async (req, res) => {
 
 export const createTaxRate = async (req, res) => {
     try {
-        const taxRate = await payrollService.createTaxRate(req.body);
+        const createdBy = req.headers['employee-id'];
+        const taxRate = await payrollService.createTaxRate(req.body, createdBy);
         res.status(201).json({ success: true, data: taxRate });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
