@@ -26,6 +26,7 @@ import holidayRoutes from './routes/holiday.routes.js';
 import payrollRoutes from './routes/payrollRoutes.js';
 import trainingRoutes from './routes/trainingRoutes.js';
 import { analyticsRoutes } from './routes/analytics.js';
+import recruitmentRoutes from "./routes/recruitment.routes.js";
 
 
 dotenv.config();
@@ -60,6 +61,8 @@ app.use('/api/holidays', holidayRoutes);//done
 app.use('/api/payroll', payrollRoutes);//done
 app.use('/api/training', trainingRoutes);//done
 app.use('/api/analytics', analyticsRoutes); //done
+app.use("/api/recruitment", recruitmentRoutes);
+
 
 startReviewReminderScheduler();
 // Metrics endpoint
