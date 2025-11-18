@@ -5,9 +5,9 @@ const prisma = new PrismaClient();
 
 // ✅ Create position
 export const createPosition = async (data,createdBy) => {
-  const { title, description,createdById, isActive } = data;
+  const { title, description, isActive } = data;
   if (!title) throw new Error("Title is required");
-
+console.log("fjaf", createdBy)
   const create =await prisma.position.create({
     data: {
       title,
@@ -15,16 +15,16 @@ export const createPosition = async (data,createdBy) => {
       isActive,
      createdById: Number(createdBy),
     },
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
+    //  createdBy: {
+    //     select: {
+    //       id: true,
+    //       first_name: true,
+    //       last_name: true
+    //     }
+    //   },
   });
     await logAction({
-    employeeId: createdById, // 👈 correct field name that matches the Log model
+    employeeId: createdBy, // 👈 correct field name that matches the Log model
     type: "CREATE",
     module: "Position",
     result: "SUCCESS",

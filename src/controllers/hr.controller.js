@@ -6,58 +6,72 @@ import {
   deleteEmployeeService,
 } from "../services/hr.service.js";
 
-// ✅ Create
+// ======================== CREATE ========================
 export const createEmployee = async (req, res) => {
   try {
-    const createdBy = req.headers['employee-id'];
-    console.log("employee", createdBy);
+    const createdBy = req.headers["user-id"];
 
     const newEmployee = await createEmployeeService(req.body, createdBy);
-    res.status(201).json({ success: true, data: newEmployee });
+
+    return res.status(201).json({
+      success: true,
+      data: newEmployee,
+    });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
-// ✅ Get All
+// ======================== GET ALL ========================
 export const getAllEmployees = async (req, res) => {
   try {
     const employees = await getAllEmployeesService();
-    res.status(200).json({ success: true, data: employees });
+    return res.status(200).json({ success: true, data: employees });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ✅ Get By ID
+// ======================== GET BY ID ========================
 export const getEmployeeById = async (req, res) => {
   try {
     const employee = await getEmployeeByIdService(req.params.id);
-    res.status(200).json({ success: true, data: employee });
+    return res.status(200).json({ success: true, data: employee });
   } catch (error) {
-    res.status(404).json({ success: false, message: error.message });
+    return res.status(404).json({ success: false, message: error.message });
   }
 };
 
-// ✅ Update
+// ======================== UPDATE ========================
 export const updateEmployee = async (req, res) => {
   try {
-    const updatedBy = req.headers['employee-id'];
-    const updated = await updateEmployeeService(req.params.id, req.body, updatedBy);
-    res.status(200).json({ success: true, data: updated });
+    const updatedBy = req.headers["employee-id"];
+    const updatedEmployee = await updateEmployeeService(
+      req.params.id,
+      req.body,
+      updatedBy
+    );
+
+    return res.status(200).json({ success: true, data: updatedEmployee });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    return res.status(400).json({ success: false, message: error.message });
   }
 };
 
-// ✅ Delete
+// ======================== DELETE ========================
 export const deleteEmployee = async (req, res) => {
   try {
-    const deletedBy = req.headers['employee-id'];
-
+    const deletedBy = req.headers["employee-id"];
     const result = await deleteEmployeeService(req.params.id, deletedBy);
-    res.status(200).json({ success: true, message: result.message });
+
+    return res.status(200).json({
+      success: true,
+      message: result.message,
+    });
   } catch (error) {
-    res.status(404).json({ success: false, message: error.message });
+    return res.status(404).json({ success: false, message: error.message });
   }
 };
