@@ -165,18 +165,48 @@ enum ApprovalDecision {
 // ==================== MODELS ====================
 
 model Employee {
-  id         Int      @id @default(autoincrement())
-  first_name String?
-  last_name  String?
-  gender     String?
-  job_title  String
-  hire_date  DateTime
-  status     String
-  userId     Int?
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  id                  Int       @id @default(autoincrement())
+  tenant_id           Int?
+  first_name          String?
+  middle_name         String?
+  last_name           String?
+  preferred_name      String?
+  nationality_id_type String?
+  employee_code       String?   @db.VarChar(50)
+  date_of_birth       DateTime?
+  joining_date        DateTime?
+  probation_end_date  DateTime?
+  employee_type       String? // contract permenant etc..
+  remarks             String?
+  marital_status      String?
+  nationality_id      Int?
+  current_address     String?
+  permenant_address   String?
+  city                String?
+  state               String?
+  province            String?
+  country             String?
+  postal_code         String?
+  personal_contact    Int?
+  email               String?
+  work_email          String?
+  work_phone          Int?
+  employement_status  String? // Active/ Inactive
+  photo_url           String?
+  updatedById         Int?
+  createdById         Int?
+  additional_fields   Json?
+  gender              String?
+  job_title           String?
+  hire_date           DateTime?
+  status              String?
+  userId              Int?
+  employee_name       String?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
 
   // Existing relations
+  emergencyContact      EmergencyContacts[]   @relation("RelationWithEmployee")
   attendance            Attendance[]
   leaves                Leave[]
   reviewsGiven          PerformanceReview[]   @relation("Reviewer")
@@ -190,7 +220,7 @@ model Employee {
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
   TrainingEnrollment    TrainingEnrollment[]
-  positionCreatedBy     Position[]            @relation("CreatedBy")
+  // positionCreatedBy     Position[]            @relation("CreatedBy")
   actionBy              Log[]                 @relation("ActionBy")
   logs                  Log[]
   goalCreatedBy         Goal[]                @relation("GoalCreatedBy")
@@ -234,6 +264,16 @@ model Employee {
   regionId              Int?
   regionsCreated        Region[]               @relation("RegionCreatedBy")
   regionsUpdated        Region[]               @relation("RegionUpdatedBy")
+}
+
+model EmergencyContacts {
+  id           Int       @id @default(autoincrement())
+  Contact_name String?
+  relationship String?
+  phone        Int?
+  email        String?
+  employee_Id  Int?
+  employee     Employee? @relation("RelationWithEmployee", fields: [employee_Id], references: [id])
 }
 
 model Log {
@@ -693,7 +733,7 @@ model Position {
   updatedAt      DateTime         @updatedAt
   employees      Employee[]
   JobRequisition JobRequisition[]
-  createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
+  // createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
 }
 
 model JobRequisition {
