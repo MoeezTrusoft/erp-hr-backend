@@ -3,7 +3,7 @@ import * as tagService from "../services/tagService.js";
 
 export const listTags = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];
         const tenantId = user.tenantId ?? null;
         const { search, page, limit } = req.query;
 
@@ -30,7 +30,9 @@ export const createTag = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const createdById = user.employeeId || user.id || null;
+        const createdById = req.headers['user-id'] || user.id || null;
+        console.log("hello",createdById);
+        
 
         const { name, type } = req.body;
         if (!name) {
@@ -62,13 +64,14 @@ export const createTag = async (req, res) => {
 
 export const deactivateTag = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];
         const tenantId = user.tenantId ?? null;
         const { id } = req.params;
 
         await tagService.deactivateTag({
             id: Number(id),
             tenantId,
+            user,
         });
 
         return res.status(204).send();

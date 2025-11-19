@@ -1,6 +1,7 @@
 // src/services/candidateService.js
 import prisma from "../config/prisma.js";
 import { upsertTags } from "./tagService.js";
+import { logAction } from "../utils/logs.js";
 
 /**
  * Create candidate with optional tags (skill names).
@@ -17,6 +18,27 @@ export const createCandidate = async ({
     tenantId,
     createdById,
 }) => {
+
+      // 🔍 1. Validate if email already exists (before transaction)
+    const existing = await prisma.candidate.findUnique({
+        where: { email }
+    });
+
+    if (existing) {
+        // ❗ Log failed attempt
+        await logAction({
+            employeeId: createdById ?? null,
+            type: "CREATE",
+            module: "Candidate",
+            result: "FAILED",
+            notes: `Candidate creation failed. Email "${email}" already exists.`,
+        });
+
+        // ❗ Throw friendly error
+        const error = new Error(`Candidate with email "${email}" already exists.`);
+        error.status = 409; // Conflict
+        throw error;
+    }
     const tags = await upsertTags({
         names: tagNames,
         tenantId,
@@ -34,7 +56,7 @@ export const createCandidate = async ({
                 resumeUrl,
                 notes,
                 tenantId: tenantId ?? null,
-                createdById: createdById ?? null,
+                createdById: Number(createdById) ?? null,
             },
         });
 
@@ -47,6 +69,14 @@ export const createCandidate = async ({
                 skipDuplicates: true,
             });
         }
+   // ⭐ Add the logging here   
+        await logAction({
+            employeeId: createdById ?? null,
+            type: "CREATE",
+            module: "Candidate",
+            result: "SUCCESS",
+            notes: `Candidate "${candidate.id}" created successfully.`,
+        });
 
         return tx.candidate.findUnique({
             where: { id: candidate.id },
@@ -72,6 +102,7 @@ export const updateCandidate = async ({
             where: { id, tenantId: tenantId ?? null },
             data: {
                 ...data,
+                  createdById: Number(updatedById),
                 // if you later add updatedById column, set it here
             },
         });
@@ -80,7 +111,7 @@ export const updateCandidate = async ({
             const tags = await upsertTags({
                 names: tagNames,
                 tenantId,
-                createdById: updatedById,
+                createdById: Number(updatedById),
             });
 
             await tx.candidateTag.deleteMany({
@@ -97,6 +128,14 @@ export const updateCandidate = async ({
                 });
             }
         }
+
+          await logAction({
+            employeeId: updatedById,
+            type: "UPDATE",
+            module: "Candidate",
+            result: "SUCCESS",
+            notes: `Candidate "${id}" updated successfully.`,
+        });
 
         return tx.candidate.findFirst({
             where: { id, tenantId: tenantId ?? null },

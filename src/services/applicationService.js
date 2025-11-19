@@ -1,6 +1,6 @@
 // src/services/applicationService.js
 import prisma from "../config/prisma.js";
-
+import { logAction } from "../utils/logs.js";
 /**
  * Create an application: candidate → jobRequisition
  */
@@ -12,40 +12,68 @@ export const createApplication = async ({
     tenantId,
     createdById,
 }) => {
-    return prisma.application.create({
+    const create = prisma.application.create({
         data: {
             candidateId,
             jobRequisitionId,
             stage,
             status,
             tenantId: tenantId ?? null,
-            createdById: createdById ?? null,
+            createdById: Number(createdById) ?? null,
         },
         include: {
             candidate: true,
             jobRequisition: true,
         },
     });
+    await logAction({
+        employeeId: createdById ?? null,
+        type: "CREATE",
+        module: "Application",
+        result: "SUCCESS",
+        notes: `Application "${application.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
+    });
+
+
+    return create;
 };
 
 /**
  * Update stage of an application
  */
-export const updateApplicationStage = async ({ id, tenantId, stage }) => {
-    return prisma.application.updateMany({
+export const updateApplicationStage = async ({ id, tenantId, stage,updatedById }) => {
+    const update = prisma.application.updateMany({
         where: { id, tenantId: tenantId ?? null },
         data: { stage },
     });
+
+ await logAction({
+            employeeId: Number(updatedById) ?? null,
+            type: "UPDATE",
+            module: "Application",
+            result: "SUCCESS",
+            notes: `Application "${id}" stage updated to "${stage}".`,
+        });
+    return update
 };
 
 /**
  * Update status (open/closed/hired/rejected)
  */
-export const updateApplicationStatus = async ({ id, tenantId, status }) => {
-    return prisma.application.updateMany({
+export const updateApplicationStatus = async ({ id, tenantId, status, updatedById }) => {
+    const updateStatus = await prisma.application.updateMany({
         where: { id, tenantId: tenantId ?? null },
         data: { status },
     });
+
+ await logAction({
+            employeeId: Number(updatedById) ?? null,
+            type: "UPDATE",
+            module: "Application",
+            result: "SUCCESS",
+            notes: `Application "${id}" status updated to "${status}".`,
+        });
+    return updateStatus;
 };
 
 /**

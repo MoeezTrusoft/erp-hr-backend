@@ -3,9 +3,9 @@ import * as applicationService from "../services/applicationService.js";
 
 export const createApplication = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];;
         const tenantId = user.tenantId ?? null;
-        const createdById = user.employeeId || user.id || null;
+        const createdById = user || user.employeeId || user.id || null;
 
         const { candidateId, jobRequisitionId, stage, status } = req.body;
 
@@ -69,8 +69,9 @@ export const listApplications = async (req, res) => {
 
 export const updateStage = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];
         const tenantId = user.tenantId ?? null;
+        const updatedById = user || user.employeeId || user.id || null;
         const { id } = req.params;
         const { stage } = req.body;
 
@@ -85,6 +86,7 @@ export const updateStage = async (req, res) => {
             id: Number(id),
             tenantId,
             stage,
+            updatedById
         });
 
         return res.status(204).send();
@@ -98,8 +100,9 @@ export const updateStage = async (req, res) => {
 
 export const updateStatus = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];
         const tenantId = user.tenantId ?? null;
+        const updatedById = user || user.employeeId || user.id || null;
         const { id } = req.params;
         const { status } = req.body;
 
@@ -114,6 +117,7 @@ export const updateStatus = async (req, res) => {
             id: Number(id),
             tenantId,
             status,
+            updatedById
         });
 
         return res.status(204).send();

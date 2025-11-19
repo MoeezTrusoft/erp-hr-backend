@@ -4,7 +4,7 @@ import os from "os";
 const prisma = new PrismaClient();
 
 export const logAction = async ({
-   employeeId,
+   userId,
     type,
     module,
     result,
@@ -16,8 +16,8 @@ export const logAction = async ({
 
         await prisma.log.create({
             data: {
-                employeeId,
-                actionById: employeeId,
+                userId,
+                actionById: userId,
                 type,
                 action_type: type,
                 module,

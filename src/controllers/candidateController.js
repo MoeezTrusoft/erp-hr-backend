@@ -1,11 +1,14 @@
 // src/controllers/candidateController.js
 import * as candidateService from "../services/candidateService.js";
 
+
 export const createCandidate = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];
+        console.log("condidate", user);
+        
         const tenantId = user.tenantId ?? null;
-        const createdById = user.employeeId || user.id || null;
+        const createdById = user||user.employeeId || user.id || null;
 
         const {
             firstName,
@@ -53,10 +56,11 @@ export const createCandidate = async (req, res) => {
 
 export const updateCandidate = async (req, res) => {
     try {
-        const user = req.user || {};
+        const user = req.headers['user-id'];
         const tenantId = user.tenantId ?? null;
-        const updatedById = user.employeeId || user.id || null;
+        const updatedById = user||user.employeeId || user.id || null;
         const { id } = req.params;
+console.log("update condidate", user);
 
         const {
             firstName,
