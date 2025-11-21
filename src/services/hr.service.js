@@ -4,9 +4,89 @@ import { logAction } from "../utils/logs.js";
 const prisma = new PrismaClient();
 
 // ✅ Create Employee
-export const createEmployeeService = async (data, createdBy) => {
+// export const createEmployeeService = async (data, createdBy) => {
 
-  // ------------ REQUIRED FIELDS (your demand) -----------------
+//   // ------------ REQUIRED FIELDS (your demand) -----------------
+//   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
+
+//   for (const field of requiredFields) {
+//     if (!data[field]) {
+//       throw new Error(`${field} is a required field`);
+//     }
+//   }
+
+//   // ------------ Validate Position ----------------------------
+//   const positionExists = await prisma.position.findUnique({
+//     where: { id: Number(data.positionId) },
+//   });
+
+//   if (!positionExists) {
+//     throw new Error(`Position ID ${data.positionId} does not exist`);
+//   }
+
+//   // ------------ Convert incoming data properly ----------------
+//   const parsedData = {
+//     tenant_id: data.tenant_id ? Number(data.tenant_id) : null,
+//     first_name: data.first_name || null,
+//     middle_name: data.middle_name || null,
+//     last_name: data.last_name || null,
+//     preferred_name: data.preferred_name || null,
+//     nationality_id_type: data.nationality_id_type || null,
+//     employee_code: data.employee_code || null,
+//     date_of_birth: data.date_of_birth ? new Date(data.date_of_birth) : null,
+//     joining_date: data.joining_date ? new Date(data.joining_date) : null,
+//     probation_end_date: data.probation_end_date ? new Date(data.probation_end_date) : null,
+//     employee_type: data.employee_type || null,
+//     remarks: data.remarks || null,
+//     marital_status: data.marital_status || null,
+//     nationality_id: data.nationality_id ? Number(data.nationality_id) : null,
+//     current_address: data.current_address || null,
+//     permenant_address: data.permenant_address || null,
+//     city: data.city || null,
+//     state: data.state || null,
+//     province: data.province || null,
+//     country: data.country || null,
+//     postal_code: data.postal_code || null,
+//     personal_contact: data.personal_contact ? Number(data.personal_contact) : null,
+//     email: data.email || null,
+//     work_email: data.work_email || null,
+//     work_phone: data.work_phone ? Number(data.work_phone) : null,
+//     employement_status: data.employement_status || null,
+//     photo_url: data.photo_url || null,
+
+//     gender: data.gender || null,
+//     job_title: data.job_title,
+//     hire_date: new Date(data.hire_date),
+//     status: data.status,
+//     userId: data.userId ? Number(data.userId) : null,
+
+//     positionId: Number(data.positionId),
+//     regionId: data.regionId ? Number(data.regionId) : null,
+
+//     additional_fields: data.additional_fields || null,
+
+//     createdById: Number(createdBy) || null
+//   };
+
+//   // ------------ Create Employee -------------------------------
+//   const employee = await prisma.employee.create({
+//     data: parsedData
+//   });
+
+//   // ------------ Log -------------------------------------------
+//   await logAction({
+//     employeeId: Number(createdBy),
+//     type: "CREATE",
+//     module: "Employee",
+//     result: "SUCCESS",
+//     notes: `Employee ${employee.id} created successfully`,
+//   });
+
+//   return employee;
+// };
+
+export const createEmployeeService = async (data, createdBy) => {
+  // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 
   for (const field of requiredFields) {
@@ -24,7 +104,47 @@ export const createEmployeeService = async (data, createdBy) => {
     throw new Error(`Position ID ${data.positionId} does not exist`);
   }
 
-  // ------------ Convert incoming data properly ----------------
+  // ------------ Validate Manager (optional) -------------------
+  if (data.managerId) {
+    const manager = await prisma.employee.findUnique({
+      where: { id: Number(data.managerId) },
+    });
+    if (!manager) throw new Error(`Manager ID ${data.managerId} does not exist`);
+  }
+
+  // ------------ Validate Report-To (optional) -----------------
+  if (data.reportToId) {
+    const reportTo = await prisma.employee.findUnique({
+      where: { id: Number(data.reportToId) },
+    });
+    if (!reportTo) throw new Error(`Report-To ID ${data.reportToId} does not exist`);
+  }
+
+  // ------------ Validate Business Unit (optional) -------------
+  if (data.businessUnitId) {
+    const bu = await prisma.businessUnit.findUnique({
+      where: { id: Number(data.businessUnitId) },
+    });
+    if (!bu) throw new Error(`BusinessUnit ID ${data.businessUnitId} does not exist`);
+  }
+
+  // ------------ Validate Grade Level (optional) ---------------
+  if (data.gradeLevelId) {
+    const grade = await prisma.gradeLevel.findUnique({
+      where: { id: Number(data.gradeLevelId) },
+    });
+    if (!grade) throw new Error(`GradeLevel ID ${data.gradeLevelId} does not exist`);
+  }
+
+  // ------------ Validate Region (optional) --------------------
+  if (data.regionId) {
+    const region = await prisma.region.findUnique({
+      where: { id: Number(data.regionId) },
+    });
+    if (!region) throw new Error(`Region ID ${data.regionId} does not exist`);
+  }
+
+  // ------------ Parse Incoming Data Properly --------------------
   const parsedData = {
     tenant_id: data.tenant_id ? Number(data.tenant_id) : null,
     first_name: data.first_name || null,
@@ -33,13 +153,16 @@ export const createEmployeeService = async (data, createdBy) => {
     preferred_name: data.preferred_name || null,
     nationality_id_type: data.nationality_id_type || null,
     employee_code: data.employee_code || null,
+
     date_of_birth: data.date_of_birth ? new Date(data.date_of_birth) : null,
     joining_date: data.joining_date ? new Date(data.joining_date) : null,
     probation_end_date: data.probation_end_date ? new Date(data.probation_end_date) : null,
+
     employee_type: data.employee_type || null,
     remarks: data.remarks || null,
     marital_status: data.marital_status || null,
     nationality_id: data.nationality_id ? Number(data.nationality_id) : null,
+
     current_address: data.current_address || null,
     permenant_address: data.permenant_address || null,
     city: data.city || null,
@@ -47,6 +170,7 @@ export const createEmployeeService = async (data, createdBy) => {
     province: data.province || null,
     country: data.country || null,
     postal_code: data.postal_code || null,
+
     personal_contact: data.personal_contact ? Number(data.personal_contact) : null,
     email: data.email || null,
     work_email: data.work_email || null,
@@ -58,22 +182,32 @@ export const createEmployeeService = async (data, createdBy) => {
     job_title: data.job_title,
     hire_date: new Date(data.hire_date),
     status: data.status,
-    userId: data.userId ? Number(data.userId) : null,
 
+    userId: data.userId ? Number(data.userId) : null,
     positionId: Number(data.positionId),
+
+    // NEW FIELDS
+    businessUnitId: data.businessUnitId ? Number(data.businessUnitId) : null,
+    gradeLevelId: data.gradeLevelId ? Number(data.gradeLevelId) : null,
+    managerId: data.managerId ? Number(data.managerId) : null,
+    reportToId: data.reportToId ? Number(data.reportToId) : null,
+    fte: data.fte ? Number(data.fte) : null,
+    tenureMonths: data.tenureMonths ? Number(data.tenureMonths) : null,
+
+    // Leave Management
     regionId: data.regionId ? Number(data.regionId) : null,
 
     additional_fields: data.additional_fields || null,
 
-    createdById: Number(createdBy) || null
+    createdById: Number(createdBy) || null,
   };
 
   // ------------ Create Employee -------------------------------
   const employee = await prisma.employee.create({
-    data: parsedData
+    data: parsedData,
   });
 
-  // ------------ Log -------------------------------------------
+  // ------------ Log Action -------------------------------------
   await logAction({
     employeeId: Number(createdBy),
     type: "CREATE",
@@ -93,7 +227,7 @@ export const getAllEmployeesService = async () => {
     orderBy: { created_at: "desc" },
     include: {
       Position: true,
-      emergencyContact:true,
+      emergencyContact: true,
       attendance: { orderBy: { date: "desc" } },
       leaves: { orderBy: { start_date: "desc" } },
     },
@@ -105,22 +239,85 @@ export const getEmployeeByIdService = async (id) => {
     where: { id: Number(id) },
     include: {
       Position: true,
+      businessUnit: true,
+      gradeLevel: true,
+      region: true,
+      manager: {
+        select: { id: true, employee_name: true, job_title: true, email: true }
+      },
+      reportTo: {
+        select: { id: true, employee_name: true, job_title: true, email: true }
+      },
+      teamMembers: { select: { id: true, employee_name: true, job_title: true } },
+      reports: { select: { id: true, employee_name: true, job_title: true } },
       emergencyContact: true,
-      attendance: { orderBy: { date: "desc" } },
-      leaves: { orderBy: { start_date: "desc" } },
+      attendance: { orderBy: { date: 'desc' }, take: 30 },
+      leaves: { orderBy: { start_date: 'desc' } },
+      leaveRequests: true,
+      approvedLeaveRequests: true,
+      leaveBalances: true,
+      leavePoliciesCreated: true,
+      leavePoliciesUpdated: true,
+      leaveRequestsCreated: true,
+      leaveRequestsUpdated: true,
+      approvalWorkflowsCreated: true,
+      approvalWorkflowsUpdated: true,
+      holidayCalendarsCreated: true,
+      holidayCalendarsUpdated: true,
+      holidaysCreated: true,
+      holidaysUpdated: true,
+      leaveBalancesUpdated: true,
+      leaveRequestApprovals: true,
+      employeeHolidayCalendars: true,
       reviewsReceived: {
         include: {
-          reviewer: true,
-          feedbacks: { include: { reviewer: true } },
-        },
+          reviewer: { select: { id: true, employee_name: true, job_title: true } },
+          feedbacks: {
+            include: { reviewer: { select: { id: true, employee_name: true } } }
+          }
+        }
       },
-    },
+      reviewsGiven: true,
+      feedbackGiven: true,
+      feedBackBy: true,
+      ReviewReminder: true,
+      calibratedBy: true,
+      goalCreatedBy: true,
+      approvedBy: true,
+      goalProgress: true,
+      TrainingEnrollment: {
+        include: {
+          course: true,
+          employee: true
+        }
+      },
+      requisitionsRequested: true,
+      requisitionsApproved: true,
+      approvals: true,
+      JobRequisition: true,
+      payrollPayslips: true,
+      employmentTerms: true,
+      payrollAssignments: {
+        include: { earningType: true, deductionType: true }
+      },
+      bankDetails: true,
+      PayrollAuditLog: true,
+      TimeEntry: true,
+      Timesheet: true,
+      TimeApproval: true,
+      WorkSchedule: true,
+      actionBy: true,
+      logs: { orderBy: { created_at: 'desc' }, take: 50 },
+      regionsCreated: true,
+      regionsUpdated: true
+    }
   });
 
-  if (!employee) throw new Error("Employee not found");
+  if (!employee) throw new Error('Employee not found');
 
   return employee;
 };
+
 
 
 

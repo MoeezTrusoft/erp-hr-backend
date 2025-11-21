@@ -205,6 +205,16 @@ model Employee {
   created_at          DateTime  @default(now())
   updated_at          DateTime  @updatedAt
 
+  // NEW FIELDS
+  businessUnitId Int?        // Business Unit / Platform
+  gradeLevelId   Int?        // Employee Grade
+  managerId      Int?        // Direct Supervisor (Manager)
+  reportToId     Int?        // Functional Reporting (if different from manager)
+  fte            Float?      // Full-Time Equivalent (0.0–1.0)
+  tenureMonths   Int?        // Tenure in months (system-calculated)
+
+
+
   // Existing relations
   emergencyContact      EmergencyContacts[]   @relation("RelationWithEmployee")
   attendance            Attendance[]
@@ -229,6 +239,15 @@ model Employee {
   feedBackBy            ReviewFeedback[]      @relation("FeedbackBy")
   ReviewReminder        ReviewReminder[]
   calibratedBy          RatingAdjustment[]    @relation("CalibratedBy")
+
+
+   businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+  gradeLevel     GradeLevel?   @relation(fields: [gradeLevelId], references: [id])
+  manager        Employee?      @relation("ManagerRelation", fields: [managerId], references: [id])
+  reportTo       Employee?      @relation("ReportToRelation", fields: [reportToId], references: [id])
+  teamMembers    Employee[]     @relation("ManagerRelation")
+  reports        Employee[]     @relation("ReportToRelation")
+
 
   // Payroll relations
   payrollPayslips    PayrollPayslip[]
@@ -266,12 +285,35 @@ model Employee {
   regionsUpdated        Region[]               @relation("RegionUpdatedBy")
 }
 
+
+
+model BusinessUnit {
+  id          Int        @id @default(autoincrement())
+  name        String
+  description String?
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  employees   Employee[]
+}
+
+model GradeLevel {
+  id          Int        @id @default(autoincrement())
+  name        String     // e.g., "G5", "Senior", "Associate"
+  description String?
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  employees   Employee[]
+}
+
 model EmergencyContacts {
   id           Int       @id @default(autoincrement())
   Contact_name String?
   relationship String?
   phone        Int?
   email        String?
+  is_primary   Boolean   @default(false)
   employee_Id  Int?
   employee     Employee? @relation("RelationWithEmployee", fields: [employee_Id], references: [id])
 }
