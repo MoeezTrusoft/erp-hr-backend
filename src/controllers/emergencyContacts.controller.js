@@ -9,11 +9,11 @@ import {
 // ------------------------- CREATE -------------------------
 export const create = async (req, res) => {
   try {
+
+        const createdBy = req.headers["user-id"];
+        console.log("user",createdBy);
+        
     const { Contact_name, relationship, phone, email, is_primary, employee_Id } = req.body;
-
-    // Validations
-    if (!employee_Id) return res.status(400).json({ message: "employee_Id is required" });
-
 
     const createData = {
       Contact_name,
@@ -24,9 +24,9 @@ export const create = async (req, res) => {
       employee_Id
     };
 
-    const result = await createEmergencyContact(createData, req.user?.id);
+    const result = await createEmergencyContact(createData, createdBy);
 
-    res.status(201).json({ success: true, data: result });
+    res.status(201).json({ success: true,  message: "Emergency Contact Created successfully",data: result });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -59,6 +59,7 @@ export const getById = async (req, res) => {
 // ------------------------- UPDATE -------------------------
 export const update = async (req, res) => {
   try {
+    const updatedBy = req.headers["user-id"];
     const { id } = req.params;
 
     const { Contact_name, relationship, phone, email, is_primary } = req.body;
@@ -71,9 +72,9 @@ export const update = async (req, res) => {
       is_primary: is_primary === "true" || is_primary === true,
     };
 
-    const result = await updateEmergencyContact(id, updateData);
+    const result = await updateEmergencyContact(id, updateData,updatedBy);
 
-    res.status(200).json({ success: true, data: result });
+    res.status(200).json({ success: true,message: "Emergency Contact Updated successfully", data: result });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -82,9 +83,10 @@ export const update = async (req, res) => {
 // ------------------------- DELETE -------------------------
 export const remove = async (req, res) => {
   try {
+    const deletedBy = req.headers["user-id"];
     const { id } = req.params;
 
-    const result = await deleteEmergencyContact(id);
+    const result = await deleteEmergencyContact(id,deletedBy);
 
     res.status(200).json({ success: true, message: "Deleted successfully", data: result });
   } catch (err) {
