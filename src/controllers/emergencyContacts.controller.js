@@ -13,12 +13,12 @@ export const create = async (req, res) => {
 
     // Validations
     if (!employee_Id) return res.status(400).json({ message: "employee_Id is required" });
-    if (phone && isNaN(phone)) return res.status(400).json({ message: "Phone must be a number" });
+
 
     const createData = {
       Contact_name,
       relationship,
-      phone: phone ? Number(phone) : null,
+      phone: phone ? phone : null,
       email,
       is_primary: is_primary === "true" || is_primary === true,
       employee_Id
@@ -66,7 +66,7 @@ export const update = async (req, res) => {
     const updateData = {
       Contact_name,
       relationship,
-      phone: phone ? Number(phone) : undefined,
+      phone: phone ? phone : undefined,
       email,
       is_primary: is_primary === "true" || is_primary === true,
     };
