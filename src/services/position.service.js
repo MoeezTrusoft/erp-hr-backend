@@ -8,12 +8,23 @@ export const createPosition = async (data,createdBy) => {
   const { title, description, isActive } = data;
   if (!title) throw new Error("Title is required");
 console.log("fjaf", createdBy)
+
+  // Generate a unique job code, e.g., "POS-001", "POS-002", etc.
+  const lastPosition = await prisma.position.findFirst({
+    orderBy: { id: "desc" },
+    select: { id: true }
+  });
+
+  const nextId = lastPosition ? lastPosition.id + 1 : 1;
+  const jobCode = `TST-${nextId.toString().padStart(3, "0")}`; // POS-001, POS-002
+
   const create =await prisma.position.create({
     data: {
       title,
       description,
       isActive,
      createdById: Number(createdBy),
+      jobCode,
     },
     //  createdBy: {
     //     select: {
@@ -74,6 +85,7 @@ export const updatePosition = async (id, data, updatedBy) => {
       description,
       isActive,
       updatedByById : Number(updatedBy),
+       jobCode,
     },
      updatedBy: {
         select: {
