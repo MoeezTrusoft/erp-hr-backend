@@ -85,7 +85,31 @@ const prisma = new PrismaClient();
 //   return employee;
 // };
 
-export const createEmployeeService = async (data, createdBy) => {
+function calculateTenure(hireDate) {
+  const now = new Date();
+  const start = new Date(hireDate);
+
+  let months =
+    (now.getFullYear() - start.getFullYear()) * 12 +
+    (now.getMonth() - start.getMonth());
+
+  if (now.getDate() < start.getDate()) {
+    months -= 1;
+  }
+
+  if (months < 0) months = 0;
+
+  const years = Math.floor(months / 12);
+  const remainingMonths = months % 12;
+
+  return {
+    months: `${years} Y, ${remainingMonths} M`,   // <-- converted to STRING
+    years: `${years}`,                                         // <-- converted to STRING
+    label: `${years} year(s) ${remainingMonths} month(s)`
+  };
+}
+
+export const createEmployeeService = async (data, finalMediaId, createdBy) => {
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 
@@ -143,10 +167,40 @@ export const createEmployeeService = async (data, createdBy) => {
     });
     if (!region) throw new Error(`Region ID ${data.regionId} does not exist`);
   }
+  // ------------ EMAIL VALIDATION ---------------------------
+  if (data.email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(data.email)) {
+      throw new Error("Invalid personal email format");
+    }
+  }
 
+  if (data.work_email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(data.work_email)) {
+      throw new Error("Invalid work email format");
+    }
+  }
+
+  // ------------ CNIC VALIDATION ---------------------------
+
+  const validateCNIC = (cnic) => {
+    const regex = /^(\d{5}-\d{7}-\d{1}|\d{13})$/;
+    return regex.test(cnic);
+  };
+
+  if (data.nationality_id_no) {
+    if (!validateCNIC(data.nationality_id.toString())) {
+      throw new Error("Invalid CNIC format. Expected 13 digits or 5-7-1 format.");
+    }
+  }
+
+  const hireDate = new Date(data.hire_date);
+  const tenure = calculateTenure(hireDate);
   // ------------ Parse Incoming Data Properly --------------------
   const parsedData = {
     tenant_id: data.tenant_id ? Number(data.tenant_id) : null,
+    employee_media_id: finalMediaId,
     first_name: data.first_name || null,
     middle_name: data.middle_name || null,
     last_name: data.last_name || null,
@@ -162,6 +216,7 @@ export const createEmployeeService = async (data, createdBy) => {
     remarks: data.remarks || null,
     marital_status: data.marital_status || null,
     nationality_id: data.nationality_id ? Number(data.nationality_id) : null,
+    nationality_id_no: data.nationality_id_no,
 
     current_address: data.current_address || null,
     permenant_address: data.permenant_address || null,
@@ -192,8 +247,8 @@ export const createEmployeeService = async (data, createdBy) => {
     managerId: data.managerId ? Number(data.managerId) : null,
     reportToId: data.reportToId ? Number(data.reportToId) : null,
     fte: data.fte ? Number(data.fte) : null,
-    tenureMonths: data.tenureMonths ? Number(data.tenureMonths) : null,
-
+    // Tenure saved here
+    tenureMonths: tenure.months,
     // Leave Management
     regionId: data.regionId ? Number(data.regionId) : null,
 

@@ -27,7 +27,9 @@ import payrollRoutes from './routes/payrollRoutes.js';
 import trainingRoutes from './routes/trainingRoutes.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import recruitmentRoutes from "./routes/recruitment.routes.js";
-import emergencyContactRoutes from "./routes/emergencyContacts.routes.js"
+import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
+import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
+
 
 
 dotenv.config();
@@ -64,6 +66,7 @@ app.use('/api/training', trainingRoutes);//done
 app.use('/api/analytics', analyticsRoutes); //done
 app.use("/api/recruitment", recruitmentRoutes);
 app.use("/api/emergency-contacts",emergencyContactRoutes)
+app.use("/api/employee-media", employeeMediaRoutes);
 
 
 startReviewReminderScheduler();

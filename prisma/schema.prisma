@@ -180,7 +180,7 @@ model Employee {
   remarks             String?
   marital_status      String?
   nationality         String?
-  nationality_id_no String?
+  nationality_id_no   String?
   nationality_id      Int?
   current_address     String?
   permenant_address   String?
@@ -203,6 +203,7 @@ model Employee {
   hire_date           DateTime?
   status              String?
   userId              Int?
+  employee_media_id   Int?
   employee_name       String?
   created_at          DateTime  @default(now())
   updated_at          DateTime  @updatedAt
@@ -213,7 +214,7 @@ model Employee {
   managerId      Int? // Direct Supervisor (Manager)
   reportToId     Int? // Functional Reporting (if different from manager)
   fte            Float? // Full-Time Equivalent (0.0–1.0)
-  tenureMonths   Int? // Tenure in months (system-calculated)
+  tenureMonths   String? // Tenure in months (system-calculated)
 
   // Existing relations
   emergencyContact      EmergencyContacts[]   @relation("RelationWithEmployee")
@@ -281,6 +282,21 @@ model Employee {
   regionId              Int?
   regionsCreated        Region[]               @relation("RegionCreatedBy")
   regionsUpdated        Region[]               @relation("RegionUpdatedBy")
+  employee_media        EmployeeMedia[]        @relation("employeeMedia")
+}
+
+model EmployeeMedia {
+  id             Int       @id @default(autoincrement())
+  title          String?
+  category       String?
+  version        String?
+  visibility     Boolean   @default(true)
+  effective_date String?
+  expiry_date    String?
+  notes          String?   @db.Text
+  employee       Employee? @relation("employeeMedia", fields: [employee_id], references: [id])
+  employee_id    Int?
+  media_id       Int?
 }
 
 model BusinessUnit {
@@ -1101,15 +1117,17 @@ model PayrollDeductionType {
 }
 
 model EmploymentTerms {
-  id            Int          @id @default(autoincrement())
-  employeeId    Int
-  baseSalary    Float
-  currency      String       @default("USD")
-  payFrequency  PayFrequency
-  effectiveFrom DateTime
-  effectiveTo   DateTime?
-  created_at    DateTime     @default(now())
-  updated_at    DateTime     @updatedAt
+  id              Int          @id @default(autoincrement())
+  employeeId      Int
+  baseSalary      Float
+  currency        String       @default("USD")
+  payFrequency    PayFrequency
+  bonusTarget     Float?
+  equalityDetails String?
+  effectiveFrom   DateTime
+  effectiveTo     DateTime?
+  created_at      DateTime     @default(now())
+  updated_at      DateTime     @updatedAt
 
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
