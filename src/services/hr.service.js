@@ -109,14 +109,16 @@ function calculateTenure(hireDate) {
   };
 }
 
-export const createEmployeeService = async (data, finalMediaId, createdBy) => {
+export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,createdBy) => {
+  console.log("fsfsfsfsf",finalMediaUrl,finalMediaId);
+  
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 
   for (const field of requiredFields) {
     if (!data[field]) {
       throw new Error(`${field} is a required field`);
-    }
+    } 
   }
 
   // ------------ Validate Position ----------------------------
@@ -231,7 +233,7 @@ export const createEmployeeService = async (data, finalMediaId, createdBy) => {
     work_email: data.work_email || null,
     work_phone: data.work_phone ? Number(data.work_phone) : null,
     employement_status: data.employement_status || null,
-    photo_url: data.photo_url || null,
+    photo_url: finalMediaUrl || null,
 
     gender: data.gender || null,
     job_title: data.job_title,

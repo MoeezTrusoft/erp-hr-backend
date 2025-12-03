@@ -1,5 +1,5 @@
 import prisma from "../config/prisma.js";
-import { hrRequest } from "../services/dam.rbac.department.js";
+import { uploadFileToDAM,hrRequest } from "../services/dam.rbac.department.js";
 import {
   createEmployeeService,
   getAllEmployeesService,
@@ -18,7 +18,7 @@ export const createEmployee = async (req, res) => {
         const mediaId = req.body.mediaId;
 
         if (mediaId) {
-            const mediaRecord = await damRequest(`assets/${mediaId}`, "GET");
+            const mediaRecord = await hrRequest(`assets/${mediaId}`, "GET");
             console.log("media recordd", mediaRecord, mediaId);
 
 
@@ -35,11 +35,25 @@ export const createEmployee = async (req, res) => {
             }
         }
 
-        const finalMediaId =
-            mediaRecord?.id ||
-            (Array.isArray(mediaRecord) ? mediaRecord[0]?.id : undefined);
+      const record =
+  mediaRecord?.items?.[0] ||       // case: DAM returns items[]
+  (Array.isArray(mediaRecord) ? mediaRecord[0] : mediaRecord);
 
-    const newEmployee = await createEmployeeService(req.body,finalMediaId, createdBy);
+// Extract ID
+const finalMediaId = record?.id;
+
+// Extract URL
+const finalMediaUrl =
+  record?.file_url ||
+  record?.url ||  
+  record?.download_url ||
+  record?.cdn_url ||
+  null;
+
+
+  console.log("fjajfajfja",finalMediaUrl, finalMediaId);
+  
+    const newEmployee = await createEmployeeService(req.body,finalMediaId,finalMediaUrl, createdBy);
 
     return res.status(201).json({
       success: true,
