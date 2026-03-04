@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { logAction } from "../utils/logs.js";
-
+import { uploadFileToDAM } from "./dam.media.service.js";
 
 const prisma = new PrismaClient();
 
@@ -9,12 +9,12 @@ export const createCourse = async (data) => {
   if (!data.categoryId) throw new Error("Category ID is required");
 
   const create = await prisma.trainingCourse.create({ data });
-    await logAction({
+  await logAction({
     employeeId: 1,
-    type: "Create", // 👈 changed from CREATE to UPDATE
+    type: "Create",
     module: "Training Course",
     result: "SUCCESS",
-    notes: `Training Course"${create.id}" created successfully`,
+    notes: `Training Course\"${create.id}\" created successfully`,
   });
 
   return create;
@@ -26,6 +26,9 @@ export const getAllCourses = async () => {
       category: true,
       instructor: true,
       enrollments: true,
+      sessions: true,
+      pathCourses: true,
+      certifications: true,
     },
     orderBy: { id: "desc" },
   });
@@ -38,6 +41,9 @@ export const getCourseById = async (id) => {
       category: true,
       instructor: true,
       enrollments: { include: { employee: true } },
+      sessions: true,
+      pathCourses: true,
+      certifications: true,
     },
   });
   if (!course) throw new Error("Course not found");
@@ -50,37 +56,43 @@ export const updateCourse = async (id, data) => {
     data,
   });
 
-    await logAction({
+  await logAction({
     employeeId: 1,
-    type: "Update", // 👈 changed from CREATE to UPDATE
+    type: "Update",
     module: "Training Course",
     result: "SUCCESS",
-    notes: `Training Course"${id}" Updated successfully`,
+    notes: `Training Course\"${id}\" updated successfully`,
   });
 
-  return update
+  return update;
 };
 
 export const deleteCourse = async (id) => {
   const existing = await prisma.trainingCourse.findUnique({ where: { id: Number(id) } });
-  if(!existing) throw new Error(`Course not found Id${id}`);
-  
+  if (!existing) throw new Error(`Course not found Id${id}`);
+
   const deleted = await prisma.trainingCourse.delete({ where: { id: Number(id) } });
 
-    await logAction({
+  await logAction({
     employeeId: 1,
-    type: "Delete", // 👈 changed from CREATE to UPDATE
+    type: "Delete",
     module: "Training Course",
     result: "SUCCESS",
-    notes: `Training Course"${id}}" Deleted successfully`,
+    notes: `Training Course\"${id}\" deleted successfully`,
   });
   return deleted;
 };
 
-/**
- * Upcoming courses within next `days` days (default 30)
- * Only returns courses with startDate defined and status ACTIVE by default.
- */
+export const uploadCourseMaterial = async (id, file) => {
+  const uploaded = await uploadFileToDAM(file, "document");
+  if (!uploaded || !uploaded[0]) throw new Error("DAM upload failed");
+
+  return prisma.trainingCourse.update({
+    where: { id: Number(id) },
+    data: { contentMediaId: uploaded[0].id },
+  });
+};
+
 export const getUpcomingCourses = async ({ days = 30, limit = 50, offset = 0 } = {}) => {
   const now = new Date();
   const future = new Date();
@@ -98,9 +110,6 @@ export const getUpcomingCourses = async ({ days = 30, limit = 50, offset = 0 } =
   });
 };
 
-/**
- * Course analytics: enrollmentCount, completedCount, completionRate, avgProgress
- */
 export const getCourseAnalytics = async (courseId) => {
   const id = Number(courseId);
 
@@ -126,15 +135,11 @@ export const getCourseAnalytics = async (courseId) => {
   };
 };
 
-/**
- * Global analytics overview
- */
 export const getGlobalAnalyticsOverview = async () => {
   const totalCourses = await prisma.trainingCourse.count();
   const activeCourses = await prisma.trainingCourse.count({ where: { status: "ACTIVE" } });
   const totalEnrollments = await prisma.trainingEnrollment.count();
 
-  // compute overall completion rate
   const completedEnrollments = await prisma.trainingEnrollment.count({
     where: { status: "COMPLETED" },
   });

@@ -12,7 +12,9 @@ import {
     updateCandidate,
     getCandidate,
     listCandidates,
+    uploadCandidateResume,
 } from "../controllers/candidateController.js";
+import dynamicUpload from "../middlewares/upload.middleware.js";
 
 import {
     createApplication,
@@ -33,6 +35,7 @@ router.get("/candidates", listCandidates);
 router.post("/candidates", createCandidate);
 router.get("/candidates/:id", getCandidate);
 router.put("/candidates/:id", updateCandidate);
+router.post("/candidates/:id/resume", dynamicUpload, uploadCandidateResume);
 
 // APPLICATIONS
 router.get("/applications", listApplications);

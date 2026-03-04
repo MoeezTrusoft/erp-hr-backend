@@ -20,7 +20,7 @@ export const createEmployee = async (req, res) => {
     const mediaId = req.body.mediaId;
 
     if (mediaId) {
-      const mediaRecord = await damRequest(`assets/${mediaId}`, "GET");
+      mediaRecord = await damRequest(`assets/${mediaId}`, "GET");
       console.log("media recordd", mediaRecord, mediaId);
 
 

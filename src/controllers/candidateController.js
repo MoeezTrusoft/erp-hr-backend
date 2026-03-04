@@ -1,5 +1,7 @@
 // src/controllers/candidateController.js
 import * as candidateService from "../services/candidateService.js";
+import { uploadFileToDAM } from "../services/dam.media.service.js";
+import prisma from "../config/prisma.js";
 
 
 export const createCandidate = async (req, res) => {
@@ -16,7 +18,6 @@ export const createCandidate = async (req, res) => {
             email,
             phone,
             source,
-            resumeUrl,
             notes,
             tags, // array of tag names
         } = req.body;
@@ -34,7 +35,6 @@ export const createCandidate = async (req, res) => {
             email,
             phone,
             source,
-            resumeUrl,
             notes,
             tagNames: Array.isArray(tags) ? tags : [],
             tenantId,
@@ -67,7 +67,6 @@ console.log("update condidate", user);
             lastName,
             phone,
             source,
-            resumeUrl,
             notes,
             status,
             tags, // array of tag names
@@ -81,7 +80,6 @@ console.log("update condidate", user);
                 lastName,
                 phone,
                 source,
-                resumeUrl,
                 notes,
                 status,
             },
@@ -129,6 +127,7 @@ export const getCandidate = async (req, res) => {
 
         return res.status(200).json({
             success: true,
+            message: "Success",
             data: candidate,
         });
     } catch (error) {
@@ -136,6 +135,28 @@ export const getCandidate = async (req, res) => {
             success: false,
             message: error.message,
         });
+    }
+};
+
+export const uploadCandidateResume = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ success: false, message: "No file uploaded" });
+        }
+        const file = req.files[0];
+        const uploaded = await uploadFileToDAM(file, "document");
+        if (!uploaded || !uploaded[0]) {
+            return res.status(500).json({ success: false, message: "DAM upload failed" });
+        }
+        const mediaId = uploaded[0].id;
+        const candidate = await prisma.candidate.update({
+            where: { id: Number(id) },
+            data: { resumeMediaId: mediaId },
+        });
+        return res.status(200).json({ success: true, message: "Success", data: candidate });
+    } catch (error) {
+        return res.status(400).json({ success: false, message: error.message });
     }
 };
 
@@ -162,6 +183,7 @@ export const listCandidates = async (req, res) => {
 
         return res.status(200).json({
             success: true,
+            message: "Success",
             data: result,
         });
     } catch (error) {

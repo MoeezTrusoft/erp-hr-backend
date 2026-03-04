@@ -5,7 +5,7 @@ import {
     updateEmployeeMediaService,
     deleteEmployeeMediaService,
 } from "../services/employee.mediaService.js";
-import { uploadFileToDAM, damRequest } from "../services/dam.media.service.js";
+import { uploadFileToDAM, getDamAssetById } from "../services/dam.media.service.js";
 
 // CREATE
 export const createEmployeeMedia = async (req, res) => {
@@ -34,8 +34,7 @@ export const createEmployeeMedia = async (req, res) => {
         );
         // 2️⃣ Fetch DAM metadata for each uploaded file
         const fetchedMediaRecords = await Promise.all(uploadedFiles.map(async ({ media_id }) => {
-            const meta = await damRequest(`assets/download/${media_id}`, "GET");
-            const record = meta?.items?.[0] || meta;
+            const record = await getDamAssetById(media_id);
             return { media_id, damMedia: record, };
         })
         );
