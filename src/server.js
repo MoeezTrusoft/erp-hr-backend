@@ -29,6 +29,8 @@ import { analyticsRoutes } from './routes/analytics.js';
 import recruitmentRoutes from "./routes/recruitment.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
+import  dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js"
+
 
 
 
@@ -67,6 +69,8 @@ app.use('/api/analytics', analyticsRoutes); //done
 app.use("/api/recruitment", recruitmentRoutes);
 app.use("/api/emergency-contacts",emergencyContactRoutes)
 app.use("/api/employee-media", employeeMediaRoutes);
+app.use("/api/dashboard-layout", dashboardLayoutRoutes);
+
 
 
 startReviewReminderScheduler();

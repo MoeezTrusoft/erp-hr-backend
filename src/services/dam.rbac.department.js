@@ -5,27 +5,27 @@ const HR_BASE_URL = process.env.HR_SERVICE_URL || "http://localhost:3002/api";
 const HR_TIMEOUT = parseInt(process.env.HR_SERVICE_TIMEOUT || "10000", 10);
 
 const hrApi = axios.create({
-    baseURL: HR_BASE_URL,
-    timeout: HR_TIMEOUT,
+  baseURL: HR_BASE_URL,
+  timeout: HR_TIMEOUT,
 });
 
-export async function hrRequest(endpoint, method = "GET", body = {}, headers = {}) {
-    try {
-        const response = await hrApi.request({
-            url: endpoint.startsWith("/") ? endpoint : `/${endpoint}`,
-            method: method.toUpperCase(),
-            data: ["POST", "PUT", "PATCH"].includes(method.toUpperCase()) ? body : undefined,
-            headers,
-        });
+export async function damRequest(endpoint, method = "GET", body = {}, headers = {}) {
+  try {
+    const response = await hrApi.request({
+      url: endpoint.startsWith("/") ? endpoint : `/${endpoint}`,
+      method: method.toUpperCase(),
+      data: ["POST", "PUT", "PATCH"].includes(method.toUpperCase()) ? body : undefined,
+      headers,
+    });
 
-        return response.data;
-    } catch (error) {
-        console.error(
-            `[HR] ${method} ${endpoint} failed:`,
-            error.response?.data || error.message
-        );
-        return null;
-    }
+    return response.data;
+  } catch (error) {
+    console.error(
+      `[HR] ${method} ${endpoint} failed:`,
+      error.response?.data || error.message
+    );
+    return null;
+  }
 }
 
 // New helper: upload file to DAM
@@ -40,9 +40,10 @@ export async function uploadFileToDAM(file, type = "avatar") {
 
     formData.append("source", "HR-TruSoft"); // REQUIRED
     formData.append("externalId", 123)
+      //formData.append("title", title)
 
     // ✅ Send to DAM
-    const uploadResponse = await hrRequest(
+    const uploadResponse = await damRequest(
       "/assets/upload",
       "POST",
       formData,
@@ -50,7 +51,7 @@ export async function uploadFileToDAM(file, type = "avatar") {
     );
 
     console.log(uploadResponse, "upload response");
-    
+
 
     // ✅ Correct return value
     return uploadResponse?.items;
