@@ -1,0 +1,38 @@
+import express from "express";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { getMcpServer } from "./mcpServer.js";
+import { mcpCtx, buildContextFromHeaders } from "./context.js";
+
+const router = express.Router();
+
+router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
+  if (!req.headers["x-mcp-internal"]) {
+    return res.status(403).json({ error: "Direct MCP access not allowed" });
+  }
+
+  const ctx = buildContextFromHeaders(req);
+  const body = req.body;
+
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const server = getMcpServer();
+
+  try {
+    await mcpCtx.run(ctx, async () => {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, body);
+    });
+  } catch (err) {
+    console.error("[MCP erp-hr-service] Error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: body?.id ?? null,
+      });
+    }
+  } finally {
+    await transport.close().catch(() => {});
+  }
+});
+
+export default router;

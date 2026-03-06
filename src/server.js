@@ -48,6 +48,7 @@ import reimbursementRoutes from "./routes/reimbursement.routes.js";
 import gdprRoutes from "./routes/gdpr.routes.js";
 
 import { startReviewReminderScheduler } from "./services/reminderScheduler.service.js";
+import mcpRouter from "./mcp/mcpRouter.js";
 
 dotenv.config();
 const app = express();
@@ -106,6 +107,8 @@ app.get("/metrics", async (_req, res) => {
   res.setHeader("Content-Type", register.contentType);
   res.end(await register.metrics());
 });
+
+app.use("/mcp", mcpRouter);
 
 app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
 
