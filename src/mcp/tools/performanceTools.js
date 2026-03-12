@@ -1,17 +1,24 @@
 import { z } from "zod";
-import axios from "axios";
+import {
+  mcpAddPerformanceFeedback,
+  mcpAdjustCalibrationRating,
+  mcpApproveGoal,
+  mcpCreateCalibration,
+  mcpCreateDevelopmentPlan,
+  mcpCreateGoal,
+  mcpCreatePerformanceReview,
+  mcpFinalizeCalibration,
+  mcpListCalibrationSessions,
+  mcpListGoals,
+  mcpListPerformanceMetrics,
+  mcpListPerformanceReviews,
+  mcpRecordGoalProgress,
+  mcpUpdateGoal,
+  mcpUpdatePerformanceReview,
+} from "../controllers/performanceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -28,7 +35,7 @@ export function registerPerformanceTools(server) {
     { description: "List all performance reviews" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/performance", user);
+      const data = await mcpListPerformanceReviews(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -39,7 +46,7 @@ export function registerPerformanceTools(server) {
     { description: "List all employee goals" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/goals", user);
+      const data = await mcpListGoals(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -50,7 +57,7 @@ export function registerPerformanceTools(server) {
     { description: "List all calibration sessions" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/calibration", user);
+      const data = await mcpListCalibrationSessions(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -61,7 +68,7 @@ export function registerPerformanceTools(server) {
     { description: "List all performance metrics" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/performance/metrics", user);
+      const data = await mcpListPerformanceMetrics(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -82,7 +89,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/goals", user.isAdmin);
-      const data = await self("POST", "/api/goals", user, args);
+      const data = await mcpCreateGoal(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -101,7 +108,7 @@ export function registerPerformanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/goals/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/goals/${id}`, user, rest);
+      const data = await mcpUpdateGoal(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -117,7 +124,7 @@ export function registerPerformanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/goals/approve/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/goals/approve/${id}`, user, rest);
+      const data = await mcpApproveGoal(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -133,7 +140,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/goals/progress", user.isAdmin);
-      const data = await self("POST", "/api/goals/progress", user, args);
+      const data = await mcpRecordGoalProgress(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -153,7 +160,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/performance", user.isAdmin);
-      const data = await self("POST", "/api/performance", user, args);
+      const data = await mcpCreatePerformanceReview(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -170,7 +177,7 @@ export function registerPerformanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/performance/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/performance/${id}`, user, rest);
+      const data = await mcpUpdatePerformanceReview(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -187,7 +194,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/performance", user.isAdmin);
-      const data = await self("POST", "/api/performance/feedback", user, args);
+      const data = await mcpAddPerformanceFeedback(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -206,7 +213,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/calibration", user.isAdmin);
-      const data = await self("POST", "/api/calibration", user, args);
+      const data = await mcpCreateCalibration(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -222,7 +229,7 @@ export function registerPerformanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/calibration/finalize/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/calibration/finalize/${id}`, user, rest);
+      const data = await mcpFinalizeCalibration(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -239,7 +246,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/calibration/adjust", user.isAdmin);
-      const data = await self("POST", "/api/calibration/adjust", user, args);
+      const data = await mcpAdjustCalibrationRating(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -251,7 +258,7 @@ export function registerPerformanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/calibration/finalize/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/calibration/finalize/${id}`, user);
+      const data = await mcpFinalizeCalibration(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -271,7 +278,7 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/development-plans", user.isAdmin);
-      const data = await self("POST", "/api/development-plans", user, args);
+      const data = await mcpCreateDevelopmentPlan(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

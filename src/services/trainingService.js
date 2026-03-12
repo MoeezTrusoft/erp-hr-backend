@@ -35,7 +35,7 @@ export const createCourse = async (courseData, createdBy) => {
             }
         });
         await logAction({
-            employeeId: Number(createdBy),
+            userId: Number(createdBy),
             type: "Create", // 👈 changed from CREATE to UPDATE
             module: "Training Course",
             result: "SUCCESS",
@@ -166,11 +166,11 @@ export const updateCourse = async (courseId, updateData, updatedBy) => {
             }
         });
         await logAction({
-            employeeId: Number(updatedBy),
+            userId: Number(updatedBy),
             type: "Update", // 👈 changed from CREATE to UPDATE
             module: "Training Course",
             result: "SUCCESS",
-            notes: `Training Course "${id}" Updated successfully`,
+            notes: `Training Course "${courseId}" Updated successfully`,
         });
 
         return course;
@@ -203,11 +203,11 @@ export const deleteCourse = async (courseId, deletedBy) => {
             where: { id: parseInt(courseId) }
         });
         await logAction({
-            employeeId: Number(deletedBy),
+            userId: Number(deletedBy),
             type: "Delete", // 👈 changed from CREATE to UPDATE
             module: "Training Course",
             result: "SUCCESS",
-            notes: `Training Course "${id}" Delete successfully`,
+            notes: `Training Course "${courseId}" Delete successfully`,
         });
 
         return deleted
@@ -233,11 +233,11 @@ export const createCategory = async (categoryData, createdBy) => {
         });
 
         await logAction({
-            employeeId: Number(createdBy),
+            userId: Number(createdBy),
             type: "Create", // 👈 changed from CREATE to UPDATE
             module: "Training Category",
             result: "SUCCESS",
-            notes: `Training Category "${id}" Created successfully`,
+            notes: `Training Category "${category.id}" Created successfully`,
         });
         return category;
     } catch (error) {

@@ -1,17 +1,26 @@
 import { z } from "zod";
-import axios from "axios";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
+import {
+  mcpBulkTrainingEnrollment,
+  mcpCancelTrainingEnrollment,
+  mcpCreateCertification,
+  mcpCreateLearningPath,
+  mcpCreateTrainingCategory,
+  mcpCreateTrainingCourse,
+  mcpCreateTrainingEnrollment,
+  mcpDeleteTrainingCourse,
+  mcpListCertifications,
+  mcpListLearningPaths,
+  mcpListSkills,
+  mcpListTrainingCategories,
+  mcpListTrainingCourses,
+  mcpListTrainingSessions,
+  mcpUpdateTrainingCourse,
+  mcpUpdateTrainingEnrollmentProgress,
+  mcpUpdateTrainingEnrollmentStatus,
+} from "../controllers/learningMcpController.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -20,15 +29,13 @@ function getCtx() {
 }
 
 export function registerLearningTools(server) {
-  // ── RESOURCES ────────────────────────────────────────────────────────────
-
   server.resource(
     "hr_training_courses_list",
     "hr://training/courses",
     { description: "List all training courses" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/training/courses", user);
+      const data = await mcpListTrainingCourses(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -39,7 +46,7 @@ export function registerLearningTools(server) {
     { description: "List all training categories" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/training/categories", user);
+      const data = await mcpListTrainingCategories(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -50,7 +57,7 @@ export function registerLearningTools(server) {
     { description: "List all learning paths" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/learning-paths", user);
+      const data = await mcpListLearningPaths(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -61,7 +68,7 @@ export function registerLearningTools(server) {
     { description: "List all certifications" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/certifications", user);
+      const data = await mcpListCertifications(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -72,7 +79,7 @@ export function registerLearningTools(server) {
     { description: "List all employee skills" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/skills", user);
+      const data = await mcpListSkills(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -83,12 +90,10 @@ export function registerLearningTools(server) {
     { description: "List all scheduled training sessions" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/training-sessions", user);
+      const data = await mcpListTrainingSessions(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
-
-  // ── COURSE TOOLS ─────────────────────────────────────────────────────────
 
   server.tool(
     "hr_training_course_create",
@@ -104,7 +109,7 @@ export function registerLearningTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/training/courses", user.isAdmin);
-      const data = await self("POST", "/api/training/courses", user, args);
+      const data = await mcpCreateTrainingCourse(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -122,7 +127,7 @@ export function registerLearningTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/training/courses/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/training/courses/${id}`, user, rest);
+      const data = await mcpUpdateTrainingCourse(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -134,7 +139,7 @@ export function registerLearningTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/training/courses/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/training/courses/${id}`, user);
+      const data = await mcpDeleteTrainingCourse(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -146,12 +151,10 @@ export function registerLearningTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/training/categories", user.isAdmin);
-      const data = await self("POST", "/api/training/categories", user, args);
+      const data = await mcpCreateTrainingCategory(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── ENROLLMENT TOOLS ─────────────────────────────────────────────────────
 
   server.tool(
     "hr_training_enrollment_create",
@@ -164,7 +167,7 @@ export function registerLearningTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/training/enrollments", user.isAdmin);
-      const data = await self("POST", "/api/training/enrollments", user, args);
+      const data = await mcpCreateTrainingEnrollment(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -180,7 +183,7 @@ export function registerLearningTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/training/enrollments/bulk", user.isAdmin);
-      const data = await self("POST", "/api/training/enrollments/bulk", user, args);
+      const data = await mcpBulkTrainingEnrollment(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -195,7 +198,7 @@ export function registerLearningTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/training/enrollments/${id}/status`, user.isAdmin);
-      const data = await self("PUT", `/api/training/enrollments/${id}/status`, user, rest);
+      const data = await mcpUpdateTrainingEnrollmentStatus(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -211,7 +214,7 @@ export function registerLearningTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/training/enrollments/${id}/progress`, user.isAdmin);
-      const data = await self("PUT", `/api/training/enrollments/${id}/progress`, user, rest);
+      const data = await mcpUpdateTrainingEnrollmentProgress(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -223,15 +226,13 @@ export function registerLearningTools(server) {
       id: z.string().min(1),
       reason: z.string().optional(),
     },
-    withToolError(async ({ id, ...rest }) => {
+    withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/training/enrollments/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/training/enrollments/${id}`, user);
+      const data = await mcpCancelTrainingEnrollment(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── CERTIFICATION TOOLS ──────────────────────────────────────────────────
 
   server.tool(
     "hr_certification_create",
@@ -246,12 +247,10 @@ export function registerLearningTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/certifications", user.isAdmin);
-      const data = await self("POST", "/api/certifications", user, args);
+      const data = await mcpCreateCertification(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── LEARNING PATH TOOLS ──────────────────────────────────────────────────
 
   server.tool(
     "hr_learning_path_create",
@@ -265,7 +264,7 @@ export function registerLearningTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/learning-paths", user.isAdmin);
-      const data = await self("POST", "/api/learning-paths", user, args);
+      const data = await mcpCreateLearningPath(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

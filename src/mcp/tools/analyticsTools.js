@@ -1,17 +1,20 @@
 import { z } from "zod";
-import axios from "axios";
+import {
+  mcpExportAnalyticsReport,
+  mcpGetAnalyticsAbsence,
+  mcpGetAnalyticsDashboardOverview,
+  mcpGetAnalyticsDashboardPerformance,
+  mcpGetAnalyticsDashboardRecruitment,
+  mcpGetAnalyticsEeo,
+  mcpGetAnalyticsHeadcount,
+  mcpGetAnalyticsLeaveBalances,
+  mcpGetAnalyticsRecruitmentPipeline,
+  mcpGetAnalyticsSalary,
+  mcpGetAnalyticsTurnover,
+} from "../controllers/analyticsMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -28,7 +31,7 @@ export function registerAnalyticsTools(server) {
     { description: "HR dashboard overview KPIs (headcount, turnover, open positions)" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/dashboards/overview", user);
+      const data = await mcpGetAnalyticsDashboardOverview(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -39,7 +42,7 @@ export function registerAnalyticsTools(server) {
     { description: "Recruitment dashboard metrics (pipeline, time-to-hire)" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/dashboards/recruitment", user);
+      const data = await mcpGetAnalyticsDashboardRecruitment(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -50,7 +53,7 @@ export function registerAnalyticsTools(server) {
     { description: "Performance management dashboard metrics" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/dashboards/performance", user);
+      const data = await mcpGetAnalyticsDashboardPerformance(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -61,7 +64,7 @@ export function registerAnalyticsTools(server) {
     { description: "Headcount report by department, location, and employment type" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/headcount", user);
+      const data = await mcpGetAnalyticsHeadcount(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -72,7 +75,7 @@ export function registerAnalyticsTools(server) {
     { description: "Employee turnover report" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/turnover", user);
+      const data = await mcpGetAnalyticsTurnover(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -83,7 +86,7 @@ export function registerAnalyticsTools(server) {
     { description: "Salary distribution and compensation report" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/salary", user);
+      const data = await mcpGetAnalyticsSalary(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -94,7 +97,7 @@ export function registerAnalyticsTools(server) {
     { description: "Leave balance summary report across all employees" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/leave-balances", user);
+      const data = await mcpGetAnalyticsLeaveBalances(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -105,7 +108,7 @@ export function registerAnalyticsTools(server) {
     { description: "Absence and attendance report" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/absence", user);
+      const data = await mcpGetAnalyticsAbsence(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -116,7 +119,7 @@ export function registerAnalyticsTools(server) {
     { description: "Equal employment opportunity (EEO) compliance report" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/eeo", user);
+      const data = await mcpGetAnalyticsEeo(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -127,7 +130,7 @@ export function registerAnalyticsTools(server) {
     { description: "Recruitment pipeline analytics report" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/analytics/reports/recruitment-pipeline", user);
+      const data = await mcpGetAnalyticsRecruitmentPipeline(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -145,7 +148,7 @@ export function registerAnalyticsTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/analytics/reports/export", user.isAdmin);
-      const data = await self("POST", "/api/analytics/reports/export", user, args);
+      const data = await mcpExportAnalyticsReport(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

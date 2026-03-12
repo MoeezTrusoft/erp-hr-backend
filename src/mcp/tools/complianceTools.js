@@ -1,17 +1,16 @@
 import { z } from "zod";
-import axios from "axios";
+import {
+  mcpApproveReimbursement,
+  mcpCreateComplianceChecklist,
+  mcpCreateReimbursement,
+  mcpEraseGdprEmployeeData,
+  mcpExportGdprEmployeeData,
+  mcpListComplianceChecklists,
+  mcpUpdateComplianceItem,
+} from "../controllers/complianceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -28,7 +27,7 @@ export function registerComplianceTools(server) {
     { description: "List all compliance checklists" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/compliance/checklists", user);
+      const data = await mcpListComplianceChecklists(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -53,7 +52,7 @@ export function registerComplianceTools(server) {
         ...args,
         name: args.name || args.title,
       };
-      const data = await self("POST", "/api/compliance/checklists", user, payload);
+      const data = await mcpCreateComplianceChecklist(user, payload);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -69,7 +68,7 @@ export function registerComplianceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/compliance/items/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/compliance/items/${id}`, user, rest);
+      const data = await mcpUpdateComplianceItem(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -83,7 +82,7 @@ export function registerComplianceTools(server) {
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", `/hr/api/gdpr/export/${employeeId}`, user.isAdmin);
-      const data = await self("GET", `/api/gdpr/export/${employeeId}`, user);
+      const data = await mcpExportGdprEmployeeData(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -98,7 +97,7 @@ export function registerComplianceTools(server) {
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/gdpr/erase/${employeeId}`, user.isAdmin);
-      const data = await self("DELETE", `/api/gdpr/erase/${employeeId}`, user);
+      const data = await mcpEraseGdprEmployeeData(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -119,7 +118,7 @@ export function registerComplianceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/reimbursements", user.isAdmin);
-      const data = await self("POST", "/api/reimbursements", user, args);
+      const data = await mcpCreateReimbursement(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -134,7 +133,7 @@ export function registerComplianceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/reimbursements/${id}/approve`, user.isAdmin);
-      const data = await self("PUT", `/api/reimbursements/${id}/approve`, user, rest);
+      const data = await mcpApproveReimbursement(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

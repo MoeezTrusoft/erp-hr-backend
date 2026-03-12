@@ -1,17 +1,27 @@
 import { z } from "zod";
-import axios from "axios";
+import {
+  mcpApproveTimesheet,
+  mcpCheckIn,
+  mcpCheckOut,
+  mcpCreateOvertimeRule,
+  mcpCreateTimeEntry,
+  mcpCreateTimesheet,
+  mcpCreateWorkSchedule,
+  mcpDeleteOvertimeRule,
+  mcpDeleteTimeEntry,
+  mcpDeleteWorkSchedule,
+  mcpGetAttendanceByEmployee,
+  mcpListOvertimeRules,
+  mcpListTimeEntries,
+  mcpListTimesheets,
+  mcpListWorkSchedules,
+  mcpUpdateOvertimeRule,
+  mcpUpdateTimeEntry,
+  mcpUpdateWorkSchedule,
+} from "../controllers/attendanceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -30,7 +40,7 @@ export function registerAttendanceTools(server) {
       const { user } = getCtx();
       const employeeId = user?.employeeId || user?.userId;
       if (!employeeId) throw Object.assign(new Error("Employee ID not found in session"), { status: 400 });
-      const data = await self("GET", `/api/attendance/get-attandance/${employeeId}`, user);
+      const data = await mcpGetAttendanceByEmployee(user, employeeId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -41,7 +51,7 @@ export function registerAttendanceTools(server) {
     { description: "List all employee timesheets" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/time-attendance/timesheets", user);
+      const data = await mcpListTimesheets(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -60,7 +70,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/attendance/checkin", user.isAdmin);
-      const data = await self("POST", "/api/attendance/checkin", user, args);
+      const data = await mcpCheckIn(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -76,7 +86,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/attendance/checkout", user.isAdmin);
-      const data = await self("POST", "/api/attendance/checkout", user, args);
+      const data = await mcpCheckOut(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -98,7 +108,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/time-attendance/timesheets", user.isAdmin);
-      const data = await self("POST", "/api/time-attendance/timesheets", user, args);
+      const data = await mcpCreateTimesheet(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -113,7 +123,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ timesheetId, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", `/hr/api/time-attendance/timesheets/${timesheetId}/approve`, user.isAdmin);
-      const data = await self("POST", `/api/time-attendance/timesheets/${timesheetId}/approve`, user, rest);
+      const data = await mcpApproveTimesheet(user, timesheetId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -125,7 +135,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", `/hr/api/attendance/get-attandance/${id}`, user.isAdmin);
-      const data = await self("GET", `/api/attendance/get-attandance/${id}`, user);
+      const data = await mcpGetAttendanceByEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -138,7 +148,7 @@ export function registerAttendanceTools(server) {
     { description: "List all time entries" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/time-attendance/entries", user);
+      const data = await mcpListTimeEntries(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -156,7 +166,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/time-attendance/entries", user.isAdmin);
-      const data = await self("POST", "/api/time-attendance/entries", user, args);
+      const data = await mcpCreateTimeEntry(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -173,7 +183,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/time-attendance/entries/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/time-attendance/entries/${id}`, user, rest);
+      const data = await mcpUpdateTimeEntry(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -185,7 +195,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/time-attendance/entries/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/time-attendance/entries/${id}`, user);
+      const data = await mcpDeleteTimeEntry(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -198,7 +208,7 @@ export function registerAttendanceTools(server) {
     { description: "List all work schedules" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/time-attendance/work-schedules", user);
+      const data = await mcpListWorkSchedules(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -218,7 +228,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/time-attendance/work-schedules", user.isAdmin);
-      const data = await self("POST", "/api/time-attendance/work-schedules", user, args);
+      const data = await mcpCreateWorkSchedule(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -234,7 +244,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/time-attendance/work-schedules/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/time-attendance/work-schedules/${id}`, user, rest);
+      const data = await mcpUpdateWorkSchedule(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -246,7 +256,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/time-attendance/work-schedules/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/time-attendance/work-schedules/${id}`, user);
+      const data = await mcpDeleteWorkSchedule(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -259,7 +269,7 @@ export function registerAttendanceTools(server) {
     { description: "List all overtime rules" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/time-attendance/overtime-rules", user);
+      const data = await mcpListOvertimeRules(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -276,7 +286,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/time-attendance/overtime-rules", user.isAdmin);
-      const data = await self("POST", "/api/time-attendance/overtime-rules", user, args);
+      const data = await mcpCreateOvertimeRule(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -293,7 +303,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/time-attendance/overtime-rules/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/time-attendance/overtime-rules/${id}`, user, rest);
+      const data = await mcpUpdateOvertimeRule(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -305,7 +315,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/time-attendance/overtime-rules/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/time-attendance/overtime-rules/${id}`, user);
+      const data = await mcpDeleteOvertimeRule(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

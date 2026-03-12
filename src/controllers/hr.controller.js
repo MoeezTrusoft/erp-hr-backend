@@ -1,4 +1,3 @@
-import prisma from "../config/prisma.js";
 import { uploadFileToDAM, damRequest } from "../services/dam.rbac.department.js";
 import {
   createEmployeeService,
@@ -6,8 +5,8 @@ import {
   getEmployeeByIdService,
   updateEmployeeService,
   deleteEmployeeService,
-
-
+  createEmployeeMediaRecordService,
+  getEmployeeMediaIdService,
 } from "../services/hr.service.js";
 
 // ======================== CREATE ========================
@@ -140,21 +139,16 @@ export const uploadEmployeeDocuments = async (req, res) => {
     const finalMediaId = record.id;
 
     // ✅ Save into EmployeeMedia table
-    const savedMedia = await prisma.employeeMedia.create({
-      data: {
-        title: title || record?.title || null,
-        category: category || null,
-        version: version || null,
-        visibility: visibility,
-        effective_date: effective_date || null,
-        expiry_date: expiry_date || null,
-        notes: notes || null,
-        employee_id: Number(employeeId),
-        media_id: finalMediaId
-      },
-      include: {
-        employee: true, // 🔥 This includes employee details
-      },
+    const savedMedia = await createEmployeeMediaRecordService({
+      title: title || record?.title || null,
+      category,
+      version,
+      visibility,
+      effective_date,
+      expiry_date,
+      notes,
+      employeeId,
+      mediaId: finalMediaId,
     });
 
     return res.status(201).json({
@@ -187,13 +181,7 @@ export const getEmployeeById = async (req, res) => {
     console.log("employee", req.params.id);
 
     // Fetch user mediaId from database
-    const employee_id = await prisma.employee.findUnique({
-      where: { id: Number(req.params.id) },
-      select: {
-        employee_media_id: true,
-      }, // Only select mediaId
-
-    });
+    const employee_id = await getEmployeeMediaIdService(req.params.id);
     if (!employee_id) {
       return res.status(404).json({
         success: false,

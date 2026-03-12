@@ -10,8 +10,18 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
     return res.status(403).json({ error: "Direct MCP access not allowed" });
   }
 
-  const ctx = buildContextFromHeaders(req);
   const body = req.body;
+
+  // Defensive normalization for MCP transport negotiation headers.
+  const accept = String(req.headers.accept || "");
+  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+    req.headers.accept = "application/json, text/event-stream";
+  }
+  if (!req.headers["mcp-protocol-version"]) {
+    req.headers["mcp-protocol-version"] = body?.params?.protocolVersion || "2024-11-05";
+  }
+
+  const ctx = buildContextFromHeaders(req);
 
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const server = getMcpServer();

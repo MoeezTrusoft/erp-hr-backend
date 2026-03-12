@@ -1,7 +1,6 @@
 // src/controllers/candidateController.js
 import * as candidateService from "../services/candidateService.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
-import prisma from "../config/prisma.js";
 
 
 export const createCandidate = async (req, res) => {
@@ -150,10 +149,7 @@ export const uploadCandidateResume = async (req, res) => {
             return res.status(500).json({ success: false, message: "DAM upload failed" });
         }
         const mediaId = uploaded[0].id;
-        const candidate = await prisma.candidate.update({
-            where: { id: Number(id) },
-            data: { resumeMediaId: mediaId },
-        });
+        const candidate = await candidateService.updateCandidateResumeMedia({ id, mediaId });
         return res.status(200).json({ success: true, message: "Success", data: candidate });
     } catch (error) {
         return res.status(400).json({ success: false, message: error.message });

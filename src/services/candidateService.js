@@ -216,3 +216,11 @@ export const listCandidates = async ({
 
     return { items, total, page, limit };
 };
+
+export const updateCandidateResumeMedia = async ({ id, mediaId }) => {
+    const candidate = await prisma.candidate.update({
+        where: { id: Number(id) },
+        data: { resumeMediaId: Number(mediaId) },
+    });
+    return candidate;
+};

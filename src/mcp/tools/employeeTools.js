@@ -1,17 +1,25 @@
 import { z } from "zod";
-import axios from "axios";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
+import {
+  mcpCreateEmergencyContact,
+  mcpCreateEmployee,
+  mcpCreateEmployeeLifecycle,
+  mcpCreateOffboarding,
+  mcpCreatePosition,
+  mcpDeleteEmergencyContact,
+  mcpDeleteEmployee,
+  mcpDeletePosition,
+  mcpGetEmployeeById,
+  mcpGetEmployees,
+  mcpGetOrgChart,
+  mcpGetPositions,
+  mcpUpdateEmergencyContact,
+  mcpUpdateEmployee,
+  mcpUpdateOffboarding,
+  mcpUpdatePosition,
+} from "../controllers/employeeMcpController.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -20,15 +28,13 @@ function getCtx() {
 }
 
 export function registerEmployeeTools(server) {
-  // ── RESOURCES ────────────────────────────────────────────────────────────
-
   server.resource(
     "hr_employees_list",
     "hr://employees",
     { description: "List all employees with optional filters (page, limit, department, status)" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/employee", user);
+      const data = await mcpGetEmployees(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -39,7 +45,7 @@ export function registerEmployeeTools(server) {
     { description: "List all job positions" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/positions", user);
+      const data = await mcpGetPositions(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -50,12 +56,10 @@ export function registerEmployeeTools(server) {
     { description: "Get the full organizational hierarchy chart" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/org-chart", user);
+      const data = await mcpGetOrgChart(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
-
-  // ── EMPLOYEE TOOLS ───────────────────────────────────────────────────────
 
   server.tool(
     "hr_employee_get",
@@ -64,7 +68,7 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", `/hr/api/employee/${id}`, user.isAdmin);
-      const data = await self("GET", `/api/employee/${id}`, user);
+      const data = await mcpGetEmployeeById(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -87,7 +91,7 @@ export function registerEmployeeTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/employee", user.isAdmin);
-      const data = await self("POST", "/api/employee", user, args);
+      const data = await mcpCreateEmployee(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -109,7 +113,7 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/employee/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/employee/${id}`, user, rest);
+      const data = await mcpUpdateEmployee(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -121,12 +125,10 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/employee/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/employee/${id}`, user);
+      const data = await mcpDeleteEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── POSITION TOOLS ───────────────────────────────────────────────────────
 
   server.tool(
     "hr_position_create",
@@ -140,7 +142,7 @@ export function registerEmployeeTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/positions", user.isAdmin);
-      const data = await self("POST", "/api/positions", user, args);
+      const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -157,7 +159,7 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/positions/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/positions/${id}`, user, rest);
+      const data = await mcpUpdatePosition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -169,12 +171,10 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/positions/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/positions/${id}`, user);
+      const data = await mcpDeletePosition(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── EMPLOYEE LIFECYCLE ───────────────────────────────────────────────────
 
   server.tool(
     "hr_employee_lifecycle_create",
@@ -185,15 +185,16 @@ export function registerEmployeeTools(server) {
       effectiveDate: z.string().describe("ISO 8601 date"),
       notes: z.string().optional(),
     },
-    withToolError(async (args) => {
+    withToolError(async ({ eventType, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/employee-lifecycle", user.isAdmin);
-      const data = await self("POST", "/api/employee-lifecycle", user, args);
+      const data = await mcpCreateEmployeeLifecycle(user, {
+        ...rest,
+        type: eventType,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── OFFBOARDING ──────────────────────────────────────────────────────────
 
   server.tool(
     "hr_offboarding_create",
@@ -203,10 +204,14 @@ export function registerEmployeeTools(server) {
       lastWorkingDate: z.string().describe("ISO 8601 date"),
       reason: z.string().optional(),
     },
-    withToolError(async (args) => {
+    withToolError(async ({ lastWorkingDate, reason, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/offboarding", user.isAdmin);
-      const data = await self("POST", "/api/offboarding", user, args);
+      const data = await mcpCreateOffboarding(user, {
+        ...rest,
+        exitDate: lastWorkingDate,
+        exitReason: reason,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -220,15 +225,16 @@ export function registerEmployeeTools(server) {
       lastWorkingDate: z.string().optional(),
       notes: z.string().optional(),
     },
-    withToolError(async ({ id, ...rest }) => {
+    withToolError(async ({ id, lastWorkingDate, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/offboarding/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/offboarding/${id}`, user, rest);
+      const data = await mcpUpdateOffboarding(user, id, {
+        ...rest,
+        ...(lastWorkingDate ? { exitDate: lastWorkingDate } : {}),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── EMERGENCY CONTACTS ───────────────────────────────────────────────────
 
   server.tool(
     "hr_emergency_contact_create",
@@ -240,10 +246,14 @@ export function registerEmployeeTools(server) {
       phone: z.string().min(1),
       email: z.string().email().optional(),
     },
-    withToolError(async (args) => {
+    withToolError(async ({ employeeId, name, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/emergency-contacts", user.isAdmin);
-      const data = await self("POST", "/api/emergency-contacts", user, args);
+      const data = await mcpCreateEmergencyContact(user, {
+        ...rest,
+        employee_Id: employeeId,
+        Contact_name: name,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -258,10 +268,13 @@ export function registerEmployeeTools(server) {
       phone: z.string().optional(),
       email: z.string().email().optional(),
     },
-    withToolError(async ({ id, ...rest }) => {
+    withToolError(async ({ id, name, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/emergency-contacts/update/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/emergency-contacts/update/${id}`, user, rest);
+      const data = await mcpUpdateEmergencyContact(user, id, {
+        ...rest,
+        ...(name ? { Contact_name: name } : {}),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -273,7 +286,7 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/emergency-contacts/delete/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/emergency-contacts/delete/${id}`, user);
+      const data = await mcpDeleteEmergencyContact(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

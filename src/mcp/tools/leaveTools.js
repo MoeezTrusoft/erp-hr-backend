@@ -1,17 +1,24 @@
 import { z } from "zod";
-import axios from "axios";
+import {
+  mcpApproveLeaveRequest,
+  mcpCancelLeaveRequest,
+  mcpCreateHoliday,
+  mcpCreateLeavePolicy,
+  mcpCreateLeaveRequest,
+  mcpDeleteLeavePolicy,
+  mcpListHolidays,
+  mcpListLeaveBalances,
+  mcpListLeavePolicies,
+  mcpListLeaveRequests,
+  mcpListPendingLeaveApprovals,
+  mcpRejectLeaveRequest,
+  mcpRunLeaveAccruals,
+  mcpUpdateLeaveBalance,
+  mcpUpdateLeavePolicy,
+} from "../controllers/leaveMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -28,7 +35,7 @@ export function registerLeaveTools(server) {
     { description: "List all leave requests" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/leaves/requests", user);
+      const data = await mcpListLeaveRequests(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -39,7 +46,7 @@ export function registerLeaveTools(server) {
     { description: "List all leave policies" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/leaves/policies", user);
+      const data = await mcpListLeavePolicies(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -50,7 +57,7 @@ export function registerLeaveTools(server) {
     { description: "List leave balances for all employees" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/leaves/balances", user);
+      const data = await mcpListLeaveBalances(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -61,7 +68,7 @@ export function registerLeaveTools(server) {
     { description: "Get leave requests pending approval" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/leaves/approvals/pending", user);
+      const data = await mcpListPendingLeaveApprovals(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -72,7 +79,7 @@ export function registerLeaveTools(server) {
     { description: "List all public holidays" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/holidays/holidays", user);
+      const data = await mcpListHolidays(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -92,7 +99,7 @@ export function registerLeaveTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/leaves/requests", user.isAdmin);
-      const data = await self("POST", "/api/leaves/requests", user, args);
+      const data = await mcpCreateLeaveRequest(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -107,7 +114,7 @@ export function registerLeaveTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", `/hr/api/leaves/requests/${id}/approve`, user.isAdmin);
-      const data = await self("POST", `/api/leaves/requests/${id}/approve`, user, rest);
+      const data = await mcpApproveLeaveRequest(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -122,7 +129,7 @@ export function registerLeaveTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", `/hr/api/leaves/requests/${id}/reject`, user.isAdmin);
-      const data = await self("POST", `/api/leaves/requests/${id}/reject`, user, rest);
+      const data = await mcpRejectLeaveRequest(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -137,7 +144,7 @@ export function registerLeaveTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/leaves/requests/${id}/cancel`, user.isAdmin);
-      const data = await self("PUT", `/api/leaves/requests/${id}/cancel`, user, rest);
+      const data = await mcpCancelLeaveRequest(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -155,7 +162,7 @@ export function registerLeaveTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/leaves/policies", user.isAdmin);
-      const data = await self("POST", "/api/leaves/policies", user, args);
+      const data = await mcpCreateLeavePolicy(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -172,7 +179,7 @@ export function registerLeaveTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/leaves/policies/${id}`, user.isAdmin);
-      const data = await self("PUT", `/api/leaves/policies/${id}`, user, rest);
+      const data = await mcpUpdateLeavePolicy(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -184,7 +191,7 @@ export function registerLeaveTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", `/hr/api/leaves/policies/${id}`, user.isAdmin);
-      const data = await self("DELETE", `/api/leaves/policies/${id}`, user);
+      const data = await mcpDeleteLeavePolicy(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -200,7 +207,7 @@ export function registerLeaveTools(server) {
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", `/hr/api/leaves/balances/${employeeId}`, user.isAdmin);
-      const data = await self("PUT", `/api/leaves/balances/${employeeId}`, user, rest);
+      const data = await mcpUpdateLeaveBalance(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -214,7 +221,7 @@ export function registerLeaveTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/leaves/accruals/run", user.isAdmin);
-      const data = await self("POST", "/api/leaves/accruals/run", user, args);
+      const data = await mcpRunLeaveAccruals(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -230,7 +237,7 @@ export function registerLeaveTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/holidays/holidays", user.isAdmin);
-      const data = await self("POST", "/api/holidays/holidays", user, args);
+      const data = await mcpCreateHoliday(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

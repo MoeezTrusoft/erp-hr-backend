@@ -1,16 +1,15 @@
 import { z } from "zod";
-import axios from "axios";
+import {
+  mcpCreateSelfLeaveRequest,
+  mcpGetSelfAttendance,
+  mcpGetSelfLeaveBalances,
+  mcpGetSelfPayslips,
+  mcpGetSelfProfile,
+  mcpSelfCheckin,
+  mcpUpdateSelfProfile,
+} from "../controllers/selfMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { withToolError } from "../utils/toolError.js";
-
-async function self(method, path, user, data) {
-  const PORT = process.env.PORT || 3003;
-  const headers = { "X-Internal": "true" };
-  if (user?.userId) headers["X-User-ID"] = String(user.userId);
-  const r = await axios({ method, url: `http://localhost:${PORT}${path}`, data, headers, timeout: 30000 });
-  return r.data;
-}
-
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -27,7 +26,7 @@ export function registerSelfTools(server) {
     { description: "Get the current employee's own profile" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/self/profile", user);
+      const data = await mcpGetSelfProfile(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -38,7 +37,7 @@ export function registerSelfTools(server) {
     { description: "Get the current employee's leave balances" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/self/leave-balance", user);
+      const data = await mcpGetSelfLeaveBalances(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -49,7 +48,7 @@ export function registerSelfTools(server) {
     { description: "Get the current employee's payslips" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/self/payslips", user);
+      const data = await mcpGetSelfPayslips(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -60,7 +59,7 @@ export function registerSelfTools(server) {
     { description: "Get the current employee's attendance records" },
     async (uri) => {
       const { user } = getCtx();
-      const data = await self("GET", "/api/self/attendance", user);
+      const data = await mcpGetSelfAttendance(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -79,7 +78,7 @@ export function registerSelfTools(server) {
     },
     withToolError(async (args) => {
       const { user } = getCtx();
-      const data = await self("PUT", "/api/self/profile", user, args);
+      const data = await mcpUpdateSelfProfile(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -95,7 +94,7 @@ export function registerSelfTools(server) {
     },
     withToolError(async (args) => {
       const { user } = getCtx();
-      const data = await self("POST", "/api/self/leave-request", user, args);
+      const data = await mcpCreateSelfLeaveRequest(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -109,7 +108,7 @@ export function registerSelfTools(server) {
     },
     withToolError(async (args) => {
       const { user } = getCtx();
-      const data = await self("POST", "/api/self/checkin", user, args);
+      const data = await mcpSelfCheckin(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
