@@ -2,6 +2,8 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import client from "prom-client";
+import { createServer } from "node:http";
+import { Server as SocketIOServer } from "socket.io";
 
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
@@ -47,11 +49,15 @@ import developmentPlanRoutes from "./routes/developmentPlan.routes.js";
 import reimbursementRoutes from "./routes/reimbursement.routes.js";
 import gdprRoutes from "./routes/gdpr.routes.js";
 
+import { bootstrapAttendanceData } from "./services/attendance.bootstrap.service.js";
 import { startReviewReminderScheduler } from "./services/reminderScheduler.service.js";
+import { startAttendanceListener, stopAttendanceListener } from "./services/attendance.listener.service.js";
+import { bindRealtimeSocketServer } from "./services/attendance.realtime.service.js";
 import mcpRouter from "./mcp/mcpRouter.js";
 
 dotenv.config();
 const app = express();
+const httpServer = createServer(app);
 const register = new client.Registry();
 
 app.use(express.json());
@@ -103,6 +109,18 @@ app.use("/api/gdpr", gdprRoutes);
 
 startReviewReminderScheduler();
 
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: process.env.ATTENDANCE_SOCKET_CORS_ORIGIN || "*",
+    credentials: true,
+  },
+});
+
+bindRealtimeSocketServer(io);
+
+console.log("[server] attendance listener enabled:", String(process.env.ATTENDANCE_LISTENER_ENABLED ?? "true"));
+console.log("[server] attendance device:", process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202", "port", process.env.ATTENDANCE_DEVICE_PORT || "4370");
+
 app.get("/metrics", async (_req, res) => {
   res.setHeader("Content-Type", register.contentType);
   res.end(await register.metrics());
@@ -113,4 +131,16 @@ app.use("/mcp", mcpRouter);
 app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
 
 const PORT = process.env.PORT || 3003;
-app.listen(PORT, () => console.log(`HR Service running on port ${PORT}`));
+const server = httpServer.listen(PORT, async () => {
+  console.log(`HR Service running on port ${PORT}`);
+  await bootstrapAttendanceData();
+  startAttendanceListener();
+});
+
+function gracefulShutdown() {
+  stopAttendanceListener();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);

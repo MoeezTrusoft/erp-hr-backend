@@ -1,5 +1,12 @@
 import { runController } from "./_runner.js";
-import { checkIn, checkOut, getEmployeeAttendance } from "../../controllers/attendance.controller.js";
+import {
+  checkIn,
+  checkOut,
+  getDailyAttendanceStatusSummary,
+  getEmployeeAttendance,
+  syncDeviceAttendance,
+  testDeviceConnectivity,
+} from "../../controllers/attendance.controller.js";
 import { getTimesheets, createTimesheet, approveTimesheet } from "../../controllers/timesheetController.js";
 import { getTimeEntries, createTimeEntry, updateTimeEntry, deleteTimeEntry } from "../../controllers/timeEntryController.js";
 import { getWorkSchedules, createWorkSchedule, updateWorkSchedule, deleteWorkSchedule } from "../../controllers/workScheduleController.js";
@@ -9,6 +16,9 @@ export const mcpGetAttendanceByEmployee = (user, id) => runController(getEmploye
 export const mcpListTimesheets = (user) => runController(getTimesheets, { user });
 export const mcpCheckIn = (user, data) => runController(checkIn, { user, body: data });
 export const mcpCheckOut = (user, data) => runController(checkOut, { user, body: data });
+export const mcpDeviceConnectivity = (user, data) => runController(testDeviceConnectivity, { user, body: data });
+export const mcpDeviceSyncAttendance = (user, data) => runController(syncDeviceAttendance, { user, body: data });
+export const mcpAttendanceDailySummary = (user, query) => runController(getDailyAttendanceStatusSummary, { user, query });
 export const mcpCreateTimesheet = (user, data) => runController(createTimesheet, { user, body: data });
 export const mcpApproveTimesheet = (user, id, data) => runController(approveTimesheet, { user, params: { id: String(id) }, body: data });
 

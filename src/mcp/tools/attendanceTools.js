@@ -3,9 +3,12 @@ import {
   mcpApproveTimesheet,
   mcpCheckIn,
   mcpCheckOut,
+  mcpAttendanceDailySummary,
   mcpCreateOvertimeRule,
   mcpCreateTimeEntry,
   mcpCreateTimesheet,
+  mcpDeviceConnectivity,
+  mcpDeviceSyncAttendance,
   mcpCreateWorkSchedule,
   mcpDeleteOvertimeRule,
   mcpDeleteTimeEntry,
@@ -87,6 +90,65 @@ export function registerAttendanceTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/attendance/checkout", user.isAdmin);
       const data = await mcpCheckOut(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_attendance_device_connectivity",
+    "Check if biometric attendance device is reachable on TCP",
+    {
+      host: z.string().optional().describe("Device IP/hostname; defaults to ATTENDANCE_DEVICE_HOST"),
+      port: z.number().int().positive().optional().describe("Device TCP port; defaults to 4370"),
+      timeoutMs: z.number().int().positive().optional().describe("Connection timeout in milliseconds"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "/hr/api/attendance/device/connectivity", user.isAdmin);
+      const data = await mcpDeviceConnectivity(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_attendance_device_sync",
+    "Sync biometric punches into attendance with auto late calculation",
+    {
+      punches: z.array(z.object({
+        employeeId: z.union([z.number(), z.string()]).optional(),
+        employeeCode: z.string().optional(),
+        deviceUserId: z.string().optional(),
+        userId: z.string().optional(),
+        timestamp: z.string().describe("ISO 8601 datetime"),
+        type: z.string().optional().describe("IN / OUT"),
+      })).min(1),
+      shiftStart: z.string().optional().describe("HH:mm, default 09:00"),
+      lateGraceMinutes: z.number().int().min(0).optional().describe("Grace minutes after shift start"),
+      dryRun: z.boolean().optional().describe("Preview actions only; no DB writes"),
+      testConnectivity: z.boolean().optional().describe("Check device reachability before sync"),
+      host: z.string().optional(),
+      port: z.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "/hr/api/attendance/device/sync", user.isAdmin);
+      const data = await mcpDeviceSyncAttendance(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_attendance_daily_summary",
+    "Get present/late/absent totals for a day",
+    {
+      date: z.string().optional().describe("YYYY-MM-DD, defaults to today"),
+      shiftStart: z.string().optional().describe("HH:mm, default 09:00"),
+      lateGraceMinutes: z.union([z.number(), z.string()]).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "/hr/api/attendance/device/daily-summary", user.isAdmin);
+      const data = await mcpAttendanceDailySummary(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

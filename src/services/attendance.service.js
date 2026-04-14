@@ -3,14 +3,46 @@ import { logAction } from "../utils/logs.js";
 
 const prisma = new PrismaClient();
 
-export const createAttendanceService = async (data) => {
-  const { employeeId, date, check_in, status } = data;
+function parseCheckInInput({ date, check_in, timestamp }) {
+  if (timestamp) {
+    const ts = new Date(timestamp);
+    if (Number.isNaN(ts.getTime())) throw new Error("Invalid timestamp");
+    return ts;
+  }
 
-  if (!employeeId) throw new Error("employeeId is required");
   if (!date) throw new Error("date is required");
   if (!check_in) throw new Error("check_in is required");
 
+  const parsed = new Date(`${date} ${check_in}`);
+  if (Number.isNaN(parsed.getTime())) throw new Error("Invalid check_in/date value");
+  return parsed;
+}
+
+function getDayRange(dt) {
+  const start = new Date(dt);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(dt);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+function resolveStatus(checkInTs, providedStatus) {
+  if (providedStatus) return String(providedStatus).toUpperCase();
+  const shiftStartRaw = process.env.ATTENDANCE_SHIFT_START || "09:00";
+  const graceMinutes = Number(process.env.ATTENDANCE_LATE_GRACE_MINUTES || 15);
+  const [h, m] = shiftStartRaw.split(":").map(Number);
+  const cutoff = new Date(checkInTs);
+  cutoff.setHours(Number.isInteger(h) ? h : 9, Number.isInteger(m) ? m + graceMinutes : graceMinutes, 0, 0);
+  return checkInTs > cutoff ? "LATE" : "PRESENT";
+}
+
+export const createAttendanceService = async (data) => {
+  const { employeeId, date, check_in, status, timestamp } = data;
+
+  if (!employeeId) throw new Error("employeeId is required");
+
   const empId = Number(employeeId);
+  if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
 
   // ✅ Ensure employee exists
   const employee = await prisma.employee.findUnique({
@@ -18,18 +50,39 @@ export const createAttendanceService = async (data) => {
   });
   if (!employee) throw new Error("Employee not found");
 
-  // ✅ Convert "09:00 AM" → ISO Date
-  const parsedCheckIn = new Date(`${date} ${check_in}`);
+  const parsedCheckIn = parseCheckInInput({ date, check_in, timestamp });
+  const { start, end } = getDayRange(parsedCheckIn);
+  const computedStatus = resolveStatus(parsedCheckIn, status);
 
-  // ✅ Create attendance record
-  const attendanceIn = await prisma.attendance.create({
-    data: {
+  const existing = await prisma.attendance.findFirst({
+    where: {
       employeeId: empId,
-      date: new Date(date),
-      check_in: parsedCheckIn,
-      status,
+      date: {
+        gte: start,
+        lte: end,
+      },
     },
+    orderBy: { id: "desc" },
   });
+
+  const attendanceIn = existing
+    ? await prisma.attendance.update({
+      where: { id: existing.id },
+      data: {
+        check_in: existing.check_in
+          ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
+          : parsedCheckIn,
+        status: computedStatus,
+      },
+    })
+    : await prisma.attendance.create({
+      data: {
+        employeeId: empId,
+        date: start,
+        check_in: parsedCheckIn,
+        status: computedStatus,
+      },
+    });
 
    // Log the update action
     await logAction({
@@ -42,17 +95,24 @@ export const createAttendanceService = async (data) => {
   return attendanceIn;
 };
 export const checkOutService = async (employeeId) => {
+  return checkOutServiceWithTimestamp(employeeId);
+};
 
-   const empId = Number(employeeId);
+export const checkOutServiceWithTimestamp = async (employeeId, timestamp) => {
+  const empId = Number(employeeId);
+  if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
+
   const attendance = await prisma.attendance.findFirst({
-    where: { empId },
+    where: { employeeId: empId },
     orderBy: { date: "desc" }
   });
 
   if (!attendance || attendance.check_out)
     throw new Error("No active check-in found");
 
-  const checkOutTime = new Date();
+  const checkOutTime = timestamp ? new Date(timestamp) : new Date();
+  if (Number.isNaN(checkOutTime.getTime())) throw new Error("Invalid checkout timestamp");
+
   const totalHours =
     (checkOutTime - attendance.check_in) / (1000 * 60 * 60);
 
@@ -61,15 +121,15 @@ export const checkOutService = async (employeeId) => {
     data: { check_out: checkOutTime, total_hours: totalHours }
   });
 
-   // Log the update action
-    await logAction({
-      employeeId: 1,
-      type: "Check Out", // 👈 changed from CREATE to UPDATE
-      module: "Attandance",
-      result: "SUCCESS",
-      notes: `CHeck Out "${1}" updated successfully`,
-    });
-return checkOut;
+  // Log the update action
+  await logAction({
+    employeeId: 1,
+    type: "Check Out", // 👈 changed from CREATE to UPDATE
+    module: "Attandance",
+    result: "SUCCESS",
+    notes: `CHeck Out "${1}" updated successfully`,
+  });
+  return checkOut;
 };
 
 export const getAttendanceByEmployee = async (employeeId) => {
