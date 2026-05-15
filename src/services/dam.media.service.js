@@ -9,13 +9,18 @@ const damApi = axios.create({
     timeout: DAM_TIMEOUT,
 });
 
+const withInternalSecret = (headers = {}) => ({
+    ...headers,
+    "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
+});
+
 export async function damRequest(endpoint, method = "GET", body = {}, headers = {}) {
     try {
         const response = await damApi.request({
             url: endpoint.startsWith("/") ? endpoint : `/${endpoint}`,
             method: method.toUpperCase(),
             data: ["POST", "PUT", "PATCH"].includes(method.toUpperCase()) ? body : undefined,
-            headers,
+            headers: withInternalSecret(headers),
         });
         return response.data;
     } catch (error) {

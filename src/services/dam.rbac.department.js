@@ -8,13 +8,18 @@ const hrApi = axios.create({
     timeout: HR_TIMEOUT,
 });
 
+const withInternalSecret = (headers = {}) => ({
+    ...headers,
+    "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
+});
+
 export async function hrRequest(endpoint, method = "GET", body = {}, headers = {}) {
     try {
         const response = await hrApi.request({
             url: endpoint.startsWith("/") ? endpoint : `/${endpoint}`,
             method: method.toUpperCase(),
             data: ["POST", "PUT", "PATCH"].includes(method.toUpperCase()) ? body : undefined,
-            headers,
+            headers: withInternalSecret(headers),
         });
 
         return response.data;
