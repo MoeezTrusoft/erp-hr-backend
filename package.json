@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "sync:k20:march": "node scripts/sync_k20_march_to_db.js --month 3",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit",
     "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration",
@@ -24,6 +25,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@prisma/client": "^6.19.0",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
@@ -38,7 +40,12 @@
     "nodemailer": "^7.0.4",
     "prisma": "^6.19.0",
     "prom-client": "^15.1.3",
-    "uuid": "^11.1.0"
+    "socket.io": "^4.8.3",
+    "uuid": "^11.1.0",
+    "zod": "^4.3.6"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

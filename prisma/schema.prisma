@@ -164,6 +164,19 @@ enum ApprovalDecision {
 
 // ==================== MODELS ====================
 
+model DashboardLayout {
+  id            Int      @id @default(autoincrement())
+  employeeId    Int
+  dashboardType String   @default("workforce")
+  layout        Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([dashboardType])
+}
+
 model Employee {
   id                  Int       @id @default(autoincrement())
   tenant_id           Int?
@@ -283,6 +296,36 @@ model Employee {
   regionsCreated        Region[]               @relation("RegionCreatedBy")
   regionsUpdated        Region[]               @relation("RegionUpdatedBy")
   employee_media        EmployeeMedia[]        @relation("employeeMedia")
+  dashboardLayouts      DashboardLayout[]
+
+  // Onboarding relations
+  onboardingChecklists OnboardingChecklist[]
+  onboardingDocuments  OnboardingDocument[]
+  onboardingSurveys    OnboardingSurvey[]
+  buddyAssignments     OnboardingBuddy[]     @relation("BuddyRelation")
+
+  // Recruitment relations
+  interviewPanels    InterviewInterviewer[]
+  interviewScorecardsGiven InterviewScorecard[] @relation("ScorecardReviewer")
+
+  // Learning & Development relations
+  certifications     Certification[]
+  facilitatedSessions TrainingSession[]    @relation("SessionFacilitator")
+  sessionAttendances TrainingSessionAttendee[]
+  learningPathEnrollments LearningPathEnrollment[]
+
+  // Employee management relations
+  skills             EmployeeSkill[]
+  lifecycleEvents    EmployeeLifecycleEvent[]
+  offboardingChecklist OffboardingChecklist?
+  offboardingTasksAssigned OffboardingTask[]
+
+  // Compliance, IDP, Reimbursement relations
+  complianceItems    ComplianceItem[]
+  developmentPlans   DevelopmentPlan[]
+  reimbursementClaims ReimbursementClaim[]          @relation("ReimbursementEmployee")
+  reimbursementsApproved ReimbursementClaim[]       @relation("ReimbursementApprover")
+  documentExpiryAlerts DocumentExpiryAlert[]
 }
 
 model EmployeeMedia {
@@ -813,6 +856,7 @@ model JobRequisition {
   postings     JobPosting[]
   employee     Employee?             @relation(fields: [employeeId], references: [id])
   applications Application[]
+  offers       Offer[]
 }
 
 model RequisitionApproval {
@@ -843,27 +887,32 @@ model TrainingCategory {
   id          Int              @id @default(autoincrement())
   name        String
   description String?
-  courses     TrainingCourse[]
+  courses       TrainingCourse[]
+  learningPaths LearningPath[]
 }
 
 model TrainingCourse {
-  id            Int          @id @default(autoincrement())
-  title         String
-  description   String?
-  categoryId    Int
-  instructorId  Int?
-  durationHours Int?
-  location      String?
-  mode          CourseMode   @default(ONLINE)
-  startDate     DateTime?
-  endDate       DateTime?
-  status        CourseStatus @default(DRAFT)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  id             Int          @id @default(autoincrement())
+  title          String
+  description    String?
+  categoryId     Int
+  instructorId   Int?
+  durationHours  Int?
+  location       String?
+  mode           CourseMode   @default(ONLINE)
+  startDate      DateTime?
+  endDate        DateTime?
+  status         CourseStatus @default(DRAFT)
+  contentMediaId Int? // DAM asset ID for course material
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  category    TrainingCategory     @relation(fields: [categoryId], references: [id])
-  instructor  Employee?            @relation(fields: [instructorId], references: [id])
-  enrollments TrainingEnrollment[]
+  category        TrainingCategory       @relation(fields: [categoryId], references: [id])
+  instructor      Employee?              @relation(fields: [instructorId], references: [id])
+  enrollments     TrainingEnrollment[]
+  sessions        TrainingSession[]
+  pathCourses     LearningPathCourse[]
+  certifications  Certification[]
 }
 
 model TrainingEnrollment {
@@ -1223,22 +1272,25 @@ model Tag {
 }
 
 model Candidate {
-  id          Int      @id @default(autoincrement())
-  firstName   String
-  lastName    String?
-  email       String   @unique
-  phone       String?
-  source      String? // LinkedIn, Referral, etc.
-  resumeUrl   String?
-  notes       String?
-  status      String   @default("active") // active | archived
-  tenantId    Int?
-  createdById Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            Int      @id @default(autoincrement())
+  firstName     String
+  lastName      String?
+  email         String   @unique
+  phone         String?
+  source        String? // LinkedIn, Referral, etc.
+  resumeUrl     String? // legacy - use resumeMediaId for new uploads
+  resumeMediaId Int? // DAM asset ID for resume file
+  notes         String?
+  status        String   @default("active") // active | archived
+  tenantId      Int?
+  createdById   Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   tags         CandidateTag[]
   applications Application[]
+  talentPools  TalentPool[]
+  offers       Offer[]
 }
 
 model CandidateTag {
@@ -1265,6 +1317,8 @@ model Application {
 
   candidate      Candidate      @relation(fields: [candidateId], references: [id])
   jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+  interviews     Interview[]
+  offer          Offer?
 
   @@unique([candidateId, jobRequisitionId])
 }
@@ -1295,3 +1349,583 @@ model PerformanceReviewItem {
 
   @@unique([reviewId, metricId])
 }
+
+// ==================== ONBOARDING ENUMS ====================
+
+enum OnboardingStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  OVERDUE
+}
+
+enum TaskAssigneeType {
+  HR
+  MANAGER
+  NEW_HIRE
+  IT
+}
+
+enum SurveyType {
+  DAY_30
+  DAY_60
+  DAY_90
+}
+
+// ==================== ONBOARDING MODELS ====================
+
+model OnboardingChecklist {
+  id          Int               @id @default(autoincrement())
+  employeeId  Int
+  title       String
+  startDate   DateTime
+  targetDate  DateTime?
+  status      OnboardingStatus  @default(NOT_STARTED)
+  completedAt DateTime?
+  notes       String?
+  created_at  DateTime          @default(now())
+  updated_at  DateTime          @updatedAt
+
+  employee  Employee              @relation(fields: [employeeId], references: [id])
+  tasks     OnboardingTask[]
+  documents OnboardingDocument[]
+  surveys   OnboardingSurvey[]
+  buddy     OnboardingBuddy?
+
+  @@map("onboarding_checklists")
+}
+
+model OnboardingTask {
+  id           Int              @id @default(autoincrement())
+  checklistId  Int
+  title        String
+  description  String?
+  assigneeType TaskAssigneeType
+  assigneeId   Int?
+  dueDate      DateTime?
+  completed    Boolean          @default(false)
+  completedAt  DateTime?
+  sortOrder    Int              @default(0)
+  mediaId      Int?
+  created_at   DateTime         @default(now())
+  updated_at   DateTime         @updatedAt
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@map("onboarding_tasks")
+}
+
+model OnboardingDocument {
+  id            Int      @id @default(autoincrement())
+  checklistId   Int
+  employeeId    Int
+  title         String
+  mediaId       Int
+  category      String?
+  requiresSign  Boolean  @default(false)
+  signedAt      DateTime?
+  signedByEmpId Int?
+  created_at    DateTime @default(now())
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  employee  Employee            @relation(fields: [employeeId], references: [id])
+
+  @@map("onboarding_documents")
+}
+
+model OnboardingBuddy {
+  id          Int      @id @default(autoincrement())
+  checklistId Int      @unique
+  buddyId     Int
+  assignedAt  DateTime @default(now())
+  notes       String?
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  buddy     Employee            @relation("BuddyRelation", fields: [buddyId], references: [id])
+
+  @@map("onboarding_buddies")
+}
+
+model OnboardingSurvey {
+  id          Int        @id @default(autoincrement())
+  checklistId Int
+  employeeId  Int
+  type        SurveyType
+  responses   Json?
+  submittedAt DateTime?
+  created_at  DateTime   @default(now())
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  employee  Employee            @relation(fields: [employeeId], references: [id])
+
+  @@unique([checklistId, type])
+  @@map("onboarding_surveys")
+}
+
+// ==================== RECRUITMENT COMPLETION ENUMS ====================
+
+enum InterviewType {
+  PHONE_SCREEN
+  TECHNICAL
+  BEHAVIORAL
+  PANEL
+  FINAL
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum OfferStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+// ==================== RECRUITMENT COMPLETION MODELS ====================
+
+model Interview {
+  id              Int             @id @default(autoincrement())
+  applicationId   Int
+  interviewType   InterviewType
+  scheduledAt     DateTime
+  durationMinutes Int             @default(60)
+  location        String?
+  status          InterviewStatus @default(SCHEDULED)
+  notes           String?
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  application  Application            @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  interviewers InterviewInterviewer[]
+  scorecards   InterviewScorecard[]
+
+  @@map("interviews")
+}
+
+model InterviewInterviewer {
+  interviewId Int
+  employeeId  Int
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  employee  Employee  @relation(fields: [employeeId], references: [id])
+
+  @@id([interviewId, employeeId])
+  @@map("interview_interviewers")
+}
+
+model InterviewScorecard {
+  id             Int      @id @default(autoincrement())
+  interviewId    Int
+  reviewerId     Int
+  scores         Json
+  overallScore   Float?
+  recommendation String?
+  notes          String?
+  submittedAt    DateTime?
+  created_at     DateTime  @default(now())
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  reviewer  Employee  @relation("ScorecardReviewer", fields: [reviewerId], references: [id])
+
+  @@unique([interviewId, reviewerId])
+  @@map("interview_scorecards")
+}
+
+model Offer {
+  id               Int         @id @default(autoincrement())
+  applicationId    Int         @unique
+  candidateId      Int
+  jobRequisitionId Int
+  salary           Float
+  currency         String      @default("USD")
+  startDate        DateTime?
+  expiryDate       DateTime?
+  status           OfferStatus @default(DRAFT)
+  offerLetterMediaId Int?
+  notes            String?
+  sentAt           DateTime?
+  respondedAt      DateTime?
+  createdById      Int?
+  created_at       DateTime    @default(now())
+  updated_at       DateTime    @updatedAt
+
+  application    Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  candidate      Candidate      @relation(fields: [candidateId], references: [id])
+  jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+
+  @@map("offers")
+}
+
+model TalentPool {
+  id          Int      @id @default(autoincrement())
+  candidateId Int
+  poolName    String
+  notes       String?
+  addedById   Int?
+  addedAt     DateTime @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id])
+
+  @@unique([candidateId, poolName])
+  @@map("talent_pools")
+}
+
+// ==================== LEARNING & DEVELOPMENT ENUMS ====================
+
+enum LearningPathStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SessionFormat {
+  LIVE_ONLINE
+  LIVE_IN_PERSON
+  RECORDED
+  SELF_PACED
+}
+
+// ==================== LEARNING & DEVELOPMENT MODELS ====================
+
+model LearningPath {
+  id            Int                @id @default(autoincrement())
+  name          String
+  description   String?
+  categoryId    Int?
+  status        LearningPathStatus @default(DRAFT)
+  durationHours Int?
+  targetRole    String?
+  createdById   Int?
+  created_at    DateTime           @default(now())
+  updated_at    DateTime           @updatedAt
+
+  category    TrainingCategory?        @relation(fields: [categoryId], references: [id])
+  courses     LearningPathCourse[]
+  enrollments LearningPathEnrollment[]
+
+  @@map("learning_paths")
+}
+
+model LearningPathCourse {
+  learningPathId Int
+  courseId       Int
+  sortOrder      Int     @default(0)
+  isRequired     Boolean @default(true)
+
+  learningPath LearningPath   @relation(fields: [learningPathId], references: [id], onDelete: Cascade)
+  course       TrainingCourse @relation(fields: [courseId], references: [id])
+
+  @@id([learningPathId, courseId])
+  @@map("learning_path_courses")
+}
+
+model LearningPathEnrollment {
+  id             Int              @id @default(autoincrement())
+  learningPathId Int
+  employeeId     Int
+  enrolledAt     DateTime         @default(now())
+  progress       Float            @default(0)
+  status         EnrollmentStatus @default(ENROLLED)
+  completedAt    DateTime?
+
+  learningPath LearningPath @relation(fields: [learningPathId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id])
+
+  @@unique([learningPathId, employeeId])
+  @@map("learning_path_enrollments")
+}
+
+model TrainingSession {
+  id               Int           @id @default(autoincrement())
+  courseId         Int
+  title            String
+  format           SessionFormat
+  scheduledAt      DateTime?
+  durationMinutes  Int?
+  location         String?
+  meetingUrl       String?
+  facilitatorId    Int?
+  maxAttendees     Int?
+  recordingMediaId Int?
+  created_at       DateTime      @default(now())
+  updated_at       DateTime      @updatedAt
+
+  course      TrainingCourse            @relation(fields: [courseId], references: [id])
+  facilitator Employee?                 @relation("SessionFacilitator", fields: [facilitatorId], references: [id])
+  attendees   TrainingSessionAttendee[]
+
+  @@map("training_sessions")
+}
+
+model TrainingSessionAttendee {
+  sessionId  Int
+  employeeId Int
+  attended   Boolean @default(false)
+
+  session  TrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  employee Employee        @relation(fields: [employeeId], references: [id])
+
+  @@id([sessionId, employeeId])
+  @@map("training_session_attendees")
+}
+
+model Certification {
+  id                 Int       @id @default(autoincrement())
+  employeeId         Int
+  courseId           Int?
+  name               String
+  issuedBy           String?
+  issuedAt           DateTime?
+  expiryDate         DateTime?
+  credentialId       String?
+  certificateMediaId Int?
+  created_at         DateTime  @default(now())
+
+  employee Employee        @relation(fields: [employeeId], references: [id])
+  course   TrainingCourse? @relation(fields: [courseId], references: [id])
+
+  @@map("certifications")
+}
+
+// ==================== EMPLOYEE MANAGEMENT ENUMS ====================
+
+enum LifecycleEventType {
+  HIRED
+  PROMOTED
+  TRANSFERRED
+  DEMOTED
+  LEAVE_OF_ABSENCE
+  RETURN_FROM_LEAVE
+  ROLE_CHANGED
+  SALARY_CHANGED
+  OFFBOARDING_STARTED
+  TERMINATED
+  RESIGNED
+}
+
+enum OffboardingStatus {
+  INITIATED
+  IN_PROGRESS
+  COMPLETED
+}
+
+// ==================== EMPLOYEE MANAGEMENT MODELS ====================
+
+model Skill {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  category   String?
+  created_at DateTime @default(now())
+
+  employeeSkills EmployeeSkill[]
+
+  @@map("skills")
+}
+
+model EmployeeSkill {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int
+  skillId      Int
+  proficiency  String?
+  verified     Boolean  @default(false)
+  verifiedById Int?
+  addedAt      DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+  skill    Skill    @relation(fields: [skillId], references: [id])
+
+  @@unique([employeeId, skillId])
+  @@map("employee_skills")
+}
+
+model EmployeeLifecycleEvent {
+  id            Int                @id @default(autoincrement())
+  employeeId    Int
+  eventType     LifecycleEventType
+  effectiveDate DateTime
+  description   String?
+  oldValues     Json?
+  newValues     Json?
+  createdById   Int?
+  created_at    DateTime           @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId, effectiveDate])
+  @@map("employee_lifecycle_events")
+}
+
+model OffboardingChecklist {
+  id                   Int               @id @default(autoincrement())
+  employeeId           Int               @unique
+  exitDate             DateTime
+  exitReason           String?
+  status               OffboardingStatus @default(INITIATED)
+  exitInterviewMediaId Int?
+  created_at           DateTime          @default(now())
+  updated_at           DateTime          @updatedAt
+
+  employee Employee         @relation(fields: [employeeId], references: [id])
+  tasks    OffboardingTask[]
+
+  @@map("offboarding_checklists")
+}
+
+model OffboardingTask {
+  id           Int              @id @default(autoincrement())
+  checklistId  Int
+  title        String
+  assigneeType TaskAssigneeType
+  assigneeId   Int?
+  dueDate      DateTime?
+  completed    Boolean          @default(false)
+  completedAt  DateTime?
+  created_at   DateTime         @default(now())
+
+  checklist   OffboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  assignee    Employee?            @relation(fields: [assigneeId], references: [id])
+
+  @@map("offboarding_tasks")
+}
+
+// ==================== COMPLIANCE ENUMS ====================
+
+enum ComplianceItemStatus {
+  PENDING
+  COMPLETED
+  OVERDUE
+  WAIVED
+}
+
+enum IDPItemStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  DEFERRED
+}
+
+enum ReimbursementStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  PAID
+}
+
+// ==================== COMPLIANCE & IDP & REIMBURSEMENT MODELS ====================
+
+model ComplianceChecklist {
+  id            Int      @id @default(autoincrement())
+  name          String
+  description   String?
+  applicableTo  String?
+  refId         Int?
+  isActive      Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  items ComplianceItem[]
+
+  @@map("compliance_checklists")
+}
+
+model ComplianceItem {
+  id              Int                  @id @default(autoincrement())
+  checklistId     Int
+  employeeId      Int?
+  title           String
+  description     String?
+  dueDate         DateTime?
+  status          ComplianceItemStatus @default(PENDING)
+  completedAt     DateTime?
+  evidenceMediaId Int?
+  notes           String?
+  created_at      DateTime             @default(now())
+  updated_at      DateTime             @updatedAt
+
+  checklist ComplianceChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  employee  Employee?           @relation(fields: [employeeId], references: [id])
+
+  @@map("compliance_items")
+}
+
+model DocumentExpiryAlert {
+  id               Int      @id @default(autoincrement())
+  employeeMediaId  Int
+  employeeId       Int
+  alertDate        DateTime
+  daysBeforeExpiry Int
+  notified         Boolean  @default(false)
+  notifiedAt       DateTime?
+  created_at       DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@map("document_expiry_alerts")
+}
+
+model DevelopmentPlan {
+  id           Int       @id @default(autoincrement())
+  employeeId   Int
+  title        String
+  description  String?
+  startDate    DateTime
+  endDate      DateTime?
+  reviewedById Int?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  employee Employee              @relation(fields: [employeeId], references: [id])
+  items    DevelopmentPlanItem[]
+
+  @@map("development_plans")
+}
+
+model DevelopmentPlanItem {
+  id          Int           @id @default(autoincrement())
+  planId      Int
+  title       String
+  description String?
+  targetDate  DateTime?
+  status      IDPItemStatus @default(NOT_STARTED)
+  completedAt DateTime?
+  created_at  DateTime      @default(now())
+
+  plan DevelopmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@map("development_plan_items")
+}
+
+model ReimbursementClaim {
+  id             Int                 @id @default(autoincrement())
+  employeeId     Int
+  title          String
+  amount         Float
+  currency       String              @default("USD")
+  category       String?
+  receiptMediaId Int?
+  status         ReimbursementStatus @default(DRAFT)
+  submittedAt    DateTime?
+  approvedById   Int?
+  approvedAt     DateTime?
+  paidAt         DateTime?
+  notes          String?
+  created_at     DateTime            @default(now())
+  updated_at     DateTime            @updatedAt
+
+  employee   Employee  @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
+  approvedBy Employee? @relation("ReimbursementApprover", fields: [approvedById], references: [id])
+
+  @@map("reimbursement_claims")
+}
+
+// ==================== LEARNING PATH CATEGORY RELATION ====================
+
+// Note: LearningPath.category references TrainingCategory which already exists

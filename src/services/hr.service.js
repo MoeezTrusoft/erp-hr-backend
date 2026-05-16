@@ -109,14 +109,16 @@ function calculateTenure(hireDate) {
   };
 }
 
-export const createEmployeeService = async (data, finalMediaId, createdBy) => {
+export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,createdBy) => {
+  console.log("fsfsfsfsf",finalMediaUrl,finalMediaId);
+  
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 
   for (const field of requiredFields) {
     if (!data[field]) {
       throw new Error(`${field} is a required field`);
-    }
+    } 
   }
 
   // ------------ Validate Position ----------------------------
@@ -231,7 +233,7 @@ export const createEmployeeService = async (data, finalMediaId, createdBy) => {
     work_email: data.work_email || null,
     work_phone: data.work_phone ? Number(data.work_phone) : null,
     employement_status: data.employement_status || null,
-    photo_url: data.photo_url || null,
+    photo_url: finalMediaUrl || null,
 
     gender: data.gender || null,
     job_title: data.job_title,
@@ -371,6 +373,43 @@ export const getEmployeeByIdService = async (id) => {
   if (!employee) throw new Error('Employee not found');
 
   return employee;
+};
+
+export const getEmployeeMediaIdService = async (id) => {
+  const employee = await prisma.employee.findUnique({
+    where: { id: Number(id) },
+    select: { employee_media_id: true },
+  });
+  return employee;
+};
+
+export const createEmployeeMediaRecordService = async ({
+  title,
+  category,
+  version,
+  visibility = true,
+  effective_date,
+  expiry_date,
+  notes,
+  employeeId,
+  mediaId,
+}) => {
+  return prisma.employeeMedia.create({
+    data: {
+      title: title || null,
+      category: category || null,
+      version: version || null,
+      visibility,
+      effective_date: effective_date || null,
+      expiry_date: expiry_date || null,
+      notes: notes || null,
+      employee_id: Number(employeeId),
+      media_id: Number(mediaId),
+    },
+    include: {
+      employee: true,
+    },
+  });
 };
 
 

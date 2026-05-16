@@ -3,9 +3,18 @@ import os from "os";
 
 const prisma = new PrismaClient();
 
+const toIntOrNull = (value) => {
+    if (value === undefined || value === null || value === "") return null;
+    const num = Number(value);
+    return Number.isInteger(num) && num > 0 ? num : null;
+};
+
 export const logAction = async ({
-   userId,
+    userId,
+    employeeId,
+    actionById,
     type,
+    actionType,
     module,
     result,
     notes = "",
@@ -13,13 +22,34 @@ export const logAction = async ({
 }) => {
     try {
         const os_name = os.platform();
+        const requestedEmployeeId = toIntOrNull(employeeId ?? userId);
+        const requestedActionById = toIntOrNull(actionById ?? employeeId ?? userId);
+
+        let validEmployeeId = null;
+        let validActionById = null;
+
+        if (requestedEmployeeId) {
+            const exists = await prisma.employee.findUnique({
+                where: { id: requestedEmployeeId },
+                select: { id: true },
+            });
+            validEmployeeId = exists?.id || null;
+        }
+
+        if (requestedActionById) {
+            const exists = await prisma.employee.findUnique({
+                where: { id: requestedActionById },
+                select: { id: true },
+            });
+            validActionById = exists?.id || null;
+        }
 
         await prisma.log.create({
             data: {
-                userId,
-                actionById: userId,
+                ...(validEmployeeId ? { employeeId: validEmployeeId } : {}),
+                ...(validActionById ? { actionById: validActionById } : {}),
                 type,
-                action_type: type,
+                action_type: actionType || type,
                 module,
                 result,
                 ip,

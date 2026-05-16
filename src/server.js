@@ -1,9 +1,12 @@
-// hr-service/server.js
 import express from "express";
 import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
+import client from "prom-client";
+import { createServer } from "node:http";
+import { Server as SocketIOServer } from "socket.io";
+
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
 import attendanceRoutes from "./routes/attendance.routes.js";
@@ -17,33 +20,54 @@ import performanceCycleRoutes from "./routes/performanceCycleRoutes.js";
 import performanceTemplateRoutes from "./routes/performanceTemplateRoutes.js";
 import goalsRoutes from "./routes/goal.routes.js";
 import goalAllignmentRoutes from "./routes/goalAlignment.routes.js";
-import performanceReviewRoutes from "./routes/performanceReview.routes.js"
-import { startReviewReminderScheduler } from "./services/reminderScheduler.service.js";
+import performanceReviewRoutes from "./routes/performanceReview.routes.js";
 import calibrationRoutes from "./routes/calibration.routes.js";
 import calibrationReportRoutes from "./routes/calibrationReport.routes.js";
-import client from "prom-client";
-import timeAttendanceRoutes from './routes/timeAttendanceRoutes.js';
-import leaveRoutes from './routes/leave.routes.js';
-import holidayRoutes from './routes/holiday.routes.js';
-import payrollRoutes from './routes/payrollRoutes.js';
-import trainingRoutes from './routes/trainingRoutes.js';
-import { analyticsRoutes } from './routes/analytics.js';
+import timeAttendanceRoutes from "./routes/timeAttendanceRoutes.js";
+import leaveRoutes from "./routes/leave.routes.js";
+import holidayRoutes from "./routes/holiday.routes.js";
+import payrollRoutes from "./routes/payrollRoutes.js";
+import trainingRoutes from "./routes/trainingRoutes.js";
+import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
 import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { attachRequestId } from "./utils/apiContract.js";
+import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 
+import onboardingRoutes from "./routes/onboarding.routes.js";
+import interviewRoutes from "./routes/interview.routes.js";
+import offerRoutes from "./routes/offer.routes.js";
+import talentPoolRoutes from "./routes/talentPool.routes.js";
+import learningPathRoutes from "./routes/learningPath.routes.js";
+import trainingSessionRoutes from "./routes/trainingSession.routes.js";
+import certificationRoutes from "./routes/certification.routes.js";
+import employeeSkillRoutes from "./routes/employeeSkill.routes.js";
+import employeeLifecycleRoutes from "./routes/employeeLifecycle.routes.js";
+import offboardingRoutes from "./routes/offboarding.routes.js";
+import orgChartRoutes from "./routes/orgChart.routes.js";
+import selfRoutes from "./routes/self.routes.js";
+import complianceRoutes from "./routes/compliance.routes.js";
+import developmentPlanRoutes from "./routes/developmentPlan.routes.js";
+import reimbursementRoutes from "./routes/reimbursement.routes.js";
+import gdprRoutes from "./routes/gdpr.routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { bootstrapAttendanceData } from "./services/attendance.bootstrap.service.js";
+import { startReviewReminderScheduler } from "./services/reminderScheduler.service.js";
+import { startAttendanceListener, stopAttendanceListener } from "./services/attendance.listener.service.js";
+import { bindRealtimeSocketServer } from "./services/attendance.realtime.service.js";
+import mcpRouter from "./mcp/mcpRouter.js";
 
 dotenv.config({
   path: path.resolve(__dirname, "../.env"),
 });
 const app = express();
-// Create a registry
+const httpServer = createServer(app);
 const register = new client.Registry();
+
 app.use(express.json());
 
 const allowedOrigins = process.env.ALLOWED_DOMAINS
@@ -100,42 +124,83 @@ app.use(attachHrContext);
 app.use("/api", requireInternalService);
 app.use("/api/hr", hrContractRoutes);
 app.use("/api/employee", hrRoutes);
-app.use("/api/attendance", attendanceRoutes);//no
+app.use("/api/attendance", attendanceRoutes);
 app.use("/api/performance", performanceRoutes);
 app.use("/api/positions", positionRoutes);
 app.use("/api/requisitions", requisitionRoutes);
-app.use("/api/train_cat", traningCategoryRoutes);//no
-app.use("/api/course", traningCourseRoutes);//no
-app.use("/api/enrollment", traningEnrollmentRoutes);//no
+app.use("/api/train_cat", traningCategoryRoutes);
+app.use("/api/course", traningCourseRoutes);
+app.use("/api/enrollment", traningEnrollmentRoutes);
 app.use("/api/log", logRoutes);
 app.use("/api/performance/cycles", performanceCycleRoutes);
 app.use("/api/performance/templates", performanceTemplateRoutes);
-app.use("/api/goals", goalsRoutes)
-app.use("/api/goal-alignments", goalAllignmentRoutes)
-app.use("/api/PerformanceReview", performanceReviewRoutes)
+app.use("/api/goals", goalsRoutes);
+app.use("/api/goal-alignments", goalAllignmentRoutes);
+app.use("/api/PerformanceReview", performanceReviewRoutes);
 app.use("/api/calibration", calibrationRoutes);
-app.use("/api/calibration/reports", calibrationReportRoutes);//done
-
-app.use('/api/time-attendance', timeAttendanceRoutes);//done
-app.use('/api/leaves', leaveRoutes);//done
-app.use('/api/holidays', holidayRoutes);//done
-
-app.use('/api/payroll', payrollRoutes);//done
-app.use('/api/training', trainingRoutes);//done
-app.use('/api/analytics', analyticsRoutes); //done
+app.use("/api/calibration/reports", calibrationReportRoutes);
+app.use("/api/time-attendance", timeAttendanceRoutes);
+app.use("/api/leaves", leaveRoutes);
+app.use("/api/holidays", holidayRoutes);
+app.use("/api/payroll", payrollRoutes);
+app.use("/api/training", trainingRoutes);
+app.use("/api/analytics", analyticsRoutes);
 app.use("/api/recruitment", recruitmentRoutes);
-app.use("/api/emergency-contacts",emergencyContactRoutes)
+app.use("/api/emergency-contacts", emergencyContactRoutes);
 app.use("/api/employee-media", employeeMediaRoutes);
+app.use("/api/dashboard-layout", dashboardLayoutRoutes);
 
+app.use("/api/onboarding", onboardingRoutes);
+app.use("/api/interviews", interviewRoutes);
+app.use("/api/offers", offerRoutes);
+app.use("/api/talent-pool", talentPoolRoutes);
+app.use("/api/learning-paths", learningPathRoutes);
+app.use("/api/training-sessions", trainingSessionRoutes);
+app.use("/api/certifications", certificationRoutes);
+app.use("/api/skills", employeeSkillRoutes);
+app.use("/api/employee-lifecycle", employeeLifecycleRoutes);
+app.use("/api/offboarding", offboardingRoutes);
+app.use("/api/org-chart", orgChartRoutes);
+app.use("/api/self", selfRoutes);
+app.use("/api/compliance", complianceRoutes);
+app.use("/api/development-plans", developmentPlanRoutes);
+app.use("/api/reimbursements", reimbursementRoutes);
+app.use("/api/gdpr", gdprRoutes);
 
 startReviewReminderScheduler();
-// Metrics endpoint
-app.get("/metrics", async (req, res) => {
+
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: process.env.ATTENDANCE_SOCKET_CORS_ORIGIN || "*",
+    credentials: true,
+  },
+});
+
+bindRealtimeSocketServer(io);
+
+console.log("[server] attendance listener enabled:", String(process.env.ATTENDANCE_LISTENER_ENABLED ?? "true"));
+console.log("[server] attendance device:", process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202", "port", process.env.ATTENDANCE_DEVICE_PORT || "4370");
+
+app.get("/metrics", async (_req, res) => {
   res.setHeader("Content-Type", register.contentType);
   res.end(await register.metrics());
 });
 
-app.get("/", (req, res) => res.json({ message: "HR Service Running 🏢" }));
+app.use("/mcp", mcpRouter);
+
+app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
 
 const PORT = process.env.PORT || 3003;
-app.listen(PORT, () => console.log(`HR Service running on port ${PORT}`));
+const server = httpServer.listen(PORT, async () => {
+  console.log(`HR Service running on port ${PORT}`);
+  await bootstrapAttendanceData();
+  startAttendanceListener();
+});
+
+function gracefulShutdown() {
+  stopAttendanceListener();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);

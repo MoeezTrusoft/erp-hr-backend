@@ -1,4 +1,9 @@
 import * as attandanceService from "../services/attendance.service.js";
+import {
+  getDailyAttendanceSummary,
+  probeAttendanceDevice,
+  syncAttendanceFromPunches,
+} from "../services/attendance.device.service.js";
 
 export const checkIn = async (req, res) => {
   try {
@@ -15,8 +20,8 @@ export const checkIn = async (req, res) => {
 
 export const checkOut = async (req, res) => {
   try {
-    const { employeeId } = req.body;
-    const result = await attandanceService.checkOutService(employeeId);
+    const { employeeId, timestamp } = req.body;
+    const result = await attandanceService.checkOutServiceWithTimestamp(employeeId, timestamp);
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -30,5 +35,36 @@ export const getEmployeeAttendance = async (req, res) => {
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+};
+
+export const testDeviceConnectivity = async (req, res) => {
+  try {
+    const result = await probeAttendanceDevice(req.body || {});
+    return res.status(result.reachable ? 200 : 503).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+export const syncDeviceAttendance = async (req, res) => {
+  try {
+    const result = await syncAttendanceFromPunches(req.body || {});
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+export const getDailyAttendanceStatusSummary = async (req, res) => {
+  try {
+    const result = await getDailyAttendanceSummary({
+      date: req.query?.date,
+      shiftStart: req.query?.shiftStart,
+      lateGraceMinutes: req.query?.lateGraceMinutes,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 };
