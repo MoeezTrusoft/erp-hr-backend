@@ -13,6 +13,8 @@ const handle = (fn, successMessage, statusCode = 200) => async (req, res) => {
   }
 };
 
+const firstFile = (req) => req.files?.[0] || req.file || null;
+
 export const getDashboardWidgets = handle(
   () => hrContract.getDashboardWidgetCatalog(),
   "Dashboard widget catalog loaded"
@@ -43,6 +45,12 @@ export const listEmployees = handle(
   "Employees loaded"
 );
 
+export const createEmployee = handle(
+  (req) => hrContract.createEmployee(req.body, actorId(req)),
+  "Employee created",
+  201
+);
+
 export const getEmployeeQuickView = handle(
   (req) => hrContract.getEmployeeQuickView(req.params.id),
   "Employee quick view loaded"
@@ -63,9 +71,61 @@ export const getEmployeeDocuments = handle(
   "Employee documents loaded"
 );
 
+export const updateEmployee = handle(
+  (req) => hrContract.updateEmployee(req.params.id, req.body, actorId(req)),
+  "Employee updated"
+);
+
 export const updateEmployeeStatus = handle(
   (req) => hrContract.updateEmployeeStatus(req.params.id, req.body.status, actorId(req)),
   "Employee status updated"
+);
+
+export const uploadEmployeeProfilePhoto = handle(
+  (req) => hrContract.uploadEmployeeProfilePhoto(req.params.id, req.body, firstFile(req), actorId(req)),
+  "Employee profile photo uploaded"
+);
+
+export const uploadEmployeeCoverPhoto = handle(
+  (req) => hrContract.uploadEmployeeCoverPhoto(req.params.id, req.body, firstFile(req), actorId(req)),
+  "Employee cover photo uploaded"
+);
+
+export const createEmployeeDocument = handle(
+  (req) => hrContract.createEmployeeDocument(req.params.id, req.body, firstFile(req), actorId(req)),
+  "Employee document created",
+  201
+);
+
+export const updateEmployeeDocument = handle(
+  (req) => hrContract.updateEmployeeDocument(req.params.id, req.params.documentId, req.body, firstFile(req), actorId(req)),
+  "Employee document updated"
+);
+
+export const deleteEmployeeDocument = handle(
+  (req) => hrContract.deleteEmployeeDocument(req.params.id, req.params.documentId),
+  "Employee document deleted"
+);
+
+export const listEmployeeEmergencyContacts = handle(
+  (req) => hrContract.listEmployeeEmergencyContacts(req.params.id),
+  "Employee emergency contacts loaded"
+);
+
+export const createEmployeeEmergencyContact = handle(
+  (req) => hrContract.createEmployeeEmergencyContact(req.params.id, req.body),
+  "Employee emergency contact created",
+  201
+);
+
+export const updateEmployeeEmergencyContact = handle(
+  (req) => hrContract.updateEmployeeEmergencyContact(req.params.id, req.params.contactId, req.body),
+  "Employee emergency contact updated"
+);
+
+export const deleteEmployeeEmergencyContact = handle(
+  (req) => hrContract.deleteEmployeeEmergencyContact(req.params.id, req.params.contactId),
+  "Employee emergency contact deleted"
 );
 
 export const listPositions = handle(

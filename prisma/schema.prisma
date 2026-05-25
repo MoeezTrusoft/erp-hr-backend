@@ -202,12 +202,14 @@ model Employee {
   province            String?
   country             String?
   postal_code         String?
-  personal_contact    Int?
+  personal_contact    String?
   email               String?
   work_email          String?
   work_phone          String?
   employement_status  String? // Active/ Inactive
   photo_url           String?
+  cover_photo_url     String?
+  cover_photo_media_id Int?
   updatedById         Int?
   createdById         Int?
   additional_fields   Json?
@@ -333,13 +335,20 @@ model EmployeeMedia {
   title          String?
   category       String?
   version        String?
-  visibility     Boolean   @default(true)
+  visibility     String    @default("all")
   effective_date String?
   expiry_date    String?
   notes          String?   @db.Text
   employee       Employee? @relation("employeeMedia", fields: [employee_id], references: [id])
   employee_id    Int?
   media_id       Int?
+  file_name      String?
+  mime_type      String?
+  file_size      Int?
+  download_url   String?
+  uploaded_by_id Int?
+  uploaded_at    DateTime  @default(now())
+  status         String    @default("active")
 }
 
 model BusinessUnit {

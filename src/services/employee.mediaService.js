@@ -23,7 +23,7 @@ export const createEmployeeMediaService = async (data, fetchedMediaRecords) => {
           title,
           category,
           version,
-          visibility: visibility === "true",
+          visibility: visibility === true || visibility === "true" ? "all" : visibility || "all",
           effective_date,
           expiry_date,
           notes,
@@ -103,7 +103,12 @@ export const updateEmployeeMediaService = async (id, data, files) => {
       title: data.title ?? existing.title,
       category: data.category ?? existing.category,
       version: updatedVersion,
-      visibility: data.visibility !== undefined ? data.visibility === "true" : existing.visibility,
+      visibility:
+        data.visibility !== undefined
+          ? data.visibility === true || data.visibility === "true"
+            ? "all"
+            : data.visibility
+          : existing.visibility,
       effective_date: data.effective_date ?? existing.effective_date,
       expiry_date: data.expiry_date ?? existing.expiry_date,
       notes: data.notes ?? existing.notes,

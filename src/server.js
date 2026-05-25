@@ -121,6 +121,9 @@ app.use(attachRequestId);
 app.use(attachHrContext);
 
 // HR routes
+// Browser clients should reach this service through the API gateway. The gateway
+// is responsible for rewriting /hr/api/hr/* to /api/hr/* and injecting the
+// internal secret plus x-user-* context headers before requests arrive here.
 app.use("/api", requireInternalService);
 app.use("/api/hr", hrContractRoutes);
 app.use("/api/employee", hrRoutes);

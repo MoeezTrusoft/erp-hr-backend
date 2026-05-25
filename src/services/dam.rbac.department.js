@@ -1,5 +1,6 @@
 import axios from "axios";
 import FormData from "form-data";
+import { damRequest as mediaDamRequest } from "./dam.media.service.js";
 
 const HR_BASE_URL = process.env.HR_SERVICE_URL || "http://localhost:3002/api";
 const HR_TIMEOUT = parseInt(process.env.HR_SERVICE_TIMEOUT || "10000", 10);
@@ -32,6 +33,8 @@ export async function hrRequest(endpoint, method = "GET", body = {}, headers = {
     return null;
   }
 }
+
+export const damRequest = mediaDamRequest;
 
 // New helper: upload file to DAM
 export async function uploadFileToDAM(file, type = "avatar") {
