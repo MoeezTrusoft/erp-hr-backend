@@ -39,6 +39,17 @@ export function registerEmployeeTools(server) {
     }
   );
 
+  server.tool(
+    "hr_employees_list",
+    "List all employees with optional filters (page, limit, department, status)",
+    {},
+    withToolError(async () => {
+      const { user } = getCtx();
+      const data = await mcpGetEmployees(user);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
   server.resource(
     "hr_positions_list",
     "hr://positions",
@@ -48,6 +59,17 @@ export function registerEmployeeTools(server) {
       const data = await mcpGetPositions(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
+  );
+
+  server.tool(
+    "hr_positions_list",
+    "List all job positions",
+    {},
+    withToolError(async () => {
+      const { user } = getCtx();
+      const data = await mcpGetPositions(user);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
   );
 
   server.resource(

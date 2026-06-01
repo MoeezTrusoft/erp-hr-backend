@@ -48,7 +48,7 @@ console.log("fjaf", createdBy)
 export const getAllPositions = async () => {
   return prisma.position.findMany({
     include: { employees: true,
-       createdBy: true,
+      //createdBy: true,
      },
     orderBy: { id: "desc" },
   });
