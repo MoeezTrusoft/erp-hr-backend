@@ -138,3 +138,34 @@ export const getAttendanceByEmployee = async (employeeId) => {
     orderBy: { date: "desc" }
   });
 };
+
+export const listAttendanceRecords = async ({ date, limit = 100 } = {}) => {
+  const target = date ? new Date(date) : new Date();
+  const start = new Date(target);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return prisma.attendance.findMany({
+    where: {
+      date: {
+        gte: start,
+        lt: end,
+      },
+    },
+    include: {
+      employee: {
+        select: {
+          id: true,
+          employee_name: true,
+          first_name: true,
+          last_name: true,
+          job_title: true,
+          photo_url: true,
+        },
+      },
+    },
+    orderBy: [{ check_in: "desc" }, { date: "desc" }],
+    take: Number(limit) || 100,
+  });
+};

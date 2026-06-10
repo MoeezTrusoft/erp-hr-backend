@@ -5,6 +5,7 @@ import { withToolError } from "../utils/toolError.js";
 import {
   mcpCreateEmergencyContact,
   mcpCreateEmployee,
+  mcpCreateEmployeeDocument,
   mcpCreateEmployeeLifecycle,
   mcpCreateOffboarding,
   mcpCreatePosition,
@@ -12,13 +13,21 @@ import {
   mcpDeleteEmployee,
   mcpDeletePosition,
   mcpGetEmployeeById,
+  mcpGetEmployeeDocuments,
+  mcpGetEmployeeQuickView,
   mcpGetEmployees,
   mcpGetOrgChart,
   mcpGetPositions,
+  mcpListEmployeesContract,
+  mcpListPositionsContract,
   mcpUpdateEmergencyContact,
   mcpUpdateEmployee,
+  mcpUpdateEmployeeStatus,
   mcpUpdateOffboarding,
   mcpUpdatePosition,
+  mcpUpdatePositionStatus,
+  mcpUploadEmployeeCoverPhoto,
+  mcpUploadEmployeeProfilePhoto,
 } from "../controllers/employeeMcpController.js";
 
 function getCtx() {
@@ -27,9 +36,31 @@ function getCtx() {
   return ctx;
 }
 
+const listToolShape = {
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+  q: z.string().optional(),
+  status: z.string().optional(),
+  positionId: z.union([z.string(), z.number()]).optional(),
+  companyId: z.union([z.string(), z.number()]).optional(),
+  departmentId: z.union([z.string(), z.number()]).optional(),
+  sort: z.string().optional(),
+  order: z.enum(["asc", "desc"]).optional(),
+};
+
+const mediaPayloadShape = {
+  id: z.string().min(1),
+  mediaId: z.union([z.string(), z.number()]).optional(),
+  url: z.string().optional(),
+  downloadUrl: z.string().optional(),
+  fileName: z.string().optional(),
+  mimeType: z.string().optional(),
+  fileSize: z.union([z.string(), z.number()]).optional(),
+};
+
 export function registerEmployeeTools(server) {
   server.resource(
-    "hr_employees_list",
+    "hr_employees_resource",
     "hr://employees",
     { description: "List all employees with optional filters (page, limit, department, status)" },
     async (uri) => {
@@ -41,17 +72,23 @@ export function registerEmployeeTools(server) {
 
   server.tool(
     "hr_employees_list",
-    "List all employees with optional filters (page, limit, department, status)",
-    {},
-    withToolError(async () => {
-      const { user } = getCtx();
-      const data = await mcpGetEmployees(user);
+    "List employees for the HR frontend directory",
+    listToolShape,
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const query = { page: 1, pageSize: 10, ...args };
+      console.info("[MCP HR] resolved pagination hr_employees_list", {
+        page: query.page,
+        pageSize: query.pageSize,
+      });
+      const data = await mcpListEmployeesContract(query);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }, "hr_employees_list")
   );
 
   server.resource(
-    "hr_positions_list",
+    "hr_positions_resource",
     "hr://positions",
     { description: "List all job positions" },
     async (uri) => {
@@ -63,13 +100,26 @@ export function registerEmployeeTools(server) {
 
   server.tool(
     "hr_positions_list",
-    "List all job positions",
-    {},
-    withToolError(async () => {
-      const { user } = getCtx();
-      const data = await mcpGetPositions(user);
+    "List positions for HR frontend selectors and management screens",
+    {
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(10),
+      q: z.string().optional(),
+      status: z.string().optional(),
+      sort: z.string().optional(),
+      order: z.enum(["asc", "desc"]).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const query = { page: 1, pageSize: 10, ...args };
+      console.info("[MCP HR] resolved pagination hr_positions_list", {
+        page: query.page,
+        pageSize: query.pageSize,
+      });
+      const data = await mcpListPositionsContract(query);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }, "hr_positions_list")
   );
 
   server.resource(
@@ -83,16 +133,67 @@ export function registerEmployeeTools(server) {
     }
   );
 
+  const registerEmployeeProfileTool = (toolName, handler) => {
+    server.tool(
+      toolName,
+      "Get a specific employee profile by ID for edit/detail screens",
+      { id: z.string().min(1).describe("Employee ID") },
+      withToolError(async ({ id }) => {
+        const { user, permissions } = getCtx();
+        assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+        const data = await handler(user, id);
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      }, toolName)
+    );
+  };
+
+  registerEmployeeProfileTool("hr_employee_get", mcpGetEmployeeById);
+  registerEmployeeProfileTool("hr_employee_profile_get", mcpGetEmployeeById);
+
   server.tool(
-    "hr_employee_get",
-    "Get a specific employee by ID",
+    "hr_employee_quick_view_get",
+    "Get a compact employee quick-view card by ID",
     { id: z.string().min(1).describe("Employee ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", `/hr/api/employee/${id}`, user.isAdmin);
-      const data = await mcpGetEmployeeById(user, id);
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const data = await mcpGetEmployeeQuickView(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }, "hr_employee_quick_view_get")
+  );
+
+  server.tool(
+    "hr_employee_documents_list",
+    "List documents attached to an employee",
+    { employeeId: z.string().min(1).describe("Employee ID") },
+    withToolError(async ({ employeeId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const data = await mcpGetEmployeeDocuments(user, employeeId);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_documents_list")
+  );
+
+  server.tool(
+    "hr_employee_emergency_contacts_list",
+    "List emergency contacts for an employee",
+    { employeeId: z.string().min(1).describe("Employee ID") },
+    withToolError(async ({ employeeId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const profile = await mcpGetEmployeeById(user, employeeId);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              data: { items: profile?.data?.emergencyContacts || [] },
+            }),
+          },
+        ],
+      };
+    }, "hr_employee_emergency_contacts_list")
   );
 
   server.tool(
@@ -101,21 +202,46 @@ export function registerEmployeeTools(server) {
     {
       firstName: z.string().min(1),
       lastName: z.string().min(1),
-      email: z.string().email(),
+      preferredName: z.string().optional(),
+      dateOfBirth: z.string().optional(),
+      gender: z.string().optional(),
+      maritalStatus: z.string().optional(),
+      nationality: z.string().optional(),
+      nationalIdType: z.string().optional(),
+      nationalIdNumber: z.string().optional(),
+      personalEmail: z.string().optional(),
+      workEmail: z.string().optional(),
+      email: z.string().optional(),
+      mobilePhone: z.string().optional(),
       phone: z.string().optional(),
-      departmentId: z.string().optional(),
-      positionId: z.string().optional(),
-      managerId: z.string().optional(),
+      workPhone: z.string().optional(),
+      residentialAddress: z.string().optional(),
+      mailingAddress: z.string().optional(),
+      city: z.string().optional(),
+      stateProvince: z.string().optional(),
+      country: z.string().optional(),
+      postalCode: z.string().optional(),
+      employeeCode: z.string().optional(),
+      jobTitle: z.string().optional(),
+      companyId: z.union([z.string(), z.number()]).optional(),
+      departmentId: z.union([z.string(), z.number()]).optional(),
+      positionId: z.union([z.string(), z.number()]).optional(),
+      managerId: z.union([z.string(), z.number()]).optional(),
       hireDate: z.string().optional().describe("ISO 8601 date"),
-      employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"]).optional(),
+      joiningDate: z.string().optional(),
+      probationEndDate: z.string().optional(),
+      employmentType: z.string().optional(),
+      employmentStatus: z.string().optional(),
       status: z.string().optional(),
+      emergencyContacts: z.array(z.any()).optional(),
+      documents: z.array(z.any()).optional(),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/employee", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateEmployee(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_employee_create")
   );
 
   server.tool(
@@ -125,19 +251,65 @@ export function registerEmployeeTools(server) {
       id: z.string().min(1).describe("Employee ID"),
       firstName: z.string().optional(),
       lastName: z.string().optional(),
-      email: z.string().email().optional(),
+      preferredName: z.string().optional(),
+      dateOfBirth: z.string().optional(),
+      gender: z.string().optional(),
+      maritalStatus: z.string().optional(),
+      nationality: z.string().optional(),
+      nationalIdType: z.string().optional(),
+      nationalIdNumber: z.string().optional(),
+      personalEmail: z.string().optional(),
+      workEmail: z.string().optional(),
+      email: z.string().optional(),
+      mobilePhone: z.string().optional(),
       phone: z.string().optional(),
-      departmentId: z.string().optional(),
-      positionId: z.string().optional(),
-      managerId: z.string().optional(),
+      workPhone: z.string().optional(),
+      residentialAddress: z.string().optional(),
+      mailingAddress: z.string().optional(),
+      city: z.string().optional(),
+      stateProvince: z.string().optional(),
+      country: z.string().optional(),
+      postalCode: z.string().optional(),
+      employeeCode: z.string().optional(),
+      jobTitle: z.string().optional(),
+      companyId: z.union([z.string(), z.number()]).optional(),
+      departmentId: z.union([z.string(), z.number()]).optional(),
+      positionId: z.union([z.string(), z.number()]).optional(),
+      managerId: z.union([z.string(), z.number()]).optional(),
+      hireDate: z.string().optional(),
+      joiningDate: z.string().optional(),
+      probationEndDate: z.string().optional(),
+      employmentType: z.string().optional(),
+      employmentStatus: z.string().optional(),
       status: z.string().optional(),
+      emergencyContacts: z.array(z.any()).optional(),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/employee/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdateEmployee(user, id, rest);
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_employee_update")
+  );
+
+  server.tool(
+    "hr_employee_status_update",
+    "Update an employee employment status",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      status: z.string().min(1).describe("Active, Inactive, Disabled, etc."),
+    },
+    withToolError(async ({ id, status }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      const data = await mcpUpdateEmployeeStatus(
+        user,
+        id,
+        status,
+        user?.employeeId || user?.userId
+      );
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }, "hr_employee_status_update")
   );
 
   server.tool(
@@ -153,12 +325,67 @@ export function registerEmployeeTools(server) {
   );
 
   server.tool(
+    "hr_employee_profile_photo_attach",
+    "Attach or update an employee profile photo",
+    mediaPayloadShape,
+    withToolError(async ({ id, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      const data = await mcpUploadEmployeeProfilePhoto(user, id, rest);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_profile_photo_attach")
+  );
+
+  server.tool(
+    "hr_employee_cover_photo_attach",
+    "Attach or update an employee cover photo",
+    mediaPayloadShape,
+    withToolError(async ({ id, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      const data = await mcpUploadEmployeeCoverPhoto(user, id, rest);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_cover_photo_attach")
+  );
+
+  server.tool(
+    "hr_employee_document_create",
+    "Create an employee document record",
+    {
+      employeeId: z.string().min(1),
+      title: z.string().optional(),
+      category: z.string().optional(),
+      version: z.string().optional(),
+      visibility: z.string().optional(),
+      expiryDate: z.string().optional(),
+      notes: z.string().optional(),
+      mediaId: z.union([z.string(), z.number()]).optional(),
+      downloadUrl: z.string().optional(),
+      fileName: z.string().optional(),
+      mimeType: z.string().optional(),
+      fileSize: z.union([z.string(), z.number()]).optional(),
+    },
+    withToolError(async ({ employeeId, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
+      const data = await mcpCreateEmployeeDocument(user, employeeId, rest);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_document_create")
+  );
+
+  server.tool(
     "hr_position_create",
     "Create a new job position",
     {
       title: z.string().min(1),
-      departmentId: z.string().optional(),
+      companyId: z.union([z.string(), z.number()]).optional(),
+      departmentId: z.union([z.string(), z.number()]).optional(),
       description: z.string().optional(),
+      band: z.string().optional(),
+      responsibilities: z.string().optional(),
+      requirements: z.string().optional(),
+      jobCode: z.string().optional(),
+      isActive: z.coerce.boolean().optional(),
       gradeLevelId: z.string().optional(),
     },
     withToolError(async (args) => {
@@ -175,8 +402,14 @@ export function registerEmployeeTools(server) {
     {
       id: z.string().min(1),
       title: z.string().optional(),
-      departmentId: z.string().optional(),
+      companyId: z.union([z.string(), z.number()]).optional(),
+      departmentId: z.union([z.string(), z.number()]).optional(),
       description: z.string().optional(),
+      band: z.string().optional(),
+      responsibilities: z.string().optional(),
+      requirements: z.string().optional(),
+      jobCode: z.string().optional(),
+      isActive: z.coerce.boolean().optional(),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -184,6 +417,21 @@ export function registerEmployeeTools(server) {
       const data = await mcpUpdatePosition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
+  );
+
+  server.tool(
+    "hr_position_status_update",
+    "Update a job position status",
+    {
+      id: z.string().min(1),
+      isActive: z.coerce.boolean(),
+    },
+    withToolError(async ({ id, isActive }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", `/hr/api/positions/${id}`, user.isAdmin);
+      const data = await mcpUpdatePositionStatus(user, id, isActive);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_position_status_update")
   );
 
   server.tool(

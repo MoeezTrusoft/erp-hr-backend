@@ -6,16 +6,24 @@ import {
   mcpCreateInterview,
   mcpCreateOffer,
   mcpCreateRequisition,
+  mcpAddTalentPool,
   mcpDeleteRequisition,
   mcpListApplications,
   mcpListCandidates,
   mcpListRecruitmentTags,
   mcpListRequisitions,
+  mcpListInterviews,
+  mcpListOffers,
   mcpListTalentPool,
   mcpPostRequisition,
+  mcpRemoveTalentPool,
+  mcpSendOffer,
   mcpUpdateApplicationStage,
   mcpUpdateApplicationStatus,
   mcpUpdateCandidate,
+  mcpUpdateInterview,
+  mcpUpdateRequisition,
+  mcpUpdateOffer,
 } from "../controllers/recruitmentMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -85,6 +93,28 @@ export function registerRecruitmentTools(server) {
     }
   );
 
+  server.resource(
+    "hr_interviews_list",
+    "hr://recruitment/interviews",
+    { description: "List scheduled recruitment interviews" },
+    async (uri) => {
+      const { user } = getCtx();
+      const data = await mcpListInterviews(user);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
+  server.resource(
+    "hr_offers_list",
+    "hr://recruitment/offers",
+    { description: "List job offers" },
+    async (uri) => {
+      const { user } = getCtx();
+      const data = await mcpListOffers(user);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
   // ── REQUISITION TOOLS ────────────────────────────────────────────────────
 
   server.tool(
@@ -92,9 +122,15 @@ export function registerRecruitmentTools(server) {
     "Create a job requisition",
     {
       title: z.string().min(1),
+      companyId: z.string().optional(),
       positionId: z.string().optional(),
       departmentId: z.string().optional(),
+      employeeId: z.string().optional(),
+      openings: z.number().int().positive().optional(),
       headcount: z.number().int().positive().optional(),
+      status: z.string().optional(),
+      priority: z.string().optional(),
+      description: z.string().optional(),
       targetDate: z.string().optional().describe("ISO 8601 date"),
       justification: z.string().optional(),
     },
@@ -102,6 +138,32 @@ export function registerRecruitmentTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/requisitions", user.isAdmin);
       const data = await mcpCreateRequisition(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_requisition_update",
+    "Update a job requisition",
+    {
+      id: z.string().min(1),
+      title: z.string().optional(),
+      companyId: z.string().optional(),
+      positionId: z.string().optional(),
+      departmentId: z.string().optional(),
+      employeeId: z.string().optional(),
+      openings: z.number().int().positive().optional(),
+      headcount: z.number().int().positive().optional(),
+      status: z.string().optional(),
+      priority: z.string().optional(),
+      description: z.string().optional(),
+      targetDate: z.string().optional().describe("ISO 8601 date"),
+      justification: z.string().optional(),
+    },
+    withToolError(async ({ id, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", `/hr/api/requisitions/${id}`, user.isAdmin);
+      const data = await mcpUpdateRequisition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -256,6 +318,38 @@ export function registerRecruitmentTools(server) {
     })
   );
 
+  server.tool(
+    "hr_interview_update",
+    "Update an interview",
+    {
+      id: z.string().min(1),
+      scheduledAt: z.string().optional(),
+      type: z.string().optional(),
+      interviewType: z.string().optional(),
+      location: z.string().optional(),
+      status: z.string().optional(),
+      notes: z.string().optional(),
+      decision: z.string().optional(),
+      feedback: z
+        .object({
+          ratings: z.record(z.union([z.string(), z.number()])).optional(),
+          decision: z.string().optional(),
+          recommendation: z.string().optional(),
+          comments: z.string().optional(),
+        })
+        .optional(),
+    },
+    withToolError(async ({ id, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", `/hr/api/interviews/${id}`, user.isAdmin);
+      const data = await mcpUpdateInterview(user, id, {
+        ...rest,
+        reviewerId: user?.employeeId,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
   // ── OFFER TOOLS ──────────────────────────────────────────────────────────
 
   server.tool(
@@ -264,6 +358,8 @@ export function registerRecruitmentTools(server) {
     {
       applicationId: z.string().min(1),
       baseSalary: z.number().positive(),
+      candidateId: z.string().optional(),
+      jobRequisitionId: z.string().optional(),
       currency: z.string().default("USD"),
       startDate: z.string().describe("ISO 8601 date"),
       expiryDate: z.string().optional().describe("ISO 8601 date"),
@@ -273,6 +369,69 @@ export function registerRecruitmentTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "/hr/api/offers", user.isAdmin);
       const data = await mcpCreateOffer(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_update",
+    "Update a job offer",
+    {
+      id: z.string().min(1),
+      applicationId: z.string().optional(),
+      baseSalary: z.number().positive().optional(),
+      candidateId: z.string().optional(),
+      jobRequisitionId: z.string().optional(),
+      currency: z.string().optional(),
+      startDate: z.string().optional().describe("ISO 8601 date"),
+      expiryDate: z.string().optional().describe("ISO 8601 date"),
+      benefits: z.string().optional(),
+      status: z.string().optional(),
+    },
+    withToolError(async ({ id, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", `/hr/api/offers/${id}`, user.isAdmin);
+      const data = await mcpUpdateOffer(user, id, rest);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_send",
+    "Send an offer",
+    { id: z.string().min(1) },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", `/hr/api/offers/${id}/send`, user.isAdmin);
+      const data = await mcpSendOffer(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_talent_pool_add",
+    "Add a candidate to talent pool",
+    {
+      candidateId: z.string().min(1),
+      poolName: z.string().default("General"),
+      notes: z.string().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "/hr/api/recruitment/talent-pool", user.isAdmin);
+      const data = await mcpAddTalentPool(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_talent_pool_remove",
+    "Remove a candidate from talent pool",
+    { id: z.string().min(1) },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", `/hr/api/recruitment/talent-pool/${id}`, user.isAdmin);
+      const data = await mcpRemoveTalentPool(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

@@ -5,11 +5,12 @@ import {
   postRequisition,
   deleteRequisitions,
   getByIdRequisitions,
+  updateRequisition,
 } from "../services/requisition.service.js";
 
 export const createRequisitionController = async (req, res) => {
   try {
-    const requestedBy = req.headers['employee-id'];
+    const requestedBy = req.headers['employee-id'] || req.headers['x-employee-id'] || req.body.employeeId;
     const result = await createRequisition(req.body, requestedBy);
     res.status(201).json({ success: true, data: result });
   } catch (error) {
@@ -63,6 +64,17 @@ export const postRequisitionController = async (req, res) => {
     const createdBy = req.headers['employee-id'];
     const { externalUrl } = req.body;
     const result = await postRequisition(id, externalUrl, createdBy);
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+export const updateRequisitionController = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updatedBy = req.headers['employee-id'] || req.headers['x-employee-id'];
+    const result = await updateRequisition(id, req.body, updatedBy);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

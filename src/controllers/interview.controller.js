@@ -17,7 +17,11 @@ export const listInterviews = async (req, res) => {
 
 export const updateInterview = async (req, res) => {
     try {
-        const result = await svc.updateInterview(req.params.id, req.body);
+        const reviewerId = req.headers["x-employee-id"] || req.user?.employeeId;
+        const result = await svc.updateInterview(req.params.id, {
+            ...req.body,
+            reviewerId,
+        });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
 };

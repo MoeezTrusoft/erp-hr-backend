@@ -1,14 +1,5 @@
+import { deleteEmployee } from "../../controllers/hr.controller.js";
 import {
-  createEmployee,
-  getAllEmployees,
-  getEmployeeById,
-  updateEmployee,
-  deleteEmployee,
-} from "../../controllers/hr.controller.js";
-import {
-  createPositionController,
-  getPositionsController,
-  updatePositionController,
   deletePositionController,
 } from "../../controllers/position.controller.js";
 import { getOrgChart as getOrgChartController } from "../../controllers/orgChart.controller.js";
@@ -22,6 +13,7 @@ import {
   update as updateEmergencyContactController,
   remove as deleteEmergencyContactController,
 } from "../../controllers/emergencyContacts.controller.js";
+import * as hrContractService from "../../services/hrContract.service.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -66,36 +58,75 @@ async function runController(controller, { user = {}, params = {}, query = {}, b
   return payload;
 }
 
-export async function mcpGetEmployees(user) {
-  return runController(getAllEmployees, { user });
+export async function mcpGetEmployees(user, args = {}) {
+  return hrContractService.listEmployees(args);
+}
+
+export async function mcpListEmployeesContract(query = {}) {
+  return hrContractService.listEmployees(query);
 }
 
 export async function mcpGetEmployeeById(user, id) {
-  return runController(getEmployeeById, { user, params: { id: String(id) } });
+  return { success: true, data: await hrContractService.getEmployeeProfile(id) };
+}
+
+export async function mcpGetEmployeeQuickView(user, id) {
+  return { success: true, data: await hrContractService.getEmployeeQuickView(id) };
+}
+
+export async function mcpGetEmployeeDocuments(user, id) {
+  return { success: true, data: await hrContractService.getEmployeeDocuments(id) };
+}
+
+export async function mcpUpdateEmployeeStatus(user, id, status, actorId) {
+  return {
+    success: true,
+    data: await hrContractService.updateEmployeeStatus(id, status, actorId),
+  };
 }
 
 export async function mcpCreateEmployee(user, data) {
-  return runController(createEmployee, { user, body: data });
+  return hrContractService.createEmployee(data, user?.employeeId || user?.userId);
 }
 
 export async function mcpUpdateEmployee(user, id, data) {
-  return runController(updateEmployee, { user, params: { id: String(id) }, body: data });
+  return hrContractService.updateEmployee(id, data, user?.employeeId || user?.userId);
 }
 
 export async function mcpDeleteEmployee(user, id) {
   return runController(deleteEmployee, { user, params: { id: String(id) } });
 }
 
+export async function mcpUploadEmployeeProfilePhoto(user, id, data) {
+  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, user?.employeeId || user?.userId);
+}
+
+export async function mcpUploadEmployeeCoverPhoto(user, id, data) {
+  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, user?.employeeId || user?.userId);
+}
+
+export async function mcpCreateEmployeeDocument(user, employeeId, data) {
+  return hrContractService.createEmployeeDocument(employeeId, data, null, user?.employeeId || user?.userId);
+}
+
 export async function mcpGetPositions(user) {
-  return runController(getPositionsController, { user });
+  return hrContractService.listPositions({ page: 1, pageSize: 10 });
+}
+
+export async function mcpListPositionsContract(query = {}) {
+  return hrContractService.listPositions(query);
 }
 
 export async function mcpCreatePosition(user, data) {
-  return runController(createPositionController, { user, body: data });
+  return hrContractService.createPosition(data, user?.employeeId || user?.userId);
 }
 
 export async function mcpUpdatePosition(user, id, data) {
-  return runController(updatePositionController, { user, params: { id: String(id) }, body: data });
+  return hrContractService.updatePosition(id, data);
+}
+
+export async function mcpUpdatePositionStatus(user, id, isActive) {
+  return hrContractService.updatePositionStatus(id, isActive);
 }
 
 export async function mcpDeletePosition(user, id) {

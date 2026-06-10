@@ -1,30 +1,83 @@
 import prisma from "../config/prisma.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
 
+const employeeSelect = {
+    id: true,
+    employee_name: true,
+    first_name: true,
+    last_name: true,
+    job_title: true,
+    joining_date: true,
+    hire_date: true,
+    photo_url: true,
+    current_address: true,
+    city: true,
+};
+
+const mapSurveyType = (value) => {
+    const normalized = String(value || "DAY_30").toUpperCase().replace(/-/g, "_");
+    if (normalized === "30_DAY" || normalized === "DAY_30") return "DAY_30";
+    if (normalized === "60_DAY" || normalized === "DAY_60") return "DAY_60";
+    if (normalized === "90_DAY" || normalized === "DAY_90") return "DAY_90";
+    return normalized;
+};
+
+const normalizeTaskUpdate = (data = {}) => {
+    const update = { ...data };
+
+    if (update.status !== undefined) {
+        const status = String(update.status).toUpperCase();
+        update.completed = status === "COMPLETED";
+        if (update.completed) update.completedAt = new Date();
+        else if (status === "PENDING") update.completedAt = null;
+        delete update.status;
+    }
+
+    if (update.isCompleted !== undefined) {
+        update.completed = !!update.isCompleted;
+        if (update.completed) update.completedAt = new Date();
+        delete update.isCompleted;
+    }
+
+    if (update.notes !== undefined) {
+        update.description = update.notes;
+        delete update.notes;
+    }
+
+    if (update.assigneeId !== undefined) {
+        update.assigneeId = update.assigneeId ? Number(update.assigneeId) : null;
+    }
+
+    return update;
+};
+
 // ── Checklists ──────────────────────────────────────────────────────────────
 
-export const createChecklist = async ({ employeeId, title, startDate, targetCompletionDate, notes, createdById }) => {
+export const createChecklist = async ({ employeeId, title, startDate, targetCompletionDate, targetDate, notes }) => {
     return prisma.onboardingChecklist.create({
         data: {
             employeeId: Number(employeeId),
-            title,
+            title: title || "Employee Onboarding",
             startDate: startDate ? new Date(startDate) : new Date(),
-            targetCompletionDate: targetCompletionDate ? new Date(targetCompletionDate) : null,
+            targetDate: targetCompletionDate || targetDate ? new Date(targetCompletionDate || targetDate) : null,
             notes,
-            assignedById: createdById ? Number(createdById) : null,
         },
-        include: { tasks: true, documents: true, buddy: true },
+        include: { tasks: true, documents: true, buddy: { include: { buddy: { select: employeeSelect } } } },
     });
 };
 
-export const listChecklists = async ({ page = 1, limit = 20 }) => {
+export const listChecklists = async ({ page = 1, limit = 20 } = {}) => {
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
         prisma.onboardingChecklist.findMany({
             skip,
             take: limit,
             orderBy: { created_at: "desc" },
-            include: { employee: { select: { id: true, firstName: true, lastName: true } }, tasks: true },
+            include: {
+                employee: { select: employeeSelect },
+                tasks: { orderBy: { sortOrder: "asc" } },
+                buddy: { include: { buddy: { select: employeeSelect } } },
+            },
         }),
         prisma.onboardingChecklist.count(),
     ]);
@@ -35,10 +88,10 @@ export const getChecklist = async (id) => {
     return prisma.onboardingChecklist.findUnique({
         where: { id: Number(id) },
         include: {
-            employee: true,
-            tasks: true,
+            employee: { select: employeeSelect },
+            tasks: { orderBy: { sortOrder: "asc" } },
             documents: true,
-            buddy: { include: { buddy: { select: { id: true, firstName: true, lastName: true } } } },
+            buddy: { include: { buddy: { select: employeeSelect } } },
             surveys: true,
         },
     });
@@ -47,7 +100,12 @@ export const getChecklist = async (id) => {
 export const getChecklistByEmployee = async (employeeId) => {
     return prisma.onboardingChecklist.findMany({
         where: { employeeId: Number(employeeId) },
-        include: { tasks: true, documents: true },
+        include: {
+            employee: { select: employeeSelect },
+            tasks: { orderBy: { sortOrder: "asc" } },
+            documents: true,
+            buddy: { include: { buddy: { select: employeeSelect } } },
+        },
         orderBy: { created_at: "desc" },
     });
 };
@@ -56,12 +114,13 @@ export const updateChecklist = async (id, data) => {
     return prisma.onboardingChecklist.update({
         where: { id: Number(id) },
         data,
+        include: { tasks: true, buddy: { include: { buddy: { select: employeeSelect } } } },
     });
 };
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId }) => {
+export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId, assigneeId }) => {
     return prisma.onboardingTask.create({
         data: {
             checklistId: Number(checklistId),
@@ -69,14 +128,13 @@ export const addTask = async ({ checklistId, title, description, assigneeType, d
             description,
             assigneeType: assigneeType || "HR",
             dueDate: dueDate ? new Date(dueDate) : null,
-            assignedToId: assignedToId ? Number(assignedToId) : null,
+            assigneeId: assignedToId || assigneeId ? Number(assignedToId || assigneeId) : null,
         },
     });
 };
 
 export const updateTask = async (taskId, data) => {
-    const update = { ...data };
-    if (data.isCompleted) update.completedAt = new Date();
+    const update = normalizeTaskUpdate(data);
     return prisma.onboardingTask.update({
         where: { id: Number(taskId) },
         data: update,
@@ -89,14 +147,21 @@ export const deleteTask = async (taskId) => {
 
 // ── Documents ────────────────────────────────────────────────────────────────
 
-export const uploadDocument = async ({ checklistId, title, file }) => {
+export const uploadDocument = async ({ checklistId, employeeId, title, file }) => {
     const uploaded = await uploadFileToDAM(file, "document");
     if (!uploaded || !uploaded[0]) throw new Error("DAM upload failed");
     const mediaId = uploaded[0].id;
 
+    const checklist = await prisma.onboardingChecklist.findUnique({
+        where: { id: Number(checklistId) },
+        select: { employeeId: true },
+    });
+    if (!checklist) throw new Error("Checklist not found");
+
     return prisma.onboardingDocument.create({
         data: {
             checklistId: Number(checklistId),
+            employeeId: Number(employeeId || checklist.employeeId),
             title,
             mediaId,
         },
@@ -113,7 +178,7 @@ export const listDocuments = async (checklistId) => {
 export const signDocument = async (docId) => {
     return prisma.onboardingDocument.update({
         where: { id: Number(docId) },
-        data: { isSigned: true, signedAt: new Date() },
+        data: { signedAt: new Date() },
     });
 };
 
@@ -124,26 +189,49 @@ export const assignBuddy = async ({ checklistId, buddyId }) => {
         where: { checklistId: Number(checklistId) },
         update: { buddyId: Number(buddyId) },
         create: { checklistId: Number(checklistId), buddyId: Number(buddyId) },
-        include: { buddy: { select: { id: true, firstName: true, lastName: true } } },
+        include: { buddy: { select: employeeSelect } },
     });
 };
 
 export const getBuddy = async (checklistId) => {
     return prisma.onboardingBuddy.findUnique({
         where: { checklistId: Number(checklistId) },
-        include: { buddy: { select: { id: true, firstName: true, lastName: true } } },
+        include: { buddy: { select: employeeSelect } },
     });
 };
 
 // ── Surveys ──────────────────────────────────────────────────────────────────
 
-export const submitSurvey = async ({ employeeId, type, responses, submittedById }) => {
-    return prisma.onboardingSurvey.create({
-        data: {
-            employeeId: Number(employeeId),
-            type,
+export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, responses }) => {
+    const resolvedType = mapSurveyType(surveyType || type);
+    let resolvedChecklistId = checklistId ? Number(checklistId) : null;
+
+    if (!resolvedChecklistId) {
+        const checklist = await prisma.onboardingChecklist.findFirst({
+            where: { employeeId: Number(employeeId) },
+            orderBy: { created_at: "desc" },
+            select: { id: true },
+        });
+        if (!checklist) throw new Error("Onboarding checklist not found for employee");
+        resolvedChecklistId = checklist.id;
+    }
+
+    return prisma.onboardingSurvey.upsert({
+        where: {
+            checklistId_type: {
+                checklistId: resolvedChecklistId,
+                type: resolvedType,
+            },
+        },
+        update: {
             responses,
-            submittedById: submittedById ? Number(submittedById) : null,
+            submittedAt: new Date(),
+        },
+        create: {
+            checklistId: resolvedChecklistId,
+            employeeId: Number(employeeId),
+            type: resolvedType,
+            responses,
             submittedAt: new Date(),
         },
     });

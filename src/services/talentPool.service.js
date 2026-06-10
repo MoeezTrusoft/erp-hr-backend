@@ -3,7 +3,7 @@ import prisma from "../config/prisma.js";
 export const listPools = async ({ page = 1, limit = 20 }) => {
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
-        prisma.talentPool.findMany({ skip, take: limit, orderBy: { created_at: "desc" }, include: { candidate: { select: { id: true, firstName: true, lastName: true, email: true } } } }),
+        prisma.talentPool.findMany({ skip, take: limit, orderBy: { addedAt: "desc" }, include: { candidate: { select: { id: true, firstName: true, lastName: true, email: true } } } }),
         prisma.talentPool.count(),
     ]);
     return { items, total, page, limit };

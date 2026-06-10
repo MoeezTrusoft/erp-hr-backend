@@ -7,6 +7,7 @@ const optionalEmail = z.preprocess(emptyToUndefined, z.string().trim().email().o
 const optionalDate = z.preprocess(emptyToUndefined, z.coerce.date().optional());
 const optionalInt = z.preprocess(emptyToUndefined, z.coerce.number().int().positive().optional());
 const optionalNumber = z.preprocess(emptyToUndefined, z.coerce.number().optional());
+const optionalRecord = z.record(z.string(), z.any()).optional();
 const requiredString = z.preprocess(emptyToUndefined, z.string().trim().min(1));
 const requiredDate = z.preprocess(emptyToUndefined, z.coerce.date());
 const requiredInt = z.preprocess(emptyToUndefined, z.coerce.number().int().positive());
@@ -71,8 +72,10 @@ const employeeBase = {
   postalCode: optionalString,
   employeeCode: optionalString,
   jobTitle: optionalString,
+  companyId: optionalInt,
   positionId: optionalInt,
   departmentId: optionalInt,
+  businessUnitId: optionalInt,
   managerId: optionalInt,
   locationId: optionalInt,
   employmentType: optionalString,
@@ -85,6 +88,7 @@ const employeeBase = {
   coverPhotoMediaId: optionalInt,
   emergencyContacts: z.array(emergencyContactSchema).optional().default([]),
   documents: z.array(employeeDocumentSchema).optional().default([]),
+  additionalFields: optionalRecord,
 };
 
 export const createEmployeeContractSchema = z
@@ -126,6 +130,7 @@ export const employeeStatusSchema = z.object({
 export const mediaAttachSchema = z.object({
   mediaId: optionalInt,
   url: optionalString,
+  downloadUrl: optionalString,
   fileName: optionalString,
   mimeType: optionalString,
   fileSize: optionalInt,

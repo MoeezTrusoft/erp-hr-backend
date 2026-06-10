@@ -48,3 +48,11 @@ export const uploadOfferLetter = async (req, res) => {
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
 };
+
+export const updateOffer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await svc.updateOffer(id, req.body);
+        res.status(200).json({ success: true, message: "Success", data: result });
+    } catch (e) { res.status(400).json({ success: false, message: e.message }); }
+};

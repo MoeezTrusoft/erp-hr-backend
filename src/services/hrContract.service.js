@@ -18,6 +18,45 @@ const employeeName = (employee) =>
   employee?.preferred_name ||
   `Employee ${employee?.id}`;
 
+const POSITION_META_PREFIX = "__TRUSOFT_POSITION_META__:";
+
+const parsePositionDescription = (description) => {
+  if (!description || typeof description !== "string") {
+    return { description: description || null, meta: {} };
+  }
+
+  if (!description.startsWith(POSITION_META_PREFIX)) {
+    return { description, meta: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(description.slice(POSITION_META_PREFIX.length));
+    return {
+      description: parsed.description || null,
+      meta: parsed.meta && typeof parsed.meta === "object" ? parsed.meta : {},
+    };
+  } catch {
+    return { description, meta: {} };
+  }
+};
+
+const buildPositionDescription = (data, existingDescription = null) => {
+  const current = parsePositionDescription(existingDescription);
+  const meta = {
+    ...current.meta,
+    companyId: data.companyId ?? current.meta.companyId,
+    departmentId: data.departmentId ?? current.meta.departmentId,
+    band: data.band ?? current.meta.band,
+    responsibilities: data.responsibilities ?? current.meta.responsibilities,
+    requirements: data.requirements ?? current.meta.requirements,
+  };
+
+  return `${POSITION_META_PREFIX}${JSON.stringify({
+    description: data.description ?? current.description,
+    meta: Object.fromEntries(Object.entries(meta).filter(([, value]) => value !== undefined)),
+  })}`;
+};
+
 const compactEmployeeSelect = {
   id: true,
   employee_code: true,
@@ -38,6 +77,9 @@ const compactEmployeeSelect = {
   joining_date: true,
   created_at: true,
   updated_at: true,
+  additional_fields: true,
+  businessUnitId: true,
+  positionId: true,
   Position: { select: { id: true, title: true, jobCode: true, isActive: true } },
   manager: { select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true } },
   businessUnit: { select: { id: true, name: true } },
@@ -45,41 +87,60 @@ const compactEmployeeSelect = {
   region: { select: { id: true, name: true } },
 };
 
-const employeeDirectoryRow = (employee) => ({
-  id: employee.id,
-  code: employee.employee_code,
-  name: employeeName(employee),
-  email: employee.work_email || employee.email,
-  phone: employee.work_phone || employee.personal_contact,
-  role: employee.job_title || employee.Position?.title,
-  position: employee.Position
-    ? { id: employee.Position.id, title: employee.Position.title, code: employee.Position.jobCode }
-    : null,
-  department: employee.businessUnit?.name || null,
-  grade: employee.gradeLevel?.name || null,
-  location: employee.region?.name || null,
-  manager: employee.manager
-    ? { id: employee.manager.id, name: employeeName(employee.manager), role: employee.manager.job_title }
-    : null,
-  status: employee.status || employee.employement_status || "Active",
-  avatarUrl: employee.photo_url,
-  hireDate: employee.hire_date || employee.joining_date,
-  updatedAt: employee.updated_at,
-});
+const employeeDirectoryRow = (employee) => {
+  const integration =
+    employee.additional_fields?.hrIntegration && typeof employee.additional_fields.hrIntegration === "object"
+      ? employee.additional_fields.hrIntegration
+      : {};
 
-const positionRow = (position) => ({
-  id: position.id,
-  title: position.title,
-  description: position.description,
-  code: position.jobCode,
-  status: position.isActive ? "Active" : "Inactive",
-  isActive: position.isActive,
-  filledCount: position._count?.employees || 0,
-  openCount: Math.max((position._count?.JobRequisition || 0) - (position._count?.employees || 0), 0),
-  requisitionCount: position._count?.JobRequisition || 0,
-  createdAt: position.createdAt,
-  updatedAt: position.updatedAt,
-});
+  return {
+    id: employee.id,
+    code: employee.employee_code,
+    name: employeeName(employee),
+    email: employee.work_email || employee.email,
+    phone: employee.work_phone || employee.personal_contact,
+    role: employee.job_title || employee.Position?.title,
+    positionId: employee.positionId || employee.Position?.id || null,
+    position: employee.Position
+      ? { id: employee.Position.id, title: employee.Position.title, code: employee.Position.jobCode }
+      : null,
+    companyId: integration.companyId || null,
+    departmentId: integration.departmentId || employee.businessUnitId || null,
+    department: integration.departmentName || employee.businessUnit?.name || null,
+    grade: employee.gradeLevel?.name || null,
+    location: employee.region?.name || null,
+    manager: employee.manager
+      ? { id: employee.manager.id, name: employeeName(employee.manager), role: employee.manager.job_title }
+      : null,
+    status: employee.status || employee.employement_status || "Active",
+    avatarUrl: employee.photo_url,
+    hireDate: employee.hire_date || employee.joining_date,
+    updatedAt: employee.updated_at,
+  };
+};
+
+const positionRow = (position) => {
+  const parsed = parsePositionDescription(position.description);
+
+  return {
+    id: position.id,
+    title: position.title,
+    description: parsed.description,
+    companyId: parsed.meta.companyId || null,
+    departmentId: parsed.meta.departmentId || null,
+    band: parsed.meta.band || null,
+    responsibilities: parsed.meta.responsibilities || "",
+    requirements: parsed.meta.requirements || "",
+    code: position.jobCode,
+    status: position.isActive ? "Active" : "Inactive",
+    isActive: position.isActive,
+    filledCount: position._count?.employees || 0,
+    openCount: Math.max((position._count?.JobRequisition || 0) - (position._count?.employees || 0), 0),
+    requisitionCount: position._count?.JobRequisition || 0,
+    createdAt: position.createdAt,
+    updatedAt: position.updatedAt,
+  };
+};
 
 const requisitionRow = (requisition) => ({
   id: requisition.id,
@@ -144,9 +205,30 @@ const requireRecord = async (model, id, label) => {
   if (!record) throw new Error(`${label} ID ${id} does not exist`);
 };
 
+const requireActivePosition = async (id) => {
+  if (!id) return;
+  const position = await prisma.position.findUnique({
+    where: { id: Number(id) },
+    select: { id: true, isActive: true, title: true },
+  });
+  if (!position) throw new Error(`Position ID ${id} does not exist`);
+  if (!position.isActive) {
+    throw new Error(`Position "${position.title}" is inactive and cannot be assigned`);
+  }
+};
+
 const assertEmployeeReferences = async (data, currentEmployeeId = null) => {
-  await requireRecord("position", data.positionId, "Position");
-  await requireRecord("businessUnit", data.departmentId, "Department");
+  if (data.positionId) {
+    const current = currentEmployeeId
+      ? await prisma.employee.findUnique({
+          where: { id: Number(currentEmployeeId) },
+          select: { positionId: true },
+        })
+      : null;
+    if (!current || Number(current.positionId) !== Number(data.positionId)) {
+      await requireActivePosition(data.positionId);
+    }
+  }
   await requireRecord("region", data.locationId, "Location");
 
   if (data.managerId) {
@@ -192,7 +274,7 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
     employee_code: data.employeeCode,
     job_title: data.jobTitle,
     positionId: data.positionId,
-    businessUnitId: data.departmentId,
+    businessUnitId: data.businessUnitId,
     managerId: data.managerId,
     regionId: data.locationId,
     employee_type: data.employmentType,
@@ -207,6 +289,29 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
     photo_url: data.profilePhotoUrl,
     cover_photo_url: data.coverPhotoUrl,
     updatedById: actorId ? Number(actorId) : undefined,
+  };
+
+  const additionalFields =
+    existing.additional_fields && typeof existing.additional_fields === "object" ? existing.additional_fields : {};
+  const hrIntegration = {
+    ...(additionalFields.hrIntegration && typeof additionalFields.hrIntegration === "object"
+      ? additionalFields.hrIntegration
+      : {}),
+    companyId: data.companyId,
+    departmentId: data.departmentId,
+  };
+  update.additional_fields = {
+    ...additionalFields,
+    employeeForm:
+      data.additionalFields && typeof data.additionalFields === "object"
+        ? {
+            ...(additionalFields.employeeForm && typeof additionalFields.employeeForm === "object"
+              ? additionalFields.employeeForm
+              : {}),
+            ...data.additionalFields,
+          }
+        : additionalFields.employeeForm,
+    hrIntegration: Object.fromEntries(Object.entries(hrIntegration).filter(([, value]) => value !== undefined)),
   };
 
   if (data.hireDate) update.tenureMonths = calculateTenureMonths(data.hireDate);
@@ -252,8 +357,12 @@ const employeeProfileSelect = {
   reports: { select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true } },
 };
 
-const employeeContractProfile = (employee) => ({
-  summary: employeeDirectoryRow(employee),
+const employeeContractProfile = (employee) => {
+  const summary = employeeDirectoryRow(employee);
+  const additionalFields =
+    employee.additional_fields && typeof employee.additional_fields === "object" ? employee.additional_fields : {};
+  return {
+  summary,
   personal: {
     firstName: employee.first_name,
     middleName: employee.middle_name,
@@ -282,7 +391,7 @@ const employeeContractProfile = (employee) => ({
     employeeCode: employee.employee_code,
     jobTitle: employee.job_title,
     positionId: employee.positionId,
-    departmentId: employee.businessUnitId,
+    departmentId: summary.departmentId || employee.businessUnitId,
     managerId: employee.managerId,
     locationId: employee.regionId,
     employmentType: employee.employee_type,
@@ -310,6 +419,7 @@ const employeeContractProfile = (employee) => ({
     coverPhotoMediaId: employee.cover_photo_media_id,
     coverPhotoUrl: employee.cover_photo_url,
   },
+  additionalFields,
   emergencyContacts: employee.emergencyContact?.map(emergencyContactRow) || [],
   documents: employee.employee_media?.map(employeeDocumentRow) || [],
   org: {
@@ -319,7 +429,8 @@ const employeeContractProfile = (employee) => ({
     reports: employee.reports?.map((report) => ({ id: report.id, name: employeeName(report), role: report.job_title })),
     teamMembers: employee.teamMembers?.map((member) => ({ id: member.id, name: employeeName(member), role: member.job_title })),
   },
-});
+};
+};
 
 const employeeDocumentRow = (document) => ({
   id: document.id,
@@ -374,11 +485,22 @@ const normalizeMediaPayload = async ({ mediaId, file, type, fallback = {} }) => 
     const asset = await getDamAssetById(mediaId);
     return {
       mediaId: Number(mediaId),
-      url: mediaUrl(asset, fallback.url),
+      url: mediaUrl(asset, fallback.url || fallback.downloadUrl),
       fileName: mediaFileName(asset, null, fallback.fileName),
       mimeType: asset?.mime_type || fallback.mimeType || null,
       fileSize: Number(asset?.file_size || asset?.size || fallback.fileSize || 0) || null,
       asset,
+    };
+  }
+
+  if (fallback.url || fallback.downloadUrl) {
+    return {
+      mediaId: null,
+      url: fallback.url || fallback.downloadUrl,
+      fileName: fallback.fileName || null,
+      mimeType: fallback.mimeType || null,
+      fileSize: Number(fallback.fileSize || 0) || null,
+      asset: null,
     };
   }
 
@@ -919,7 +1041,11 @@ export const deleteEmployeeEmergencyContact = async (employeeId, contactId) => {
 
 export const listPositions = async (query) => {
   const list = parseListQuery(query, { sort: "createdAt" });
-  const filters = { status: query.status || null };
+  const filters = {
+    status: query.status || null,
+    companyId: query.companyId ? String(query.companyId) : null,
+    departmentId: query.departmentId ? String(query.departmentId) : null,
+  };
   const where = {
     AND: [
       list.q ? { title: { contains: list.q, mode: "insensitive" } } : {},
@@ -927,18 +1053,23 @@ export const listPositions = async (query) => {
     ],
   };
 
-  const [items, total] = await Promise.all([
-    prisma.position.findMany({
-      where,
-      include: { _count: { select: { employees: true, JobRequisition: true } } },
-      orderBy: listOrder(list.sort, list.order, "createdAt", ["id", "title", "createdAt", "updatedAt"]),
-      skip: list.skip,
-      take: list.pageSize,
-    }),
-    prisma.position.count({ where }),
-  ]);
+  const items = await prisma.position.findMany({
+    where,
+    include: { _count: { select: { employees: true, JobRequisition: true } } },
+    orderBy: listOrder(list.sort, list.order, "createdAt", ["id", "title", "createdAt", "updatedAt"]),
+  });
 
-  return buildListPayload({ ...list, total, filters, items: items.map(positionRow) });
+  const filteredItems = items
+    .map(positionRow)
+    .filter((position) => (filters.companyId ? String(position.companyId) === filters.companyId : true))
+    .filter((position) => (filters.departmentId ? String(position.departmentId) === filters.departmentId : true));
+
+  return buildListPayload({
+    ...list,
+    total: filteredItems.length,
+    filters,
+    items: filteredItems.slice(list.skip, list.skip + list.pageSize),
+  });
 };
 
 export const getPosition = async (id) => {
@@ -972,7 +1103,7 @@ export const createPosition = async (data, actorId) => {
   const position = await prisma.position.create({
     data: {
       title: data.title,
-      description: data.description || null,
+      description: buildPositionDescription(data),
       isActive: data.isActive ?? true,
       createdById: actorId ? Number(actorId) : null,
       jobCode: data.jobCode || `TST-${nextId.toString().padStart(3, "0")}`,
@@ -984,25 +1115,54 @@ export const createPosition = async (data, actorId) => {
 };
 
 export const updatePosition = async (id, data) => {
-  const position = await prisma.position.update({
-    where: { id: Number(id) },
-    data: {
-      title: data.title,
-      description: data.description,
-      isActive: data.isActive,
-      jobCode: data.jobCode,
-    },
-    include: { _count: { select: { employees: true, JobRequisition: true } } },
+  const existing = await prisma.position.findUnique({ where: { id: Number(id) } });
+  if (!existing) throw new Error("Position not found");
+
+  const position = await prisma.$transaction(async (tx) => {
+    const updated = await tx.position.update({
+      where: { id: Number(id) },
+      data: {
+        title: data.title,
+        description: buildPositionDescription(data, existing.description),
+        isActive: data.isActive,
+        jobCode: data.jobCode,
+      },
+      include: { _count: { select: { employees: true, JobRequisition: true } } },
+    });
+
+    if (data.isActive !== undefined && Boolean(data.isActive) !== Boolean(existing.isActive)) {
+      await tx.employee.updateMany({
+        where: { positionId: Number(id) },
+        data: {
+          status: data.isActive ? "Active" : "Inactive",
+          employement_status: data.isActive ? "Active" : "Inactive",
+        },
+      });
+    }
+
+    return updated;
   });
 
   return positionRow(position);
 };
 
 export const updatePositionStatus = async (id, isActive) => {
-  const position = await prisma.position.update({
-    where: { id: Number(id) },
-    data: { isActive },
-    include: { _count: { select: { employees: true, JobRequisition: true } } },
+  const position = await prisma.$transaction(async (tx) => {
+    const updated = await tx.position.update({
+      where: { id: Number(id) },
+      data: { isActive },
+      include: { _count: { select: { employees: true, JobRequisition: true } } },
+    });
+
+    await tx.employee.updateMany({
+      where: { positionId: Number(id) },
+      data: {
+        status: isActive ? "Active" : "Inactive",
+        employement_status: isActive ? "Active" : "Inactive",
+      },
+    });
+
+    return updated;
   });
 
   return positionRow(position);

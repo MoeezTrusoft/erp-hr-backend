@@ -4,6 +4,7 @@ import {
   checkOut,
   getDailyAttendanceStatusSummary,
   getEmployeeAttendance,
+  listAttendanceRecords,
   syncDeviceAttendance,
   testDeviceConnectivity,
 } from "../../controllers/attendance.controller.js";
@@ -13,6 +14,7 @@ import { getWorkSchedules, createWorkSchedule, updateWorkSchedule, deleteWorkSch
 import { getOvertimeRules, createOvertimeRule, updateOvertimeRule, deleteOvertimeRule } from "../../controllers/overtimeController.js";
 
 export const mcpGetAttendanceByEmployee = (user, id) => runController(getEmployeeAttendance, { user, params: { id: String(id) } });
+export const mcpListAttendanceRecords = (user, query) => runController(listAttendanceRecords, { user, query });
 export const mcpListTimesheets = (user) => runController(getTimesheets, { user });
 export const mcpCheckIn = (user, data) => runController(checkIn, { user, body: data });
 export const mcpCheckOut = (user, data) => runController(checkOut, { user, body: data });

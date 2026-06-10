@@ -1,3 +1,4 @@
+import prisma from "../../config/prisma.js";
 import { runController } from "./_runner.js";
 import {
   getLeaveRequests,
@@ -22,7 +23,34 @@ export const mcpListLeaveBalances = (user) => runController(getLeaveBalances, { 
 export const mcpListPendingLeaveApprovals = (user) => runController(getPendingApprovals, { user });
 export const mcpListHolidays = (user) => runController(getHolidays, { user });
 
-export const mcpCreateLeaveRequest = (user, data) => runController(createLeaveRequest, { user, body: data });
+const resolveLeavePolicyId = async (leaveType) => {
+  const code = String(leaveType || "").trim();
+  if (!code) throw new Error("Leave type is required");
+
+  const policy = await prisma.leavePolicy.findFirst({
+    where: {
+      active: true,
+      OR: [
+        { leaveTypeCode: { equals: code, mode: "insensitive" } },
+        { name: { contains: code, mode: "insensitive" } },
+      ],
+    },
+  });
+
+  if (!policy) throw new Error(`Leave policy not found for type: ${leaveType}`);
+  return policy.id;
+};
+
+export const mcpCreateLeaveRequest = async (user, data) => {
+  const body = { ...data };
+  if (body.leaveType && !body.leavePolicyId) {
+    body.leavePolicyId = await resolveLeavePolicyId(body.leaveType);
+  }
+  if (!body.employeeId) {
+    body.employeeId = user.employeeId || user.userId;
+  }
+  return runController(createLeaveRequest, { user, body });
+};
 export const mcpApproveLeaveRequest = (user, id, data) => runController(approveLeaveRequest, { user, params: { id: String(id) }, body: data });
 export const mcpRejectLeaveRequest = (user, id, data) => runController(rejectLeaveRequest, { user, params: { id: String(id) }, body: data });
 export const mcpCancelLeaveRequest = (user, id, data) => runController(cancelLeaveRequest, { user, params: { id: String(id) }, body: data });

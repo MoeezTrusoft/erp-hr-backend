@@ -5,7 +5,10 @@ import {
   mcpCreateReimbursement,
   mcpEraseGdprEmployeeData,
   mcpExportGdprEmployeeData,
+  mcpListAuditLogs,
   mcpListComplianceChecklists,
+  mcpListDocumentExpiryAlerts,
+  mcpListGdprRecords,
   mcpUpdateComplianceItem,
 } from "../controllers/complianceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
@@ -33,6 +36,39 @@ export function registerComplianceTools(server) {
   );
 
   // ── TOOLS ────────────────────────────────────────────────────────────────
+
+  server.resource(
+    "hr_compliance_audit_logs",
+    "hr://compliance/audit-logs",
+    { description: "List HR audit logs for reports" },
+    async (uri) => {
+      getCtx();
+      const data = await mcpListAuditLogs();
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
+  server.resource(
+    "hr_compliance_document_expiry_alerts",
+    "hr://compliance/document-expiry-alerts",
+    { description: "List employee document expiry alerts" },
+    async (uri) => {
+      getCtx();
+      const data = await mcpListDocumentExpiryAlerts();
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
+  server.resource(
+    "hr_compliance_gdpr_records",
+    "hr://compliance/gdpr-records",
+    { description: "List GDPR/privacy records derived from employee data" },
+    async (uri) => {
+      getCtx();
+      const data = await mcpListGdprRecords();
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
 
   server.tool(
     "hr_compliance_checklist_create",

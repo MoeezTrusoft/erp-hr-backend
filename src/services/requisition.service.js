@@ -1,12 +1,14 @@
 import { PrismaClient } from "@prisma/client";
 import { logAction } from "../utils/logs.js";
 
-
 const prisma = new PrismaClient();
+
 // ✅ Create a new requisition
 export const createRequisition = async (data, requestedBy) => {
-  const { title, description, departmentId, positionId, openings } = data;
+  const { title, description, departmentId, positionId, employeeId, openings, status } = data;
   if (!title) throw new Error("Title  are required");
+  const requesterId = requestedBy || employeeId;
+  if (!requesterId) throw new Error("Hiring manager is required");
 
   const createRequi = await prisma.jobRequisition.create({
     data: {
@@ -14,26 +16,25 @@ export const createRequisition = async (data, requestedBy) => {
       description,
       departmentId: departmentId ? Number(departmentId) : null,
       positionId: positionId ? Number(positionId) : null,
-      requestedById: Number(requestedBy),
+      requestedById: Number(requesterId),
+      employeeId: employeeId ? Number(employeeId) : null,
       openings: openings ? Number(openings) : 1,
-      //   status: "PENDING_APPROVAL",
+      status: status || "DRAFT",
     },
-    requestedBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    }
+    include: {
+      position: true,
+      requestedBy: true,
+      approvedBy: true,
+      employee: true,
+    },
   });
   await logAction({
-    employeeId: requestedBy,
-    type: "Create", // 👈 changed from CREATE to UPDATE
+    employeeId: requesterId,
+    type: "Create",
     module: "Create Requisition",
     result: "SUCCESS",
     notes: `Create Requisition"${createRequi.id}" Created successfully`,
   });
-
 
   return createRequi;
 };
@@ -42,10 +43,10 @@ export const createRequisition = async (data, requestedBy) => {
 export const getAllRequisitions = async () => {
   return prisma.jobRequisition.findMany({
     include: {
-      // department: true,
       position: true,
       requestedBy: true,
       approvedBy: true,
+      employee: true,
     },
     orderBy: { id: "desc" },
   });
@@ -55,10 +56,10 @@ export const getByIdRequisitions = async (id) => {
   const getByID = prisma.jobRequisition.findUnique({
     where: { id: Number(id) },
     include: {
-      // department: true,
       position: true,
       requestedBy: true,
       approvedBy: true,
+      employee: true,
     },
   });
   if (!getByID) throw new Error("Job Requisition");
@@ -72,10 +73,9 @@ export const deleteRequisitions = async (id, deletedBy) => {
   const deleted = await prisma.jobRequisition.delete({
     where: { id: Number(id) }
   });
-  // Log the update action
   await logAction({
     employeeId: deletedBy,
-    type: "Delete", // 👈 changed from CREATE to UPDATE
+    type: "Delete",
     module: "Requisition",
     result: "SUCCESS",
     notes: `Requisition Position  "${id}" Deleted successfully`,
@@ -91,7 +91,6 @@ export const approveRequisition = async (id, status, comments, approvedBy) => {
   if (!requisition) throw new Error("Requisition not found");
 
   await prisma.requisitionApproval.create({
-    
     data: {
       requisitionId: Number(id),
       approverId: Number(approvedBy),
@@ -115,10 +114,9 @@ export const approveRequisition = async (id, status, comments, approvedBy) => {
       }
     }
   });
-  // Log the update action
   await logAction({
     employeeId: approvedBy,
-    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    type: "UPDATE",
     module: "Requisition Approve",
     result: "SUCCESS",
     notes: `Requisition approve "${id}" updated successfully`,
@@ -146,7 +144,6 @@ export const postRequisition = async (id, externalUrl, createdBy) => {
         last_name: true
       }
     },
-
   });
 
   const jobPosted = await prisma.jobRequisition.update({
@@ -156,10 +153,46 @@ export const postRequisition = async (id, externalUrl, createdBy) => {
 
   await logAction({
     employeeId: createdBy,
-    type: "UPDATE", // 👈 changed from CREATE to UPDATE
+    type: "UPDATE",
     module: "Requisition Post",
     result: "SUCCESS",
     notes: `Post Requisition "${id}" Posted successfully`,
   });
   return jobPosted;
+};
+
+// ✅ Update requisition
+export const updateRequisition = async (id, data, updatedBy) => {
+  const { title, description, departmentId, positionId, employeeId, openings, status } = data;
+  const updateData = {};
+  if (title !== undefined) updateData.title = title;
+  if (description !== undefined) updateData.description = description;
+  if (departmentId !== undefined) updateData.departmentId = departmentId ? Number(departmentId) : null;
+  if (positionId !== undefined) updateData.positionId = positionId ? Number(positionId) : null;
+  if (employeeId !== undefined) updateData.employeeId = employeeId ? Number(employeeId) : null;
+  if (openings !== undefined) updateData.openings = openings ? Number(openings) : undefined;
+  if (status !== undefined) updateData.status = status;
+
+  const updatedRequi = await prisma.jobRequisition.update({
+    where: { id: Number(id) },
+    data: updateData,
+    include: {
+      position: true,
+      requestedBy: true,
+      approvedBy: true,
+      employee: true,
+    },
+  });
+
+  if (updatedBy) {
+    await logAction({
+      employeeId: updatedBy,
+      type: "UPDATE",
+      module: "Update Requisition",
+      result: "SUCCESS",
+      notes: `Requisition "${id}" updated successfully`,
+    });
+  }
+
+  return updatedRequi;
 };

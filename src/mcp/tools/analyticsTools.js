@@ -152,4 +152,5 @@ export function registerAnalyticsTools(server) {
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
+
 }

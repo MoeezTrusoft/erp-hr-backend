@@ -7,7 +7,8 @@ export const createApplication = async (req, res) => {
         const tenantId = user.tenantId ?? null;
         const createdById = user || user.employeeId || user.id || null;
 
-        const { candidateId, jobRequisitionId, stage, status } = req.body;
+        const { candidateId, requisitionId, jobRequisitionId: bodyJobRequisitionId, stage, status } = req.body;
+        const jobRequisitionId = bodyJobRequisitionId || requisitionId;
 
         if (!candidateId || !jobRequisitionId) {
             return res.status(400).json({

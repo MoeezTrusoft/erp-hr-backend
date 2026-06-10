@@ -12,7 +12,7 @@ export const createApplication = async ({
     tenantId,
     createdById,
 }) => {
-    const create = prisma.application.create({
+    const create = await prisma.application.create({
         data: {
             candidateId,
             jobRequisitionId,
@@ -31,7 +31,7 @@ export const createApplication = async ({
         type: "CREATE",
         module: "Application",
         result: "SUCCESS",
-        notes: `Application "${application.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
+            notes: `Application "${create.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
     });
 
 

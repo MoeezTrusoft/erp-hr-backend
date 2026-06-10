@@ -38,6 +38,18 @@ export const getEmployeeAttendance = async (req, res) => {
   }
 };
 
+export const listAttendanceRecords = async (req, res) => {
+  try {
+    const result = await attandanceService.listAttendanceRecords({
+      date: req.query?.date,
+      limit: req.query?.limit,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+};
+
 export const testDeviceConnectivity = async (req, res) => {
   try {
     const result = await probeAttendanceDevice(req.body || {});

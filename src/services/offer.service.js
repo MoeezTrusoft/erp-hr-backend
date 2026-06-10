@@ -27,7 +27,12 @@ export const getOffer = async (id) => {
 export const listOffers = async ({ page = 1, limit = 20 }) => {
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
-        prisma.offer.findMany({ skip, take: limit, orderBy: { created_at: "desc" }, include: { candidate: true } }),
+        prisma.offer.findMany({
+            skip,
+            take: limit,
+            orderBy: { created_at: "desc" },
+            include: { candidate: true, jobRequisition: { include: { position: true } }, application: true },
+        }),
         prisma.offer.count(),
     ]);
     return { items, total, page, limit };
@@ -50,5 +55,22 @@ export const uploadOfferLetter = async (id, file) => {
     return prisma.offer.update({
         where: { id: Number(id) },
         data: { offerLetterMediaId: uploaded[0].id },
+    });
+};
+
+export const updateOffer = async (id, { applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, status }) => {
+    const data = {};
+    if (applicationId !== undefined) data.applicationId = applicationId ? Number(applicationId) : null;
+    if (candidateId !== undefined) data.candidateId = Number(candidateId);
+    if (jobRequisitionId !== undefined) data.jobRequisitionId = jobRequisitionId ? Number(jobRequisitionId) : null;
+    if (salary !== undefined) data.salary = salary ? Number(salary) : null;
+    if (currency !== undefined) data.currency = currency || "USD";
+    if (startDate !== undefined) data.startDate = startDate ? new Date(startDate) : null;
+    if (expiryDate !== undefined) data.expiryDate = expiryDate ? new Date(expiryDate) : null;
+    if (notes !== undefined) data.notes = notes;
+    if (status !== undefined) data.status = status;
+    return prisma.offer.update({
+        where: { id: Number(id) },
+        data,
     });
 };

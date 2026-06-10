@@ -14,6 +14,7 @@ import {
   mcpDeleteTimeEntry,
   mcpDeleteWorkSchedule,
   mcpGetAttendanceByEmployee,
+  mcpListAttendanceRecords,
   mcpListOvertimeRules,
   mcpListTimeEntries,
   mcpListTimesheets,
@@ -55,6 +56,17 @@ export function registerAttendanceTools(server) {
     async (uri) => {
       const { user } = getCtx();
       const data = await mcpListTimesheets(user);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
+  server.resource(
+    "hr_attendance_records_list",
+    "hr://attendance/records",
+    { description: "List attendance records for a day" },
+    async (uri) => {
+      const { user } = getCtx();
+      const data = await mcpListAttendanceRecords(user, {});
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
