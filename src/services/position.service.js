@@ -1,13 +1,11 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
-const prisma = new PrismaClient();
 
 
 // ✅ Create position
 export const createPosition = async (data,createdBy) => {
   const { title, description, isActive } = data;
   if (!title) throw new Error("Title is required");
-console.log("fjaf", createdBy)
 
   // Generate a unique job code, e.g., "POS-001", "POS-002", etc.
   const lastPosition = await prisma.position.findFirst({

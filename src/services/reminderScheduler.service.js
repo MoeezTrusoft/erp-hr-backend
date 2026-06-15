@@ -1,13 +1,13 @@
 import cron from "node-cron";
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
+import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 
-const prisma = new PrismaClient();
 
 export const startReviewReminderScheduler = () => {
   // Performance review reminders: daily at 9 AM
   cron.schedule("0 9 * * *", async () => {
-    console.log("🔔 Running daily performance review reminder job...");
+    logger.info("performance review reminder job: start");
 
     const pendingReviews = await prisma.performanceReview.findMany({
       where: { status: { in: ["PENDING", "IN_PROGRESS"] } },
@@ -34,20 +34,20 @@ export const startReviewReminderScheduler = () => {
           },
         });
       } catch (err) {
-        console.error("❌ Reminder error:", err.message);
+        logger.error({ err, reviewId: review.id }, "performance review reminder per-review failed");
       }
     }
 
-    console.log("🎯 Performance reminder job completed!");
+    logger.info("performance review reminder job: done");
   });
 
   // Document expiry alerts: daily at 8 AM
   cron.schedule("0 8 * * *", async () => {
     try {
       const alerts = await generateDocumentExpiryAlerts({ daysBefore: [30, 14, 7] });
-      console.log(`📄 Document expiry alert job completed. New alerts: ${alerts.length}`);
+      logger.info({ newAlertCount: alerts.length }, "document expiry alert job: done");
     } catch (err) {
-      console.error("❌ Document expiry alert job error:", err.message);
+      logger.error({ err }, "document expiry alert job failed");
     }
   });
 };

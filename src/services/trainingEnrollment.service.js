@@ -1,7 +1,6 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 
-const prisma = new PrismaClient();
 
 export const enrollEmployee = async (data) => {
   if (!data.courseId || !data.employeeId)

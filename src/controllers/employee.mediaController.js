@@ -25,8 +25,6 @@ export const createEmployeeMedia = async (req, res) => {
             files.map(async (file) => {
                 const damResponse = await uploadFileToDAM(file);
 
-                console.log("DAM media id:", damResponse?.[0]?.id);
-
                 return {
                     media_id: damResponse?.[0]?.id,
                 };

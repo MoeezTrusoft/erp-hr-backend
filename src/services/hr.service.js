@@ -1,7 +1,6 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 
-const prisma = new PrismaClient();
 
 // ✅ Create Employee
 // export const createEmployeeService = async (data, createdBy) => {
@@ -110,8 +109,6 @@ function calculateTenure(hireDate) {
 }
 
 export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,createdBy) => {
-  console.log("fsfsfsfsf",finalMediaUrl,finalMediaId);
-  
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 

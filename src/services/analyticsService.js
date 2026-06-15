@@ -1,8 +1,8 @@
 import { logAction } from "../utils/logs.js";
-import { PrismaClient } from '@prisma/client';
+import prisma from "../lib/prisma.js";
+import logger from "../lib/logger.js";
 import * as utils from '../utils/analyticsUtils.js';
 
-const prisma = new PrismaClient();
 
 /**
  * Standard Report Services
@@ -66,7 +66,7 @@ export const generateHeadcountReport = async ({ tenantId, startDate, endDate, po
         return Object.values(headcountByPosition);
 
     } catch (error) {
-        console.error('Headcount Report Service Error:', error);
+        logger.error({ err: error }, 'Headcount Report Service Error');
         throw error;
     }
 };
@@ -125,7 +125,7 @@ export const generateTurnoverReport = async ({ tenantId, startDate, endDate, pos
         return Object.values(positionTurnover);
 
     } catch (error) {
-        console.error('Turnover Report Service Error:', error);
+        logger.error({ err: error }, 'Turnover Report Service Error');
         throw error;
     }
 };
@@ -181,7 +181,7 @@ export const generateSalaryReport = async ({ tenantId, positionId, jobGrade, loc
         return Object.values(reportData);
 
     } catch (error) {
-        console.error('Salary Report Service Error:', error);
+        logger.error({ err: error }, 'Salary Report Service Error');
         throw error;
     }
 };
@@ -215,7 +215,7 @@ export const generateLeaveBalancesReport = async ({ tenantId, positionId, employ
         }));
 
     } catch (error) {
-        console.error('Leave Balances Report Error:', error);
+        logger.error({ err: error }, 'Leave Balances Report Error');
         throw error;
     }
 };
@@ -287,7 +287,7 @@ export const generateAbsenceReport = async ({ tenantId, startDate, endDate, posi
         return Object.values(reportData);
 
     } catch (error) {
-        console.error('Absence Report Service Error:', error);
+        logger.error({ err: error }, 'Absence Report Service Error');
         throw error;
     }
 };
@@ -351,7 +351,7 @@ export const generateEEOReport = async ({ tenantId, positionId, location, userRo
         return Object.values(eeoData);
 
     } catch (error) {
-        console.error('EEO Report Service Error:', error);
+        logger.error({ err: error }, 'EEO Report Service Error');
         throw error;
     }
 };
@@ -387,7 +387,7 @@ export const generateRecruitmentPipelineReport = async ({ tenantId, status, posi
         return reportData;
 
     } catch (error) {
-        console.error('Recruitment Pipeline Report Service Error:', error);
+        logger.error({ err: error }, 'Recruitment Pipeline Report Service Error');
         throw error;
     }
 };
@@ -502,7 +502,7 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
         };
 
     } catch (error) {
-        console.error('Dashboard KPIs Service Error:', error);
+        logger.error({ err: error }, 'Dashboard KPIs Service Error');
         throw error;
     }
 };
@@ -587,7 +587,7 @@ export const getPositionDashboard = async ({ tenantId, positionId, timeframe, us
         };
 
     } catch (error) {
-        console.error('Position Dashboard Service Error:', error);
+        logger.error({ err: error }, 'Position Dashboard Service Error');
         throw error;
     }
 };
@@ -636,7 +636,7 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
         };
 
     } catch (error) {
-        console.error('Recruitment Dashboard Service Error:', error);
+        logger.error({ err: error }, 'Recruitment Dashboard Service Error');
         throw error;
     }
 };
@@ -695,7 +695,7 @@ export const getPerformanceDashboard = async ({ tenantId, timeframe, userRole })
         };
 
     } catch (error) {
-        console.error('Performance Dashboard Service Error:', error);
+        logger.error({ err: error }, 'Performance Dashboard Service Error');
         throw error;
     }
 };

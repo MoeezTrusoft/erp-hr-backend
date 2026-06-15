@@ -6,6 +6,9 @@ import cors from "cors";
 import client from "prom-client";
 import { createServer } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
+import logger from "./lib/logger.js";
+import prisma from "./lib/prisma.js";
+import { createHealthRouter } from "./routes/health.routes.js";
 
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
@@ -181,8 +184,11 @@ const io = new SocketIOServer(httpServer, {
 
 bindRealtimeSocketServer(io);
 
-console.log("[server] attendance listener enabled:", String(process.env.ATTENDANCE_LISTENER_ENABLED ?? "true"));
-console.log("[server] attendance device:", process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202", "port", process.env.ATTENDANCE_DEVICE_PORT || "4370");
+logger.info({
+  attendanceListenerEnabled: String(process.env.ATTENDANCE_LISTENER_ENABLED ?? "true"),
+  attendanceDeviceHost: process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202",
+  attendanceDevicePort: process.env.ATTENDANCE_DEVICE_PORT || "4370",
+}, "attendance subsystem configured");
 
 app.get("/metrics", async (_req, res) => {
   res.setHeader("Content-Type", register.contentType);
@@ -193,9 +199,12 @@ app.use("/mcp", mcpRouter);
 
 app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
 
+// /healthz (liveness) + /readyz (readiness; pings DB via singleton).
+app.use(createHealthRouter({ prisma }));
+
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
-  console.log(`HR Service running on port ${PORT}`);
+  logger.info({ port: PORT }, "HR Service listening");
   await bootstrapAttendanceData();
   startAttendanceListener();
 });

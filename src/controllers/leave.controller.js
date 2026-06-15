@@ -26,17 +26,10 @@ export const createLeavePolicy = async (req, res) => {
   try {
 
      const employeeId = req.headers['employee-id'];
-    console.log(req.headers, "user id req");
-     console.log("user Id", req.user);
     const policy = await leaveService.createLeavePolicy({
-      
       ...req.body,
       createdById: employeeId
   });
-  //  console.log("user Id", createdById);
-    
-      console.log("📥 HR service received headers:", req.headers);
-  console.log("📥 HR service received body:", req.body);
     res.status(201).json({ success: true,message:policy,  receivedUserId: req.headers["x-user-id"] });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });

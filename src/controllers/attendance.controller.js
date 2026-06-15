@@ -4,6 +4,7 @@ import {
   probeAttendanceDevice,
   syncAttendanceFromPunches,
 } from "../services/attendance.device.service.js";
+import logger from "../lib/logger.js";
 
 export const checkIn = async (req, res) => {
   try {
@@ -13,7 +14,7 @@ export const checkIn = async (req, res) => {
       attendance: result,
     });
   } catch (error) {
-    console.error("❌ checkIn error:", error);
+    logger.error({ err: error }, "attendance checkIn failed");
     res.status(400).json({ error: error.message });
   }
 };

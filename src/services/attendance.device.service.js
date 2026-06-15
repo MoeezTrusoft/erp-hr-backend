@@ -1,8 +1,5 @@
 import net from "node:net";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
-
+import prisma from "../lib/prisma.js";
 const DEFAULT_DEVICE_HOST = process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202";
 const DEFAULT_DEVICE_PORT = Number(process.env.ATTENDANCE_DEVICE_PORT || 4370);
 const DEFAULT_TIMEOUT_MS = Number(process.env.ATTENDANCE_DEVICE_TIMEOUT_MS || 3000);

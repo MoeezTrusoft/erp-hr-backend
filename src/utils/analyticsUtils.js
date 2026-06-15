@@ -1,7 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
-
+import prisma from "../lib/prisma.js";
 /**
  * Apply data scope filtering based on user role and permissions
  * @param {number} tenantId - The tenant ID

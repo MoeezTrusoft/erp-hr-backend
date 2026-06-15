@@ -31,8 +31,6 @@ export const createTag = async (req, res) => {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
         const createdById = req.headers['user-id'] || user.id || null;
-        console.log("hello",createdById);
-        
 
         const { name, type } = req.body;
         if (!name) {

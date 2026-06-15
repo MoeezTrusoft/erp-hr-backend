@@ -2,6 +2,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import logger from "../../lib/logger.js";
 import {
   mcpCreateEmergencyContact,
   mcpCreateEmployee,
@@ -78,10 +79,7 @@ export function registerEmployeeTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const query = { page: 1, pageSize: 10, ...args };
-      console.info("[MCP HR] resolved pagination hr_employees_list", {
-        page: query.page,
-        pageSize: query.pageSize,
-      });
+      logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_employees_list pagination resolved");
       const data = await mcpListEmployeesContract(query);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employees_list")
@@ -113,10 +111,7 @@ export function registerEmployeeTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const query = { page: 1, pageSize: 10, ...args };
-      console.info("[MCP HR] resolved pagination hr_positions_list", {
-        page: query.page,
-        pageSize: query.pageSize,
-      });
+      logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_positions_list pagination resolved");
       const data = await mcpListPositionsContract(query);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_positions_list")

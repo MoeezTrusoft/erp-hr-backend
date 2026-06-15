@@ -1,4 +1,5 @@
 import * as analyticsService from '../services/analyticsService.js';
+import logger from '../lib/logger.js';
 
 /**
  * Standard Report Controllers
@@ -34,7 +35,7 @@ export const getHeadcountReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Headcount Report Error:', error);
+        logger.error({ err: error }, 'Headcount Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -73,7 +74,7 @@ export const getTurnoverReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Turnover Report Error:', error);
+        logger.error({ err: error }, 'Turnover Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -111,7 +112,7 @@ export const getSalaryReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Salary Report Error:', error);
+        logger.error({ err: error }, 'Salary Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -140,7 +141,7 @@ export const getLeaveBalancesReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Leave Balances Report Error:', error);
+        logger.error({ err: error }, 'Leave Balances Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -179,7 +180,7 @@ export const getAbsenceReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Absence Report Error:', error);
+        logger.error({ err: error }, 'Absence Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -208,7 +209,7 @@ export const getEEOReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('EEO Report Error:', error);
+        logger.error({ err: error }, 'EEO Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -238,7 +239,7 @@ export const getRecruitmentPipelineReport = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Recruitment Pipeline Report Error:', error);
+        logger.error({ err: error }, 'Recruitment Pipeline Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -269,7 +270,7 @@ export const getDashboardKPIs = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Dashboard KPIs Error:', error);
+        logger.error({ err: error }, 'Dashboard KPIs Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -306,7 +307,7 @@ export const getPositionDashboard = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Position Dashboard Error:', error);
+        logger.error({ err: error }, 'Position Dashboard Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -342,7 +343,7 @@ export const getRecruitmentDashboard = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Recruitment Dashboard Error:', error);
+        logger.error({ err: error }, 'Recruitment Dashboard Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -378,7 +379,7 @@ export const getPerformanceDashboard = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Performance Dashboard Error:', error);
+        logger.error({ err: error }, 'Performance Dashboard Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -439,7 +440,7 @@ export const exportReport = async (req, res) => {
 
         res.send(result);
     } catch (error) {
-        console.error('Export Report Error:', error);
+        logger.error({ err: error }, 'Export Report Error');
         res.status(500).json({
             success: false,
             error: error.message
@@ -467,7 +468,7 @@ export const healthCheck = async (req, res) => {
             services: 'operational'
         });
     } catch (error) {
-        console.error('Health Check Error:', error);
+        logger.error({ err: error }, 'Health Check Error');
         res.status(503).json({
             success: false,
             status: 'unhealthy',

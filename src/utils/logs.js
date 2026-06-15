@@ -1,7 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import os from "os";
+import logger from "../lib/logger.js";
 
-const prisma = new PrismaClient();
 
 const toIntOrNull = (value) => {
     if (value === undefined || value === null || value === "") return null;
@@ -58,6 +58,6 @@ export const logAction = async ({
             },
         });
     } catch (err) {
-        console.error("Logging failed:", err.message);
+        logger.error({ err }, "Audit logAction failed");
     }
 };

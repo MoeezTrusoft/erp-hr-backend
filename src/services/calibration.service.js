@@ -1,6 +1,5 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
-const prisma = new PrismaClient();
 
 // 🟢 Create calibration session
 export const createCalibrationSessionService = async (data, createdBy) => {
@@ -24,7 +23,6 @@ export const createCalibrationSessionService = async (data, createdBy) => {
 // 🟢 Add rating adjustment
 export const adjustRatingService = async (data, calibrated_by_employee_id) => {
   const { reviewId, old_rating, new_rating, justification } = data;
-  console.log(data);
 
   if (!reviewId || !new_rating)
     throw new Error("reviewId, new_rating and calibrated_by are required");

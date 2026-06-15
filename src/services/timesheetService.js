@@ -1,8 +1,7 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
 
-const prisma = new PrismaClient();
 
 export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status }) => {
     const where = { employeeId: parseInt(employeeId) };
