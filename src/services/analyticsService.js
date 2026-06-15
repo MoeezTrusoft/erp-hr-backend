@@ -713,3 +713,26 @@ export const exportReport = async ({ tenantId, reportType, format, filters, user
         generatedAt: new Date().toISOString()
     };
 };
+
+export {
+    applyDataScope,
+    calculateDateRange,
+    calculateYearsOfService,
+    calculateDiversityIndex,
+    calculateMedian,
+    createSalaryDistribution,
+    calculateWorkingDays,
+    calculateTurnoverRate,
+    calculateAbsenteeismRate,
+    generateDepartmentAlerts,
+    identifyRecruitmentBottlenecks,
+    calculateRecruitmentConversionRates,
+    formatCurrency,
+    calculateAge,
+    calculateAgeGroup,
+    validateDate,
+    calculateAverage,
+    calculateStandardDeviation,
+    analyzeTrend,
+    formatPercentage
+} from '../utils/analyticsUtils.js';
