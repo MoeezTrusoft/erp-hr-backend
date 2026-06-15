@@ -18,7 +18,8 @@
     "test:training:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js tests/integration/training.integration.test.js tests/e2e/training.e2e.test.js",
     "test:sprint8": "npm run test:training:all",
     "test:analytics:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/analyticsService.final.test.js tests/unit/analyticsController.test.js tests/integration/analytics.integration.test.js",
-    "test:sprint9": "npm run test:analytics:all"
+    "test:sprint9": "npm run test:analytics:all",
+    "gate:p1": "bash scripts/gate-p1.sh"
   },
   "keywords": [],
   "author": "",
