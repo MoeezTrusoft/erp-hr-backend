@@ -11,7 +11,7 @@ describe('Analytics Service - Core Functions', () => {
     describe('applyDataScope', () => {
         test('should return correct data scope for different roles', () => {
             expect(applyDataScope(1, 'HR_ADMIN')).toEqual({});
-            expect(applyDataScope(1, 'DEPARTMENT_MANAGER', 5)).toEqual({ departmentId: 5 });
+            expect(applyDataScope(1, 'DEPARTMENT_MANAGER', 5)).toEqual({ department_id: 5 });
             expect(applyDataScope(1, 'EMPLOYEE', 10)).toEqual({ id: 10 });
         });
     });
@@ -55,30 +55,26 @@ describe('Analytics Service - Core Functions', () => {
     });
 
     describe('calculateAgeGroup', () => {
-        test('should return a string for any valid date', () => {
-            const result = calculateAgeGroup(new Date('2020-01-01'));
+        // calculateAgeGroup categorises an *age in years*, not a hire date.
+        test('should return a string for any valid age', () => {
+            const result = calculateAgeGroup(30);
 
             expect(typeof result).toBe('string');
             expect(result.length).toBeGreaterThan(0);
         });
 
-        test('should handle recent hire dates', () => {
-            const recentHire = new Date();
-            recentHire.setMonth(recentHire.getMonth() - 6); // 6 months ago
-
-            const result = calculateAgeGroup(recentHire);
+        test('should categorise mid-career employees', () => {
+            const result = calculateAgeGroup(40);
 
             expect(typeof result).toBe('string');
-            expect(['Less than 1 year', '1-3 years']).toContain(result);
+            expect(['35-44']).toContain(result);
         });
 
-        test('should handle long-term employees', () => {
-            const longTermHire = new Date('2010-01-01');
-
-            const result = calculateAgeGroup(longTermHire);
+        test('should categorise senior employees', () => {
+            const result = calculateAgeGroup(60);
 
             expect(typeof result).toBe('string');
-            expect(result).toBe('10+ years');
+            expect(result).toBe('55+');
         });
     });
 });

@@ -16,7 +16,7 @@ const mockGetRecruitmentDashboard = jest.fn();
 const mockGetPerformanceDashboard = jest.fn();
 const mockExportReport = jest.fn();
 
-jest.unstable_mockModule('../../src/services/analyticsService.js', () => ({
+jest.unstable_mockModule('../../../src/services/analyticsService.js', () => ({
     generateHeadcountReport: mockGenerateHeadcountReport,
     generateTurnoverReport: mockGenerateTurnoverReport,
     generateSalaryReport: mockGenerateSalaryReport,
@@ -32,7 +32,7 @@ jest.unstable_mockModule('../../src/services/analyticsService.js', () => ({
 }));
 
 // Import routes after mocking
-const { analyticsRoutes } = await import('../../src/routes/analytics.js');
+const { analyticsRoutes } = await import('../../../src/routes/analytics.js');
 
 const createTestApp = (user = null) => {
     const app = express();
@@ -75,13 +75,15 @@ describe('Analytics Routes Integration Tests', () => {
 
             mockGenerateHeadcountReport.mockResolvedValue(mockReport);
 
+            // Controller now keys filters on positionId (renamed from
+            // departmentId during the position-model migration).
             const app = createTestApp(mockUser);
             const response = await request(app)
                 .get('/api/analytics/reports/headcount')
                 .query({
                     startDate: '2024-01-01',
                     endDate: '2024-01-31',
-                    departmentId: '1',
+                    positionId: '1',
                     location: 'New York'
                 });
 
@@ -91,7 +93,7 @@ describe('Analytics Routes Integration Tests', () => {
             expect(response.body.metadata.filters).toEqual({
                 startDate: '2024-01-01',
                 endDate: '2024-01-31',
-                departmentId: '1',
+                positionId: '1',
                 location: 'New York'
             });
 
@@ -99,7 +101,7 @@ describe('Analytics Routes Integration Tests', () => {
                 tenantId: 1,
                 startDate: '2024-01-01',
                 endDate: '2024-01-31',
-                departmentId: '1',
+                positionId: '1',
                 location: 'New York',
                 userRole: 'HR_ADMIN'
             });

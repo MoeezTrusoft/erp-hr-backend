@@ -19,7 +19,7 @@ describe('Analytics Service - Core Functions', () => {
 
         test('should filter by department for DEPARTMENT_MANAGER', () => {
             const result = applyDataScope(1, 'DEPARTMENT_MANAGER', 5);
-            expect(result).toEqual({ departmentId: 5 });
+            expect(result).toEqual({ department_id: 5 });
         });
     });
 
