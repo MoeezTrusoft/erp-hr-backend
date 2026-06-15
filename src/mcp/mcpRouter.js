@@ -2,6 +2,7 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { getMcpServer } from "./mcpServer.js";
 import { mcpCtx, buildContextFromHeaders } from "./context.js";
+import logger from "../lib/logger.js";
 
 const router = express.Router();
 
@@ -32,7 +33,7 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
       await transport.handleRequest(req, res, body);
     });
   } catch (err) {
-    console.error("[MCP erp-hr-service] Error:", err);
+    logger.error({ err, mcpRequestId: body?.id ?? null }, "MCP request failed");
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: "2.0",

@@ -1,5 +1,6 @@
 import prisma from "../lib/prisma.js";
 import os from "os";
+import logger from "../lib/logger.js";
 
 
 const toIntOrNull = (value) => {
@@ -57,6 +58,6 @@ export const logAction = async ({
             },
         });
     } catch (err) {
-        console.error("Logging failed:", err.message);
+        logger.error({ err }, "Audit logAction failed");
     }
 };

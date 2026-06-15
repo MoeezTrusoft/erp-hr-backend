@@ -6,8 +6,7 @@ import { uploadFileToDAM } from "../services/dam.media.service.js";
 export const createCandidate = async (req, res) => {
     try {
         const user = req.headers['user-id'];
-        console.log("condidate", user);
-        
+
         const tenantId = user.tenantId ?? null;
         const createdById = user||user.employeeId || user.id || null;
 
@@ -59,7 +58,6 @@ export const updateCandidate = async (req, res) => {
         const tenantId = user.tenantId ?? null;
         const updatedById = user||user.employeeId || user.id || null;
         const { id } = req.params;
-console.log("update condidate", user);
 
         const {
             firstName,

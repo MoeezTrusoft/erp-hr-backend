@@ -20,16 +20,12 @@ export const createEmployee = async (req, res) => {
 
     if (mediaId) {
       mediaRecord = await damRequest(`assets/${mediaId}`, "GET");
-      console.log("media recordd", mediaRecord, mediaId);
-
-
     }
 
 
     else if (req.files && req.files.length > 0) {
       // Upload file to DAM
       mediaRecord = await uploadFileToDAM(req.files[0], "avatar");
-      console.log(mediaRecord, "media record");
 
       if (!mediaRecord) {
         return res.status(500).json({ success: false, message: "Failed to upload media" });
@@ -51,8 +47,6 @@ export const createEmployee = async (req, res) => {
       record?.cdn_url ||
       null;
 
-
-    console.log("fjajfajfja", finalMediaUrl, finalMediaId);
 
     const newEmployee = await createEmployeeService(req.body, finalMediaId, finalMediaUrl, createdBy);
 
@@ -177,9 +171,6 @@ export const getAllEmployees = async (req, res) => {
 // ======================== GET BY ID ========================
 export const getEmployeeById = async (req, res) => {
   try {
-
-    console.log("employee", req.params.id);
-
     // Fetch user mediaId from database
     const employee_id = await getEmployeeMediaIdService(req.params.id);
     if (!employee_id) {
@@ -191,7 +182,6 @@ export const getEmployeeById = async (req, res) => {
 
 
     const employeeMediaId = employee_id.employee_media_id;
-    console.log("user media id:", employeeMediaId);
 
     let mediaRecord = null;
     if (employeeMediaId) {
@@ -199,11 +189,9 @@ export const getEmployeeById = async (req, res) => {
       if (!mediaRecord) {
         return res.status(404).json({ success: false, message: "Media Record not found" });
       }
-      console.log("media record:", mediaRecord);
     }
 
     // const user = await damRequest(`/user/by-employee/${req.params.id}`, "GET");
-    // console.log("deapfa", user)
     // if (!user) {
     //   return res.status(404).json({ success: false, message: "User not found in RBAC" });
     // }

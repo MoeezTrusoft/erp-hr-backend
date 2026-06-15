@@ -1,6 +1,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import { damRequest as mediaDamRequest } from "./dam.media.service.js";
+import logger from "../lib/logger.js";
 
 const HR_BASE_URL = process.env.HR_SERVICE_URL || "http://localhost:3002/api";
 const HR_TIMEOUT = parseInt(process.env.HR_SERVICE_TIMEOUT || "10000", 10);
@@ -26,10 +27,12 @@ export async function hrRequest(endpoint, method = "GET", body = {}, headers = {
 
     return response.data;
   } catch (error) {
-    console.error(
-      `[HR] ${method} ${endpoint} failed:`,
-      error.response?.data || error.message
-    );
+    logger.error({
+      err: error,
+      method,
+      endpoint,
+      responseData: error.response?.data,
+    }, "HR upstream request failed");
     return null;
   }
 }
@@ -58,13 +61,13 @@ export async function uploadFileToDAM(file, type = "avatar") {
       formData.getHeaders()
     );
 
-    console.log(uploadResponse, "upload response");
-
-
     // ✅ Correct return value
     return uploadResponse?.items;
   } catch (err) {
-    console.error("[DAM] Upload failed:", err.response?.data || err.message);
+    logger.error({
+      err,
+      responseData: err.response?.data,
+    }, "DAM upload failed (rbac.department)");
     return null;
   }
 }

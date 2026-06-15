@@ -109,8 +109,6 @@ function calculateTenure(hireDate) {
 }
 
 export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,createdBy) => {
-  console.log("fsfsfsfsf",finalMediaUrl,finalMediaId);
-  
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 

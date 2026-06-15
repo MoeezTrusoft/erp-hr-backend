@@ -11,8 +11,7 @@ export const create = async (req, res) => {
   try {
 
         const createdBy = req.headers["user-id"];
-        console.log("user",createdBy);
-        
+
     const { Contact_name, relationship, phone, email, is_primary, employee_Id } = req.body;
 
     const createData = {

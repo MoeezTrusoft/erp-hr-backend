@@ -7,7 +7,6 @@ export const saveLayoutController = async (req, res) => {
   try {
      const employeeId = req.headers["user-id"];
     const { dashboardType = "workforce", layout } = req.body;
-console.log(employeeId);
 
     if (!employeeId || !layout) {
       return res.status(400).json({

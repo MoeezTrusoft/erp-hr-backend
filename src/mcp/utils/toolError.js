@@ -1,15 +1,17 @@
+import logger from "../../lib/logger.js";
+
 export function withToolError(fn, toolName = "unknown_tool") {
   return async (args) => {
     try {
-      console.info(`[MCP HR] tool start ${toolName}`, { args });
+      logger.debug({ toolName, args }, "MCP tool start");
       return await fn(args);
     } catch (err) {
-      console.error(`[MCP HR] tool failed ${toolName}`, {
+      logger.error({
+        toolName,
         args,
-        message: err?.message,
+        err,
         status: err?.status || 500,
-        stack: err?.stack,
-      });
+      }, "MCP tool failed");
       const body = { error: err.message, status: err.status || 500 };
       return {
         isError: true,

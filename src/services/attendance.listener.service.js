@@ -8,6 +8,9 @@ import {
   persistBootstrapPunches,
   updateListenerState,
 } from "./attendance.realtime.service.js";
+import logger from "../lib/logger.js";
+
+const listenerLog = logger.child({ component: "attendance-listener" });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,7 +26,7 @@ function debugEnabled() {
 
 function log(...args) {
   if (!debugEnabled()) return;
-  console.log("[attendance-listener]", ...args);
+  listenerLog.debug({ args }, "attendance-listener");
 }
 
 function parseEnabledFlag(raw) {

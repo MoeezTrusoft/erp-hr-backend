@@ -3,8 +3,6 @@ import *as positionService from "../services/position.service.js";
 export const createPositionController = async (req, res) => {
   try {
     const createdBy = req.headers['user-id'];
-    console.log("jfahfa",createdBy);
-    
     const result = await positionService.createPosition(req.body, createdBy);
     res.status(201).json({ success: true, data: result });
   } catch (error) {

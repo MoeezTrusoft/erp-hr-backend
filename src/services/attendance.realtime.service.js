@@ -1,6 +1,9 @@
 import prisma from "../lib/prisma.js";
 import { checkOutServiceWithTimestamp, createAttendanceService } from "./attendance.service.js";
 import { syncAttendanceFromPunches } from "./attendance.device.service.js";
+import logger from "../lib/logger.js";
+
+const realtimeLog = logger.child({ component: "attendance-realtime" });
 
 const MAX_RECENT_EVENTS = 300;
 
@@ -24,7 +27,7 @@ function debugEnabled() {
 
 function log(...args) {
   if (!debugEnabled()) return;
-  console.log("[attendance-realtime]", ...args);
+  realtimeLog.debug({ args }, "attendance-realtime");
 }
 
 function pushRecent(event) {

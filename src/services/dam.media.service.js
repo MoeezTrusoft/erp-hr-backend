@@ -1,5 +1,6 @@
 import axios from "axios";
 import FormData from "form-data";
+import logger from "../lib/logger.js";
 
 const DAM_BASE_URL = process.env.DAM_SERVICE_URL || "http://localhost:3002/api";
 const DAM_TIMEOUT = parseInt(process.env.DAM_SERVICE_TIMEOUT || "1000000", 10);
@@ -24,7 +25,12 @@ export async function damRequest(endpoint, method = "GET", body = {}, headers = 
         });
         return response.data;
     } catch (error) {
-        console.error(`[DAM] ${method} ${endpoint} failed:`, error.response?.data || error.message);
+        logger.error({
+            err: error,
+            method,
+            endpoint,
+            responseData: error.response?.data,
+        }, "DAM upstream request failed");
         return null;
     }
 }
@@ -67,7 +73,10 @@ export async function uploadFileToDAM(file, type = "avatar") {
 
     return uploadResponse?.items || [];
   } catch (err) {
-    console.error("[DAM] Upload failed:", err.response?.data || err.message);
+    logger.error({
+      err,
+      responseData: err.response?.data,
+    }, "DAM upload failed");
     return [];
   }
 }
