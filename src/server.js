@@ -7,6 +7,8 @@ import client from "prom-client";
 import { createServer } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import logger from "./lib/logger.js";
+import prisma from "./lib/prisma.js";
+import { createHealthRouter } from "./routes/health.routes.js";
 
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
@@ -196,6 +198,9 @@ app.get("/metrics", async (_req, res) => {
 app.use("/mcp", mcpRouter);
 
 app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
+
+// /healthz (liveness) + /readyz (readiness; pings DB via singleton).
+app.use(createHealthRouter({ prisma }));
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
