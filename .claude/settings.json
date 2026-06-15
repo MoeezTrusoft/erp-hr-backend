@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENT_ALLOWED_GLOBS='erp-hr-backend/**' WORKSPACE_ROOT='/Users/mac/Desktop/Abdullah/erp' jq -r '.tool_input.file_path' | bash /Users/mac/Desktop/Abdullah/erp/scripts/guard-path.sh"
+            "command": "jq -r '.tool_input.file_path' | AGENT_ALLOWED_GLOBS='erp-hr-backend/**' WORKSPACE_ROOT='/Users/mac/Desktop/Abdullah/erp' bash /Users/mac/Desktop/Abdullah/erp/scripts/guard-path.sh"
           }
         ]
       }
