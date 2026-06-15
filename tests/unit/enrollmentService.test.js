@@ -1,15 +1,44 @@
 // tests/unit/enrollmentService.test.js
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+//
+// The production enrollmentService now imports the shared Prisma client
+// from src/lib/prisma.js (per BE-§7.1, P1B singleton work), so we can
+// substitute it with jest.unstable_mockModule before importing the
+// service. The original suite was parked behind describe.skip while the
+// service still ran `new PrismaClient()`; we now revive its intent.
+//
+// We also stub src/utils/logs.js so the audit-log side-effect doesn't
+// reach the real prisma client during these unit tests.
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
-// NOTE: the production enrollmentService imports its own PrismaClient via
-// `new PrismaClient()` rather than the shared `src/config/prisma.js`. That
-// makes it impossible to swap the client via jest.mock under ESM without
-// editing production source. The original suite mocked the wrong path
-// (`../../services/...`) and the wrong prisma module (`../../config/prisma.js`)
-// and silently never ran. We preserve the test intent here via `describe.skip`
-// so the future singleton-prisma work (BE-§7.1) can revive it without
-// reconstructing the assertions from scratch.
-import * as enrollmentService from '../../src/services/enrollmentService.js';
+const mockFindFirst = jest.fn();
+const mockCreate = jest.fn();
+const mockUpdate = jest.fn();
+const mockFindMany = jest.fn();
+const mockCount = jest.fn();
+const mockTransaction = jest.fn();
+const mockLogAction = jest.fn();
+
+jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
+    default: {
+        trainingEnrollment: {
+            findFirst: mockFindFirst,
+            create: mockCreate,
+            update: mockUpdate,
+            findMany: mockFindMany,
+            count: mockCount,
+        },
+        trainingCourse: {
+            findMany: mockFindMany,
+        },
+        $transaction: mockTransaction,
+    },
+}));
+
+jest.unstable_mockModule('../../src/utils/logs.js', () => ({
+    logAction: mockLogAction,
+}));
+
+const enrollmentService = await import('../../src/services/enrollmentService.js');
 
 describe('Enrollment Service module surface (smoke)', () => {
     it('exposes the documented entry points', () => {
@@ -20,80 +49,94 @@ describe('Enrollment Service module surface (smoke)', () => {
     });
 });
 
-describe.skip('Enrollment Service Unit Tests (deferred: needs prisma singleton)', () => {
-    let prisma;
-
+describe('Enrollment Service Unit Tests', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        mockFindFirst.mockReset();
+        mockCreate.mockReset();
+        mockUpdate.mockReset();
+        mockFindMany.mockReset();
+        mockCount.mockReset();
+        mockTransaction.mockReset();
+        mockLogAction.mockReset();
+        mockLogAction.mockResolvedValue(undefined);
     });
 
     describe('enrollUser', () => {
         it('should enroll user successfully', async () => {
-            const enrollmentData = {
-                courseId: 1,
-                employeeId: 1
-            };
-
+            const enrollmentData = { courseId: 1, employeeId: 1 };
             const mockEnrollment = {
                 id: 1,
                 ...enrollmentData,
                 status: 'ENROLLED',
-                enrollmentDate: new Date()
+                enrollmentDate: new Date(),
             };
 
-            prisma.trainingEnrollment.findFirst.mockResolvedValue(null);
-            prisma.trainingEnrollment.create.mockResolvedValue(mockEnrollment);
+            mockFindFirst.mockResolvedValue(null);
+            mockCreate.mockResolvedValue(mockEnrollment);
 
-            const result = await enrollmentService.enrollUser(enrollmentData);
+            const result = await enrollmentService.enrollUser(enrollmentData, 99);
 
-            expect(prisma.trainingEnrollment.findFirst).toHaveBeenCalledWith({
+            expect(mockFindFirst).toHaveBeenCalledWith({
                 where: {
                     courseId: 1,
                     employeeId: 1,
-                    status: { in: ['ENROLLED', 'IN_PROGRESS'] }
-                }
+                    status: { in: ['ENROLLED', 'IN_PROGRESS'] },
+                },
             });
             expect(result).toEqual(mockEnrollment);
+            expect(mockLogAction).toHaveBeenCalledTimes(1);
         });
 
+        // The service wraps every error in `Failed to enroll user: …`; the
+        // substring matchers below stay readable while still asserting the
+        // root cause.
         it('should throw error when user already enrolled', async () => {
-            const enrollmentData = {
-                courseId: 1,
-                employeeId: 1
-            };
+            mockFindFirst.mockResolvedValue({ id: 1 });
 
-            prisma.trainingEnrollment.findFirst.mockResolvedValue({ id: 1 });
-
-            await expect(enrollmentService.enrollUser(enrollmentData))
-                .rejects.toThrow('User is already enrolled in this course');
+            await expect(
+                enrollmentService.enrollUser({ courseId: 1, employeeId: 1 })
+            ).rejects.toThrow('User is already enrolled in this course');
         });
 
         it('should throw error when required fields missing', async () => {
-            await expect(enrollmentService.enrollUser({}))
-                .rejects.toThrow('Course ID and Employee ID are required');
+            await expect(enrollmentService.enrollUser({})).rejects.toThrow(
+                'Course ID and Employee ID are required'
+            );
         });
     });
 
     describe('bulkEnrollUsers', () => {
         it('should bulk enroll users successfully', async () => {
-            const bulkData = {
-                courseId: 1,
-                employeeIds: [1, 2, 3]
-            };
-
             const mockEnrollments = [
                 { id: 1, courseId: 1, employeeId: 1, status: 'ENROLLED' },
                 { id: 2, courseId: 1, employeeId: 2, status: 'ENROLLED' },
-                { id: 3, courseId: 1, employeeId: 3, status: 'ENROLLED' }
+                { id: 3, courseId: 1, employeeId: 3, status: 'ENROLLED' },
             ];
 
-            prisma.$transaction.mockImplementation(callback => callback(prisma));
-            prisma.trainingEnrollment.create.mockResolvedValue(mockEnrollments[0]);
+            // The service calls `prisma.$transaction(arrayOfCreatePromises)`,
+            // not the callback overload. Resolve the array of promises so
+            // the mock matches real Prisma semantics.
+            mockTransaction.mockImplementation((ops) => {
+                if (Array.isArray(ops)) return Promise.all(ops);
+                return ops(/* tx */);
+            });
+            mockCreate
+                .mockResolvedValueOnce(mockEnrollments[0])
+                .mockResolvedValueOnce(mockEnrollments[1])
+                .mockResolvedValueOnce(mockEnrollments[2]);
 
-            const result = await enrollmentService.bulkEnrollUsers(1, [1, 2, 3]);
+            const result = await enrollmentService.bulkEnrollUsers(1, [1, 2, 3], 99);
 
-            expect(prisma.$transaction).toHaveBeenCalled();
+            expect(mockTransaction).toHaveBeenCalledTimes(1);
+            expect(mockCreate).toHaveBeenCalledTimes(3);
             expect(result).toHaveLength(3);
+            expect(mockLogAction).toHaveBeenCalledTimes(1);
+        });
+
+        it('should reject when employeeIds is not an array', async () => {
+            await expect(
+                enrollmentService.bulkEnrollUsers(1, 'not-an-array', 99)
+            ).rejects.toThrow('Course ID and Employee IDs array are required');
         });
     });
 
@@ -102,37 +145,50 @@ describe.skip('Enrollment Service Unit Tests (deferred: needs prisma singleton)'
             const mockEnrollment = {
                 id: 1,
                 progress: 100,
-                status: 'COMPLETED'
+                status: 'COMPLETED',
             };
 
-            prisma.trainingEnrollment.update.mockResolvedValue(mockEnrollment);
+            mockUpdate.mockResolvedValue(mockEnrollment);
 
-            const result = await enrollmentService.updateProgress(1, 100);
+            const result = await enrollmentService.updateProgress(1, 100, 99);
 
-            expect(prisma.trainingEnrollment.update).toHaveBeenCalledWith({
+            expect(mockUpdate).toHaveBeenCalledWith({
                 where: { id: 1 },
                 data: {
                     progress: 100,
-                    status: 'COMPLETED'
+                    status: 'COMPLETED',
                 },
-                include: expect.any(Object)
+                include: expect.any(Object),
             });
             expect(result.status).toBe('COMPLETED');
+            expect(mockLogAction).toHaveBeenCalledTimes(1);
         });
 
         it('should update progress and keep as in progress below 100%', async () => {
             const mockEnrollment = {
                 id: 1,
                 progress: 75,
-                status: 'IN_PROGRESS'
+                status: 'IN_PROGRESS',
             };
 
-            prisma.trainingEnrollment.update.mockResolvedValue(mockEnrollment);
+            mockUpdate.mockResolvedValue(mockEnrollment);
 
-            const result = await enrollmentService.updateProgress(1, 75);
+            const result = await enrollmentService.updateProgress(1, 75, 99);
 
             expect(result.status).toBe('IN_PROGRESS');
             expect(result.progress).toBe(75);
+        });
+
+        // The service catches Prisma's P2025 ("record not found") code and
+        // surfaces a friendly "Enrollment not found" message — assert that
+        // pathway here so it can't regress silently.
+        it('should translate Prisma P2025 to a not-found error', async () => {
+            const err = Object.assign(new Error('not found'), { code: 'P2025' });
+            mockUpdate.mockRejectedValue(err);
+
+            await expect(
+                enrollmentService.updateProgress(1, 50, 99)
+            ).rejects.toThrow('Enrollment not found');
         });
     });
 
@@ -146,24 +202,30 @@ describe.skip('Enrollment Service Unit Tests (deferred: needs prisma singleton)'
                     course: {
                         id: 1,
                         title: 'Completed Course',
-                        category: { name: 'Technical' }
-                    }
-                }
+                        category: { name: 'Technical' },
+                    },
+                },
             ];
 
-            prisma.trainingEnrollment.findMany.mockResolvedValue(mockEnrollments);
+            mockFindMany.mockResolvedValue(mockEnrollments);
 
             const result = await enrollmentService.getEmployeeTranscript(1);
 
-            expect(prisma.trainingEnrollment.findMany).toHaveBeenCalledWith({
+            expect(mockFindMany).toHaveBeenCalledWith({
                 where: {
                     employeeId: 1,
-                    status: 'COMPLETED'
+                    status: 'COMPLETED',
                 },
                 include: expect.any(Object),
-                orderBy: { completionDate: 'desc' }
+                orderBy: { completionDate: 'desc' },
             });
             expect(result).toEqual(mockEnrollments);
+        });
+
+        it('should reject when employeeId is missing', async () => {
+            await expect(
+                enrollmentService.getEmployeeTranscript(undefined)
+            ).rejects.toThrow('Employee ID is required');
         });
     });
 });
