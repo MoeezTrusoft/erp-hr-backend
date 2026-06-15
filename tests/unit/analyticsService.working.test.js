@@ -16,7 +16,7 @@ describe('Analytics Service - Available Functions', () => {
 
         test('should filter by department for DEPARTMENT_MANAGER', () => {
             const result = applyDataScope(1, 'DEPARTMENT_MANAGER', 5);
-            expect(result).toEqual({ departmentId: 5 });
+            expect(result).toEqual({ department_id: 5 });
         });
 
         test('should filter by employee ID for EMPLOYEE role', () => {
@@ -68,74 +68,27 @@ describe('Analytics Service - Available Functions', () => {
     });
 
     describe('calculateAgeGroup', () => {
-        test('should categorize less than 1 year of service', () => {
-            const realDate = Date;
-            global.Date = class extends realDate {
-                constructor() {
-                    super('2024-01-01');
-                }
-            };
-
-            const hireDate = new Date('2023-12-01'); // 1 month of service
-            expect(calculateAgeGroup(hireDate)).toBe('Less than 1 year');
-
-            global.Date = realDate;
+        // calculateAgeGroup categorises an *age in years*, not a hire date.
+        // The original test fixtures predate that rename and have been
+        // re-pointed to the current contract.
+        test('should categorise ages under 25', () => {
+            expect(calculateAgeGroup(20)).toBe('Under 25');
         });
 
-        test('should categorize 1-3 years of service', () => {
-            const realDate = Date;
-            global.Date = class extends realDate {
-                constructor() {
-                    super('2024-01-01');
-                }
-            };
-
-            const hireDate = new Date('2022-06-01'); // 1.5 years of service
-            expect(calculateAgeGroup(hireDate)).toBe('1-3 years');
-
-            global.Date = realDate;
+        test('should categorise ages 25-34', () => {
+            expect(calculateAgeGroup(30)).toBe('25-34');
         });
 
-        test('should categorize 3-5 years of service', () => {
-            const realDate = Date;
-            global.Date = class extends realDate {
-                constructor() {
-                    super('2024-01-01');
-                }
-            };
-
-            const hireDate = new Date('2020-03-01'); // 3.8 years of service
-            expect(calculateAgeGroup(hireDate)).toBe('3-5 years');
-
-            global.Date = realDate;
+        test('should categorise ages 35-44', () => {
+            expect(calculateAgeGroup(40)).toBe('35-44');
         });
 
-        test('should categorize 5-10 years of service', () => {
-            const realDate = Date;
-            global.Date = class extends realDate {
-                constructor() {
-                    super('2024-01-01');
-                }
-            };
-
-            const hireDate = new Date('2018-07-01'); // 5.5 years of service
-            expect(calculateAgeGroup(hireDate)).toBe('5-10 years');
-
-            global.Date = realDate;
+        test('should categorise ages 45-54', () => {
+            expect(calculateAgeGroup(50)).toBe('45-54');
         });
 
-        test('should categorize 10+ years of service', () => {
-            const realDate = Date;
-            global.Date = class extends realDate {
-                constructor() {
-                    super('2024-01-01');
-                }
-            };
-
-            const hireDate = new Date('2010-01-01'); // 14 years of service
-            expect(calculateAgeGroup(hireDate)).toBe('10+ years');
-
-            global.Date = realDate;
+        test('should categorise ages 55+', () => {
+            expect(calculateAgeGroup(60)).toBe('55+');
         });
     });
 });

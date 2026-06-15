@@ -1,18 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+// Converted to pure-function tests for the baseline lane: the original
+// suite required a live `erp-hr` database via PrismaClient.deleteMany in
+// before/after hooks, which is out of scope for unit tests.
+import { describe, it, expect } from '@jest/globals';
 
 describe('Leave Service', () => {
-    beforeEach(async () => {
-        // Clean up before each test
-        await prisma.leave.deleteMany({});
-    });
-
-    afterEach(async () => {
-        await prisma.leave.deleteMany({});
-    });
-
     it('should calculate working days correctly', () => {
         const startDate = new Date('2024-01-01');
         const endDate = new Date('2024-01-05');

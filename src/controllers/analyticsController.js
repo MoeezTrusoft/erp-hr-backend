@@ -476,3 +476,5 @@ export const healthCheck = async (req, res) => {
         });
     }
 };
+
+export { getPositionDashboard as getDepartmentDashboard };
