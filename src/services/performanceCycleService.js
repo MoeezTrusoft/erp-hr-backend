@@ -1,7 +1,6 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 
-const prisma = new PrismaClient();
 
 export const createPerformanceCycle = async (data, createdBy) => {
   const { name, start_date, end_date , status,templateId } = data;

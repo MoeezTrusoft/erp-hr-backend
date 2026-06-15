@@ -1,7 +1,6 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import os from "os";
 
-const prisma = new PrismaClient();
 
 const toIntOrNull = (value) => {
     if (value === undefined || value === null || value === "") return null;

@@ -1,6 +1,5 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
-const prisma = new PrismaClient();
 
 // ✅ Create alignment between two goals
 export const createGoalAlignmentService = async (data, createdBy) => {

@@ -1,6 +1,5 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
-const prisma = new PrismaClient();
 
 // 1️⃣ Create or initiate reviews
 export const initiateReviewsService = async (cycleId, employeeIds, reviewedBy) => {

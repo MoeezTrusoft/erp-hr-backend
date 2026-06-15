@@ -1,9 +1,8 @@
 // src/services/trainingService.js
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 
 
-const prisma = new PrismaClient();
 export const createCourse = async (courseData, createdBy) => {
     try {
         if (!courseData.title || !courseData.categoryId) {

@@ -1,8 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
 
-const prisma = new PrismaClient();
 
 export const createCourse = async (data) => {
   if (!data.title) throw new Error("Course title is required");

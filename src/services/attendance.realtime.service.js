@@ -1,8 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { checkOutServiceWithTimestamp, createAttendanceService } from "./attendance.service.js";
 import { syncAttendanceFromPunches } from "./attendance.device.service.js";
 
-const prisma = new PrismaClient();
 const MAX_RECENT_EVENTS = 300;
 
 const recentEvents = [];

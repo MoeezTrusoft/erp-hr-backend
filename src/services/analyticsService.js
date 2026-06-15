@@ -1,8 +1,7 @@
 import { logAction } from "../utils/logs.js";
-import { PrismaClient } from '@prisma/client';
+import prisma from "../lib/prisma.js";
 import * as utils from '../utils/analyticsUtils.js';
 
-const prisma = new PrismaClient();
 
 /**
  * Standard Report Services

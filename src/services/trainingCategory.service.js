@@ -1,8 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 
 
-const prisma = new PrismaClient();
 
 export const createCategory = async (data) => {
   if (!data.name) throw new Error("Category name is required");

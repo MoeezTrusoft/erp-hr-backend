@@ -1,8 +1,7 @@
 // src/services/enrollmentService.js
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 
-const prisma = new PrismaClient();
 export const enrollUser = async (enrollmentData, createdBy) => {
     try {
         if (!enrollmentData.courseId || !enrollmentData.employeeId) {

@@ -1,8 +1,7 @@
 import cron from "node-cron";
-import { PrismaClient } from "@prisma/client";
+import prisma from "../lib/prisma.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 
-const prisma = new PrismaClient();
 
 export const startReviewReminderScheduler = () => {
   // Performance review reminders: daily at 9 AM
