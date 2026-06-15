@@ -1,7 +1,47 @@
-import { jest } from '@jest/globals';
+// tests/unit/analyticsService.test.js
+//
+// This suite was previously split: the utility-function and alert-function
+// tests ran statically, while the Report Functions block was parked behind
+// describe.skip because the static `import` at the top of the file
+// resolved the real Prisma client before `jest.unstable_mockModule` ever
+// ran (ESM imports are hoisted; the dynamic `await import()` then hit the
+// cached module instance).
+//
+// Now that the service uses the singleton at src/lib/prisma.js (P1B,
+// BE-§7.1) we can fix the mock-ordering: register the mock first, then
+// do a top-level dynamic import. The previously-static utility/alert
+// tests are kept exactly as they were, just re-pointed at the dynamic
+// module handle.
+import { jest, describe, test, expect, beforeEach } from '@jest/globals';
 
-// First, let's import only what exists
-import {
+const mockEmployeeFindMany = jest.fn();
+const mockEmployeeCount = jest.fn();
+const mockEmploymentTermsFindMany = jest.fn();
+const mockAttendanceFindMany = jest.fn();
+const mockLeaveBalanceFindMany = jest.fn();
+const mockJobRequisitionFindMany = jest.fn();
+const mockPerformanceReviewFindMany = jest.fn();
+const mockLogAction = jest.fn();
+
+jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
+    default: {
+        employee: {
+            findMany: mockEmployeeFindMany,
+            count: mockEmployeeCount,
+        },
+        employmentTerms: { findMany: mockEmploymentTermsFindMany },
+        attendance: { findMany: mockAttendanceFindMany },
+        leaveBalance: { findMany: mockLeaveBalanceFindMany },
+        jobRequisition: { findMany: mockJobRequisitionFindMany },
+        performanceReview: { findMany: mockPerformanceReviewFindMany },
+    },
+}));
+
+jest.unstable_mockModule('../../src/utils/logs.js', () => ({
+    logAction: mockLogAction,
+}));
+
+const {
     applyDataScope,
     calculateDateRange,
     calculateMedian,
@@ -9,39 +49,13 @@ import {
     calculateWorkingDays,
     calculateAgeGroup,
     generateDepartmentAlerts,
-    identifyRecruitmentBottlenecks
-} from '../../src/services/analyticsService.js';
-
-// Mock Prisma client properly
-const mockEmployeeFindMany = jest.fn();
-const mockAttendanceFindMany = jest.fn();
-const mockJobRequisitionFindMany = jest.fn();
-const mockPerformanceReviewFindMany = jest.fn();
-
-jest.unstable_mockModule('@prisma/client', () => ({
-    PrismaClient: jest.fn(() => ({
-        employee: {
-            findMany: mockEmployeeFindMany,
-        },
-        attendance: {
-            findMany: mockAttendanceFindMany,
-        },
-        jobRequisition: {
-            findMany: mockJobRequisitionFindMany,
-        },
-        performanceReview: {
-            findMany: mockPerformanceReviewFindMany,
-        },
-    })),
-}));
-
-// Now import the report functions after mocking
-const {
+    identifyRecruitmentBottlenecks,
     generateHeadcountReport,
-    generateTurnoverReport
+    generateTurnoverReport,
 } = await import('../../src/services/analyticsService.js');
 
-// Add missing utility function
+// Diversity index is not exported from the service; the helper below is
+// what the original suite tested against.
 const calculateDiversityIndex = (counts) => {
     const total = counts.reduce((sum, count) => sum + count, 0);
     if (total === 0) return 0;
@@ -307,77 +321,215 @@ describe('Analytics Service - Alert Functions', () => {
     });
 });
 
-// Report-function tests are skipped because the static `import` block at the
-// top of this file resolves the real `@prisma/client` *before* the
-// `jest.unstable_mockModule` call below registers the fake — ESM hoists
-// imports, so by the time the report functions are dynamically re-imported
-// the cached module instance already holds a live PrismaClient. Restructuring
-// to use only dynamic imports is out of scope for the test-baseline lane.
-describe.skip('Analytics Service - Report Functions (deferred: needs ESM mock-ordering refactor)', () => {
+// Revived from describe.skip. The current source contract differs from
+// what the original fixtures asserted: generateHeadcountReport returns
+// `Array<{ position, headcount, activeEmployees[] }>` grouped by
+// Position.title, not the old `{ summary, byDepartment }` envelope.
+// generateTurnoverReport returns `Array<{ position, terminations,
+// turnoverRate }>`. Both call exactly one prisma method each
+// (findMany + findMany/count); the original test expected two findMany
+// calls back-to-back which never matched the current implementation.
+describe('Analytics Service - Report Functions', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        mockEmployeeFindMany.mockReset();
+        mockEmployeeCount.mockReset();
+        mockEmploymentTermsFindMany.mockReset();
+        mockAttendanceFindMany.mockReset();
+        mockLeaveBalanceFindMany.mockReset();
+        mockJobRequisitionFindMany.mockReset();
+        mockPerformanceReviewFindMany.mockReset();
+        mockLogAction.mockReset();
     });
 
     describe('generateHeadcountReport', () => {
-        test('should generate headcount report with department breakdown', async () => {
+        test('groups active employees by Position.title', async () => {
             const mockEmployees = [
                 {
                     id: 1,
-                    departmentId: 1,
+                    first_name: 'Ada',
+                    last_name: 'Lovelace',
                     hire_date: new Date('2023-01-01'),
-                    termination_date: null,
-                    Position: { title: 'Developer' }
+                    status: 'ACTIVE',
+                    Position: { title: 'Developer' },
                 },
                 {
                     id: 2,
-                    departmentId: 1,
+                    first_name: 'Grace',
+                    last_name: 'Hopper',
                     hire_date: new Date('2023-06-01'),
-                    termination_date: null,
-                    Position: { title: 'Manager' }
+                    status: 'ACTIVE',
+                    Position: { title: 'Developer' },
                 },
                 {
                     id: 3,
-                    departmentId: 2,
+                    first_name: 'Alan',
+                    last_name: 'Turing',
                     hire_date: new Date('2023-03-01'),
-                    termination_date: null,
-                    Position: { title: 'Analyst' }
-                }
+                    status: 'ACTIVE',
+                    Position: { title: 'Analyst' },
+                },
             ];
 
-            mockEmployeeFindMany
-                .mockResolvedValueOnce(mockEmployees) // Current period
-                .mockResolvedValueOnce([mockEmployees[0]]); // Previous period
+            mockEmployeeFindMany.mockResolvedValue(mockEmployees);
 
-            const params = {
+            const result = await generateHeadcountReport({
                 tenantId: 1,
                 startDate: '2024-01-01',
                 endDate: '2024-01-31',
-                userRole: 'HR_ADMIN'
-            };
+                userRole: 'HR_ADMIN',
+            });
 
-            const result = await generateHeadcountReport(params);
+            expect(mockEmployeeFindMany).toHaveBeenCalledTimes(1);
+            // HR_ADMIN scope is unconstrained.
+            expect(mockEmployeeFindMany.mock.calls[0][0]).toMatchObject({
+                include: { Position: true },
+            });
 
-            expect(mockEmployeeFindMany).toHaveBeenCalledTimes(2);
-            expect(result.summary.totalHeadcount).toBe(3);
-            expect(result.byDepartment).toHaveLength(2);
-            expect(result.byDepartment[0].currentCount).toBe(2);
-            expect(result.byDepartment[1].currentCount).toBe(1);
+            expect(result).toHaveLength(2);
+            const developer = result.find((r) => r.position === 'Developer');
+            const analyst = result.find((r) => r.position === 'Analyst');
+            expect(developer.headcount).toBe(2);
+            expect(developer.activeEmployees).toHaveLength(2);
+            expect(developer.activeEmployees[0]).toMatchObject({
+                name: 'Ada Lovelace',
+                status: 'ACTIVE',
+            });
+            expect(analyst.headcount).toBe(1);
         });
 
-        test('should handle empty employee data', async () => {
+        test('returns an empty array when no employees match', async () => {
             mockEmployeeFindMany.mockResolvedValue([]);
 
-            const params = {
+            const result = await generateHeadcountReport({
                 tenantId: 1,
                 startDate: '2024-01-01',
                 endDate: '2024-01-31',
-                userRole: 'HR_ADMIN'
-            };
+                userRole: 'HR_ADMIN',
+            });
 
-            const result = await generateHeadcountReport(params);
+            expect(result).toEqual([]);
+        });
 
-            expect(result.summary.totalHeadcount).toBe(0);
-            expect(result.byDepartment).toHaveLength(0);
+        test('buckets employees with no Position under "No Position"', async () => {
+            mockEmployeeFindMany.mockResolvedValue([
+                {
+                    id: 4,
+                    first_name: 'Margaret',
+                    last_name: 'Hamilton',
+                    hire_date: new Date('2023-02-01'),
+                    status: 'ACTIVE',
+                    Position: null,
+                },
+            ]);
+
+            const result = await generateHeadcountReport({
+                tenantId: 1,
+                startDate: '2024-01-01',
+                endDate: '2024-01-31',
+                userRole: 'HR_ADMIN',
+            });
+
+            expect(result).toHaveLength(1);
+            expect(result[0].position).toBe('No Position');
+            expect(result[0].headcount).toBe(1);
+        });
+
+        test('rejects when startDate is after endDate', async () => {
+            await expect(
+                generateHeadcountReport({
+                    tenantId: 1,
+                    startDate: '2024-02-01',
+                    endDate: '2024-01-01',
+                    userRole: 'HR_ADMIN',
+                })
+            ).rejects.toThrow('startDate must be before endDate');
+
+            expect(mockEmployeeFindMany).not.toHaveBeenCalled();
+        });
+
+        test('applies the DEPARTMENT_MANAGER data scope to the query', async () => {
+            mockEmployeeFindMany.mockResolvedValue([]);
+
+            await generateHeadcountReport({
+                tenantId: 1,
+                startDate: '2024-01-01',
+                endDate: '2024-01-31',
+                positionId: 7,
+                userRole: 'DEPARTMENT_MANAGER',
+            });
+
+            const whereArg = mockEmployeeFindMany.mock.calls[0][0].where;
+            // applyDataScope translates positionId → department_id for
+            // DEPARTMENT_MANAGER (snake_case Prisma column).
+            expect(whereArg.department_id).toBe(7);
+        });
+    });
+
+    describe('generateTurnoverReport', () => {
+        test('groups inactive employees by Position.title and computes turnoverRate', async () => {
+            mockEmployeeFindMany.mockResolvedValue([
+                {
+                    id: 1,
+                    first_name: 'Linus',
+                    last_name: 'T',
+                    status: 'INACTIVE',
+                    Position: { title: 'Developer' },
+                },
+                {
+                    id: 2,
+                    first_name: 'Dennis',
+                    last_name: 'R',
+                    status: 'INACTIVE',
+                    Position: { title: 'Developer' },
+                },
+                {
+                    id: 3,
+                    first_name: 'Ken',
+                    last_name: 'T',
+                    status: 'INACTIVE',
+                    Position: { title: 'Analyst' },
+                },
+            ]);
+            // 8 active employees still on the roster → denominator for
+            // the turnoverRate helper.
+            mockEmployeeCount.mockResolvedValue(8);
+
+            const result = await generateTurnoverReport({
+                tenantId: 1,
+                startDate: '2024-01-01',
+                endDate: '2024-01-31',
+                userRole: 'HR_ADMIN',
+            });
+
+            expect(mockEmployeeFindMany).toHaveBeenCalledTimes(1);
+            expect(mockEmployeeCount).toHaveBeenCalledTimes(1);
+            expect(mockEmployeeCount.mock.calls[0][0].where).toMatchObject({
+                status: 'ACTIVE',
+            });
+
+            const developer = result.find((r) => r.position === 'Developer');
+            const analyst = result.find((r) => r.position === 'Analyst');
+            expect(developer.terminations).toBe(2);
+            expect(analyst.terminations).toBe(1);
+            // Real turnover-rate math is covered in the utility-functions
+            // suite; here we just assert that the helper was wired in and
+            // produced a finite, non-negative number.
+            expect(typeof developer.turnoverRate).toBe('number');
+            expect(developer.turnoverRate).toBeGreaterThanOrEqual(0);
+        });
+
+        test('returns an empty array when no terminations are found', async () => {
+            mockEmployeeFindMany.mockResolvedValue([]);
+            mockEmployeeCount.mockResolvedValue(0);
+
+            const result = await generateTurnoverReport({
+                tenantId: 1,
+                startDate: '2024-01-01',
+                endDate: '2024-01-31',
+                userRole: 'HR_ADMIN',
+            });
+
+            expect(result).toEqual([]);
         });
     });
 });
