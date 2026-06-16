@@ -9,15 +9,13 @@
 // Concrete blockers (each must be resolved before this suite can move out
 // of `describe.skip`):
 //
-//   1. No running app handle. The original file does
-//      `import app from '../../src/server.js'`, but `src/server.js` does
-//      not export the Express `app` — it bootstraps and calls
-//      `httpServer.listen(PORT, ...)` at import time, which would bind a
-//      real port (and start the attendance listener, the review reminder
-//      scheduler, and the metrics registry) under Jest. A testable
-//      `src/app.js` that exports the configured app without calling
-//      `listen()` is part of the P2 outbox / route-shape work
-//      (ARCH-01 §7, BE-§7.1) and cannot be done in a unit lane.
+//   1. [RESOLVED 2026-06-16 by A-HR-TESTABLE-APP-FOUNDATION]
+//      A testable app factory now exists at `src/app.js` (`createApp()`),
+//      and `src/server.js` only invokes it during runtime bootstrap.
+//      When this suite is revived it should
+//      `import { createApp } from '../../src/app.js'` and drive
+//      supertest against a fresh app per `beforeAll`, instead of the
+//      original side-effectful `import app from '../../src/server.js'`.
 //
 //   2. No test database. The harness reads and writes
 //      `trainingCategory`, `trainingCourse`, `trainingEnrollment`, and
@@ -47,7 +45,7 @@
 // regression in this fixture while the suite is parked.
 import { describe, it, expect } from '@jest/globals';
 
-describe.skip('Training Module Performance Tests (deferred: needs src/app.js export, erp-hr-test DB, internal-secret fixture, perf runner)', () => {
+describe.skip('Training Module Performance Tests (deferred: needs erp-hr-test DB, internal-secret fixture, perf runner)', () => {
     it('placeholder', () => {
         expect(true).toBe(true);
     });
