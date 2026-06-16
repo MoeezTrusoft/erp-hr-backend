@@ -20,6 +20,7 @@
     "test:analytics:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/analyticsService.final.test.js tests/unit/analyticsController.test.js tests/integration/analytics.integration.test.js",
     "test:sprint9": "npm run test:analytics:all",
     "test:perf": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --testPathIgnorePatterns=/node_modules/ --testPathPatterns=performance\\.test\\.js$",
+    "test:db:prepare": "node scripts/test-db-provision.js",
     "gate:p1": "bash scripts/gate-p1.sh"
   },
   "keywords": [],
