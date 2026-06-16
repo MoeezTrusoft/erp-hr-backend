@@ -36,9 +36,21 @@
 //        - tests/README.md documents how to provision erp-hr-test,
 //          the TEST_DATABASE_URL format, and the hard rules around
 //          never pointing it at dev/staging/prod.
+//      [Updated 2026-06-16 by A-HR-TEST-DB-CI-PROVISIONING] An
+//      idempotent provisioner now exists -- `scripts/test-db-provision.js`
+//      (invoked via `npm run test:db:prepare`) ensures the database
+//      exists and runs `prisma migrate deploy` against it, after
+//      validating TEST_DATABASE_URL through the same safety check
+//      the helper uses. tests/README.md > "Provisioning erp-hr-test"
+//      documents the local and CI recipes; the README's CI snippet is
+//      illustrative because no .github/ workflow exists in this repo
+//      today.
+//
 //      Open work to fully close this blocker:
-//        a. CI / contributor environment must actually provision
-//           `erp-hr-test` and inject TEST_DATABASE_URL.
+//        a. A CI runner (or contributor shell) must export
+//           TEST_DATABASE_URL=postgres://.../erp_hr_test (sourced
+//           from a secret store, never committed) and call
+//           `npm run test:db:prepare` before `npm run test:perf`.
 //        b. This suite's contents must be rewritten on top of the
 //           helper (see "next steps for the future unskip lane"
 //           below).
@@ -65,9 +77,11 @@
 //
 // Next steps for the future unskip lane (in order):
 //
-//   1. Provision `erp-hr-test` (see tests/README.md > "Provisioning
-//      erp-hr-test") and inject TEST_DATABASE_URL into the CI runner
-//      that calls `npm run test:perf`.
+//   1. In the CI runner (or contributor shell) that calls
+//      `npm run test:perf`, export TEST_DATABASE_URL pointing at an
+//      `erp-hr-test`-style database and run `npm run test:db:prepare`
+//      once per setup (it is idempotent). See tests/README.md >
+//      "Provisioning erp-hr-test" for the full recipe.
 //   2. Replace the imports at the top of this file with:
 //        import { createApp } from '../../../src/app.js';
 //        import { gatewayHeaders } from '../../helpers/internal-gateway.js';

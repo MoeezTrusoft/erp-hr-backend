@@ -156,37 +156,97 @@ postgresql://<user>:<password>@<host>:<port>/<dbname>
 
 ### Provisioning `erp-hr-test`
 
-1. **Create the database** (one-time, against the same Postgres
-   server the dev DB lives on):
+The repo ships a single idempotent provisioner that ensures the
+database exists and runs `prisma migrate deploy` against it. It
+re-uses the same safety check as the runtime helper, so a misconfigured
+`TEST_DATABASE_URL` is rejected before any DB activity happens.
 
-   ```sh
-   createdb -U postgres erp_hr_test
-   ```
+#### Local setup
 
-2. **Apply the schema** so `prisma migrate deploy` runs the same
-   migrations as production:
-
-   ```sh
-   DATABASE_URL=postgres://postgres:postgres@localhost:5432/erp_hr_test \
-     npx prisma migrate deploy
-   ```
-
-   (`prisma migrate deploy` reads `DATABASE_URL`; we point it at the
-   test DB for this single command. The HR runtime stays on the real
-   `DATABASE_URL`.)
-
-3. **Set `TEST_DATABASE_URL`** in your shell or `.env.test` (NOT
-   `.env`, which is loaded by `src/server.js` at runtime):
+1. **Export `TEST_DATABASE_URL`** in your shell or in a `.env.test`
+   file you source manually (NOT `.env`, which is loaded by
+   `src/server.js` at runtime — see "Hard rules" below):
 
    ```sh
    export TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/erp_hr_test
    ```
 
-4. **Run only the perf suites**:
+2. **Run the provisioner.** It is idempotent — safe to run again
+   any time the schema migrations change:
+
+   ```sh
+   npm run test:db:prepare
+   ```
+
+   The script:
+   - Validates `TEST_DATABASE_URL` via `assertSafeTestDatabaseUrl`
+     and aborts if the URL looks like a dev / staging / production
+     target (see the helper API table above for the full rule set).
+   - Calls `createdb` against the host/port/user encoded in the URL.
+     If the database already exists, that step is a no-op.
+   - Runs `npx prisma migrate deploy` as a **child process** with
+     `DATABASE_URL` set to `TEST_DATABASE_URL` for that one
+     invocation. The parent shell's `DATABASE_URL` is not modified,
+     and `src/lib/prisma.js`'s runtime singleton is never touched.
+
+3. **Run only the perf suites.** Once a perf suite is wired onto the
+   helper (see "Reviving the parked perf suite" below), run:
 
    ```sh
    npm run test:perf
    ```
+
+#### CI setup
+
+No CI workflow is wired in this repo today (no `.github/` directory).
+When one is added — or in any external CI system — the perf job
+should look roughly like:
+
+```yaml
+jobs:
+  hr-perf:
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres   # template DB; we create erp_hr_test ourselves
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      # NEVER hard-code these. Source from the CI secret store, and
+      # confirm the database name contains "test" before adding.
+      TEST_DATABASE_URL: ${{ secrets.HR_TEST_DATABASE_URL }}
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:db:prepare
+      - run: npm run test:perf
+```
+
+The exact YAML will evolve when a CI workflow lands; the contract
+that matters here is:
+
+| Env var | Where | Required for |
+| --- | --- | --- |
+| `TEST_DATABASE_URL` | CI secret store; never `.env`; never logged | `test:db:prepare`, `test:perf` |
+| `NODE_ENV` | Set to `test` for both steps | the helper's safety gate inside the suites |
+| `DATABASE_URL` | **Not** required by `test:db:prepare` or `test:perf`; the runtime config is irrelevant to test DB work | runtime only |
+
+The provisioner shells out to `createdb` and `npx prisma migrate
+deploy`. The host running the perf job must have a Postgres client
+installed (`postgresql-client` on Debian / `libpq` on macOS).
+`createdb` failures other than "already exists" abort the script
+with a non-zero exit so a misconfigured runner cannot silently fall
+through to `test:perf`.
 
 ### Hard rules
 
