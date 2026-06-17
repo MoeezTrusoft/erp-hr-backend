@@ -60,6 +60,8 @@ import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
 import { attachHrContext } from "./middlewares/hrContext.middleware.js";
+import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
+import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
 import { attachRequestId } from "./utils/apiContract.js";
 import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 
@@ -82,30 +84,14 @@ import gdprRoutes from "./routes/gdpr.routes.js";
 
 import mcpRouter from "./mcp/mcpRouter.js";
 
-const requireInternalService = (req, res, next) => {
-    const configuredSecret = process.env.INTERNAL_SERVICE_SECRET;
-    const requestSecret = req.headers["x-internal-secret"];
-
-    if (!configuredSecret) {
-        return res.status(500).json({
-            success: false,
-            message: "Internal service secret is not configured",
-        });
-    }
-
-    if (requestSecret !== configuredSecret) {
-        return res.status(403).json({
-            success: false,
-            message: "Direct service access is not allowed",
-        });
-    }
-
-    next();
-};
-
 export const createApp = () => {
     const app = express();
     const register = new client.Registry();
+    // Surface the inbound-boundary counter on /metrics so the
+    // X-Internal-Secret → service-JWT sunset is observable from the
+    // same exposition the rest of the service uses. attachInternal-
+    // BoundaryMetric is idempotent across createApp() calls.
+    attachInternalBoundaryMetric(register);
 
     app.use(express.json());
 
@@ -131,6 +117,8 @@ export const createApp = () => {
             "Accept",
             "X-Requested-With",
             "X-Request-ID",
+            "X-Service-Authorization",
+            "X-Internal-Secret",
         ],
         optionsSuccessStatus: 204,
     }));
@@ -142,7 +130,7 @@ export const createApp = () => {
     // Browser clients should reach this service through the API gateway. The gateway
     // is responsible for rewriting /hr/api/hr/* to /api/hr/* and injecting the
     // internal secret plus x-user-* context headers before requests arrive here.
-    app.use("/api", requireInternalService);
+    app.use("/api", internalServiceGuard);
     app.use("/api/hr", hrContractRoutes);
     app.use("/api/employee", hrRoutes);
     app.use("/api/attendance", attendanceRoutes);

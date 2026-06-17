@@ -20,6 +20,7 @@ const options = {
         paths: [
             'req.headers.authorization',
             'req.headers["x-internal-secret"]',
+            'req.headers["x-service-authorization"]',
             'req.headers.cookie',
             '*.password',
             '*.token',
