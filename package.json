@@ -30,6 +30,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@prisma/client": "^6.19.0",
+    "@trusoft/contracts": "github:MoeezTrusoft/erp-contracts#v0.4.0",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
