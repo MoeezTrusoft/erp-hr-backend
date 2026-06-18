@@ -98,3 +98,30 @@ export function verifyServiceRequest(req) {
     const token = extractServiceToken(req);
     return verifyServiceToken(token);
 }
+
+// --- Outbound signing (A-HR-EMIT-SERVICE-JWT-DAM) ---
+// Mints a short-lived HMAC JWT for HR → peer-service calls so the
+// receiving service can verify the caller without relying solely on
+// X-Internal-Secret.  Uses the same SERVICE_JWT_SECRET as the
+// inbound verifier.
+
+const DEFAULT_SELF_ISSUER = 'erp-hr';
+const DEFAULT_EXPIRY = '60s';
+
+export function signServiceJwt(extraClaims = {}) {
+    const secret = getSecret();
+    if (!secret) return null;
+
+    const selfIssuer =
+        process.env.SERVICE_JWT_SELF_ISSUER || DEFAULT_SELF_ISSUER;
+
+    return jwt.sign(
+        { sub: selfIssuer, ...extraClaims },
+        secret,
+        {
+            issuer: selfIssuer,
+            audience: getAudience(),
+            expiresIn: DEFAULT_EXPIRY,
+        },
+    );
+}

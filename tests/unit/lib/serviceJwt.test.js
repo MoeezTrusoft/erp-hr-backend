@@ -13,6 +13,7 @@ import {
     extractServiceToken,
     verifyServiceToken,
     verifyServiceRequest,
+    signServiceJwt,
 } from '../../../src/lib/serviceJwt.js';
 
 const FIXED_SECRET = 'test-service-secret-do-not-use-in-prod';
@@ -181,6 +182,65 @@ describe('src/lib/serviceJwt.js', () => {
             const outcome = verifyServiceRequest({ headers: {} });
             expect(outcome.ok).toBe(false);
             expect(outcome.reason).toBe('missing-token');
+        });
+    });
+
+    // --- A-HR-EMIT-SERVICE-JWT-DAM: outbound signing ---
+    describe('signServiceJwt', () => {
+        test('returns a JWT string when SERVICE_JWT_SECRET is set', () => {
+            const token = signServiceJwt();
+            expect(typeof token).toBe('string');
+            expect(token.split('.')).toHaveLength(3);
+        });
+
+        test('token verifies with the same secret/audience', () => {
+            const token = signServiceJwt();
+            const decoded = jwt.verify(token, FIXED_SECRET, {
+                audience: 'internal',
+                algorithms: ['HS256', 'HS384', 'HS512'],
+            });
+            expect(decoded.sub).toBe('erp-hr');
+            expect(decoded.iss).toBe('erp-hr');
+            expect(decoded.aud).toBe('internal');
+        });
+
+        test('extra claims are included in the token payload', () => {
+            const token = signServiceJwt({ tenantId: 't-99', userId: 42 });
+            const decoded = jwt.verify(token, FIXED_SECRET, {
+                audience: 'internal',
+                algorithms: ['HS256', 'HS384', 'HS512'],
+            });
+            expect(decoded.tenantId).toBe('t-99');
+            expect(decoded.userId).toBe(42);
+        });
+
+        test('respects SERVICE_JWT_SELF_ISSUER env override', () => {
+            process.env.SERVICE_JWT_SELF_ISSUER = 'erp-custom';
+            const token = signServiceJwt();
+            const decoded = jwt.verify(token, FIXED_SECRET, {
+                audience: 'internal',
+                issuer: 'erp-custom',
+                algorithms: ['HS256', 'HS384', 'HS512'],
+            });
+            expect(decoded.sub).toBe('erp-custom');
+            expect(decoded.iss).toBe('erp-custom');
+            delete process.env.SERVICE_JWT_SELF_ISSUER;
+        });
+
+        test('returns null when SERVICE_JWT_SECRET is unset', () => {
+            delete process.env.SERVICE_JWT_SECRET;
+            expect(signServiceJwt()).toBeNull();
+        });
+
+        test('minted token is accepted by the inbound verifier', () => {
+            // Round-trip: sign → verify (simulates HR → DAM → DAM-verifier).
+            // Both sides share the same secret/audience, so the inbound
+            // verifier with matching audience should accept.
+            process.env.SERVICE_JWT_ISSUER = 'erp-hr';
+            const token = signServiceJwt();
+            const outcome = verifyServiceToken(token);
+            expect(outcome.ok).toBe(true);
+            expect(outcome.context.service).toBe('erp-hr');
         });
     });
 });
