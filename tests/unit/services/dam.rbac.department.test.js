@@ -98,19 +98,33 @@ describe('dam.rbac.department.js DAM re-export headers [B1-HR-DAM-RBAC-DEPARTMEN
 // This describe block documents that finding so future audits can skip it.
 describe('dam.rbac.department.js hrRequest dead-code status [HR-SELF-CALL-SERVICE-JWT]', () => {
     test('hrRequest is exported but is not imported anywhere in src/', async () => {
-        const { execSync } = await import('child_process');
-        // grep the entire src/ tree for any import/require of hrRequest,
-        // excluding the definition file itself.
-        const result = execSync(
-            'grep -rn "hrRequest" src/ --include="*.js" || true',
-            { cwd: process.cwd(), encoding: 'utf8' },
-        ).trim();
+        const fs = await import('fs');
+        const path = await import('path');
 
-        // The only hit should be the export definition line in dam.rbac.department.js.
-        const lines = result.split('\n').filter(Boolean);
-        const importers = lines.filter(
-            (l) => !l.includes('dam.rbac.department.js'),
+        const srcDir = path.resolve(process.cwd(), 'src');
+
+        // Recursively collect all .js files under src/
+        function collectJs(dir) {
+            let files = [];
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    files = files.concat(collectJs(full));
+                } else if (entry.isFile() && entry.name.endsWith('.js')) {
+                    files.push(full);
+                }
+            }
+            return files;
+        }
+
+        const definitionFile = path.resolve(
+            srcDir, 'services', 'dam.rbac.department.js',
         );
+
+        const importers = collectJs(srcDir)
+            .filter((f) => path.resolve(f) !== definitionFile)
+            .filter((f) => fs.readFileSync(f, 'utf8').includes('hrRequest'));
+
         expect(importers).toHaveLength(0);
     });
 
