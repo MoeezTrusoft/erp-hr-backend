@@ -91,3 +91,31 @@ describe('dam.rbac.department.js DAM re-export headers [B1-HR-DAM-RBAC-DEPARTMEN
         expect(rbac.damRequest).toBe(media.damRequest);
     });
 });
+
+// --- HR-SELF-CALL-SERVICE-JWT: hrRequest dead-code evidence ---
+// `hrRequest` is exported by dam.rbac.department.js but never imported
+// anywhere in the codebase (verified via repo-wide grep for "hrRequest").
+// This describe block documents that finding so future audits can skip it.
+describe('dam.rbac.department.js hrRequest dead-code status [HR-SELF-CALL-SERVICE-JWT]', () => {
+    test('hrRequest is exported but is not imported anywhere in src/', async () => {
+        const { execSync } = await import('child_process');
+        // grep the entire src/ tree for any import/require of hrRequest,
+        // excluding the definition file itself.
+        const result = execSync(
+            'grep -rn "hrRequest" src/ --include="*.js" || true',
+            { cwd: process.cwd(), encoding: 'utf8' },
+        ).trim();
+
+        // The only hit should be the export definition line in dam.rbac.department.js.
+        const lines = result.split('\n').filter(Boolean);
+        const importers = lines.filter(
+            (l) => !l.includes('dam.rbac.department.js'),
+        );
+        expect(importers).toHaveLength(0);
+    });
+
+    test('hrRequest is a callable function (guards against silent removal)', async () => {
+        const mod = await import('../../../src/services/dam.rbac.department.js');
+        expect(typeof mod.hrRequest).toBe('function');
+    });
+});
