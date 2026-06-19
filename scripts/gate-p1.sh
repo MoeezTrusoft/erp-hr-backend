@@ -36,7 +36,7 @@ fi
 source "$COMMON"
 gate_init "erp-hr-backend"
 
-gate_step "unit"     "NODE_OPTIONS=--experimental-vm-modules npx --no-install jest --passWithNoTests --silent --colors=false"
+gate_step "unit"     "npm test -- --passWithNoTests --silent --colors=false"
 # lint and boundary start narrow: ESLint flat-config + dep-cruiser are
 # wired only to the P1B foundation layer (src/lib/**, the health router,
 # and their tests). Subsequent A-HR lanes widen the file scope as the
