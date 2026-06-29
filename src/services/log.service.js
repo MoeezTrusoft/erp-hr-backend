@@ -1,8 +1,14 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere } from "../lib/tenancy.js";
 
-export const getAllLogs = async (userId, ip) => {
+// C.2-completion — verified tenant (T-P2.1) threaded via a trailing `tenantId`;
+// audit-log reads are tenant-scoped fail-closed so one tenant never reads
+// another tenant's audit trail.
+
+export const getAllLogs = async (userId, ip, tenantId) => {
   const logs = await prisma.log.findMany({
+    where: scopedWhere(tenantId, {}),
     include: {
       user: true,
       action_by: true,
@@ -23,9 +29,9 @@ export const getAllLogs = async (userId, ip) => {
 
 };
 
-export const getLogById = async (id, userId, ip) => {
-  const log = await prisma.log.findUnique({
-    where: { id: parseInt(id) },
+export const getLogById = async (id, userId, ip, tenantId) => {
+  const log = await prisma.log.findFirst({
+    where: scopedWhere(tenantId, { id: parseInt(id) }),
     include: {
       user: true,
       action_by: true,

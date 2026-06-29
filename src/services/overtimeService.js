@@ -1,17 +1,21 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
+// into overtime-rule reads and stamped on creates, fail-closed when present.
 
-export const getOvertimeRules = async () => {
+export const getOvertimeRules = async (tenantId) => {
     return await prisma.overtimeRule.findMany({
+        where: scopedWhere(tenantId, {}),
         orderBy: { name: 'asc' }
     });
 };
 
-export const createOvertimeRule = async (data, createdBy) => {
+export const createOvertimeRule = async (data, createdBy, tenantId) => {
     const create =  await prisma.overtimeRule.create({
-        data
+        data: scopedData(tenantId, { ...data })
     });
 
     
@@ -25,9 +29,9 @@ export const createOvertimeRule = async (data, createdBy) => {
     return create;
 };
 
-export const updateOvertimeRule = async (id, data,updatedBy) => {
-    const rule = await prisma.overtimeRule.findUnique({
-        where: { id: parseInt(id) }
+export const updateOvertimeRule = async (id, data,updatedBy,tenantId) => {
+    const rule = await prisma.overtimeRule.findFirst({
+        where: scopedWhere(tenantId, { id: parseInt(id) })
     });
 
     if (!rule) {
@@ -49,9 +53,9 @@ export const updateOvertimeRule = async (id, data,updatedBy) => {
     return update;
 };
 
-export const deleteOvertimeRule = async (id,deletedBy) => {
-    const rule = await prisma.overtimeRule.findUnique({
-        where: { id: parseInt(id) }
+export const deleteOvertimeRule = async (id,deletedBy,tenantId) => {
+    const rule = await prisma.overtimeRule.findFirst({
+        where: scopedWhere(tenantId, { id: parseInt(id) })
     });
 
     if (!rule) {
@@ -60,7 +64,7 @@ export const deleteOvertimeRule = async (id,deletedBy) => {
 
     // Check if rule is being used by any work schedules
     const scheduleCount = await prisma.workSchedule.count({
-        where: { overtimeRuleId: parseInt(id) }
+        where: scopedWhere(tenantId, { overtimeRuleId: parseInt(id) })
     });
 
     if (scheduleCount > 0) {
@@ -82,16 +86,16 @@ export const deleteOvertimeRule = async (id,deletedBy) => {
     return deleted;
 };
 
-export const calculateOvertime = async ({ employeeId, periodStart, periodEnd }) => {
+export const calculateOvertime = async ({ employeeId, periodStart, periodEnd, tenantId }) => {
     const timeEntries = await prisma.timeEntry.findMany({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             work_date: {
                 gte: new Date(periodStart),
                 lte: new Date(periodEnd)
             },
             work_type: 'REGULAR'
-        },
+        }),
         orderBy: { work_date: 'asc' }
     });
 
@@ -109,14 +113,14 @@ export const calculateOvertime = async ({ employeeId, periodStart, periodEnd }) 
 
     // Get employee's work schedule and overtime rules
     const workSchedule = await prisma.workSchedule.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             effective_start_date: { lte: new Date(periodEnd) },
             OR: [
                 { effective_end_date: null },
                 { effective_end_date: { gte: new Date(periodStart) } }
             ]
-        },
+        }),
         include: { overtimeRule: true },
         orderBy: { effective_start_date: 'desc' }
     });

@@ -49,8 +49,10 @@ const ORIGINAL_SECRET = process.env.INTERNAL_SERVICE_SECRET;
 describe('src/app.js — testable app foundation', () => {
     beforeEach(() => {
         // Each test sets its own value (or deletes the var) so we
-        // never leak between cases.
+        // never leak between cases. Post-sunset the gate keys on
+        // SERVICE_JWT_SECRET, so reset it too for determinism.
         delete process.env.INTERNAL_SERVICE_SECRET;
+        delete process.env.SERVICE_JWT_SECRET;
     });
 
     afterAll(() => {
@@ -102,9 +104,12 @@ describe('src/app.js — testable app foundation', () => {
         });
     });
 
-    describe('internal-secret gate', () => {
-        test('rejects /api/* with 403 when no x-internal-secret header is sent', async () => {
-            process.env.INTERNAL_SERVICE_SECRET = 'test-secret';
+    // Post-sunset (T-P6.1): the internal boundary is the service-JWT gate.
+    // The legacy X-Internal-Secret ACCEPT path is removed; the gate keys on
+    // SERVICE_JWT_SECRET and a verified X-Service-Authorization token.
+    describe('service-JWT gate', () => {
+        test('rejects /api/* with 403 when no service token is sent', async () => {
+            process.env.SERVICE_JWT_SECRET = 'svc-secret';
 
             const response = await request(createApp())
                 .get('/api/this-path-does-not-need-to-exist');
@@ -114,40 +119,35 @@ describe('src/app.js — testable app foundation', () => {
             expect(response.body.message).toMatch(/direct service access/i);
         });
 
-        test('rejects /api/* with 403 when x-internal-secret is wrong', async () => {
-            process.env.INTERNAL_SERVICE_SECRET = 'real-secret';
+        test('rejects /api/* with 401 when the service token is invalid', async () => {
+            process.env.SERVICE_JWT_SECRET = 'svc-secret';
 
             const response = await request(createApp())
                 .get('/api/this-path-does-not-need-to-exist')
-                .set('x-internal-secret', 'wrong-secret');
+                .set('x-service-authorization', 'Bearer not.a.valid.jwt');
 
-            expect(response.status).toBe(403);
+            expect(response.status).toBe(401);
             expect(response.body.success).toBe(false);
         });
 
-        test('falls through to the rest of the router when x-internal-secret matches', async () => {
-            // With the right secret the gate calls next(), so a path
-            // that isn't mounted under /api falls all the way through
-            // to Express's default 404 handler. Anything other than
-            // 403 here proves the gate is no longer blocking, which
-            // is the only behaviour we can safely assert without a DB.
+        test('a valid X-Internal-Secret is NO LONGER honored (legacy accept removed)', async () => {
+            // Pre-sunset this fell through to 404 (gate passed). Now the legacy
+            // accept path is gone, so even a matching secret is rejected — only
+            // a service-JWT authenticates.
+            process.env.SERVICE_JWT_SECRET = 'svc-secret';
             process.env.INTERNAL_SERVICE_SECRET = 'real-secret';
 
             const response = await request(createApp())
                 .get('/api/this-path-does-not-need-to-exist')
                 .set('x-internal-secret', 'real-secret');
 
-            // Express's default 404 handler returns HTML, not JSON,
-            // so we assert via status alone. The point is that the
-            // request reached a "no route matched" state instead of
-            // being short-circuited by the gate.
-            expect(response.status).toBe(404);
-            expect(response.status).not.toBe(403);
+            expect(response.status).toBe(403);
+            expect(response.status).not.toBe(404);
         });
 
-        test('returns 500 when INTERNAL_SERVICE_SECRET is unset on the process', async () => {
-            // beforeEach already deletes the var; this asserts the
-            // controller's misconfiguration branch.
+        test('returns 500 when SERVICE_JWT_SECRET is unset on the process (fail closed)', async () => {
+            // beforeEach deletes both secrets; this asserts the fail-closed
+            // misconfiguration branch now keyed on SERVICE_JWT_SECRET.
             const response = await request(createApp())
                 .get('/api/anything');
 

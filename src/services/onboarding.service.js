@@ -1,5 +1,10 @@
 import prisma from "../config/prisma.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+
+// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
+// param; folded into onboarding reads and stamped on creates, fail-closed so
+// tenant B never reads/mutates tenant A's onboarding checklists/tasks/documents.
 
 const employeeSelect = {
     id: true,
@@ -53,23 +58,25 @@ const normalizeTaskUpdate = (data = {}) => {
 
 // ── Checklists ──────────────────────────────────────────────────────────────
 
-export const createChecklist = async ({ employeeId, title, startDate, targetCompletionDate, targetDate, notes }) => {
+export const createChecklist = async ({ employeeId, title, startDate, targetCompletionDate, targetDate, notes, tenantId }) => {
     return prisma.onboardingChecklist.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: Number(employeeId),
             title: title || "Employee Onboarding",
             startDate: startDate ? new Date(startDate) : new Date(),
             targetDate: targetCompletionDate || targetDate ? new Date(targetCompletionDate || targetDate) : null,
             notes,
-        },
+        }),
         include: { tasks: true, documents: true, buddy: { include: { buddy: { select: employeeSelect } } } },
     });
 };
 
-export const listChecklists = async ({ page = 1, limit = 20 } = {}) => {
+export const listChecklists = async ({ page = 1, limit = 20, tenantId } = {}) => {
     const skip = (page - 1) * limit;
+    const where = scopedWhere(tenantId, {});
     const [items, total] = await Promise.all([
         prisma.onboardingChecklist.findMany({
+            where,
             skip,
             take: limit,
             orderBy: { created_at: "desc" },
@@ -79,14 +86,14 @@ export const listChecklists = async ({ page = 1, limit = 20 } = {}) => {
                 buddy: { include: { buddy: { select: employeeSelect } } },
             },
         }),
-        prisma.onboardingChecklist.count(),
+        prisma.onboardingChecklist.count({ where }),
     ]);
     return { items, total, page, limit };
 };
 
-export const getChecklist = async (id) => {
-    return prisma.onboardingChecklist.findUnique({
-        where: { id: Number(id) },
+export const getChecklist = async (id, tenantId) => {
+    return prisma.onboardingChecklist.findFirst({
+        where: scopedWhere(tenantId, { id: Number(id) }),
         include: {
             employee: { select: employeeSelect },
             tasks: { orderBy: { sortOrder: "asc" } },
@@ -97,9 +104,9 @@ export const getChecklist = async (id) => {
     });
 };
 
-export const getChecklistByEmployee = async (employeeId) => {
+export const getChecklistByEmployee = async (employeeId, tenantId) => {
     return prisma.onboardingChecklist.findMany({
-        where: { employeeId: Number(employeeId) },
+        where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
         include: {
             employee: { select: employeeSelect },
             tasks: { orderBy: { sortOrder: "asc" } },
@@ -110,7 +117,9 @@ export const getChecklistByEmployee = async (employeeId) => {
     });
 };
 
-export const updateChecklist = async (id, data) => {
+export const updateChecklist = async (id, data, tenantId) => {
+    const existing = await prisma.onboardingChecklist.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+    if (!existing) throw new Error("Checklist not found");
     return prisma.onboardingChecklist.update({
         where: { id: Number(id) },
         data,
@@ -120,20 +129,22 @@ export const updateChecklist = async (id, data) => {
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId, assigneeId }) => {
+export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId, assigneeId, tenantId }) => {
     return prisma.onboardingTask.create({
-        data: {
+        data: scopedData(tenantId, {
             checklistId: Number(checklistId),
             title,
             description,
             assigneeType: assigneeType || "HR",
             dueDate: dueDate ? new Date(dueDate) : null,
             assigneeId: assignedToId || assigneeId ? Number(assignedToId || assigneeId) : null,
-        },
+        }),
     });
 };
 
-export const updateTask = async (taskId, data) => {
+export const updateTask = async (taskId, data, tenantId) => {
+    const existing = await prisma.onboardingTask.findFirst({ where: scopedWhere(tenantId, { id: Number(taskId) }) });
+    if (!existing) throw new Error("Task not found");
     const update = normalizeTaskUpdate(data);
     return prisma.onboardingTask.update({
         where: { id: Number(taskId) },
@@ -141,41 +152,45 @@ export const updateTask = async (taskId, data) => {
     });
 };
 
-export const deleteTask = async (taskId) => {
+export const deleteTask = async (taskId, tenantId) => {
+    const existing = await prisma.onboardingTask.findFirst({ where: scopedWhere(tenantId, { id: Number(taskId) }) });
+    if (!existing) throw new Error("Task not found");
     return prisma.onboardingTask.delete({ where: { id: Number(taskId) } });
 };
 
 // ── Documents ────────────────────────────────────────────────────────────────
 
-export const uploadDocument = async ({ checklistId, employeeId, title, file }) => {
-    const uploaded = await uploadFileToDAM(file, "document");
-    if (!uploaded || !uploaded[0]) throw new Error("DAM upload failed");
-    const mediaId = uploaded[0].id;
-
-    const checklist = await prisma.onboardingChecklist.findUnique({
-        where: { id: Number(checklistId) },
+export const uploadDocument = async ({ checklistId, employeeId, title, file, tenantId }) => {
+    const checklist = await prisma.onboardingChecklist.findFirst({
+        where: scopedWhere(tenantId, { id: Number(checklistId) }),
         select: { employeeId: true },
     });
     if (!checklist) throw new Error("Checklist not found");
 
+    const uploaded = await uploadFileToDAM(file, "document");
+    if (!uploaded || !uploaded[0]) throw new Error("DAM upload failed");
+    const mediaId = uploaded[0].id;
+
     return prisma.onboardingDocument.create({
-        data: {
+        data: scopedData(tenantId, {
             checklistId: Number(checklistId),
             employeeId: Number(employeeId || checklist.employeeId),
             title,
             mediaId,
-        },
+        }),
     });
 };
 
-export const listDocuments = async (checklistId) => {
+export const listDocuments = async (checklistId, tenantId) => {
     return prisma.onboardingDocument.findMany({
-        where: { checklistId: Number(checklistId) },
+        where: scopedWhere(tenantId, { checklistId: Number(checklistId) }),
         orderBy: { created_at: "desc" },
     });
 };
 
-export const signDocument = async (docId) => {
+export const signDocument = async (docId, tenantId) => {
+    const existing = await prisma.onboardingDocument.findFirst({ where: scopedWhere(tenantId, { id: Number(docId) }) });
+    if (!existing) throw new Error("Document not found");
     return prisma.onboardingDocument.update({
         where: { id: Number(docId) },
         data: { signedAt: new Date() },
@@ -184,31 +199,37 @@ export const signDocument = async (docId) => {
 
 // ── Buddy ────────────────────────────────────────────────────────────────────
 
-export const assignBuddy = async ({ checklistId, buddyId }) => {
+export const assignBuddy = async ({ checklistId, buddyId, tenantId }) => {
+    // Scope the parent checklist so a buddy can't be attached cross-tenant.
+    const checklist = await prisma.onboardingChecklist.findFirst({
+        where: scopedWhere(tenantId, { id: Number(checklistId) }),
+        select: { id: true },
+    });
+    if (!checklist) throw new Error("Checklist not found");
     return prisma.onboardingBuddy.upsert({
         where: { checklistId: Number(checklistId) },
         update: { buddyId: Number(buddyId) },
-        create: { checklistId: Number(checklistId), buddyId: Number(buddyId) },
+        create: scopedData(tenantId, { checklistId: Number(checklistId), buddyId: Number(buddyId) }),
         include: { buddy: { select: employeeSelect } },
     });
 };
 
-export const getBuddy = async (checklistId) => {
-    return prisma.onboardingBuddy.findUnique({
-        where: { checklistId: Number(checklistId) },
+export const getBuddy = async (checklistId, tenantId) => {
+    return prisma.onboardingBuddy.findFirst({
+        where: scopedWhere(tenantId, { checklistId: Number(checklistId) }),
         include: { buddy: { select: employeeSelect } },
     });
 };
 
 // ── Surveys ──────────────────────────────────────────────────────────────────
 
-export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, responses }) => {
+export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, responses, tenantId }) => {
     const resolvedType = mapSurveyType(surveyType || type);
     let resolvedChecklistId = checklistId ? Number(checklistId) : null;
 
     if (!resolvedChecklistId) {
         const checklist = await prisma.onboardingChecklist.findFirst({
-            where: { employeeId: Number(employeeId) },
+            where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
             orderBy: { created_at: "desc" },
             select: { id: true },
         });
@@ -227,19 +248,19 @@ export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, 
             responses,
             submittedAt: new Date(),
         },
-        create: {
+        create: scopedData(tenantId, {
             checklistId: resolvedChecklistId,
             employeeId: Number(employeeId),
             type: resolvedType,
             responses,
             submittedAt: new Date(),
-        },
+        }),
     });
 };
 
-export const getSurveys = async (employeeId) => {
+export const getSurveys = async (employeeId, tenantId) => {
     return prisma.onboardingSurvey.findMany({
-        where: { employeeId: Number(employeeId) },
+        where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
         orderBy: { created_at: "desc" },
     });
 };

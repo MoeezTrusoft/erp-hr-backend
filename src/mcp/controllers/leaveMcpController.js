@@ -17,7 +17,7 @@ import {
 } from "../../controllers/leave.controller.js";
 import { getHolidays, createHoliday } from "../../controllers/holiday.controller.js";
 
-export const mcpListLeaveRequests = (user) => runController(getLeaveRequests, { user });
+export const mcpListLeaveRequests = (user, query = {}) => runController(getLeaveRequests, { user, query });
 export const mcpListLeavePolicies = (user) => runController(getLeavePolicies, { user });
 export const mcpListLeaveBalances = (user) => runController(getLeaveBalances, { user });
 export const mcpListPendingLeaveApprovals = (user) => runController(getPendingApprovals, { user });

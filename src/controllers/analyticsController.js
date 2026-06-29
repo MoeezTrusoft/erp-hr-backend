@@ -388,6 +388,46 @@ export const getPerformanceDashboard = async (req, res) => {
 };
 
 /**
+ * HR-KPI-06 — Payroll Accuracy + On-Time KPIs.
+ */
+export const getPayrollKpis = async (req, res) => {
+    try {
+        const { timeframe = 'current_quarter', graceDays } = req.query;
+        const user = req.user;
+
+        // Payroll KPIs are sensitive; restrict to HR/payroll roles.
+        if (!['HR_ADMIN', 'HR_MANAGER', 'PAYROLL_ADMIN'].includes(user.role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Insufficient permissions to access payroll KPIs'
+            });
+        }
+
+        const dashboard = await analyticsService.getPayrollKpis({
+            tenantId: user.tenantId,
+            timeframe,
+            userRole: user.role,
+            ...(graceDays !== undefined && { graceDays: parseInt(graceDays, 10) })
+        });
+
+        res.json({
+            success: true,
+            data: dashboard,
+            metadata: {
+                generatedAt: new Date().toISOString(),
+                timeframe
+            }
+        });
+    } catch (error) {
+        logger.error({ err: error }, 'Payroll KPIs Error');
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+};
+
+/**
  * Export Controller
  */
 export const exportReport = async (req, res) => {

@@ -112,6 +112,8 @@ enum PayrollRunStatus {
   PENDING
   PROCESSING
   COMPLETED
+  APPROVED // HR-02 / T-P4.1 — human-approved (distinct approver) and ready to FINALIZE
+  FINALIZED // HR-02 / T-P4.1 — finalized after approval; payslips locked for distribution
   CANCELLED
   FAILED
 }
@@ -174,54 +176,57 @@ model DashboardLayout {
 
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([dashboardType])
+  @@index([tenantId])
 }
 
 model Employee {
-  id                  Int       @id @default(autoincrement())
-  tenant_id           Int?
-  first_name          String?
-  middle_name         String?
-  last_name           String?
-  preferred_name      String?
-  nationality_id_type String?
-  employee_code       String?   @db.VarChar(50)
-  date_of_birth       DateTime?
-  joining_date        DateTime?
-  probation_end_date  DateTime?
-  employee_type       String? // contract permenant etc..
-  remarks             String?
-  marital_status      String?
-  nationality         String?
-  nationality_id_no   String?
-  nationality_id      Int?
-  current_address     String?
-  permenant_address   String?
-  city                String?
-  state               String?
-  province            String?
-  country             String?
-  postal_code         String?
-  personal_contact    String?
-  email               String?
-  work_email          String?
-  work_phone          String?
-  employement_status  String? // Active/ Inactive
-  photo_url           String?
-  cover_photo_url     String?
+  id                   Int       @id @default(autoincrement())
+  tenant_id            String?   @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
+  first_name           String?
+  middle_name          String?
+  last_name            String?
+  preferred_name       String?
+  nationality_id_type  String?
+  employee_code        String?   @db.VarChar(50)
+  date_of_birth        DateTime?
+  joining_date         DateTime?
+  probation_end_date   DateTime?
+  employee_type        String? // contract permenant etc..
+  remarks              String?
+  marital_status       String?
+  nationality          String?
+  nationality_id_no    String?
+  nationality_id       Int?
+  current_address      String?
+  permenant_address    String?
+  city                 String?
+  state                String?
+  province             String?
+  country              String?
+  postal_code          String?
+  personal_contact     String?
+  email                String?
+  work_email           String?
+  work_phone           String?
+  employement_status   String? // Active/ Inactive
+  photo_url            String?
+  cover_photo_url      String?
   cover_photo_media_id Int?
-  updatedById         Int?
-  createdById         Int?
-  additional_fields   Json?
-  gender              String?
-  job_title           String?
-  hire_date           DateTime?
-  status              String?
-  userId              Int?
-  employee_media_id   Int?
-  employee_name       String?
-  created_at          DateTime  @default(now())
-  updated_at          DateTime  @updatedAt
+  updatedById          Int?
+  createdById          Int?
+  additional_fields    Json?
+  gender               String?
+  job_title            String?
+  hire_date            DateTime?
+  status               String?
+  userId               Int?
+  employee_media_id    Int?
+  employee_name        String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
 
   // NEW FIELDS
   businessUnitId Int? // Business Unit / Platform
@@ -307,27 +312,29 @@ model Employee {
   buddyAssignments     OnboardingBuddy[]     @relation("BuddyRelation")
 
   // Recruitment relations
-  interviewPanels    InterviewInterviewer[]
-  interviewScorecardsGiven InterviewScorecard[] @relation("ScorecardReviewer")
+  interviewPanels          InterviewInterviewer[]
+  interviewScorecardsGiven InterviewScorecard[]   @relation("ScorecardReviewer")
 
   // Learning & Development relations
-  certifications     Certification[]
-  facilitatedSessions TrainingSession[]    @relation("SessionFacilitator")
-  sessionAttendances TrainingSessionAttendee[]
+  certifications          Certification[]
+  facilitatedSessions     TrainingSession[]         @relation("SessionFacilitator")
+  sessionAttendances      TrainingSessionAttendee[]
   learningPathEnrollments LearningPathEnrollment[]
 
   // Employee management relations
-  skills             EmployeeSkill[]
-  lifecycleEvents    EmployeeLifecycleEvent[]
-  offboardingChecklist OffboardingChecklist?
+  skills                   EmployeeSkill[]
+  lifecycleEvents          EmployeeLifecycleEvent[]
+  offboardingChecklist     OffboardingChecklist?
   offboardingTasksAssigned OffboardingTask[]
 
   // Compliance, IDP, Reimbursement relations
-  complianceItems    ComplianceItem[]
-  developmentPlans   DevelopmentPlan[]
-  reimbursementClaims ReimbursementClaim[]          @relation("ReimbursementEmployee")
-  reimbursementsApproved ReimbursementClaim[]       @relation("ReimbursementApprover")
-  documentExpiryAlerts DocumentExpiryAlert[]
+  complianceItems        ComplianceItem[]
+  developmentPlans       DevelopmentPlan[]
+  reimbursementClaims    ReimbursementClaim[]  @relation("ReimbursementEmployee")
+  reimbursementsApproved ReimbursementClaim[]  @relation("ReimbursementApprover")
+  documentExpiryAlerts   DocumentExpiryAlert[]
+  // HR-BENEFITS-04 — benefit enrollments for this employee.
+  benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 }
 
 model EmployeeMedia {
@@ -349,6 +356,10 @@ model EmployeeMedia {
   uploaded_by_id Int?
   uploaded_at    DateTime  @default(now())
   status         String    @default("active")
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model BusinessUnit {
@@ -359,6 +370,10 @@ model BusinessUnit {
   updated_at  DateTime @updatedAt
 
   employees Employee[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model GradeLevel {
@@ -369,6 +384,10 @@ model GradeLevel {
   updated_at  DateTime @updatedAt
 
   employees Employee[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model EmergencyContacts {
@@ -380,6 +399,10 @@ model EmergencyContacts {
   is_primary   Boolean   @default(false)
   employee_Id  Int?
   employee     Employee? @relation("RelationWithEmployee", fields: [employee_Id], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model Log {
@@ -406,6 +429,10 @@ model Log {
   payrollRunId Int?
   payslip      PayrollPayslip? @relation(fields: [payslipId], references: [id])
   payslipId    Int?
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model Attendance {
@@ -423,6 +450,10 @@ model Attendance {
 
   employee Employee @relation(fields: [employeeId], references: [id])
   logs     Log[]    @relation("AttendanceMark")
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model Leave {
@@ -441,6 +472,10 @@ model Leave {
   updated_at DateTime @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 // ==================== LEAVE MANAGEMENT MODELS ====================
@@ -471,7 +506,10 @@ model LeavePolicy {
   updatedBy   Employee? @relation("LeavePolicyUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([name])
+  @@index([tenantId])
   @@map("leave_policies")
 }
 
@@ -499,9 +537,12 @@ model LeaveRequest {
   updatedBy   Employee? @relation("LeaveRequestUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId])
   @@index([status])
   @@index([startDate, endDate])
+  @@index([tenantId])
   @@map("leave_requests")
 }
 
@@ -523,8 +564,11 @@ model LeaveRequestApproval {
   createdBy   Employee @relation("LeaveRequestApprovalCreatedBy", fields: [createdById], references: [id])
   createdById Int
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([leaveRequestId])
   @@index([approverId])
+  @@index([tenantId])
   @@map("leave_request_approvals")
 }
 
@@ -543,7 +587,10 @@ model LeaveBalance {
   updatedBy   Employee? @relation("LeaveBalanceUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([employeeId, leavePolicyId])
+  @@index([tenantId])
   @@map("leave_balances")
 }
 
@@ -564,7 +611,10 @@ model ApprovalWorkflow {
   updatedBy   Employee? @relation("ApprovalWorkflowUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([name])
+  @@index([tenantId])
   @@map("approval_workflows")
 }
 
@@ -576,7 +626,10 @@ model ApprovalWorkflowStep {
   // Relations
   approvalWorkflow ApprovalWorkflow @relation(fields: [approvalWorkflowId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([approvalWorkflowId, stepOrder])
+  @@index([tenantId])
   @@map("approval_workflow_steps")
 }
 
@@ -598,7 +651,10 @@ model Region {
   updatedById Int?
   Employee    Employee[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([name])
+  @@index([tenantId])
   @@map("regions")
 }
 
@@ -622,6 +678,9 @@ model HolidayCalendar {
   updatedBy   Employee? @relation("HolidayCalendarUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("holiday_calendars")
 }
 
@@ -644,7 +703,10 @@ model Holiday {
   updatedBy   Employee? @relation("HolidayUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([holidayCalendarId, date])
+  @@index([tenantId])
   @@map("holidays")
 }
 
@@ -658,7 +720,10 @@ model EmployeeHolidayCalendar {
   employee        Employee        @relation(fields: [employeeId], references: [id])
   holidayCalendar HolidayCalendar @relation(fields: [holidayCalendarId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([employeeId, holidayCalendarId, effectiveFrom])
+  @@index([tenantId])
   @@map("employee_holiday_calendars")
 }
 
@@ -685,8 +750,11 @@ model TimeEntry {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId, work_date])
   @@index([timesheetId])
+  @@index([tenantId])
 }
 
 model Timesheet {
@@ -707,8 +775,11 @@ model Timesheet {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([employeeId, period_start, period_end])
   @@index([employeeId, status])
+  @@index([tenantId])
 }
 
 model TimeApproval {
@@ -725,7 +796,10 @@ model TimeApproval {
 
   created_at DateTime @default(now())
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([timesheetId])
+  @@index([tenantId])
 }
 
 model OvertimeRule {
@@ -746,6 +820,9 @@ model OvertimeRule {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("overtime_rules")
 }
 
@@ -766,7 +843,10 @@ model WorkSchedule {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId, effective_start_date])
+  @@index([tenantId])
   @@map("work_schedules")
 }
 
@@ -782,6 +862,10 @@ model Source {
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 // ==================== PERFORMANCE MANAGEMENT MODELS ====================
@@ -812,6 +896,10 @@ model PerformanceReview {
   calibrationSessionId   Int?
   RatingAdjustment       RatingAdjustment[]      @relation("RatingPerformanceReview")
   performanceReviewItems PerformanceReviewItem[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model ReviewFeedback {
@@ -827,6 +915,10 @@ model ReviewFeedback {
   review     PerformanceReview @relation(fields: [reviewId], references: [id])
   reviewer   Employee          @relation("FeedbackByEmployee", fields: [reviewerId], references: [id])
   feedbackBy Employee?         @relation("FeedbackBy", fields: [feedbackById], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model Position {
@@ -841,6 +933,10 @@ model Position {
   employees      Employee[]
   JobRequisition JobRequisition[]
   // createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model JobRequisition {
@@ -866,6 +962,10 @@ model JobRequisition {
   employee     Employee?             @relation(fields: [employeeId], references: [id])
   applications Application[]
   offers       Offer[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model RequisitionApproval {
@@ -879,6 +979,10 @@ model RequisitionApproval {
   // Relations
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])
   approver    Employee       @relation(fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model JobPosting {
@@ -890,14 +994,22 @@ model JobPosting {
 
   // Relations
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model TrainingCategory {
-  id          Int              @id @default(autoincrement())
-  name        String
-  description String?
+  id            Int              @id @default(autoincrement())
+  name          String
+  description   String?
   courses       TrainingCourse[]
   learningPaths LearningPath[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model TrainingCourse {
@@ -916,12 +1028,16 @@ model TrainingCourse {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  category        TrainingCategory       @relation(fields: [categoryId], references: [id])
-  instructor      Employee?              @relation(fields: [instructorId], references: [id])
-  enrollments     TrainingEnrollment[]
-  sessions        TrainingSession[]
-  pathCourses     LearningPathCourse[]
-  certifications  Certification[]
+  category       TrainingCategory     @relation(fields: [categoryId], references: [id])
+  instructor     Employee?            @relation(fields: [instructorId], references: [id])
+  enrollments    TrainingEnrollment[]
+  sessions       TrainingSession[]
+  pathCourses    LearningPathCourse[]
+  certifications Certification[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model TrainingEnrollment {
@@ -935,6 +1051,10 @@ model TrainingEnrollment {
 
   course   TrainingCourse @relation(fields: [courseId], references: [id])
   employee Employee       @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model PerformanceCycle {
@@ -951,6 +1071,10 @@ model PerformanceCycle {
   templateId         Int?
   reviews            PerformanceReview[]
   CalibrationSession CalibrationSession[] @relation("CalibrationPerformanceCycle")
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model PerformanceTemplate {
@@ -963,6 +1087,10 @@ model PerformanceTemplate {
   updated_at     DateTime @updatedAt
 
   cycles PerformanceCycle[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model Goal {
@@ -988,6 +1116,10 @@ model Goal {
   parentGoal      GoalAlignment[] @relation("GoalAlignmentsParent")
   alignedGoal     GoalAlignment[] @relation("GoalAlignmentsChild")
   goal            GoalAlignment[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model GoalProgress {
@@ -1001,6 +1133,10 @@ model GoalProgress {
   // Relations
   goal      Goal?     @relation(fields: [goalId], references: [id])
   createdBy Employee? @relation("GoalProgressCreatedBy", fields: [created_by], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model GoalAlignment {
@@ -1013,6 +1149,10 @@ model GoalAlignment {
   alignedGoal Goal? @relation("GoalAlignmentsChild", fields: [alignedGoalId], references: [id])
   Goal        Goal? @relation(fields: [goalId], references: [id])
   goalId      Int?
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model ReviewReminder {
@@ -1024,6 +1164,10 @@ model ReviewReminder {
 
   review PerformanceReview @relation(fields: [reviewId], references: [id])
   sentTo Employee          @relation(fields: [sentToId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model CalibrationSession {
@@ -1040,6 +1184,10 @@ model CalibrationSession {
   performance_reviews PerformanceReview[] @relation("CalibrationPerformanceReviews")
   ratingAdjustments   RatingAdjustment[]  @relation("CalibrationSessions")
   cycle               PerformanceCycle?   @relation("CalibrationPerformanceCycle", fields: [cycleId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model RatingAdjustment {
@@ -1056,41 +1204,68 @@ model RatingAdjustment {
   calibrationSession CalibrationSession? @relation("CalibrationSessions", fields: [calibrationSessionId], references: [id])
   performance_review PerformanceReview?  @relation("RatingPerformanceReview", fields: [reviewId], references: [id])
   calibratedBy       Employee?           @relation("CalibratedBy", fields: [calibrated_by_employee_id], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 // ==================== PAYROLL MODELS ====================
 
 model PayrollRun {
-  id              Int              @id @default(autoincrement())
-  periodStart     DateTime
-  periodEnd       DateTime
-  countryCode     String           @db.Char(2)
-  currencyCode    String           @db.Char(3)
-  status          PayrollRunStatus @default(PENDING)
-  totalGross      Float?           @default(0)
-  totalDeductions Float?           @default(0)
-  totalNet        Float?           @default(0)
-  employeeCount   Int?             @default(0)
-  processedAt     DateTime?
-  created_at      DateTime         @default(now())
-  updated_at      DateTime         @updatedAt
+  id               Int              @id @default(autoincrement())
+  tenantId         String?          @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  periodStart      DateTime
+  periodEnd        DateTime
+  countryCode      String           @db.Char(2)
+  currencyCode     String           @db.Char(3)
+  status           PayrollRunStatus @default(PENDING)
+  totalGross       Float?           @default(0)
+  totalDeductions  Float?           @default(0)
+  totalNet         Float?           @default(0)
+  employeeCount    Int?             @default(0)
+  processedAt      DateTime?
+  // HR-02 / T-P4.1 — separation of duties + reproducibility.
+  // processedBy : employee id that ran processing (the processor).
+  // approvedBy  : employee id that approved the run; MUST differ from
+  //               processedBy (no self-approval). FINALIZE requires this set.
+  // approvedAt  : when approval was recorded.
+  // ruleVersion / ratesEffectiveAt : the versioned tax/rule snapshot the run
+  //               was computed against, so the run is reproducible against the
+  //               rates that were in effect (not whatever the table holds now).
+  processedBy      Int?
+  approvedBy       Int?
+  approvedAt       DateTime?
+  ruleVersion      String?
+  ratesEffectiveAt DateTime?
+  created_at       DateTime         @default(now())
+  updated_at       DateTime         @updatedAt
 
   // Relations
   payslips        PayrollPayslip[]
   logs            Log[]
   PayrollAuditLog PayrollAuditLog[]
 
-  @@unique([periodStart, periodEnd])
+  // REQ-006 follow-up / REQ-007 — period uniqueness is tenant-scoped: a period
+  // is unique WITHIN a tenant, so two DIFFERENT tenants may each own the same
+  // (periodStart, periodEnd). The app-level overlap guard in createPayrollRun is
+  // already tenant-scoped (withTenant), so this aligns the DB constraint with it.
+  @@unique([tenantId, periodStart, periodEnd])
+  @@index([tenantId])
   @@map("payroll_runs")
 }
 
 model PayrollPayslip {
   id              Int           @id @default(autoincrement())
+  tenantId        String?       @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   payrollRunId    Int
   employeeId      Int
   grossAmount     Float
   totalDeductions Float
   netAmount       Float
+  // HR-02 / T-P4.1 — the rule/rate version this payslip was computed against,
+  // copied from its run so a single payslip is independently reproducible.
+  ruleVersion     String?
   distributedAt   DateTime?
   status          PayslipStatus @default(DRAFT)
   created_at      DateTime      @default(now())
@@ -1105,6 +1280,7 @@ model PayrollPayslip {
   PayrollAuditLog PayrollAuditLog[]
 
   @@unique([payrollRunId, employeeId])
+  @@index([tenantId])
   @@map("payroll_payslips")
 }
 
@@ -1121,6 +1297,9 @@ model PayrollEarning {
   payslip     PayrollPayslip     @relation(fields: [payslipId], references: [id], onDelete: Cascade)
   earningType PayrollEarningType @relation(fields: [earningTypeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("payroll_earnings")
 }
 
@@ -1137,11 +1316,15 @@ model PayrollDeduction {
   payslip       PayrollPayslip       @relation(fields: [payslipId], references: [id], onDelete: Cascade)
   deductionType PayrollDeductionType @relation(fields: [deductionTypeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("payroll_deductions")
 }
 
 model PayrollEarningType {
   id          Int            @id @default(autoincrement())
+  tenantId    String?        @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   code        String         @unique
   name        String
   description String?
@@ -1154,11 +1337,13 @@ model PayrollEarningType {
   earnings    PayrollEarning[]
   assignments PayrollAssignment[]
 
+  @@index([tenantId])
   @@map("payroll_earning_types")
 }
 
 model PayrollDeductionType {
   id          Int            @id @default(autoincrement())
+  tenantId    String?        @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   code        String         @unique
   name        String
   description String?
@@ -1171,16 +1356,21 @@ model PayrollDeductionType {
   deductions  PayrollDeduction[]
   assignments PayrollAssignment[]
 
+  @@index([tenantId])
   @@map("payroll_deduction_types")
 }
 
 model EmploymentTerms {
   id              Int          @id @default(autoincrement())
+  tenantId        String?      @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   employeeId      Int
-  baseSalary      Float
+  // HR-01 / T-P4.2 — C4 salary/comp encrypted at rest (was Float). Stored as a
+  // self-describing AES-256-GCM envelope string; the prisma C4 extension
+  // decrypts to a Number on read so callers (payroll/analytics) are unchanged.
+  baseSalary      String
   currency        String       @default("USD")
   payFrequency    PayFrequency
-  bonusTarget     Float?
+  bonusTarget     String? // HR-01 / T-P4.2 — C4 bonus encrypted at rest (was Float?)
   equalityDetails String?
   effectiveFrom   DateTime
   effectiveTo     DateTime?
@@ -1190,11 +1380,13 @@ model EmploymentTerms {
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
 
+  @@index([tenantId])
   @@map("employment_terms")
 }
 
 model PayrollAssignment {
   id              Int       @id @default(autoincrement())
+  tenantId        String?   @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   employeeId      Int
   earningTypeId   Int?
   deductionTypeId Int?
@@ -1211,29 +1403,42 @@ model PayrollAssignment {
   earningType   PayrollEarningType?   @relation(fields: [earningTypeId], references: [id])
   deductionType PayrollDeductionType? @relation(fields: [deductionTypeId], references: [id])
 
+  @@index([tenantId])
   @@map("payroll_assignments")
 }
 
 model BankDetail {
-  id            Int      @id @default(autoincrement())
-  employeeId    Int
-  bankName      String
-  accountNumber String
-  routingNumber String?
-  accountType   String   @default("CHECKING")
-  isPrimary     Boolean  @default(true)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id                Int      @id @default(autoincrement())
+  tenantId          String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  employeeId        Int
+  bankName          String
+  // HR-01 / T-P4.2 — C4 bank account encrypted at rest (AES-256-GCM envelope).
+  // GCM uses a random IV so ciphertext differs per write, which would break the
+  // old @@unique([employeeId, accountNumber]) and any lookup-by-account. The
+  // accountNumberBidx column below holds a deterministic HMAC (blind index) of
+  // the plaintext; uniqueness and equality lookups move to it (see the prisma
+  // C4 extension). The encrypted value still lives in accountNumber.
+  accountNumber     String
+  accountNumberBidx String? // HR-01 / T-P4.2 — deterministic HMAC of the plaintext account for unique + lookup
+  routingNumber     String? // HR-01 / T-P4.2 — C4 routing number encrypted at rest
+  accountType       String   @default("CHECKING")
+  isPrimary         Boolean  @default(true)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
 
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
 
-  @@unique([employeeId, accountNumber])
+  // HR-01 / T-P4.2 — uniqueness moved off the (now-encrypted) accountNumber to
+  // its blind index so a duplicate account is still rejected.
+  @@unique([employeeId, accountNumberBidx])
+  @@index([tenantId])
   @@map("bank_details")
 }
 
 model TaxRate {
   id            Int       @id @default(autoincrement())
+  tenantId      String?   @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   countryCode   String    @db.Char(2)
   bracketMin    Float
   bracketMax    Float?
@@ -1243,11 +1448,13 @@ model TaxRate {
   created_at    DateTime  @default(now())
   updated_at    DateTime  @updatedAt
 
+  @@index([tenantId])
   @@map("tax_rates")
 }
 
 model PayrollAuditLog {
   id           Int      @id @default(autoincrement())
+  tenantId     String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   action       String
   details      String?
   payrollRunId Int?
@@ -1262,6 +1469,7 @@ model PayrollAuditLog {
   payslip    PayrollPayslip? @relation(fields: [payslipId], references: [id])
   employee   Employee?       @relation(fields: [employeeId], references: [id])
 
+  @@index([tenantId])
   @@map("payroll_audit_logs")
 }
 
@@ -1269,7 +1477,7 @@ model Tag {
   id          Int      @id @default(autoincrement())
   name        String
   type        String? // e.g. "skill", "keyword"
-  tenantId    Int?
+  tenantId    String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   isActive    Boolean  @default(true)
   createdById Int?
   createdAt   DateTime @default(now())
@@ -1291,7 +1499,7 @@ model Candidate {
   resumeMediaId Int? // DAM asset ID for resume file
   notes         String?
   status        String   @default("active") // active | archived
-  tenantId      Int?
+  tenantId      String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById   Int?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -1310,7 +1518,10 @@ model CandidateTag {
   candidate Candidate @relation(fields: [candidateId], references: [id])
   tag       Tag       @relation(fields: [tagId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([candidateId, tagId])
+  @@index([tenantId])
 }
 
 model Application {
@@ -1319,7 +1530,7 @@ model Application {
   jobRequisitionId Int
   stage            String   @default("applied") // applied | screening | interview | offer | hired | rejected
   status           String   @default("open") // open | closed
-  tenantId         Int?
+  tenantId         String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById      Int?
   appliedAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1338,7 +1549,7 @@ model PerformanceMetric {
   description String?
   category    String? // e.g. "Core", "Leadership"
   isActive    Boolean  @default(true)
-  tenantId    Int?
+  tenantId    String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1356,7 +1567,10 @@ model PerformanceReviewItem {
   review PerformanceReview @relation(fields: [reviewId], references: [id])
   metric PerformanceMetric @relation(fields: [metricId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([reviewId, metricId])
+  @@index([tenantId])
 }
 
 // ==================== ONBOARDING ENUMS ====================
@@ -1384,23 +1598,26 @@ enum SurveyType {
 // ==================== ONBOARDING MODELS ====================
 
 model OnboardingChecklist {
-  id          Int               @id @default(autoincrement())
+  id          Int              @id @default(autoincrement())
   employeeId  Int
   title       String
   startDate   DateTime
   targetDate  DateTime?
-  status      OnboardingStatus  @default(NOT_STARTED)
+  status      OnboardingStatus @default(NOT_STARTED)
   completedAt DateTime?
   notes       String?
-  created_at  DateTime          @default(now())
-  updated_at  DateTime          @updatedAt
+  created_at  DateTime         @default(now())
+  updated_at  DateTime         @updatedAt
 
-  employee  Employee              @relation(fields: [employeeId], references: [id])
+  employee  Employee             @relation(fields: [employeeId], references: [id])
   tasks     OnboardingTask[]
   documents OnboardingDocument[]
   surveys   OnboardingSurvey[]
   buddy     OnboardingBuddy?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("onboarding_checklists")
 }
 
@@ -1421,24 +1638,30 @@ model OnboardingTask {
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("onboarding_tasks")
 }
 
 model OnboardingDocument {
-  id            Int      @id @default(autoincrement())
+  id            Int       @id @default(autoincrement())
   checklistId   Int
   employeeId    Int
   title         String
   mediaId       Int
   category      String?
-  requiresSign  Boolean  @default(false)
+  requiresSign  Boolean   @default(false)
   signedAt      DateTime?
   signedByEmpId Int?
-  created_at    DateTime @default(now())
+  created_at    DateTime  @default(now())
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee            @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("onboarding_documents")
 }
 
@@ -1452,6 +1675,9 @@ model OnboardingBuddy {
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   buddy     Employee            @relation("BuddyRelation", fields: [buddyId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("onboarding_buddies")
 }
 
@@ -1467,7 +1693,10 @@ model OnboardingSurvey {
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee            @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([checklistId, type])
+  @@index([tenantId])
   @@map("onboarding_surveys")
 }
 
@@ -1515,6 +1744,9 @@ model Interview {
   interviewers InterviewInterviewer[]
   scorecards   InterviewScorecard[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("interviews")
 }
 
@@ -1525,12 +1757,15 @@ model InterviewInterviewer {
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   employee  Employee  @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([interviewId, employeeId])
+  @@index([tenantId])
   @@map("interview_interviewers")
 }
 
 model InterviewScorecard {
-  id             Int      @id @default(autoincrement())
+  id             Int       @id @default(autoincrement())
   interviewId    Int
   reviewerId     Int
   scores         Json
@@ -1543,32 +1778,40 @@ model InterviewScorecard {
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   reviewer  Employee  @relation("ScorecardReviewer", fields: [reviewerId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([interviewId, reviewerId])
+  @@index([tenantId])
   @@map("interview_scorecards")
 }
 
 model Offer {
-  id               Int         @id @default(autoincrement())
-  applicationId    Int         @unique
-  candidateId      Int
-  jobRequisitionId Int
-  salary           Float
-  currency         String      @default("USD")
-  startDate        DateTime?
-  expiryDate       DateTime?
-  status           OfferStatus @default(DRAFT)
+  id                 Int         @id @default(autoincrement())
+  applicationId      Int         @unique
+  candidateId        Int
+  jobRequisitionId   Int
+  // HR-01 / T-P4.2 — C4 offered salary encrypted at rest (was Float). Decrypted
+  // to a Number on read by the prisma C4 extension.
+  salary             String
+  currency           String      @default("USD")
+  startDate          DateTime?
+  expiryDate         DateTime?
+  status             OfferStatus @default(DRAFT)
   offerLetterMediaId Int?
-  notes            String?
-  sentAt           DateTime?
-  respondedAt      DateTime?
-  createdById      Int?
-  created_at       DateTime    @default(now())
-  updated_at       DateTime    @updatedAt
+  notes              String?
+  sentAt             DateTime?
+  respondedAt        DateTime?
+  createdById        Int?
+  created_at         DateTime    @default(now())
+  updated_at         DateTime    @updatedAt
 
   application    Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   candidate      Candidate      @relation(fields: [candidateId], references: [id])
   jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("offers")
 }
 
@@ -1582,7 +1825,10 @@ model TalentPool {
 
   candidate Candidate @relation(fields: [candidateId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([candidateId, poolName])
+  @@index([tenantId])
   @@map("talent_pools")
 }
 
@@ -1619,6 +1865,9 @@ model LearningPath {
   courses     LearningPathCourse[]
   enrollments LearningPathEnrollment[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("learning_paths")
 }
 
@@ -1631,7 +1880,10 @@ model LearningPathCourse {
   learningPath LearningPath   @relation(fields: [learningPathId], references: [id], onDelete: Cascade)
   course       TrainingCourse @relation(fields: [courseId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([learningPathId, courseId])
+  @@index([tenantId])
   @@map("learning_path_courses")
 }
 
@@ -1647,7 +1899,10 @@ model LearningPathEnrollment {
   learningPath LearningPath @relation(fields: [learningPathId], references: [id])
   employee     Employee     @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([learningPathId, employeeId])
+  @@index([tenantId])
   @@map("learning_path_enrollments")
 }
 
@@ -1670,6 +1925,9 @@ model TrainingSession {
   facilitator Employee?                 @relation("SessionFacilitator", fields: [facilitatorId], references: [id])
   attendees   TrainingSessionAttendee[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("training_sessions")
 }
 
@@ -1681,7 +1939,10 @@ model TrainingSessionAttendee {
   session  TrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   employee Employee        @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([sessionId, employeeId])
+  @@index([tenantId])
   @@map("training_session_attendees")
 }
 
@@ -1700,6 +1961,9 @@ model Certification {
   employee Employee        @relation(fields: [employeeId], references: [id])
   course   TrainingCourse? @relation(fields: [courseId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("certifications")
 }
 
@@ -1735,6 +1999,9 @@ model Skill {
 
   employeeSkills EmployeeSkill[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("skills")
 }
 
@@ -1750,7 +2017,10 @@ model EmployeeSkill {
   employee Employee @relation(fields: [employeeId], references: [id])
   skill    Skill    @relation(fields: [skillId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([employeeId, skillId])
+  @@index([tenantId])
   @@map("employee_skills")
 }
 
@@ -1767,7 +2037,10 @@ model EmployeeLifecycleEvent {
 
   employee Employee @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId, effectiveDate])
+  @@index([tenantId])
   @@map("employee_lifecycle_events")
 }
 
@@ -1781,9 +2054,12 @@ model OffboardingChecklist {
   created_at           DateTime          @default(now())
   updated_at           DateTime          @updatedAt
 
-  employee Employee         @relation(fields: [employeeId], references: [id])
+  employee Employee          @relation(fields: [employeeId], references: [id])
   tasks    OffboardingTask[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("offboarding_checklists")
 }
 
@@ -1798,9 +2074,12 @@ model OffboardingTask {
   completedAt  DateTime?
   created_at   DateTime         @default(now())
 
-  checklist   OffboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
-  assignee    Employee?            @relation(fields: [assigneeId], references: [id])
+  checklist OffboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  assignee  Employee?            @relation(fields: [assigneeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("offboarding_tasks")
 }
 
@@ -1828,20 +2107,37 @@ enum ReimbursementStatus {
   PAID
 }
 
+// HR-BENEFITS-04 — per-employee benefits (health / retirement / allowances).
+enum BenefitType {
+  HEALTH
+  RETIREMENT
+  ALLOWANCE
+  OTHER
+}
+
+enum EmployeeBenefitStatus {
+  ACTIVE
+  WAIVED
+  TERMINATED
+}
+
 // ==================== COMPLIANCE & IDP & REIMBURSEMENT MODELS ====================
 
 model ComplianceChecklist {
-  id            Int      @id @default(autoincrement())
-  name          String
-  description   String?
-  applicableTo  String?
-  refId         Int?
-  isActive      Boolean  @default(true)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id           Int      @id @default(autoincrement())
+  name         String
+  description  String?
+  applicableTo String?
+  refId        Int?
+  isActive     Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
   items ComplianceItem[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("compliance_checklists")
 }
 
@@ -1862,21 +2158,27 @@ model ComplianceItem {
   checklist ComplianceChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee?           @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("compliance_items")
 }
 
 model DocumentExpiryAlert {
-  id               Int      @id @default(autoincrement())
+  id               Int       @id @default(autoincrement())
   employeeMediaId  Int
   employeeId       Int
   alertDate        DateTime
   daysBeforeExpiry Int
-  notified         Boolean  @default(false)
+  notified         Boolean   @default(false)
   notifiedAt       DateTime?
-  created_at       DateTime @default(now())
+  created_at       DateTime  @default(now())
 
   employee Employee @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("document_expiry_alerts")
 }
 
@@ -1894,6 +2196,9 @@ model DevelopmentPlan {
   employee Employee              @relation(fields: [employeeId], references: [id])
   items    DevelopmentPlanItem[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("development_plans")
 }
 
@@ -1909,6 +2214,9 @@ model DevelopmentPlanItem {
 
   plan DevelopmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("development_plan_items")
 }
 
@@ -1932,7 +2240,94 @@ model ReimbursementClaim {
   employee   Employee  @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
   approvedBy Employee? @relation("ReimbursementApprover", fields: [approvedById], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("reimbursement_claims")
+}
+
+// HR-BENEFITS-04 — a benefit plan a tenant offers (health / retirement /
+// allowance / other). Money fields are carried as INTEGER MINOR UNITS (cents)
+// per src/lib/money.js — the API boundary converts to/from major units. Plans
+// are tenant-scoped (RBAC Company.uuid, verified service-JWT claim; fail-closed).
+model BenefitPlan {
+  id                        Int         @id @default(autoincrement())
+  tenantId                  String?     @db.Uuid
+  name                      String
+  type                      BenefitType
+  description               String?
+  // Stored in integer minor units (cents) — see src/lib/money.js.
+  employerContributionMinor Int?
+  employeeContributionMinor Int?
+  active                    Boolean     @default(true)
+  created_at                DateTime    @default(now())
+  updated_at                DateTime    @updatedAt
+
+  enrollments EmployeeBenefit[]
+
+  @@index([tenantId])
+  @@map("benefit_plans")
+}
+
+// HR-BENEFITS-04 — enrollment join between an Employee and a BenefitPlan.
+// electedAmount (employee-chosen contribution/allowance) is integer minor units.
+model EmployeeBenefit {
+  id                 Int                   @id @default(autoincrement())
+  tenantId           String?               @db.Uuid
+  employeeId         Int
+  benefitPlanId      Int
+  enrolledAt         DateTime              @default(now())
+  status             EmployeeBenefitStatus @default(ACTIVE)
+  electedAmountMinor Int?
+  created_at         DateTime              @default(now())
+  updated_at         DateTime              @updatedAt
+
+  employee    Employee    @relation("EmployeeBenefits", fields: [employeeId], references: [id])
+  benefitPlan BenefitPlan @relation(fields: [benefitPlanId], references: [id])
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([benefitPlanId])
+  @@map("employee_benefits")
+}
+
+// ==================== OUTBOX (A.4 · ARCH-01 §7–§8) ====================
+//
+// Transactional outbox for HR fabric events. A domain event (today
+// `hr.employee.lifecycle.v1`) is written into this table INSIDE the same
+// transaction as the source aggregate (Employee create/update/terminate), so
+// the event and the business write commit or roll back together — no lost or
+// phantom events. A separate claim/lease dispatcher (src/jobs/outbox.dispatcher
+// .js) drains unpublished rows and XADDs the persisted EventEnvelope to a Redis
+// stream. Mirrors erp-communication-backend's CommunicationOutbox shape.
+//
+// payload is the full @trusoft/contracts EventEnvelope (validate-before-write),
+// whose `.payload` is the HrEmployeeLifecycleV1 ids-only payload.
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  tenantId      String    @db.Uuid
+  eventName     String // e.g. 'hr.employee.lifecycle.v1'
+  aggregateType String // 'Employee'
+  aggregateId   String // stringified source row id
+  payload       Json // a conformant EventEnvelope
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
+
+  // Lease-based claim so multiple dispatcher replicas coordinate without an
+  // external lock service. A row is claimable when publishedAt IS NULL AND
+  // (claimedAt IS NULL OR claimExpiresAt < NOW()). claimedBy is a bounded,
+  // PII-free worker id.
+  claimedAt      DateTime?
+  claimedBy      String?
+  claimExpiresAt DateTime?
+
+  @@index([tenantId, publishedAt])
+  @@index([publishedAt, createdAt])
+  // Dispatcher candidate scan (free or expired claim).
+  @@index([publishedAt, claimExpiresAt, createdAt])
+  @@map("outbox_events")
 }
 
 // ==================== LEARNING PATH CATEGORY RELATION ====================

@@ -1,6 +1,13 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { attendanceRecordedEvent } from "./hrEvents.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field (on the data
+// object) / trailing param; folded into attendance reads and stamped on the
+// check-in create, fail-closed so tenant B can never read/mutate tenant A's
+// attendance records. Employee carries snake_case `tenant_id` (REQ-007).
 
 function parseCheckInInput({ date, check_in, timestamp }) {
   if (timestamp) {
@@ -36,16 +43,16 @@ function resolveStatus(checkInTs, providedStatus) {
 }
 
 export const createAttendanceService = async (data) => {
-  const { employeeId, date, check_in, status, timestamp } = data;
+  const { employeeId, date, check_in, status, timestamp, tenantId } = data;
 
   if (!employeeId) throw new Error("employeeId is required");
 
   const empId = Number(employeeId);
   if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
 
-  // ✅ Ensure employee exists
-  const employee = await prisma.employee.findUnique({
-    where: { id: empId },
+  // ✅ Ensure employee exists (tenant-scoped on snake_case tenant_id when present)
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: empId }),
   });
   if (!employee) throw new Error("Employee not found");
 
@@ -54,34 +61,48 @@ export const createAttendanceService = async (data) => {
   const computedStatus = resolveStatus(parsedCheckIn, status);
 
   const existing = await prisma.attendance.findFirst({
-    where: {
+    where: scopedWhere(tenantId, {
       employeeId: empId,
       date: {
         gte: start,
         lte: end,
       },
-    },
+    }),
     orderBy: { id: "desc" },
   });
 
-  const attendanceIn = existing
-    ? await prisma.attendance.update({
-      where: { id: existing.id },
-      data: {
-        check_in: existing.check_in
-          ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
-          : parsedCheckIn,
-        status: computedStatus,
-      },
-    })
-    : await prisma.attendance.create({
-      data: {
-        employeeId: empId,
-        date: start,
-        check_in: parsedCheckIn,
-        status: computedStatus,
-      },
-    });
+  // M1-HR: the attendance write + hr.attendance.recorded.v1 outbox event are
+  // atomic (outbox-on-write, validate-before-write). The event is ids-only +
+  // tenant-scoped; when the row carries no tenant the builder fails-closed and
+  // the write still succeeds (no event).
+  const attendanceIn = await prisma.$transaction(async (tx) => {
+    const row = existing
+      ? await tx.attendance.update({
+        where: { id: existing.id },
+        data: {
+          check_in: existing.check_in
+            ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
+            : parsedCheckIn,
+          status: computedStatus,
+        },
+      })
+      : await tx.attendance.create({
+        data: scopedData(tenantId, {
+          employeeId: empId,
+          date: start,
+          check_in: parsedCheckIn,
+          status: computedStatus,
+        }),
+      });
+
+    const event = attendanceRecordedEvent(
+      { id: row.id, employeeId: empId, action: 'checkin', at: parsedCheckIn.toISOString(), tenantId: row.tenantId ?? tenantId },
+      { actorId: data?.ctx?.actorId ?? empId, correlationId: data?.ctx?.correlationId }
+    );
+    if (event) await enqueueHrDomainEvent(tx, event);
+
+    return row;
+  });
 
    // Log the update action
     await logAction({
@@ -93,16 +114,16 @@ export const createAttendanceService = async (data) => {
     });
   return attendanceIn;
 };
-export const checkOutService = async (employeeId) => {
-  return checkOutServiceWithTimestamp(employeeId);
+export const checkOutService = async (employeeId, tenantId) => {
+  return checkOutServiceWithTimestamp(employeeId, undefined, tenantId);
 };
 
-export const checkOutServiceWithTimestamp = async (employeeId, timestamp) => {
+export const checkOutServiceWithTimestamp = async (employeeId, timestamp, tenantId) => {
   const empId = Number(employeeId);
   if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
 
   const attendance = await prisma.attendance.findFirst({
-    where: { employeeId: empId },
+    where: scopedWhere(tenantId, { employeeId: empId }),
     orderBy: { date: "desc" }
   });
 
@@ -115,9 +136,21 @@ export const checkOutServiceWithTimestamp = async (employeeId, timestamp) => {
   const totalHours =
     (checkOutTime - attendance.check_in) / (1000 * 60 * 60);
 
-  const checkOut=  await prisma.attendance.update({
-    where: { id: attendance.id },
-    data: { check_out: checkOutTime, total_hours: totalHours }
+  // M1-HR: the check-out write + hr.attendance.recorded.v1 (action=checkout)
+  // outbox event are atomic.
+  const checkOut = await prisma.$transaction(async (tx) => {
+    const row = await tx.attendance.update({
+      where: { id: attendance.id },
+      data: { check_out: checkOutTime, total_hours: totalHours }
+    });
+
+    const event = attendanceRecordedEvent(
+      { id: row.id, employeeId: empId, action: 'checkout', at: checkOutTime.toISOString(), tenantId: row.tenantId ?? tenantId },
+      { actorId: empId }
+    );
+    if (event) await enqueueHrDomainEvent(tx, event);
+
+    return row;
   });
 
   // Log the update action
@@ -131,14 +164,14 @@ export const checkOutServiceWithTimestamp = async (employeeId, timestamp) => {
   return checkOut;
 };
 
-export const getAttendanceByEmployee = async (employeeId) => {
+export const getAttendanceByEmployee = async (employeeId, tenantId) => {
   return prisma.attendance.findMany({
-    where: { employeeId },
+    where: scopedWhere(tenantId, { employeeId }),
     orderBy: { date: "desc" }
   });
 };
 
-export const listAttendanceRecords = async ({ date, limit = 100 } = {}) => {
+export const listAttendanceRecords = async ({ date, limit = 100, tenantId } = {}) => {
   const target = date ? new Date(date) : new Date();
   const start = new Date(target);
   start.setHours(0, 0, 0, 0);
@@ -146,12 +179,12 @@ export const listAttendanceRecords = async ({ date, limit = 100 } = {}) => {
   end.setDate(end.getDate() + 1);
 
   return prisma.attendance.findMany({
-    where: {
+    where: scopedWhere(tenantId, {
       date: {
         gte: start,
         lt: end,
       },
-    },
+    }),
     include: {
       employee: {
         select: {

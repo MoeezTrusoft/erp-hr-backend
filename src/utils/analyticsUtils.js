@@ -276,6 +276,18 @@ export const generateDepartmentAlerts = (metrics) => {
 };
 
 /**
+ * IC-15 / D-12 — the department→position naming pass renamed the
+ * analyticsService call sites to `generatePositionAlerts` but the util kept
+ * the legacy `generateDepartmentAlerts` name, so the overview dashboard threw
+ * "utils.generatePositionAlerts is not a function". The alert logic is
+ * position/department-agnostic (it only reads turnover/absenteeism/performance
+ * metrics), so the new canonical name is a thin alias of the legacy one. The
+ * legacy export is retained for existing callers/tests.
+ * @see generateDepartmentAlerts
+ */
+export const generatePositionAlerts = generateDepartmentAlerts;
+
+/**
  * Identify recruitment pipeline bottlenecks
  * @param {Object} conversionRates - Conversion rates between stages
  * @returns {string[]} Array of bottleneck descriptions
@@ -479,6 +491,271 @@ export const formatPercentage = (value, decimals = 2) => {
     return `${(value * 100).toFixed(decimals)}%`;
 };
 
+/**
+ * HR-KPI-07 — KPI target/threshold configuration.
+ *
+ * Default targets used to flag a KPI as out-of-range. Only the comparison
+ * (computation + exposure) lives here; actual alert *delivery* (email/SMS) is a
+ * separate notification concern (out of scope for this task).
+ *
+ * `direction` describes which side of the threshold is bad:
+ *   - 'max'  → value ABOVE target is bad (e.g. time-to-fill, turnover).
+ *   - 'min'  → value BELOW target is bad (e.g. completion %, accuracy %).
+ *
+ * Values are derived from the thresholds already encoded in
+ * generateDepartmentAlerts (15% turnover, 5% absenteeism, 60-day recruitment,
+ * 3.0 performance) so the two stay consistent.
+ */
+export const KPI_TARGETS = {
+    timeToFillDays: { target: 60, direction: 'max', unit: 'days' },
+    turnoverRate: { target: 15, direction: 'max', unit: 'percent' },
+    absenteeismRate: { target: 5, direction: 'max', unit: 'percent' },
+    appraisalCompletionRate: { target: 90, direction: 'min', unit: 'percent' },
+    appraisalOnTimeRate: { target: 90, direction: 'min', unit: 'percent' },
+    payrollAccuracyRate: { target: 99, direction: 'min', unit: 'percent' },
+    payrollOnTimeRate: { target: 95, direction: 'min', unit: 'percent' },
+    offerAcceptanceRate: { target: 80, direction: 'min', unit: 'percent' },
+};
+
+/**
+ * HR-KPI-07 — evaluate a single KPI value against a configured target.
+ * Returns a breach descriptor when out of range, otherwise null. Never throws
+ * on null/undefined input (returns null so missing data is not a false breach).
+ *
+ * @param {string} kpiKey - key in KPI_TARGETS
+ * @param {number|null} value - computed KPI value
+ * @param {Object} [targets=KPI_TARGETS] - target config (injectable for tests)
+ * @returns {Object|null}
+ */
+export const evaluateKpiTarget = (kpiKey, value, targets = KPI_TARGETS) => {
+    const cfg = targets[kpiKey];
+    if (!cfg || value === null || value === undefined || Number.isNaN(value)) {
+        return null;
+    }
+
+    const breached = cfg.direction === 'max'
+        ? value > cfg.target
+        : value < cfg.target;
+
+    if (!breached) return null;
+
+    return {
+        kpi: kpiKey,
+        value,
+        target: cfg.target,
+        direction: cfg.direction,
+        unit: cfg.unit,
+        severity: 'WARNING',
+        message: cfg.direction === 'max'
+            ? `${kpiKey} (${value}) exceeds target of ${cfg.target} ${cfg.unit}`
+            : `${kpiKey} (${value}) is below target of ${cfg.target} ${cfg.unit}`,
+    };
+};
+
+/**
+ * HR-KPI-07 — evaluate a whole KPI object against the configured targets and
+ * return only the breached ones. Keys not present in the targets map are
+ * ignored. Pure function — safe to unit test without DB.
+ *
+ * @param {Object} kpis - { kpiKey: value }
+ * @param {Object} [targets=KPI_TARGETS]
+ * @returns {Object[]} breach descriptors
+ */
+export const evaluateKpiTargets = (kpis = {}, targets = KPI_TARGETS) => {
+    const breaches = [];
+    for (const key of Object.keys(targets)) {
+        if (Object.prototype.hasOwnProperty.call(kpis, key)) {
+            const breach = evaluateKpiTarget(key, kpis[key], targets);
+            if (breach) breaches.push(breach);
+        }
+    }
+    return breaches;
+};
+
+/**
+ * HR-KPI-04 — Time to Fill.
+ * Computes the number of days between when a requisition was approved and when
+ * its offer was accepted, for every filled requisition, then aggregates.
+ *
+ * Each input row must already carry resolved Date (or ISO) anchors:
+ *   { approvedAt, acceptedAt, category }
+ * Rows missing either anchor, or with acceptedAt < approvedAt, are skipped
+ * (guard) so a half-entered requisition never poisons the average.
+ *
+ * @param {Object[]} rows - filled-requisition anchors
+ * @returns {Object} { avgDays, medianDays, count, byCategory, samples }
+ */
+export const computeTimeToFill = (rows = []) => {
+    const samples = [];
+
+    for (const row of rows) {
+        if (!row || !row.approvedAt || !row.acceptedAt) continue;
+        const approved = new Date(row.approvedAt).getTime();
+        const accepted = new Date(row.acceptedAt).getTime();
+        if (Number.isNaN(approved) || Number.isNaN(accepted)) continue;
+        if (accepted < approved) continue; // guard: cannot be filled before approval
+
+        const days = (accepted - approved) / (1000 * 60 * 60 * 24);
+        samples.push({ category: row.category || 'Uncategorized', days });
+    }
+
+    const allDays = samples.map(s => s.days);
+
+    // Aggregate per category
+    const byCategoryMap = samples.reduce((acc, s) => {
+        if (!acc[s.category]) acc[s.category] = [];
+        acc[s.category].push(s.days);
+        return acc;
+    }, {});
+
+    const byCategory = Object.entries(byCategoryMap).map(([category, days]) => ({
+        category,
+        avgDays: parseFloat(calculateAverage(days).toFixed(2)),
+        medianDays: parseFloat(calculateMedian(days).toFixed(2)),
+        count: days.length,
+    }));
+
+    return {
+        avgDays: allDays.length > 0 ? parseFloat(calculateAverage(allDays).toFixed(2)) : null,
+        medianDays: allDays.length > 0 ? parseFloat(calculateMedian(allDays).toFixed(2)) : null,
+        count: allDays.length,
+        byCategory,
+    };
+};
+
+/**
+ * HR-KPI-05 — Appraisal completion (and on-time completion) %.
+ * Given the review rows of a cycle, computes the share that reached FINALIZED
+ * and the share finalized on-or-before the cycle end (on-time).
+ *
+ * @param {Object[]} reviews - [{ status, submittedAt }]
+ * @param {Date|string|null} cycleEnd - cycle end date for the on-time test
+ * @returns {Object} { total, finalized, completionRate, onTime, onTimeRate }
+ */
+export const computeAppraisalCompletion = (reviews = [], cycleEnd = null) => {
+    const total = reviews.length;
+    if (total === 0) {
+        return { total: 0, finalized: 0, completionRate: 0, onTime: 0, onTimeRate: 0 };
+    }
+
+    const finalizedReviews = reviews.filter(r => r && r.status === 'FINALIZED');
+    const finalized = finalizedReviews.length;
+
+    const end = cycleEnd ? new Date(cycleEnd).getTime() : null;
+    const onTime = (end === null || Number.isNaN(end))
+        ? 0
+        : finalizedReviews.filter(r => {
+            if (!r.submittedAt) return false;
+            const t = new Date(r.submittedAt).getTime();
+            return !Number.isNaN(t) && t <= end;
+        }).length;
+
+    return {
+        total,
+        finalized,
+        completionRate: parseFloat(((finalized / total) * 100).toFixed(2)),
+        onTime,
+        // on-time rate is measured against the whole cycle population, so an
+        // unfinalized or late review counts against the cycle.
+        onTimeRate: (end === null || Number.isNaN(end))
+            ? null
+            : parseFloat(((onTime / total) * 100).toFixed(2)),
+    };
+};
+
+/**
+ * HR-KPI-06 — Payroll accuracy + on-time rate per set of runs.
+ *
+ * accuracy: a run is "accurate" when it completed its lifecycle without
+ *   failing — i.e. it is NOT in FAILED status. CANCELLED runs are excluded from
+ *   the denominator entirely (deliberately voided, not an accuracy event).
+ * on-time: a successfully-finalised run is on-time when it was finalised within
+ *   `graceDays` after its periodEnd. Runs without a finalize timestamp are not
+ *   counted as on-time.
+ *
+ * Finalize timestamp precedence: explicit finalizedAt → approvedAt → processedAt
+ * → updated_at (FINALIZED runs lock on the finalize write, so updated_at is the
+ * finalize moment in the current schema).
+ *
+ * @param {Object[]} runs - PayrollRun-shaped rows
+ * @param {number} [graceDays=5]
+ * @returns {Object}
+ */
+export const computePayrollKpis = (runs = [], graceDays = 5) => {
+    // Accuracy denominator excludes deliberately-cancelled runs.
+    const scored = runs.filter(r => r && r.status !== 'CANCELLED');
+    const total = scored.length;
+
+    if (total === 0) {
+        return {
+            totalRuns: 0,
+            failedRuns: 0,
+            accuracyRate: null,
+            finalizedRuns: 0,
+            onTimeRuns: 0,
+            onTimeRate: null,
+        };
+    }
+
+    const failedRuns = scored.filter(r => r.status === 'FAILED').length;
+    const accuracyRate = parseFloat((((total - failedRuns) / total) * 100).toFixed(2));
+
+    const finalizedRuns = scored.filter(r => r.status === 'FINALIZED');
+    const graceMs = graceDays * 24 * 60 * 60 * 1000;
+
+    const onTimeRuns = finalizedRuns.filter(r => {
+        const finalizeTs = r.finalizedAt ?? r.approvedAt ?? r.processedAt ?? r.updated_at;
+        if (!finalizeTs || !r.periodEnd) return false;
+        const finalized = new Date(finalizeTs).getTime();
+        const due = new Date(r.periodEnd).getTime() + graceMs;
+        return !Number.isNaN(finalized) && !Number.isNaN(due) && finalized <= due;
+    }).length;
+
+    return {
+        totalRuns: total,
+        failedRuns,
+        accuracyRate,
+        finalizedRuns: finalizedRuns.length,
+        onTimeRuns,
+        onTimeRate: finalizedRuns.length > 0
+            ? parseFloat(((onTimeRuns / finalizedRuns.length) * 100).toFixed(2))
+            : null,
+    };
+};
+
+/**
+ * HR-REC-09 — Recruitment funnel KPIs from application-stage counts.
+ * Wraps calculateRecruitmentConversionRates and adds the explicit
+ * offer-acceptance rate (HR-KPI-03) so the funnel exposes every stage
+ * transition the spec names.
+ *
+ * @param {Object} stageCounts - { applied, screened, interviewed, offered, accepted, hired }
+ * @returns {Object} funnel + conversions + offerAcceptanceRate
+ */
+export const computeRecruitmentFunnel = (stageCounts = {}) => {
+    const counts = {
+        applied: stageCounts.applied || 0,
+        screened: stageCounts.screened || 0,
+        interviewed: stageCounts.interviewed || 0,
+        offered: stageCounts.offered || 0,
+        accepted: stageCounts.accepted || 0,
+        hired: stageCounts.hired || 0,
+    };
+
+    const conversions = calculateRecruitmentConversionRates(counts);
+
+    // HR-KPI-03 — offer acceptance: accepted offers / total offers extended.
+    const offerAcceptanceRate = counts.offered > 0
+        ? parseFloat(((counts.accepted / counts.offered) * 100).toFixed(2))
+        : null;
+
+    return {
+        funnel: counts,
+        conversions,
+        offerAcceptanceRate,
+    };
+};
+
 export default {
     applyDataScope,
     calculateDateRange,
@@ -490,6 +767,7 @@ export default {
     calculateTurnoverRate,
     calculateAbsenteeismRate,
     generateDepartmentAlerts,
+    generatePositionAlerts,
     identifyRecruitmentBottlenecks,
     calculateRecruitmentConversionRates,
     formatCurrency,
@@ -499,5 +777,12 @@ export default {
     calculateAverage,
     calculateStandardDeviation,
     analyzeTrend,
-    formatPercentage
+    formatPercentage,
+    KPI_TARGETS,
+    evaluateKpiTarget,
+    evaluateKpiTargets,
+    computeTimeToFill,
+    computeAppraisalCompletion,
+    computePayrollKpis,
+    computeRecruitmentFunnel
 };

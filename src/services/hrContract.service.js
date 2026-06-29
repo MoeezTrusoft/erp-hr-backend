@@ -1,7 +1,12 @@
 import prisma from "../config/prisma.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
+import {
+  enqueueEmployeeLifecycle,
+  mapEmployeeToLifecycleInput,
+} from "./employeeOutbox.service.js";
 import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js";
+import { scopedEmployeeWhere, scopedWhere } from "../lib/tenancy.js";
 import {
   createEmployeeContractSchema,
   createEmployeeDocumentSchema,
@@ -594,7 +599,12 @@ export const saveDashboardLayout = async (employeeId, layout) => {
   return dashboardLayout;
 };
 
-export const listEmployees = async (query) => {
+// BLOCKER-1 / C.2 — the verified tenant (req.user.tenantId → tenantId param) is
+// folded into the where via scopedEmployeeWhere so the directory NEVER returns
+// another tenant's (or null-tenant) employees. Employee carries the snake_case
+// `tenant_id` column (REQ-007). `undefined` keeps the legacy unscoped path for
+// back-compat; a present value (incl. null) is fail-closed.
+export const listEmployees = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "created_at" });
   const filters = {
     status: query.status || null,
@@ -604,6 +614,7 @@ export const listEmployees = async (query) => {
 
   const where = {
     AND: [
+      scopedEmployeeWhere(tenantId, {}),
       list.q
         ? {
             OR: [
@@ -647,9 +658,9 @@ export const listEmployees = async (query) => {
   });
 };
 
-export const getEmployeeQuickView = async (id) => {
-  const employee = await prisma.employee.findUnique({
-    where: { id: Number(id) },
+export const getEmployeeQuickView = async (id, tenantId) => {
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(id) }),
     select: {
       ...compactEmployeeSelect,
       emergencyContact: { take: 2 },
@@ -673,7 +684,45 @@ export const getEmployeeQuickView = async (id) => {
   };
 };
 
-export const createEmployee = async (payload, actorId) => {
+// A.4 / ARCH-01 §7–§8 — emit hr.employee.lifecycle.v1 into the outbox INSIDE the
+// aggregate tx so the Employee row and its lifecycle event commit or roll back
+// together. Mirrors src/services/hr.service.js::emitEmployeeLifecycle so the
+// MCP contract path and the REST path share ONE envelope/outbox shape. ctx
+// carries the request correlationId (A.5) + acting principal so the event is
+// traceable end-to-end. Fail-soft (no OutboxEvent model on the client) and
+// fail-closed (no tenant) are both handled by the shared helpers; a CONTRACT
+// failure throws and rolls back the surrounding tx so a bad event never escapes.
+const emitEmployeeLifecycle = async (tx, employee, phase, ctx = {}, extra = {}) => {
+  if (!employee) return null;
+  const input = mapEmployeeToLifecycleInput(employee, phase, extra);
+  // Skip emission when the tenant is unknown (fail-closed): an event with no
+  // tenant cannot be contract-valid and must not break the aggregate write.
+  if (!input.tenantId) return null;
+  return enqueueEmployeeLifecycle(tx, {
+    ...input,
+    aggregateId: employee.id,
+    actorId: ctx.actorId ?? extra.actorId,
+    correlationId: ctx.correlationId,
+  });
+};
+
+// Columns the in-tx lifecycle mapper needs to build a contract-valid event from
+// the freshly-created row (tenant, identity, org unit, code, effective date).
+const lifecycleSourceSelect = {
+  id: true,
+  tenant_id: true,
+  employee_code: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  work_email: true,
+  businessUnitId: true,
+  positionId: true,
+  status: true,
+  hire_date: true,
+};
+
+export const createEmployee = async (payload, actorId, ctx = {}) => {
   const data = createEmployeeContractSchema.parse(normalizeContractPayload(payload));
   await assertEmployeeReferences(data);
   const profilePhoto = data.profilePhotoMediaId
@@ -682,17 +731,31 @@ export const createEmployee = async (payload, actorId) => {
   const coverPhoto = data.coverPhotoMediaId
     ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
     : null;
+  // T-P2.2/T-P2.6: tenant comes ONLY from the verified claim (ctx.tenantId,
+  // surfaced from the service-JWT tenant on req.user) — NEVER the request body.
+  // It is an opaque RBAC Company.uuid string; thread it verbatim, null → null
+  // (fail-closed). The persisted status defaults to the directory display value
+  // ("Active") when the caller supplies none, so the row matches the API.
+  const verifiedTenantId = ctx.tenantId != null ? ctx.tenantId : null;
+  const effectiveStatus = data.employmentStatus || "Active";
   const employeeData = {
     ...data,
+    employmentStatus: effectiveStatus,
     profilePhotoUrl: profilePhoto?.url,
     coverPhotoUrl: coverPhoto?.url,
   };
 
   const employee = await prisma.$transaction(async (tx) => {
+    const createData = employeeDataFromContract(employeeData, actorId);
+    createData.tenant_id = verifiedTenantId;
     const created = await tx.employee.create({
-      data: employeeDataFromContract(employeeData, actorId),
-      select: { id: true },
+      data: createData,
+      select: lifecycleSourceSelect,
     });
+
+    // A.4: enqueue exactly one hr.employee.lifecycle.v1 (phase=hired) in the SAME
+    // tx as the employee write, via the shared validate-before-write helper.
+    await emitEmployeeLifecycle(tx, created, "hired", { ...ctx, actorId: ctx.actorId ?? actorId });
 
     if (data.emergencyContacts.length > 0) {
       await tx.emergencyContacts.createMany({
@@ -794,9 +857,9 @@ export const updateEmployee = async (id, payload, actorId) => {
   return employeeContractProfile(employee);
 };
 
-export const getEmployeeProfile = async (id) => {
-  const employee = await prisma.employee.findUnique({
-    where: { id: Number(id) },
+export const getEmployeeProfile = async (id, tenantId) => {
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(id) }),
     select: employeeProfileSelect,
   });
 
@@ -805,7 +868,15 @@ export const getEmployeeProfile = async (id) => {
   return employeeContractProfile(employee);
 };
 
-export const getEmployeeDocuments = async (id) => {
+export const getEmployeeDocuments = async (id, tenantId) => {
+  // BLOCKER-1 / C.2 — EmployeeMedia has no tenant column; deny cross-tenant doc
+  // reads by construction by first asserting the parent employee is in-tenant.
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(id) }),
+    select: { id: true },
+  });
+  if (!employee) throw new Error("Employee not found");
+
   const documents = await prisma.employeeMedia.findMany({
     where: { employee_id: Number(id) },
     orderBy: { id: "desc" },
@@ -1039,7 +1110,7 @@ export const deleteEmployeeEmergencyContact = async (employeeId, contactId) => {
   return { id: Number(contactId), deleted: true };
 };
 
-export const listPositions = async (query) => {
+export const listPositions = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const filters = {
     status: query.status || null,
@@ -1048,6 +1119,7 @@ export const listPositions = async (query) => {
   };
   const where = {
     AND: [
+      scopedWhere(tenantId, {}),
       list.q ? { title: { contains: list.q, mode: "insensitive" } } : {},
       filters.status ? { isActive: filters.status.toLowerCase() === "active" } : {},
     ],
@@ -1168,7 +1240,7 @@ export const updatePositionStatus = async (id, isActive) => {
   return positionRow(position);
 };
 
-export const listRequisitions = async (query) => {
+export const listRequisitions = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const filters = {
     status: query.status || null,
@@ -1176,6 +1248,7 @@ export const listRequisitions = async (query) => {
   };
   const where = {
     AND: [
+      scopedWhere(tenantId, {}),
       list.q ? { title: { contains: list.q, mode: "insensitive" } } : {},
       filters.status ? { status: filters.status } : {},
       filters.positionId ? { positionId: filters.positionId } : {},

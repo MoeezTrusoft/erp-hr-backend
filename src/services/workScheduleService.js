@@ -1,11 +1,15 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args object /
+// trailing param; folded into work-schedule reads and stamped on creates,
+// fail-closed when present.
 
-export const getWorkSchedules = async ({ employeeId }) => {
+export const getWorkSchedules = async ({ employeeId, tenantId }) => {
     return await prisma.workSchedule.findMany({
-        where: { employeeId: parseInt(employeeId) },
+        where: scopedWhere(tenantId, { employeeId: parseInt(employeeId) }),
         include: {
             employee: {
                 select: {
@@ -20,11 +24,11 @@ export const getWorkSchedules = async ({ employeeId }) => {
 };
 
 export const createWorkSchedule = async (data) => {
-    const { employeeId, effective_start_date, effective_end_date, overtimeRuleId } = data;
+    const { employeeId, effective_start_date, effective_end_date, overtimeRuleId, tenantId } = data;
 
     // Check for overlapping schedules
     const overlappingSchedule = await prisma.workSchedule.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             OR: [
                 {
@@ -36,7 +40,7 @@ export const createWorkSchedule = async (data) => {
                     effective_end_date: null
                 }
             ]
-        }
+        })
     });
 
     if (overlappingSchedule) {
@@ -55,7 +59,7 @@ export const createWorkSchedule = async (data) => {
     }
 
     const create = await prisma.workSchedule.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             schedule_name: data.schedule_name,
             effective_start_date: new Date(effective_start_date),
@@ -63,7 +67,7 @@ export const createWorkSchedule = async (data) => {
             total_hours_per_week: data.total_hours_per_week,
             schedule_pattern: data.schedule_pattern,
             overtimeRuleId: overtimeRuleId ? parseInt(overtimeRuleId) : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -86,9 +90,9 @@ export const createWorkSchedule = async (data) => {
     return create;
 };
 
-export const updateWorkSchedule = async (id, data,updatedBy) => {
-    const schedule = await prisma.workSchedule.findUnique({
-        where: { id: parseInt(id) }
+export const updateWorkSchedule = async (id, data,updatedBy,tenantId) => {
+    const schedule = await prisma.workSchedule.findFirst({
+        where: scopedWhere(tenantId, { id: parseInt(id) })
     });
 
     if (!schedule) {
@@ -136,9 +140,9 @@ export const updateWorkSchedule = async (id, data,updatedBy) => {
     return update;
 };
 
-export const deleteWorkSchedule = async (id,deletedBy) => {
-    const schedule = await prisma.workSchedule.findUnique({
-        where: { id: parseInt(id) }
+export const deleteWorkSchedule = async (id,deletedBy,tenantId) => {
+    const schedule = await prisma.workSchedule.findFirst({
+        where: scopedWhere(tenantId, { id: parseInt(id) })
     });
 
     if (!schedule) {

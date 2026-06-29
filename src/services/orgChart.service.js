@@ -1,4 +1,10 @@
 import prisma from "../config/prisma.js";
+import { scopedEmployeeWhere } from "../lib/tenancy.js";
+
+// C.2-completion — verified tenant (T-P2.1) threaded via a trailing `tenantId`;
+// the org chart is built only from this tenant's employees (Employee carries the
+// tenant on the snake_case `tenant_id` column, REQ-007), fail-closed so one
+// tenant's chart never includes another tenant's people.
 
 function toNode(employee) {
   return {
@@ -11,8 +17,9 @@ function toNode(employee) {
   };
 }
 
-export const getOrgChart = async () => {
+export const getOrgChart = async (tenantId) => {
   const employees = await prisma.employee.findMany({
+    where: scopedEmployeeWhere(tenantId, {}),
     select: {
       id: true,
       first_name: true,
@@ -39,8 +46,8 @@ export const getOrgChart = async () => {
   return roots;
 };
 
-export const getOrgSubtree = async (employeeId) => {
-  const roots = await getOrgChart();
+export const getOrgSubtree = async (employeeId, tenantId) => {
+  const roots = await getOrgChart(tenantId);
   const targetId = Number(employeeId);
 
   const stack = [...roots];

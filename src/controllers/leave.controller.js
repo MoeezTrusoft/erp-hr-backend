@@ -1,6 +1,12 @@
 import * as leaveService from '../services/leave.service.js';
 import { createRequisitionController } from './requisition.controller.js';
 
+// C.2 / T-P2.2 — the verified tenant arrives on req.user.tenantId (set by
+// internalServiceGuard from the signed service-JWT claim; T-P2.1) — NEVER from
+// a request header. Threaded into the scoped leave service calls so tenant B
+// cannot read/mutate tenant A's leave rows.
+const tenantOf = (req) => req.user?.tenantId ?? null;
+
 export const getLeavePolicies = async (req, res) => {
   try {
     const policies = await leaveService.getLeavePolicies(req.query);
@@ -64,7 +70,8 @@ export const getLeaveRequests = async (req, res) => {
     // If user is not HR/Manager, only show their own requests
     const filters = req.user.role === 'EMPLOYEE'
       ? { ...req.query, employeeId: req.user.id }
-      : req.query;
+      : { ...req.query };
+    filters.tenantId = tenantOf(req);
 
     const requests = await leaveService.getLeaveRequests(filters);
     res.json({ success: true, data: requests });
@@ -75,7 +82,7 @@ export const getLeaveRequests = async (req, res) => {
 
 export const getLeaveRequestById = async (req, res) => {
   try {
-    const request = await leaveService.getLeaveRequestById(parseInt(req.params.id));
+    const request = await leaveService.getLeaveRequestById(parseInt(req.params.id), tenantOf(req));
     if (!request) {
       return res.status(404).json({ success: false, error: 'Leave request not found' });
     }
@@ -99,7 +106,7 @@ export const createLeaveRequest = async (req, res) => {
       ...req.body,
      // employeeId: req.user.id,
       createdById: employeeId
-    });
+    }, undefined, tenantOf(req));
     res.status(201).json({ success: true, data: request });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });

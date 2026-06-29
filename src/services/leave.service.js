@@ -1,5 +1,20 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { withTenant, tenantData } from "../lib/tenancy.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { leaveApprovedEvent, leaveRejectedEvent } from "./hrEvents.js";
+import { assertIfMatch } from "../lib/optimisticConcurrency.js";
+
+// C.2 / T-P2.2 / T-P2.6 — leave is a representative newly-scoped HR family. The
+// verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the controller
+// as `tenantId` and folded into the per-query predicate via withTenant. The
+// param is optional so legacy callers/tests keep working; when a tenant IS
+// supplied the read/write is fail-closed to that tenant — tenant B can never
+// read or mutate tenant A's leave request for the SAME id (resolves not-found).
+// `undefined` means "no tenant scoping requested" (legacy path); a present value
+// (incl. null) applies the fail-closed predicate.
+const scopedWhere = (tenantId, where) =>
+  tenantId === undefined ? where : withTenant(tenantId, where);
 
 // Helper Functions
 const calculateWorkingDays = async (employeeId, startDate, endDate) => {
@@ -360,11 +375,14 @@ export const getLeaveRequests = async (filters = {}) => {
     endDate,
     department,
     page = 1,
-    limit = 20
+    limit = 20,
+    tenantId
   } = filters;
 
-  const where = {};
   const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  // C.2: fold the verified tenant into the predicate (fail-closed when present).
+  const where = scopedWhere(tenantId, {});
 
   if (employeeId) {
     where.employeeId = parseInt(employeeId);
@@ -397,11 +415,10 @@ export const getLeaveRequests = async (filters = {}) => {
             first_name: true,
             last_name: true,
             job_title: true,
-            position: {
-              include: {
-                department: true
-              }
-            }
+            // C.2 bugfix: the Employee→Position relation is `Position` (schema
+            // l.246), not `position`; Position has no `department` relation, so
+            // a plain include is the correct, working read.
+            Position: true
           }
         },
         leavePolicy: true,
@@ -443,9 +460,12 @@ export const getLeaveRequests = async (filters = {}) => {
   };
 };
 
-export const getLeaveRequestById = async (id) => {
-  return await prisma.leaveRequest.findUnique({
-    where: { id },
+export const getLeaveRequestById = async (id, tenantId) => {
+  // C.2: when a tenant is supplied, scope by [id, tenantId] so a cross-tenant
+  // id resolves to not-found (null) — never another tenant's leave row. We use
+  // findFirst (findUnique cannot carry the non-unique tenantId predicate).
+  return await prisma.leaveRequest.findFirst({
+    where: scopedWhere(tenantId, { id }),
     include: {
       employee: {
         select: {
@@ -453,11 +473,10 @@ export const getLeaveRequestById = async (id) => {
           first_name: true,
           last_name: true,
           job_title: true,
-          position: {
-            include: {
-              department: true
-            }
-          }
+          // C.2 bugfix: the Employee→Position relation is `Position` (schema
+          // l.246), not `position`; Position has no `department` relation, so
+          // a plain include is the correct, working read.
+          Position: true
         }
       },
       leavePolicy: {
@@ -502,7 +521,7 @@ export const getLeaveRequestById = async (id) => {
   });
 };
 
-export const createLeaveRequest = async (data,createdById) => {
+export const createLeaveRequest = async (data,createdById, tenantId) => {
   const {
     employeeId,
     leavePolicyId,
@@ -579,7 +598,9 @@ export const createLeaveRequest = async (data,createdById) => {
   });
 
   const create = await prisma.leaveRequest.create({
-    data: {
+    // C.2: stamp the verified tenant on the new row (omitted → unchanged legacy
+    // behavior; present → fail-closed via tenantData).
+    data: (tenantId === undefined ? (d) => d : (d) => tenantData(tenantId, d))({
       employeeId: parseInt(employeeId),
       leavePolicyId: parseInt(leavePolicyId),
       startDate: start,
@@ -589,7 +610,7 @@ export const createLeaveRequest = async (data,createdById) => {
       notes,
       status: 'PENDING',
       createdById: parseInt(createdById)
-    },
+    }),
     include: {
       employee: {
         select: {
@@ -772,6 +793,10 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
 
 export const approveLeaveRequest = async (leaveRequestId, data,) => {
   const { approverId, approverRole, comments, createdById } = data;
+  // M1-HR fan-out: the acting context for the outbox event (A.5 correlation +
+  // acting principal). Threaded from the controller via `data.ctx`; absent in
+  // legacy/test callers (the builder/enqueue then fail-soft).
+  const ctx = data?.ctx || { actorId: createdById, correlationId: data?.correlationId };
 
   const leaveRequest = await prisma.leaveRequest.findUnique({
     where: { id: leaveRequestId },
@@ -794,6 +819,9 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
   if (!leaveRequest) {
     throw new Error('Leave request not found');
   }
+
+  // X-07 — If-Match / 412 optimistic concurrency (opt-in via data.ifMatch).
+  assertIfMatch(data?.ifMatch, leaveRequest);
 
   if (leaveRequest.status !== 'PENDING') {
     throw new Error('Leave request is not pending approval');
@@ -856,30 +884,47 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
     await createLeaveAttendanceRecords(leaveRequest);
   }
 
-  const update = await prisma.leaveRequest.update({
-    where: { id: leaveRequestId },
-    data: { status: newStatus },
-    include: {
-      employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true,
-      approvals: {
-        include: {
-          approver: {
-            select: {
-              id: true,
-              first_name: true,
-              last_name: true
+  // M1-HR: the status flip and — on FINAL approval — the
+  // hr.leave.approved.v1 outbox event commit or roll back together (outbox-on-
+  // write, validate-before-write). The event is ids-only + tenant-scoped from
+  // the leave request's verified tenant; a non-conformant event throws and
+  // rolls back the status update (a bad event never escapes).
+  const update = await prisma.$transaction(async (tx) => {
+    const row = await tx.leaveRequest.update({
+      where: { id: leaveRequestId },
+      data: { status: newStatus },
+      include: {
+        employee: {
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true
+          }
+        },
+        leavePolicy: true,
+        approvals: {
+          include: {
+            approver: {
+              select: {
+                id: true,
+                first_name: true,
+                last_name: true
+              }
             }
           }
         }
       }
+    });
+
+    if (newStatus === 'APPROVED') {
+      const event = leaveApprovedEvent(
+        { id: row.id, employeeId: row.employeeId, leavePolicyId: row.leavePolicyId, totalDays: leaveRequest.totalDays, tenantId: row.tenantId },
+        ctx
+      );
+      if (event) await enqueueHrDomainEvent(tx, event);
     }
+
+    return row;
   });
     await logAction({
       employeeId: Number(createdById),
@@ -894,6 +939,7 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
 
 export const rejectLeaveRequest = async (leaveRequestId, data) => {
   const { approverId, approverRole, comments, createdById } = data;
+  const ctx = data?.ctx || { actorId: createdById, correlationId: data?.correlationId };
 
   const leaveRequest = await prisma.leaveRequest.findUnique({
     where: { id: leaveRequestId }
@@ -920,30 +966,42 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
     }
   });
 
-  const update = await prisma.leaveRequest.update({
-    where: { id: leaveRequestId },
-    data: { status: 'REJECTED' },
-    include: {
-      employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true,
-      approvals: {
-        include: {
-          approver: {
-            select: {
-              id: true,
-              first_name: true,
-              last_name: true
+  // M1-HR: the status flip + hr.leave.rejected.v1 outbox event are atomic.
+  const update = await prisma.$transaction(async (tx) => {
+    const row = await tx.leaveRequest.update({
+      where: { id: leaveRequestId },
+      data: { status: 'REJECTED' },
+      include: {
+        employee: {
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true
+          }
+        },
+        leavePolicy: true,
+        approvals: {
+          include: {
+            approver: {
+              select: {
+                id: true,
+                first_name: true,
+                last_name: true
+              }
             }
           }
         }
       }
-    }
+    });
+
+    const event = leaveRejectedEvent(
+      { id: row.id, employeeId: row.employeeId, tenantId: row.tenantId },
+      ctx,
+      { reason: comments ?? null }
+    );
+    if (event) await enqueueHrDomainEvent(tx, event);
+
+    return row;
   });
   await logAction({
     employeeId: Number(createdById),
@@ -982,11 +1040,10 @@ export const getLeaveBalances = async (filters = {}) => {
           first_name: true,
           last_name: true,
           job_title: true,
-          position: {
-            include: {
-              department: true
-            }
-          }
+          // C.2 bugfix: the Employee→Position relation is `Position` (schema
+          // l.246), not `position`; Position has no `department` relation, so
+          // a plain include is the correct, working read.
+          Position: true
         }
       },
       leavePolicy: true,

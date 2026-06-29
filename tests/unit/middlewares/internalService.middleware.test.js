@@ -149,24 +149,29 @@ describe('internalServiceGuard — /api boundary', () => {
         });
     });
 
-    describe('accept: legacy X-Internal-Secret fallback is preserved', () => {
-        test('matching legacy secret falls through to 404 (gate passed)', async () => {
+    // Cutover 2026-06-23 (assured by scripts/assure-cutover.mjs): the legacy
+    // X-Internal-Secret ACCEPT path is REMOVED. service-JWT is the only accepted
+    // internal credential. These tests previously asserted legacy acceptance
+    // (404 gate-passed); they now assert it is rejected.
+    describe('cutover: legacy X-Internal-Secret accept path is removed', () => {
+        test('matching legacy secret is now REJECTED with 403 (service-JWT only)', async () => {
             const response = await request(createApp())
                 .get('/api/this-path-does-not-need-to-exist')
                 .set('x-internal-secret', FIXED_LEGACY_SECRET);
 
-            expect(response.status).toBe(404);
-            expect(response.status).not.toBe(403);
+            expect(response.status).toBe(403);
+            expect(response.body.message).toMatch(/direct service access/i);
         });
 
-        test('matching legacy secret still works when SERVICE_JWT_SECRET is unset', async () => {
+        test('legacy secret with SERVICE_JWT_SECRET unset fails CLOSED (500)', async () => {
             delete process.env.SERVICE_JWT_SECRET;
 
             const response = await request(createApp())
                 .get('/api/anything')
                 .set('x-internal-secret', FIXED_LEGACY_SECRET);
 
-            expect(response.status).toBe(404);
+            expect(response.status).toBe(500);
+            expect(response.body.message).toMatch(/not configured/i);
         });
     });
 
@@ -230,18 +235,16 @@ describe('internalServiceGuard — /api boundary', () => {
             ).toBe(0);
         });
 
-        test('increments source=legacy-secret,outcome=accept on a valid legacy secret', async () => {
+        test('legacy secret no longer increments legacy-secret/accept (path removed); request is rejected', async () => {
             const app = createApp();
-            await request(app)
+            const res = await request(app)
                 .get('/api/anything')
                 .set('x-internal-secret', FIXED_LEGACY_SECRET);
+            expect(res.status).toBe(403);
 
             const metricsBody = await request(app).get('/metrics');
             expect(
                 readMetricSample(metricsBody.text, 'legacy-secret', 'accept')
-            ).toBeGreaterThanOrEqual(1);
-            expect(
-                readMetricSample(metricsBody.text, 'service-jwt', 'accept')
             ).toBe(0);
         });
 

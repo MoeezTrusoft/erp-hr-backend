@@ -1,12 +1,17 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2-completion — verified tenant (T-P2.1) threaded in via `tenantId` (inside
+// the create `data`, or a trailing read/update/delete param); folded into
+// enrollment reads/writes fail-closed so tenant B never touches tenant A's data.
 
 export const enrollEmployee = async (data) => {
   if (!data.courseId || !data.employeeId)
     throw new Error("Course ID and Employee ID are required");
 
-  const create = await prisma.trainingEnrollment.create({ data });
+  const { tenantId, ...rest } = data;
+  const create = await prisma.trainingEnrollment.create({ data: scopedData(tenantId, rest) });
   await logAction({
     employeeId: 1,
     type: "Create", // 👈 changed from CREATE to UPDATE
@@ -18,24 +23,25 @@ export const enrollEmployee = async (data) => {
   return create;
 };
 
-export const getEnrollments = async () => {
+export const getEnrollments = async (tenantId) => {
   return prisma.trainingEnrollment.findMany({
+    where: scopedWhere(tenantId, {}),
     include: { course: true, employee: true },
     orderBy: { id: "desc" },
   });
 };
 
-export const getEnrollmentById = async (id) => {
-  const enrollment = await prisma.trainingEnrollment.findUnique({
-    where: { id: Number(id) },
+export const getEnrollmentById = async (id, tenantId) => {
+  const enrollment = await prisma.trainingEnrollment.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: { course: true, employee: true },
   });
   if (!enrollment) throw new Error("Enrollment not found");
   return enrollment;
 };
 
-export const updateEnrollment = async (id, data) => {
-  const existing = await prisma.trainingEnrollment.findUnique({where: {id: Number(id)}})
+export const updateEnrollment = async (id, data, tenantId) => {
+  const existing = await prisma.trainingEnrollment.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
   if(!existing) throw new Error(`Enrollment not Found ${id}`);
   
   const update = await prisma.trainingEnrollment.update({
@@ -54,8 +60,8 @@ export const updateEnrollment = async (id, data) => {
   return update
 };
 
-export const deleteEnrollment = async (id) => {
-  const existing = await prisma.trainingEnrollment.findUnique({where: {id: Number(id)}})
+export const deleteEnrollment = async (id, tenantId) => {
+  const existing = await prisma.trainingEnrollment.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
   if(!existing) throw new Error(`Enrollment not Fount ${id}`);
   
   const deleted= await prisma.trainingEnrollment.delete({ where: { id: Number(id) } });
@@ -71,13 +77,16 @@ export const deleteEnrollment = async (id) => {
 };
 
 
-export const updateEnrollmentProgress = async (id, { progress }) => {
+export const updateEnrollmentProgress = async (id, { progress }, tenantId) => {
   if (progress === undefined || progress === null)
     throw new Error("Progress value is required");
 
   const parsedProgress = Number(progress);
   if (Number.isNaN(parsedProgress))
     throw new Error("Progress must be a number");
+
+  const existing = await prisma.trainingEnrollment.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+  if (!existing) throw new Error(`Enrollment not Found ${id}`);
 
   // clamp
   const clamped = Math.max(0, Math.min(100, parsedProgress));
@@ -99,18 +108,18 @@ export const updateEnrollmentProgress = async (id, { progress }) => {
 
   // after updating enrollment, check if all enrollments for course are completed
   if (updated.courseId) {
-    await _maybeCompleteCourseIfAllEnrollmentsCompleted(updated.courseId);
+    await _maybeCompleteCourseIfAllEnrollmentsCompleted(updated.courseId, tenantId);
   }
 
   return updated;
 };
 
-const _maybeCompleteCourseIfAllEnrollmentsCompleted = async (courseId) => {
+const _maybeCompleteCourseIfAllEnrollmentsCompleted = async (courseId, tenantId) => {
   // fetch counts
   const [total, completed] = await Promise.all([
-    prisma.trainingEnrollment.count({ where: { courseId: Number(courseId) } }),
+    prisma.trainingEnrollment.count({ where: scopedWhere(tenantId, { courseId: Number(courseId) }) }),
     prisma.trainingEnrollment.count({
-      where: { courseId: Number(courseId), status: "COMPLETED" },
+      where: scopedWhere(tenantId, { courseId: Number(courseId), status: "COMPLETED" }),
     }),
   ]);
 

@@ -1,5 +1,29 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import {
+  enqueueEmployeeLifecycle,
+  mapEmployeeToLifecycleInput,
+} from "./employeeOutbox.service.js";
+import { assertIfMatch } from "../lib/optimisticConcurrency.js";
+
+// A.4 — emit hr.employee.lifecycle.v1 into the outbox INSIDE the aggregate tx.
+// ctx carries the request correlationId (A.5) + acting principal so the event
+// is traceable end-to-end. Fail-soft is handled inside enqueueEmployeeLifecycle
+// (returns null when the OutboxEvent model is unavailable); a CONTRACT failure
+// throws and rolls back the surrounding tx so a bad event never escapes.
+async function emitEmployeeLifecycle(tx, employee, phase, ctx = {}, extra = {}) {
+  if (!employee) return null;
+  const input = mapEmployeeToLifecycleInput(employee, phase, extra);
+  // Skip emission when the tenant is unknown (fail-closed): an event with no
+  // tenant cannot be contract-valid and must not break the aggregate write.
+  if (!input.tenantId) return null;
+  return enqueueEmployeeLifecycle(tx, {
+    ...input,
+    aggregateId: employee.id,
+    actorId: ctx.actorId,
+    correlationId: ctx.correlationId,
+  });
+}
 
 
 // ✅ Create Employee
@@ -108,7 +132,7 @@ function calculateTenure(hireDate) {
   };
 }
 
-export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,createdBy) => {
+export const createEmployeeService = async (data, finalMediaId, finalMediaUrl, createdBy, ctx = {}) => {
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 
@@ -198,7 +222,9 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,cr
   const tenure = calculateTenure(hireDate);
   // ------------ Parse Incoming Data Properly --------------------
   const parsedData = {
-    tenant_id: data.tenant_id ? Number(data.tenant_id) : null,
+    // REQ-007: tenant_id is an opaque RBAC Company.uuid string — store it
+    // verbatim, never Number()/parseInt it. Absent → null (fail-closed).
+    tenant_id: data.tenant_id != null ? data.tenant_id : null,
     employee_media_id: finalMediaId,
     first_name: data.first_name || null,
     middle_name: data.middle_name || null,
@@ -256,9 +282,15 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,cr
     createdById: Number(createdBy) || null,
   };
 
-  // ------------ Create Employee -------------------------------
-  const employee = await prisma.employee.create({
-    data: parsedData,
+  // ------------ Create Employee (+ lifecycle event in the SAME tx) --------
+  // A.4: the Employee row and its hr.employee.lifecycle.v1 (phase=hired) event
+  // commit or roll back together. The C4 encryption $extends and payroll engine
+  // are untouched — we still write through the same singleton client, just
+  // wrapped in an interactive transaction so the outbox row is atomic with it.
+  const employee = await prisma.$transaction(async (tx) => {
+    const created = await tx.employee.create({ data: parsedData });
+    await emitEmployeeLifecycle(tx, created, "hired", ctx);
+    return created;
   });
 
   // ------------ Log Action -------------------------------------
@@ -414,12 +446,18 @@ export const createEmployeeMediaRecordService = async ({
 
 
 // ✅ Update Employee
-export const updateEmployeeService = async (id, data, updatedBy) => {
+export const updateEmployeeService = async (id, data, updatedBy, ctx = {}) => {
   const exists = await prisma.employee.findUnique({
     where: { id: Number(id) },
   });
 
   if (!exists) throw new Error("Employee not found");
+
+  // X-07 / ARCH-01 §3.4 — If-Match / 412 optimistic concurrency. Opt-in: when
+  // the caller supplies ctx.ifMatch (the request If-Match header), reject the
+  // write with 412 if the employee row was modified by another writer since the
+  // caller read it. No precondition ⇒ no-op (back-compat).
+  assertIfMatch(ctx.ifMatch, exists);
 
   if (data.positionId) {
     const pos = await prisma.position.findUnique({
@@ -428,14 +466,20 @@ export const updateEmployeeService = async (id, data, updatedBy) => {
     if (!pos) throw new Error(`Position ID ${data.positionId} does not exist`);
   }
 
-  const updated = await prisma.employee.update({
-    where: { id: Number(id) },
-    data: {
-      ...data,
-      hire_date: data.hire_date ? new Date(data.hire_date) : exists.hire_date,
-      updatedById: Number(updatedBy),
-      positionId: data.positionId ? Number(data.positionId) : exists.positionId,
-    },
+  // A.4: the update and its hr.employee.lifecycle.v1 (phase=transferred) event
+  // commit or roll back together.
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.employee.update({
+      where: { id: Number(id) },
+      data: {
+        ...data,
+        hire_date: data.hire_date ? new Date(data.hire_date) : exists.hire_date,
+        updatedById: Number(updatedBy),
+        positionId: data.positionId ? Number(data.positionId) : exists.positionId,
+      },
+    });
+    await emitEmployeeLifecycle(tx, row, "transferred", ctx);
+    return row;
   });
 
   await logAction({
@@ -449,19 +493,26 @@ export const updateEmployeeService = async (id, data, updatedBy) => {
   return updated;
 };
 
-// ✅ Delete Employee
-export const deleteEmployeeService = async (id, deletedBy) => {
+// ✅ Delete Employee (terminate)
+export const deleteEmployeeService = async (id, deletedBy, ctx = {}) => {
   const exists = await prisma.employee.findUnique({
     where: { id: Number(id) },
   });
 
   if (!exists) throw new Error("Employee not found");
 
-  // Clean dependent data
-  await prisma.attendance.deleteMany({ where: { employeeId: Number(id) } });
-  await prisma.leave.deleteMany({ where: { employeeId: Number(id) } });
-
-  await prisma.employee.delete({ where: { id: Number(id) } });
+  // A.4: emit hr.employee.lifecycle.v1 (phase=terminated) BEFORE the row is
+  // deleted (the mapper needs the still-present employee), all in ONE tx so the
+  // event and the deletion are atomic.
+  await prisma.$transaction(async (tx) => {
+    await emitEmployeeLifecycle(tx, exists, "terminated", ctx, {
+      terminationCause: ctx.terminationCause,
+    });
+    // Clean dependent data
+    await tx.attendance.deleteMany({ where: { employeeId: Number(id) } });
+    await tx.leave.deleteMany({ where: { employeeId: Number(id) } });
+    await tx.employee.delete({ where: { id: Number(id) } });
+  });
 
   await logAction({
     employeeId: Number(deletedBy),

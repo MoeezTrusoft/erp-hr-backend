@@ -1,0 +1,32 @@
+{
+  "employeeId": 4242,
+  "ruleVersion": "v1:9bb5666cbc30dfa6",
+  "ratesEffectiveAt": "2026-06-30T00:00:00.000Z",
+  "grossAmount": 7197.53,
+  "totalDeductions": 1139.51,
+  "netAmount": 6058.02,
+  "earnings": [
+    {
+      "earningTypeId": null,
+      "amount": 6543.21,
+      "description": "Base salary for 2026-06-01 to 2026-06-30"
+    },
+    {
+      "earningTypeId": 11,
+      "amount": 654.32,
+      "description": "Housing Allowance"
+    }
+  ],
+  "deductions": [
+    {
+      "deductionTypeId": 21,
+      "amount": 200,
+      "description": "Health Insurance"
+    },
+    {
+      "deductionTypeId": null,
+      "amount": 939.51,
+      "description": "Income Tax"
+    }
+  ]
+}

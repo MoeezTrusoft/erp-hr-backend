@@ -1,4 +1,5 @@
 import { uploadFileToDAM, damRequest } from "../services/dam.rbac.department.js";
+import { forwardCorrelationHeader } from "../middlewares/correlationId.middleware.js";
 import {
   createEmployeeService,
   getAllEmployeesService,
@@ -18,8 +19,12 @@ export const createEmployee = async (req, res) => {
     let mediaRecord = null;
     const mediaId = req.body.mediaId;
 
+    // A.5: forward x-correlation-id on the outbound DAM call so the chain is
+    // unbroken across the service boundary.
+    const damHeaders = forwardCorrelationHeader(req);
+
     if (mediaId) {
-      mediaRecord = await damRequest(`assets/${mediaId}`, "GET");
+      mediaRecord = await damRequest(`assets/${mediaId}`, "GET", {}, damHeaders);
     }
 
 
@@ -48,7 +53,14 @@ export const createEmployee = async (req, res) => {
       null;
 
 
-    const newEmployee = await createEmployeeService(req.body, finalMediaId, finalMediaUrl, createdBy);
+    // A.5/A.4: thread the request correlationId + acting principal so the
+    // emitted hr.employee.lifecycle.v1 envelope is traceable end-to-end.
+    const ctx = {
+      correlationId: req.correlationId,
+      actorId: req.user?.userId ?? createdBy ?? null,
+    };
+
+    const newEmployee = await createEmployeeService(req.body, finalMediaId, finalMediaUrl, createdBy, ctx);
 
     return res.status(201).json({
       success: true,
@@ -212,15 +224,25 @@ export const getEmployeeById = async (req, res) => {
 export const updateEmployee = async (req, res) => {
   try {
     const updatedBy = req.headers["employee-id"];
+    const ctx = {
+      correlationId: req.correlationId,
+      actorId: req.user?.userId ?? updatedBy ?? null,
+      // X-07 — If-Match / 412 optimistic concurrency (opt-in). The header value
+      // (if any) is threaded to the service which rejects a stale write.
+      ifMatch: req.headers["if-match"] ?? null,
+    };
     const updatedEmployee = await updateEmployeeService(
       req.params.id,
       req.body,
-      updatedBy
+      updatedBy,
+      ctx
     );
 
     return res.status(200).json({ success: true, data: updatedEmployee });
   } catch (error) {
-    return res.status(400).json({ success: false, message: error.message });
+    // Honor an explicit error.status (e.g. 412 PreconditionFailed); default 400.
+    const status = Number(error?.status) || 400;
+    return res.status(status).json({ success: false, message: error.message });
   }
 };
 
@@ -228,7 +250,12 @@ export const updateEmployee = async (req, res) => {
 export const deleteEmployee = async (req, res) => {
   try {
     const deletedBy = req.headers["employee-id"];
-    const result = await deleteEmployeeService(req.params.id, deletedBy);
+    const ctx = {
+      correlationId: req.correlationId,
+      actorId: req.user?.userId ?? deletedBy ?? null,
+      terminationCause: req.body?.terminationCause,
+    };
+    const result = await deleteEmployeeService(req.params.id, deletedBy, ctx);
 
     return res.status(200).json({
       success: true,

@@ -1,13 +1,16 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
+// into training-course reads and stamped on creates, fail-closed when present.
 
-export const createCourse = async (data) => {
+export const createCourse = async (data, tenantId) => {
   if (!data.title) throw new Error("Course title is required");
   if (!data.categoryId) throw new Error("Category ID is required");
 
-  const create = await prisma.trainingCourse.create({ data });
+  const create = await prisma.trainingCourse.create({ data: scopedData(tenantId, { ...data }) });
   await logAction({
     employeeId: 1,
     type: "Create",
@@ -19,8 +22,9 @@ export const createCourse = async (data) => {
   return create;
 };
 
-export const getAllCourses = async () => {
+export const getAllCourses = async (tenantId) => {
   return prisma.trainingCourse.findMany({
+    where: scopedWhere(tenantId, {}),
     include: {
       category: true,
       instructor: true,
@@ -33,9 +37,9 @@ export const getAllCourses = async () => {
   });
 };
 
-export const getCourseById = async (id) => {
-  const course = await prisma.trainingCourse.findUnique({
-    where: { id: Number(id) },
+export const getCourseById = async (id, tenantId) => {
+  const course = await prisma.trainingCourse.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       category: true,
       instructor: true,
@@ -49,7 +53,9 @@ export const getCourseById = async (id) => {
   return course;
 };
 
-export const updateCourse = async (id, data) => {
+export const updateCourse = async (id, data, tenantId) => {
+  const existing = await prisma.trainingCourse.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+  if (!existing) throw new Error("Course not found");
   const update = await prisma.trainingCourse.update({
     where: { id: Number(id) },
     data,
@@ -66,8 +72,8 @@ export const updateCourse = async (id, data) => {
   return update;
 };
 
-export const deleteCourse = async (id) => {
-  const existing = await prisma.trainingCourse.findUnique({ where: { id: Number(id) } });
+export const deleteCourse = async (id, tenantId) => {
+  const existing = await prisma.trainingCourse.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error(`Course not found Id${id}`);
 
   const deleted = await prisma.trainingCourse.delete({ where: { id: Number(id) } });
@@ -82,7 +88,9 @@ export const deleteCourse = async (id) => {
   return deleted;
 };
 
-export const uploadCourseMaterial = async (id, file) => {
+export const uploadCourseMaterial = async (id, file, tenantId) => {
+  const existing = await prisma.trainingCourse.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+  if (!existing) throw new Error("Course not found");
   const uploaded = await uploadFileToDAM(file, "document");
   if (!uploaded || !uploaded[0]) throw new Error("DAM upload failed");
 
@@ -92,16 +100,16 @@ export const uploadCourseMaterial = async (id, file) => {
   });
 };
 
-export const getUpcomingCourses = async ({ days = 30, limit = 50, offset = 0 } = {}) => {
+export const getUpcomingCourses = async ({ days = 30, limit = 50, offset = 0, tenantId } = {}) => {
   const now = new Date();
   const future = new Date();
   future.setDate(now.getDate() + Number(days));
 
   return prisma.trainingCourse.findMany({
-    where: {
+    where: scopedWhere(tenantId, {
       startDate: { gte: now, lte: future },
       status: "ACTIVE",
-    },
+    }),
     include: { category: true, instructor: true },
     orderBy: { startDate: "asc" },
     take: Number(limit),

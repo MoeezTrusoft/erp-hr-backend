@@ -2,13 +2,18 @@ import prisma from "../lib/prisma.js";
 import { checkOutServiceWithTimestamp, createAttendanceService } from "./attendance.service.js";
 import { syncAttendanceFromPunches } from "./attendance.device.service.js";
 import logger from "../lib/logger.js";
+import {
+  publishAttendanceEvent,
+  publishAttendanceStatus,
+  publishAttendanceHealth,
+  publishAttendanceBootstrap,
+} from "./attendanceRealtime.publisher.js";
 
 const realtimeLog = logger.child({ component: "attendance-realtime" });
 
 const MAX_RECENT_EVENTS = 300;
 
 const recentEvents = [];
-let socketServer = null;
 let healthInterval = null;
 const listenerState = {
   enabled: false,
@@ -37,16 +42,14 @@ function pushRecent(event) {
   }
 }
 
+// X-13: realtime is published onto the `hr:attendance` Redis stream (fail-soft,
+// no-op when no transport is bound) instead of a self-hosted socket.io server.
 function broadcast(event) {
-  if (socketServer) {
-    socketServer.emit("attendance:event", event);
-  }
+  publishAttendanceEvent(event);
 }
 
 function broadcastStatus() {
-  if (socketServer) {
-    socketServer.emit("attendance:status", getRealtimeListenerState());
-  }
+  publishAttendanceStatus(getRealtimeListenerState());
 }
 
 async function buildHealthSnapshot() {
@@ -269,9 +272,7 @@ export async function ingestBootstrapDeviceEvents(rawEvents = []) {
     pushRecent(event);
   }
 
-  if (socketServer) {
-    socketServer.emit("attendance:bootstrap", getRecentRealtimeEvents(25));
-  }
+  publishAttendanceBootstrap(getRecentRealtimeEvents(25));
 
   log("Bootstrap events ingested:", normalized.length);
   return normalized;
@@ -345,34 +346,32 @@ export async function getRealtimeBootstrapEvents(limit = 25) {
   }));
 }
 
-export function bindRealtimeSocketServer(io) {
-  socketServer = io;
-  log("Socket server bound for realtime attendance");
-
+// X-13: the self-hosted socket.io server is RETIRED. Realtime attendance is
+// projected onto the `hr:attendance` Redis stream and the gateway SSE spine is
+// the single delivery pipe to browsers. This periodic health beat replaces the
+// old per-socket health emit: it publishes a health snapshot onto the stream on
+// an interval so a freshly-connected SSE consumer sees liveness. Best-effort:
+// the publisher is fail-soft and the timer is unref'd so it never holds the
+// process open on its own.
+export function startRealtimeHealthBroadcast({ intervalMs = 15000 } = {}) {
   if (healthInterval) clearInterval(healthInterval);
   healthInterval = setInterval(async () => {
-    if (!socketServer) return;
     const health = await buildHealthSnapshot();
-    socketServer.emit("attendance:health", health);
-  }, 15000);
-
-  io.on("connection", async (socket) => {
-    log("Socket client connected:", socket.id);
-    socket.emit("attendance:status", getRealtimeListenerState());
-    socket.emit("attendance:health", await buildHealthSnapshot());
-    try {
-      const bootstrapEvents = await getRealtimeBootstrapEvents(25);
-      socket.emit("attendance:bootstrap", bootstrapEvents);
-      log("Bootstrap events sent:", bootstrapEvents.length);
-    } catch (err) {
-      log("Bootstrap load failed:", err?.message || err);
-      socket.emit("attendance:error", {
-        message: err?.message || "Failed to load bootstrap attendance data",
-      });
-    }
-
-    socket.on("disconnect", (reason) => {
-      log("Socket client disconnected:", socket.id, reason);
-    });
-  });
+    publishAttendanceHealth(health);
+  }, intervalMs);
+  if (healthInterval && typeof healthInterval.unref === "function") {
+    healthInterval.unref();
+  }
+  // Emit an initial status + bootstrap so a consumer attaching right after boot
+  // gets state without waiting a full interval.
+  publishAttendanceStatus(getRealtimeListenerState());
+  buildHealthSnapshot().then((health) => publishAttendanceHealth(health)).catch(() => {});
+  return {
+    stop() {
+      if (healthInterval) {
+        clearInterval(healthInterval);
+        healthInterval = null;
+      }
+    },
+  };
 }

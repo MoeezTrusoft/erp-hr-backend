@@ -6,6 +6,11 @@ import {
   deleteEmergencyContact
 } from "../services/emergencyContacts.service.js";
 
+// C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
+// scoped emergency-contact service so tenant B cannot read/mutate tenant A's
+// emergency contacts.
+const tenantOf = (req) => req.user?.tenantId;
+
 // ------------------------- CREATE -------------------------
 export const create = async (req, res) => {
   try {
@@ -20,7 +25,8 @@ export const create = async (req, res) => {
       phone: phone ? phone : null,
       email,
       is_primary: is_primary === "true" || is_primary === true,
-      employee_Id
+      employee_Id,
+      tenantId: tenantOf(req)
     };
 
     const result = await createEmergencyContact(createData, createdBy);
@@ -34,7 +40,7 @@ export const create = async (req, res) => {
 // ------------------------- GET ALL -------------------------
 export const getAll = async (req, res) => {
   try {
-    const result = await getAllEmergencyContacts();
+    const result = await getAllEmergencyContacts(tenantOf(req));
     res.status(200).json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -46,7 +52,7 @@ export const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await getEmergencyContactById(id);
+    const result = await getEmergencyContactById(id, tenantOf(req));
     if (!result) return res.status(404).json({ message: "Emergency contact not found" });
 
     res.status(200).json({ success: true, data: result });
@@ -71,7 +77,7 @@ export const update = async (req, res) => {
       is_primary: is_primary === "true" || is_primary === true,
     };
 
-    const result = await updateEmergencyContact(id, updateData,updatedBy);
+    const result = await updateEmergencyContact(id, updateData, updatedBy, tenantOf(req));
 
     res.status(200).json({ success: true,message: "Emergency Contact Updated successfully", data: result });
   } catch (err) {
@@ -85,7 +91,7 @@ export const remove = async (req, res) => {
     const deletedBy = req.headers["user-id"];
     const { id } = req.params;
 
-    const result = await deleteEmergencyContact(id,deletedBy);
+    const result = await deleteEmergencyContact(id, deletedBy, tenantOf(req));
 
     res.status(200).json({ success: true, message: "Deleted successfully", data: result });
   } catch (err) {

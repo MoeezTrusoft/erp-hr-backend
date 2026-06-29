@@ -1,8 +1,13 @@
 import prisma from "../config/prisma.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
-export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes }) => {
+// C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
+// object / trailing param; folded into reads and stamped on creates, fail-closed
+// so tenant B can never read/mutate tenant A's interviews/scorecards.
+
+export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes, tenantId }) => {
     return prisma.interview.create({
-        data: {
+        data: scopedData(tenantId, {
             applicationId: Number(applicationId),
             interviewType: interviewType || type || "PANEL",
             scheduledAt: new Date(scheduledAt),
@@ -10,9 +15,9 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
             location,
             notes,
             interviewers: interviewerIds?.length
-                ? { create: interviewerIds.map(id => ({ employeeId: Number(id) })) }
+                ? { create: interviewerIds.map(id => ({ employeeId: Number(id), ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
                 : undefined,
-        },
+        }),
         include: {
             interviewers: {
                 include: {
@@ -25,8 +30,8 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
     });
 };
 
-export const listInterviews = async ({ applicationId, page = 1, limit = 20 }) => {
-    const where = applicationId ? { applicationId: Number(applicationId) } : {};
+export const listInterviews = async ({ applicationId, page = 1, limit = 20, tenantId }) => {
+    const where = scopedWhere(tenantId, applicationId ? { applicationId: Number(applicationId) } : {});
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
         prisma.interview.findMany({
@@ -96,9 +101,13 @@ const averageRating = (ratings = {}) => {
     return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
 };
 
-export const updateInterview = async (id, data = {}) => {
+export const updateInterview = async (id, data = {}, tenantId) => {
     const interviewId = Number(id);
     const { updateData, feedback, reviewerId } = normalizeInterviewUpdateData(data);
+
+    // Tenant-scoped pre-read so a cross-tenant id cannot be mutated (fail-closed).
+    const existingInterview = await prisma.interview.findFirst({ where: scopedWhere(tenantId, { id: interviewId }) });
+    if (!existingInterview) throw new Error("Interview not found");
 
     await prisma.interview.update({
         where: { id: interviewId },
@@ -132,37 +141,37 @@ export const updateInterview = async (id, data = {}) => {
             });
         } else {
             await prisma.interviewScorecard.create({
-                data: {
+                data: scopedData(tenantId, {
                     interviewId,
                     reviewerId: resolvedReviewerId,
                     ...scorePayload,
-                },
+                }),
             });
         }
     }
 
-    return prisma.interview.findUnique({
-        where: { id: interviewId },
+    return prisma.interview.findFirst({
+        where: scopedWhere(tenantId, { id: interviewId }),
         include: interviewInclude,
     });
 };
 
-export const submitScorecard = async ({ interviewId, reviewerId, scores, overallScore, recommendation, notes }) => {
+export const submitScorecard = async ({ interviewId, reviewerId, scores, overallScore, recommendation, notes, tenantId }) => {
     return prisma.interviewScorecard.create({
-        data: {
+        data: scopedData(tenantId, {
             interviewId: Number(interviewId),
             reviewerId: Number(reviewerId),
             scores: scores || {},
             overallScore: overallScore ? Number(overallScore) : null,
             recommendation,
             notes,
-        },
+        }),
     });
 };
 
-export const getScorecards = async (interviewId) => {
+export const getScorecards = async (interviewId, tenantId) => {
     return prisma.interviewScorecard.findMany({
-        where: { interviewId: Number(interviewId) },
+        where: scopedWhere(tenantId, { interviewId: Number(interviewId) }),
         include: { reviewer: { select: { id: true, employee_name: true, first_name: true, last_name: true } } },
     });
 };

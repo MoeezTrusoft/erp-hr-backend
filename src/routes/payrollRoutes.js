@@ -1,43 +1,65 @@
 import express from 'express';
 import * as payrollController from '../controllers/payrollController.js';
+import * as taxFormController from '../controllers/taxFormController.js';
+import { requirePermission } from '../middlewares/hrContext.middleware.js';
 
 
 const router = express.Router();
 
+// HR-03: deny-by-default authz on the C4 payroll surface. `admin` requires the
+// hr:payroll permission for the method's action; `self` additionally lets an
+// EMPLOYEE through to routes the controller self-scopes (own data only).
+const admin = requirePermission('hr:payroll');
+const self = requirePermission('hr:payroll', { allowSelf: true });
 
-// Payroll Runs
-router.get('/runs', payrollController.getPayrollRuns);
-router.get('/runs/:id', payrollController.getPayrollRunById);
-router.post('/runs', payrollController.createPayrollRun);
-router.put('/runs/:id/process', payrollController.processPayrollRun);
-router.put('/runs/:id/finalize', payrollController.finalizePayrollRun);
-router.delete('/runs/:id', payrollController.cancelPayrollRun);
 
-// Payroll Configuration
-router.get('/earning-types', payrollController.getEarningTypes);
-router.post('/earning-types', payrollController.createEarningType);
-router.put('/earning-types/:id', payrollController.updateEarningType);
+// Payroll Runs (org-wide — admin only)
+router.get('/runs', admin, payrollController.getPayrollRuns);
+router.get('/runs/:id', admin, payrollController.getPayrollRunById);
+router.post('/runs', admin, payrollController.createPayrollRun);
+router.put('/runs/:id/process', admin, payrollController.processPayrollRun);
+// HR-02 / T-P4.1 — approval gate: a distinct approver must approve before finalize.
+router.put('/runs/:id/approve', admin, payrollController.approvePayrollRun);
+router.put('/runs/:id/finalize', admin, payrollController.finalizePayrollRun);
+// HR-BANKFILE-03 / HR-PAY-04 — bank/ACH disbursement export (FINALIZED runs
+// only). Deny-by-default gated like the rest of the C4 payroll surface; the
+// service tenant-scopes the run and never logs decrypted account numbers.
+router.get('/runs/:id/bank-file', admin, payrollController.exportBankDisbursementFile);
+router.delete('/runs/:id', admin, payrollController.cancelPayrollRun);
 
-router.get('/deduction-types', payrollController.getDeductionTypes);
-router.post('/deduction-types', payrollController.createDeductionType);
-router.put('/deduction-types/:id', payrollController.updateDeductionType);
+// Payroll Configuration (admin only)
+router.get('/earning-types', admin, payrollController.getEarningTypes);
+router.post('/earning-types', admin, payrollController.createEarningType);
+router.put('/earning-types/:id', admin, payrollController.updateEarningType);
 
-// Employee Payroll Data
-router.get('/employees/:employeeId/payroll-data', payrollController.getEmployeePayrollData);
-router.post('/employees/:employeeId/employment-terms', payrollController.createEmploymentTerms);
-router.post('/employees/:employeeId/payroll-assignments', payrollController.createPayrollAssignment);
+router.get('/deduction-types', admin, payrollController.getDeductionTypes);
+router.post('/deduction-types', admin, payrollController.createDeductionType);
+router.put('/deduction-types/:id', admin, payrollController.updateDeductionType);
 
-// Payslips
-router.get('/payslips', payrollController.getPayslips);
-router.get('/payslips/:id', payrollController.getPayslipById);
-router.post('/payslips/:id/distribute', payrollController.distributePayslip);
-router.get('/employees/:employeeId/payslips', payrollController.getEmployeePayslips);
+// Employee Payroll Data (self-scoped read; writes admin-only)
+router.get('/employees/:employeeId/payroll-data', self, payrollController.getEmployeePayrollData);
+router.post('/employees/:employeeId/employment-terms', admin, payrollController.createEmploymentTerms);
+router.post('/employees/:employeeId/payroll-assignments', admin, payrollController.createPayrollAssignment);
 
-// Tax Configuration
-router.get('/tax-rates', payrollController.getTaxRates);
-router.post('/tax-rates', payrollController.createTaxRate);
+// Payslips (list-all + distribute admin; single + own-list self-scoped)
+router.get('/payslips', admin, payrollController.getPayslips);
+router.get('/payslips/:id', self, payrollController.getPayslipById);
+router.post('/payslips/:id/distribute', admin, payrollController.distributePayslip);
+router.get('/employees/:employeeId/payslips', self, payrollController.getEmployeePayslips);
 
-// Audit Logs
-router.get('/audit-logs', payrollController.getAuditLogs);
+// Tax Configuration (admin only)
+router.get('/tax-rates', admin, payrollController.getTaxRates);
+router.post('/tax-rates', admin, payrollController.createTaxRate);
+
+// HR-PAY-07 / HR-SEC-05 — statutory year-end tax forms (W-2 / 1099-NEC),
+// computed from the tax year's FINALIZED runs. Admin-only (deny-by-default,
+// same C4 hr:payroll gate); the service tenant-scopes every read, decrypts
+// SSN/EIN in-memory only and never logs them. `export` streams a CSV artifact;
+// the IRS EFW2/1099 fixed-width wire layout is a documented extension point.
+router.get('/tax-forms/:taxYear', admin, taxFormController.getYearEndTaxForms);
+router.get('/tax-forms/:taxYear/export', admin, taxFormController.exportYearEndTaxForms);
+
+// Audit Logs (admin only)
+router.get('/audit-logs', admin, payrollController.getAuditLogs);
 
 export default router;

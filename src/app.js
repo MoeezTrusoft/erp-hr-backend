@@ -32,6 +32,7 @@ import cors from "cors";
 import client from "prom-client";
 import prisma from "./lib/prisma.js";
 import { createHealthRouter } from "./routes/health.routes.js";
+import { createComplianceHealthRouter } from "./routes/complianceHealth.routes.js";
 
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
@@ -62,7 +63,12 @@ import hrContractRoutes from "./routes/hrContract.routes.js";
 import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
 import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
+import {
+    createHttpMetricsMiddleware,
+    attachHttpRequestDurationMetric,
+} from "./lib/httpMetrics.js";
 import { attachRequestId } from "./utils/apiContract.js";
+import { attachCorrelationId } from "./middlewares/correlationId.middleware.js";
 import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 
 import onboardingRoutes from "./routes/onboarding.routes.js";
@@ -81,6 +87,7 @@ import complianceRoutes from "./routes/compliance.routes.js";
 import developmentPlanRoutes from "./routes/developmentPlan.routes.js";
 import reimbursementRoutes from "./routes/reimbursement.routes.js";
 import gdprRoutes from "./routes/gdpr.routes.js";
+import benefitRoutes from "./routes/benefit.routes.js";
 
 import mcpRouter from "./mcp/mcpRouter.js";
 
@@ -92,6 +99,10 @@ export const createApp = () => {
     // same exposition the rest of the service uses. attachInternal-
     // BoundaryMetric is idempotent across createApp() calls.
     attachInternalBoundaryMetric(register);
+    // A-RED (08-sota-roadmap §DO-NOW #2): surface the shared
+    // http_request_duration_seconds histogram on this app's /metrics so
+    // Prometheus/Grafana can compute Rate / Error / p95 per route.
+    attachHttpRequestDurationMetric(register);
 
     app.use(express.json());
 
@@ -119,12 +130,26 @@ export const createApp = () => {
             "X-Request-ID",
             "X-Service-Authorization",
             "X-Internal-Secret",
+            // C.2 / T-P2.2 — clients send Idempotency-Key on mutating HR calls.
+            "Idempotency-Key",
         ],
         optionsSuccessStatus: 204,
     }));
 
     app.use(attachRequestId);
+    // A.5: read/mint x-correlation-id, bind a per-request child logger on
+    // req.log, echo the header on the response. Mounted before the route tree
+    // (and before the /api guard) so EVERY request — including health probes
+    // and rejected calls — is traceable end-to-end.
+    app.use(attachCorrelationId);
     app.use(attachHrContext);
+
+    // A-RED (08-sota-roadmap §DO-NOW #2): observe inbound request duration into
+    // the http_request_duration_seconds histogram (exposed on this app's
+    // /metrics). Mounted BEFORE the route tree (and the /api guard) so it times
+    // every request via res 'finish'/'close'. Purely observational — never
+    // alters response/auth/tenancy.
+    app.use(createHttpMetricsMiddleware());
 
     // HR routes
     // Browser clients should reach this service through the API gateway. The gateway
@@ -175,18 +200,29 @@ export const createApp = () => {
     app.use("/api/development-plans", developmentPlanRoutes);
     app.use("/api/reimbursements", reimbursementRoutes);
     app.use("/api/gdpr", gdprRoutes);
+    app.use("/api/benefits", benefitRoutes);
 
     app.get("/metrics", async (_req, res) => {
         res.setHeader("Content-Type", register.contentType);
         res.end(await register.metrics());
     });
 
-    app.use("/mcp", mcpRouter);
+    // SECURITY: the /mcp boundary MUST verify the gateway's service-JWT (same as
+    // /api above + rbac/comms /mcp) — NOT merely trust a present x-mcp-internal
+    // header. Without internalServiceGuard, any caller reaching this service with
+    // a non-empty x-mcp-internal could spoof tenant/permissions in the MCP ctx and
+    // bypass every HR tool gate (payroll/SSN/bank/benefits/GDPR). [HR-MCP-AUTH-01]
+    app.use("/mcp", internalServiceGuard, mcpRouter);
 
     app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
 
     // /healthz (liveness) + /readyz (readiness; pings DB via singleton).
     app.use(createHealthRouter({ prisma }));
+
+    // A.6: GET /compliance — readyz-style conformance assertion (verify key
+    // present, outbox dispatcher heartbeat, key/cert expiry). Mounted at the
+    // top level alongside /readyz so probes reach it without the /api guard.
+    app.use(createComplianceHealthRouter());
 
     return app;
 };

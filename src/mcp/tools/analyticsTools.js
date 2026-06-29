@@ -22,117 +22,94 @@ function getCtx() {
   return ctx;
 }
 
+// IC-15 — every analytics resource/report is gated by the single RBAC code
+// `hr:analytics` (VIEW). Previously the read resources carried NO MCP-boundary
+// permission check (deny-by-default violation) and instead leaned on hard-coded
+// role-name lists buried in the controllers — which 403'd a holder of
+// hr:analytics whose role wasn't literally HR_ADMIN/HR_MANAGER/RECRUITER (e.g.
+// the super-admin RBAC_ADMIN). Gating on the actual granted code is the
+// IC-2/IC-4-class fix: deny-by-default for non-holders, allow every holder.
+const ANALYTICS_RESOURCE_CODE = "hr:analytics";
+
 export function registerAnalyticsTools(server) {
   // ── RESOURCES (all analytics dashboards and reports as read resources) ───
+
+  // Wrap a resource loader with the hr:analytics:VIEW gate (deny-by-default).
+  const analyticsResource = (loader) => async (uri) => {
+    const { user, permissions } = getCtx();
+    assertPermission(permissions, "GET", ANALYTICS_RESOURCE_CODE, user.isAdmin);
+    const data = await loader(user);
+    return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+  };
 
   server.resource(
     "hr_analytics_dashboard_overview",
     "hr://analytics/dashboards/overview",
     { description: "HR dashboard overview KPIs (headcount, turnover, open positions)" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsDashboardOverview(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsDashboardOverview)
   );
 
   server.resource(
     "hr_analytics_dashboard_recruitment",
     "hr://analytics/dashboards/recruitment",
     { description: "Recruitment dashboard metrics (pipeline, time-to-hire)" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsDashboardRecruitment(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsDashboardRecruitment)
   );
 
   server.resource(
     "hr_analytics_dashboard_performance",
     "hr://analytics/dashboards/performance",
     { description: "Performance management dashboard metrics" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsDashboardPerformance(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsDashboardPerformance)
   );
 
   server.resource(
     "hr_analytics_report_headcount",
     "hr://analytics/reports/headcount",
     { description: "Headcount report by department, location, and employment type" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsHeadcount(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsHeadcount)
   );
 
   server.resource(
     "hr_analytics_report_turnover",
     "hr://analytics/reports/turnover",
     { description: "Employee turnover report" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsTurnover(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsTurnover)
   );
 
   server.resource(
     "hr_analytics_report_salary",
     "hr://analytics/reports/salary",
     { description: "Salary distribution and compensation report" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsSalary(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsSalary)
   );
 
   server.resource(
     "hr_analytics_report_leave_balances",
     "hr://analytics/reports/leave-balances",
     { description: "Leave balance summary report across all employees" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsLeaveBalances(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsLeaveBalances)
   );
 
   server.resource(
     "hr_analytics_report_absence",
     "hr://analytics/reports/absence",
     { description: "Absence and attendance report" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsAbsence(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsAbsence)
   );
 
   server.resource(
     "hr_analytics_report_eeo",
     "hr://analytics/reports/eeo",
     { description: "Equal employment opportunity (EEO) compliance report" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsEeo(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsEeo)
   );
 
   server.resource(
     "hr_analytics_report_recruitment_pipeline",
     "hr://analytics/reports/recruitment-pipeline",
     { description: "Recruitment pipeline analytics report" },
-    async (uri) => {
-      const { user } = getCtx();
-      const data = await mcpGetAnalyticsRecruitmentPipeline(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    analyticsResource(mcpGetAnalyticsRecruitmentPipeline)
   );
 
   // ── TOOLS ────────────────────────────────────────────────────────────────
@@ -147,7 +124,10 @@ export function registerAnalyticsTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/analytics/reports/export", user.isAdmin);
+      // IC-15 — was gated on the path `/hr/api/analytics/reports/export`, a key
+      // the gateway never grants (it grants the code `hr:analytics`), so export
+      // 403'd for every legitimate holder. Gate on the granted code instead.
+      assertPermission(permissions, "POST", ANALYTICS_RESOURCE_CODE, user.isAdmin);
       const data = await mcpExportAnalyticsReport(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

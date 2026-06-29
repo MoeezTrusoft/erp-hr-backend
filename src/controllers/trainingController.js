@@ -1,10 +1,16 @@
 // src/controllers/trainingController.js
 import * as trainingService from '../services/trainingService.js';
 
+// C.2-completion — the verified tenant arrives ONLY on req.user.tenantId (set by
+// internalServiceGuard from the signed service-JWT claim; T-P2.1), NEVER from a
+// header. Threaded into the scoped training service calls so tenant B cannot
+// read/mutate tenant A's courses/categories.
+const tenantOf = (req) => req.user?.tenantId;
+
 export const createCourse = async (req, res) => {
-    try {    
+    try {
         const createdBy = req.headers?.['employee-id'];
-        const course = await trainingService.createCourse(req.body, createdBy);
+        const course = await trainingService.createCourse({ ...req.body, tenantId: tenantOf(req) }, createdBy);
         return res.status(201).json({
             success: true,
             message: 'Course created successfully',
@@ -20,7 +26,7 @@ export const createCourse = async (req, res) => {
 
 export const getCourses = async (req, res) => {
     try {
-        const result = await trainingService.getCourses(req.query);
+        const result = await trainingService.getCourses({ ...req.query, tenantId: tenantOf(req) });
         return res.status(200).json({
             success: true,
             message: 'Courses fetched successfully',
@@ -36,7 +42,7 @@ export const getCourses = async (req, res) => {
 
 export const getCourse = async (req, res) => {
     try {
-        const course = await trainingService.getCourseById(req.params.id);
+        const course = await trainingService.getCourseById(req.params.id, tenantOf(req));
         return res.status(200).json({
             success: true,
             message: 'Course fetched successfully',
@@ -59,7 +65,7 @@ export const getCourse = async (req, res) => {
 export const updateCourse = async (req, res) => {
     try {
         const updatedBy = req.headers?.['employee-id'];
-        const course = await trainingService.updateCourse(req.params.id, req.body,updatedBy);
+        const course = await trainingService.updateCourse(req.params.id, req.body, updatedBy, tenantOf(req));
         return res.status(200).json({
             success: true,
             message: 'Course updated successfully',
@@ -82,7 +88,7 @@ export const updateCourse = async (req, res) => {
 export const deleteCourse = async (req, res) => {
     try {
         const deletedBy = req.headers?.['employee-id'];
-        const result = await trainingService.deleteCourse(req.params.id, deletedBy);
+        const result = await trainingService.deleteCourse(req.params.id, deletedBy, tenantOf(req));
         return res.status(200).json({
             success: true,
             message: result.message
@@ -105,7 +111,7 @@ export const createCategory = async (req, res) => {
     try {
 
         const createdBy = req.headers?.['employee-id'];
-        const category = await trainingService.createCategory(req.body,createdBy);
+        const category = await trainingService.createCategory({ ...req.body, tenantId: tenantOf(req) }, createdBy);
         return res.status(201).json({
             success: true,
             message: 'Category created successfully',
@@ -121,7 +127,7 @@ export const createCategory = async (req, res) => {
 
 export const getCategories = async (req, res) => {
     try {
-        const categories = await trainingService.getCategories();
+        const categories = await trainingService.getCategories(tenantOf(req));
         return res.status(200).json({
             success: true,
             message: 'Categories fetched successfully',

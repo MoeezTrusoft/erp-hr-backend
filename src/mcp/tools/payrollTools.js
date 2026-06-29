@@ -14,10 +14,16 @@ import {
   mcpListPayrollRuns,
   mcpListPayslips,
   mcpProcessPayrollRun,
+  mcpExportBankDisbursementFile,
 } from "../controllers/payrollMcpController.js";
+import {
+  mcpListYearEndTaxForms,
+  mcpExportYearEndTaxForms,
+} from "../controllers/taxFormMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -84,6 +90,28 @@ export function registerPayrollTools(server) {
   );
 
   // ── TOOLS ────────────────────────────────────────────────────────────────
+
+  // IC-1: the HR FE binds the Payslips LIST screen to the `hr_payslips_list`
+  // TOOL (tools/call). A same-named RESOURCE exists but callTool could not
+  // resolve it, so the screen fell back to mock data. This TOOL wraps the
+  // existing payslips list service, tenant-scoped via ctx, and returns the
+  // FE-expected paginated envelope. Gated on hr:payroll:VIEW (deny-by-default).
+  server.tool(
+    "hr_payslips_list",
+    "List payslips (paginated) for the HR payroll screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      payrollRunId: z.union([z.string(), z.number()]).optional(),
+      employeeId: z.union([z.string(), z.number()]).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      const data = await mcpListPayslips(user, toListQuery(args));
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_payslips_list")
+  );
 
   server.tool(
     "hr_payroll_run_create",
@@ -214,6 +242,57 @@ export function registerPayrollTools(server) {
       assertPermission(permissions, "POST", "/hr/api/payroll/deduction-types", user.isAdmin);
       const data = await mcpCreateDeductionType(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  // ── BANK / ACH DISBURSEMENT EXPORT (HR-BANKFILE-03 / HR-PAY-04) ────────────
+  server.tool(
+    "hr_payroll_bank_file_export",
+    "Export the bank/ACH disbursement file for a FINALIZED payroll run",
+    {
+      id: z.string().min(1).describe("Payroll run ID (must be FINALIZED)"),
+      format: z.enum(["nacha", "csv"]).optional().describe("Wire format (default: nacha)"),
+    },
+    withToolError(async ({ id, format }) => {
+      const { user, permissions } = getCtx();
+      // Same C4 payroll gate as GET /hr/api/payroll/runs/:id/bank-file.
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      const data = await mcpExportBankDisbursementFile(user, id, format ? { format } : {});
+      return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data) }] };
+    })
+  );
+
+  // ── YEAR-END TAX FORMS — W-2 / 1099-NEC (HR-PAY-07 / HR-SEC-05) ────────────
+  server.tool(
+    "hr_tax_forms_list",
+    "List statutory year-end tax forms (W-2 / 1099-NEC) for a tax year",
+    { taxYear: z.string().min(1).describe("Tax year, e.g. 2025") },
+    withToolError(async ({ taxYear }) => {
+      const { user, permissions } = getCtx();
+      // Same C4 payroll gate as GET /hr/api/payroll/tax-forms/:taxYear.
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      const data = await mcpListYearEndTaxForms(user, taxYear);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_tax_forms_export",
+    "Export year-end tax forms (W-2 / 1099-NEC) for a tax year as a file artifact",
+    {
+      taxYear: z.string().min(1).describe("Tax year, e.g. 2025"),
+      formType: z.enum(["w2", "1099"]).optional().describe("Form type (default: w2)"),
+      format: z.enum(["csv"]).optional().describe("Export format (default: csv)"),
+    },
+    withToolError(async ({ taxYear, formType, format }) => {
+      const { user, permissions } = getCtx();
+      // Same C4 payroll gate as GET /hr/api/payroll/tax-forms/:taxYear/export.
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      const query = {};
+      if (formType) query.formType = formType;
+      if (format) query.format = format;
+      const data = await mcpExportYearEndTaxForms(user, taxYear, query);
+      return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data) }] };
     })
   );
 }

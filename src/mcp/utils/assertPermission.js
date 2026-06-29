@@ -1,4 +1,4 @@
-const METHOD_ACTION = {
+export const METHOD_ACTION = {
   GET: "VIEW",
   POST: "CREATE",
   PUT: "EDIT",
@@ -14,7 +14,7 @@ const ACTION_TO_BIT = {
   EXPORT: 16,
 };
 
-function hasPermission(permissions, resourceKey, action) {
+export function hasPermission(permissions, resourceKey, action) {
   const granted = permissions?.[resourceKey];
   if (!granted) return false;
   if (Array.isArray(granted)) return granted.includes(action);
@@ -28,8 +28,12 @@ function hasPermission(permissions, resourceKey, action) {
   return false;
 }
 
-export function assertPermission(permissions, method, resourceKey, isAdmin) {
-  if (isAdmin) return;
+export function assertPermission(permissions, method, resourceKey, _isAdmin) {
+  // HR-03: the `isAdmin` blanket bypass is REMOVED. It was derived from the
+  // client-supplied `x-is-admin` header (hrContext.middleware.js), so a forged
+  // header granted full access. Authorization is now purely permission-based
+  // (deny-by-default); a real admin carries the resource permissions in their
+  // entitlement blob. The param is kept for call-site compatibility, unused.
   const action = METHOD_ACTION[method.toUpperCase()];
   if (!action) return;
   if (!hasPermission(permissions, resourceKey, action)) {

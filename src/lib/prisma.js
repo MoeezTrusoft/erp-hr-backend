@@ -9,16 +9,22 @@
 // production runs see exactly one. `src/config/prisma.js` re-exports
 // from this file so legacy `../config/prisma.js` imports keep working.
 import { PrismaClient } from '@prisma/client';
+import { c4EncryptionExtension } from './c4Encryption.js';
 
 const globalForPrisma = globalThis;
 
+// HR-01 / HR-10 (T-P4.2): the singleton is wrapped with the C4 encryption
+// client extension ($extends). Every src/ module already imports THIS file,
+// so encrypt-on-write / decrypt-on-read is transparent — no call site changes.
+// $extends returns a NEW client; we cache the extended client so all callers
+// (and dev-time reloads) share exactly one encrypted client.
 const prisma =
     globalForPrisma.__hrPrisma ??
     new PrismaClient({
         log: process.env.PRISMA_LOG_LEVEL
             ? process.env.PRISMA_LOG_LEVEL.split(',').map((s) => s.trim()).filter(Boolean)
             : ['warn', 'error'],
-    });
+    }).$extends(c4EncryptionExtension);
 
 if (process.env.NODE_ENV !== 'production') {
     globalForPrisma.__hrPrisma = prisma;

@@ -15,10 +15,13 @@ export const saveLayoutController = async (req, res) => {
       });
     }
 
+    // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded in
+    // so a tenant never overwrites/reads another tenant's saved layout.
     const data = await saveDashboardLayout(
       employeeId,
       dashboardType,
-      layout
+      layout,
+      req.user?.tenantId
     );
 
     res.json({

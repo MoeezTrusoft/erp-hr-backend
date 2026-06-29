@@ -1,10 +1,14 @@
 // src/controllers/enrollmentController.js
 import * as enrollmentService from '../services/enrollmentService.js';
 
+// C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
+// scoped enrollment service so tenant B cannot read/mutate tenant A's enrollments.
+const tenantOf = (req) => req.user?.tenantId;
+
 export const enrollUser = async (req, res) => {
     try {
         const createdBy = req.headers['employee-id'];
-        const enrollment = await enrollmentService.enrollUser(req.body,createdBy);
+        const enrollment = await enrollmentService.enrollUser({ ...req.body, tenantId: tenantOf(req) }, createdBy);
         return res.status(201).json({
             success: true,
             message: 'User enrolled successfully',
@@ -22,7 +26,7 @@ export const bulkEnrollUsers = async (req, res) => {
     try {
         const createdBy = req.headers['employee-id'];
         const { courseId, employeeIds } = req.body;
-        const enrollments = await enrollmentService.bulkEnrollUsers(courseId, employeeIds, createdBy);
+        const enrollments = await enrollmentService.bulkEnrollUsers(courseId, employeeIds, createdBy, tenantOf(req));
         return res.status(201).json({
             success: true,
             message: 'Users enrolled successfully',
@@ -38,7 +42,7 @@ export const bulkEnrollUsers = async (req, res) => {
 
 export const getUserEnrollments = async (req, res) => {
     try {
-        const result = await enrollmentService.getUserEnrollments(req.params.employeeId, req.query);
+        const result = await enrollmentService.getUserEnrollments(req.params.employeeId, { ...req.query, tenantId: tenantOf(req) });
         return res.status(200).json({
             success: true,
             message: 'Enrollments fetched successfully',
@@ -54,7 +58,7 @@ export const getUserEnrollments = async (req, res) => {
 
 export const getCourseEnrollments = async (req, res) => {
     try {
-        const result = await enrollmentService.getCourseEnrollments(req.params.courseId, req.query);
+        const result = await enrollmentService.getCourseEnrollments(req.params.courseId, { ...req.query, tenantId: tenantOf(req) });
         return res.status(200).json({
             success: true,
             message: 'Course enrollments fetched successfully',
@@ -72,7 +76,7 @@ export const updateEnrollmentStatus = async (req, res) => {
     try {
         const { status } = req.body;
 const updatedBy = req.headers['employee-id'];
-        const enrollment = await enrollmentService.updateEnrollmentStatus(req.params.id, status,updatedBy);
+        const enrollment = await enrollmentService.updateEnrollmentStatus(req.params.id, status, updatedBy, tenantOf(req));
         return res.status(200).json({
             success: true,
             message: 'Enrollment status updated successfully',
@@ -96,7 +100,7 @@ export const updateProgress = async (req, res) => {
     try {
         const { progress } = req.body;
         const updatedBy = req.headers['employee-id'];
-        const enrollment = await enrollmentService.updateProgress(req.params.id, progress, updatedBy);
+        const enrollment = await enrollmentService.updateProgress(req.params.id, progress, updatedBy, tenantOf(req));
         return res.status(200).json({
             success: true,
             message: 'Progress updated successfully',
@@ -141,7 +145,7 @@ export const cancelEnrollment = async (req, res) => {
 
 export const getEmployeeTranscript = async (req, res) => {
     try {
-        const transcript = await enrollmentService.getEmployeeTranscript(req.params.employeeId);
+        const transcript = await enrollmentService.getEmployeeTranscript(req.params.employeeId, tenantOf(req));
         return res.status(200).json({
             success: true,
             message: 'Transcript fetched successfully',

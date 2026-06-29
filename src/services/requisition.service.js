@@ -1,16 +1,20 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
+// into every recruitment read and stamped on every create, fail-closed when
+// present so tenant B can never read/mutate tenant A's requisitions.
 
 // ✅ Create a new requisition
-export const createRequisition = async (data, requestedBy) => {
+export const createRequisition = async (data, requestedBy, tenantId) => {
   const { title, description, departmentId, positionId, employeeId, openings, status } = data;
   if (!title) throw new Error("Title  are required");
   const requesterId = requestedBy || employeeId;
   if (!requesterId) throw new Error("Hiring manager is required");
 
   const createRequi = await prisma.jobRequisition.create({
-    data: {
+    data: scopedData(tenantId, {
       title,
       description,
       departmentId: departmentId ? Number(departmentId) : null,
@@ -19,7 +23,7 @@ export const createRequisition = async (data, requestedBy) => {
       employeeId: employeeId ? Number(employeeId) : null,
       openings: openings ? Number(openings) : 1,
       status: status || "DRAFT",
-    },
+    }),
     include: {
       position: true,
       requestedBy: true,
@@ -39,8 +43,9 @@ export const createRequisition = async (data, requestedBy) => {
 };
 
 // ✅ Get all requisitions
-export const getAllRequisitions = async () => {
+export const getAllRequisitions = async (tenantId) => {
   return prisma.jobRequisition.findMany({
+    where: scopedWhere(tenantId, {}),
     include: {
       position: true,
       requestedBy: true,
@@ -51,9 +56,11 @@ export const getAllRequisitions = async () => {
   });
 };
 
-export const getByIdRequisitions = async (id) => {
-  const getByID = prisma.jobRequisition.findUnique({
-    where: { id: Number(id) },
+export const getByIdRequisitions = async (id, tenantId) => {
+  // findFirst (not findUnique) so the non-unique tenantId predicate scopes the
+  // read; a cross-tenant id resolves to not-found, never another tenant's row.
+  const getByID = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       position: true,
       requestedBy: true,
@@ -61,12 +68,11 @@ export const getByIdRequisitions = async (id) => {
       employee: true,
     },
   });
-  if (!getByID) throw new Error("Job Requisition");
   return getByID;
 };
 
-export const deleteRequisitions = async (id, deletedBy) => {
-  const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
+export const deleteRequisitions = async (id, deletedBy, tenantId) => {
+  const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!requisition) throw new Error("Requisition not found");
 
   const deleted = await prisma.jobRequisition.delete({
@@ -83,20 +89,20 @@ export const deleteRequisitions = async (id, deletedBy) => {
 };
 
 // ✅ Approve or reject requisition
-export const approveRequisition = async (id, status, comments, approvedBy) => {
+export const approveRequisition = async (id, status, comments, approvedBy, tenantId) => {
   if (!["APPROVED", "REJECTED"].includes(status)) throw new Error("Invalid status");
 
-  const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
+  const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!requisition) throw new Error("Requisition not found");
 
   await prisma.requisitionApproval.create({
-    data: {
+    data: scopedData(tenantId, {
       requisitionId: Number(id),
       approverId: Number(approvedBy),
       status,
       comments,
       decidedAt: new Date(),
-    },
+    }),
   });
 
   const update = await prisma.jobRequisition.update({
@@ -124,18 +130,18 @@ export const approveRequisition = async (id, status, comments, approvedBy) => {
 };
 
 // ✅ Post approved job externally
-export const postRequisition = async (id, externalUrl, createdBy) => {
-  const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
+export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
+  const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!requisition) throw new Error("Requisition not found");
   if (requisition.status !== "APPROVED") throw new Error("Only approved requisitions can be posted");
 
   await prisma.jobPosting.create({
-    data: {
+    data: scopedData(tenantId, {
       requisitionId: Number(id),
       externalUrl,
       isActive: true,
       createdById: Number(createdBy),
-    },
+    }),
     createdBy: {
       select: {
         id: true,
@@ -161,8 +167,13 @@ export const postRequisition = async (id, externalUrl, createdBy) => {
 };
 
 // ✅ Update requisition
-export const updateRequisition = async (id, data, updatedBy) => {
+export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   const { title, description, departmentId, positionId, employeeId, openings, status } = data;
+
+  // Tenant-scoped pre-read so a cross-tenant id cannot be mutated (fail-closed).
+  const existing = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+  if (!existing) throw new Error("Requisition not found");
+
   const updateData = {};
   if (title !== undefined) updateData.title = title;
   if (description !== undefined) updateData.description = description;

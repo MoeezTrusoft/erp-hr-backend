@@ -19,6 +19,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { toListEnvelope } from "../utils/listEnvelope.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -71,6 +72,27 @@ export function registerPerformanceTools(server) {
       const data = await mcpListPerformanceMetrics(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
+  );
+
+  // ── LIST TOOLS (FE list-screen binding) ──────────────────────────────────
+  // IC-1: the HR FE binds the Performance Reviews LIST screen to the
+  // `hr_performance_reviews_list` TOOL (tools/call). A same-named RESOURCE exists
+  // but callTool could not resolve it, so the screen fell back to mock data. This
+  // TOOL wraps the existing reviews list service, tenant-scoped via ctx, and
+  // returns the FE-expected paginated envelope. Gated on hr:performance:VIEW.
+  server.tool(
+    "hr_performance_reviews_list",
+    "List performance reviews (paginated) for the HR performance screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
+      const data = await mcpListPerformanceReviews(user);
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_performance_reviews_list")
   );
 
   // ── GOAL TOOLS ───────────────────────────────────────────────────────────

@@ -503,8 +503,10 @@ describe('Analytics Service - Report Functions', () => {
 
             expect(mockEmployeeFindMany).toHaveBeenCalledTimes(1);
             expect(mockEmployeeCount).toHaveBeenCalledTimes(1);
+            // IC-15 — the active-headcount denominator now matches the
+            // free-form status column case-insensitively ('Active' in the DB).
             expect(mockEmployeeCount.mock.calls[0][0].where).toMatchObject({
-                status: 'ACTIVE',
+                status: { equals: 'ACTIVE', mode: 'insensitive' },
             });
 
             const developer = result.find((r) => r.position === 'Developer');

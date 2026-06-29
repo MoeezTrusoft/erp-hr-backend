@@ -1,10 +1,14 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { AppError } from '../utils/AppError.js';
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args object /
+// trailing param; folded into timesheet reads and stamped on creates,
+// fail-closed so tenant B never reads/mutates tenant A's timesheets/approvals.
 
-export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status }) => {
-    const where = { employeeId: parseInt(employeeId) };
+export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status, tenantId }) => {
+    const where = scopedWhere(tenantId, { employeeId: parseInt(employeeId) });
 
     if (periodStart && periodEnd) {
         where.OR = [
@@ -50,9 +54,9 @@ export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status
     });
 };
 
-export const getTimesheetById = async (id, userId) => {
+export const getTimesheetById = async (id, userId, tenantId) => {
     const timesheet = await prisma.timesheet.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: {
             employee: {
                 select: {
@@ -95,11 +99,11 @@ export const getTimesheetById = async (id, userId) => {
 };
 
 export const createTimesheet = async (data) => {
-    const { employeeId, period_start, period_end } = data;
+    const { employeeId, period_start, period_end, tenantId } = data;
 
     // Check for existing timesheet for the same period
     const existingTimesheet = await prisma.timesheet.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             OR: [
                 {
@@ -107,7 +111,7 @@ export const createTimesheet = async (data) => {
                     period_end: { gte: new Date(period_start) }
                 }
             ]
-        }
+        })
     });
 
     if (existingTimesheet) {
@@ -116,14 +120,14 @@ export const createTimesheet = async (data) => {
 
     // Get time entries for the period
     const timeEntries = await prisma.timeEntry.findMany({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             work_date: {
                 gte: new Date(period_start),
                 lte: new Date(period_end)
             },
             timesheetId: null
-        }
+        })
     });
 
     // Calculate total hours
@@ -132,13 +136,13 @@ export const createTimesheet = async (data) => {
     }, 0);
 
     const timesheet = await prisma.timesheet.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             period_start: new Date(period_start),
             period_end: new Date(period_end),
             total_hours: parseFloat(totalHours.toFixed(2)),
             status: 'DRAFT'
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -167,12 +171,12 @@ export const createTimesheet = async (data) => {
     notes: `Time Sheet "${timesheet.id}" Created successfully`,
   });
 
-    return getTimesheetById(timesheet.id, parseInt(employeeId));
+    return getTimesheetById(timesheet.id, parseInt(employeeId), tenantId);
 };
 
-export const submitTimesheet = async (id, userId) => {
+export const submitTimesheet = async (id, userId, tenantId) => {
     const timesheet = await prisma.timesheet.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -224,9 +228,9 @@ export const submitTimesheet = async (id, userId) => {
     return update;
 };
 
-export const approveTimesheet = async (id, approverId, comments = '') => {
+export const approveTimesheet = async (id, approverId, comments = '', tenantId) => {
     const timesheet = await prisma.timesheet.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -240,12 +244,12 @@ export const approveTimesheet = async (id, approverId, comments = '') => {
 
     // Create approval record
     await prisma.timeApproval.create({
-        data: {
+        data: scopedData(tenantId, {
             timesheetId: parseInt(id),
             approverId: parseInt(approverId),
             decision: 'APPROVED',
             comments
-        }
+        })
     });
 
     const update =  await prisma.timesheet.update({
@@ -285,9 +289,9 @@ export const approveTimesheet = async (id, approverId, comments = '') => {
     return update;
 };
 
-export const rejectTimesheet = async (id, approverId, comments = '') => {
+export const rejectTimesheet = async (id, approverId, comments = '', tenantId) => {
     const timesheet = await prisma.timesheet.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -305,12 +309,12 @@ export const rejectTimesheet = async (id, approverId, comments = '') => {
 
     // Create approval record
     await prisma.timeApproval.create({
-        data: {
+        data: scopedData(tenantId, {
             timesheetId: parseInt(id),
             approverId: parseInt(approverId),
             decision: 'REJECTED',
             comments
-        }
+        })
     });
 
     const reject = await prisma.timesheet.update({

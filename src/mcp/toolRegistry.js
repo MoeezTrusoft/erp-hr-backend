@@ -7,6 +7,7 @@ import { registerRecruitmentTools } from "./tools/recruitmentTools.js";
 import { registerOnboardingTools } from "./tools/onboardingTools.js";
 import { registerLearningTools } from "./tools/learningTools.js";
 import { registerComplianceTools } from "./tools/complianceTools.js";
+import { registerBenefitTools } from "./tools/benefitTools.js";
 import { registerAnalyticsTools } from "./tools/analyticsTools.js";
 import { registerSelfTools } from "./tools/selfTools.js";
 
@@ -20,6 +21,7 @@ export function registerAllTools(server) {
   registerOnboardingTools(server);
   registerLearningTools(server);
   registerComplianceTools(server);
+  registerBenefitTools(server);
   registerAnalyticsTools(server);
   registerSelfTools(server);
 }

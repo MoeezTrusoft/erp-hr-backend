@@ -26,6 +26,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -200,6 +201,27 @@ export function registerAttendanceTools(server) {
       const data = await mcpApproveTimesheet(user, timesheetId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
+  );
+
+  // IC-1: the HR FE binds the Attendance LIST screen to the `hr_attendance_list`
+  // TOOL (tools/call). A same-named RESOURCE already exists (resources/read) but
+  // callTool could not resolve it, so the screen fell back to mock data. This
+  // TOOL wraps the existing records list service, tenant-scoped via ctx, and
+  // returns the FE-expected paginated envelope. Gated on hr:attendance:VIEW.
+  server.tool(
+    "hr_attendance_list",
+    "List attendance records (paginated) for the HR attendance screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      date: z.string().optional().describe("YYYY-MM-DD filter"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await mcpListAttendanceRecords(user, toListQuery(args));
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_attendance_list")
   );
 
   server.tool(

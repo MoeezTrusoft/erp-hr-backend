@@ -153,17 +153,22 @@ describe('src/lib/serviceJwt.js', () => {
         });
 
         test('returns "no-secret-configured" in production when SERVICE_JWT_SECRET is unset', () => {
+            // Mint an HS256-shaped token first (so the protected header decodes
+            // to alg=HS256 and the verifier reaches the shared-secret branch),
+            // THEN drop the secret — the HS path must report the missing secret.
+            const token = mintToken();
             process.env.NODE_ENV = 'production';
             delete process.env.SERVICE_JWT_SECRET;
-            const outcome = verifyServiceToken('any.value.here');
+            const outcome = verifyServiceToken(token);
             expect(outcome.ok).toBe(false);
             expect(outcome.reason).toBe('no-secret-configured');
         });
 
         test('returns "no-secret-configured-nonprod" outside production when SERVICE_JWT_SECRET is unset', () => {
+            const token = mintToken();
             process.env.NODE_ENV = 'test';
             delete process.env.SERVICE_JWT_SECRET;
-            const outcome = verifyServiceToken('any.value.here');
+            const outcome = verifyServiceToken(token);
             expect(outcome.ok).toBe(false);
             expect(outcome.reason).toBe('no-secret-configured-nonprod');
         });

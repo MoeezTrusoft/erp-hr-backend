@@ -19,6 +19,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -85,6 +86,29 @@ export function registerLeaveTools(server) {
   );
 
   // ── TOOLS ────────────────────────────────────────────────────────────────
+
+  // IC-1: the HR FE binds the Leave Requests LIST screen to the
+  // `hr_leave_requests_list` TOOL (tools/call). A same-named RESOURCE exists but
+  // callTool could not resolve it, so the screen fell back to mock data. This
+  // TOOL wraps the existing list service, tenant-scoped via ctx, and returns the
+  // FE-expected paginated envelope. Gated on hr:leave:VIEW (deny-by-default).
+  server.tool(
+    "hr_leave_requests_list",
+    "List leave requests (paginated) for the HR leave screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      status: z.string().optional(),
+      employeeId: z.union([z.string(), z.number()]).optional(),
+      leaveType: z.string().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await mcpListLeaveRequests(user, toListQuery(args));
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_leave_requests_list")
+  );
 
   server.tool(
     "hr_leave_request_create",

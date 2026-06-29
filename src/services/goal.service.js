@@ -1,14 +1,18 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+
+// C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
+// into goal reads and stamped on creates, fail-closed when present.
 
 // ✅ Create a new goal
-export const createGoalService = async (data, createdBy) => {
+export const createGoalService = async (data, createdBy, tenantId) => {
   const { employeeId, title, description, category, start_date, end_date, target_value } = data;
 
   if (!employeeId || !title) throw new Error("Employee ID and Title are required");
 
   const create = await prisma.goal.create({
-    data: {
+    data: scopedData(tenantId, {
       employeeId: Number(employeeId),
       title,
       description,
@@ -18,7 +22,7 @@ export const createGoalService = async (data, createdBy) => {
       target_value: target_value ? Number(target_value) : null,
       status: "PENDING",
       employeeId: number(createdBy),
-    },
+    }),
      employee: {
         select: {
           id: true,
@@ -39,8 +43,8 @@ export const createGoalService = async (data, createdBy) => {
 };
 
 // ✅ Get goals (all or by employee)
-export const getGoalsService = async (employeeId) => {
-  const where = employeeId ? { employeeId: Number(employeeId) } : {};
+export const getGoalsService = async (employeeId, tenantId) => {
+  const where = scopedWhere(tenantId, employeeId ? { employeeId: Number(employeeId) } : {});
   return prisma.goal.findMany({
     where,
     include: {
@@ -53,11 +57,11 @@ export const getGoalsService = async (employeeId) => {
 };
 
 // ✅ Update goal details or progress
-export const updateGoalService = async (id, data,updatedBy) => {
+export const updateGoalService = async (id, data,updatedBy,tenantId) => {
   const { title, description, progress, status } = data;
 
-  // Find existing goal
-  const existing = await prisma.goal.findUnique({ where: { id: Number(id) } });
+  // Find existing goal (tenant-scoped pre-read; cross-tenant id → not-found)
+  const existing = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Goal not found");
 
   //const targetValue = existing.target_value ?? 0;
@@ -101,10 +105,10 @@ export const updateGoalService = async (id, data,updatedBy) => {
 };
 
 // ✅ Approve or reject goal
-export const approveGoalService = async (id, status, approvedBy) => {
+export const approveGoalService = async (id, status, approvedBy, tenantId) => {
   if (!["APPROVED", "REJECTED"].includes(status))
     throw new Error("Invalid status. Use APPROVED or REJECTED.");
-const existing = await prisma.goal.findUnique({where:{id: Number(id)}})
+const existing = await prisma.goal.findFirst({where: scopedWhere(tenantId, {id: Number(id)})})
 if (!existing) throw new Error("Goal Not found");
 
 
@@ -135,19 +139,19 @@ if (!existing) throw new Error("Goal Not found");
 };
 
 // ✅ Add a progress update
-export const addGoalProgressService = async (data,createdBy) => {
+export const addGoalProgressService = async (data,createdBy,tenantId) => {
   const { goalId, comment, progress, } = data;
 
-  const goal = await prisma.goal.findUnique({ where: { id: Number(goalId) } });
+  const goal = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(goalId) }) });
   if (!goal) throw new Error("Goal not found");
 
   const newProgress = await prisma.goalProgress.create({
-    data: {
+    data: scopedData(tenantId, {
       goalId: Number(goalId),
       comment,
       progress: Number(progress),
       created_by: Number(createdBy),
-    },
+    }),
      createdBy: {
         select: {
           id: true,
@@ -175,13 +179,13 @@ export const addGoalProgressService = async (data,createdBy) => {
 };
 
 // ✅ Get all progress updates for a goal
-export const getGoalProgressService = async (id) => {
+export const getGoalProgressService = async (id, tenantId) => {
 
-  const goal = await prisma.goal.findUnique({ where: { id: Number(id) } });
+  const goal = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!goal) throw new Error("Goal not found");
 
   return prisma.goalProgress.findMany({
-    where: { goalId: Number(id) },
+    where: scopedWhere(tenantId, { goalId: Number(id) }),
     include: { createdBy: true },
     orderBy: { update_date: "desc" },
   });

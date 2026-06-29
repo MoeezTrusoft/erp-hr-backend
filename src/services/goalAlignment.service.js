@@ -1,9 +1,15 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+
+// C.2-completion — verified tenant (T-P2.1) threaded via `tenantId` (in the
+// create payload, or a trailing read/delete param); both aligned goals are
+// re-checked inside the tenant, and the alignment row is stamped + read
+// fail-closed so tenant B never aligns/reads tenant A's goals.
 
 // ✅ Create alignment between two goals
 export const createGoalAlignmentService = async (data, createdBy) => {
-  const { parentGoalId, alignedGoalId } = data;
+  const { parentGoalId, alignedGoalId, tenantId } = data;
 
   if (!parentGoalId || !alignedGoalId)
     throw new Error("Both parentGoalId and alignedGoalId are required");
@@ -11,10 +17,10 @@ export const createGoalAlignmentService = async (data, createdBy) => {
   if (parentGoalId === alignedGoalId)
     throw new Error("A goal cannot be aligned to itself");
 
-  // Check both goals exist
+  // Check both goals exist (within this tenant)
   const [parentGoal, alignedGoal] = await Promise.all([
-    prisma.goal.findUnique({ where: { id: Number(parentGoalId) } }),
-    prisma.goal.findUnique({ where: { id: Number(alignedGoalId) } }),
+    prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(parentGoalId) }) }),
+    prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(alignedGoalId) }) }),
   ]);
 
   if (!parentGoal || !alignedGoal)
@@ -22,16 +28,16 @@ export const createGoalAlignmentService = async (data, createdBy) => {
 
   // Check if already aligned
   const existing = await prisma.goalAlignment.findFirst({
-    where: { parentGoalId: Number(parentGoalId), alignedGoalId: Number(alignedGoalId) },
+    where: scopedWhere(tenantId, { parentGoalId: Number(parentGoalId), alignedGoalId: Number(alignedGoalId) }),
   });
   if (existing) throw new Error("These goals are already aligned");
 
   const create = await prisma.goalAlignment.create({
-    data: {
+    data: scopedData(tenantId, {
       parentGoalId: Number(parentGoalId),
       alignedGoalId: Number(alignedGoalId),
       createdById: Number(createdBy),
-    },
+    }),
     createdBy: {
       select: {
         id: true,
@@ -52,14 +58,14 @@ export const createGoalAlignmentService = async (data, createdBy) => {
 };
 
 // ✅ Get all alignments for a goal (both parent & children)
-export const getGoalAlignmentsService = async (goalId) => {
+export const getGoalAlignmentsService = async (goalId, tenantId) => {
   return prisma.goalAlignment.findMany({
-    where: {
+    where: scopedWhere(tenantId, {
       OR: [
         { parentGoalId: Number(goalId) },
         { alignedGoalId: Number(goalId) },
       ],
-    },
+    }),
     include: {
       parentGoal: true,
       alignedGoal: true,
@@ -68,8 +74,8 @@ export const getGoalAlignmentsService = async (goalId) => {
 };
 
 // ✅ Remove alignment
-export const deleteGoalAlignmentService = async (id, deletedBy) => {
-  const existing = await prisma.goalAlignment.findUnique({ where: { id: Number(id) } });
+export const deleteGoalAlignmentService = async (id, deletedBy, tenantId) => {
+  const existing = await prisma.goalAlignment.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Alignment not found");
 
   const deleted = await prisma.goalAlignment.delete({ where: { id: Number(id) } });

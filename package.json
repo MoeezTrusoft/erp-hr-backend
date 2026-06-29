@@ -21,6 +21,7 @@
     "test:sprint9": "npm run test:analytics:all",
     "test:perf": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --testPathIgnorePatterns=/node_modules/ --testPathPatterns=performance\\.test\\.js$",
     "test:db:prepare": "node scripts/test-db-provision.js",
+    "backfill:c4": "node scripts/backfill-c4-encryption.js",
     "gate:p1": "bash scripts/gate-p1.sh"
   },
   "keywords": [],
@@ -30,9 +31,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@prisma/client": "^6.19.0",
-    "@trusoft/contracts": "github:MoeezTrusoft/erp-contracts#v0.4.0",
+    "@trusoft/contracts": "file:../contracts",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.79.1",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
@@ -40,12 +42,10 @@
     "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
-    "node-cron": "^4.2.1",
     "nodemailer": "^7.0.4",
     "pino": "^10.3.1",
     "prisma": "^6.19.0",
     "prom-client": "^15.1.3",
-    "socket.io": "^4.8.3",
     "uuid": "^11.1.0",
     "zod": "^4.3.6"
   },

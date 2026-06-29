@@ -35,7 +35,10 @@
 
 import logger from '../lib/logger.js';
 import { extractServiceToken, verifyServiceRequest } from '../lib/serviceJwt.js';
-import { recordInternalBoundary } from '../lib/authMetrics.js';
+import {
+    recordInternalBoundary,
+    recordServiceJwtAccept,
+} from '../lib/authMetrics.js';
 
 const LEGACY_SECRET_HEADER = 'x-internal-secret';
 const SERVICE_JWT_HEADER = 'x-service-authorization';
@@ -50,7 +53,21 @@ export function internalServiceGuard(req, res, next) {
         const outcome = verifyServiceRequest(req);
         if (outcome.ok) {
             req.internalService = { ...outcome.context, source: 'service-jwt' };
+            // T-P2.1 / X-02: the request tenant comes ONLY from the verified
+            // service-JWT claim — never the spoofable x-tenant-id header. This
+            // overwrites the (now-null) header-derived value on req.user so all
+            // downstream consumers (which read req.user.tenantId) are scoped by
+            // the verified tenant.
+            // REQ-007: the tenant claim is an opaque RBAC Company.uuid STRING
+            // (no longer the integer companyId). Thread it through verbatim —
+            // NEVER Number()/parseInt() it. Null (role without company) stays
+            // null so downstream scoping remains fail-closed.
+            const verifiedTenant = req.internalService.tenantId;
+            if (req.user) {
+                req.user.tenantId = verifiedTenant != null ? verifiedTenant : null;
+            }
             recordInternalBoundary({ source: 'service-jwt', outcome: 'accept' });
+            recordServiceJwtAccept('hr');
             return next();
         }
         if (outcome.reason === 'expired' || outcome.reason === 'invalid') {
@@ -65,36 +82,26 @@ export function internalServiceGuard(req, res, next) {
             });
         }
         // "no-secret-configured" / "no-secret-configured-nonprod" — JWT
-        // verification is not available on this process. Fall through
-        // to the legacy secret path so the existing HR contract is
-        // preserved when the gateway isn't yet minting JWTs.
+        // verification is not available on this process. The legacy
+        // X-Internal-Secret accept path has been REMOVED (cutover 2026-06-23,
+        // assured by scripts/assure-cutover.mjs), so this falls through to
+        // rejection rather than a secret-compare fallback.
     }
 
-    // 2) Legacy X-Internal-Secret fallback.
-    const configuredSecret = process.env.INTERNAL_SERVICE_SECRET;
-    const requestSecret = req.headers[LEGACY_SECRET_HEADER];
-
-    if (configuredSecret && requestSecret === configuredSecret) {
-        req.internalService = { source: 'legacy-secret' };
-        recordInternalBoundary({ source: 'legacy-secret', outcome: 'accept' });
-        return next();
-    }
-
-    // 3) No accepted credential. Distinguish three failure modes:
-    //    (a) neither secret is configured at all → 500 (preserve the
-    //        pre-existing HR behaviour and surface a misconfiguration
-    //        rather than a generic 403).
-    //    (b) a credential header was presented but rejected → 403
-    //        rejected.
-    //    (c) nothing was presented → 403 anonymous.
+    // 2) Cutover hardening: the legacy X-Internal-Secret ACCEPT path is removed.
+    //    service-JWT is the ONLY accepted internal credential. A missing
+    //    SERVICE_JWT_SECRET on this process fails CLOSED (misconfiguration).
     const jwtSecretConfigured = Boolean(process.env.SERVICE_JWT_SECRET);
-    if (!configuredSecret && !jwtSecretConfigured) {
+    if (!jwtSecretConfigured) {
         recordInternalBoundary({ source: 'rejected', outcome: 'reject' });
         return res.status(500).json({
             success: false,
-            message: 'Internal service secret is not configured',
+            message: 'Service JWT secret is not configured',
         });
     }
+
+    // 3) A credential may have been presented but rejected (403 rejected), or
+    //    nothing was presented (403 anonymous).
 
     const hadAnyCredential =
         typeof req.headers[SERVICE_JWT_HEADER] === 'string' ||

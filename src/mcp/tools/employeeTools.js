@@ -80,7 +80,8 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const query = { page: 1, pageSize: 10, ...args };
       logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_employees_list pagination resolved");
-      const data = await mcpListEmployeesContract(query);
+      // BLOCKER-1: thread the verified tenant so the directory is tenant-scoped.
+      const data = await mcpListEmployeesContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employees_list")
   );
@@ -112,7 +113,8 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const query = { page: 1, pageSize: 10, ...args };
       logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_positions_list pagination resolved");
-      const data = await mcpListPositionsContract(query);
+      // BLOCKER-1: thread the verified tenant so positions are tenant-scoped.
+      const data = await mcpListPositionsContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_positions_list")
   );
@@ -232,9 +234,12 @@ export function registerEmployeeTools(server) {
       documents: z.array(z.any()).optional(),
     },
     withToolError(async (args) => {
-      const { user, permissions } = getCtx();
+      const { user, permissions, correlationId } = getCtx();
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
-      const data = await mcpCreateEmployee(user, args);
+      // A.4/A.5: pass the request correlationId so the in-tx
+      // hr.employee.lifecycle.v1 envelope chains HTTP → event end-to-end. The
+      // verified tenant rides on user.tenantId (set by buildContextFromHeaders).
+      const data = await mcpCreateEmployee(user, args, { correlationId });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_employee_create")
   );

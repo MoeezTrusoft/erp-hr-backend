@@ -28,6 +28,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -113,6 +114,46 @@ export function registerRecruitmentTools(server) {
       const data = await mcpListOffers(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
+  );
+
+  // ── LIST TOOLS (FE list-screen binding) ──────────────────────────────────
+  // IC-1: the HR FE binds the Requisitions + Candidates LIST screens to the
+  // `hr_requisitions_list` / `hr_candidates_list` TOOLS (tools/call). Same-named
+  // RESOURCES exist but callTool could not resolve them, so the screens fell
+  // back to mock data. These TOOLS wrap the existing list services, tenant-scoped
+  // via ctx, and return the FE-expected paginated envelope. Both gated on
+  // hr:recruitment:VIEW (deny-by-default).
+  server.tool(
+    "hr_requisitions_list",
+    "List job requisitions (paginated) for the HR recruitment screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      status: z.string().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await mcpListRequisitions(user);
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_requisitions_list")
+  );
+
+  server.tool(
+    "hr_candidates_list",
+    "List candidates (paginated) for the HR recruitment screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      search: z.string().optional(),
+      tags: z.string().optional().describe("Comma-separated tag ids"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await mcpListCandidates(user, toListQuery(args));
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_candidates_list")
   );
 
   // ── REQUISITION TOOLS ────────────────────────────────────────────────────
@@ -332,7 +373,7 @@ export function registerRecruitmentTools(server) {
       decision: z.string().optional(),
       feedback: z
         .object({
-          ratings: z.record(z.union([z.string(), z.number()])).optional(),
+          ratings: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
           decision: z.string().optional(),
           recommendation: z.string().optional(),
           comments: z.string().optional(),

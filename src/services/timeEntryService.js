@@ -1,9 +1,13 @@
 import prisma from "../lib/prisma.js";
 import { AppError } from '../utils/AppError.js';
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args object /
+// trailing param; folded into time-entry reads and stamped on creates,
+// fail-closed so tenant B never reads/mutates tenant A's time entries.
 
-export const getTimeEntries = async ({ employeeId, startDate, endDate }) => {
-    const where = { employeeId: parseInt(employeeId) };
+export const getTimeEntries = async ({ employeeId, startDate, endDate, tenantId }) => {
+    const where = scopedWhere(tenantId, { employeeId: parseInt(employeeId) });
 
     if (startDate && endDate) {
         where.work_date = {
@@ -30,7 +34,7 @@ export const getTimeEntries = async ({ employeeId, startDate, endDate }) => {
 };
 
 export const createTimeEntry = async (data) => {
-    const { employeeId, start_time, end_time, work_type, note, sourceId } = data;
+    const { employeeId, start_time, end_time, work_type, note, sourceId, tenantId } = data;
 
     // Validate time range
     if (end_time && new Date(end_time) <= new Date(start_time)) {
@@ -38,7 +42,7 @@ export const createTimeEntry = async (data) => {
     }
 
     const create =  await prisma.timeEntry.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             start_time: new Date(start_time),
             end_time: end_time ? new Date(end_time) : null,
@@ -50,7 +54,7 @@ export const createTimeEntry = async (data) => {
             duration_minutes: end_time
                 ? Math.round((new Date(end_time) - new Date(start_time)) / (1000 * 60))
                 : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -71,9 +75,9 @@ export const createTimeEntry = async (data) => {
     return create;
 };
 
-export const updateTimeEntry = async (id, data, userId) => {
+export const updateTimeEntry = async (id, data, userId, tenantId) => {
     const entry = await prisma.timeEntry.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -125,9 +129,9 @@ export const updateTimeEntry = async (id, data, userId) => {
     return update;
 };
 
-export const deleteTimeEntry = async (id, userId) => {
+export const deleteTimeEntry = async (id, userId, tenantId) => {
     const entry = await prisma.timeEntry.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -154,14 +158,14 @@ export const deleteTimeEntry = async (id, userId) => {
     return deleted
 };
 
-export const clockIn = async ({ employeeId, location, note, sourceId }) => {
+export const clockIn = async ({ employeeId, location, note, sourceId, tenantId }) => {
     // Check if already clocked in
     const activeEntry = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null,
             entry_type: 'CLOCK_IN'
-        }
+        })
     });
 
     if (activeEntry) {
@@ -171,7 +175,7 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
     const now = new Date();
 
     const create =  await prisma.timeEntry.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             start_time: now,
             work_date: now,
@@ -179,7 +183,7 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
             work_type: 'REGULAR',
             note,
             sourceId: sourceId ? parseInt(sourceId) : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -201,14 +205,14 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
     return create;
 };
 
-export const clockOut = async ({ employeeId, location, note, sourceId }) => {
+export const clockOut = async ({ employeeId, location, note, sourceId, tenantId }) => {
     // Find active clock-in entry
     const activeEntry = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null,
             entry_type: 'CLOCK_IN'
-        }
+        })
     });
 
     if (!activeEntry) {
@@ -246,11 +250,11 @@ export const clockOut = async ({ employeeId, location, note, sourceId }) => {
     return clockOut;
 };
 
-export const startBreak = async ({ employeeId, note, sourceId }) => {
+export const startBreak = async ({ employeeId, note, sourceId, tenantId }) => {
     const now = new Date();
 
     const breakStart = await prisma.timeEntry.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             start_time: now,
             work_date: now,
@@ -258,7 +262,7 @@ export const startBreak = async ({ employeeId, note, sourceId }) => {
             work_type: 'REGULAR',
             note,
             sourceId: sourceId ? parseInt(sourceId) : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -280,13 +284,13 @@ export const startBreak = async ({ employeeId, note, sourceId }) => {
     return breakStart;
 };
 
-export const endBreak = async ({ employeeId, note, sourceId }) => {
+export const endBreak = async ({ employeeId, note, sourceId, tenantId }) => {
     const activeBreak = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null,
             entry_type: 'BREAK_START'
-        }
+        })
     });
 
     if (!activeBreak) {
@@ -323,12 +327,12 @@ export const endBreak = async ({ employeeId, note, sourceId }) => {
     return endBreak;
 };
 
-export const getCurrentStatus = async (employeeId) => {
+export const getCurrentStatus = async (employeeId, tenantId) => {
     const activeEntry = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null
-        },
+        }),
         orderBy: { start_time: 'desc' },
         include: {
             employee: {
@@ -341,13 +345,13 @@ export const getCurrentStatus = async (employeeId) => {
     });
 
     const todayEntries = await prisma.timeEntry.findMany({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             work_date: {
                 gte: new Date().setHours(0, 0, 0, 0),
                 lte: new Date().setHours(23, 59, 59, 999)
             }
-        },
+        }),
         orderBy: { start_time: 'asc' }
     });
 

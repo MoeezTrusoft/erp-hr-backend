@@ -1,13 +1,17 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+
+// C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
+// into calibration reads and stamped on creates, fail-closed when present.
 
 // 🟢 Create calibration session
-export const createCalibrationSessionService = async (data, createdBy) => {
+export const createCalibrationSessionService = async (data, createdBy, tenantId) => {
   const { name, cycleId } = data;
   if (!name || !cycleId) throw new Error("name and cycleId are required");
 
   const create = await prisma.calibrationSession.create({
-    data: { name, cycleId },
+    data: scopedData(tenantId, { name, cycleId }),
   });
   await logAction({
     employeeId: Number(createdBy),
@@ -21,28 +25,28 @@ export const createCalibrationSessionService = async (data, createdBy) => {
 };
 
 // 🟢 Add rating adjustment
-export const adjustRatingService = async (data, calibrated_by_employee_id) => {
+export const adjustRatingService = async (data, calibrated_by_employee_id, tenantId) => {
   const { reviewId, old_rating, new_rating, justification } = data;
 
   if (!reviewId || !new_rating)
     throw new Error("reviewId, new_rating and calibrated_by are required");
 
-  const review = await prisma.performanceReview.findUnique({
-    where: { id: reviewId },
+  const review = await prisma.performanceReview.findFirst({
+    where: scopedWhere(tenantId, { id: reviewId }),
   });
   if (!review) throw new Error("Review not found");
 
   const adjustment = await prisma.ratingAdjustment.create({
-    data: {
+    data: scopedData(tenantId, {
       reviewId,
       old_rating,
       new_rating,
       justification,
       calibrated_by_employee_id: calibrated_by_employee_id,
-    },
+    }),
   });
 
-  // Update the main review rating
+  // Update the main review rating (pre-read above already proved tenant scope)
   await prisma.performanceReview.update({
     where: { id: reviewId },
     data: { overall_rating: new_rating },
@@ -61,8 +65,9 @@ export const adjustRatingService = async (data, calibrated_by_employee_id) => {
 };
 
 // 🟢 Get all calibration sessions
-export const getAllCalibrationSessionsService = async () => {
+export const getAllCalibrationSessionsService = async (tenantId) => {
   return prisma.calibrationSession.findMany({
+    where: scopedWhere(tenantId, {}),
     include: {
       ratingAdjustments: true,
       cycle: true,
@@ -72,9 +77,9 @@ export const getAllCalibrationSessionsService = async () => {
 };
 
 // 🟢 Finalize a calibration session
-export const finalizeCalibrationService = async (id, finalizedBy) => {
-  const session = await prisma.calibrationSession.findUnique({
-    where: { id: Number(id) },
+export const finalizeCalibrationService = async (id, finalizedBy, tenantId) => {
+  const session = await prisma.calibrationSession.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
   });
   if (!session) throw new Error("Calibration session not found");
 
@@ -86,9 +91,10 @@ export const finalizeCalibrationService = async (id, finalizedBy) => {
     },
   });
 
-  // Optionally, mark all reviews in that cycle as FINALIZED
+  // Optionally, mark all reviews in that cycle as FINALIZED (tenant-scoped so a
+  // finalize never reaches another tenant's reviews in the same cycle).
   await prisma.performanceReview.updateMany({
-    where: { cycleId: session.cycleId },
+    where: scopedWhere(tenantId, { cycleId: session.cycleId }),
     data: { status: "FINALIZED" },
   });
    await logAction({

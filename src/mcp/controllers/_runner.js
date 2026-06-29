@@ -25,7 +25,8 @@ export async function runController(controller, { user = {}, params = {}, query 
       role: primaryRole,
       roles: Array.isArray(user.roles) ? user.roles : [],
       isAdmin: !!user.isAdmin,
-      tenantId: user.tenantId ? Number(user.tenantId) : undefined,
+      // REQ-007: tenant is an opaque uuid string — pass it through, never coerce.
+      tenantId: user.tenantId != null ? user.tenantId : undefined,
     },
     files: [],
     ip: "127.0.0.1",
@@ -38,7 +39,21 @@ export async function runController(controller, { user = {}, params = {}, query 
 
   let statusCode = 200;
   let payload;
+  const headers = {};
   const res = {
+    // Some controllers (file/artifact exports e.g. bank-file, tax-forms) stream
+    // via res.setHeader(...).send(content). Record headers no-op-style so those
+    // controllers run unchanged through the MCP boundary instead of throwing.
+    setHeader(name, value) {
+      headers[String(name).toLowerCase()] = value;
+      return this;
+    },
+    set(name, value) {
+      return this.setHeader(name, value);
+    },
+    getHeader(name) {
+      return headers[String(name).toLowerCase()];
+    },
     status(code) {
       statusCode = Number(code) || 200;
       return this;

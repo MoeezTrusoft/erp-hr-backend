@@ -1,7 +1,11 @@
 // src/services/trainingService.js
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2-completion — verified tenant (T-P2.1) threaded in as `tenantId` on the
+// args / trailing param; folded into course/enrollment reads and stamped on
+// creates, fail-closed so tenant B never reads/mutates tenant A's training data.
 
 export const createCourse = async (courseData, createdBy) => {
     try {
@@ -10,7 +14,7 @@ export const createCourse = async (courseData, createdBy) => {
         }
 
         const course = await prisma.trainingCourse.create({
-            data: {
+            data: scopedData(courseData.tenantId, {
                 title: courseData.title,
                 description: courseData.description,
                 categoryId: parseInt(courseData.categoryId),
@@ -21,7 +25,7 @@ export const createCourse = async (courseData, createdBy) => {
                 startDate: courseData.startDate,
                 endDate: courseData.endDate,
                 status: courseData.status || 'DRAFT'
-            },
+            }),
             include: {
                 category: true,
                 instructor: {
@@ -60,7 +64,7 @@ export const getCourses = async (filters = {}) => {
 
         const skip = (page - 1) * limit;
 
-        const where = {};
+        const where = scopedWhere(filters.tenantId, {});
         if (categoryId) where.categoryId = parseInt(categoryId);
         if (status) where.status = status;
         if (mode) where.mode = mode;
@@ -106,15 +110,15 @@ export const getCourses = async (filters = {}) => {
     }
 };
 
-export const getCourseById = async (courseId) => {
+export const getCourseById = async (courseId, tenantId) => {
     try {
-        const existing = await prisma.trainingCourse.findUnique({  where: { id: parseInt(courseId) },})
+        const existing = await prisma.trainingCourse.findFirst({ where: scopedWhere(tenantId, { id: parseInt(courseId) }) })
         if (!existing) {
-            throw new Error('Course ID is required');
+            throw new Error('Course not found');
         }
 
-        const course = await prisma.trainingCourse.findUnique({
-            where: { id: parseInt(courseId) },
+        const course = await prisma.trainingCourse.findFirst({
+            where: scopedWhere(tenantId, { id: parseInt(courseId) }),
             include: {
                 category: true,
                 instructor: {
@@ -148,11 +152,11 @@ export const getCourseById = async (courseId) => {
     }
 };
 
-export const updateCourse = async (courseId, updateData, updatedBy) => {
+export const updateCourse = async (courseId, updateData, updatedBy, tenantId) => {
     try {
-       const existing = await prisma.trainingCourse.findUnique({  where: { id: parseInt(courseId) },})
+       const existing = await prisma.trainingCourse.findFirst({ where: scopedWhere(tenantId, { id: parseInt(courseId) }) })
         if (!existing) {
-            throw new Error('Course ID is required');
+            throw new Error('Course not found');
         }
 
 
@@ -181,17 +185,17 @@ export const updateCourse = async (courseId, updateData, updatedBy) => {
     }
 };
 
-export const deleteCourse = async (courseId, deletedBy) => {
+export const deleteCourse = async (courseId, deletedBy, tenantId) => {
     try {
-       const existing = await prisma.trainingCourse.findUnique({  where: { id: parseInt(courseId) },})
+       const existing = await prisma.trainingCourse.findFirst({ where: scopedWhere(tenantId, { id: parseInt(courseId) }) })
         if (!existing) {
-            throw new Error('Course ID is required');
+            throw new Error('Course not found');
         }
 
 
         // Check if there are enrollments
         const enrollments = await prisma.trainingEnrollment.count({
-            where: { courseId: parseInt(courseId) }
+            where: scopedWhere(tenantId, { courseId: parseInt(courseId) })
         });
 
         if (enrollments > 0) {
@@ -225,10 +229,10 @@ export const createCategory = async (categoryData, createdBy) => {
         }
 
         const category = await prisma.trainingCategory.create({
-            data: {
+            data: scopedData(categoryData.tenantId, {
                 name: categoryData.name,
                 description: categoryData.description
-            }
+            })
         });
 
         await logAction({
@@ -244,9 +248,10 @@ export const createCategory = async (categoryData, createdBy) => {
     }
 };
 
-export const getCategories = async () => {
+export const getCategories = async (tenantId) => {
     try {
         const categories = await prisma.trainingCategory.findMany({
+            where: scopedWhere(tenantId, {}),
             include: {
                 courses: {
                     select: {

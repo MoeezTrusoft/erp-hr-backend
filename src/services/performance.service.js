@@ -1,19 +1,27 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 
+// C.2 — the verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the
+// controller as a trailing `tenantId` and folded into every read predicate and
+// stamped on every create. `undefined` = legacy/no-scope (back-compat for
+// existing callers/tests); a present value (incl. null) is fail-closed so
+// tenant B can never read/mutate tenant A's performance rows for the same id.
 
 // ✅ Create new performance review
-export const createPerformanceReview = async (data,createdBy) => {
+export const createPerformanceReview = async (data,createdBy,tenantId) => {
   const { employeeId, reviewerId, period_start, period_end,cycleId, comments } = data;
 
   if (!employeeId || !period_start || !period_end)
     throw new Error("employeeId, period_start, and period_end are required");
-  const employee = await prisma.employee.findUnique({where: {id: employeeId}})
+  // Employee carries `tenant_id` (snake_case, REQ-007) not `tenantId`; scope the
+  // existence guard by it so we never confirm an employee from another tenant.
+  const employee = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(employeeId)})})
   if(!employee) throw new Error("Employee not Found");
-  
+
 
   const create = await prisma.performanceReview.create({
-    data: {
+    data: scopedData(tenantId, {
       employeeId: Number(employeeId),
       reviewerId: reviewerId ? Number(reviewerId) : null,
       cycleId: cycleId ? Number(cycleId) :null,
@@ -21,7 +29,7 @@ export const createPerformanceReview = async (data,createdBy) => {
       period_end: new Date(period_end),
       comments,
       createdById: Number(createdBy)
-    },
+    }),
      createdBy: {
         select: {
           id: true,
@@ -43,8 +51,9 @@ export const createPerformanceReview = async (data,createdBy) => {
 };
 
 // ✅ Get all reviews (admin or HR)
-export const getAllReviews = async () => {
+export const getAllReviews = async (tenantId) => {
   return prisma.performanceReview.findMany({
+    where: scopedWhere(tenantId, {}),
     include: {
       employee: true,
       reviewer: true,
@@ -55,20 +64,22 @@ export const getAllReviews = async () => {
 };
 
 // ✅ Get reviews by employee (for employee dashboard)
-export const getReviewsByEmployee = async (employeeId) => {
-   const employee = await prisma.employee.findUnique({where: {id: employeeId}})
+export const getReviewsByEmployee = async (employeeId, tenantId) => {
+   const employee = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(employeeId)})})
   if(!employee) throw new Error("Employee not Found");
 
   return prisma.performanceReview.findMany({
-    where: { employeeId: Number(employeeId) },
+    where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
     include: { reviewer: true, feedbacks: true },
     orderBy: { updated_at: "desc" },
   });
 };
 
 // ✅ Update review (e.g., finalize)
-export const updateReview = async (id, data,updatedBy) => {
-  const existing = await prisma.performanceReview.findUnique({ where: { id: Number(id) } });
+export const updateReview = async (id, data,updatedBy,tenantId) => {
+  // Tenant-scoped pre-read: a cross-tenant id resolves to not-found, never
+  // another tenant's review — and we never mutate it (fail-closed).
+  const existing = await prisma.performanceReview.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Review not found");
 
   const updated = await prisma.performanceReview.update({
@@ -100,25 +111,25 @@ export const updateReview = async (id, data,updatedBy) => {
 };
 
 // ✅ Add feedback to a review
-export const addFeedback = async (data,createdBy) => {
+export const addFeedback = async (data,createdBy,tenantId) => {
   const { reviewId, reviewerId, feedback, rating } = data;
   if (!reviewId || !reviewerId || !feedback)
     throw new Error("reviewId, reviewerId, and feedback are required");
 
-   const review = await prisma.employee.findUnique({where: {id: reviewId}})
+   const review = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(reviewId)})})
   if(!review) throw new Error("Employee not Found");
 
-     const reviewer = await prisma.employee.findUnique({where: {id: reviewerId}})
+     const reviewer = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(reviewerId)})})
   if(!reviewer) throw new Error("Employee not Found");
 
   const create = await prisma.reviewFeedback.create({
-    data: {
+    data: scopedData(tenantId, {
       reviewId: Number(reviewId),
       reviewerId: Number(reviewerId),
       feedback,
       rating: rating ? Number(rating) : null,
       createdById : Number(createdBy),
-    },
+    }),
      createdBy: {
         select: {
           id: true,
@@ -140,10 +151,10 @@ export const addFeedback = async (data,createdBy) => {
 };
 
 
-export const updateFeedback = async (id, data, updatedBy) => {
+export const updateFeedback = async (id, data, updatedBy, tenantId) => {
   const { reviewId, reviewerId, feedback, rating } = data;
 
-  const existing = await prisma.reviewFeedback.findUnique({ where: { id: Number(id) } });
+  const existing = await prisma.reviewFeedback.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Feed Back not found");
 
   const updated = await prisma.reviewFeedback.update({
@@ -174,8 +185,8 @@ export const updateFeedback = async (id, data, updatedBy) => {
   return updated;
 };
 
-export const deleteFeedback = async (id,deletedBy) => {
-  const existing = await prisma.reviewFeedback.findUnique({ where: { id: Number(id) } });
+export const deleteFeedback = async (id,deletedBy,tenantId) => {
+  const existing = await prisma.reviewFeedback.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("FeedBack not found");
 
   const deleted = await prisma.reviewFeedback.delete({ where: { id: Number(id) } });

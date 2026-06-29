@@ -1,14 +1,20 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2-completion — verified tenant (T-P2.1) threaded via `tenantId` (in the
+// create payload, or a trailing read/update/delete param); folded into position
+// reads + stamped on creates, fail-closed so tenant B never reads or mutates
+// tenant A's positions.
 
 // ✅ Create position
 export const createPosition = async (data,createdBy) => {
-  const { title, description, isActive } = data;
+  const { title, description, isActive, tenantId } = data;
   if (!title) throw new Error("Title is required");
 
-  // Generate a unique job code, e.g., "POS-001", "POS-002", etc.
+  // Generate a unique job code, e.g., "POS-001", "POS-002", etc. (scoped read)
   const lastPosition = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, {}),
     orderBy: { id: "desc" },
     select: { id: true }
   });
@@ -17,13 +23,13 @@ export const createPosition = async (data,createdBy) => {
   const jobCode = `TST-${nextId.toString().padStart(3, "0")}`; // POS-001, POS-002
 
   const create =await prisma.position.create({
-    data: {
+    data: scopedData(tenantId, {
       title,
       description,
       isActive,
      createdById: Number(createdBy),
       jobCode,
-    },
+    }),
     //  createdBy: {
     //     select: {
     //       id: true,
@@ -43,8 +49,9 @@ export const createPosition = async (data,createdBy) => {
 };
 
 // ✅ Get all positions
-export const getAllPositions = async () => {
+export const getAllPositions = async (tenantId) => {
   return prisma.position.findMany({
+    where: scopedWhere(tenantId, {}),
     include: { employees: true,
       //createdBy: true,
      },
@@ -53,11 +60,11 @@ export const getAllPositions = async () => {
 };
 
 // ✅ Get single position
-export const getPositionById = async (id) => {
-  const position = await prisma.position.findUnique({
-    where: { id: Number(id) },
-    include: { 
-      employees: true, 
+export const getPositionById = async (id, tenantId) => {
+  const position = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+    include: {
+      employees: true,
       createdBy: true,
      },
   });
@@ -66,9 +73,9 @@ export const getPositionById = async (id) => {
 };
 
 // ✅ Update position
-export const updatePosition = async (id, data, updatedBy) => {
-  const existing = await prisma.position.findUnique({
-    where: { id: Number(id) },
+export const updatePosition = async (id, data, updatedBy, tenantId) => {
+  const existing = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
   });
 
   if (!existing) throw new Error("Position not found");
@@ -106,8 +113,8 @@ export const updatePosition = async (id, data, updatedBy) => {
   return updated;
 };
 // ✅ Delete position
-export const deletePosition = async (id,deletedBy) => {
-  const existing = await prisma.position.findUnique({ where: { id: Number(id) } });
+export const deletePosition = async (id,deletedBy, tenantId) => {
+  const existing = await prisma.position.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Position not found");
 
   const  deleted = prisma.position.delete({

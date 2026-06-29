@@ -9,8 +9,6 @@ const optionalInt = z.preprocess(emptyToUndefined, z.coerce.number().int().posit
 const optionalNumber = z.preprocess(emptyToUndefined, z.coerce.number().optional());
 const optionalRecord = z.record(z.string(), z.any()).optional();
 const requiredString = z.preprocess(emptyToUndefined, z.string().trim().min(1));
-const requiredDate = z.preprocess(emptyToUndefined, z.coerce.date());
-const requiredInt = z.preprocess(emptyToUndefined, z.coerce.number().int().positive());
 const optionalPhone = z.preprocess(
   emptyToUndefined,
   z
@@ -91,15 +89,18 @@ const employeeBase = {
   additionalFields: optionalRecord,
 };
 
+// Only firstName + lastName are required at create time. jobTitle, hireDate,
+// employmentStatus and positionId map to NULLABLE DB columns (Employee.job_title,
+// hire_date, employement_status, positionId — all `?` in prisma/schema.prisma),
+// so they stay optional+nullable here to match both the DB and the advertised
+// MCP inputSchema (firstName + lastName only). positionId is FK-validated by the
+// service ONLY when supplied (assertEmployeeReferences). The `optional*` helpers
+// already coerce "" / null → undefined, so an explicit null is accepted too.
 export const createEmployeeContractSchema = z
   .object({
     ...employeeBase,
     firstName: requiredString,
     lastName: requiredString,
-    jobTitle: requiredString,
-    hireDate: requiredDate,
-    employmentStatus: requiredString,
-    positionId: requiredInt,
   })
   .superRefine((data, ctx) => {
     const primaryCount = data.emergencyContacts.filter((contact) => contact.isPrimary).length;

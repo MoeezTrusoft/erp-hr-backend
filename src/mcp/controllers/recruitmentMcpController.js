@@ -15,7 +15,7 @@ import { scheduleInterview, listInterviews, updateInterview } from "../../contro
 import { createOffer, updateOffer, listOffers, sendOffer } from "../../controllers/offer.controller.js";
 
 export const mcpListRequisitions = (user) => runController(getRequisitionsController, { user });
-export const mcpListCandidates = (user) => runController(listCandidates, { user });
+export const mcpListCandidates = (user, query = {}) => runController(listCandidates, { user, query });
 export const mcpListApplications = (user) => runController(listApplications, { user });
 export const mcpListTalentPool = (user) => runController(listPools, { user });
 export const mcpListRecruitmentTags = (user) => runController(listTags, { user });

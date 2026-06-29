@@ -2,6 +2,10 @@ import * as hrContract from "../services/hrContract.service.js";
 import { sendContractError, sendContractSuccess } from "../utils/apiContract.js";
 
 const actorId = (req) => req.user?.employeeId || req.user?.userId;
+// BLOCKER-1 / C.2 — the verified tenant rides ONLY on req.user.tenantId (set
+// from the service-JWT claim). `?? null` keeps reads fail-closed so the REST
+// surface can never return another tenant's (or null-tenant) rows.
+const tenantOf = (req) => req.user?.tenantId ?? null;
 
 const handle = (fn, successMessage, statusCode = 200) => async (req, res) => {
   try {
@@ -41,7 +45,7 @@ export const resetDashboardLayout = handle(
 );
 
 export const listEmployees = handle(
-  (req) => hrContract.listEmployees(req.query),
+  (req) => hrContract.listEmployees(req.query, tenantOf(req)),
   "Employees loaded"
 );
 
@@ -52,22 +56,22 @@ export const createEmployee = handle(
 );
 
 export const getEmployeeQuickView = handle(
-  (req) => hrContract.getEmployeeQuickView(req.params.id),
+  (req) => hrContract.getEmployeeQuickView(req.params.id, tenantOf(req)),
   "Employee quick view loaded"
 );
 
 export const getEmployeeProfile = handle(
-  (req) => hrContract.getEmployeeProfile(req.params.id),
+  (req) => hrContract.getEmployeeProfile(req.params.id, tenantOf(req)),
   "Employee profile loaded"
 );
 
 export const getEmployeeProfileOverview = handle(
-  (req) => hrContract.getEmployeeProfile(req.params.id).then((profile) => profile.overview),
+  (req) => hrContract.getEmployeeProfile(req.params.id, tenantOf(req)).then((profile) => profile.overview),
   "Employee profile overview loaded"
 );
 
 export const getEmployeeDocuments = handle(
-  (req) => hrContract.getEmployeeDocuments(req.params.id),
+  (req) => hrContract.getEmployeeDocuments(req.params.id, tenantOf(req)),
   "Employee documents loaded"
 );
 
@@ -129,7 +133,7 @@ export const deleteEmployeeEmergencyContact = handle(
 );
 
 export const listPositions = handle(
-  (req) => hrContract.listPositions(req.query),
+  (req) => hrContract.listPositions(req.query, tenantOf(req)),
   "Positions loaded"
 );
 
@@ -161,7 +165,7 @@ export const updatePositionStatus = handle(
 );
 
 export const listRequisitions = handle(
-  (req) => hrContract.listRequisitions(req.query),
+  (req) => hrContract.listRequisitions(req.query, tenantOf(req)),
   "Requisitions loaded"
 );
 

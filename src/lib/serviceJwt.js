@@ -1,29 +1,50 @@
-// src/lib/serviceJwt.js — A-HR-SERVICE-JWT-INBOUND.
+// src/lib/serviceJwt.js — A-HR-SERVICE-JWT-INBOUND · X-02 / ARCH-01 §4.1-4.2.
 //
-// Verifies the downstream service JWT minted by the gateway and presented
-// on every internal call as `X-Service-Authorization`. Mirrors the
-// RBAC reference implementation (erp-rbac-backend/src/lib/serviceJwt.js)
-// so the two services accept the same shape of token from the same
-// gateway. This is the P2A slice: HMAC verification only (EdDSA /
-// refresh-rotation are P2B), but the claim shape, header parsing, and
-// fail-closed posture are finalized here so /api can rely on
-// req.internalService when the JWT path is taken.
+// Verifies the downstream service JWT minted by the gateway/rbac and
+// presented on every internal call as `X-Service-Authorization`. The two
+// real signers now mint EdDSA(Ed25519)-signed tokens carrying a `kid`
+// protected-header field:
+//   * iss=erp-rbac    kid "rbac-svc-9057db2a"
+//   * iss=erp-gateway kid "gw-ed25519-9d4f042d2332f689"
+//
+// VERIFY ORDER (fail closed if neither path verifies):
+//   1. Decode the protected header. If alg=EdDSA, resolve the public key by
+//      kid from the registry (src/lib/serviceJwtKeys.js), verify the Ed25519
+//      signature with the algorithm PINNED to EdDSA via node:crypto, then
+//      enforce iss ∈ {erp-rbac, erp-gateway}, aud="internal", and exp.
+//   2. DUAL-ACCEPT (rollout): if the token is HS256/384/512 and the flag
+//      SERVICE_JWT_ACCEPT_HS256 is true (default "true" in dev), verify via
+//      the legacy shared secret (jsonwebtoken). If the flag is false, REJECT
+//      the HS token. The legacy path is NOT removed here (sunset is later).
+//
+// Rejections: no kid, unknown kid, non-EdDSA alg masquerading as a key it
+// isn't, bad signature, expired, wrong iss/aud, HS256-when-disabled.
 //
 // Required env in production:
-//   SERVICE_JWT_SECRET   — shared HMAC secret with the gateway.
-//   SERVICE_JWT_AUDIENCE — defaults to "internal".
-//   SERVICE_JWT_ISSUER   — defaults to "erp-gateway".
+//   SERVICE_JWT_SECRET            — legacy shared HMAC secret (HS path).
+//   SERVICE_JWT_PUBLIC_KEYS_JSON  — {kid: JWK|PEM} for the EdDSA path.
+//   SERVICE_JWT_AUDIENCE          — defaults to "internal".
+//   SERVICE_JWT_ISSUER            — legacy single-issuer default "erp-gateway"
+//                                   (HS path only; EdDSA accepts the set below).
+//   SERVICE_JWT_ACCEPT_HS256      — "true"/"false"; HS dual-accept flag.
 //
-// In non-production a missing SERVICE_JWT_SECRET makes the verifier
-// disabled-but-explicit (returns a "no-secret-configured-nonprod"
-// outcome the middleware interprets as "fall through to the legacy
-// X-Internal-Secret path"), so local dev without a gateway doesn't
-// 500 and HR's existing legacy fallback continues to function.
+// In non-production a missing SERVICE_JWT_SECRET makes the HS path
+// disabled-but-explicit (returns a "no-secret-configured-nonprod" outcome)
+// — but the EdDSA path still functions whenever keys are configured, so the
+// gateway/rbac EdDSA plane verifies even with no shared secret present.
+
+import crypto from 'node:crypto';
 
 import jwt from 'jsonwebtoken';
 
+import { resolvePublicKeyPem } from './serviceJwtKeys.js';
+
 const DEFAULT_AUDIENCE = 'internal';
 const DEFAULT_ISSUER = 'erp-gateway';
+
+// EdDSA tokens may be signed by either real service. The HS legacy path keeps
+// its single configurable issuer for backward-compatibility.
+const EDDSA_ACCEPTED_ISSUERS = ['erp-rbac', 'erp-gateway'];
 
 export const SERVICE_JWT_HEADER = 'x-service-authorization';
 
@@ -54,10 +75,129 @@ function getIssuer() {
     return process.env.SERVICE_JWT_ISSUER || DEFAULT_ISSUER;
 }
 
-// Verify a token string. Returns an outcome object; never throws.
-export function verifyServiceToken(token) {
-    if (!token) {
-        return { ok: false, reason: 'missing-token' };
+// HS256 dual-accept flag. Default "true" (dev rollout); any value other than
+// an explicit "false" is treated as enabled so a typo fails OPEN only for the
+// legacy path that is already gated by the shared secret — set "false" to
+// reject HS tokens entirely once the EdDSA cutover completes.
+function hs256Accepted() {
+    return process.env.SERVICE_JWT_ACCEPT_HS256 !== 'false';
+}
+
+// Decode (without verifying) the protected JOSE header so we can branch on alg
+// and read the kid. Returns null on any structural problem.
+function decodeProtectedHeader(token) {
+    if (typeof token !== 'string') return null;
+    const dot = token.indexOf('.');
+    if (dot <= 0) return null;
+    try {
+        const json = Buffer.from(token.slice(0, dot), 'base64url').toString('utf8');
+        const header = JSON.parse(json);
+        if (!header || typeof header !== 'object') return null;
+        return header;
+    } catch {
+        return null;
+    }
+}
+
+// Build the normalized context the middleware attaches to req.internalService.
+function buildContext(claims, alg) {
+    return {
+        service: claims.sub || claims.service || 'unknown',
+        tenantId: claims.tenantId ?? claims.tid ?? null,
+        userId: claims.userId ?? claims.uid ?? null,
+        // Gateway P2/P3 mints either `email` or `userEmail` — accept both so
+        // reconciliation works against whichever claim shape lands first.
+        email: claims.email ?? claims.userEmail ?? null,
+        alg,
+        claims,
+    };
+}
+
+// Verify an EdDSA(Ed25519) service-JWT entirely with node:crypto, with the
+// algorithm PINNED to Ed25519 (the kid resolves to an Ed25519 public key and
+// we never feed attacker-chosen alg into a verify primitive — this defeats
+// alg-confusion). Returns an outcome object; never throws.
+function verifyEdDSA(token, header) {
+    if (!header.kid) {
+        return { ok: false, reason: 'no-kid' };
+    }
+    const pem = resolvePublicKeyPem(header.kid);
+    if (!pem) {
+        return { ok: false, reason: 'unknown-kid' };
+    }
+
+    const parts = token.split('.');
+    if (parts.length !== 3 || !parts[2]) {
+        return { ok: false, reason: 'invalid' };
+    }
+    const [encHeader, encPayload, encSig] = parts;
+
+    let keyObject;
+    try {
+        keyObject = crypto.createPublicKey(pem);
+    } catch {
+        return { ok: false, reason: 'unknown-kid' };
+    }
+    // Defense in depth: the registry only admits Ed25519, but re-check here so
+    // a future registry change can never route a non-Ed25519 key into this
+    // signature check.
+    if (keyObject.asymmetricKeyType !== 'ed25519') {
+        return { ok: false, reason: 'invalid' };
+    }
+
+    let signatureValid;
+    try {
+        const signature = Buffer.from(encSig, 'base64url');
+        // algorithm pinned to Ed25519: crypto.verify(null, ...) for an
+        // Ed25519 key uses EdDSA only — header.alg is NEVER consulted here.
+        signatureValid = crypto.verify(
+            null,
+            Buffer.from(`${encHeader}.${encPayload}`),
+            keyObject,
+            signature
+        );
+    } catch {
+        signatureValid = false;
+    }
+    if (!signatureValid) {
+        return { ok: false, reason: 'invalid' };
+    }
+
+    let claims;
+    try {
+        claims = JSON.parse(Buffer.from(encPayload, 'base64url').toString('utf8'));
+    } catch {
+        return { ok: false, reason: 'invalid' };
+    }
+    if (!claims || typeof claims !== 'object') {
+        return { ok: false, reason: 'invalid' };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof claims.exp === 'number' && now >= claims.exp) {
+        return { ok: false, reason: 'expired' };
+    }
+    if (typeof claims.nbf === 'number' && now < claims.nbf) {
+        return { ok: false, reason: 'invalid' };
+    }
+    if (!EDDSA_ACCEPTED_ISSUERS.includes(claims.iss)) {
+        return { ok: false, reason: 'invalid' };
+    }
+    const expectedAud = getAudience();
+    const aud = claims.aud;
+    const audOk = Array.isArray(aud) ? aud.includes(expectedAud) : aud === expectedAud;
+    if (!audOk) {
+        return { ok: false, reason: 'invalid' };
+    }
+
+    return { ok: true, context: buildContext(claims, 'EdDSA') };
+}
+
+// Verify a legacy HS256/384/512 token via the shared secret (jsonwebtoken),
+// gated behind the dual-accept flag.
+function verifyHS(token) {
+    if (!hs256Accepted()) {
+        return { ok: false, reason: 'hs256-disabled' };
     }
     const secret = getSecret();
     if (!secret) {
@@ -72,25 +212,43 @@ export function verifyServiceToken(token) {
             issuer: getIssuer(),
             algorithms: ['HS256', 'HS384', 'HS512'],
         });
-        return {
-            ok: true,
-            context: {
-                service: claims.sub || claims.service || 'unknown',
-                tenantId: claims.tenantId ?? claims.tid ?? null,
-                userId: claims.userId ?? claims.uid ?? null,
-                // Gateway P2/P3 mints either `email` or `userEmail` —
-                // accept both so reconciliation works against whichever
-                // claim shape lands first.
-                email: claims.email ?? claims.userEmail ?? null,
-                claims,
-            },
-        };
+        return { ok: true, context: buildContext(claims, claims.alg || 'HS256') };
     } catch (err) {
         if (err && err.name === 'TokenExpiredError') {
             return { ok: false, reason: 'expired' };
         }
         return { ok: false, reason: 'invalid' };
     }
+}
+
+// Verify a token string. Returns an outcome object; never throws.
+// Prefers EdDSA (the new signer plane); falls back to HS dual-accept.
+export function verifyServiceToken(token) {
+    if (!token) {
+        return { ok: false, reason: 'missing-token' };
+    }
+
+    const header = decodeProtectedHeader(token);
+    if (!header || !header.alg) {
+        return { ok: false, reason: 'invalid' };
+    }
+
+    if (header.alg === 'EdDSA') {
+        return verifyEdDSA(token, header);
+    }
+
+    if (header.alg === 'HS256' || header.alg === 'HS384' || header.alg === 'HS512') {
+        // Re-derive the HMAC alg from the protected header rather than trusting
+        // the verified claim, so the context.alg reflects the wire alg.
+        const outcome = verifyHS(token);
+        if (outcome.ok && outcome.context) {
+            outcome.context.alg = header.alg;
+        }
+        return outcome;
+    }
+
+    // Any other alg (none, RS*, ES*, …) is not part of the accepted plane.
+    return { ok: false, reason: 'invalid' };
 }
 
 // Convenience: verify directly from the incoming Express request.

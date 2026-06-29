@@ -7,6 +7,45 @@ import {
 } from "../../src/validators/hrEmployeeContract.schema.js";
 
 describe("HR employee contract validation", () => {
+  // hr_employee_create defect — the advertised MCP inputSchema requires only
+  // firstName + lastName, and the DB columns job_title / positionId /
+  // employement_status / hire_date are all nullable. The service contract must
+  // agree: a minimal {firstName, lastName} create has to pass validation.
+  it("accepts a minimal {firstName, lastName} employee create payload", () => {
+    const result = createEmployeeContractSchema.safeParse({
+      firstName: "Ada",
+      lastName: "Lovelace",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data.firstName).toBe("Ada");
+    expect(result.data.lastName).toBe("Lovelace");
+    // optional/nullable fields must not be forced to a value
+    expect(result.data.jobTitle).toBeUndefined();
+    expect(result.data.positionId).toBeUndefined();
+    expect(result.data.employmentStatus).toBeUndefined();
+    expect(result.data.hireDate).toBeUndefined();
+  });
+
+  it("accepts explicit null for the nullable employee create fields", () => {
+    const result = createEmployeeContractSchema.safeParse({
+      firstName: "Ada",
+      lastName: "Lovelace",
+      jobTitle: null,
+      positionId: null,
+      employmentStatus: null,
+      hireDate: null,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("still rejects a create missing the DB-required firstName / lastName", () => {
+    expect(createEmployeeContractSchema.safeParse({ lastName: "Lovelace" }).success).toBe(false);
+    expect(createEmployeeContractSchema.safeParse({ firstName: "Ada" }).success).toBe(false);
+    expect(createEmployeeContractSchema.safeParse({}).success).toBe(false);
+  });
+
   it("accepts the minimum frontend employee create payload", () => {
     const result = createEmployeeContractSchema.safeParse({
       firstName: "Ayesha",
