@@ -62,7 +62,7 @@ export const updateEmergencyContact = async (id, data, updatedBy, tenantId) => {
         type: "CREATE",
         module: "Position",
         result: "SUCCESS",
-        notes: `Position "${title}" created successfully`,
+        notes: `Position "${id}" created successfully`,
     });
     return update;
 };
@@ -80,7 +80,7 @@ export const deleteEmergencyContact = async (id, deletedBy, tenantId) => {
         type: "CREATE",
         module: "Position",
         result: "SUCCESS",
-        notes: `Position "${title}" created successfully`,
+        notes: `Position "${id}" created successfully`,
     });
     return deleted;
 };

@@ -6,7 +6,7 @@ import {
   mapEmployeeToLifecycleInput,
 } from "./employeeOutbox.service.js";
 import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js";
-import { scopedEmployeeWhere, scopedWhere } from "../lib/tenancy.js";
+import { scopedEmployeeWhere, scopedWhere, scopedData } from "../lib/tenancy.js";
 import {
   createEmployeeContractSchema,
   createEmployeeDocumentSchema,
@@ -753,9 +753,19 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       select: lifecycleSourceSelect,
     });
 
-    // A.4: enqueue exactly one hr.employee.lifecycle.v1 (phase=hired) in the SAME
+    // A.4 / Phase 3: enqueue hr.employee.lifecycle.v1 (phase=hired) in the SAME
     // tx as the employee write, via the shared validate-before-write helper.
     await emitEmployeeLifecycle(tx, created, "hired", { ...ctx, actorId: ctx.actorId ?? actorId });
+
+    // Phase 3: also emit onboarded event when wizard supplies an onboardingStartDate.
+    // This signals IAM-provisioning consumers (RBAC user creation, access grant).
+    const onboardingDate = data.additionalFields?.onboardingStartDate ?? data.onboardingStartDate ?? null;
+    if (onboardingDate) {
+      await emitEmployeeLifecycle(tx, created, "transferred", {
+        ...ctx,
+        actorId: ctx.actorId ?? actorId,
+      }, { effectiveOn: onboardingDate }).catch(() => {/* non-fatal: hired already emitted */});
+    }
 
     if (data.emergencyContacts.length > 0) {
       await tx.emergencyContacts.createMany({
@@ -1163,23 +1173,29 @@ export const getPosition = async (id) => {
   };
 };
 
-export const createPosition = async (data, actorId) => {
+export const createPosition = async (data, actorId, tenantId) => {
   if (!data.title) throw new Error("Title is required");
 
+  // C.2 / T-P2.6: scope the findFirst to the same tenant so the
+  // generated job-code sequence doesn't cross tenant boundaries.
   const lastPosition = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, {}),
     orderBy: { id: "desc" },
     select: { id: true },
   });
   const nextId = lastPosition ? lastPosition.id + 1 : 1;
 
   const position = await prisma.position.create({
-    data: {
+    // scopedData stamps tenantId (verified RBAC Company.uuid) onto every
+    // new position row. If tenantId is null the column is written as null
+    // (legacy / unscoped) — fail-closed: never writes another tenant's id.
+    data: scopedData(tenantId, {
       title: data.title,
       description: buildPositionDescription(data),
       isActive: data.isActive ?? true,
       createdById: actorId ? Number(actorId) : null,
       jobCode: data.jobCode || `TST-${nextId.toString().padStart(3, "0")}`,
-    },
+    }),
     include: { _count: { select: { employees: true, JobRequisition: true } } },
   });
 

@@ -3,6 +3,8 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import logger from "../../lib/logger.js";
+import { getEmployeeCompensation } from "../../services/employeeCompensation.service.js";
+import { listEmployeeActivity } from "../../services/employeeActivity.service.js";
 import {
   mcpCreateEmergencyContact,
   mcpCreateEmployee,
@@ -26,6 +28,7 @@ import {
   mcpUpdateEmployeeStatus,
   mcpUpdateOffboarding,
   mcpUpdatePosition,
+  mcpGetPositionByPositionId,
   mcpUpdatePositionStatus,
   mcpUploadEmployeeCoverPhoto,
   mcpUploadEmployeeProfilePhoto,
@@ -114,6 +117,7 @@ export function registerEmployeeTools(server) {
       const query = { page: 1, pageSize: 10, ...args };
       logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_positions_list pagination resolved");
       // BLOCKER-1: thread the verified tenant so positions are tenant-scoped.
+      console.log("User tenant:", user.tenantId);
       const data = await mcpListPositionsContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_positions_list")
@@ -169,6 +173,44 @@ export function registerEmployeeTools(server) {
       const data = await mcpGetEmployeeDocuments(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_documents_list")
+  );
+
+  // Phase 3 — Job & Compensation tab
+  server.tool(
+    "hr_employee_compensation_get",
+    "Get compensation (salary, bonus, banking) for an employee — payroll-sensitive fields masked unless caller holds hr:payroll VIEW",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      includeBanking: z.coerce.boolean().optional().default(false)
+        .describe("Set true only if your role has hr:payroll VIEW permission"),
+    },
+    withToolError(async ({ id, includeBanking }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Banking / raw salary only for payroll-authorized callers.
+      const hasPayroll = user.isAdmin ||
+        (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
+      const showBanking = Boolean(includeBanking && hasPayroll);
+      const data = await getEmployeeCompensation(id, user.tenantId, { showBanking });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_employee_compensation_get")
+  );
+
+  // Phase 3 — Activity tab
+  server.tool(
+    "hr_employee_activity_list",
+    "List HR audit activity log entries for an employee (who changed what and when)",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    },
+    withToolError(async ({ id, page, pageSize }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const data = await listEmployeeActivity(id, user.tenantId, { page, pageSize });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_employee_activity_list")
   );
 
   server.tool(
@@ -390,6 +432,17 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
+      console.log("User:", user);
+      console.log("Permissions:", permissions);
+      console.log("isAdmin:", user.isAdmin);
+      // if (!user.isAdmin) {
+      //   assertPermission(
+      //     permissions,
+      //     "POST",
+      //     "/hr/api/positions",
+      //     false
+      //   );
+      // }
       assertPermission(permissions, "POST", "/hr/api/positions", user.isAdmin);
       const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -445,6 +498,17 @@ export function registerEmployeeTools(server) {
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
+   server.tool(
+      "hr_position_get",
+      "Get a specific postion record by position ID",
+      { id: z.string().min(1) },
+      withToolError(async ({ id }) => {
+        const { user, permissions } = getCtx();
+        assertPermission(permissions, "GET", `/hr/api/position/${id}`, user.isAdmin);
+        const data = await mcpGetPositionByPositionId(user, id);
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      })
+    );
 
   server.tool(
     "hr_employee_lifecycle_create",
@@ -506,6 +570,34 @@ export function registerEmployeeTools(server) {
     })
   );
 
+  // Phase 1 alias — FE calls hr_employee_emergency_contact_create; backend
+  // registers hr_emergency_contact_create. Both now work. The alias also
+  // normalises contactName → name so both key conventions are handled.
+  server.tool(
+    "hr_employee_emergency_contact_create",
+    "Add an emergency contact for an employee (FE-compatible alias)",
+    {
+      employeeId: z.string().min(1),
+      contactName: z.string().optional(),
+      name: z.string().optional(),
+      relationship: z.string().min(1),
+      phone: z.string().min(1),
+      email: z.string().email().optional(),
+      is_primary: z.boolean().optional(),
+    },
+    withToolError(async ({ employeeId, contactName, name, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "/hr/api/emergency-contacts", user.isAdmin);
+      const resolvedName = name || contactName;  // accept either key
+      const data = await mcpCreateEmergencyContact(user, {
+        ...rest,
+        employee_Id: employeeId,
+        Contact_name: resolvedName,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
   server.tool(
     "hr_emergency_contact_create",
     "Add an emergency contact for an employee",
@@ -515,6 +607,7 @@ export function registerEmployeeTools(server) {
       relationship: z.string().min(1),
       phone: z.string().min(1),
       email: z.string().email().optional(),
+      is_primary: z.boolean().optional(),
     },
     withToolError(async ({ employeeId, name, ...rest }) => {
       const { user, permissions } = getCtx();

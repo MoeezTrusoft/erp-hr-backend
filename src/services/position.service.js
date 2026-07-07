@@ -65,7 +65,7 @@ export const getPositionById = async (id, tenantId) => {
     where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       employees: true,
-      createdBy: true,
+     //createdBy: true,
      },
   });
   if (!position) throw new Error("Position not found");

@@ -10,9 +10,9 @@ export const logEvent = async ({ employeeId, type, effectiveDate, notes, perform
     return prisma.employeeLifecycleEvent.create({
         data: scopedData(tenantId, {
             employeeId: Number(employeeId),
-            type,
+            eventType,
             effectiveDate: effectiveDate ? new Date(effectiveDate) : new Date(),
-            notes,
+            description,
             performedById: performedById ? Number(performedById) : null,
             metadata: metadata || {},
         }),
@@ -32,7 +32,7 @@ export const listEvents = async ({ type, page = 1, limit = 20, tenantId } = {}) 
     const [items, total] = await Promise.all([
         prisma.employeeLifecycleEvent.findMany({
             where, skip, take: limit, orderBy: { effectiveDate: "desc" },
-            include: { employee: { select: { id: true, firstName: true, lastName: true } } },
+            include: { employee: { select: { id: true, first_name: true, last_name: true } } },
         }),
         prisma.employeeLifecycleEvent.count({ where }),
     ]);
