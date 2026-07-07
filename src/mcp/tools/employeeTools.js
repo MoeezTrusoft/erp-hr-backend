@@ -443,7 +443,7 @@ export function registerEmployeeTools(server) {
       //     false
       //   );
       // }
-      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
+      assertPermission(permissions, "POST", "/hr/api/positions", user.isAdmin);
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -505,7 +505,7 @@ export function registerEmployeeTools(server) {
       { id: z.string().min(1) },
       withToolError(async ({ id }) => {
         const { user, permissions } = getCtx();
-        assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+        assertPermission(permissions, "GET", `/hr/api/position/${id}`, user.isAdmin);
         const data = await mcpGetPositionByPositionId(user, id);
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
       })
@@ -588,7 +588,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ employeeId, contactName, name, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
+      assertPermission(permissions, "POST", "/hr/api/emergency-contacts", user.isAdmin);
       const resolvedName = name || contactName;  // accept either key
       const data = await mcpCreateEmergencyContact(user, {
         ...rest,
