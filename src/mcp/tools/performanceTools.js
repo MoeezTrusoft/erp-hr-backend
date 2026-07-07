@@ -110,7 +110,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/goals", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpCreateGoal(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -129,7 +129,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/goals/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
       const data = await mcpUpdateGoal(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -145,7 +145,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/goals/approve/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
       const data = await mcpApproveGoal(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -161,7 +161,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/goals/progress", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpRecordGoalProgress(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -181,7 +181,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/performance", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpCreatePerformanceReview(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -198,7 +198,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/performance/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
       const data = await mcpUpdatePerformanceReview(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -215,7 +215,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/performance", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpAddPerformanceFeedback(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -234,7 +234,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/calibration", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpCreateCalibration(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -250,7 +250,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/calibration/finalize/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
       const data = await mcpFinalizeCalibration(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -267,7 +267,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/calibration/adjust", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpAdjustCalibrationRating(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -279,7 +279,7 @@ export function registerPerformanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/calibration/finalize/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
       const data = await mcpFinalizeCalibration(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -299,7 +299,7 @@ export function registerPerformanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/development-plans", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
       const data = await mcpCreateDevelopmentPlan(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
