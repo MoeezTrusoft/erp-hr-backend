@@ -432,18 +432,6 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      console.log("User:", user);
-      console.log("Permissions:", permissions);
-      console.log("isAdmin:", user.isAdmin);
-      // if (!user.isAdmin) {
-      //   assertPermission(
-      //     permissions,
-      //     "POST",
-      //     "/hr/api/positions",
-      //     false
-      //   );
-      // }
-      assertPermission(permissions, "POST", "/hr/api/positions", user.isAdmin);
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -505,7 +493,7 @@ export function registerEmployeeTools(server) {
       { id: z.string().min(1) },
       withToolError(async ({ id }) => {
         const { user, permissions } = getCtx();
-        assertPermission(permissions, "GET", `/hr/api/position/${id}`, user.isAdmin);
+        assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
         const data = await mcpGetPositionByPositionId(user, id);
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
       })
