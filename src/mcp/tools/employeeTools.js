@@ -360,7 +360,7 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/employee/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeleteEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -444,6 +444,7 @@ export function registerEmployeeTools(server) {
       //   );
       // }
       assertPermission(permissions, "POST", "/hr/api/positions", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -466,7 +467,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/positions/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdatePosition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -481,7 +482,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, isActive }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/positions/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdatePositionStatus(user, id, isActive);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_position_status_update")
@@ -493,7 +494,7 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/positions/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeletePosition(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -521,7 +522,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ eventType, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/employee-lifecycle", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateEmployeeLifecycle(user, {
         ...rest,
         type: eventType,
@@ -540,7 +541,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ lastWorkingDate, reason, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/offboarding", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateOffboarding(user, {
         ...rest,
         exitDate: lastWorkingDate,
@@ -561,7 +562,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, lastWorkingDate, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/offboarding/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdateOffboarding(user, id, {
         ...rest,
         ...(lastWorkingDate ? { exitDate: lastWorkingDate } : {}),
@@ -611,7 +612,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ employeeId, name, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/emergency-contacts", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateEmergencyContact(user, {
         ...rest,
         employee_Id: employeeId,
@@ -633,7 +634,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, name, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/emergency-contacts/update/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdateEmergencyContact(user, id, {
         ...rest,
         ...(name ? { Contact_name: name } : {}),
@@ -648,7 +649,7 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/emergency-contacts/delete/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeleteEmergencyContact(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

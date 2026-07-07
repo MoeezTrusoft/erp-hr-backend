@@ -85,7 +85,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/checkin", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCheckIn(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -101,7 +101,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/checkout", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCheckOut(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -117,7 +117,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/device/connectivity", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpDeviceConnectivity(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -144,7 +144,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/device/sync", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpDeviceSyncAttendance(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -160,7 +160,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "/hr/api/attendance/device/daily-summary", user.isAdmin);
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
       const data = await mcpAttendanceDailySummary(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -182,7 +182,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/timesheets", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateTimesheet(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -197,7 +197,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async ({ timesheetId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/time-attendance/timesheets/${timesheetId}/approve`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpApproveTimesheet(user, timesheetId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -230,7 +230,7 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", `/hr/api/attendance/get-attandance/${id}`, user.isAdmin);
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
       const data = await mcpGetAttendanceByEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -261,7 +261,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/entries", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateTimeEntry(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -278,7 +278,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/time-attendance/entries/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateTimeEntry(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -290,7 +290,7 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/time-attendance/entries/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
       const data = await mcpDeleteTimeEntry(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -323,7 +323,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/work-schedules", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateWorkSchedule(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -339,7 +339,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/time-attendance/work-schedules/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateWorkSchedule(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -351,7 +351,7 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/time-attendance/work-schedules/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
       const data = await mcpDeleteWorkSchedule(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -381,7 +381,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/overtime-rules", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateOvertimeRule(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -398,7 +398,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/time-attendance/overtime-rules/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateOvertimeRule(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -410,7 +410,7 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/time-attendance/overtime-rules/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
       const data = await mcpDeleteOvertimeRule(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

@@ -83,7 +83,7 @@ export function registerComplianceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/compliance/checklists", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:compliance", user.isAdmin);
       const payload = {
         ...args,
         name: args.name || args.title,
@@ -103,7 +103,7 @@ export function registerComplianceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/compliance/items/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:compliance", user.isAdmin);
       const data = await mcpUpdateComplianceItem(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -117,7 +117,7 @@ export function registerComplianceTools(server) {
     { employeeId: z.string().min(1) },
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", `/hr/api/gdpr/export/${employeeId}`, user.isAdmin);
+      assertPermission(permissions, "GET", "hr:gdpr", user.isAdmin);
       const data = await mcpExportGdprEmployeeData(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -132,7 +132,7 @@ export function registerComplianceTools(server) {
     },
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/gdpr/erase/${employeeId}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:gdpr", user.isAdmin);
       const data = await mcpEraseGdprEmployeeData(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -153,7 +153,7 @@ export function registerComplianceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/reimbursements", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:reimbursement", user.isAdmin);
       const data = await mcpCreateReimbursement(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -168,7 +168,7 @@ export function registerComplianceTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/reimbursements/${id}/approve`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:reimbursement", user.isAdmin);
       const data = await mcpApproveReimbursement(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

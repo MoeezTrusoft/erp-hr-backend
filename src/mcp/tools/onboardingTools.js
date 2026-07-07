@@ -58,7 +58,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/onboarding/checklists", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await mcpCreateOnboardingChecklist(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -74,7 +74,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/onboarding/checklists/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
       const data = await mcpUpdateOnboardingChecklist(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -92,7 +92,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async ({ checklistId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/onboarding/checklists/${checklistId}/tasks`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await mcpAddOnboardingTask(user, checklistId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -108,7 +108,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async ({ taskId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/onboarding/tasks/${taskId}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
       const data = await mcpUpdateOnboardingTask(user, taskId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -120,7 +120,7 @@ export function registerOnboardingTools(server) {
     { taskId: z.string().min(1) },
     withToolError(async ({ taskId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/onboarding/tasks/${taskId}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:onboarding", user.isAdmin);
       const data = await mcpDeleteOnboardingTask(user, taskId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -135,7 +135,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async ({ docId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/onboarding/documents/${docId}/sign`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
       const data = await mcpSignOnboardingDocument(user, docId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -150,7 +150,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async ({ checklistId, buddyId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/onboarding/checklists/${checklistId}/buddy`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await mcpAssignOnboardingBuddy(user, checklistId, { buddyId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -166,7 +166,7 @@ export function registerOnboardingTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/onboarding/surveys", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await mcpSubmitOnboardingSurvey(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
