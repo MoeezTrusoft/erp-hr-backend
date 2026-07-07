@@ -927,7 +927,7 @@ model Position {
   title          String
   description    String?
   createdById    Int?
-  jobCode        String?          @unique // <-- new field
+  jobCode        String?      
   isActive       Boolean          @default(true)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
