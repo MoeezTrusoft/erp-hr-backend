@@ -9,6 +9,7 @@
 // production runs see exactly one. `src/config/prisma.js` re-exports
 // from this file so legacy `../config/prisma.js` imports keep working.
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { c4EncryptionExtension } from './c4Encryption.js';
 import { rlsTenantExtension } from './rlsTenant.js';
 
@@ -21,7 +22,7 @@ const globalForPrisma = globalThis;
 // (and dev-time reloads) share exactly one encrypted client.
 const prisma =
     globalForPrisma.__hrPrisma ??
-    new PrismaClient({
+    new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
         log: process.env.PRISMA_LOG_LEVEL
             ? process.env.PRISMA_LOG_LEVEL.split(',').map((s) => s.trim()).filter(Boolean)
             : ['warn', 'error'],

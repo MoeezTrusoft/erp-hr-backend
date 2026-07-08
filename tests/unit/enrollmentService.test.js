@@ -4,7 +4,7 @@
 // from src/lib/prisma.js (per BE-§7.1, P1B singleton work), so we can
 // substitute it with jest.unstable_mockModule before importing the
 // service. The original suite was parked behind describe.skip while the
-// service still ran `new PrismaClient()`; we now revive its intent.
+// service still ran `new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) })`; we now revive its intent.
 //
 // We also stub src/utils/logs.js so the audit-log side-effect doesn't
 // reach the real prisma client during these unit tests.

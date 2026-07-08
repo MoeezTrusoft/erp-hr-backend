@@ -19,6 +19,7 @@
 // applied), so the suite stays green on a bare checkout.
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import prisma from '../../src/lib/prisma.js';
 
 const TENANT_A = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
@@ -50,7 +51,7 @@ beforeAll(async () => {
         // Confirm the hr_app role + RLS pilot migration are present.
         const roles = await prisma.$queryRaw`SELECT 1 FROM pg_roles WHERE rolname = 'hr_app'`;
         if (!roles || roles.length === 0) return;
-        appClient = new PrismaClient({ datasourceUrl: url });
+        appClient = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }), datasourceUrl: url });
         await appClient.$queryRaw`SELECT 1`;
         ready = true;
     } catch {

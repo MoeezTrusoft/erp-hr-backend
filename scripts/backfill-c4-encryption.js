@@ -25,6 +25,7 @@
 //
 // DATABASE_URL selects the target DB (the same env the app uses).
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import {
     encryptString,
     encryptNumber,
@@ -34,7 +35,7 @@ import {
 
 const log = (m) => process.stdout.write(`backfill-c4: ${m}\n`);
 
-const raw = new PrismaClient({ log: ['warn', 'error'] });
+const raw = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }), log: ['warn', 'error'] });
 
 let updated = { terms: 0, banks: 0, offers: 0, employees: 0 };
 
