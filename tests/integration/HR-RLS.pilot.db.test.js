@@ -51,7 +51,7 @@ beforeAll(async () => {
         // Confirm the hr_app role + RLS pilot migration are present.
         const roles = await prisma.$queryRaw`SELECT 1 FROM pg_roles WHERE rolname = 'hr_app'`;
         if (!roles || roles.length === 0) return;
-        appClient = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }), datasourceUrl: url });
+        appClient = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
         await appClient.$queryRaw`SELECT 1`;
         ready = true;
     } catch {

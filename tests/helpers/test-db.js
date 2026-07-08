@@ -152,8 +152,8 @@ export const requireTestDatabaseUrl = () => {
 export const getTestPrisma = () => {
     if (cachedClient) return cachedClient;
     const url = requireTestDatabaseUrl();
-    cachedClient = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
-        datasourceUrl: url,
+    cachedClient = new PrismaClient({
+        adapter: new PrismaPg({ connectionString: url }),
         log: ['warn', 'error'],
     });
     return cachedClient;
