@@ -512,6 +512,43 @@ const normalizeMediaPayload = async ({ mediaId, file, type, fallback = {} }) => 
   return null;
 };
 
+// Decode a FE-supplied inline upload (raw base64 OR a `data:<mime>;base64,…`
+// URI) into the multer-style file object uploadFileToDAM expects, so the FE can
+// send the raw bytes and the BE extracts fileName/mimeType/fileSize itself.
+// Accepts either a bare string or an object carrying { fileBase64, fileName,
+// mimeType }. Returns null when there is no usable base64 content.
+export const fileFromBase64 = (input, fallbackName = "upload.bin") => {
+  if (!input) return null;
+  const raw = typeof input === "string" ? input : input.fileBase64 || input.base64;
+  if (!raw || typeof raw !== "string") return null;
+
+  let mimetype = typeof input === "object" ? input.mimeType || input.mimetype : null;
+  let b64 = raw.trim();
+  const dataUri = b64.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?(?:;base64)?,(.*)$/s);
+  if (dataUri) {
+    if (dataUri[1] && !mimetype) mimetype = dataUri[1];
+    b64 = dataUri[2];
+  }
+  b64 = b64.replace(/\s/g, "");
+  if (!b64) return null;
+
+  const buffer = Buffer.from(b64, "base64");
+  if (!buffer.length) return null;
+
+  const originalname =
+    (typeof input === "object" && (input.fileName || input.filename)) || fallbackName;
+  return { buffer, originalname, mimetype: mimetype || "application/octet-stream", size: buffer.length };
+};
+
+// Resolve an employee media slot from EITHER an inline base64 upload OR a
+// pre-existing DAM mediaId. base64 wins when both are present.
+const resolveEmployeeMedia = async (base64Input, mediaId, type, fallback = {}) => {
+  const file = fileFromBase64(base64Input, `${type}.bin`);
+  if (file) return normalizeMediaPayload({ file, type });
+  if (mediaId) return normalizeMediaPayload({ mediaId, type, fallback });
+  return null;
+};
+
 const documentDataFromContract = (document, employeeId, actorId, media = null) => ({
   title: document.title || media?.fileName || null,
   category: document.category || null,
@@ -725,12 +762,44 @@ const lifecycleSourceSelect = {
 export const createEmployee = async (payload, actorId, ctx = {}) => {
   const data = createEmployeeContractSchema.parse(normalizeContractPayload(payload));
   await assertEmployeeReferences(data);
-  const profilePhoto = data.profilePhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.profilePhotoMediaId, type: "employee-profile-photo" })
-    : null;
-  const coverPhoto = data.coverPhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
-    : null;
+  // Photos: accept an inline base64/data-URI upload OR a pre-existing mediaId.
+  const profilePhoto = await resolveEmployeeMedia(
+    { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
+    data.profilePhotoMediaId,
+    "employee-profile-photo"
+  );
+  const coverPhoto = await resolveEmployeeMedia(
+    { fileBase64: data.coverPhotoBase64, fileName: data.coverPhotoFileName },
+    data.coverPhotoMediaId,
+    "employee-cover-photo"
+  );
+  // Documents: upload any base64 file to DAM BEFORE the tx (network I/O must not
+  // run inside a prisma transaction), resolving each to a media record. A doc is
+  // valid with an inline file OR an existing mediaId.
+  const documentMedia = await Promise.all(
+    (data.documents || []).map(async (document) => {
+      const file = fileFromBase64(document, "employee-document.bin");
+      let media = null;
+      if (file) {
+        media = await normalizeMediaPayload({ file, type: "employee-document" });
+      } else if (document.mediaId) {
+        media = await normalizeMediaPayload({
+          mediaId: document.mediaId,
+          type: "employee-document",
+          fallback: {
+            fileName: document.fileName,
+            mimeType: document.mimeType,
+            fileSize: document.fileSize,
+            url: document.downloadUrl,
+          },
+        });
+      }
+      if (!media?.mediaId) {
+        throw new Error("Each employee document requires an inline file (fileBase64) or an existing mediaId");
+      }
+      return { document, media };
+    })
+  );
   // T-P2.2/T-P2.6: tenant comes ONLY from the verified claim (ctx.tenantId,
   // surfaced from the service-JWT tenant on req.user) — NEVER the request body.
   // It is an opaque RBAC Company.uuid string; thread it verbatim, null → null
@@ -780,15 +849,11 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       });
     }
 
-    if (data.documents.length > 0) {
+    if (documentMedia.length > 0) {
       await tx.employeeMedia.createMany({
-        data: data.documents.map((document) => {
-          const parsedDocument = createEmployeeDocumentSchema.parse(document);
-          if (!parsedDocument.mediaId) {
-            throw new Error("Nested employee documents require mediaId");
-          }
-          return documentDataFromContract(parsedDocument, created.id, actorId);
-        }),
+        data: documentMedia.map(({ document, media }) =>
+          documentDataFromContract(document, created.id, actorId, media)
+        ),
       });
     }
 
@@ -817,12 +882,16 @@ export const updateEmployee = async (id, payload, actorId) => {
 
   const data = updateEmployeeContractSchema.parse(normalizeContractPayload(payload));
   await assertEmployeeReferences(data, employeeId);
-  const profilePhoto = data.profilePhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.profilePhotoMediaId, type: "employee-profile-photo" })
-    : null;
-  const coverPhoto = data.coverPhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
-    : null;
+  const profilePhoto = await resolveEmployeeMedia(
+    { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
+    data.profilePhotoMediaId,
+    "employee-profile-photo"
+  );
+  const coverPhoto = await resolveEmployeeMedia(
+    { fileBase64: data.coverPhotoBase64, fileName: data.coverPhotoFileName },
+    data.coverPhotoMediaId,
+    "employee-cover-photo"
+  );
   const employeeData = {
     ...data,
     profilePhotoUrl: profilePhoto?.url,
@@ -915,6 +984,7 @@ export const updateEmployeeStatus = async (id, status, actorId) => {
 
 export const uploadEmployeeProfilePhoto = async (id, payload, file, actorId) => {
   const data = mediaAttachSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-profile-photo.bin");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
     file,
@@ -944,6 +1014,7 @@ export const uploadEmployeeProfilePhoto = async (id, payload, file, actorId) => 
 
 export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
   const data = mediaAttachSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-cover-photo.bin");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
     file,
@@ -974,6 +1045,7 @@ export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
 export const createEmployeeDocument = async (employeeId, payload, file, actorId) => {
   await requireRecord("employee", employeeId, "Employee");
   const data = createEmployeeDocumentSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-document.bin");
   if (!file && !data.mediaId) throw new Error("mediaId or uploaded file is required");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
@@ -1002,6 +1074,7 @@ export const updateEmployeeDocument = async (employeeId, documentId, payload, fi
   if (!existing) throw new Error("Employee document not found");
 
   const data = updateEmployeeDocumentSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-document.bin");
   const media = file || data.mediaId
     ? await normalizeMediaPayload({
         mediaId: data.mediaId || existing.media_id,
