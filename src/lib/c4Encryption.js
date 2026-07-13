@@ -45,8 +45,11 @@ import {
 //      where the conductor's ~L1573 pointer lands).
 export const C4_FIELDS = {
     employmentTerms: { baseSalary: 'number', bonusTarget: 'number' },
-    bankDetail: { accountNumber: 'string', routingNumber: 'string' },
-    employee: { nationality_id_no: 'string' },
+    // iban embeds the account number → encrypt at rest like accountNumber. No
+    // blind index (we never look up / uniquely constrain by iban).
+    bankDetail: { accountNumber: 'string', routingNumber: 'string', iban: 'string' },
+    // ntn is a Pakistan tax registration id → encrypt like nationality_id_no.
+    employee: { nationality_id_no: 'string', ntn: 'string' },
     offer: { salary: 'number' },
 };
 

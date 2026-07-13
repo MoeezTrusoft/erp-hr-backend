@@ -15,6 +15,7 @@ import {
   remove as deleteEmergencyContactController,
 } from "../../controllers/emergencyContacts.controller.js";
 import * as hrContractService from "../../services/hrContract.service.js";
+import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -73,6 +74,17 @@ export async function mcpListEmployeesContract(query = {}, tenantId) {
 
 export async function mcpGetEmployeeById(user, id) {
   return { success: true, data: await hrContractService.getEmployeeProfile(id, user?.tenantId ?? null) };
+}
+
+// Consolidated employee profile (department/company from RBAC, bank block, ntn,
+// tax slab, EOBI/PF, monthly/YTD tax, compensation history, skills/competencies,
+// certifications, documents). Sensitive fields (raw salary/account/iban/ntn) are
+// gated on `showSensitive` — set by the tool from the caller's hr:payroll VIEW.
+export async function mcpGetEmployeeProfile(user, id, opts = {}) {
+  return {
+    success: true,
+    data: await getEmployeeConsolidatedProfile(id, user?.tenantId ?? null, opts),
+  };
 }
 
 

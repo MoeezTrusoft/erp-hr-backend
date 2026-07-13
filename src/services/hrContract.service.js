@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
 import {
@@ -282,6 +283,7 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
     businessUnitId: data.businessUnitId,
     managerId: data.managerId,
     regionId: data.locationId,
+    ntn: data.ntn, // C4-encrypted at rest by the prisma extension
     employee_type: data.employmentType,
     employement_status: data.employmentStatus,
     status: data.employmentStatus,
@@ -331,8 +333,64 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
   return Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined));
 };
 
+// Collect the primary-BankDetail fields present in a contract payload. Returns
+// null when none are supplied so create/update can skip banking entirely.
+// accountNumber / iban are C4-encrypted transparently on write.
+const bankFieldsFromContract = (data) => {
+  const map = {
+    bankName: data.bankName,
+    accountTitle: data.accountTitle,
+    accountNumber: data.accountNumber,
+    iban: data.iban,
+    branch: data.branch,
+    disbursementMethod: data.disbursementMethod,
+    routingNumber: data.routingNumber,
+    accountType: data.accountType,
+  };
+  const present = Object.fromEntries(Object.entries(map).filter(([, v]) => v !== undefined));
+  return Object.keys(present).length ? present : null;
+};
+
+// Upsert the employee's PRIMARY BankDetail inside a transaction. A NEW row needs
+// both bankName + accountNumber (NOT NULL columns); a partial patch updates the
+// existing primary. Returns true if a write happened.
+const upsertPrimaryBankDetail = async (tx, employeeId, tenantId, bank) => {
+  if (!bank) return false;
+  const existing = await tx.bankDetail.findFirst({
+    where: { employeeId: Number(employeeId), isPrimary: true },
+    orderBy: { created_at: "desc" },
+    select: { id: true },
+  });
+
+  if (existing) {
+    await tx.bankDetail.update({ where: { id: existing.id }, data: bank });
+    return true;
+  }
+
+  if (!bank.bankName || !bank.accountNumber) {
+    // Can't create a new bank row without the NOT NULL fields; skip silently so
+    // a partial update on an employee with no bank row is a no-op, not a 500.
+    return false;
+  }
+  await tx.bankDetail.create({
+    data: {
+      employeeId: Number(employeeId),
+      tenantId: tenantId ?? null,
+      isPrimary: true,
+      accountType: bank.accountType || "CHECKING",
+      ...bank,
+    },
+  });
+  return true;
+};
+
 const employeeProfileSelect = {
   ...compactEmployeeSelect,
+  ntn: true,
+  bankDetails: {
+    orderBy: [{ isPrimary: "desc" }, { created_at: "desc" }],
+    take: 1,
+  },
   date_of_birth: true,
   nationality: true,
   nationality_id_type: true,
@@ -362,12 +420,35 @@ const employeeProfileSelect = {
   reports: { select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true } },
 };
 
+const maskTail = (v) => {
+  const s = String(v ?? "");
+  return s ? `****${s.slice(-4)}` : null;
+};
+
 const employeeContractProfile = (employee) => {
   const summary = employeeDirectoryRow(employee);
   const additionalFields =
     employee.additional_fields && typeof employee.additional_fields === "object" ? employee.additional_fields : {};
+  // Primary bank row (C4-decrypted on read); account/iban masked here since this
+  // profile is gated on hr:employee (not hr:payroll). The full-detail, permission
+  // -gated view lives in the consolidated hr_employee_profile_get tool.
+  const primaryBank = employee.bankDetails?.[0] || null;
   return {
   summary,
+  ntn: employee.ntn ? maskTail(employee.ntn) : null,
+  banking: primaryBank
+    ? {
+        id: primaryBank.id,
+        accountTitle: primaryBank.accountTitle ?? null,
+        bankName: primaryBank.bankName ?? null,
+        accountNumber: maskTail(primaryBank.accountNumber),
+        iban: maskTail(primaryBank.iban),
+        branch: primaryBank.branch ?? null,
+        disbursementMethod: primaryBank.disbursementMethod ?? null,
+        accountType: primaryBank.accountType ?? null,
+        isPrimary: primaryBank.isPrimary,
+      }
+    : null,
   personal: {
     firstName: employee.first_name,
     middleName: employee.middle_name,
@@ -857,6 +938,10 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       });
     }
 
+    // Banking (A/C title, bank, account #, IBAN, branch, disbursement) — no
+    // create path existed before. Verified tenant rides on the row.
+    await upsertPrimaryBankDetail(tx, created.id, verifiedTenantId, bankFieldsFromContract(data));
+
     return tx.employee.findUnique({
       where: { id: created.id },
       select: employeeProfileSelect,
@@ -872,7 +957,31 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     notes: `Employee ${employee.id} created from HR contract`,
   });
 
-  return employeeContractProfile(employee);
+  // Opt-in AI resume parsing: only when BOTH resumeMediaId + parseResume are set.
+  // Best-effort enrichment — a parse failure must NOT fail employee creation.
+  // The resume service is dynamically imported so its lazy AI deps are never
+  // touched unless a caller opts in.
+  let resumeParsing = null;
+  if (data.resumeMediaId && data.parseResume) {
+    try {
+      const { ingestEmployeeResume } = await import("./resumeParsing.service.js");
+      resumeParsing = await ingestEmployeeResume({
+        employeeId: employee.id,
+        mediaId: data.resumeMediaId,
+        tenantId: verifiedTenantId,
+        actorId,
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err?.message, employeeId: employee.id },
+        "createEmployee: opt-in resume parse failed (non-fatal)"
+      );
+      resumeParsing = { error: err?.message || "resume parse failed" };
+    }
+  }
+
+  const profile = employeeContractProfile(employee);
+  return resumeParsing ? { ...profile, resumeParsing } : profile;
 };
 
 export const updateEmployee = async (id, payload, actorId) => {
@@ -917,6 +1026,10 @@ export const updateEmployee = async (id, payload, actorId) => {
         })),
       });
     }
+
+    // Banking upsert — patch the existing primary BankDetail or create one when
+    // bankName + accountNumber are supplied. Tenant inherited from the employee.
+    await upsertPrimaryBankDetail(tx, employeeId, existing.tenant_id ?? null, bankFieldsFromContract(data));
 
     return tx.employee.findUnique({
       where: { id: employeeId },

@@ -16,6 +16,7 @@ import {
   mcpDeleteEmployee,
   mcpDeletePosition,
   mcpGetEmployeeById,
+  mcpGetEmployeeProfile,
   mcpGetEmployeeDocuments,
   mcpGetEmployeeQuickView,
   mcpGetEmployees,
@@ -150,7 +151,29 @@ export function registerEmployeeTools(server) {
   };
 
   registerEmployeeProfileTool("hr_employee_get", mcpGetEmployeeById);
-  registerEmployeeProfileTool("hr_employee_profile_get", mcpGetEmployeeById);
+
+  // Consolidated profile: company/department (RBAC), pay grade, middle name,
+  // bank block (A/C title, bank, account #, IBAN, branch, disbursement), NTN,
+  // tax slab (PK FY), EOBI/PF, monthly + YTD tax, compensation history,
+  // skills/competencies, certifications, and documents. Raw salary/account/iban/
+  // ntn are surfaced only to callers with hr:payroll VIEW (else masked).
+  server.tool(
+    "hr_employee_profile_get",
+    "Get a consolidated employee profile: company & department (from RBAC), pay grade, bank & payment details, NTN, tax slab, EOBI/PF, monthly & YTD tax, compensation history, skills, competencies, certifications and documents",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the tax slab, e.g. 'FY26'. Defaults to the FY of the latest payslip."),
+    },
+    withToolError(async ({ id, taxFiscalYear }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Raw salary / account / iban / ntn only for payroll-authorized callers.
+      const showSensitive = user.isAdmin ||
+        (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
+      const data = await mcpGetEmployeeProfile(user, id, { showSensitive, taxFiscalYear });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_profile_get")
+  );
 
   server.tool(
     "hr_employee_quick_view_get",
@@ -279,6 +302,19 @@ export function registerEmployeeTools(server) {
       coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
       documents: z.array(z.any()).optional().describe("Each item may carry fileBase64 (+fileName) for the BE to upload, OR an existing mediaId."),
+      // Tax + banking (consolidated profile). ntn + iban are encrypted at rest.
+      ntn: z.string().optional().describe("Pakistan National Tax Number (encrypted at rest)"),
+      bankName: z.string().optional(),
+      accountTitle: z.string().optional().describe("A/C Title"),
+      accountNumber: z.string().optional().describe("Provide with bankName to create the primary bank row"),
+      iban: z.string().optional(),
+      branch: z.string().optional(),
+      disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
+      routingNumber: z.string().optional(),
+      accountType: z.string().optional(),
+      // Opt-in AI resume parsing: only runs when BOTH are set.
+      resumeMediaId: z.union([z.string(), z.number()]).optional().describe("DAM asset id of the resume to parse"),
+      parseResume: z.coerce.boolean().optional().describe("Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create"),
     },
     withToolError(async (args) => {
       const { user, permissions, correlationId } = getCtx();
@@ -334,6 +370,17 @@ export function registerEmployeeTools(server) {
       coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
       coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
+      // Tax + banking — patches the primary bank row (or creates it when bankName
+      // + accountNumber are supplied). ntn + iban are encrypted at rest.
+      ntn: z.string().optional(),
+      bankName: z.string().optional(),
+      accountTitle: z.string().optional().describe("A/C Title"),
+      accountNumber: z.string().optional(),
+      iban: z.string().optional(),
+      branch: z.string().optional(),
+      disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
+      routingNumber: z.string().optional(),
+      accountType: z.string().optional(),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

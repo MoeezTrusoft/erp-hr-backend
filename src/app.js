@@ -88,6 +88,7 @@ import developmentPlanRoutes from "./routes/developmentPlan.routes.js";
 import reimbursementRoutes from "./routes/reimbursement.routes.js";
 import gdprRoutes from "./routes/gdpr.routes.js";
 import benefitRoutes from "./routes/benefit.routes.js";
+import resumeRoutes from "./routes/resume.routes.js";
 
 import mcpRouter from "./mcp/mcpRouter.js";
 
@@ -201,6 +202,7 @@ export const createApp = () => {
     app.use("/api/reimbursements", reimbursementRoutes);
     app.use("/api/gdpr", gdprRoutes);
     app.use("/api/benefits", benefitRoutes);
+    app.use("/api/resume", resumeRoutes);
 
     app.get("/metrics", async (_req, res) => {
         res.setHeader("Content-Type", register.contentType);

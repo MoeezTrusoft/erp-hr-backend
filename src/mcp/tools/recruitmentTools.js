@@ -263,6 +263,8 @@ export function registerRecruitmentTools(server) {
       phone: z.string().optional(),
       linkedinUrl: z.string().url().optional(),
       source: z.string().optional().describe("e.g. REFERRAL, JOB_BOARD, AGENCY"),
+      resumeMediaId: z.union([z.string(), z.number()]).optional().describe("DAM asset id of the resume"),
+      parseResume: z.coerce.boolean().optional().describe("Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

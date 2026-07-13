@@ -102,6 +102,23 @@ const employeeBase = {
   emergencyContacts: z.array(emergencyContactSchema).optional().default([]),
   documents: z.array(employeeDocumentSchema).optional().default([]),
   additionalFields: optionalRecord,
+  // Tax + banking (consolidated profile). ntn is C4-encrypted at rest. The bank
+  // fields upsert the employee's PRIMARY BankDetail (no create/update path existed
+  // before). Provide bankName + accountNumber together to create a bank row; any
+  // subset updates the existing primary. iban is C4-encrypted at rest.
+  ntn: optionalString,
+  bankName: optionalString,
+  accountTitle: optionalString, // A/C Title
+  accountNumber: optionalString,
+  iban: optionalString,
+  branch: optionalString,
+  disbursementMethod: optionalString, // Bank Transfer | Cheque | Cash
+  routingNumber: optionalString,
+  accountType: optionalString,
+  // Opt-in AI resume parsing on create/update: only runs when BOTH a resumeMediaId
+  // (DAM asset) and parseResume:true are supplied. See resumeParsing.service.js.
+  resumeMediaId: optionalInt,
+  parseResume: z.coerce.boolean().optional().default(false),
 };
 
 // Only firstName + lastName are required at create time. jobTitle, hireDate,

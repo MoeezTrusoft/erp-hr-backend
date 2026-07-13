@@ -228,6 +228,9 @@ model Employee {
   updated_at           DateTime  @updatedAt
 
   // NEW FIELDS
+  // Pakistan National Tax Number. Additive nullable; C4-encrypted at rest via the
+  // prisma C4 extension (C4_FIELDS.employee.ntn) — plaintext string in memory.
+  ntn            String?
   businessUnitId Int? // Business Unit / Platform
   gradeLevelId   Int? // Employee Grade
   managerId      Int? // Direct Supervisor (Manager)
@@ -1421,6 +1424,11 @@ model BankDetail {
   accountNumberBidx String? // HR-01 / T-P4.2 — deterministic HMAC of the plaintext account for unique + lookup
   routingNumber     String? // HR-01 / T-P4.2 — C4 routing number encrypted at rest
   accountType       String   @default("CHECKING")
+  // Consolidated-profile fields (additive nullable).
+  accountTitle       String? // A/C Title — name the account is held under
+  iban               String? // C4-encrypted at rest (C4_FIELDS.bankDetail.iban); embeds the account number
+  branch             String? // bank branch name / code
+  disbursementMethod String? // how net pay is disbursed: Bank Transfer | Cheque | Cash
   isPrimary         Boolean  @default(true)
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
@@ -1498,15 +1506,42 @@ model Candidate {
   resumeMediaId Int? // DAM asset ID for resume file
   notes         String?
   status        String   @default("active") // active | archived
+  // AI resume-parsing output (skills/competencies/certifications + raw meta).
+  // Additive nullable JSON; candidates have no Certification relation so their
+  // extracted certs live here.
+  parsedResume  Json?
   tenantId      String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById   Int?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  tags         CandidateTag[]
-  applications Application[]
-  talentPools  TalentPool[]
-  offers       Offer[]
+  tags           CandidateTag[]
+  applications   Application[]
+  talentPools    TalentPool[]
+  offers         Offer[]
+  candidateSkills CandidateSkill[]
+}
+
+model CandidateSkill {
+  id          Int      @id @default(autoincrement())
+  candidateId Int
+  // Self-contained (candidates are pre-hire, not linked to the Skill catalog):
+  // name + category ('skill' | 'competency') + AI rating (score 0-100 + level).
+  name        String
+  category    String?  @default("skill")
+  score       Int?
+  level       String?
+  source      String?  @default("ai-resume")
+  createdAt   DateTime @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid; nullable, fail-closed
+
+  @@unique([candidateId, name])
+  @@index([candidateId])
+  @@index([tenantId])
+  @@map("candidate_skills")
 }
 
 model CandidateTag {
@@ -2009,6 +2044,12 @@ model EmployeeSkill {
   employeeId   Int
   skillId      Int
   proficiency  String?
+  // AI resume-parsing ratings (additive nullable). score 0-100 + a level label
+  // (Beginner/Intermediate/Advanced/Expert). source marks provenance, e.g.
+  // "ai-resume" so AI-derived ratings are distinguishable from manual ones.
+  score        Int?
+  level        String?
+  source       String?
   verified     Boolean  @default(false)
   verifiedById Int?
   addedAt      DateTime @default(now())
