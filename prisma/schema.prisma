@@ -319,6 +319,7 @@ model Employee {
 
   // Learning & Development relations
   certifications          Certification[]
+  recognitions            Recognition[]
   facilitatedSessions     TrainingSession[]         @relation("SessionFacilitator")
   sessionAttendances      TrainingSessionAttendee[]
   learningPathEnrollments LearningPathEnrollment[]
@@ -1050,6 +1051,8 @@ model TrainingEnrollment {
   progress       Float            @default(0)
   status         EnrollmentStatus @default(ENROLLED)
   completionDate DateTime?
+  // Assessment score 0-100 (additive nullable). Training tab averages completed scores.
+  score          Int?
 
   course   TrainingCourse @relation(fields: [courseId], references: [id])
   employee Employee       @relation(fields: [employeeId], references: [id])
@@ -1373,6 +1376,9 @@ model EmploymentTerms {
   currency        String       @default("USD")
   payFrequency    PayFrequency
   bonusTarget     String? // HR-01 / T-P4.2 — C4 bonus encrypted at rest (was Float?)
+  // Equity component (RSUs/options/grant value) — free-form, C4-encrypted at rest
+  // (C4_FIELDS.employmentTerms.equity). Additive nullable. Job & Comp tab.
+  equity          String?
   equalityDetails String?
   effectiveFrom   DateTime
   effectiveTo     DateTime?
@@ -2024,6 +2030,25 @@ enum OffboardingStatus {
 }
 
 // ==================== EMPLOYEE MANAGEMENT MODELS ====================
+
+model Recognition {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  title       String
+  description String?
+  category    String? // Award | Kudos | Spot Bonus | Milestone
+  givenById   Int? // employee/user who gave the recognition
+  awardedAt   DateTime @default(now())
+  created_at  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // RBAC Company.uuid; nullable, fail-closed
+
+  @@index([employeeId])
+  @@index([tenantId])
+  @@map("recognitions")
+}
 
 model Skill {
   id         Int      @id @default(autoincrement())

@@ -44,7 +44,7 @@ import {
 //      no CompensationPackage model; Offer.salary is the salary field that sits
 //      where the conductor's ~L1573 pointer lands).
 export const C4_FIELDS = {
-    employmentTerms: { baseSalary: 'number', bonusTarget: 'number' },
+    employmentTerms: { baseSalary: 'number', bonusTarget: 'number', equity: 'string' },
     // iban embeds the account number → encrypt at rest like accountNumber. No
     // blind index (we never look up / uniquely constrain by iban).
     bankDetail: { accountNumber: 'string', routingNumber: 'string', iban: 'string' },

@@ -93,6 +93,7 @@ const compTermsRow = (t, showSensitive) => ({
   id: t.id,
   baseSalary: showSensitive ? num(t.baseSalary) : null,
   bonusTarget: showSensitive ? num(t.bonusTarget) : null,
+  equity: showSensitive ? (t.equity ?? null) : null, // C4-decrypted free-form
   currency: t.currency,
   payFrequency: t.payFrequency,
   effectiveFrom: t.effectiveFrom,
@@ -160,8 +161,9 @@ export async function getEmployeeConsolidatedProfile(employeeId, tenantId, opts 
 
   if (!employee) throw Object.assign(new Error("Employee not found"), { status: 404 });
 
-  // ---- Org identity from RBAC (fail-soft) ----
-  const org = await getUserByEmployeeId(id);
+  // ---- Org identity from RBAC (fail-soft) ---- (reuse a pre-fetched org when the
+  // tab dispatcher already resolved it, to avoid a second RBAC round-trip).
+  const org = opts.org ?? (await getUserByEmployeeId(id));
 
   // ---- Bank ----
   const primaryBank =

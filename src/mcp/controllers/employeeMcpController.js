@@ -16,6 +16,7 @@ import {
 } from "../../controllers/emergencyContacts.controller.js";
 import * as hrContractService from "../../services/hrContract.service.js";
 import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
+import { getEmployeeProfileTab } from "../../services/employeeProfileTabs.service.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -84,6 +85,14 @@ export async function mcpGetEmployeeProfile(user, id, opts = {}) {
   return {
     success: true,
     data: await getEmployeeConsolidatedProfile(id, user?.tenantId ?? null, opts),
+  };
+}
+
+// Tab-scoped profile: fetches ONE tab's data + the always-on identity header.
+export async function mcpGetEmployeeProfileTab(user, id, opts = {}) {
+  return {
+    success: true,
+    data: await getEmployeeProfileTab(id, user?.tenantId ?? null, opts),
   };
 }
 

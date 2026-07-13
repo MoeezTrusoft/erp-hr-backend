@@ -17,6 +17,7 @@ import {
   mcpDeletePosition,
   mcpGetEmployeeById,
   mcpGetEmployeeProfile,
+  mcpGetEmployeeProfileTab,
   mcpGetEmployeeDocuments,
   mcpGetEmployeeQuickView,
   mcpGetEmployees,
@@ -157,22 +158,50 @@ export function registerEmployeeTools(server) {
   // tax slab (PK FY), EOBI/PF, monthly + YTD tax, compensation history,
   // skills/competencies, certifications, and documents. Raw salary/account/iban/
   // ntn are surfaced only to callers with hr:payroll VIEW (else masked).
+  // Tab-scoped profile: returns an always-on identity header + ONE tab's data.
+  //   overview     — skills & competencies, leave balance, last review, attendance, projects
+  //   job_and_comp — company/dept, pay grade, bank block, NTN, tax slab, EOBI/PF, monthly &
+  //                  YTD tax, compensation history, CTC/basic/allowances/variable bonus/equity, documents
+  //   performance  — goals, performance potential, recognition
+  //   leaves       — upcoming leaves + team coverage, holidays, hours completed
+  //   training     — courses done, avg score, certificates, active learning path, recommended, activity timeline
+  //   activity     — last login, device, 2FA, sessions (30d), failed attempts, permissions & roles (from RBAC)
+  // Sensitive fields (raw salary/account/iban/ntn/CTC) surface only for hr:payroll VIEW callers.
   server.tool(
     "hr_employee_profile_get",
-    "Get a consolidated employee profile: company & department (from RBAC), pay grade, bank & payment details, NTN, tax slab, EOBI/PF, monthly & YTD tax, compensation history, skills, competencies, certifications and documents",
+    "Get a tab-scoped employee profile (identity header + one tab's data). tab = overview | job_and_comp | performance | leaves | training | activity",
     {
       id: z.string().min(1).describe("Employee ID"),
-      taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the tax slab, e.g. 'FY26'. Defaults to the FY of the latest payslip."),
+      tab: z.enum(["overview", "job_and_comp", "performance", "leaves", "training", "activity"]).optional().default("overview").describe("Which tab's data to fetch (default overview)"),
+      taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the job_and_comp tax slab, e.g. 'FY26'."),
+    },
+    withToolError(async ({ id, tab, taxFiscalYear }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Raw salary / account / iban / ntn / CTC only for payroll-authorized callers.
+      const showSensitive = user.isAdmin ||
+        (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
+      const data = await mcpGetEmployeeProfileTab(user, id, { tab, showSensitive, taxFiscalYear });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_profile_get")
+  );
+
+  // Back-compat: the previous all-at-once consolidated profile (job_and_comp core).
+  server.tool(
+    "hr_employee_profile_full_get",
+    "Get the full consolidated employee compensation profile in one call (company/dept, pay grade, bank, NTN, tax, EOBI/PF, comp history, skills, certifications, documents). Prefer hr_employee_profile_get with a tab for UI use.",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      taxFiscalYear: z.string().optional(),
     },
     withToolError(async ({ id, taxFiscalYear }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
-      // Raw salary / account / iban / ntn only for payroll-authorized callers.
       const showSensitive = user.isAdmin ||
         (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
       const data = await mcpGetEmployeeProfile(user, id, { showSensitive, taxFiscalYear });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_profile_get")
+    }, "hr_employee_profile_full_get")
   );
 
   server.tool(

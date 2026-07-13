@@ -266,6 +266,28 @@ export function verifyServiceRequest(req) {
 const DEFAULT_SELF_ISSUER = 'erp-hr';
 const DEFAULT_EXPIRY = '60s';
 
+// Cache the imported Ed25519 private key (env-sourced) for the process lifetime.
+let _svcPrivKey = null;
+let _svcPrivKeyPem = null;
+function getServicePrivateKey() {
+    const pem = process.env.SERVICE_JWT_PRIVATE_KEY_PEM;
+    if (!pem) return null;
+    if (_svcPrivKey && _svcPrivKeyPem === pem) return _svcPrivKey;
+    try {
+        _svcPrivKey = crypto.createPrivateKey(pem); // PKCS#8 Ed25519
+        _svcPrivKeyPem = pem;
+        return _svcPrivKey;
+    } catch {
+        return null;
+    }
+}
+
+const b64url = (x) => Buffer.from(x).toString('base64url');
+
+// HS256 service token (unchanged legacy default). Peers that use the legacy
+// X-Internal-Secret lane or the HS256 dual-accept path (e.g. DAM) keep working
+// exactly as before — this function is intentionally left as HS256 so switching
+// HR's outbound scheme never regresses an existing peer.
 export function signServiceJwt(extraClaims = {}) {
     const secret = getSecret();
     if (!secret) return null;
@@ -282,4 +304,38 @@ export function signServiceJwt(extraClaims = {}) {
             expiresIn: DEFAULT_EXPIRY,
         },
     );
+}
+
+// EdDSA(Ed25519) service token for peers on the EdDSA plane (RBAC, PM). Hand-
+// rolled with node:crypto (jsonwebtoken has no EdDSA support); carries `kid` so
+// verifiers resolve HR's public key from their SERVICE_JWT_PUBLIC_KEYS_JSON
+// registry — no shared secret. Returns null when the private key / kid are not
+// configured, so callers fail-soft. Used ONLY by the RBAC/PM clients, so HR's
+// other peers (DAM) are unaffected.
+export function signServiceJwtEdDSA(extraClaims = {}) {
+    const privKey = getServicePrivateKey();
+    const kid = process.env.SERVICE_JWT_CURRENT_KID;
+    if (!privKey || !kid) return null;
+
+    const selfIssuer = process.env.SERVICE_JWT_SELF_ISSUER || DEFAULT_SELF_ISSUER;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = b64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT', kid }));
+    const payload = b64url(
+        JSON.stringify({
+            ...extraClaims,
+            sub: selfIssuer,
+            iss: selfIssuer,
+            aud: getAudience(),
+            iat: nowSec,
+            exp: nowSec + 60,
+        })
+    );
+    const input = `${header}.${payload}`;
+    try {
+        // Ed25519: algorithm MUST be null — node uses the key's built-in curve.
+        const sig = crypto.sign(null, Buffer.from(input), privKey);
+        return `${input}.${b64url(sig)}`;
+    } catch {
+        return null;
+    }
 }

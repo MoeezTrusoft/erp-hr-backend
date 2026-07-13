@@ -9,7 +9,7 @@
 // any error returns nulls so the profile still renders without org names.
 import axios from "axios";
 import logger from "../lib/logger.js";
-import { signServiceJwt } from "../lib/serviceJwt.js";
+import { signServiceJwtEdDSA } from "../lib/serviceJwt.js";
 
 const RBAC_BASE_URL = process.env.RBAC_SERVICE_URL || "http://localhost:3001";
 const RBAC_TIMEOUT = parseInt(process.env.RBAC_SERVICE_TIMEOUT || "10000", 10);
@@ -18,7 +18,7 @@ const rbacApi = axios.create({ baseURL: RBAC_BASE_URL, timeout: RBAC_TIMEOUT });
 
 const withInternalAuth = (headers = {}) => {
   const merged = { ...headers, "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
-  const token = signServiceJwt();
+  const token = signServiceJwtEdDSA(); // RBAC verifies HR on the EdDSA plane
   if (token) merged["X-Service-Authorization"] = `Bearer ${token}`;
   return merged;
 };
