@@ -54,6 +54,7 @@ const listToolShape = {
 
 const mediaPayloadShape = {
   id: z.string().min(1),
+  fileBase64: z.string().optional().describe("Raw base64 or data: URI of the image. BE uploads to DAM and derives mediaId/url/size."),
   mediaId: z.union([z.string(), z.number()]).optional(),
   url: z.string().optional(),
   downloadUrl: z.string().optional(),
@@ -272,8 +273,12 @@ export function registerEmployeeTools(server) {
       employmentType: z.string().optional(),
       employmentStatus: z.string().optional(),
       status: z.string().optional(),
+      profilePhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
+      profilePhotoFileName: z.string().optional(),
+      coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
+      coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
-      documents: z.array(z.any()).optional(),
+      documents: z.array(z.any()).optional().describe("Each item may carry fileBase64 (+fileName) for the BE to upload, OR an existing mediaId."),
     },
     withToolError(async (args) => {
       const { user, permissions, correlationId } = getCtx();
@@ -324,6 +329,10 @@ export function registerEmployeeTools(server) {
       employmentType: z.string().optional(),
       employmentStatus: z.string().optional(),
       status: z.string().optional(),
+      profilePhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
+      profilePhotoFileName: z.string().optional(),
+      coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
+      coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
     },
     withToolError(async ({ id, ...rest }) => {
@@ -395,6 +404,7 @@ export function registerEmployeeTools(server) {
     "Create an employee document record",
     {
       employeeId: z.string().min(1),
+      fileBase64: z.string().optional().describe("Raw base64 or data: URI of the document. BE uploads to DAM and derives mediaId/fileName/mimeType/size."),
       title: z.string().optional(),
       category: z.string().optional(),
       version: z.string().optional(),
