@@ -19,7 +19,14 @@ import { getEmployeeActivity } from "./rbacActivity.client.js";
 import { getEmployeeProjects } from "./pmProjects.client.js";
 import { getEmployeeConsolidatedProfile } from "./employeeProfile.service.js";
 
-export const PROFILE_TABS = ["overview", "job_and_comp", "performance", "leaves", "training", "activity"];
+export const PROFILE_TABS = ["overview", "job_and_comp", "documents", "performance", "leaves", "training", "activity"];
+
+// Standard document set every employee is expected to have on file. The Documents
+// tab reports which of these are present (any EmployeeMedia whose category/title
+// matches) vs MISSING. Order is the display order.
+const REQUIRED_DOC_TYPES = ["CNIC", "Employment Contract", "Offer Letter", "Educational Certificate", "Experience Letter"];
+const MASK = "••••••";
+const mask = (v, show) => (v == null ? null : show ? v : MASK);
 
 const FREQ_PER_YEAR = { WEEKLY: 52, BI_WEEKLY: 26, SEMI_MONTHLY: 24, MONTHLY: 12 };
 const num = (v) => {
@@ -43,19 +50,20 @@ async function buildHeader(employee, org) {
     firstName: employee.first_name,
     middleName: employee.middle_name,
     lastName: employee.last_name,
+    preferredName: employee.preferred_name ?? null,
     jobTitle: employee.job_title ?? employee.Position?.title ?? null,
     photoUrl: employee.photo_url ?? null,
     status: employee.status || employee.employement_status || null,
     payGrade: employee.gradeLevel?.name ?? null,
     companyName: org?.companyName ?? null,
     departments: org?.departments ?? [],
-    departmentName: org?.departments?.[0] ?? null,
+    departmentName: org?.departments?.[0] ?? employee.businessUnit?.name ?? null,
   };
 }
 
 // -------------------------------------------------------------- overview ----
-async function overviewTab(id, tenantId, ctx) {
-  const [skillRows, leaveBalances, lastReview, attendanceRows, projects] = await Promise.all([
+async function overviewTab(id, tenantId, ctx, employee) {
+  const [skillRows, leaveBalances, lastReview, attendanceRows, certifications, projects] = await Promise.all([
     prisma.employeeSkill.findMany({
       where: { employeeId: id },
       include: { skill: { select: { name: true, category: true } } },
@@ -71,8 +79,13 @@ async function overviewTab(id, tenantId, ctx) {
       select: { id: true, overall_rating: true, status: true, type: true, period_start: true, period_end: true, submittedAt: true },
     }),
     prisma.attendance.findMany({
-      where: { employeeId: id, date: { gte: startOfMonth(), lte: now() } },
+      where: { employeeId: id, date: { gte: daysFromNow(-30), lte: now() } },
       select: { status: true, total_hours: true },
+    }),
+    prisma.certification.findMany({
+      where: { employeeId: id },
+      orderBy: [{ issuedAt: "desc" }],
+      select: { id: true, name: true, issuedBy: true, issuedAt: true, expiryDate: true },
     }),
     ctx.userId ? getEmployeeProjects(ctx.userId) : Promise.resolve({ available: false, items: [], reason: "no linked userId" }),
   ]);
@@ -93,18 +106,69 @@ async function overviewTab(id, tenantId, ctx) {
       acc.totalHours += num(a.total_hours) || 0;
       return acc;
     },
-    { present: 0, absent: 0, late: 0, totalHours: 0, period: "this-month" }
+    { present: 0, absent: 0, late: 0, totalHours: 0, period: "last-30-days" }
   );
 
+  const leaveBalance = leaveBalances.map((b) => ({
+    policy: b.leavePolicy?.name ?? null,
+    leaveTypeCode: b.leavePolicy?.leaveTypeCode ?? null,
+    balance: num(b.balance),
+    carryOver: num(b.carryOverBalance),
+  }));
+  const leaveBalanceDays = leaveBalance.reduce((s, b) => s + (b.balance || 0), 0);
+  const show = ctx.showSensitive;
+
   return {
+    // Personal Information card
+    personalInfo: {
+      firstName: employee.first_name,
+      middleName: employee.middle_name,
+      lastName: employee.last_name,
+      preferredName: employee.preferred_name ?? null,
+      dateOfBirth: employee.date_of_birth ?? null,
+      gender: employee.gender ?? null,
+      maritalStatus: employee.marital_status ?? null,
+      nationality: employee.nationality ?? null,
+      nationalIdType: employee.nationality_id_type ?? null,
+      nationalId: mask(employee.nationality_id_no ?? null, show), // C4-decrypted; masked unless payroll VIEW
+    },
+    // Employment Details card
+    employmentDetails: {
+      title: employee.job_title ?? employee.Position?.title ?? null,
+      department: ctx.org?.departments?.[0] ?? employee.businessUnit?.name ?? null,
+      manager: employee.manager ? employeeName(employee.manager) : null,
+      employmentType: employee.employee_type ?? null,
+      status: employee.status || employee.employement_status || null,
+      hired: employee.hire_date ?? null,
+      joined: employee.joining_date ?? null,
+      probationEnds: employee.probation_end_date ?? null,
+      workLocation: employee.region?.name || ([employee.city, employee.country].filter(Boolean).join(", ") || null),
+    },
+    // Contact card
+    contact: {
+      personalEmail: employee.email ?? null,
+      workEmail: employee.work_email ?? null,
+      mobilePhone: employee.personal_contact ?? null,
+      workPhone: employee.work_phone ?? null,
+      residentialAddress: employee.current_address ?? null,
+      mailingAddress: employee.permenant_address ?? null,
+      city: employee.city ?? null,
+      state: employee.state ?? employee.province ?? null,
+      country: employee.country ?? null,
+      postalCode: employee.postal_code ?? null,
+    },
+    // Quick Stats
+    quickStats: {
+      leaveBalanceDays: Math.round(leaveBalanceDays * 10) / 10,
+      lastReview: lastReview ? { rating: num(lastReview.overall_rating), periodEnd: lastReview.period_end, submittedAt: lastReview.submittedAt } : null,
+      attendance: { present: attendance.present, late: attendance.late, absent: attendance.absent, period: "last-30-days" },
+      projects: projects.available ? { count: projects.items.length, active: projects.items.filter((p) => String(p.status || "").toUpperCase() !== "COMPLETED").length } : { count: null, active: null },
+    },
     skills: all.filter((s) => String(s.category || "").toLowerCase() !== "competency"),
     competencies: all.filter((s) => String(s.category || "").toLowerCase() === "competency"),
-    leaveBalance: leaveBalances.map((b) => ({
-      policy: b.leavePolicy?.name ?? null,
-      leaveTypeCode: b.leavePolicy?.leaveTypeCode ?? null,
-      balance: num(b.balance),
-      carryOver: num(b.carryOverBalance),
-    })),
+    certifications: certifications.map((c) => ({ id: c.id, name: c.name, issuedBy: c.issuedBy, issuedAt: c.issuedAt, expiryDate: c.expiryDate })),
+    // legacy fields kept for back-compat
+    leaveBalance,
     lastReview: lastReview
       ? { id: lastReview.id, rating: num(lastReview.overall_rating), status: lastReview.status, type: lastReview.type, periodStart: lastReview.period_start, periodEnd: lastReview.period_end, submittedAt: lastReview.submittedAt }
       : null,
@@ -112,6 +176,51 @@ async function overviewTab(id, tenantId, ctx) {
     projects: projects.available
       ? { available: true, items: projects.items }
       : { available: false, reason: projects.reason, items: [] },
+  };
+}
+
+// ------------------------------------------------------------- documents ----
+async function documentsTab(id, tenantId) {
+  const docs = await prisma.employeeMedia.findMany({
+    where: { employee_id: id },
+    orderBy: [{ uploaded_at: "desc" }],
+    select: {
+      id: true, title: true, category: true, version: true, status: true,
+      effective_date: true, expiry_date: true, file_name: true, mime_type: true,
+      file_size: true, download_url: true, uploaded_at: true, notes: true,
+    },
+  });
+
+  const parseDate = (v) => {
+    if (!v) return null;
+    const d = v instanceof Date ? v : new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const in90 = daysFromNow(90);
+  let verified = 0, pending = 0, expiring90d = 0;
+  const items = docs.map((d) => {
+    const st = String(d.status || "").toLowerCase();
+    if (st === "verified" || st === "active") verified += 1;
+    else if (st === "pending") pending += 1;
+    const exp = parseDate(d.expiry_date);
+    const isExpiring = exp && exp >= now() && exp <= in90;
+    if (isExpiring) expiring90d += 1;
+    return {
+      id: d.id, title: d.title, category: d.category, version: d.version,
+      status: d.status, effectiveDate: d.effective_date, expiryDate: d.expiry_date,
+      expiring: Boolean(isExpiring), fileName: d.file_name, mimeType: d.mime_type,
+      fileSize: d.file_size, downloadUrl: d.download_url, uploadedAt: d.uploaded_at, notes: d.notes,
+    };
+  });
+
+  // Missing = required doc types with no matching category/title on file.
+  const present = new Set(docs.flatMap((d) => [d.category, d.title].filter(Boolean).map((s) => String(s).toLowerCase())));
+  const missing = REQUIRED_DOC_TYPES.filter((t) => !present.has(t.toLowerCase()));
+
+  return {
+    summary: { total: docs.length, verified, pending, expiring90d, missing: missing.length },
+    missingTypes: missing,
+    documents: items,
   };
 }
 
@@ -214,7 +323,17 @@ async function performanceTab(id, tenantId) {
 // ---------------------------------------------------------------- leaves ----
 async function leavesTab(id, tenantId, employee) {
   const windowEnd = daysFromNow(30);
-  const [upcoming, teammates] = await Promise.all([
+  const [balances, history, upcoming, teammates] = await Promise.all([
+    prisma.leaveBalance.findMany({
+      where: { employeeId: id },
+      include: { leavePolicy: { select: { name: true, leaveTypeCode: true } } },
+    }),
+    prisma.leaveRequest.findMany({
+      where: { employeeId: id },
+      orderBy: [{ startDate: "desc" }],
+      take: 30,
+      include: { leavePolicy: { select: { name: true, leaveTypeCode: true } } },
+    }),
     prisma.leaveRequest.findMany({
       where: { employeeId: id, startDate: { gte: now() }, status: { in: ["PENDING", "APPROVED"] } },
       orderBy: [{ startDate: "asc" }],
@@ -270,6 +389,15 @@ async function leavesTab(id, tenantId, employee) {
   const hoursCompleted = timesheets.reduce((s, t) => s + (num(t.total_hours) || 0), 0);
 
   return {
+    // Per-type balances (Annual / Casual / Sick ...) for the balance cards.
+    balances: balances.map((b) => ({
+      policy: b.leavePolicy?.name ?? null,
+      leaveTypeCode: b.leavePolicy?.leaveTypeCode ?? null,
+      balance: num(b.balance),
+      carryOver: num(b.carryOverBalance),
+    })),
+    // Full leave history (past + present requests).
+    history: history.map((l) => ({ id: l.id, policy: l.leavePolicy?.name ?? null, leaveTypeCode: l.leavePolicy?.leaveTypeCode ?? null, startDate: l.startDate, endDate: l.endDate, totalDays: num(l.totalDays), reason: l.reason, status: l.status })),
     upcomingLeaves: upcoming.map((l) => ({ id: l.id, policy: l.leavePolicy?.name ?? null, startDate: l.startDate, endDate: l.endDate, totalDays: num(l.totalDays), status: l.status })),
     teamCoverage,
     holidays: holidays.map((h) => ({ date: h.date, name: h.name, fullDay: h.fullDay })),
@@ -282,7 +410,7 @@ async function trainingTab(id, tenantId) {
   const [enrollments, certifications, learningPaths, recentLogs] = await Promise.all([
     prisma.trainingEnrollment.findMany({
       where: { employeeId: id },
-      select: { id: true, courseId: true, status: true, progress: true, score: true, completionDate: true, course: { select: { title: true } } },
+      select: { id: true, courseId: true, status: true, progress: true, score: true, enrollmentDate: true, completionDate: true, course: { select: { title: true, durationHours: true, mode: true } } },
       orderBy: [{ enrollmentDate: "desc" }],
     }),
     prisma.certification.findMany({
@@ -306,6 +434,7 @@ async function trainingTab(id, tenantId) {
   const completed = enrollments.filter((e) => String(e.status).toUpperCase() === "COMPLETED");
   const scored = completed.filter((e) => e.score != null);
   const avgScore = scored.length ? Math.round(scored.reduce((s, e) => s + e.score, 0) / scored.length) : null;
+  const hoursCompleted = completed.reduce((s, e) => s + (num(e.course?.durationHours) || 0), 0);
 
   // Recommended: ACTIVE courses the employee is not enrolled in (heuristic), top 5.
   const enrolledCourseIds = enrollments.map((e) => e.courseId);
@@ -317,12 +446,15 @@ async function trainingTab(id, tenantId) {
   });
 
   return {
+    hoursCompleted: Math.round(hoursCompleted * 10) / 10,
     coursesDone: completed.length,
     coursesEnrolled: enrollments.length,
     avgScore, // null if no scored completions
     certificates: { count: certifications.length, items: certifications.slice(0, 10) },
     activeLearningPaths: learningPaths.map((lp) => ({ id: lp.id, name: lp.learningPath?.name ?? null, targetRole: lp.learningPath?.targetRole ?? null, progress: num(lp.progress), status: lp.status })),
     recommended: recommended.map((c) => ({ id: c.id, title: c.title, durationHours: c.durationHours, mode: c.mode })),
+    // Enrolled & completed list for the training table.
+    enrolled: enrollments.map((e) => ({ id: e.id, courseId: e.courseId, title: e.course?.title ?? null, mode: e.course?.mode ?? null, durationHours: num(e.course?.durationHours), status: e.status, progress: num(e.progress), score: e.score ?? null, enrolledAt: e.enrollmentDate, completedAt: e.completionDate })),
     activityTimeline: recentLogs.map((l) => ({ id: l.id, timestamp: l.created_at, action: l.action_type || l.type, module: l.module, result: l.result, notes: l.notes })),
   };
 }
@@ -353,8 +485,16 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
     where: scopedEmployeeWhere(tenantId, { id }),
     select: {
       id: true, employee_code: true, first_name: true, middle_name: true, last_name: true,
-      employee_name: true, job_title: true, photo_url: true, status: true, employement_status: true,
+      preferred_name: true, employee_name: true, job_title: true, photo_url: true,
+      status: true, employement_status: true, employee_type: true,
+      date_of_birth: true, gender: true, marital_status: true, nationality: true,
+      nationality_id_type: true, nationality_id_no: true,
+      email: true, work_email: true, personal_contact: true, work_phone: true,
+      current_address: true, permenant_address: true, city: true, state: true, province: true,
+      country: true, postal_code: true, hire_date: true, joining_date: true, probation_end_date: true,
       managerId: true, gradeLevel: { select: { name: true } }, Position: { select: { title: true } },
+      businessUnit: { select: { name: true } }, region: { select: { name: true } },
+      manager: { select: { first_name: true, middle_name: true, last_name: true, employee_name: true } },
     },
   });
   if (!employee) throw Object.assign(new Error("Employee not found"), { status: 404 });
@@ -367,12 +507,13 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
   let data;
   switch (tab) {
     case "job_and_comp": data = await jobCompTab(id, tenantId, ctx); break;
+    case "documents": data = await documentsTab(id, tenantId); break;
     case "performance": data = await performanceTab(id, tenantId); break;
     case "leaves": data = await leavesTab(id, tenantId, employee); break;
     case "training": data = await trainingTab(id, tenantId); break;
     case "activity": data = await activityTab(id, tenantId, ctx); break;
     case "overview":
-    default: data = await overviewTab(id, tenantId, ctx); break;
+    default: data = await overviewTab(id, tenantId, ctx, employee); break;
   }
 
   logger.debug({ employeeId: id, tenantId, tab, showSensitive: ctx.showSensitive }, "hr: getEmployeeProfileTab");

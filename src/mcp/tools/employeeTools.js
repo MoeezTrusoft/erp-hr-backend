@@ -159,20 +159,21 @@ export function registerEmployeeTools(server) {
   // skills/competencies, certifications, and documents. Raw salary/account/iban/
   // ntn are surfaced only to callers with hr:payroll VIEW (else masked).
   // Tab-scoped profile: returns an always-on identity header + ONE tab's data.
-  //   overview     — skills & competencies, leave balance, last review, attendance, projects
+  //   overview     — personal info, employment details, contact, quick stats, skills/competencies, certifications
   //   job_and_comp — company/dept, pay grade, bank block, NTN, tax slab, EOBI/PF, monthly &
-  //                  YTD tax, compensation history, CTC/basic/allowances/variable bonus/equity, documents
+  //                  YTD tax, compensation history, CTC/basic/allowances/variable bonus/equity
+  //   documents    — verified/pending/expiring-90d/missing counts + employee documents list
   //   performance  — goals, performance potential, recognition
-  //   leaves       — upcoming leaves + team coverage, holidays, hours completed
-  //   training     — courses done, avg score, certificates, active learning path, recommended, activity timeline
+  //   leaves       — balances (annual/casual/sick), history, upcoming + team coverage, holidays, hours
+  //   training     — hours completed, courses done, avg score, certificates, recommended, enrolled & completed
   //   activity     — last login, device, 2FA, sessions (30d), failed attempts, permissions & roles (from RBAC)
-  // Sensitive fields (raw salary/account/iban/ntn/CTC) surface only for hr:payroll VIEW callers.
+  // Sensitive fields (raw salary/account/iban/ntn/national-id/CTC) surface only for hr:payroll VIEW callers.
   server.tool(
     "hr_employee_profile_get",
-    "Get a tab-scoped employee profile (identity header + one tab's data). tab = overview | job_and_comp | performance | leaves | training | activity",
+    "Get a tab-scoped employee profile (identity header + one tab's data). tab = overview | job_and_comp | documents | performance | leaves | training | activity",
     {
       id: z.string().min(1).describe("Employee ID"),
-      tab: z.enum(["overview", "job_and_comp", "performance", "leaves", "training", "activity"]).optional().default("overview").describe("Which tab's data to fetch (default overview)"),
+      tab: z.enum(["overview", "job_and_comp", "documents", "performance", "leaves", "training", "activity"]).optional().default("overview").describe("Which tab's data to fetch (default overview)"),
       taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the job_and_comp tax slab, e.g. 'FY26'."),
     },
     withToolError(async ({ id, tab, taxFiscalYear }) => {
