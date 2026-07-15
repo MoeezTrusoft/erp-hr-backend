@@ -120,7 +120,7 @@ export const listManagedPool = async ({
       role: recent?.jobRequisition?.title ?? null,
       department: recent?.jobRequisition?.departmentId ?? null,
       experienceYears: deriveExperienceYears(candidate.parsedResume),
-      location: null, // Candidate has no location column — see INTEGRATION NOTES.
+      location: candidate.location ?? null,
       skills: deriveSkillNames(candidate.candidateSkills),
       poolName: m.poolName,
       notes: m.notes ?? null,
@@ -206,6 +206,7 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
       email: candidate.email ?? null,
       phone: candidate.phone ?? null,
       source: candidate.source ?? null,
+      location: candidate.location ?? null,
     },
     previousRolesApplied,
     interviewScore,

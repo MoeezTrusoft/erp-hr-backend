@@ -75,13 +75,14 @@ export function registerInterviewMgmtTools(server) {
       decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]),
       recommendation: z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]),
       comments: z.string().optional(),
+      reviewerId: z.union([z.string(), z.number()]).optional().describe("Reviewer employee id; defaults to the caller's employeeId. Provide when the caller has no employeeId (e.g. an admin scoring on someone's behalf)."),
     },
-    withToolError(async ({ interviewId, ratings, decision, recommendation, comments }) => {
+    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       await scoreInterview({
         interviewId,
-        reviewerId: user.employeeId,
+        reviewerId: reviewerId ?? user.employeeId,
         ratings,
         recommendation,
         comments,

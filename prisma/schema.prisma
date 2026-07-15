@@ -1514,6 +1514,7 @@ model Candidate {
   email         String   @unique
   phone         String?
   source        String? // LinkedIn, Referral, etc.
+  location      String? // city / region
   resumeUrl     String? // legacy - use resumeMediaId for new uploads
   resumeMediaId Int? // DAM asset ID for resume file
   notes         String?

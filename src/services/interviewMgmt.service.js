@@ -121,7 +121,9 @@ const shapeRow = (interview) => {
       location: interview.location ?? null,
     },
     comments: interview.notes ?? null,
-    documents: [],
+    documents: candidate?.resumeMediaId
+      ? [{ type: "resume", mediaId: candidate.resumeMediaId, name: "Candidate Resume" }]
+      : [],
     ratings: averageRatings(interview.scorecards),
   };
 };
