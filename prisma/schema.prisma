@@ -956,6 +956,8 @@ model JobRequisition {
   approvedById  Int?
   employeeId    Int?
   openings      Int               @default(1)
+  priority      String?           // Low | Medium | High | Urgent
+  requirements  String?           // free text / JSON string (description = JD)
   status        RequisitionStatus @default(DRAFT)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
@@ -1780,6 +1782,7 @@ model Interview {
   durationMinutes Int             @default(60)
   location        String?
   status          InterviewStatus @default(SCHEDULED)
+  decision        String?         // NEXT_ROUND | HOLD | REJECTED (interview outcome)
   notes           String?
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
@@ -1797,6 +1800,7 @@ model Interview {
 model InterviewInterviewer {
   interviewId Int
   employeeId  Int
+  status      String? // invited | accepted | declined | completed
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   employee  Employee  @relation(fields: [employeeId], references: [id])
@@ -1845,6 +1849,12 @@ model Offer {
   notes              String?
   sentAt             DateTime?
   respondedAt        DateTime?
+  viewedAt           DateTime?
+  offerType          String?     // Standard | Contract | Internship | Promotion
+  employmentType     String?     // Full-time | Part-time | Contract
+  terms              Json?        // { probationMonths, noticePeriodDays, additionalTerms, specialClauses }
+  compensation       Json?        // { baseSalary, currency, bonus, allowances, benefits:[...] }
+  approvals          Json?        // { hiringManager, hrHead, finance } each { by, decision, at, reason }
   createdById        Int?
   created_at         DateTime    @default(now())
   updated_at         DateTime    @updatedAt

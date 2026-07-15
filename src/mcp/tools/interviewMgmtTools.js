@@ -1,0 +1,109 @@
+// src/mcp/tools/interviewMgmtTools.js
+//
+// MCP facade for the HR "Interview Management" screen: shaped list/detail rows
+// (candidate + role + interviewers + averaged ratings), the FEEDBACK write
+// (per-reviewer scorecard upsert) and the interview OUTCOME write (decision +
+// COMPLETED). All gated on hr:recruitment (deny-by-default) and tenant-scoped
+// via the verified ctx tenant. Complements the existing schedule/update tools
+// (hr_interview_create / hr_interview_update / hr_interviews_list).
+import { z } from "zod";
+import {
+  listInterviewsManaged,
+  getInterviewManaged,
+  scoreInterview,
+  setInterviewOutcome,
+} from "../../services/interviewMgmt.service.js";
+import { mcpCtx as mcpRequestContext } from "../context.js";
+import { assertPermission } from "../utils/assertPermission.js";
+import { withToolError } from "../utils/toolError.js";
+
+function getCtx() {
+  const ctx = mcpRequestContext.getStore();
+  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  return ctx;
+}
+
+const ratingsSchema = z.object({
+  technicalSkills: z.coerce.number().int().min(1).max(5),
+  problemSolving: z.coerce.number().int().min(1).max(5),
+  communication: z.coerce.number().int().min(1).max(5),
+  cultureFit: z.coerce.number().int().min(1).max(5),
+});
+
+export function registerInterviewMgmtTools(server) {
+  server.tool(
+    "hr_interviews_manage_list",
+    "List interviews for the HR Interview Management screen: candidate, role, interviewers, status/decision, schedule and ratings averaged across scorecards. Supports candidate-name search, status/interviewType/decision filters, scheduledAt sort and pagination.",
+    {
+      q: z.string().optional().describe("Search by candidate name"),
+      status: z.string().optional().describe("SCHEDULED | COMPLETED | CANCELLED | NO_SHOW"),
+      interviewType: z.string().optional().describe("PHONE_SCREEN | TECHNICAL | BEHAVIORAL | PANEL | FINAL"),
+      decision: z.string().optional().describe("NEXT_ROUND | HOLD | REJECTED"),
+      sort: z.string().optional().describe("Sort field (default scheduledAt)"),
+      order: z.enum(["asc", "desc"]).optional(),
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listInterviewsManaged({ ...args, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interviews_manage_list")
+  );
+
+  server.tool(
+    "hr_interview_manage_get",
+    "Get full detail for a single interview incl. per-reviewer scorecards for the HR Interview Management screen.",
+    {
+      id: z.union([z.string(), z.number()]).describe("Interview id"),
+    },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await getInterviewManaged({ id, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_manage_get")
+  );
+
+  server.tool(
+    "hr_interview_score",
+    "Submit interview feedback: upsert the caller's scorecard (ratings, overall score, recommendation, comments) and set the interview decision/outcome.",
+    {
+      interviewId: z.union([z.string(), z.number()]),
+      ratings: ratingsSchema,
+      decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]),
+      recommendation: z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]),
+      comments: z.string().optional(),
+    },
+    withToolError(async ({ interviewId, ratings, decision, recommendation, comments }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      await scoreInterview({
+        interviewId,
+        reviewerId: user.employeeId,
+        ratings,
+        recommendation,
+        comments,
+        tenantId: user.tenantId,
+      });
+      const data = await setInterviewOutcome({ interviewId, decision, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_score")
+  );
+
+  server.tool(
+    "hr_interview_set_outcome",
+    "Set an interview outcome decision (and mark it COMPLETED).",
+    {
+      interviewId: z.union([z.string(), z.number()]),
+      decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]),
+    },
+    withToolError(async ({ interviewId, decision }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await setInterviewOutcome({ interviewId, decision, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_set_outcome")
+  );
+}

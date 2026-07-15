@@ -14,6 +14,12 @@ import { registerResumeTools } from "./tools/resumeTools.js";
 import { registerOrgChartTools } from "./tools/orgChartTools.js";
 import { registerPositionMgmtTools } from "./tools/positionMgmtTools.js";
 import { registerProfileActionTools } from "./tools/profileActionTools.js";
+import { registerRequisitionMgmtTools } from "./tools/requisitionMgmtTools.js";
+import { registerCandidatePipelineTools } from "./tools/candidatePipelineTools.js";
+import { registerInterviewMgmtTools } from "./tools/interviewMgmtTools.js";
+import { registerOfferMgmtTools } from "./tools/offerMgmtTools.js";
+import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
+import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 
 export function registerAllTools(server) {
   registerEmployeeTools(server);
@@ -32,4 +38,10 @@ export function registerAllTools(server) {
   registerOrgChartTools(server);
   registerPositionMgmtTools(server);
   registerProfileActionTools(server);
+  registerRequisitionMgmtTools(server);
+  registerCandidatePipelineTools(server);
+  registerInterviewMgmtTools(server);
+  registerOfferMgmtTools(server);
+  registerTalentPoolMgmtTools(server);
+  registerRecruitmentAnalyticsTools(server);
 }
