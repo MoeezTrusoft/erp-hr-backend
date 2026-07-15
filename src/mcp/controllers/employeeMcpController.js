@@ -73,6 +73,10 @@ export async function mcpListEmployeesContract(query = {}, tenantId) {
   return hrContractService.listEmployees(query, tenantId ?? null);
 }
 
+export async function mcpExportEmployees(query = {}, tenantId, format = "csv") {
+  return { success: true, data: await hrContractService.exportEmployees(query, tenantId ?? null, format) };
+}
+
 export async function mcpGetEmployeeById(user, id) {
   return { success: true, data: await hrContractService.getEmployeeProfile(id, user?.tenantId ?? null) };
 }

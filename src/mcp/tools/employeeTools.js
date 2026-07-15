@@ -24,6 +24,7 @@ import {
   mcpGetOrgChart,
   mcpGetPositions,
   mcpListEmployeesContract,
+  mcpExportEmployees,
   mcpListPositionsContract,
   mcpUpdateEmergencyContact,
   mcpUpdateEmployee,
@@ -50,6 +51,8 @@ const listToolShape = {
   positionId: z.union([z.string(), z.number()]).optional(),
   companyId: z.union([z.string(), z.number()]).optional(),
   departmentId: z.union([z.string(), z.number()]).optional(),
+  joinedFrom: z.string().optional().describe("Filter: joining date >= this ISO date (YYYY-MM-DD)"),
+  joinedTo: z.string().optional().describe("Filter: joining date <= this ISO date (YYYY-MM-DD)"),
   sort: z.string().optional(),
   order: z.enum(["asc", "desc"]).optional(),
 };
@@ -90,6 +93,28 @@ export function registerEmployeeTools(server) {
       const data = await mcpListEmployeesContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employees_list")
+  );
+
+  server.tool(
+    "hr_employees_export",
+    "Export the employee directory (all rows matching the filters) as CSV or PDF. Returns { format, fileName, mimeType, count, base64 }.",
+    {
+      format: z.enum(["csv", "pdf"]).default("csv"),
+      q: z.string().optional(),
+      status: z.string().optional(),
+      positionId: z.union([z.string(), z.number()]).optional(),
+      departmentId: z.union([z.string(), z.number()]).optional(),
+      joinedFrom: z.string().optional().describe("Filter: joining date >= this ISO date (YYYY-MM-DD)"),
+      joinedTo: z.string().optional().describe("Filter: joining date <= this ISO date (YYYY-MM-DD)"),
+      sort: z.string().optional(),
+      order: z.enum(["asc", "desc"]).optional(),
+    },
+    withToolError(async ({ format, ...query }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const data = await mcpExportEmployees(query, user.tenantId, format);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employees_export")
   );
 
   server.resource(

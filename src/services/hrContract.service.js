@@ -7,6 +7,7 @@ import {
   mapEmployeeToLifecycleInput,
 } from "./employeeOutbox.service.js";
 import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js";
+import { exportRows } from "../lib/export.util.js";
 import { scopedEmployeeWhere, scopedWhere, scopedData } from "../lib/tenancy.js";
 import {
   createEmployeeContractSchema,
@@ -722,27 +723,37 @@ export const saveDashboardLayout = async (employeeId, layout) => {
 // another tenant's (or null-tenant) employees. Employee carries the snake_case
 // `tenant_id` column (REQ-007). `undefined` keeps the legacy unscoped path for
 // back-compat; a present value (incl. null) is fail-closed.
-export const listEmployees = async (query, tenantId) => {
-  const list = parseListQuery(query, { sort: "created_at" });
+// Shared WHERE builder for the directory list AND export so the two never
+// drift. Supports search (q), status, position, department, and a joining-date
+// range (joinedFrom/joinedTo, matched against hire_date OR joining_date).
+const buildEmployeeListWhere = (query, tenantId, q) => {
   const filters = {
     status: query.status || null,
     positionId: toInt(query.positionId),
     departmentId: toInt(query.departmentId),
+    joinedFrom: query.joinedFrom ? new Date(query.joinedFrom) : null,
+    joinedTo: query.joinedTo ? new Date(query.joinedTo) : null,
   };
+  const range = {};
+  if (filters.joinedFrom && !Number.isNaN(filters.joinedFrom.getTime())) range.gte = filters.joinedFrom;
+  if (filters.joinedTo && !Number.isNaN(filters.joinedTo.getTime())) range.lte = filters.joinedTo;
+  const dateFilter = Object.keys(range).length
+    ? { OR: [{ hire_date: range }, { joining_date: range }] }
+    : {};
 
   const where = {
     AND: [
       scopedEmployeeWhere(tenantId, {}),
-      list.q
+      q
         ? {
             OR: [
-              { employee_name: { contains: list.q, mode: "insensitive" } },
-              { first_name: { contains: list.q, mode: "insensitive" } },
-              { last_name: { contains: list.q, mode: "insensitive" } },
-              { employee_code: { contains: list.q, mode: "insensitive" } },
-              { email: { contains: list.q, mode: "insensitive" } },
-              { work_email: { contains: list.q, mode: "insensitive" } },
-              { job_title: { contains: list.q, mode: "insensitive" } },
+              { employee_name: { contains: q, mode: "insensitive" } },
+              { first_name: { contains: q, mode: "insensitive" } },
+              { last_name: { contains: q, mode: "insensitive" } },
+              { employee_code: { contains: q, mode: "insensitive" } },
+              { email: { contains: q, mode: "insensitive" } },
+              { work_email: { contains: q, mode: "insensitive" } },
+              { job_title: { contains: q, mode: "insensitive" } },
             ],
           }
         : {},
@@ -751,10 +762,19 @@ export const listEmployees = async (query, tenantId) => {
         : {},
       filters.positionId ? { positionId: filters.positionId } : {},
       filters.departmentId ? { businessUnitId: filters.departmentId } : {},
+      dateFilter,
     ],
   };
+  return { where, filters };
+};
 
-  const allowedSorts = ["created_at", "updated_at", "employee_name", "employee_code", "hire_date"];
+const EMPLOYEE_SORTS = ["created_at", "updated_at", "employee_name", "employee_code", "hire_date"];
+
+export const listEmployees = async (query, tenantId) => {
+  const list = parseListQuery(query, { sort: "created_at" });
+  const { where, filters } = buildEmployeeListWhere(query, tenantId, list.q);
+
+  const allowedSorts = EMPLOYEE_SORTS;
   const orderBy = { [allowedSorts.includes(list.sort) ? list.sort : "created_at"]: list.order };
 
   const [items, total] = await Promise.all([
@@ -774,6 +794,46 @@ export const listEmployees = async (query, tenantId) => {
     filters,
     items: items.map(employeeDirectoryRow),
   });
+};
+
+// Employee Directory export — same filters/sort as listEmployees but returns a
+// CSV or PDF Buffer of ALL matching rows (capped) rather than one page.
+const EMPLOYEE_EXPORT_COLUMNS = [
+  { key: "code", header: "Code" },
+  { key: "name", header: "Name" },
+  { key: "department", header: "Department", value: (r) => r.department || "-" },
+  { key: "role", header: "Position / Role", value: (r) => r.role || "-" },
+  { key: "email", header: "Email", value: (r) => r.email || "-" },
+  { key: "manager", header: "Manager", value: (r) => r.manager?.name || "-" },
+  { key: "status", header: "Status" },
+  { key: "joined", header: "Joining Date", value: (r) => (r.hireDate ? new Date(r.hireDate).toISOString().slice(0, 10) : "-") },
+];
+
+export const exportEmployees = async (query, tenantId, format = "csv") => {
+  const list = parseListQuery(query, { sort: "employee_name" });
+  const { where } = buildEmployeeListWhere(query, tenantId, list.q);
+  const orderBy = { [EMPLOYEE_SORTS.includes(list.sort) ? list.sort : "employee_name"]: list.order };
+
+  const rows = await prisma.employee.findMany({
+    where,
+    select: compactEmployeeSelect,
+    orderBy,
+    take: 5000, // hard cap so an export can never run away
+  });
+  const items = rows.map(employeeDirectoryRow);
+  const { mimeType, ext, buffer } = await exportRows(format, {
+    title: "Employee Directory",
+    subtitle: `${items.length} employee(s) — generated ${new Date().toISOString().slice(0, 10)}`,
+    columns: EMPLOYEE_EXPORT_COLUMNS,
+    rows: items,
+  });
+  return {
+    format,
+    fileName: `employee-directory-${new Date().toISOString().slice(0, 10)}.${ext}`,
+    mimeType,
+    count: items.length,
+    base64: buffer.toString("base64"),
+  };
 };
 
 export const getEmployeeQuickView = async (id, tenantId) => {
