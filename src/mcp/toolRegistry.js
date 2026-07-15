@@ -21,6 +21,7 @@ import { registerOfferMgmtTools } from "./tools/offerMgmtTools.js";
 import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
+import { registerRecruitmentExtraTools } from "./tools/recruitmentExtraTools.js";
 
 export function registerAllTools(server) {
   registerEmployeeTools(server);
@@ -46,4 +47,5 @@ export function registerAllTools(server) {
   registerTalentPoolMgmtTools(server);
   registerRecruitmentAnalyticsTools(server);
   registerOnboardingMgmtTools(server);
+  registerRecruitmentExtraTools(server);
 }

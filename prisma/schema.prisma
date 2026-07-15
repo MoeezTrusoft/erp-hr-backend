@@ -1887,6 +1887,24 @@ model TalentPool {
   @@map("talent_pools")
 }
 
+// Per-tenant recruitment cost inputs so cost-per-hire is real (not illustrative).
+model RecruitmentCostConfig {
+  id         Int      @id @default(autoincrement())
+  tenantId   String?  @db.Uuid
+  period     String   @default("all") // e.g. "all" | "FY26"
+  jobAds     Int      @default(0)
+  agencyFees Int      @default(0)
+  tools      Int      @default(0)
+  other      Int      @default(0)
+  currency   String   @default("PKR")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, period])
+  @@index([tenantId])
+  @@map("recruitment_cost_configs")
+}
+
 // ==================== LEARNING & DEVELOPMENT ENUMS ====================
 
 enum LearningPathStatus {

@@ -13,6 +13,7 @@
 // The dataset is tiny (~24 applications/tenant), so we fetch the applications
 // once with the relations we need and compute in JS to avoid N+1 round-trips.
 import prisma from "../lib/prisma.js";
+import { getCostConfig } from "./recruitmentCost.service.js";
 
 // Stage constants (Application.stage is stored lower-case per schema).
 const STAGE_HIRED = "hired";
@@ -87,13 +88,19 @@ export async function computeRecruitmentAnalytics(tenantId) {
   }
   const offerAcceptanceRatePct = extended > 0 ? Math.round((accepted / extended) * 100) : 0;
 
-  // ── costPerHire (ILLUSTRATIVE) ──────────────────────────────────────────
-  const totalCost = Object.values(ILLUSTRATIVE_COST_BREAKDOWN).reduce((s, v) => s + v, 0);
+  // ── cost model: real (from RecruitmentCostConfig) if configured, else illustrative ──
+  const costCfg = await getCostConfig(tenantId, "all");
+  const costModel = costCfg ? "actual" : "illustrative";
+  const costCurrency = costCfg?.currency ?? "PKR";
+  const costParts = costCfg
+    ? { jobAds: costCfg.jobAds, agencyFees: costCfg.agencyFees, tools: costCfg.tools, other: costCfg.other }
+    : { ...ILLUSTRATIVE_COST_BREAKDOWN };
+  const totalCost = Object.values(costParts).reduce((s, v) => s + v, 0);
   const costPerHire = {
     value: totalHires > 0 ? Math.round(totalCost / totalHires) : null,
     totalCost,
-    currency: "PKR",
-    costModel: "illustrative",
+    currency: costCurrency,
+    costModel,
   };
 
   // ── hiringFunnel ────────────────────────────────────────────────────────
@@ -127,11 +134,11 @@ export async function computeRecruitmentAnalytics(tenantId) {
   }
   const sourceEffectiveness = [...bySource.values()].sort((x, y) => y.candidates - x.candidates);
 
-  // ── costBreakdown (ILLUSTRATIVE) ────────────────────────────────────────
+  // ── costBreakdown (real if configured, else illustrative) ───────────────
   const costBreakdown = {
-    ...ILLUSTRATIVE_COST_BREAKDOWN,
-    currency: "PKR",
-    costModel: "illustrative",
+    ...costParts,
+    currency: costCurrency,
+    costModel,
   };
 
   // ── metrics (per hired application) ─────────────────────────────────────
@@ -146,7 +153,7 @@ export async function computeRecruitmentAnalytics(tenantId) {
   });
 
   return {
-    illustrativeCostData: true,
+    illustrativeCostData: costModel === "illustrative",
     totalHires,
     timeToHireDays,
     offerAcceptanceRatePct,
