@@ -177,7 +177,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/requisitions", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpCreateRequisition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -203,7 +203,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/requisitions/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpUpdateRequisition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -218,7 +218,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/requisitions/approve/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpApproveRequisition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -233,7 +233,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/requisitions/post/${id}`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpPostRequisition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -245,7 +245,7 @@ export function registerRecruitmentTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/requisitions/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:recruitment", user.isAdmin);
       const data = await mcpDeleteRequisition(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -263,10 +263,12 @@ export function registerRecruitmentTools(server) {
       phone: z.string().optional(),
       linkedinUrl: z.string().url().optional(),
       source: z.string().optional().describe("e.g. REFERRAL, JOB_BOARD, AGENCY"),
+      resumeMediaId: z.union([z.string(), z.number()]).optional().describe("DAM asset id of the resume"),
+      parseResume: z.coerce.boolean().optional().describe("Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/recruitment/candidates", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpCreateCandidate(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -285,7 +287,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/recruitment/candidates/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpUpdateCandidate(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -303,7 +305,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/recruitment/applications", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpCreateApplication(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -318,7 +320,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, stage }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/recruitment/applications/${id}/stage`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpUpdateApplicationStage(user, id, { stage });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -333,7 +335,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, status }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/recruitment/applications/${id}/status`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpUpdateApplicationStatus(user, id, { status });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -353,7 +355,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/interviews", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpCreateInterview(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -382,7 +384,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/interviews/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpUpdateInterview(user, id, {
         ...rest,
         reviewerId: user?.employeeId,
@@ -408,7 +410,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/offers", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpCreateOffer(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -431,7 +433,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/offers/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await mcpUpdateOffer(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -443,7 +445,7 @@ export function registerRecruitmentTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/offers/${id}/send`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpSendOffer(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -459,7 +461,7 @@ export function registerRecruitmentTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/recruitment/talent-pool", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpAddTalentPool(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -471,7 +473,7 @@ export function registerRecruitmentTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/recruitment/talent-pool/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:recruitment", user.isAdmin);
       const data = await mcpRemoveTalentPool(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

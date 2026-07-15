@@ -9,7 +9,7 @@ import { jest, describe, test, expect, beforeEach, afterAll } from '@jest/global
 
 // Mock @prisma/client so calling getTestPrisma() does not try to
 // open a connection. The mock captures the constructor args so we
-// can assert the helper passes the right datasourceUrl through.
+// can assert the helper passes the right connection URL through.
 const mockPrismaConstructor = jest.fn();
 const mockDisconnect = jest.fn().mockResolvedValue(undefined);
 const mockExecuteRawUnsafe = jest.fn().mockResolvedValue(0);
@@ -21,6 +21,16 @@ jest.unstable_mockModule('@prisma/client', () => ({
             $disconnect: mockDisconnect,
             $executeRawUnsafe: mockExecuteRawUnsafe,
         };
+    }),
+}));
+
+// Prisma 7: the connection URL flows through the pg driver adapter rather than
+// the removed `datasourceUrl` option. Mock the adapter to capture its options.
+const mockAdapterConstructor = jest.fn();
+jest.unstable_mockModule('@prisma/adapter-pg', () => ({
+    PrismaPg: jest.fn().mockImplementation((opts) => {
+        mockAdapterConstructor(opts);
+        return { _tag: 'PrismaPg', opts };
     }),
 }));
 
@@ -160,7 +170,7 @@ describe('tests/helpers/test-db.js', () => {
     });
 
     describe('getTestPrisma() / disconnectTestPrisma()', () => {
-        test('constructs PrismaClient with datasourceUrl from TEST_DATABASE_URL', () => {
+        test('constructs PrismaClient with a pg adapter bound to TEST_DATABASE_URL', () => {
             process.env.TEST_DATABASE_URL = SAFE_URL;
 
             const prisma = getTestPrisma();
@@ -168,7 +178,11 @@ describe('tests/helpers/test-db.js', () => {
             expect(prisma).toBeDefined();
             expect(mockPrismaConstructor).toHaveBeenCalledTimes(1);
             expect(mockPrismaConstructor).toHaveBeenCalledWith(
-                expect.objectContaining({ datasourceUrl: SAFE_URL })
+                expect.objectContaining({ adapter: expect.objectContaining({ _tag: 'PrismaPg' }) })
+            );
+            // the URL flows through the driver adapter, not the removed datasourceUrl
+            expect(mockAdapterConstructor).toHaveBeenCalledWith(
+                expect.objectContaining({ connectionString: SAFE_URL })
             );
         });
 

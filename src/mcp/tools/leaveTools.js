@@ -122,7 +122,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/leaves/requests", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
       const data = await mcpCreateLeaveRequest(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -137,7 +137,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/leaves/requests/${id}/approve`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
       const data = await mcpApproveLeaveRequest(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -152,7 +152,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/leaves/requests/${id}/reject`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
       const data = await mcpRejectLeaveRequest(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -167,7 +167,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/leaves/requests/${id}/cancel`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
       const data = await mcpCancelLeaveRequest(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -185,7 +185,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/leaves/policies", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
       const data = await mcpCreateLeavePolicy(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -202,7 +202,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/leaves/policies/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
       const data = await mcpUpdateLeavePolicy(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -214,7 +214,7 @@ export function registerLeaveTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/leaves/policies/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:leave", user.isAdmin);
       const data = await mcpDeleteLeavePolicy(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -230,7 +230,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/leaves/balances/${employeeId}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
       const data = await mcpUpdateLeaveBalance(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -244,7 +244,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/leaves/accruals/run", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
       const data = await mcpRunLeaveAccruals(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -260,7 +260,7 @@ export function registerLeaveTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/holidays/holidays", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
       const data = await mcpCreateHoliday(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

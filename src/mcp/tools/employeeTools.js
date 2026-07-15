@@ -3,6 +3,8 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import logger from "../../lib/logger.js";
+import { getEmployeeCompensation } from "../../services/employeeCompensation.service.js";
+import { listEmployeeActivity } from "../../services/employeeActivity.service.js";
 import {
   mcpCreateEmergencyContact,
   mcpCreateEmployee,
@@ -14,6 +16,8 @@ import {
   mcpDeleteEmployee,
   mcpDeletePosition,
   mcpGetEmployeeById,
+  mcpGetEmployeeProfile,
+  mcpGetEmployeeProfileTab,
   mcpGetEmployeeDocuments,
   mcpGetEmployeeQuickView,
   mcpGetEmployees,
@@ -26,6 +30,7 @@ import {
   mcpUpdateEmployeeStatus,
   mcpUpdateOffboarding,
   mcpUpdatePosition,
+  mcpGetPositionByPositionId,
   mcpUpdatePositionStatus,
   mcpUploadEmployeeCoverPhoto,
   mcpUploadEmployeeProfilePhoto,
@@ -51,6 +56,7 @@ const listToolShape = {
 
 const mediaPayloadShape = {
   id: z.string().min(1),
+  fileBase64: z.string().optional().describe("Raw base64 or data: URI of the image. BE uploads to DAM and derives mediaId/url/size."),
   mediaId: z.union([z.string(), z.number()]).optional(),
   url: z.string().optional(),
   downloadUrl: z.string().optional(),
@@ -114,6 +120,7 @@ export function registerEmployeeTools(server) {
       const query = { page: 1, pageSize: 10, ...args };
       logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_positions_list pagination resolved");
       // BLOCKER-1: thread the verified tenant so positions are tenant-scoped.
+      console.log("User tenant:", user.tenantId);
       const data = await mcpListPositionsContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_positions_list")
@@ -145,7 +152,58 @@ export function registerEmployeeTools(server) {
   };
 
   registerEmployeeProfileTool("hr_employee_get", mcpGetEmployeeById);
-  registerEmployeeProfileTool("hr_employee_profile_get", mcpGetEmployeeById);
+
+  // Consolidated profile: company/department (RBAC), pay grade, middle name,
+  // bank block (A/C title, bank, account #, IBAN, branch, disbursement), NTN,
+  // tax slab (PK FY), EOBI/PF, monthly + YTD tax, compensation history,
+  // skills/competencies, certifications, and documents. Raw salary/account/iban/
+  // ntn are surfaced only to callers with hr:payroll VIEW (else masked).
+  // Tab-scoped profile: returns an always-on identity header + ONE tab's data.
+  //   overview     — personal info, employment details, contact, quick stats, skills/competencies, certifications
+  //   job_and_comp — company/dept, pay grade, bank block, NTN, tax slab, EOBI/PF, monthly &
+  //                  YTD tax, compensation history, CTC/basic/allowances/variable bonus/equity
+  //   documents    — verified/pending/expiring-90d/missing counts + employee documents list
+  //   performance  — goals, performance potential, recognition
+  //   leaves       — balances (annual/casual/sick), history, upcoming + team coverage, holidays, hours
+  //   training     — hours completed, courses done, avg score, certificates, recommended, enrolled & completed
+  //   activity     — last login, device, 2FA, sessions (30d), failed attempts, permissions & roles (from RBAC)
+  // Sensitive fields (raw salary/account/iban/ntn/national-id/CTC) surface only for hr:payroll VIEW callers.
+  server.tool(
+    "hr_employee_profile_get",
+    "Get a tab-scoped employee profile (identity header + one tab's data). tab = overview | job_and_comp | documents | performance | leaves | training | activity",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      tab: z.enum(["overview", "job_and_comp", "documents", "performance", "leaves", "training", "activity"]).optional().default("overview").describe("Which tab's data to fetch (default overview)"),
+      taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the job_and_comp tax slab, e.g. 'FY26'."),
+    },
+    withToolError(async ({ id, tab, taxFiscalYear }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Raw salary / account / iban / ntn / CTC only for payroll-authorized callers.
+      const showSensitive = user.isAdmin ||
+        (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
+      const data = await mcpGetEmployeeProfileTab(user, id, { tab, showSensitive, taxFiscalYear });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_profile_get")
+  );
+
+  // Back-compat: the previous all-at-once consolidated profile (job_and_comp core).
+  server.tool(
+    "hr_employee_profile_full_get",
+    "Get the full consolidated employee compensation profile in one call (company/dept, pay grade, bank, NTN, tax, EOBI/PF, comp history, skills, certifications, documents). Prefer hr_employee_profile_get with a tab for UI use.",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      taxFiscalYear: z.string().optional(),
+    },
+    withToolError(async ({ id, taxFiscalYear }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const showSensitive = user.isAdmin ||
+        (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
+      const data = await mcpGetEmployeeProfile(user, id, { showSensitive, taxFiscalYear });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_profile_full_get")
+  );
 
   server.tool(
     "hr_employee_quick_view_get",
@@ -169,6 +227,44 @@ export function registerEmployeeTools(server) {
       const data = await mcpGetEmployeeDocuments(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_documents_list")
+  );
+
+  // Phase 3 — Job & Compensation tab
+  server.tool(
+    "hr_employee_compensation_get",
+    "Get compensation (salary, bonus, banking) for an employee — payroll-sensitive fields masked unless caller holds hr:payroll VIEW",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      includeBanking: z.coerce.boolean().optional().default(false)
+        .describe("Set true only if your role has hr:payroll VIEW permission"),
+    },
+    withToolError(async ({ id, includeBanking }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Banking / raw salary only for payroll-authorized callers.
+      const hasPayroll = user.isAdmin ||
+        (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
+      const showBanking = Boolean(includeBanking && hasPayroll);
+      const data = await getEmployeeCompensation(id, user.tenantId, { showBanking });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_employee_compensation_get")
+  );
+
+  // Phase 3 — Activity tab
+  server.tool(
+    "hr_employee_activity_list",
+    "List HR audit activity log entries for an employee (who changed what and when)",
+    {
+      id: z.string().min(1).describe("Employee ID"),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    },
+    withToolError(async ({ id, page, pageSize }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const data = await listEmployeeActivity(id, user.tenantId, { page, pageSize });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_employee_activity_list")
   );
 
   server.tool(
@@ -230,8 +326,25 @@ export function registerEmployeeTools(server) {
       employmentType: z.string().optional(),
       employmentStatus: z.string().optional(),
       status: z.string().optional(),
+      profilePhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
+      profilePhotoFileName: z.string().optional(),
+      coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
+      coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
-      documents: z.array(z.any()).optional(),
+      documents: z.array(z.any()).optional().describe("Each item may carry fileBase64 (+fileName) for the BE to upload, OR an existing mediaId."),
+      // Tax + banking (consolidated profile). ntn + iban are encrypted at rest.
+      ntn: z.string().optional().describe("Pakistan National Tax Number (encrypted at rest)"),
+      bankName: z.string().optional(),
+      accountTitle: z.string().optional().describe("A/C Title"),
+      accountNumber: z.string().optional().describe("Provide with bankName to create the primary bank row"),
+      iban: z.string().optional(),
+      branch: z.string().optional(),
+      disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
+      routingNumber: z.string().optional(),
+      accountType: z.string().optional(),
+      // Opt-in AI resume parsing: only runs when BOTH are set.
+      resumeMediaId: z.union([z.string(), z.number()]).optional().describe("DAM asset id of the resume to parse"),
+      parseResume: z.coerce.boolean().optional().describe("Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create"),
     },
     withToolError(async (args) => {
       const { user, permissions, correlationId } = getCtx();
@@ -282,7 +395,22 @@ export function registerEmployeeTools(server) {
       employmentType: z.string().optional(),
       employmentStatus: z.string().optional(),
       status: z.string().optional(),
+      profilePhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
+      profilePhotoFileName: z.string().optional(),
+      coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
+      coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
+      // Tax + banking — patches the primary bank row (or creates it when bankName
+      // + accountNumber are supplied). ntn + iban are encrypted at rest.
+      ntn: z.string().optional(),
+      bankName: z.string().optional(),
+      accountTitle: z.string().optional().describe("A/C Title"),
+      accountNumber: z.string().optional(),
+      iban: z.string().optional(),
+      branch: z.string().optional(),
+      disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
+      routingNumber: z.string().optional(),
+      accountType: z.string().optional(),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -318,7 +446,7 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/employee/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeleteEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -353,6 +481,7 @@ export function registerEmployeeTools(server) {
     "Create an employee document record",
     {
       employeeId: z.string().min(1),
+      fileBase64: z.string().optional().describe("Raw base64 or data: URI of the document. BE uploads to DAM and derives mediaId/fileName/mimeType/size."),
       title: z.string().optional(),
       category: z.string().optional(),
       version: z.string().optional(),
@@ -390,7 +519,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/positions", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -413,7 +542,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/positions/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdatePosition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -428,7 +557,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, isActive }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/positions/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdatePositionStatus(user, id, isActive);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_position_status_update")
@@ -440,11 +569,22 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/positions/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeletePosition(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
+   server.tool(
+      "hr_position_get",
+      "Get a specific postion record by position ID",
+      { id: z.string().min(1) },
+      withToolError(async ({ id }) => {
+        const { user, permissions } = getCtx();
+        assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+        const data = await mcpGetPositionByPositionId(user, id);
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      })
+    );
 
   server.tool(
     "hr_employee_lifecycle_create",
@@ -457,7 +597,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ eventType, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/employee-lifecycle", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateEmployeeLifecycle(user, {
         ...rest,
         type: eventType,
@@ -476,7 +616,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ lastWorkingDate, reason, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/offboarding", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateOffboarding(user, {
         ...rest,
         exitDate: lastWorkingDate,
@@ -497,10 +637,38 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, lastWorkingDate, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/offboarding/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdateOffboarding(user, id, {
         ...rest,
         ...(lastWorkingDate ? { exitDate: lastWorkingDate } : {}),
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  // Phase 1 alias — FE calls hr_employee_emergency_contact_create; backend
+  // registers hr_emergency_contact_create. Both now work. The alias also
+  // normalises contactName → name so both key conventions are handled.
+  server.tool(
+    "hr_employee_emergency_contact_create",
+    "Add an emergency contact for an employee (FE-compatible alias)",
+    {
+      employeeId: z.string().min(1),
+      contactName: z.string().optional(),
+      name: z.string().optional(),
+      relationship: z.string().min(1),
+      phone: z.string().min(1),
+      email: z.string().email().optional(),
+      is_primary: z.boolean().optional(),
+    },
+    withToolError(async ({ employeeId, contactName, name, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "/hr/api/emergency-contacts", user.isAdmin);
+      const resolvedName = name || contactName;  // accept either key
+      const data = await mcpCreateEmergencyContact(user, {
+        ...rest,
+        employee_Id: employeeId,
+        Contact_name: resolvedName,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -515,10 +683,11 @@ export function registerEmployeeTools(server) {
       relationship: z.string().min(1),
       phone: z.string().min(1),
       email: z.string().email().optional(),
+      is_primary: z.boolean().optional(),
     },
     withToolError(async ({ employeeId, name, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/emergency-contacts", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreateEmergencyContact(user, {
         ...rest,
         employee_Id: employeeId,
@@ -540,7 +709,7 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ id, name, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/emergency-contacts/update/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdateEmergencyContact(user, id, {
         ...rest,
         ...(name ? { Contact_name: name } : {}),
@@ -555,7 +724,7 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/emergency-contacts/delete/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeleteEmergencyContact(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

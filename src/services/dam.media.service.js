@@ -61,6 +61,57 @@ export async function getDamAssetById(mediaId) {
   return normalizeDamAssetResponse(downloaded);
 }
 
+/**
+ * Download the raw bytes of a DAM asset (for AI resume parsing).
+ * Strategy: resolve asset metadata → try each candidate URL as arraybuffer;
+ * fall back to the DAM stream endpoint (302 → presigned URL, axios follows it).
+ * Returns { buffer, mimeType, fileName } or null on failure (fail-soft).
+ *
+ * @param {string|number} mediaId
+ */
+export async function downloadDamAssetBuffer(mediaId) {
+  if (!mediaId) return null;
+  const asset = await getDamAssetById(mediaId);
+  const fileName = asset?.file_name || asset?.filename || asset?.originalname || `asset-${mediaId}`;
+  const mimeType = asset?.mime_type || asset?.mimetype || asset?.contentType || null;
+
+  const candidates = [asset?.url, asset?.file_url, asset?.download_url, asset?.cdn_url].filter(
+    (u) => typeof u === "string" && /^https?:\/\//i.test(u)
+  );
+
+  for (const url of candidates) {
+    try {
+      const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: DAM_TIMEOUT,
+        headers: withInternalSecret(),
+        maxRedirects: 5,
+      });
+      if (res?.data) {
+        return { buffer: Buffer.from(res.data), mimeType: res.headers?.["content-type"] || mimeType, fileName };
+      }
+    } catch (err) {
+      logger.warn({ err: err?.message, mediaId, url }, "DAM asset URL download failed — trying next source");
+    }
+  }
+
+  // Fallback: DAM stream endpoint 302-redirects to a short-lived presigned URL.
+  try {
+    const res = await damApi.get(`/assets/video-stream/${mediaId}`, {
+      responseType: "arraybuffer",
+      headers: withInternalSecret(),
+      maxRedirects: 5,
+    });
+    if (res?.data) {
+      return { buffer: Buffer.from(res.data), mimeType: res.headers?.["content-type"] || mimeType, fileName };
+    }
+  } catch (err) {
+    logger.error({ err: err?.message, mediaId }, "DAM asset stream download failed");
+  }
+
+  return null;
+}
+
 export async function uploadFileToDAM(file, type = "avatar") {
   try {
     const formData = new FormData();

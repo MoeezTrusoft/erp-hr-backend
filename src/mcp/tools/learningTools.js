@@ -108,7 +108,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/training/courses", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpCreateTrainingCourse(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -126,7 +126,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/training/courses/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:learning", user.isAdmin);
       const data = await mcpUpdateTrainingCourse(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -138,7 +138,7 @@ export function registerLearningTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/training/courses/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:learning", user.isAdmin);
       const data = await mcpDeleteTrainingCourse(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -150,7 +150,7 @@ export function registerLearningTools(server) {
     { name: z.string().min(1), description: z.string().optional() },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/training/categories", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpCreateTrainingCategory(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -166,7 +166,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/training/enrollments", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpCreateTrainingEnrollment(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -182,7 +182,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/training/enrollments/bulk", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpBulkTrainingEnrollment(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -197,7 +197,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/training/enrollments/${id}/status`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:learning", user.isAdmin);
       const data = await mcpUpdateTrainingEnrollmentStatus(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -213,7 +213,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/training/enrollments/${id}/progress`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:learning", user.isAdmin);
       const data = await mcpUpdateTrainingEnrollmentProgress(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -228,7 +228,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/training/enrollments/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:learning", user.isAdmin);
       const data = await mcpCancelTrainingEnrollment(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -246,7 +246,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/certifications", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpCreateCertification(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -263,7 +263,7 @@ export function registerLearningTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/learning-paths", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpCreateLearningPath(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

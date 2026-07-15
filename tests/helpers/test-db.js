@@ -30,6 +30,7 @@
 //     when a future DB-backed suite explicitly imports it.
 
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 
 let cachedClient = null;
 
@@ -152,7 +153,7 @@ export const getTestPrisma = () => {
     if (cachedClient) return cachedClient;
     const url = requireTestDatabaseUrl();
     cachedClient = new PrismaClient({
-        datasourceUrl: url,
+        adapter: new PrismaPg({ connectionString: url }),
         log: ['warn', 'error'],
     });
     return cachedClient;

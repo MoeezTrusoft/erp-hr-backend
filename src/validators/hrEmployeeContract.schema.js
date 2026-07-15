@@ -20,6 +20,13 @@ const optionalPhone = z.preprocess(
 
 const mediaVisibility = z.enum(["hr_only", "manager", "employee", "all"]).default("all");
 
+// FE-supplied inline upload: a raw base64 string OR a full `data:<mime>;base64,…`
+// URI. When present, the service decodes it, uploads to DAM, and extracts
+// fileName/mimeType/fileSize itself — the FE no longer needs a pre-uploaded
+// mediaId. Not run through the empty→undefined trim helper because base64
+// payloads are large and never blank-meaningful; a plain optional string suffices.
+const optionalBase64 = z.string().min(1).optional();
+
 export const emergencyContactSchema = z.object({
   id: optionalInt,
   contactName: optionalString,
@@ -32,6 +39,7 @@ export const emergencyContactSchema = z.object({
 
 export const employeeDocumentSchema = z.object({
   id: optionalInt,
+  fileBase64: optionalBase64,
   title: optionalString,
   category: optionalString,
   version: optionalString,
@@ -84,9 +92,33 @@ const employeeBase = {
   fte: optionalNumber,
   profilePhotoMediaId: optionalInt,
   coverPhotoMediaId: optionalInt,
+  // Inline photo upload (base64 / data URI). If set, the service uploads to DAM
+  // and derives the media id + url; the *MediaId fields above stay for callers
+  // that already hold a DAM asset.
+  profilePhotoBase64: optionalBase64,
+  profilePhotoFileName: optionalString,
+  coverPhotoBase64: optionalBase64,
+  coverPhotoFileName: optionalString,
   emergencyContacts: z.array(emergencyContactSchema).optional().default([]),
   documents: z.array(employeeDocumentSchema).optional().default([]),
   additionalFields: optionalRecord,
+  // Tax + banking (consolidated profile). ntn is C4-encrypted at rest. The bank
+  // fields upsert the employee's PRIMARY BankDetail (no create/update path existed
+  // before). Provide bankName + accountNumber together to create a bank row; any
+  // subset updates the existing primary. iban is C4-encrypted at rest.
+  ntn: optionalString,
+  bankName: optionalString,
+  accountTitle: optionalString, // A/C Title
+  accountNumber: optionalString,
+  iban: optionalString,
+  branch: optionalString,
+  disbursementMethod: optionalString, // Bank Transfer | Cheque | Cash
+  routingNumber: optionalString,
+  accountType: optionalString,
+  // Opt-in AI resume parsing on create/update: only runs when BOTH a resumeMediaId
+  // (DAM asset) and parseResume:true are supplied. See resumeParsing.service.js.
+  resumeMediaId: optionalInt,
+  parseResume: z.coerce.boolean().optional().default(false),
 };
 
 // Only firstName + lastName are required at create time. jobTitle, hireDate,
@@ -130,6 +162,7 @@ export const employeeStatusSchema = z.object({
 
 export const mediaAttachSchema = z.object({
   mediaId: optionalInt,
+  fileBase64: optionalBase64,
   url: optionalString,
   downloadUrl: optionalString,
   fileName: optionalString,

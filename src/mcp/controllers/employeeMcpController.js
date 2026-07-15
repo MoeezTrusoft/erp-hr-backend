@@ -1,6 +1,7 @@
 import { deleteEmployee } from "../../controllers/hr.controller.js";
 import {
   deletePositionController,
+  getPositionByIdController,
 } from "../../controllers/position.controller.js";
 import { getOrgChart as getOrgChartController } from "../../controllers/orgChart.controller.js";
 import { logLifecycleEvent } from "../../controllers/employeeLifecycle.controller.js";
@@ -14,6 +15,8 @@ import {
   remove as deleteEmergencyContactController,
 } from "../../controllers/emergencyContacts.controller.js";
 import * as hrContractService from "../../services/hrContract.service.js";
+import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
+import { getEmployeeProfileTab } from "../../services/employeeProfileTabs.service.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -74,6 +77,26 @@ export async function mcpGetEmployeeById(user, id) {
   return { success: true, data: await hrContractService.getEmployeeProfile(id, user?.tenantId ?? null) };
 }
 
+// Consolidated employee profile (department/company from RBAC, bank block, ntn,
+// tax slab, EOBI/PF, monthly/YTD tax, compensation history, skills/competencies,
+// certifications, documents). Sensitive fields (raw salary/account/iban/ntn) are
+// gated on `showSensitive` — set by the tool from the caller's hr:payroll VIEW.
+export async function mcpGetEmployeeProfile(user, id, opts = {}) {
+  return {
+    success: true,
+    data: await getEmployeeConsolidatedProfile(id, user?.tenantId ?? null, opts),
+  };
+}
+
+// Tab-scoped profile: fetches ONE tab's data + the always-on identity header.
+export async function mcpGetEmployeeProfileTab(user, id, opts = {}) {
+  return {
+    success: true,
+    data: await getEmployeeProfileTab(id, user?.tenantId ?? null, opts),
+  };
+}
+
+
 export async function mcpGetEmployeeQuickView(user, id) {
   return { success: true, data: await hrContractService.getEmployeeQuickView(id, user?.tenantId ?? null) };
 }
@@ -130,12 +153,19 @@ export async function mcpListPositionsContract(query = {}, tenantId) {
 }
 
 export async function mcpCreatePosition(user, data) {
-  return hrContractService.createPosition(data, user?.employeeId || user?.userId);
+  // T-P2.6: thread the verified tenant (RBAC Company.uuid, resolved by
+  // buildContextFromHeaders from the gateway-forwarded X-Tenant-Id header)
+  // so the created Position row is correctly tenant-scoped.
+  const tenantId = user?.tenantId ?? null;
+  const actorId = user?.employeeId || user?.userId;
+  return hrContractService.createPosition(data, actorId, tenantId);
 }
 
 export async function mcpUpdatePosition(user, id, data) {
   return hrContractService.updatePosition(id, data);
 }
+
+export const mcpGetPositionByPositionId = (user, id) => runController(getPositionByIdController, { user, params: { id: String(id) } });
 
 export async function mcpUpdatePositionStatus(user, id, isActive) {
   return hrContractService.updatePositionStatus(id, isActive);
@@ -144,6 +174,7 @@ export async function mcpUpdatePositionStatus(user, id, isActive) {
 export async function mcpDeletePosition(user, id) {
   return runController(deletePositionController, { user, params: { id: String(id) } });
 }
+
 
 export async function mcpGetOrgChart(user) {
   return runController(getOrgChartController, { user });
@@ -162,6 +193,7 @@ export async function mcpUpdateOffboarding(user, id, data) {
 }
 
 export async function mcpCreateEmergencyContact(user, data) {
+  console.log("mcpCreateEmergencyContact called with data:", data);
   return runController(createEmergencyContactController, { user, body: data });
 }
 

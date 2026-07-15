@@ -10,6 +10,7 @@ import { registerComplianceTools } from "./tools/complianceTools.js";
 import { registerBenefitTools } from "./tools/benefitTools.js";
 import { registerAnalyticsTools } from "./tools/analyticsTools.js";
 import { registerSelfTools } from "./tools/selfTools.js";
+import { registerResumeTools } from "./tools/resumeTools.js";
 
 export function registerAllTools(server) {
   registerEmployeeTools(server);
@@ -24,4 +25,5 @@ export function registerAllTools(server) {
   registerBenefitTools(server);
   registerAnalyticsTools(server);
   registerSelfTools(server);
+  registerResumeTools(server);
 }

@@ -18,6 +18,8 @@ export const createCandidate = async (req, res) => {
             source,
             notes,
             tags, // array of tag names
+            resumeMediaId, // DAM asset id of the resume
+            parseResume, // opt-in AI parse flag
         } = req.body;
 
         if (!firstName || !email) {
@@ -34,15 +36,34 @@ export const createCandidate = async (req, res) => {
             phone,
             source,
             notes,
+            resumeMediaId,
             tagNames: Array.isArray(tags) ? tags : [],
             tenantId,
             createdById,
         });
 
+        // Opt-in AI resume parsing: only when BOTH resumeMediaId + parseResume are
+        // set. Best-effort — a parse failure must NOT fail candidate creation. The
+        // resume service is dynamically imported so its lazy AI deps stay untouched
+        // unless a caller opts in.
+        let resumeParsing = null;
+        if (resumeMediaId && parseResume) {
+            try {
+                const { ingestCandidateResume } = await import("../services/resumeParsing.service.js");
+                resumeParsing = await ingestCandidateResume({
+                    candidateId: candidate.id,
+                    mediaId: resumeMediaId,
+                    tenantId: req.user?.tenantId ?? tenantId ?? null,
+                });
+            } catch (err) {
+                resumeParsing = { error: err?.message || "resume parse failed" };
+            }
+        }
+
         return res.status(201).json({
             success: true,
             message: "Candidate created successfully",
-            data: candidate,
+            data: resumeParsing ? { ...candidate, resumeParsing } : candidate,
         });
     } catch (error) {
         return res.status(400).json({

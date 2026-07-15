@@ -123,7 +123,7 @@ export function registerPayrollTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/payroll/runs", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
       const data = await mcpCreatePayrollRun(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -135,7 +135,7 @@ export function registerPayrollTools(server) {
     { id: z.string().min(1).describe("Payroll run ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/payroll/runs/${id}/process`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
       const data = await mcpProcessPayrollRun(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -147,7 +147,7 @@ export function registerPayrollTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/payroll/runs/${id}/finalize`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
       const data = await mcpFinalizePayrollRun(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -159,7 +159,7 @@ export function registerPayrollTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/payroll/runs/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:payroll", user.isAdmin);
       const data = await mcpCancelPayrollRun(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -171,7 +171,7 @@ export function registerPayrollTools(server) {
     { id: z.string().min(1).describe("Payslip ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/payroll/payslips/${id}/distribute`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
       const data = await mcpDistributePayslip(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -189,7 +189,7 @@ export function registerPayrollTools(server) {
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/payroll/employees/${employeeId}/employment-terms`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
       const data = await mcpCreateEmploymentTerms(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -205,7 +205,7 @@ export function registerPayrollTools(server) {
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/payroll/employees/${employeeId}/payroll-assignments`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
       const data = await mcpCreatePayrollAssignment(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -222,7 +222,7 @@ export function registerPayrollTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/payroll/earning-types", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
       const data = await mcpCreateEarningType(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -239,7 +239,7 @@ export function registerPayrollTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/payroll/deduction-types", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
       const data = await mcpCreateDeductionType(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

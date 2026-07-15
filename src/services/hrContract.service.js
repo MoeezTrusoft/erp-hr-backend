@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
 import {
@@ -6,7 +7,7 @@ import {
   mapEmployeeToLifecycleInput,
 } from "./employeeOutbox.service.js";
 import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js";
-import { scopedEmployeeWhere, scopedWhere } from "../lib/tenancy.js";
+import { scopedEmployeeWhere, scopedWhere, scopedData } from "../lib/tenancy.js";
 import {
   createEmployeeContractSchema,
   createEmployeeDocumentSchema,
@@ -282,6 +283,7 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
     businessUnitId: data.businessUnitId,
     managerId: data.managerId,
     regionId: data.locationId,
+    ntn: data.ntn, // C4-encrypted at rest by the prisma extension
     employee_type: data.employmentType,
     employement_status: data.employmentStatus,
     status: data.employmentStatus,
@@ -331,8 +333,64 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
   return Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined));
 };
 
+// Collect the primary-BankDetail fields present in a contract payload. Returns
+// null when none are supplied so create/update can skip banking entirely.
+// accountNumber / iban are C4-encrypted transparently on write.
+const bankFieldsFromContract = (data) => {
+  const map = {
+    bankName: data.bankName,
+    accountTitle: data.accountTitle,
+    accountNumber: data.accountNumber,
+    iban: data.iban,
+    branch: data.branch,
+    disbursementMethod: data.disbursementMethod,
+    routingNumber: data.routingNumber,
+    accountType: data.accountType,
+  };
+  const present = Object.fromEntries(Object.entries(map).filter(([, v]) => v !== undefined));
+  return Object.keys(present).length ? present : null;
+};
+
+// Upsert the employee's PRIMARY BankDetail inside a transaction. A NEW row needs
+// both bankName + accountNumber (NOT NULL columns); a partial patch updates the
+// existing primary. Returns true if a write happened.
+const upsertPrimaryBankDetail = async (tx, employeeId, tenantId, bank) => {
+  if (!bank) return false;
+  const existing = await tx.bankDetail.findFirst({
+    where: { employeeId: Number(employeeId), isPrimary: true },
+    orderBy: { created_at: "desc" },
+    select: { id: true },
+  });
+
+  if (existing) {
+    await tx.bankDetail.update({ where: { id: existing.id }, data: bank });
+    return true;
+  }
+
+  if (!bank.bankName || !bank.accountNumber) {
+    // Can't create a new bank row without the NOT NULL fields; skip silently so
+    // a partial update on an employee with no bank row is a no-op, not a 500.
+    return false;
+  }
+  await tx.bankDetail.create({
+    data: {
+      employeeId: Number(employeeId),
+      tenantId: tenantId ?? null,
+      isPrimary: true,
+      accountType: bank.accountType || "CHECKING",
+      ...bank,
+    },
+  });
+  return true;
+};
+
 const employeeProfileSelect = {
   ...compactEmployeeSelect,
+  ntn: true,
+  bankDetails: {
+    orderBy: [{ isPrimary: "desc" }, { created_at: "desc" }],
+    take: 1,
+  },
   date_of_birth: true,
   nationality: true,
   nationality_id_type: true,
@@ -362,12 +420,35 @@ const employeeProfileSelect = {
   reports: { select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true } },
 };
 
+const maskTail = (v) => {
+  const s = String(v ?? "");
+  return s ? `****${s.slice(-4)}` : null;
+};
+
 const employeeContractProfile = (employee) => {
   const summary = employeeDirectoryRow(employee);
   const additionalFields =
     employee.additional_fields && typeof employee.additional_fields === "object" ? employee.additional_fields : {};
+  // Primary bank row (C4-decrypted on read); account/iban masked here since this
+  // profile is gated on hr:employee (not hr:payroll). The full-detail, permission
+  // -gated view lives in the consolidated hr_employee_profile_get tool.
+  const primaryBank = employee.bankDetails?.[0] || null;
   return {
   summary,
+  ntn: employee.ntn ? maskTail(employee.ntn) : null,
+  banking: primaryBank
+    ? {
+        id: primaryBank.id,
+        accountTitle: primaryBank.accountTitle ?? null,
+        bankName: primaryBank.bankName ?? null,
+        accountNumber: maskTail(primaryBank.accountNumber),
+        iban: maskTail(primaryBank.iban),
+        branch: primaryBank.branch ?? null,
+        disbursementMethod: primaryBank.disbursementMethod ?? null,
+        accountType: primaryBank.accountType ?? null,
+        isPrimary: primaryBank.isPrimary,
+      }
+    : null,
   personal: {
     firstName: employee.first_name,
     middleName: employee.middle_name,
@@ -509,6 +590,43 @@ const normalizeMediaPayload = async ({ mediaId, file, type, fallback = {} }) => 
     };
   }
 
+  return null;
+};
+
+// Decode a FE-supplied inline upload (raw base64 OR a `data:<mime>;base64,…`
+// URI) into the multer-style file object uploadFileToDAM expects, so the FE can
+// send the raw bytes and the BE extracts fileName/mimeType/fileSize itself.
+// Accepts either a bare string or an object carrying { fileBase64, fileName,
+// mimeType }. Returns null when there is no usable base64 content.
+export const fileFromBase64 = (input, fallbackName = "upload.bin") => {
+  if (!input) return null;
+  const raw = typeof input === "string" ? input : input.fileBase64 || input.base64;
+  if (!raw || typeof raw !== "string") return null;
+
+  let mimetype = typeof input === "object" ? input.mimeType || input.mimetype : null;
+  let b64 = raw.trim();
+  const dataUri = b64.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?(?:;base64)?,(.*)$/s);
+  if (dataUri) {
+    if (dataUri[1] && !mimetype) mimetype = dataUri[1];
+    b64 = dataUri[2];
+  }
+  b64 = b64.replace(/\s/g, "");
+  if (!b64) return null;
+
+  const buffer = Buffer.from(b64, "base64");
+  if (!buffer.length) return null;
+
+  const originalname =
+    (typeof input === "object" && (input.fileName || input.filename)) || fallbackName;
+  return { buffer, originalname, mimetype: mimetype || "application/octet-stream", size: buffer.length };
+};
+
+// Resolve an employee media slot from EITHER an inline base64 upload OR a
+// pre-existing DAM mediaId. base64 wins when both are present.
+const resolveEmployeeMedia = async (base64Input, mediaId, type, fallback = {}) => {
+  const file = fileFromBase64(base64Input, `${type}.bin`);
+  if (file) return normalizeMediaPayload({ file, type });
+  if (mediaId) return normalizeMediaPayload({ mediaId, type, fallback });
   return null;
 };
 
@@ -725,12 +843,44 @@ const lifecycleSourceSelect = {
 export const createEmployee = async (payload, actorId, ctx = {}) => {
   const data = createEmployeeContractSchema.parse(normalizeContractPayload(payload));
   await assertEmployeeReferences(data);
-  const profilePhoto = data.profilePhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.profilePhotoMediaId, type: "employee-profile-photo" })
-    : null;
-  const coverPhoto = data.coverPhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
-    : null;
+  // Photos: accept an inline base64/data-URI upload OR a pre-existing mediaId.
+  const profilePhoto = await resolveEmployeeMedia(
+    { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
+    data.profilePhotoMediaId,
+    "employee-profile-photo"
+  );
+  const coverPhoto = await resolveEmployeeMedia(
+    { fileBase64: data.coverPhotoBase64, fileName: data.coverPhotoFileName },
+    data.coverPhotoMediaId,
+    "employee-cover-photo"
+  );
+  // Documents: upload any base64 file to DAM BEFORE the tx (network I/O must not
+  // run inside a prisma transaction), resolving each to a media record. A doc is
+  // valid with an inline file OR an existing mediaId.
+  const documentMedia = await Promise.all(
+    (data.documents || []).map(async (document) => {
+      const file = fileFromBase64(document, "employee-document.bin");
+      let media = null;
+      if (file) {
+        media = await normalizeMediaPayload({ file, type: "employee-document" });
+      } else if (document.mediaId) {
+        media = await normalizeMediaPayload({
+          mediaId: document.mediaId,
+          type: "employee-document",
+          fallback: {
+            fileName: document.fileName,
+            mimeType: document.mimeType,
+            fileSize: document.fileSize,
+            url: document.downloadUrl,
+          },
+        });
+      }
+      if (!media?.mediaId) {
+        throw new Error("Each employee document requires an inline file (fileBase64) or an existing mediaId");
+      }
+      return { document, media };
+    })
+  );
   // T-P2.2/T-P2.6: tenant comes ONLY from the verified claim (ctx.tenantId,
   // surfaced from the service-JWT tenant on req.user) — NEVER the request body.
   // It is an opaque RBAC Company.uuid string; thread it verbatim, null → null
@@ -753,9 +903,19 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       select: lifecycleSourceSelect,
     });
 
-    // A.4: enqueue exactly one hr.employee.lifecycle.v1 (phase=hired) in the SAME
+    // A.4 / Phase 3: enqueue hr.employee.lifecycle.v1 (phase=hired) in the SAME
     // tx as the employee write, via the shared validate-before-write helper.
     await emitEmployeeLifecycle(tx, created, "hired", { ...ctx, actorId: ctx.actorId ?? actorId });
+
+    // Phase 3: also emit onboarded event when wizard supplies an onboardingStartDate.
+    // This signals IAM-provisioning consumers (RBAC user creation, access grant).
+    const onboardingDate = data.additionalFields?.onboardingStartDate ?? data.onboardingStartDate ?? null;
+    if (onboardingDate) {
+      await emitEmployeeLifecycle(tx, created, "transferred", {
+        ...ctx,
+        actorId: ctx.actorId ?? actorId,
+      }, { effectiveOn: onboardingDate }).catch(() => {/* non-fatal: hired already emitted */});
+    }
 
     if (data.emergencyContacts.length > 0) {
       await tx.emergencyContacts.createMany({
@@ -770,17 +930,17 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       });
     }
 
-    if (data.documents.length > 0) {
+    if (documentMedia.length > 0) {
       await tx.employeeMedia.createMany({
-        data: data.documents.map((document) => {
-          const parsedDocument = createEmployeeDocumentSchema.parse(document);
-          if (!parsedDocument.mediaId) {
-            throw new Error("Nested employee documents require mediaId");
-          }
-          return documentDataFromContract(parsedDocument, created.id, actorId);
-        }),
+        data: documentMedia.map(({ document, media }) =>
+          documentDataFromContract(document, created.id, actorId, media)
+        ),
       });
     }
+
+    // Banking (A/C title, bank, account #, IBAN, branch, disbursement) — no
+    // create path existed before. Verified tenant rides on the row.
+    await upsertPrimaryBankDetail(tx, created.id, verifiedTenantId, bankFieldsFromContract(data));
 
     return tx.employee.findUnique({
       where: { id: created.id },
@@ -797,7 +957,31 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     notes: `Employee ${employee.id} created from HR contract`,
   });
 
-  return employeeContractProfile(employee);
+  // Opt-in AI resume parsing: only when BOTH resumeMediaId + parseResume are set.
+  // Best-effort enrichment — a parse failure must NOT fail employee creation.
+  // The resume service is dynamically imported so its lazy AI deps are never
+  // touched unless a caller opts in.
+  let resumeParsing = null;
+  if (data.resumeMediaId && data.parseResume) {
+    try {
+      const { ingestEmployeeResume } = await import("./resumeParsing.service.js");
+      resumeParsing = await ingestEmployeeResume({
+        employeeId: employee.id,
+        mediaId: data.resumeMediaId,
+        tenantId: verifiedTenantId,
+        actorId,
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err?.message, employeeId: employee.id },
+        "createEmployee: opt-in resume parse failed (non-fatal)"
+      );
+      resumeParsing = { error: err?.message || "resume parse failed" };
+    }
+  }
+
+  const profile = employeeContractProfile(employee);
+  return resumeParsing ? { ...profile, resumeParsing } : profile;
 };
 
 export const updateEmployee = async (id, payload, actorId) => {
@@ -807,12 +991,16 @@ export const updateEmployee = async (id, payload, actorId) => {
 
   const data = updateEmployeeContractSchema.parse(normalizeContractPayload(payload));
   await assertEmployeeReferences(data, employeeId);
-  const profilePhoto = data.profilePhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.profilePhotoMediaId, type: "employee-profile-photo" })
-    : null;
-  const coverPhoto = data.coverPhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
-    : null;
+  const profilePhoto = await resolveEmployeeMedia(
+    { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
+    data.profilePhotoMediaId,
+    "employee-profile-photo"
+  );
+  const coverPhoto = await resolveEmployeeMedia(
+    { fileBase64: data.coverPhotoBase64, fileName: data.coverPhotoFileName },
+    data.coverPhotoMediaId,
+    "employee-cover-photo"
+  );
   const employeeData = {
     ...data,
     profilePhotoUrl: profilePhoto?.url,
@@ -838,6 +1026,10 @@ export const updateEmployee = async (id, payload, actorId) => {
         })),
       });
     }
+
+    // Banking upsert — patch the existing primary BankDetail or create one when
+    // bankName + accountNumber are supplied. Tenant inherited from the employee.
+    await upsertPrimaryBankDetail(tx, employeeId, existing.tenant_id ?? null, bankFieldsFromContract(data));
 
     return tx.employee.findUnique({
       where: { id: employeeId },
@@ -905,6 +1097,7 @@ export const updateEmployeeStatus = async (id, status, actorId) => {
 
 export const uploadEmployeeProfilePhoto = async (id, payload, file, actorId) => {
   const data = mediaAttachSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-profile-photo.bin");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
     file,
@@ -934,6 +1127,7 @@ export const uploadEmployeeProfilePhoto = async (id, payload, file, actorId) => 
 
 export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
   const data = mediaAttachSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-cover-photo.bin");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
     file,
@@ -964,6 +1158,7 @@ export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
 export const createEmployeeDocument = async (employeeId, payload, file, actorId) => {
   await requireRecord("employee", employeeId, "Employee");
   const data = createEmployeeDocumentSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-document.bin");
   if (!file && !data.mediaId) throw new Error("mediaId or uploaded file is required");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
@@ -992,6 +1187,7 @@ export const updateEmployeeDocument = async (employeeId, documentId, payload, fi
   if (!existing) throw new Error("Employee document not found");
 
   const data = updateEmployeeDocumentSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-document.bin");
   const media = file || data.mediaId
     ? await normalizeMediaPayload({
         mediaId: data.mediaId || existing.media_id,
@@ -1163,23 +1359,29 @@ export const getPosition = async (id) => {
   };
 };
 
-export const createPosition = async (data, actorId) => {
+export const createPosition = async (data, actorId, tenantId) => {
   if (!data.title) throw new Error("Title is required");
 
+  // C.2 / T-P2.6: scope the findFirst to the same tenant so the
+  // generated job-code sequence doesn't cross tenant boundaries.
   const lastPosition = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, {}),
     orderBy: { id: "desc" },
     select: { id: true },
   });
   const nextId = lastPosition ? lastPosition.id + 1 : 1;
 
   const position = await prisma.position.create({
-    data: {
+    // scopedData stamps tenantId (verified RBAC Company.uuid) onto every
+    // new position row. If tenantId is null the column is written as null
+    // (legacy / unscoped) — fail-closed: never writes another tenant's id.
+    data: scopedData(tenantId, {
       title: data.title,
       description: buildPositionDescription(data),
       isActive: data.isActive ?? true,
       createdById: actorId ? Number(actorId) : null,
       jobCode: data.jobCode || `TST-${nextId.toString().padStart(3, "0")}`,
-    },
+    }),
     include: { _count: { select: { employees: true, JobRequisition: true } } },
   });
 
