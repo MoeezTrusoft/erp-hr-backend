@@ -16,6 +16,10 @@ const pick = (a) => a[rnd(a.length)];
 const sample = (a, k) => { const c = [...a]; const o = []; while (o.length < k && c.length) o.push(c.splice(rnd(c.length), 1)[0]); return o; };
 const daysAgo = (d) => new Date(Date.now() - d * 86400000);
 const round = (n) => Math.round(n);
+const round2 = (n) => Math.round(n * 100) / 100;
+const atClock = (d, h, m) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), h, m, 0));
+const addHours = (d, hrs) => new Date(d.getTime() + Math.round(hrs * 3600) * 1000);
+const isWeekday = (d) => { const w = d.getUTCDay(); return w !== 0 && w !== 6; };
 
 const TENANT = "066dd015-2820-47b5-b2fc-1e9704f0f420"; // RBAC Company 2 uuid
 const COMPANY_ID = 2;
@@ -225,22 +229,66 @@ async function main() {
   }
   log(`${docCount} employee documents created`);
 
-  // ---------- Attendance (last 22 weekdays) + Timesheets ----------
+  // ---------- Time & attendance ----------
+  // One tenant overtime rule + a standard work schedule per employee, attendance
+  // with real check_in/out/remarks, and timesheets backed by daily time entries.
+  const otRule = await prisma.overtimeRule.create({ data: {
+    name: "Standard Overtime Policy", description: "1.5x after 8h/day or 40h/week",
+    daily_hours_threshold: 8, weekly_hours_threshold: 40,
+    daily_overtime_rate: 1.5, weekly_overtime_rate: 1.5,
+    max_hours_per_day: 12, max_hours_per_week: 60, is_active: true, tenantId: TENANT,
+  } });
+  const schedulePattern = {
+    monday: "09:00-17:00", tuesday: "09:00-17:00", wednesday: "09:00-17:00",
+    thursday: "09:00-17:00", friday: "09:00-17:00", saturday: "off", sunday: "off",
+  };
   for (const e of emps) {
     let attData = [];
     for (let d = 1; d <= 30; d++) {
       const day = daysAgo(d); const dow = day.getUTCDay();
       if (dow === 0 || dow === 6) continue;
       const st = Math.random() < 0.9 ? "PRESENT" : Math.random() < 0.6 ? "LATE" : "ABSENT";
-      attData.push({ employeeId: e.id, date: day, status: st, total_hours: st === "ABSENT" ? 0 : 8 + Math.random() * 1.5, tenantId: TENANT });
+      if (st === "ABSENT") {
+        attData.push({ employeeId: e.id, date: day, status: st, total_hours: 0, remarks: "Absent — no attendance recorded", tenantId: TENANT });
+      } else {
+        const late = st === "LATE";
+        const ci = atClock(day, 9, late ? 45 + rnd(70) : rnd(18));
+        const hours = round2(8 + Math.random() * 1.5);
+        attData.push({ employeeId: e.id, date: day, status: st, check_in: ci, check_out: addHours(ci, hours), total_hours: hours, remarks: late ? "Late arrival" : "On time", tenantId: TENANT });
+      }
     }
     await prisma.attendance.createMany({ data: attData });
-    // current-month timesheet (so "hours completed this month" is populated) + prior month
+
+    await prisma.workSchedule.create({ data: {
+      employeeId: e.id, schedule_name: "Standard 40h Week",
+      effective_start_date: e.joining_date || e.hire_date || daysAgo(365),
+      total_hours_per_week: 40, schedule_pattern: schedulePattern,
+      overtimeRuleId: otRule.id, tenantId: TENANT,
+    } });
+
+    // current-month timesheet (so "hours completed this month" is populated) + prior month,
+    // each backed by daily REGULAR time entries across weekdays in the period.
     const som = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
-    await prisma.timesheet.create({ data: { employeeId: e.id, period_start: som, period_end: daysAgo(1), total_hours: 60 + rnd(90), status: "SUBMITTED", tenantId: TENANT } });
-    await prisma.timesheet.create({ data: { employeeId: e.id, period_start: daysAgo(58), period_end: daysAgo(30), total_hours: 150 + rnd(30), status: "APPROVED", tenantId: TENANT } });
+    const periods = [
+      { start: som, end: daysAgo(1), status: "SUBMITTED" },
+      { start: daysAgo(58), end: daysAgo(30), status: "APPROVED" },
+    ];
+    for (const p of periods) {
+      const entries = [];
+      const day = new Date(Date.UTC(p.start.getUTCFullYear(), p.start.getUTCMonth(), p.start.getUTCDate()));
+      while (day <= p.end) {
+        if (isWeekday(day)) {
+          const start = atClock(day, 9, rnd(15)); const dur = 8 * 60 + rnd(60);
+          entries.push({ employeeId: e.id, work_date: new Date(day), start_time: start, end_time: new Date(start.getTime() + dur * 60000), duration_minutes: dur, work_type: "REGULAR", entry_type: "MANUAL_ENTRY", note: "Regular working day", tenantId: TENANT });
+        }
+        day.setUTCDate(day.getUTCDate() + 1);
+      }
+      const totalHours = round2(entries.reduce((s, x) => s + x.duration_minutes, 0) / 60);
+      const ts = await prisma.timesheet.create({ data: { employeeId: e.id, period_start: p.start, period_end: p.end, total_hours: totalHours, status: p.status, tenantId: TENANT } });
+      if (entries.length) await prisma.timeEntry.createMany({ data: entries.map((x) => ({ ...x, timesheetId: ts.id })) });
+    }
   }
-  log("attendance + timesheets created");
+  log("attendance + work schedules + timesheets + time entries created");
 
   // ---------- Payroll: 3 monthly runs + payslips ----------
   for (let mo = 3; mo >= 1; mo--) {
@@ -335,6 +383,9 @@ async function main() {
     employees: await prisma.employee.count(),
     payslips: await prisma.payrollPayslip.count(),
     attendance: await prisma.attendance.count(),
+    timesheets: await prisma.timesheet.count(),
+    timeEntries: await prisma.timeEntry.count(),
+    workSchedules: await prisma.workSchedule.count(),
     goals: await prisma.goal.count(),
     employeeSkills: await prisma.employeeSkill.count(),
     leaveBalances: await prisma.leaveBalance.count(),
