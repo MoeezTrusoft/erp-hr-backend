@@ -22,6 +22,10 @@ import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
 import { registerRecruitmentExtraTools } from "./tools/recruitmentExtraTools.js";
+import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
+import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
+import { registerOnboardingScheduleTools } from "./tools/onboardingScheduleTools.js";
+import { registerOnboardingPortalTools } from "./tools/onboardingPortalTools.js";
 
 export function registerAllTools(server) {
   registerEmployeeTools(server);
@@ -48,4 +52,8 @@ export function registerAllTools(server) {
   registerRecruitmentAnalyticsTools(server);
   registerOnboardingMgmtTools(server);
   registerRecruitmentExtraTools(server);
+  registerOnboardingDashboardTools(server);
+  registerOnboardingDetailTools(server);
+  registerOnboardingScheduleTools(server);
+  registerOnboardingPortalTools(server);
 }

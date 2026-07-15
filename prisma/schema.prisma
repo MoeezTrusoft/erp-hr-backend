@@ -1653,6 +1653,12 @@ model OnboardingChecklist {
   status      OnboardingStatus @default(NOT_STARTED)
   completedAt DateTime?
   notes       String?
+  readyToCollect Boolean       @default(false)
+  currentStage   String?       // pre_joining | pre_boarding | first_week | equipment | complete
+  template       String?       // onboarding template name
+  preboarding    Json?         // { readiness:{}, itSetup:{}, engagement:{}, workspace:{} } booleans
+  memberAssignments Json?      // [{ employeeId, name, role }]
+  activityLog    Json?         // [{ at, actor, text }]
   created_at  DateTime         @default(now())
   updated_at  DateTime         @updatedAt
 
@@ -1660,6 +1666,7 @@ model OnboardingChecklist {
   tasks     OnboardingTask[]
   documents OnboardingDocument[]
   surveys   OnboardingSurvey[]
+  sessions  OnboardingSession[]
   buddy     OnboardingBuddy?
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
@@ -1668,11 +1675,33 @@ model OnboardingChecklist {
   @@map("onboarding_checklists")
 }
 
+model OnboardingSession {
+  id          Int       @id @default(autoincrement())
+  checklistId Int
+  title       String
+  sessionDate DateTime?
+  fromTime    String?   // "09:00"
+  toTime      String?   // "10:00"
+  sessionType String?   // orientation | training | meeting
+  location    String?   // room or link
+  assigneeId  Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid
+  @@index([checklistId])
+  @@index([tenantId])
+  @@map("onboarding_sessions")
+}
+
 model OnboardingTask {
   id           Int              @id @default(autoincrement())
   checklistId  Int
   title        String
   description  String?
+  stage        String?          // pre_joining | pre_boarding | first_week | equipment
   assigneeType TaskAssigneeType
   assigneeId   Int?
   dueDate      DateTime?
