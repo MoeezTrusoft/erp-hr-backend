@@ -41,6 +41,41 @@ const startOfMonth = (d = new Date()) => new Date(Date.UTC(d.getUTCFullYear(), d
 const now = () => new Date();
 const daysFromNow = (n) => new Date(Date.now() + n * 86400000);
 
+// Coerce a raw value into a valid Date or null.
+const toDate = (v) => {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+// Tenure formatted as "Ny Nm" (years + months, NO days) from a start date to now.
+// Returns null when no valid start date is available.
+const formatTenure = (startVal) => {
+  const start = toDate(startVal);
+  if (!start) return null;
+  const end = now();
+  if (start > end) return "0y 0m";
+  let months = (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
+  if (end.getUTCDate() < start.getUTCDate()) months -= 1;
+  if (months < 0) months = 0;
+  const years = Math.floor(months / 12);
+  const rem = months % 12;
+  return `${years}y ${rem}m`;
+};
+
+// Normalise pagination opts → { page, pageSize, skip, take }. Defensive defaults.
+const paginate = (opts = {}, defaultPageSize = 10) => {
+  let page = Number(opts.page);
+  let pageSize = Number(opts.pageSize);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  if (!Number.isFinite(pageSize) || pageSize < 1) pageSize = defaultPageSize;
+  if (pageSize > 100) pageSize = 100;
+  return { page, pageSize, skip: (page - 1) * pageSize, take: pageSize };
+};
+
+// Best-effort designation label for an employee-shaped object.
+const designationOf = (e) => e?.job_title ?? e?.Position?.title ?? e?.gradeLevel?.name ?? null;
+
 // ---------------------------------------------------------------- header ----
 async function buildHeader(employee, org) {
   return {
@@ -52,18 +87,31 @@ async function buildHeader(employee, org) {
     lastName: employee.last_name,
     preferredName: employee.preferred_name ?? null,
     jobTitle: employee.job_title ?? employee.Position?.title ?? null,
+    role: employee.job_title ?? employee.Position?.title ?? null,
     photoUrl: employee.photo_url ?? null,
+    // Banner / cover image for the profile header.
+    coverPhotoUrl: employee.cover_photo_url ?? null,
+    bannerUrl: employee.cover_photo_url ?? null,
     status: employee.status || employee.employement_status || null,
     payGrade: employee.gradeLevel?.name ?? null,
     companyName: org?.companyName ?? null,
     departments: org?.departments ?? [],
     departmentName: org?.departments?.[0] ?? employee.businessUnit?.name ?? null,
+    // Direct manager (name only; designation lives on Overview.reportingLine).
+    manager: employee.manager ? employeeName(employee.manager) : null,
+    // Primary work location.
+    location: employee.region?.name || ([employee.city, employee.country].filter(Boolean).join(", ") || null),
+    // Contact quick-glance.
+    email: employee.work_email ?? employee.email ?? null,
+    phone: employee.work_phone ?? employee.personal_contact ?? null,
+    // Tenure as "Ny Nm" (years + months, no days) from hire_date, falling back to joining_date.
+    tenure: formatTenure(employee.hire_date ?? employee.joining_date),
   };
 }
 
 // -------------------------------------------------------------- overview ----
 async function overviewTab(id, tenantId, ctx, employee) {
-  const [skillRows, leaveBalances, lastReview, attendanceRows, certifications, projects] = await Promise.all([
+  const [skillRows, leaveBalances, lastReview, attendanceRows, certifications, projects, leaveTaken, reports] = await Promise.all([
     prisma.employeeSkill.findMany({
       where: { employeeId: id },
       include: { skill: { select: { name: true, category: true } } },
@@ -76,7 +124,10 @@ async function overviewTab(id, tenantId, ctx, employee) {
     prisma.performanceReview.findFirst({
       where: { employeeId: id },
       orderBy: [{ submittedAt: "desc" }, { created_at: "desc" }],
-      select: { id: true, overall_rating: true, status: true, type: true, period_start: true, period_end: true, submittedAt: true },
+      select: {
+        id: true, overall_rating: true, status: true, type: true, period_start: true, period_end: true, submittedAt: true,
+        cycle: { select: { name: true } },
+      },
     }),
     prisma.attendance.findMany({
       where: { employeeId: id, date: { gte: daysFromNow(-30), lte: now() } },
@@ -88,6 +139,20 @@ async function overviewTab(id, tenantId, ctx, employee) {
       select: { id: true, name: true, issuedBy: true, issuedAt: true, expiryDate: true },
     }),
     ctx.userId ? getEmployeeProjects(ctx.userId) : Promise.resolve({ available: false, items: [], reason: "no linked userId" }),
+    // Leave TAKEN = sum of totalDays across APPROVED requests (all leave types).
+    prisma.leaveRequest.aggregate({
+      where: { employeeId: id, status: "APPROVED" },
+      _sum: { totalDays: true },
+    }),
+    // Direct reports (employees whose managerId = this employee) for the reporting line.
+    prisma.employee.findMany({
+      where: { managerId: id },
+      select: {
+        id: true, employee_name: true, first_name: true, middle_name: true, last_name: true,
+        job_title: true, Position: { select: { title: true } }, gradeLevel: { select: { name: true } },
+      },
+      take: 100,
+    }),
   ]);
 
   const mapSkill = (es) => ({
@@ -118,6 +183,54 @@ async function overviewTab(id, tenantId, ctx, employee) {
   const leaveBalanceDays = leaveBalance.reduce((s, b) => s + (b.balance || 0), 0);
   const show = ctx.showSensitive;
 
+  // leaveBalance summary { total, taken } SUMMED across all leave types.
+  // total = current available balance summed; taken = approved days summed.
+  const leaveTakenDays = num(leaveTaken?._sum?.totalDays) || 0;
+  const leaveBalanceSummary = {
+    total: Math.round(leaveBalanceDays * 10) / 10,
+    taken: Math.round(leaveTakenDays * 10) / 10,
+  };
+
+  // attendancePercent — present / total over the last 30 days as a %.
+  const attTotal = attendance.present + attendance.absent + attendance.late;
+  const attendancePercent = attTotal > 0 ? Math.round((attendance.present / attTotal) * 100) : null;
+
+  // activeProjectsCount — non-completed projects (PM), null when PM unavailable.
+  const activeProjectsCount = projects.available
+    ? projects.items.filter((p) => String(p.status || "").toUpperCase() !== "COMPLETED").length
+    : null;
+
+  // lastReview { score, cycle } — cycle name (or period label) + overall rating.
+  const lastReviewScore = lastReview ? num(lastReview.overall_rating) : null;
+  const lastReviewCycle = lastReview
+    ? lastReview.cycle?.name
+      ?? (lastReview.period_end ? `${new Date(lastReview.period_end).getUTCFullYear()}` : null)
+    : null;
+
+  // reportingLine — self, manager, and direct reports (each { name, designation }).
+  const reportingLine = {
+    self: { name: employeeName(employee), designation: designationOf(employee) },
+    manager: employee.manager
+      ? { name: employeeName(employee.manager), designation: designationOf(employee.manager) }
+      : null,
+    reports: reports.map((r) => ({ name: employeeName(r), designation: designationOf(r) })),
+  };
+
+  // Emergency contacts from the EmergencyContacts relation.
+  const emergencyContacts = (employee.emergencyContact ?? []).map((c) => ({
+    name: c.Contact_name ?? null,
+    relationship: c.relationship ?? null,
+    phone: c.phone ?? null,
+    email: c.email ?? null,
+    isPrimary: Boolean(c.is_primary),
+  }));
+
+  // Simplified skills [{name, rating}] and certification name list for the header cards.
+  const skillsSimple = all
+    .filter((s) => String(s.category || "").toLowerCase() !== "competency")
+    .map((s) => ({ name: s.name, rating: s.score ?? s.level ?? null }));
+  const certificationNames = certifications.map((c) => c.name).filter(Boolean);
+
   return {
     // Personal Information card
     personalInfo: {
@@ -135,12 +248,23 @@ async function overviewTab(id, tenantId, ctx, employee) {
     // Employment Details card
     employmentDetails: {
       title: employee.job_title ?? employee.Position?.title ?? null,
+      role: employee.job_title ?? employee.Position?.title ?? null,
       department: ctx.org?.departments?.[0] ?? employee.businessUnit?.name ?? null,
       manager: employee.manager ? employeeName(employee.manager) : null,
       employmentType: employee.employee_type ?? null,
+      // Job mode (Remote/Onsite/Hybrid) — no dedicated column yet; falls back to employee_type, else null.
+      jobMode: employee.work_mode ?? employee.employee_type ?? null,
+      payGrade: employee.gradeLevel?.name ?? null,
       status: employee.status || employee.employement_status || null,
       hired: employee.hire_date ?? null,
       joined: employee.joining_date ?? null,
+      // Probation status derived from probation_end_date vs now.
+      probationStatus:
+        employee.probation_end_date == null
+          ? null
+          : toDate(employee.probation_end_date) && toDate(employee.probation_end_date) > now()
+            ? "ON_PROBATION"
+            : "CONFIRMED",
       probationEnds: employee.probation_end_date ?? null,
       workLocation: employee.region?.name || ([employee.city, employee.country].filter(Boolean).join(", ") || null),
     },
@@ -167,6 +291,23 @@ async function overviewTab(id, tenantId, ctx, employee) {
     skills: all.filter((s) => String(s.category || "").toLowerCase() !== "competency"),
     competencies: all.filter((s) => String(s.category || "").toLowerCase() === "competency"),
     certifications: certifications.map((c) => ({ id: c.id, name: c.name, issuedBy: c.issuedBy, issuedAt: c.issuedAt, expiryDate: c.expiryDate })),
+
+    // ---- Enriched summary fields (additive) ----
+    // Skills as [{name, rating}] and certifications as a flat name list.
+    skillsSummary: skillsSimple,
+    certificationNames,
+    // Leave balance summary { total, taken } across all leave types.
+    leaveBalanceSummary,
+    // lastReview { score, cycle } quick-glance (full object also under `lastReview`).
+    lastReviewSummary: lastReview ? { score: lastReviewScore, cycle: lastReviewCycle } : null,
+    // Attendance % (present/total) over the last 30 days.
+    attendancePercent,
+    // Count of non-completed projects (null when PM unavailable).
+    activeProjectsCount,
+    // Emergency contacts [{name, relationship, phone, email, isPrimary}].
+    emergencyContacts,
+    // Reporting line { self, manager, reports } each { name, designation }.
+    reportingLine,
     // legacy fields kept for back-compat
     leaveBalance,
     lastReview: lastReview
@@ -180,7 +321,9 @@ async function overviewTab(id, tenantId, ctx, employee) {
 }
 
 // ------------------------------------------------------------- documents ----
-async function documentsTab(id, tenantId) {
+async function documentsTab(id, tenantId, opts = {}) {
+  // Summary is computed across ALL documents; the `items` list is paginated.
+  const { page, pageSize, skip, take } = paginate(opts, 20);
   const docs = await prisma.employeeMedia.findMany({
     where: { employee_id: id },
     orderBy: [{ uploaded_at: "desc" }],
@@ -206,12 +349,15 @@ async function documentsTab(id, tenantId) {
     const isExpiring = exp && exp >= now() && exp <= in90;
     if (isExpiring) expiring90d += 1;
     return {
-      id: d.id, title: d.title, category: d.category, version: d.version,
+      id: d.id, title: d.title, name: d.title ?? d.file_name ?? null, category: d.category, version: d.version,
       status: d.status, effectiveDate: d.effective_date, expiryDate: d.expiry_date,
       expiring: Boolean(isExpiring), fileName: d.file_name, mimeType: d.mime_type,
-      fileSize: d.file_size, downloadUrl: d.download_url, uploadedAt: d.uploaded_at, notes: d.notes,
+      fileSize: d.file_size, size: d.file_size, downloadUrl: d.download_url, uploadedAt: d.uploaded_at, notes: d.notes,
     };
   });
+
+  // Paginated slice of the documents list (summary/missingTypes stay full-corpus).
+  const pagedItems = items.slice(skip, skip + take);
 
   // Missing = required doc types with no matching category/title on file.
   const present = new Set(docs.flatMap((d) => [d.category, d.title].filter(Boolean).map((s) => String(s).toLowerCase())));
@@ -220,12 +366,15 @@ async function documentsTab(id, tenantId) {
   return {
     summary: { total: docs.length, verified, pending, expiring90d, missing: missing.length },
     missingTypes: missing,
+    // Back-compat: full list still exposed under `documents`.
     documents: items,
+    // Paginated documents list.
+    documentsPage: { items: pagedItems, total: items.length, page, pageSize },
   };
 }
 
 // ------------------------------------------------------------ job & comp ----
-async function jobCompTab(id, tenantId, ctx) {
+async function jobCompTab(id, tenantId, ctx, opts = {}) {
   // Full comp/bank/tax block (reuse the consolidated builder; skip its RBAC call).
   const consolidated = await getEmployeeConsolidatedProfile(id, tenantId, {
     showSensitive: ctx.showSensitive,
@@ -235,10 +384,21 @@ async function jobCompTab(id, tenantId, ctx) {
 
   // CTC breakdown: basic + allowances (active earning-type assignments) + bonus + equity.
   const current = consolidated.compensation?.current ?? null;
-  const assignments = await prisma.payrollAssignment.findMany({
-    where: { employeeId: id, isActive: true, earningTypeId: { not: null } },
-    include: { earningType: { select: { name: true, type: true } } },
-  });
+  const [assignments, lifecycleRows] = await Promise.all([
+    prisma.payrollAssignment.findMany({
+      where: { employeeId: id, isActive: true, earningTypeId: { not: null } },
+      include: { earningType: { select: { name: true, type: true } } },
+    }),
+    // Role-change lifecycle events (initial → current) for the designation history.
+    prisma.employeeLifecycleEvent.findMany({
+      where: {
+        employeeId: id,
+        eventType: { in: ["HIRED", "PROMOTED", "TRANSFERRED", "DEMOTED", "ROLE_CHANGED"] },
+      },
+      orderBy: [{ effectiveDate: "asc" }],
+      select: { id: true, eventType: true, effectiveDate: true, oldValues: true, newValues: true, description: true },
+    }),
+  ]);
   const allowanceRows = assignments
     .filter((a) => String(a.earningType?.type || "EARNING").toUpperCase() === "EARNING")
     .map((a) => ({ name: a.earningType?.name ?? null, amount: num(a.amount), rate: num(a.rate) }));
@@ -252,10 +412,48 @@ async function jobCompTab(id, tenantId, ctx) {
     ctc = Math.round((basic + allowancesPerPeriod) * freq + bonus);
   }
 
+  // Full compensation history (current + prior terms) from the consolidated builder.
+  const compCurrent = consolidated.compensation?.current ?? null;
+  const compHistory = consolidated.compensation?.history ?? [];
+  const compAll = [compCurrent, ...compHistory].filter(Boolean); // newest → oldest (per employmentTerms order)
+
+  // Last revised date + % change vs the previous compensation term (annualised base).
+  const annualBaseOf = (t) =>
+    t && t.baseSalary != null ? (num(t.baseSalary) || 0) * (FREQ_PER_YEAR[t.payFrequency] || 12) : null;
+  const prevTerm = compHistory[0] ?? null;
+  const lastRevisedDate = compCurrent?.effectiveFrom ?? null;
+  let pctChangeFromPrevious = null;
+  if (ctx.showSensitive) {
+    const curAnnual = annualBaseOf(compCurrent);
+    const prevAnnual = annualBaseOf(prevTerm);
+    if (curAnnual != null && prevAnnual != null && prevAnnual !== 0) {
+      pctChangeFromPrevious = Math.round(((curAnnual - prevAnnual) / prevAnnual) * 1000) / 10;
+    }
+  }
+
+  // Designation history — lifecycle of role changes (initial → current).
+  const eventLabel = { HIRED: "HIRED", PROMOTED: "PROMOTION", TRANSFERRED: "TRANSFER", DEMOTED: "DEMOTION", ROLE_CHANGED: "ROLE_CHANGE" };
+  const jsonTitle = (j) => {
+    if (!j || typeof j !== "object") return null;
+    return j.title ?? j.jobTitle ?? j.designation ?? j.position ?? j.role ?? null;
+  };
+  const designationHistory = lifecycleRows.map((ev) => ({
+    date: ev.effectiveDate,
+    designation: jsonTitle(ev.newValues) ?? ev.description ?? null,
+    from: jsonTitle(ev.oldValues) ?? null,
+    event: eventLabel[ev.eventType] ?? ev.eventType,
+  }));
+
+  // Paginated compensation history slice.
+  const { page, pageSize, skip, take } = paginate(opts, 10);
+  const compHistoryItems = compAll.slice(skip, skip + take);
+
   return {
     ...consolidated,
     ctc: {
       annualCTC: ctc, // null unless sensitive
+      lastRevisedDate, // effectiveFrom of the current term
+      pctChangeFromPrevious, // vs previous term's annualised base; null unless sensitive / no prior
       basicSalary: ctx.showSensitive ? num(current?.baseSalary) : null,
       variableBonus: ctx.showSensitive ? num(current?.bonusTarget) : null,
       equity: ctx.showSensitive ? (current?.equity ?? null) : null,
@@ -264,12 +462,17 @@ async function jobCompTab(id, tenantId, ctx) {
       allowances: ctx.showSensitive ? allowanceRows : allowanceRows.map((a) => ({ name: a.name, amount: null, rate: null })),
       restricted: !ctx.showSensitive,
     },
+    // Role-change lifecycle (initial → current).
+    designationHistory,
+    // Paginated compensation history (current + prior terms).
+    compensationHistory: { items: compHistoryItems, total: compAll.length, page, pageSize },
   };
 }
 
 // ----------------------------------------------------------- performance ----
-async function performanceTab(id, tenantId) {
-  const [goals, potentialAdj, lastReview, recognitions] = await Promise.all([
+async function performanceTab(id, tenantId, opts = {}) {
+  const { page, pageSize, skip, take } = paginate(opts, 10);
+  const [goals, potentialAdj, lastReview, recognitions, reviewTotal, reviewRows] = await Promise.all([
     prisma.goal.findMany({
       where: { employeeId: id },
       orderBy: [{ end_date: "desc" }],
@@ -284,13 +487,27 @@ async function performanceTab(id, tenantId) {
     prisma.performanceReview.findFirst({
       where: { employeeId: id },
       orderBy: [{ submittedAt: "desc" }, { created_at: "desc" }],
-      select: { overall_rating: true },
+      select: { overall_rating: true, period_end: true, cycle: { select: { name: true } } },
     }),
     prisma.recognition.findMany({
       where: { employeeId: id },
       orderBy: [{ awardedAt: "desc" }],
       take: 25,
       select: { id: true, title: true, description: true, category: true, awardedAt: true },
+    }),
+    prisma.performanceReview.count({ where: { employeeId: id } }),
+    // Paginated review history — cycle, reviewer (manager), points, outcome.
+    prisma.performanceReview.findMany({
+      where: { employeeId: id },
+      orderBy: [{ submittedAt: "desc" }, { created_at: "desc" }],
+      skip,
+      take,
+      select: {
+        id: true, overall_rating: true, status: true, type: true, period_start: true, period_end: true,
+        cycle: { select: { name: true } },
+        reviewer: { select: { first_name: true, middle_name: true, last_name: true, employee_name: true } },
+        feedbacks: { select: { rating: true, reviewer: { select: { id: true } } } },
+      },
     }),
   ]);
 
@@ -300,6 +517,31 @@ async function performanceTab(id, tenantId) {
     : lastReview?.overall_rating != null
       ? { rating: num(lastReview.overall_rating), source: "review", note: null, at: null }
       : null;
+
+  // lastReview { score, cycle } quick-glance.
+  const lastReviewSummary = lastReview
+    ? {
+        score: num(lastReview.overall_rating),
+        cycle: lastReview.cycle?.name
+          ?? (lastReview.period_end ? `${new Date(lastReview.period_end).getUTCFullYear()}` : null),
+      }
+    : null;
+
+  // reviewHistory rows — self vs manager points split by feedback / review type, finalPoints = overall.
+  const reviewCycle = (r) => r.cycle?.name ?? (r.period_end ? `${new Date(r.period_end).getUTCFullYear()}` : null);
+  const reviewHistoryItems = reviewRows.map((r) => {
+    const selfFb = r.feedbacks?.find((f) => f.reviewer?.id === id);
+    const mgrFb = r.feedbacks?.find((f) => f.reviewer?.id !== id);
+    return {
+      id: r.id,
+      cycle: reviewCycle(r),
+      manager: r.reviewer ? employeeName(r.reviewer) : null,
+      selfPoints: num(selfFb?.rating) ?? (r.type === "SELF" ? num(r.overall_rating) : null),
+      managerPoints: num(mgrFb?.rating) ?? (r.type === "MANAGER" ? num(r.overall_rating) : null),
+      finalPoints: num(r.overall_rating),
+      outcome: r.status,
+    };
+  });
 
   return {
     goals: goals.map((g) => ({
@@ -312,27 +554,47 @@ async function performanceTab(id, tenantId) {
       completed: goals.filter((g) => String(g.status).toUpperCase() === "COMPLETED").length,
       inProgress: goals.filter((g) => String(g.status).toUpperCase() === "IN_PROGRESS").length,
     },
+    // Simplified goals [{title, completionPct, status}].
+    goalsSummary: goals.map((g) => ({ title: g.title, completionPct: num(g.progress), status: g.status })),
     performancePotential: potential,
     recognition: {
       count: recognitions.length,
       items: recognitions.map((r) => ({ id: r.id, title: r.title, description: r.description, category: r.category, awardedAt: r.awardedAt })),
+      // Simplified [{title, domain, date}] (domain = category).
+      list: recognitions.map((r) => ({ title: r.title, domain: r.category ?? null, date: r.awardedAt })),
     },
+    // lastReview { score, cycle }.
+    lastReview: lastReviewSummary,
+    // Paginated review history.
+    reviewHistory: { items: reviewHistoryItems, total: reviewTotal, page, pageSize },
   };
 }
 
 // ---------------------------------------------------------------- leaves ----
-async function leavesTab(id, tenantId, employee) {
+async function leavesTab(id, tenantId, employee, opts = {}) {
   const windowEnd = daysFromNow(30);
-  const [balances, history, upcoming, teammates] = await Promise.all([
+  const { page, pageSize, skip, take } = paginate(opts, 10);
+  const [balances, history, upcoming, teammates, historyTotal, takenByPolicy] = await Promise.all([
     prisma.leaveBalance.findMany({
       where: { employeeId: id },
-      include: { leavePolicy: { select: { name: true, leaveTypeCode: true } } },
+      select: {
+        leavePolicyId: true, balance: true, carryOverBalance: true,
+        leavePolicy: { select: { name: true, leaveTypeCode: true } },
+      },
     }),
     prisma.leaveRequest.findMany({
       where: { employeeId: id },
       orderBy: [{ startDate: "desc" }],
-      take: 30,
-      include: { leavePolicy: { select: { name: true, leaveTypeCode: true } } },
+      skip,
+      take,
+      include: {
+        leavePolicy: { select: { name: true, leaveTypeCode: true } },
+        approvals: {
+          orderBy: [{ decision_date: "desc" }],
+          take: 1,
+          select: { approver: { select: { first_name: true, middle_name: true, last_name: true, employee_name: true } } },
+        },
+      },
     }),
     prisma.leaveRequest.findMany({
       where: { employeeId: id, startDate: { gte: now() }, status: { in: ["PENDING", "APPROVED"] } },
@@ -347,6 +609,13 @@ async function leavesTab(id, tenantId, employee) {
           take: 50,
         })
       : Promise.resolve([]),
+    prisma.leaveRequest.count({ where: { employeeId: id } }),
+    // Approved days taken grouped by policy — combined with balances for per-type {taken,total}.
+    prisma.leaveRequest.groupBy({
+      by: ["leavePolicyId"],
+      where: { employeeId: id, status: "APPROVED" },
+      _sum: { totalDays: true },
+    }),
   ]);
 
   // Team coverage: teammates (same manager) with APPROVED leave overlapping next 30d.
@@ -388,6 +657,28 @@ async function leavesTab(id, tenantId, employee) {
   });
   const hoursCompleted = timesheets.reduce((s, t) => s + (num(t.total_hours) || 0), 0);
 
+  // Per-type counts { taken, total } keyed by canonical leave type (annual/sick/casual/compensatory).
+  const takenMap = new Map(takenByPolicy.map((g) => [g.leavePolicyId, num(g._sum?.totalDays) || 0]));
+  const classify = (b) => {
+    const s = `${b.leavePolicy?.leaveTypeCode || ""} ${b.leavePolicy?.name || ""}`.toLowerCase();
+    if (s.includes("annual")) return "annual";
+    if (s.includes("sick")) return "sick";
+    if (s.includes("casual")) return "casual";
+    if (s.includes("comp")) return "compensatory";
+    return null;
+  };
+  const countsByType = { annual: { taken: 0, total: 0 }, sick: { taken: 0, total: 0 }, casual: { taken: 0, total: 0 }, compensatory: { taken: 0, total: 0 } };
+  for (const b of balances) {
+    const key = classify(b);
+    if (!key) continue;
+    countsByType[key].total += num(b.balance) || 0;
+    countsByType[key].taken += takenMap.get(b.leavePolicyId) || 0;
+  }
+  for (const k of Object.keys(countsByType)) {
+    countsByType[k].total = Math.round(countsByType[k].total * 10) / 10;
+    countsByType[k].taken = Math.round(countsByType[k].taken * 10) / 10;
+  }
+
   return {
     // Per-type balances (Annual / Casual / Sick ...) for the balance cards.
     balances: balances.map((b) => ({
@@ -396,21 +687,40 @@ async function leavesTab(id, tenantId, employee) {
       balance: num(b.balance),
       carryOver: num(b.carryOverBalance),
     })),
-    // Full leave history (past + present requests).
+    // Per-type counts { taken, total } for annual/sick/casual/compensatory cards.
+    countsByType,
+    // Full leave history (past + present requests) — paginated slice.
     history: history.map((l) => ({ id: l.id, policy: l.leavePolicy?.name ?? null, leaveTypeCode: l.leavePolicy?.leaveTypeCode ?? null, startDate: l.startDate, endDate: l.endDate, totalDays: num(l.totalDays), reason: l.reason, status: l.status })),
+    historyPage: {
+      items: history.map((l) => ({
+        id: l.id,
+        from: l.startDate,
+        to: l.endDate,
+        totalDays: num(l.totalDays),
+        type: l.leavePolicy?.name ?? l.leavePolicy?.leaveTypeCode ?? null,
+        approver: l.approvals?.[0]?.approver ? employeeName(l.approvals[0].approver) : null,
+        status: l.status,
+      })),
+      total: historyTotal,
+      page,
+      pageSize,
+    },
     upcomingLeaves: upcoming.map((l) => ({ id: l.id, policy: l.leavePolicy?.name ?? null, startDate: l.startDate, endDate: l.endDate, totalDays: num(l.totalDays), status: l.status })),
+    // Team coverage this month + future — [{employeeName, from, to, type}].
     teamCoverage,
+    teamCoverageList: teamCoverage.map((t) => ({ employeeName: t.name, from: t.startDate, to: t.endDate, type: t.type ?? null })),
     holidays: holidays.map((h) => ({ date: h.date, name: h.name, fullDay: h.fullDay })),
     hoursCompleted: { hours: Math.round(hoursCompleted * 100) / 100, period: "this-month", timesheets: timesheets.length },
   };
 }
 
 // -------------------------------------------------------------- training ----
-async function trainingTab(id, tenantId) {
-  const [enrollments, certifications, learningPaths, recentLogs] = await Promise.all([
+async function trainingTab(id, tenantId, opts = {}) {
+  const { page, pageSize, skip, take } = paginate(opts, 10);
+  const [enrollments, certifications, learningPaths, recentLogs, enrolledTotal] = await Promise.all([
     prisma.trainingEnrollment.findMany({
       where: { employeeId: id },
-      select: { id: true, courseId: true, status: true, progress: true, score: true, enrollmentDate: true, completionDate: true, course: { select: { title: true, durationHours: true, mode: true } } },
+      select: { id: true, courseId: true, status: true, progress: true, score: true, enrollmentDate: true, completionDate: true, course: { select: { title: true, durationHours: true, mode: true, category: { select: { name: true } } } } },
       orderBy: [{ enrollmentDate: "desc" }],
     }),
     prisma.certification.findMany({
@@ -429,6 +739,7 @@ async function trainingTab(id, tenantId) {
       take: 12,
       select: { id: true, type: true, action_type: true, module: true, result: true, notes: true, created_at: true },
     }),
+    prisma.trainingEnrollment.count({ where: { employeeId: id } }),
   ]);
 
   const completed = enrollments.filter((e) => String(e.status).toUpperCase() === "COMPLETED");
@@ -454,7 +765,20 @@ async function trainingTab(id, tenantId) {
     activeLearningPaths: learningPaths.map((lp) => ({ id: lp.id, name: lp.learningPath?.name ?? null, targetRole: lp.learningPath?.targetRole ?? null, progress: num(lp.progress), status: lp.status })),
     recommended: recommended.map((c) => ({ id: c.id, title: c.title, durationHours: c.durationHours, mode: c.mode })),
     // Enrolled & completed list for the training table.
-    enrolled: enrollments.map((e) => ({ id: e.id, courseId: e.courseId, title: e.course?.title ?? null, mode: e.course?.mode ?? null, durationHours: num(e.course?.durationHours), status: e.status, progress: num(e.progress), score: e.score ?? null, enrolledAt: e.enrollmentDate, completedAt: e.completionDate })),
+    enrolled: enrollments.map((e) => ({ id: e.id, courseId: e.courseId, title: e.course?.title ?? null, category: e.course?.category?.name ?? null, mode: e.course?.mode ?? null, durationHours: num(e.course?.durationHours), status: e.status, progress: num(e.progress), score: e.score ?? null, enrolledAt: e.enrollmentDate, completedAt: e.completionDate })),
+    // Paginated enrolled courses [{courseName, category, hours, progress, status}].
+    enrolledCourses: {
+      items: enrollments.slice(skip, skip + take).map((e) => ({
+        courseName: e.course?.title ?? null,
+        category: e.course?.category?.name ?? null,
+        hours: num(e.course?.durationHours),
+        progress: num(e.progress),
+        status: e.status,
+      })),
+      total: enrolledTotal,
+      page,
+      pageSize,
+    },
     activityTimeline: recentLogs.map((l) => ({ id: l.id, timestamp: l.created_at, action: l.action_type || l.type, module: l.module, result: l.result, notes: l.notes })),
   };
 }
@@ -463,7 +787,32 @@ async function trainingTab(id, tenantId) {
 async function activityTab(id, tenantId, ctx) {
   // Entirely RBAC-owned; fail-soft until cross-service auth (JWT-alignment) lands.
   const activity = await getEmployeeActivity(id);
-  return activity;
+
+  // Normalise the RBAC payload into the fields the Activity tab UI expects. RBAC
+  // field names vary; probe common aliases and fall back to null (never drop keys)
+  // so the tab renders even before the RBAC endpoint returns everything.
+  const pick = (...keys) => {
+    for (const k of keys) {
+      if (activity && activity[k] != null) return activity[k];
+    }
+    return null;
+  };
+  const lastLoginTs = pick("lastLoginAt", "lastLogin", "last_login");
+  const lastLoginDevice = pick("lastLoginDevice", "device", "lastDevice");
+  const lastLoginObj =
+    activity?.lastLogin && typeof activity.lastLogin === "object"
+      ? activity.lastLogin
+      : { timestamp: lastLoginTs, device: lastLoginDevice };
+
+  return {
+    ...activity,
+    // { timestamp, device } — RBAC may deliver either a nested object or flat fields.
+    lastLogin: lastLoginObj,
+    twoFactorStatus: pick("twoFactorStatus", "twoFactorEnabled", "mfaEnabled", "twoFA"),
+    sessionsThisMonth: pick("sessionsThisMonth", "activeSessions", "sessions30d", "sessions"),
+    failedAttemptsThisMonth: pick("failedAttemptsThisMonth", "failedAttempts", "failedLogins"),
+    permissionsAndRoles: pick("permissionsAndRoles", "permissions", "roles", "rolesAndPermissions"),
+  };
 }
 
 /**
@@ -475,6 +824,9 @@ async function activityTab(id, tenantId, ctx) {
  * @param {string}  [opts.tab="overview"]
  * @param {boolean} [opts.showSensitive=false]
  * @param {string}  [opts.taxFiscalYear]
+ * @param {number}  [opts.page=1]        1-based page for paginated tabs
+ *                                       (documents, job_and_comp, performance, leaves, training).
+ * @param {number}  [opts.pageSize]      page size (default 20 for documents, 10 for the rest; max 100).
  */
 export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
   const id = Number(employeeId);
@@ -486,6 +838,7 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
     select: {
       id: true, employee_code: true, first_name: true, middle_name: true, last_name: true,
       preferred_name: true, employee_name: true, job_title: true, photo_url: true,
+      cover_photo_url: true,
       status: true, employement_status: true, employee_type: true,
       date_of_birth: true, gender: true, marital_status: true, nationality: true,
       nationality_id_type: true, nationality_id_no: true,
@@ -494,7 +847,16 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
       country: true, postal_code: true, hire_date: true, joining_date: true, probation_end_date: true,
       managerId: true, gradeLevel: { select: { name: true } }, Position: { select: { title: true } },
       businessUnit: { select: { name: true } }, region: { select: { name: true } },
-      manager: { select: { first_name: true, middle_name: true, last_name: true, employee_name: true } },
+      manager: {
+        select: {
+          id: true, first_name: true, middle_name: true, last_name: true, employee_name: true,
+          job_title: true, Position: { select: { title: true } }, gradeLevel: { select: { name: true } },
+        },
+      },
+      // Emergency contacts (Overview tab) — read directly off the relation so no extra query needed.
+      emergencyContact: {
+        select: { id: true, Contact_name: true, relationship: true, phone: true, email: true, is_primary: true },
+      },
     },
   });
   if (!employee) throw Object.assign(new Error("Employee not found"), { status: 404 });
@@ -504,13 +866,16 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
   const userId = org?.raw?.id ?? org?.raw?.userId ?? null;
   const ctx = { showSensitive: Boolean(opts.showSensitive), taxFiscalYear: opts.taxFiscalYear, org, userId };
 
+  // Pagination params (defaults applied per-tab inside paginate()).
+  const pageOpts = { page: opts.page, pageSize: opts.pageSize };
+
   let data;
   switch (tab) {
-    case "job_and_comp": data = await jobCompTab(id, tenantId, ctx); break;
-    case "documents": data = await documentsTab(id, tenantId); break;
-    case "performance": data = await performanceTab(id, tenantId); break;
-    case "leaves": data = await leavesTab(id, tenantId, employee); break;
-    case "training": data = await trainingTab(id, tenantId); break;
+    case "job_and_comp": data = await jobCompTab(id, tenantId, ctx, pageOpts); break;
+    case "documents": data = await documentsTab(id, tenantId, pageOpts); break;
+    case "performance": data = await performanceTab(id, tenantId, pageOpts); break;
+    case "leaves": data = await leavesTab(id, tenantId, employee, pageOpts); break;
+    case "training": data = await trainingTab(id, tenantId, pageOpts); break;
     case "activity": data = await activityTab(id, tenantId, ctx); break;
     case "overview":
     default: data = await overviewTab(id, tenantId, ctx, employee); break;

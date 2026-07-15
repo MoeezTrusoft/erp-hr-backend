@@ -11,6 +11,9 @@ import { registerBenefitTools } from "./tools/benefitTools.js";
 import { registerAnalyticsTools } from "./tools/analyticsTools.js";
 import { registerSelfTools } from "./tools/selfTools.js";
 import { registerResumeTools } from "./tools/resumeTools.js";
+import { registerOrgChartTools } from "./tools/orgChartTools.js";
+import { registerPositionMgmtTools } from "./tools/positionMgmtTools.js";
+import { registerProfileActionTools } from "./tools/profileActionTools.js";
 
 export function registerAllTools(server) {
   registerEmployeeTools(server);
@@ -26,4 +29,7 @@ export function registerAllTools(server) {
   registerAnalyticsTools(server);
   registerSelfTools(server);
   registerResumeTools(server);
+  registerOrgChartTools(server);
+  registerPositionMgmtTools(server);
+  registerProfileActionTools(server);
 }

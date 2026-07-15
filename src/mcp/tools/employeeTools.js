@@ -145,7 +145,6 @@ export function registerEmployeeTools(server) {
       const query = { page: 1, pageSize: 10, ...args };
       logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_positions_list pagination resolved");
       // BLOCKER-1: thread the verified tenant so positions are tenant-scoped.
-      console.log("User tenant:", user.tenantId);
       const data = await mcpListPositionsContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_positions_list")
@@ -200,14 +199,16 @@ export function registerEmployeeTools(server) {
       id: z.string().min(1).describe("Employee ID"),
       tab: z.enum(["overview", "job_and_comp", "documents", "performance", "leaves", "training", "activity"]).optional().default("overview").describe("Which tab's data to fetch (default overview)"),
       taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the job_and_comp tax slab, e.g. 'FY26'."),
+      page: z.coerce.number().int().min(1).optional().describe("Page for the paginated sections (documents/comp history/review history/leave history/training)"),
+      pageSize: z.coerce.number().int().min(1).max(100).optional().describe("Page size for paginated sections"),
     },
-    withToolError(async ({ id, tab, taxFiscalYear }) => {
+    withToolError(async ({ id, tab, taxFiscalYear, page, pageSize }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       // Raw salary / account / iban / ntn / CTC only for payroll-authorized callers.
       const showSensitive = user.isAdmin ||
         (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
-      const data = await mcpGetEmployeeProfileTab(user, id, { tab, showSensitive, taxFiscalYear });
+      const data = await mcpGetEmployeeProfileTab(user, id, { tab, showSensitive, taxFiscalYear, page, pageSize });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_profile_get")
   );
