@@ -839,7 +839,7 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
       id: true, employee_code: true, first_name: true, middle_name: true, last_name: true,
       preferred_name: true, employee_name: true, job_title: true, photo_url: true,
       cover_photo_url: true,
-      status: true, employement_status: true, employee_type: true,
+      status: true, employement_status: true, employee_type: true, work_mode: true,
       date_of_birth: true, gender: true, marital_status: true, nationality: true,
       nationality_id_type: true, nationality_id_no: true,
       email: true, work_email: true, personal_contact: true, work_phone: true,

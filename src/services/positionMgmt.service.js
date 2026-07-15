@@ -62,6 +62,9 @@ const positionSelect = {
   isActive: true,
   createdAt: true,
   updatedAt: true,
+  band: true,
+  responsibilities: true,
+  requirements: true,
 };
 
 // filled ratio (e.g. "3/5"):
@@ -100,15 +103,15 @@ const managementRow = (position, filledRatio) => {
     code: position.jobCode,
     department: meta.departmentName || null, // not resolvable from Position yet
     departmentId: meta.departmentId || null,
-    band: meta.band || null, // TODO(position-columns): read position.band post-migration
+    band: position.band ?? meta.band ?? null, // real column preferred, meta blob fallback
     filled: filledRatio.filled,
     openings: filledRatio.openings,
     filledRatio: filledRatio.ratio,
     status: position.isActive ? "Active" : "Inactive",
     isActive: position.isActive,
     jobDescription: description,
-    responsibilities: meta.responsibilities || null, // TODO(position-columns)
-    requirements: meta.requirements || null, // TODO(position-columns)
+    responsibilities: position.responsibilities ?? meta.responsibilities ?? null,
+    requirements: position.requirements ?? meta.requirements ?? null,
     createdAt: position.createdAt,
     updatedAt: position.updatedAt,
   };
