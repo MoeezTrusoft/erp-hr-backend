@@ -13,6 +13,7 @@
 //     (indented by reporting depth) via pureimage. NOTE: pureimage is not yet a
 //     dependency — see INTEGRATION NOTES.
 import * as PImage from "pureimage";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import prisma from "../lib/prisma.js";
 import { scopedEmployeeWhere } from "../lib/tenancy.js";
@@ -309,33 +310,18 @@ export const orgChartToPNG = async (rows) => {
     }
   });
 
+  // Collect the PNG into a Buffer via a REAL Node stream. pureimage pipes to the
+  // sink and calls stream methods (removeListener etc.) + emits 'error'/'end', so
+  // the sink MUST be a proper Writable — a fake object throws inside pureimage's
+  // async cleanup and escapes as an uncaughtException that kills the process.
   const chunks = [];
-  await new Promise((resolve, reject) => {
-    const sink = {
-      write(chunk) {
-        chunks.push(Buffer.from(chunk));
-        return true;
-      },
-      on() {
-        return sink;
-      },
-      once() {
-        return sink;
-      },
-      emit() {
-        return true;
-      },
-      end() {
-        resolve();
-      },
-    };
-    // PImage.encodePNGToStream resolves a promise AND/OR calls stream.end();
-    // await the returned promise, falling back to the sink.end resolve.
-    const maybe = PImage.encodePNGToStream(img, sink);
-    if (maybe && typeof maybe.then === "function") {
-      maybe.then(resolve, reject);
-    }
+  const sink = new PassThrough();
+  sink.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+  const done = new Promise((resolve, reject) => {
+    sink.on("end", resolve);
+    sink.on("error", reject);
   });
-
+  await PImage.encodePNGToStream(img, sink);
+  await done;
   return Buffer.concat(chunks);
 };
