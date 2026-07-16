@@ -43,6 +43,18 @@ function getCtx() {
   return ctx;
 }
 
+// Per-column search params (directory per-column search boxes). Each restricts
+// the query to its own column(s); ANDed together and with the generic `q`.
+const columnSearchShape = {
+  nameQ: z.string().optional().describe("Column search: employee name"),
+  codeQ: z.string().optional().describe("Column search: employee code"),
+  departmentQ: z.string().optional().describe("Column search: department (business unit name)"),
+  roleQ: z.string().optional().describe("Column search: role / job title"),
+  emailQ: z.string().optional().describe("Column search: email"),
+  statusQ: z.string().optional().describe("Column search: status"),
+  managerQ: z.string().optional().describe("Column search: manager name"),
+};
+
 const listToolShape = {
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(10),
@@ -53,8 +65,14 @@ const listToolShape = {
   departmentId: z.union([z.string(), z.number()]).optional(),
   joinedFrom: z.string().optional().describe("Filter: joining date >= this ISO date (YYYY-MM-DD)"),
   joinedTo: z.string().optional().describe("Filter: joining date <= this ISO date (YYYY-MM-DD)"),
-  sort: z.string().optional(),
+  sort: z
+    .string()
+    .optional()
+    .describe(
+      "Sort key: employee_name | employee_code | department | role | status | manager | hire_date | created_at | updated_at"
+    ),
   order: z.enum(["asc", "desc"]).optional(),
+  ...columnSearchShape,
 };
 
 const mediaPayloadShape = {
@@ -108,6 +126,7 @@ export function registerEmployeeTools(server) {
       joinedTo: z.string().optional().describe("Filter: joining date <= this ISO date (YYYY-MM-DD)"),
       sort: z.string().optional(),
       order: z.enum(["asc", "desc"]).optional(),
+      ...columnSearchShape,
     },
     withToolError(async ({ format, ...query }) => {
       const { user, permissions } = getCtx();

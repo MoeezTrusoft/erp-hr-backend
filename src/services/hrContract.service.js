@@ -113,6 +113,9 @@ const employeeDirectoryRow = (employee) => {
       : null,
     companyId: integration.companyId || null,
     departmentId: integration.departmentId || employee.businessUnitId || null,
+    // Raw business-unit id — the value the directory's Department filter sends
+    // (buildEmployeeListWhere maps departmentId -> businessUnitId).
+    businessUnitId: employee.businessUnitId || null,
     department: integration.departmentName || employee.businessUnit?.name || null,
     grade: employee.gradeLevel?.name || null,
     location: employee.region?.name || null,
@@ -791,6 +794,43 @@ const buildEmployeeListWhere = (query, tenantId, q) => {
             ],
           }
         : {},
+      // Column-specific search (directory per-column search boxes). Each is
+      // ANDed so several columns can be searched at once; each targets only its
+      // own field(s), unlike the generic `q` above.
+      query.nameQ
+        ? {
+            OR: [
+              { employee_name: { contains: query.nameQ, mode: "insensitive" } },
+              { first_name: { contains: query.nameQ, mode: "insensitive" } },
+              { last_name: { contains: query.nameQ, mode: "insensitive" } },
+              { preferred_name: { contains: query.nameQ, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      query.codeQ ? { employee_code: { contains: query.codeQ, mode: "insensitive" } } : {},
+      query.departmentQ
+        ? { businessUnit: { is: { name: { contains: query.departmentQ, mode: "insensitive" } } } }
+        : {},
+      query.roleQ ? { job_title: { contains: query.roleQ, mode: "insensitive" } } : {},
+      query.emailQ
+        ? {
+            OR: [
+              { email: { contains: query.emailQ, mode: "insensitive" } },
+              { work_email: { contains: query.emailQ, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      query.statusQ
+        ? {
+            OR: [
+              { status: { contains: query.statusQ, mode: "insensitive" } },
+              { employement_status: { contains: query.statusQ, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      query.managerQ
+        ? { manager: { is: { employee_name: { contains: query.managerQ, mode: "insensitive" } } } }
+        : {},
       filters.status
         ? { OR: [{ status: filters.status }, { employement_status: filters.status }] }
         : {},
@@ -802,14 +842,29 @@ const buildEmployeeListWhere = (query, tenantId, q) => {
   return { where, filters };
 };
 
-const EMPLOYEE_SORTS = ["created_at", "updated_at", "employee_name", "employee_code", "hire_date"];
+// Sort key -> Prisma orderBy. Includes relation-ordered columns (department by
+// business-unit name, manager by manager name) so the directory can sort every
+// visible column alphabetically. Keys are the values the frontend sends.
+const EMPLOYEE_ORDER_BY = {
+  created_at: (o) => ({ created_at: o }),
+  updated_at: (o) => ({ updated_at: o }),
+  employee_name: (o) => ({ employee_name: o }),
+  employee_code: (o) => ({ employee_code: o }),
+  hire_date: (o) => ({ hire_date: o }),
+  department: (o) => ({ businessUnit: { name: o } }),
+  role: (o) => ({ job_title: o }),
+  status: (o) => ({ status: o }),
+  manager: (o) => ({ manager: { employee_name: o } }),
+};
+const EMPLOYEE_SORTS = Object.keys(EMPLOYEE_ORDER_BY);
+const buildEmployeeOrderBy = (sort, order, fallback = "created_at") =>
+  (EMPLOYEE_ORDER_BY[sort] || EMPLOYEE_ORDER_BY[fallback])(order);
 
 export const listEmployees = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "created_at" });
   const { where, filters } = buildEmployeeListWhere(query, tenantId, list.q);
 
-  const allowedSorts = EMPLOYEE_SORTS;
-  const orderBy = { [allowedSorts.includes(list.sort) ? list.sort : "created_at"]: list.order };
+  const orderBy = buildEmployeeOrderBy(list.sort, list.order, "created_at");
 
   const [items, total] = await Promise.all([
     prisma.employee.findMany({
@@ -846,7 +901,7 @@ const EMPLOYEE_EXPORT_COLUMNS = [
 export const exportEmployees = async (query, tenantId, format = "csv") => {
   const list = parseListQuery(query, { sort: "employee_name" });
   const { where } = buildEmployeeListWhere(query, tenantId, list.q);
-  const orderBy = { [EMPLOYEE_SORTS.includes(list.sort) ? list.sort : "employee_name"]: list.order };
+  const orderBy = buildEmployeeOrderBy(list.sort, list.order, "employee_name");
 
   const rows = await prisma.employee.findMany({
     where,
