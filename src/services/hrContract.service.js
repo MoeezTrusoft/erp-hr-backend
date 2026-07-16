@@ -138,7 +138,10 @@ const positionRow = (position) => {
     description: parsed.description,
     companyId: parsed.meta.companyId || null,
     departmentId: parsed.meta.departmentId || null,
-    band: parsed.meta.band || null,
+    // `band` is a real Position column; the FE form also stashes it in the
+    // description meta. Prefer the meta (latest edit) then the column so a band
+    // set either way shows in the directory.
+    band: parsed.meta.band ?? position.band ?? null,
     responsibilities: parsed.meta.responsibilities || "",
     requirements: parsed.meta.requirements || "",
     code: position.jobCode,
