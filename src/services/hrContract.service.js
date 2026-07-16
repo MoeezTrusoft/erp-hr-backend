@@ -599,6 +599,33 @@ const normalizeMediaPayload = async ({ mediaId, file, type, fallback = {} }) => 
 // send the raw bytes and the BE extracts fileName/mimeType/fileSize itself.
 // Accepts either a bare string or an object carrying { fileBase64, fileName,
 // mimeType }. Returns null when there is no usable base64 content.
+// Filename-extension → MIME, used to give DAM a correct content-type when the
+// caller supplies a plain base64 string (no data: URI) and no explicit mimeType.
+// Without this, every such upload was stored as application/octet-stream.
+const EXT_MIME = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  csv: "text/csv",
+  txt: "text/plain",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  zip: "application/zip",
+};
+
+const mimeFromName = (name) => {
+  const ext = String(name || "").toLowerCase().split(".").pop();
+  return EXT_MIME[ext] || null;
+};
+
 export const fileFromBase64 = (input, fallbackName = "upload.bin") => {
   if (!input) return null;
   const raw = typeof input === "string" ? input : input.fileBase64 || input.base64;
@@ -619,7 +646,14 @@ export const fileFromBase64 = (input, fallbackName = "upload.bin") => {
 
   const originalname =
     (typeof input === "object" && (input.fileName || input.filename)) || fallbackName;
-  return { buffer, originalname, mimetype: mimetype || "application/octet-stream", size: buffer.length };
+  // Prefer an explicit/data-URI mime; otherwise infer from the filename extension
+  // so DAM stores the real content-type (e.g. application/pdf for resumes).
+  return {
+    buffer,
+    originalname,
+    mimetype: mimetype || mimeFromName(originalname) || "application/octet-stream",
+    size: buffer.length,
+  };
 };
 
 // Resolve an employee media slot from EITHER an inline base64 upload OR a
