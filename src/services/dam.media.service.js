@@ -1,7 +1,6 @@
 import axios from "axios";
 import FormData from "form-data";
 import logger from "../lib/logger.js";
-import { signServiceJwt } from "../lib/serviceJwt.js";
 
 const DAM_BASE_URL = process.env.DAM_SERVICE_URL || "http://localhost:3002/api";
 const DAM_TIMEOUT = parseInt(process.env.DAM_SERVICE_TIMEOUT || "1000000", 10);
@@ -11,17 +10,14 @@ const damApi = axios.create({
   timeout: DAM_TIMEOUT,
 });
 
-const withInternalSecret = (headers = {}) => {
-    const merged = {
-        ...headers,
-        "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
-    };
-    const token = signServiceJwt();
-    if (token) {
-        merged["X-Service-Authorization"] = `Bearer ${token}`;
-    }
-    return merged;
-};
+// DAM authenticates internal callers by X-Internal-Secret ALONE. Attaching an
+// HR-signed X-Service-Authorization JWT (HS256, self-issuer) that DAM cannot
+// verify makes it hard-401 "Invalid service token" — so we deliberately do NOT
+// send it. (Same reason uploadFileToDAM sends the secret only.)
+const withInternalSecret = (headers = {}) => ({
+    ...headers,
+    "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
+});
 
 export async function damRequest(endpoint, method = "GET", body = {}, headers = {}) {
     try {
