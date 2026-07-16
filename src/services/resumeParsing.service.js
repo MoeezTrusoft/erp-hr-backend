@@ -47,13 +47,25 @@ async function extractResumeText(buffer, mimeType, fileName) {
     mt.includes("officedocument.wordprocessing") || mt.includes("msword") || name.endsWith(".docx") || name.endsWith(".doc");
 
   if (isPdf) {
-    let pdfParse;
+    let m;
     try {
-      const m = await import("pdf-parse");
-      pdfParse = m.default || m;
+      m = await import("pdf-parse");
     } catch {
       throw depError("pdf-parse");
     }
+    // pdf-parse v2 exports a `PDFParse` class (new API); v1 exported a default
+    // callable. Support both so a dependency bump doesn't silently break parsing.
+    if (typeof m.PDFParse === "function") {
+      const parser = new m.PDFParse({ data: buffer });
+      try {
+        const data = await parser.getText();
+        return String(data?.text || "").trim();
+      } finally {
+        await parser.destroy?.();
+      }
+    }
+    const pdfParse = m.default || m;
+    if (typeof pdfParse !== "function") throw depError("pdf-parse");
     const data = await pdfParse(buffer);
     return String(data?.text || "").trim();
   }
