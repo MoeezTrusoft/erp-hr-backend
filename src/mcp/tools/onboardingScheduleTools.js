@@ -36,7 +36,7 @@ export function registerOnboardingScheduleTools(server) {
   server.tool(
     "hr_onboarding_schedule_list",
     "List onboarding schedule sessions for a checklist (candidate, role, joining date, timing, assignee)",
-    { checklistId: z.string().min(1) },
+    { checklistId: z.union([z.string(), z.number()]) },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
@@ -49,7 +49,7 @@ export function registerOnboardingScheduleTools(server) {
     "hr_onboarding_schedule_create",
     "Create an onboarding schedule session for a checklist",
     {
-      checklistId: z.string().min(1),
+      checklistId: z.union([z.string(), z.number()]),
       title: z.string().min(1),
       sessionDate: z.string().optional().describe("ISO 8601 date/datetime"),
       fromTime: z.string().optional().describe('e.g. "09:00"'),
@@ -70,7 +70,7 @@ export function registerOnboardingScheduleTools(server) {
     "hr_onboarding_schedule_update",
     "Update an onboarding schedule session",
     {
-      id: z.string().min(1),
+      id: z.union([z.string(), z.number()]),
       title: z.string().min(1).optional(),
       sessionDate: z.string().optional().describe("ISO 8601 date/datetime"),
       fromTime: z.string().optional(),
@@ -92,7 +92,7 @@ export function registerOnboardingScheduleTools(server) {
   server.tool(
     "hr_onboarding_documents_list",
     "List onboarding documents for a checklist (name, type, uploaded date, sign status, mediaId)",
-    { checklistId: z.string().min(1) },
+    { checklistId: z.union([z.string(), z.number()]) },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
@@ -105,7 +105,7 @@ export function registerOnboardingScheduleTools(server) {
     "hr_onboarding_document_add",
     "Attach an already-uploaded DAM document (by mediaId) to an onboarding checklist. Upload the media via the DAM upload tool first, then pass the resulting mediaId here.",
     {
-      checklistId: z.string().min(1),
+      checklistId: z.union([z.string(), z.number()]),
       employeeId: z.coerce.number().int(),
       title: z.string().min(1),
       mediaId: z.coerce.number().int().describe("DAM media id of the already-uploaded file"),

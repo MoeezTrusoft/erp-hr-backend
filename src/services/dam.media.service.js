@@ -114,28 +114,34 @@ export async function downloadDamAssetBuffer(mediaId) {
 
 export async function uploadFileToDAM(file, type = "avatar") {
   try {
-    const formData = new FormData();
-    formData.append("type", type);
-    formData.append("files", file.buffer, {
-      filename: file.originalname,
-      contentType: file.mimetype,
-    });
-    formData.append("source", "HR-TruSoft");
-    formData.append("externalId", 123);
-
-    const uploadResponse = await damRequest(
-      "/assets/upload",
-      "POST",
-      formData,
-      formData.getHeaders()
+    // Use native fetch + FormData/Blob — the form-data npm lib's multipart
+    // (via axios) is not parsed by DAM's busboy (req.file stays undefined →
+    // upload yields no asset). Native multipart works reliably.
+    const fd = new globalThis.FormData(); // native (the top-level `form-data` import shadows FormData)
+    fd.append("type", type);
+    fd.append("source", "HR-TruSoft");
+    // Unique per upload so DAM's Usage @@unique([source, externalId]) doesn't
+    // collapse every HR asset onto one usage row (was hardcoded 123).
+    fd.append("externalId", `hr-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
+    fd.append(
+      "files",
+      new globalThis.Blob([file.buffer], { type: file.mimetype || "application/octet-stream" }),
+      file.originalname || "upload.bin"
     );
 
-    return uploadResponse?.items || [];
+    const res = await fetch(`${DAM_BASE_URL.replace(/\/+$/, "")}/assets/upload`, {
+      method: "POST",
+      headers: withInternalSecret(),
+      body: fd,
+    });
+    if (!res.ok) {
+      logger.error({ status: res.status, body: (await res.text()).slice(0, 300) }, "DAM upload failed");
+      return [];
+    }
+    const json = await res.json();
+    return json?.items || [];
   } catch (err) {
-    logger.error({
-      err,
-      responseData: err.response?.data,
-    }, "DAM upload failed");
+    logger.error({ err }, "DAM upload failed");
     return [];
   }
 }

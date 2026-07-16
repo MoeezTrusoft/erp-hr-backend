@@ -26,6 +26,9 @@ import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardToo
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
 import { registerOnboardingScheduleTools } from "./tools/onboardingScheduleTools.js";
 import { registerOnboardingPortalTools } from "./tools/onboardingPortalTools.js";
+import { registerTimeAttendanceTools } from "./tools/timeAttendanceTools.js";
+import { registerLeaveManagementTools } from "./tools/leaveManagementTools.js";
+import { registerOvertimeShiftTools } from "./tools/overtimeShiftTools.js";
 
 export function registerAllTools(server) {
   registerEmployeeTools(server);
@@ -56,4 +59,7 @@ export function registerAllTools(server) {
   registerOnboardingDetailTools(server);
   registerOnboardingScheduleTools(server);
   registerOnboardingPortalTools(server);
+  registerTimeAttendanceTools(server);
+  registerLeaveManagementTools(server);
+  registerOvertimeShiftTools(server);
 }

@@ -830,6 +830,25 @@ model OvertimeRule {
   @@map("overtime_rules")
 }
 
+model OvertimeRequest {
+  id         Int       @id @default(autoincrement())
+  employeeId Int
+  date       DateTime
+  hours      Float
+  project    String?
+  reason     String?
+  approverId Int?
+  status     String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  decidedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  tenantId String? @db.Uuid
+  @@index([employeeId])
+  @@index([tenantId])
+  @@map("overtime_requests")
+}
+
 model WorkSchedule {
   id                   Int       @id @default(autoincrement())
   employeeId           Int
