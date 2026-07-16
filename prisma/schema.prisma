@@ -830,15 +830,69 @@ model OvertimeRule {
   @@map("overtime_rules")
 }
 
+model ShiftTemplate {
+  id         Int      @id @default(autoincrement())
+  name       String
+  fromTime   String   // "09:00"
+  toTime     String   // "17:00"
+  shiftType  String   @default("morning") // morning | evening | night
+  workMode   String?  // remote | hybrid | onsite
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tenantId   String?  @db.Uuid
+  @@index([tenantId])
+  @@map("shift_templates")
+}
+
+model ShiftAssignment {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  date        DateTime
+  shiftType   String   @default("morning") // morning | evening | night
+  workMode    String   @default("onsite")  // remote | hybrid | onsite
+  status      String   @default("on_shift") // on_shift | on_leave | off | holiday
+  fromTime    String?
+  toTime      String?
+  overtimeHours Float  @default(0)
+  templateId  Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenantId    String?  @db.Uuid
+  @@index([employeeId, date])
+  @@index([tenantId])
+  @@map("shift_assignments")
+}
+
+model ShiftSwapRequest {
+  id           Int       @id @default(autoincrement())
+  requesterId  Int
+  targetId     Int?
+  fromDate     DateTime
+  toDate       DateTime?
+  shiftType    String?   // morning | evening | night
+  reason       String?
+  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
+  approverId   Int?
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  tenantId     String?   @db.Uuid
+  @@index([tenantId])
+  @@map("shift_swap_requests")
+}
+
 model OvertimeRequest {
   id         Int       @id @default(autoincrement())
   employeeId Int
   date       DateTime
   hours      Float
+  rate       Float     @default(1.5) // e.g. 1.5x
   project    String?
   reason     String?
+  fromTime   String?
+  toTime     String?
   approverId Int?
-  status     String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  status     String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
   decidedAt  DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
