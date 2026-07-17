@@ -83,5 +83,10 @@ export async function runController(controller, { user = {}, params = {}, query 
     throw Object.assign(new Error(message), { status: statusCode, data: payload });
   }
 
-  return payload;
+  // A 204/empty controller (e.g. updateStage/updateStatus/delete) leaves payload
+  // undefined. MCP tool handlers `JSON.stringify(data)` the result, and
+  // JSON.stringify(undefined) === undefined produces an invalid tool content
+  // item (text: undefined). Return a serializable success envelope instead so
+  // every controller-backed tool yields valid content.
+  return payload === undefined ? { success: true, statusCode } : payload;
 }

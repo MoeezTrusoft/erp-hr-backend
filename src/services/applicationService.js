@@ -41,20 +41,27 @@ export const createApplication = async ({
 /**
  * Update stage of an application
  */
-export const updateApplicationStage = async ({ id, tenantId, stage,updatedById }) => {
-    const update = prisma.application.updateMany({
+export const updateApplicationStage = async ({ id, tenantId, stage, updatedById }) => {
+    // The Kanban board groups by the lowercase PIPELINE_STAGES enum and SKIPS
+    // unknown-cased stages, so normalize here — callers may send "SCREENING".
+    const normalizedStage = String(stage).toLowerCase();
+    const update = await prisma.application.updateMany({
         where: { id, tenantId: tenantId ?? null },
-        data: { stage },
+        data: { stage: normalizedStage },
     });
 
- await logAction({
-            employeeId: Number(updatedById) ?? null,
-            type: "UPDATE",
-            module: "Application",
-            result: "SUCCESS",
-            notes: `Application "${id}" stage updated to "${stage}".`,
-        });
-    return update
+    if (!update.count) {
+        throw new Error(`Application "${id}" not found`);
+    }
+
+    await logAction({
+        employeeId: Number(updatedById) || null,
+        type: "UPDATE",
+        module: "Application",
+        result: "SUCCESS",
+        notes: `Application "${id}" stage updated to "${normalizedStage}".`,
+    });
+    return { success: true, id, stage: normalizedStage, count: update.count };
 };
 
 /**
@@ -66,14 +73,18 @@ export const updateApplicationStatus = async ({ id, tenantId, status, updatedByI
         data: { status },
     });
 
- await logAction({
-            employeeId: Number(updatedById) ?? null,
-            type: "UPDATE",
-            module: "Application",
-            result: "SUCCESS",
-            notes: `Application "${id}" status updated to "${status}".`,
-        });
-    return updateStatus;
+    if (!updateStatus.count) {
+        throw new Error(`Application "${id}" not found`);
+    }
+
+    await logAction({
+        employeeId: Number(updatedById) || null,
+        type: "UPDATE",
+        module: "Application",
+        result: "SUCCESS",
+        notes: `Application "${id}" status updated to "${status}".`,
+    });
+    return { success: true, id, status, count: updateStatus.count };
 };
 
 /**

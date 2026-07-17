@@ -70,9 +70,9 @@ export const listApplications = async (req, res) => {
 
 export const updateStage = async (req, res) => {
     try {
-        const user = req.headers['user-id'];
+        const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const updatedById = user || user.employeeId || user.id || null;
+        const updatedById = user.employeeId || user.id || null;
         const { id } = req.params;
         const { stage } = req.body;
 
@@ -101,9 +101,9 @@ export const updateStage = async (req, res) => {
 
 export const updateStatus = async (req, res) => {
     try {
-        const user = req.headers['user-id'];
+        const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const updatedById = user || user.employeeId || user.id || null;
+        const updatedById = user.employeeId || user.id || null;
         const { id } = req.params;
         const { status } = req.body;
 
