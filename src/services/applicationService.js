@@ -123,5 +123,24 @@ export const listApplications = async ({
         prisma.application.count({ where }),
     ]);
 
+    // Resolve each application's requisition department (BusinessUnit) name so the
+    // Create Offer form can auto-fill Department from the chosen candidate. There
+    // is no JobRequisition→BusinessUnit relation, so batch-resolve by id.
+    const departmentIds = [
+        ...new Set(items.map((item) => item.jobRequisition?.departmentId).filter((id) => id != null)),
+    ];
+    if (departmentIds.length) {
+        const units = await prisma.businessUnit.findMany({
+            where: { id: { in: departmentIds } },
+            select: { id: true, name: true },
+        });
+        const nameById = new Map(units.map((unit) => [unit.id, unit.name]));
+        for (const item of items) {
+            if (item.jobRequisition?.departmentId != null) {
+                item.jobRequisition.departmentName = nameById.get(item.jobRequisition.departmentId) ?? null;
+            }
+        }
+    }
+
     return { items, total, page, limit };
 };
