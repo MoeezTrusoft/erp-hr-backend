@@ -71,6 +71,7 @@ const managementRow = (requisition, departmentName) => ({
   department: departmentName ?? null,
   departmentId: requisition.departmentId ?? null,
   manager: employeeName(requisition.requestedBy),
+  requestedById: requisition.requestedById ?? null,
   openCount: requisition.openings,
   openings: requisition.openings,
   priority: requisition.priority ?? null,

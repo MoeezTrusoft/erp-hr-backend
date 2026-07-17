@@ -1664,7 +1664,8 @@ export const createRequisition = async (data, actorId) => {
       description: data.description || null,
       departmentId: toInt(data.departmentId),
       positionId: toInt(data.positionId),
-      requestedById: Number(actorId),
+      // Hiring manager: an explicitly chosen requestedById wins, else the creator.
+      requestedById: toInt(data.requestedById) || Number(actorId),
       openings: Number(data.openings || 1),
       status: data.status || "DRAFT",
     },
@@ -1683,6 +1684,10 @@ export const updateRequisition = async (id, data) => {
       departmentId: data.departmentId === undefined ? undefined : toInt(data.departmentId),
       positionId: data.positionId === undefined ? undefined : toInt(data.positionId),
       openings: data.openings === undefined ? undefined : Number(data.openings),
+      requestedById:
+        data.requestedById === undefined || data.requestedById === ''
+          ? undefined
+          : toInt(data.requestedById),
     },
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
