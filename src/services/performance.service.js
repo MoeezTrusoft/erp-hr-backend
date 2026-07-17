@@ -66,6 +66,71 @@ export const getAllReviews = async (tenantId) => {
   });
 };
 
+// Per-employee nine-box aggregate for the Performance Analytics grid.
+// The HR FE's Analytics screen categorises EMPLOYEES on a performance ×
+// potential matrix, but the raw `performanceMetric` catalog carries no
+// per-employee ratings — so the grid rendered empty. Here we derive each
+// employee's ratings from their scored reviews (tenant-scoped, fail-closed):
+//   • performanceRating — mean overall_rating across the employee's reviews
+//   • potentialRating   — mean rating of "Leadership"/"Potential" competency
+//                          items (falls back to performanceRating when none)
+//   • riskLevel         — HIGH when performanceRating < 2.5, else LOW
+// Returns a `{ items }` envelope shaped for the FE `mapPerformanceMetric`
+// aliasing (name / performanceRating / potentialRating / riskLevel).
+export const getEmployeeNineBox = async (tenantId) => {
+  const reviews = await prisma.performanceReview.findMany({
+    where: scopedWhere(tenantId, { employeeId: { not: null } }),
+    select: {
+      employeeId: true,
+      overall_rating: true,
+      employee: { select: { id: true, first_name: true, last_name: true, employee_name: true } },
+      performanceReviewItems: {
+        select: { rating: true, metric: { select: { category: true } } },
+      },
+    },
+  });
+
+  const mean = (nums) =>
+    nums.length ? nums.reduce((sum, n) => sum + n, 0) / nums.length : null;
+
+  const byEmployee = new Map();
+  for (const review of reviews) {
+    const key = review.employeeId;
+    if (!byEmployee.has(key)) {
+      byEmployee.set(key, { employee: review.employee, perf: [], potential: [] });
+    }
+    const bucket = byEmployee.get(key);
+    if (typeof review.overall_rating === "number") bucket.perf.push(review.overall_rating);
+    for (const item of review.performanceReviewItems || []) {
+      if (typeof item.rating !== "number") continue;
+      const category = (item.metric?.category || "").toLowerCase();
+      if (category.includes("leadership") || category.includes("potential")) {
+        bucket.potential.push(item.rating);
+      }
+    }
+  }
+
+  const items = [];
+  for (const { employee, perf, potential } of byEmployee.values()) {
+    const performanceRating = mean(perf);
+    if (performanceRating == null) continue; // no scored review → not plottable
+    const potentialRating = mean(potential) ?? performanceRating;
+    const name =
+      employee?.employee_name ||
+      [employee?.first_name, employee?.last_name].filter(Boolean).join(" ").trim() ||
+      `Employee ${employee?.id ?? ""}`.trim();
+    items.push({
+      id: employee?.id,
+      name,
+      performanceRating: Math.round(performanceRating * 100) / 100,
+      potentialRating: Math.round(potentialRating * 100) / 100,
+      riskLevel: performanceRating < 2.5 ? "HIGH" : "LOW",
+    });
+  }
+
+  return { items, total: items.length };
+};
+
 // ✅ Get reviews by employee (for employee dashboard)
 export const getReviewsByEmployee = async (employeeId, tenantId) => {
    const employee = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(employeeId)})})

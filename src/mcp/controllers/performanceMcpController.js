@@ -1,14 +1,16 @@
 import { runController } from "./_runner.js";
-import { getAllReviews, createPerformanceReview, updateReview, addFeedback } from "../../controllers/performance.controller.js";
+import { getAllReviews, createPerformanceReview, updateReview, addFeedback, listEmployeeNineBox } from "../../controllers/performance.controller.js";
 import { getGoals, createGoal, updateGoal, approveGoal, addGoalProgress } from "../../controllers/goal.controller.js";
 import { getAllCalibrationSessions, createCalibrationSession, finalizeCalibration, adjustRating } from "../../controllers/calibration.controller.js";
-import { listMetrics } from "../../controllers/performanceMetricController.js";
 import { createPlan } from "../../controllers/developmentPlan.controller.js";
 
 export const mcpListPerformanceReviews = (user) => runController(getAllReviews, { user });
 export const mcpListGoals = (user) => runController(getGoals, { user });
 export const mcpListCalibrationSessions = (user) => runController(getAllCalibrationSessions, { user });
-export const mcpListPerformanceMetrics = (user) => runController(listMetrics, { user });
+// Analytics grid binds to this resource and categorises EMPLOYEES on a
+// performance × potential matrix, so return per-employee nine-box aggregates
+// (derived from scored reviews) rather than the competency catalog.
+export const mcpListPerformanceMetrics = (user) => runController(listEmployeeNineBox, { user });
 
 export const mcpCreateGoal = (user, data) => runController(createGoal, { user, body: data });
 export const mcpUpdateGoal = (user, id, data) => runController(updateGoal, { user, params: { id: String(id) }, body: data });

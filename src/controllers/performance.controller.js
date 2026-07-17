@@ -19,6 +19,18 @@ export const getAllReviews = async (req, res) => {
   }
 };
 
+// Per-employee nine-box aggregate backing the Performance Analytics grid.
+// Tenant-scoped (fail-closed) from the verified service-JWT claim.
+export const listEmployeeNineBox = async (req, res) => {
+  try {
+    const tenantId = req.user?.tenantId ?? null;
+    const data = await performanceService.getEmployeeNineBox(tenantId);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const getReviewsByEmployee = async (req, res) => {
   try {
     const reviews = await performanceService.getReviewsByEmployee(req.params.employeeId);
