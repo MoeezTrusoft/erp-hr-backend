@@ -339,6 +339,7 @@ export function registerEmployeeTools(server) {
     "Create a new employee record",
     {
       firstName: z.string().min(1),
+      middleName: z.string().optional(),
       lastName: z.string().min(1),
       preferredName: z.string().optional(),
       dateOfBirth: z.string().optional(),
@@ -408,6 +409,7 @@ export function registerEmployeeTools(server) {
     {
       id: z.string().min(1).describe("Employee ID"),
       firstName: z.string().optional(),
+      middleName: z.string().optional(),
       lastName: z.string().optional(),
       preferredName: z.string().optional(),
       dateOfBirth: z.string().optional(),
