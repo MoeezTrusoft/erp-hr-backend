@@ -1055,6 +1055,15 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       select: lifecycleSourceSelect,
     });
 
+    // Auto-generate a stable employee code when the caller didn't supply one.
+    // Uses the freshly-minted row id so it is unique + monotonic (EMP-00001).
+    if (!createData.employee_code) {
+      await tx.employee.update({
+        where: { id: created.id },
+        data: { employee_code: `EMP-${String(created.id).padStart(5, "0")}` },
+      });
+    }
+
     // A.4 / Phase 3: enqueue hr.employee.lifecycle.v1 (phase=hired) in the SAME
     // tx as the employee write, via the shared validate-before-write helper.
     await emitEmployeeLifecycle(tx, created, "hired", { ...ctx, actorId: ctx.actorId ?? actorId });

@@ -25,8 +25,6 @@ export const PROFILE_TABS = ["overview", "job_and_comp", "documents", "performan
 // tab reports which of these are present (any EmployeeMedia whose category/title
 // matches) vs MISSING. Order is the display order.
 const REQUIRED_DOC_TYPES = ["CNIC", "Employment Contract", "Offer Letter", "Educational Certificate", "Experience Letter"];
-const MASK = "••••••";
-const mask = (v, show) => (v == null ? null : show ? v : MASK);
 
 const FREQ_PER_YEAR = { WEEKLY: 52, BI_WEEKLY: 26, SEMI_MONTHLY: 24, MONTHLY: 12 };
 const num = (v) => {
@@ -181,7 +179,6 @@ async function overviewTab(id, tenantId, ctx, employee) {
     carryOver: num(b.carryOverBalance),
   }));
   const leaveBalanceDays = leaveBalance.reduce((s, b) => s + (b.balance || 0), 0);
-  const show = ctx.showSensitive;
 
   // leaveBalance summary { total, taken } SUMMED across all leave types.
   // total = current available balance summed; taken = approved days summed.
@@ -243,7 +240,10 @@ async function overviewTab(id, tenantId, ctx, employee) {
       maritalStatus: employee.marital_status ?? null,
       nationality: employee.nationality ?? null,
       nationalIdType: employee.nationality_id_type ?? null,
-      nationalId: mask(employee.nationality_id_no ?? null, show), // C4-decrypted; masked unless payroll VIEW
+      // National ID / CNIC is basic personal-info tier (the same person entered it
+      // on the create form) — visible to anyone with hr:employee GET, NOT gated
+      // behind the payroll-sensitive mask. Salary / IBAN / NTN stay masked below.
+      nationalId: employee.nationality_id_no ?? null, // C4-decrypted at rest
     },
     // Employment Details card
     employmentDetails: {

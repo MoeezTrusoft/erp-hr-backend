@@ -43,6 +43,19 @@ const parsePositionDescription = (description) => {
   }
 };
 
+// Resolve departmentId (a BusinessUnit id, carried in the position meta blob) →
+// business-unit name, batched for a page of positions so we never issue N
+// queries. Returns a Map<id, name>. Tenant-scoped fail-closed.
+const resolveDepartmentNames = async (departmentIds, tenantId) => {
+  const ids = [...new Set(departmentIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))];
+  if (!ids.length) return new Map();
+  const units = await prisma.businessUnit.findMany({
+    where: scopedWhere(tenantId, { id: { in: ids } }),
+    select: { id: true, name: true },
+  });
+  return new Map(units.map((unit) => [unit.id, unit.name]));
+};
+
 const employeeName = (employee) =>
   employee?.employee_name ||
   [employee?.first_name, employee?.middle_name, employee?.last_name].filter(Boolean).join(" ") ||
@@ -95,13 +108,15 @@ const buildFilledRatio = async (positionId, tenantId) => {
 // (computed per position). `department` is not resolvable from Position today
 // (positions don't hold a department FK); surface the meta hint if present else
 // null — TODO(position-department): resolve via RBAC once the link exists.
-const managementRow = (position, filledRatio) => {
+const managementRow = (position, filledRatio, departmentName) => {
   const { description, meta } = parsePositionDescription(position.description);
   return {
     id: position.id,
     title: position.title,
     code: position.jobCode,
-    department: meta.departmentName || null, // not resolvable from Position yet
+    // department name is resolved by the caller from meta.departmentId → BusinessUnit
+    // (batched); fall back to the meta hint then null.
+    department: departmentName ?? meta.departmentName ?? null,
     departmentId: meta.departmentId || null,
     band: position.band ?? meta.band ?? null, // real column preferred, meta blob fallback
     filled: filledRatio.filled,
@@ -171,8 +186,19 @@ export const listManagedPositions = async (query, tenantId) => {
   // Compute the filled ratio for each position, then apply the band filter
   // (meta-blob-derived today). Pagination is applied after band filtering so the
   // total reflects the filtered set.
+  const deptNames = await resolveDepartmentNames(
+    rows.map((position) => parsePositionDescription(position.description).meta.departmentId),
+    tenantId
+  );
   const built = await Promise.all(
-    rows.map(async (position) => managementRow(position, await buildFilledRatio(position.id, tenantId)))
+    rows.map(async (position) => {
+      const deptId = parsePositionDescription(position.description).meta.departmentId;
+      return managementRow(
+        position,
+        await buildFilledRatio(position.id, tenantId),
+        deptId != null ? deptNames.get(Number(deptId)) ?? null : null
+      );
+    })
   );
   const filtered = filters.band
     ? built.filter((row) => row.band && String(row.band) === filters.band)
@@ -213,9 +239,15 @@ export const getManagedPosition = async (id, tenantId) => {
 
   const filledRatio = await buildFilledRatio(position.id, tenantId);
   const { employees, ...positionCore } = position;
+  const deptId = parsePositionDescription(positionCore.description).meta.departmentId;
+  const deptNames = await resolveDepartmentNames([deptId], tenantId);
 
   return {
-    ...managementRow(positionCore, filledRatio),
+    ...managementRow(
+      positionCore,
+      filledRatio,
+      deptId != null ? deptNames.get(Number(deptId)) ?? null : null
+    ),
     employees: (employees || []).map((employee) => ({
       id: employee.id,
       name: employeeName(employee),
@@ -250,8 +282,19 @@ export const exportManagedPositions = async (query, tenantId, format = "csv") =>
     take: 5000, // hard cap so an export can never run away
   });
 
+  const deptNames = await resolveDepartmentNames(
+    rows.map((position) => parsePositionDescription(position.description).meta.departmentId),
+    tenantId
+  );
   const built = await Promise.all(
-    rows.map(async (position) => managementRow(position, await buildFilledRatio(position.id, tenantId)))
+    rows.map(async (position) => {
+      const deptId = parsePositionDescription(position.description).meta.departmentId;
+      return managementRow(
+        position,
+        await buildFilledRatio(position.id, tenantId),
+        deptId != null ? deptNames.get(Number(deptId)) ?? null : null
+      );
+    })
   );
   const items = filters.band
     ? built.filter((row) => row.band && String(row.band) === filters.band)

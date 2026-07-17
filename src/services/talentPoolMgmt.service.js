@@ -24,6 +24,17 @@ import { scopedWhere, withTenant } from "../lib/tenancy.js";
 
 // ── DERIVATION HELPERS ──────────────────────────────────────────────────────
 
+// Resolve a set of BusinessUnit ids → names, batched + tenant-scoped fail-closed.
+const resolveDepartmentNames = async (departmentIds, tenantId) => {
+  const ids = [...new Set(departmentIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))];
+  if (!ids.length) return new Map();
+  const units = await prisma.businessUnit.findMany({
+    where: scopedWhere(tenantId, { id: { in: ids } }),
+    select: { id: true, name: true },
+  });
+  return new Map(units.map((unit) => [unit.id, unit.name]));
+};
+
 // Probe a candidate's parsed-resume JSON for a years-of-experience figure.
 // parsedResume is free-form AI output, so we look at the two documented keys and
 // coerce to a finite number; anything else → null.
@@ -38,6 +49,20 @@ const deriveExperienceYears = (parsedResume) => {
 // Applications are included pre-sorted (appliedAt desc) so element 0 is newest.
 const mostRecentApplication = (applications) =>
   Array.isArray(applications) && applications.length ? applications[0] : null;
+
+// Candidate has no location column, but the parsed-resume JSON usually carries
+// one. Probe the documented free-form keys and return the first non-empty string.
+const deriveLocation = (parsedResume) => {
+  if (!parsedResume || typeof parsedResume !== "object") return null;
+  const raw =
+    parsedResume.location ??
+    parsedResume.city ??
+    parsedResume.address ??
+    (parsedResume.contact && typeof parsedResume.contact === "object"
+      ? parsedResume.contact.location ?? parsedResume.contact.city ?? parsedResume.contact.address
+      : null);
+  return typeof raw === "string" && raw.trim().length ? raw.trim() : null;
+};
 
 const deriveSkillNames = (candidateSkills) =>
   Array.isArray(candidateSkills)
@@ -110,17 +135,26 @@ export const listManagedPool = async ({
     prisma.talentPool.count({ where }),
   ]);
 
+  // Resolve each candidate's most-recent-application departmentId → BusinessUnit
+  // name, batched across the page so we never issue N queries.
+  const deptIds = memberships
+    .map((m) => mostRecentApplication(m.candidate?.applications)?.jobRequisition?.departmentId)
+    .filter((id) => id != null);
+  const deptNames = await resolveDepartmentNames(deptIds, tenantId);
+
   const rows = memberships.map((m) => {
     const candidate = m.candidate || {};
     const recent = mostRecentApplication(candidate.applications);
+    const departmentId = recent?.jobRequisition?.departmentId ?? null;
     return {
       membershipId: m.id,
       candidateId: m.candidateId,
       name: fullName(candidate),
       role: recent?.jobRequisition?.title ?? null,
-      department: recent?.jobRequisition?.departmentId ?? null,
+      department: departmentId != null ? deptNames.get(departmentId) ?? null : null,
+      departmentId,
       experienceYears: deriveExperienceYears(candidate.parsedResume),
-      location: candidate.location ?? null,
+      location: candidate.location ?? deriveLocation(candidate.parsedResume),
       skills: deriveSkillNames(candidate.candidateSkills),
       poolName: m.poolName,
       notes: m.notes ?? null,
@@ -206,7 +240,7 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
       email: candidate.email ?? null,
       phone: candidate.phone ?? null,
       source: candidate.source ?? null,
-      location: candidate.location ?? null,
+      location: candidate.location ?? deriveLocation(candidate.parsedResume),
     },
     previousRolesApplied,
     interviewScore,
