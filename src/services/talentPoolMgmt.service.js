@@ -185,7 +185,7 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
       applications: {
         orderBy: { appliedAt: "desc" },
         include: {
-          jobRequisition: { select: { title: true } },
+          jobRequisition: { select: { title: true, departmentId: true } },
           interviews: {
             select: {
               scheduledAt: true,
@@ -234,6 +234,12 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
     candidate.notes,
   ].filter((note) => typeof note === "string" && note.trim().length);
 
+  // Role / department come from the candidate's most-recent application (same
+  // derivation as the list), so the Add-to-Pool form can auto-fill them.
+  const recent = mostRecentApplication(candidate.applications);
+  const departmentId = recent?.jobRequisition?.departmentId ?? null;
+  const deptNames = await resolveDepartmentNames([departmentId], tenantId);
+
   return {
     candidate: {
       name: fullName(candidate),
@@ -242,6 +248,11 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
       source: candidate.source ?? null,
       location: candidate.location ?? deriveLocation(candidate.parsedResume),
     },
+    role: recent?.jobRequisition?.title ?? null,
+    department: departmentId != null ? deptNames.get(departmentId) ?? null : null,
+    departmentId,
+    experienceYears: deriveExperienceYears(candidate.parsedResume),
+    location: candidate.location ?? deriveLocation(candidate.parsedResume),
     previousRolesApplied,
     interviewScore,
     lastInterviewDate,
