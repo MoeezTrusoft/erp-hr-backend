@@ -35,6 +35,7 @@ const interviewInclude = {
           last_name: true,
           job_title: true,
           work_email: true,
+          photo_url: true,
           businessUnit: { select: { name: true } },
         },
       },
@@ -93,10 +94,13 @@ const toTimePart = (date) => (date ? new Date(date).toISOString().slice(11, 16) 
 
 const shapeInterviewers = (interviewers = []) =>
   interviewers.map((link) => ({
+    id: link.employee?.id ?? null,
     name: employeeName(link.employee),
     role: link.employee?.job_title ?? null,
     department: link.employee?.businessUnit?.name ?? null,
     email: link.employee?.work_email ?? null,
+    // Profile photo for the avatar (initials fallback handled client-side).
+    avatar: link.employee?.photo_url ?? null,
     status: link.status ?? null,
   }));
 

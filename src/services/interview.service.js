@@ -22,7 +22,7 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
             interviewers: {
                 include: {
                     employee: {
-                        select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true },
+                        select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
                     },
                 },
             },
@@ -49,7 +49,7 @@ export const listInterviews = async ({ applicationId, page = 1, limit = 20, tena
                 interviewers: {
                     include: {
                         employee: {
-                            select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true },
+                            select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
                         },
                     },
                 },
@@ -71,7 +71,7 @@ const interviewInclude = {
     interviewers: {
         include: {
             employee: {
-                select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true },
+                select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
             },
         },
     },

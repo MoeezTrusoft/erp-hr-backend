@@ -58,6 +58,9 @@ export const getAllReviews = async (tenantId) => {
       employee: true,
       reviewer: true,
       feedbacks: true,
+      // Per-metric scored items back the Strength / Development-area panels:
+      // high-rated metrics are strengths, low-rated ones are development areas.
+      performanceReviewItems: { include: { metric: { select: { name: true, category: true } } } },
     },
     orderBy: { updated_at: "desc" },
   });
