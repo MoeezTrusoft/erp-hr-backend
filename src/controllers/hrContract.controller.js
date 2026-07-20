@@ -138,7 +138,7 @@ export const listPositions = handle(
 );
 
 export const getPosition = handle(
-  (req) => hrContract.getPosition(req.params.id),
+  (req) => hrContract.getPosition(req.params.id, tenantOf(req)),
   "Position loaded"
 );
 
@@ -170,7 +170,7 @@ export const listRequisitions = handle(
 );
 
 export const getRequisition = handle(
-  (req) => hrContract.getRequisition(req.params.id),
+  (req) => hrContract.getRequisition(req.params.id, tenantOf(req)),
   "Requisition loaded"
 );
 

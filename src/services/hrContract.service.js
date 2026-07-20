@@ -1501,9 +1501,10 @@ export const listPositions = async (query, tenantId) => {
   });
 };
 
-export const getPosition = async (id) => {
-  const position = await prisma.position.findUnique({
-    where: { id: Number(id) },
+export const getPosition = async (id, tenantId) => {
+  // Tenant isolation: a position outside the caller's tenant is not found.
+  const position = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       employees: { select: compactEmployeeSelect, take: 20, orderBy: { employee_name: "asc" } },
       JobRequisition: { take: 10, orderBy: { createdAt: "desc" } },
@@ -1637,9 +1638,10 @@ export const listRequisitions = async (query, tenantId) => {
   return buildListPayload({ ...list, total, filters, items: items.map(requisitionRow) });
 };
 
-export const getRequisition = async (id) => {
-  const requisition = await prisma.jobRequisition.findUnique({
-    where: { id: Number(id) },
+export const getRequisition = async (id, tenantId) => {
+  // Tenant isolation: a requisition outside the caller's tenant is not found.
+  const requisition = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       position: true,
       requestedBy: true,
