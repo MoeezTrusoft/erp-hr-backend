@@ -62,6 +62,7 @@ import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
 import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
+import { establishTenantContext } from "./middlewares/tenantContext.middleware.js";
 import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
 import {
     createHttpMetricsMiddleware,
@@ -157,6 +158,10 @@ export const createApp = () => {
     // is responsible for rewriting /hr/api/hr/* to /api/hr/* and injecting the
     // internal secret plus x-user-* context headers before requests arrive here.
     app.use("/api", internalServiceGuard);
+    // Bind the verified tenant to the async context so the Prisma tenant-scope
+    // extension auto-scopes every REST query (deny-by-default). Runs after the
+    // guard has filled req.user.tenantId.
+    app.use("/api", establishTenantContext);
     app.use("/api/hr", hrContractRoutes);
     app.use("/api/employee", hrRoutes);
     app.use("/api/attendance", attendanceRoutes);

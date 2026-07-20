@@ -24,6 +24,7 @@ import os from 'node:os';
 
 import defaultPrisma from '../lib/prisma.js';
 import defaultLogger from '../lib/logger.js';
+import { mcpCtx } from '../mcp/context.js';
 
 const DEFAULT_BATCH_SIZE = 50;
 const MAX_BATCH_SIZE = 500;
@@ -158,7 +159,14 @@ const emptyCounts = () => ({
  * @param {object} [args.heartbeat]  injectable { store, now } for the beat.
  * @returns {Promise<object>} counts.
  */
-export async function runOutboxDispatch({
+// Cross-tenant outbox drain runs as SYSTEM (the tenant-scope extension denies
+// tenant-model queries with no context). Each outbox row carries its own tenant;
+// the dispatcher spans all tenants.
+export async function runOutboxDispatch(opts = {}) {
+    return mcpCtx.run({ system: true }, async () => _runOutboxDispatch(opts));
+}
+
+async function _runOutboxDispatch({
     publisher,
     workerId,
     batchSize = DEFAULT_BATCH_SIZE,

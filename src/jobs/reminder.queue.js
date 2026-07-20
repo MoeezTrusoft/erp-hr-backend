@@ -21,6 +21,7 @@ import { Queue as BullQueue, Worker as BullWorker } from 'bullmq';
 import IORedis from 'ioredis';
 
 import defaultLogger from '../lib/logger.js';
+import { mcpCtx } from '../mcp/context.js';
 import {
     runReviewReminderJob,
     runDocumentExpiryJob,
@@ -80,17 +81,21 @@ export function buildReminderProcessor({
     documentExpiry = runDocumentExpiryJob,
     retentionSweep = runRetentionSweepJob,
 } = {}) {
+    // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
+    // each sweep already scopes its own per-tenant work.
     return async function reminderProcessor(job) {
-        switch (job.name) {
-            case JOB_REVIEW_REMINDER:
-                return reviewReminder(job.data);
-            case JOB_DOCUMENT_EXPIRY:
-                return documentExpiry(job.data);
-            case JOB_RETENTION_SWEEP:
-                return retentionSweep(job.data);
-            default:
-                throw new Error(`reminder.queue: unknown job name "${job.name}"`);
-        }
+        return mcpCtx.run({ system: true }, async () => {
+            switch (job.name) {
+                case JOB_REVIEW_REMINDER:
+                    return reviewReminder(job.data);
+                case JOB_DOCUMENT_EXPIRY:
+                    return documentExpiry(job.data);
+                case JOB_RETENTION_SWEEP:
+                    return retentionSweep(job.data);
+                default:
+                    throw new Error(`reminder.queue: unknown job name "${job.name}"`);
+            }
+        });
     };
 }
 

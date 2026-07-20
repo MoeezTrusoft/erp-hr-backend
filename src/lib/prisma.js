@@ -12,6 +12,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { c4EncryptionExtension } from './c4Encryption.js';
 import { rlsTenantExtension } from './rlsTenant.js';
+import { tenantScopeExtension } from './tenantScope.js';
 
 const globalForPrisma = globalThis;
 
@@ -26,7 +27,7 @@ const prisma =
         log: process.env.PRISMA_LOG_LEVEL
             ? process.env.PRISMA_LOG_LEVEL.split(',').map((s) => s.trim()).filter(Boolean)
             : ['warn', 'error'],
-    }).$extends(c4EncryptionExtension).$extends(rlsTenantExtension);
+    }).$extends(c4EncryptionExtension).$extends(rlsTenantExtension).$extends(tenantScopeExtension);
 
 if (process.env.NODE_ENV !== 'production') {
     globalForPrisma.__hrPrisma = prisma;
