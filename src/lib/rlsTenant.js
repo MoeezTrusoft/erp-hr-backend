@@ -5,12 +5,19 @@
 //     USING/CHECK (tenantId = public.hr_current_tenant())
 // where hr_current_tenant() = current_setting('app.tenant_id', true)::uuid.
 //
-// So every read/write of those tables must run with app.tenant_id set to the
-// VERIFIED request tenant (the RBAC Company uuid on user.tenantId, never a
-// spoofable header). We wrap each such operation in a transaction that sets the
-// GUC transaction-locally via set_config(..., true) and runs the operation in
-// the SAME transaction (a batch $transaction shares one connection). Non-RLS
-// models and tenant-less contexts (jobs) are passed straight through.
+// So every read/write of those tables must run with the right GUC set:
+//   • TENANT context  → app.tenant_id = the VERIFIED request tenant (RBAC Company
+//     uuid on user.tenantId, never a spoofable header).
+//   • SYSTEM context   → app.tenant_bypass = 'on', so trusted cross-tenant jobs
+//     (mcpCtx.run({ system: true }) — reminder sweep, dispatchers) can scan every
+//     tenant's rows. WITHOUT this, a SYSTEM job sets no GUC and FORCE-RLS hides
+//     EVERY row (the review-reminder job was silently blind). The policy carries
+//     the matching `OR app.tenant_bypass='on'` clause (hr_rls_bypass_guc migration).
+// We wrap each such operation in a transaction that sets the GUC transaction-
+// locally via set_config(..., true) and runs the operation in the SAME
+// transaction (a batch $transaction shares one connection). Non-RLS models and
+// no-context queries are passed straight through (the tenantScope extension
+// denies genuinely context-less callers before they reach here).
 import { mcpCtx } from '../mcp/context.js';
 
 const RLS_MODELS = new Set(['Attendance', 'LeaveRequest', 'PerformanceReview']);
@@ -23,12 +30,21 @@ export const rlsTenantExtension = (client) =>
         query: {
             $allModels: {
                 async $allOperations({ model, args, query }) {
-                    const tenantId = mcpCtx.getStore()?.user?.tenantId;
-                    if (
-                        !RLS_MODELS.has(model) ||
-                        !tenantId ||
-                        !UUID_RE.test(String(tenantId))
-                    ) {
+                    if (!RLS_MODELS.has(model)) return query(args);
+                    const store = mcpCtx.getStore();
+
+                    // SYSTEM context: set the bypass GUC so cross-tenant jobs can
+                    // read/write pilot tables under FORCE RLS.
+                    if (store?.system) {
+                        const [, result] = await client.$transaction([
+                            client.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`,
+                            query(args),
+                        ]);
+                        return result;
+                    }
+
+                    const tenantId = store?.user?.tenantId;
+                    if (!tenantId || !UUID_RE.test(String(tenantId))) {
                         return query(args);
                     }
                     const [, result] = await client.$transaction([
