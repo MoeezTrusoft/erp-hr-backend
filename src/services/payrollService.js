@@ -452,12 +452,17 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             });
 
             // Map the engine's null-typed tax line to the resolved deduction type.
+            // FORCE-RLS: payroll_earnings / payroll_deductions are tenant-scoped;
+            // each nested-created line must carry tenantId (== app.tenant_id) or
+            // the WITH CHECK policy rejects the insert.
             const earnings = built.earnings.map((e) => ({
+                tenantId: tenantId ?? null,
                 earningTypeId: e.earningTypeId ?? baseSalaryEarningTypeId,
                 amount: e.amount,
                 description: e.description
             }));
             const deductions = built.deductions.map((d) => ({
+                tenantId: tenantId ?? null,
                 deductionTypeId: d.deductionTypeId ?? incomeTaxDeductionTypeId,
                 amount: d.amount,
                 description: d.description

@@ -1087,6 +1087,9 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
           email: contact.email || null,
           is_primary: Boolean(contact.isPrimary),
           employee_Id: created.id,
+          // FORCE-RLS: the row's tenantId must match app.tenant_id (the verified
+          // caller tenant) or the WITH CHECK policy rejects the insert.
+          tenantId: verifiedTenantId,
         })),
       });
     }
@@ -1184,6 +1187,9 @@ export const updateEmployee = async (id, payload, actorId) => {
           email: contact.email || null,
           is_primary: Boolean(contact.isPrimary),
           employee_Id: employeeId,
+          // FORCE-RLS: match the employee's tenant (== the verified caller tenant
+          // / app.tenant_id GUC) so the WITH CHECK policy accepts the insert.
+          tenantId: existing.tenant_id,
         })),
       });
     }
@@ -1407,6 +1413,12 @@ export const listEmployeeEmergencyContacts = async (employeeId) => {
 export const createEmployeeEmergencyContact = async (employeeId, payload) => {
   await requireRecord("employee", employeeId, "Employee");
   const data = emergencyContactSchema.parse(payload);
+  // FORCE-RLS: the new row's tenantId must match app.tenant_id (the caller's
+  // verified tenant). The employee's own tenant_id is that value.
+  const emp = await prisma.employee.findUnique({
+    where: { id: Number(employeeId) },
+    select: { tenant_id: true },
+  });
 
   if (data.isPrimary) {
     await prisma.emergencyContacts.updateMany({
@@ -1423,6 +1435,7 @@ export const createEmployeeEmergencyContact = async (employeeId, payload) => {
       email: data.email || null,
       is_primary: Boolean(data.isPrimary),
       employee_Id: Number(employeeId),
+      tenantId: emp?.tenant_id ?? null,
     },
   });
 
