@@ -39,6 +39,11 @@ describe('retry ladder + DLQ config', () => {
         expect(REMINDER_DLQ).not.toBe(REMINDER_QUEUE);
         expect(REMINDER_DLQ).toMatch(/dead|dlq/i);
     });
+
+    it('queue names contain no ":" — BullMQ v5 rejects it and boot silently no-ops', () => {
+        expect(REMINDER_QUEUE).not.toContain(':');
+        expect(REMINDER_DLQ).not.toContain(':');
+    });
 });
 
 describe('repeatable de-dup', () => {

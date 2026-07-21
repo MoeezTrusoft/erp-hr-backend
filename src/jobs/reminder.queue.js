@@ -8,7 +8,7 @@
 //   * a RETRY LADDER — a transient failure (DB blip) is retried with
 //     exponential backoff instead of being lost until the next day,
 //   * a DEAD-LETTER QUEUE — a job that exhausts its attempts is captured in
-//     `hr:reminders:dead` (audited / replayable), never silently dropped,
+//     `hr-reminders-dead` (audited / replayable), never silently dropped,
 //   * REPEATABLE DE-DUP — each schedule is registered with a STABLE jobId so a
 //     redeploy/restart re-uses the same repeatable instead of stacking
 //     duplicates that would fire the sweep N times.
@@ -28,8 +28,12 @@ import {
     runRetentionSweepJob,
 } from '../services/reminderScheduler.service.js';
 
-export const REMINDER_QUEUE = 'hr:reminders';
-export const REMINDER_DLQ = 'hr:reminders:dead';
+// BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
+// makes `new Queue()` throw at boot, which the startReminderJobs try/catch
+// downgrades to a disabled no-op handle, so NO reminder ever schedules. Use '-'
+// separators. (Job names and jobIds are unrestricted and keep their ':'.)
+export const REMINDER_QUEUE = 'hr-reminders';
+export const REMINDER_DLQ = 'hr-reminders-dead';
 
 export const JOB_REVIEW_REMINDER = 'review-reminder';
 export const JOB_DOCUMENT_EXPIRY = 'document-expiry';
