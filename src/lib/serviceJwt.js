@@ -38,6 +38,41 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 import { resolvePublicKeyPem } from './serviceJwtKeys.js';
+import { mcpCtx } from '../mcp/context.js';
+
+// Source the caller's VERIFIED tenant from the ambient request context (set by
+// establishTenantContext for REST and the MCP router) so peer service tokens
+// carry a `tid` claim without every call site threading tenantId through. The
+// tenant on mcpCtx came from a verified inbound JWT claim, never a spoofable
+// header, so re-minting it downstream preserves the isolation guarantee.
+// Returns null outside a tenant context (e.g. a boot/job task) → the token is
+// simply minted tenant-less and the callee fail-closes as before.
+function ambientTenantId() {
+    try {
+        const t = mcpCtx.getStore()?.user?.tenantId;
+        return t != null && String(t).trim() ? String(t) : null;
+    } catch {
+        return null;
+    }
+}
+
+// Add an ambient `tid` claim unless the caller explicitly set one (an explicit
+// `tid` — including null — opts out, e.g. a genuinely cross-tenant system call).
+function withAmbientTenant(extraClaims) {
+    if (extraClaims && 'tid' in extraClaims) return extraClaims;
+    const tid = ambientTenantId();
+    return tid ? { tid, ...extraClaims } : extraClaims;
+}
+
+// Header form of the ambient tenant for outbound clients to spread into their
+// request headers: defense-in-depth alongside the `tid` claim, and the ONLY
+// tenant channel to DAM (whose legacy X-Internal-Secret lane can't verify HR's
+// EdDSA token, so it reads the trusted X-Tenant-Id header instead). Empty object
+// outside a tenant context so nothing is sent.
+export function ambientTenantHeader() {
+    const tid = ambientTenantId();
+    return tid ? { 'X-Tenant-Id': tid } : {};
+}
 
 const DEFAULT_AUDIENCE = 'internal';
 const DEFAULT_ISSUER = 'erp-gateway';
@@ -296,7 +331,7 @@ export function signServiceJwt(extraClaims = {}) {
         process.env.SERVICE_JWT_SELF_ISSUER || DEFAULT_SELF_ISSUER;
 
     return jwt.sign(
-        { sub: selfIssuer, ...extraClaims },
+        { sub: selfIssuer, ...withAmbientTenant(extraClaims) },
         secret,
         {
             issuer: selfIssuer,
@@ -322,7 +357,7 @@ export function signServiceJwtEdDSA(extraClaims = {}) {
     const header = b64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT', kid }));
     const payload = b64url(
         JSON.stringify({
-            ...extraClaims,
+            ...withAmbientTenant(extraClaims),
             sub: selfIssuer,
             iss: selfIssuer,
             aud: getAudience(),

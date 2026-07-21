@@ -66,6 +66,10 @@ export function internalServiceGuard(req, res, next) {
             if (req.user) {
                 req.user.tenantId = verifiedTenant != null ? verifiedTenant : null;
             }
+            // Fleet-standard landing spot: req.tenantId mirrors the verified
+            // tenant so handlers/services can read one canonical field across
+            // services (alongside the existing req.user.tenantId).
+            req.tenantId = verifiedTenant != null ? verifiedTenant : null;
             recordInternalBoundary({ source: 'service-jwt', outcome: 'accept' });
             recordServiceJwtAccept('hr');
             return next();

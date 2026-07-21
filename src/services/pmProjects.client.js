@@ -6,7 +6,7 @@
 // Fail-soft: any error returns { available:false, items:[] }.
 import axios from "axios";
 import logger from "../lib/logger.js";
-import { signServiceJwtEdDSA } from "../lib/serviceJwt.js";
+import { signServiceJwtEdDSA, ambientTenantHeader } from "../lib/serviceJwt.js";
 
 const PM_BASE_URL = process.env.PM_SERVICE_URL || "http://localhost:3003";
 const PM_TIMEOUT = parseInt(process.env.PM_SERVICE_TIMEOUT || "10000", 10);
@@ -14,8 +14,8 @@ const PM_TIMEOUT = parseInt(process.env.PM_SERVICE_TIMEOUT || "10000", 10);
 const pmApi = axios.create({ baseURL: PM_BASE_URL, timeout: PM_TIMEOUT });
 
 const authHeaders = () => {
-  const h = { "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
-  const token = signServiceJwtEdDSA(); // PM verifies HR on the EdDSA internal lane
+  const h = { ...ambientTenantHeader(), "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
+  const token = signServiceJwtEdDSA(); // PM verifies HR on the EdDSA internal lane (carries tid)
   if (token) h["X-Service-Authorization"] = `Bearer ${token}`;
   return h;
 };

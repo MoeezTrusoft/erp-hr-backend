@@ -8,7 +8,7 @@
 // still renders and lights up automatically once RBAC trusts HR's issuer.
 import axios from "axios";
 import logger from "../lib/logger.js";
-import { signServiceJwtEdDSA } from "../lib/serviceJwt.js";
+import { signServiceJwtEdDSA, ambientTenantHeader } from "../lib/serviceJwt.js";
 
 const RBAC_BASE_URL = process.env.RBAC_SERVICE_URL || "http://localhost:3001";
 const RBAC_TIMEOUT = parseInt(process.env.RBAC_SERVICE_TIMEOUT || "10000", 10);
@@ -16,7 +16,7 @@ const RBAC_TIMEOUT = parseInt(process.env.RBAC_SERVICE_TIMEOUT || "10000", 10);
 const rbacApi = axios.create({ baseURL: RBAC_BASE_URL, timeout: RBAC_TIMEOUT });
 
 const authHeaders = () => {
-  const h = { "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
+  const h = { ...ambientTenantHeader(), "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
   const token = signServiceJwtEdDSA();
   if (token) h["X-Service-Authorization"] = `Bearer ${token}`;
   return h;

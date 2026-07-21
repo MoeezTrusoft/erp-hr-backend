@@ -1,6 +1,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import logger from "../lib/logger.js";
+import { ambientTenantHeader } from "../lib/serviceJwt.js";
 
 const DAM_BASE_URL = process.env.DAM_SERVICE_URL || "http://localhost:3002/api";
 const DAM_TIMEOUT = parseInt(process.env.DAM_SERVICE_TIMEOUT || "1000000", 10);
@@ -13,9 +14,12 @@ const damApi = axios.create({
 // DAM authenticates internal callers by X-Internal-Secret ALONE. Attaching an
 // HR-signed X-Service-Authorization JWT (HS256, self-issuer) that DAM cannot
 // verify makes it hard-401 "Invalid service token" — so we deliberately do NOT
-// send it. (Same reason uploadFileToDAM sends the secret only.)
+// send it. (Same reason uploadFileToDAM sends the secret only.) Since there is
+// no verifiable JWT to carry a tid claim to DAM, the ambient tenant rides as a
+// trusted X-Tenant-Id header, which DAM's legacy-secret lane now reads.
 const withInternalSecret = (headers = {}) => ({
     ...headers,
+    ...ambientTenantHeader(),
     "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
 });
 
@@ -129,7 +133,7 @@ export async function uploadFileToDAM(file, type = "avatar") {
     // HR-signed X-Service-Authorization JWT it can't verify is also present.
     const res = await fetch(`${DAM_BASE_URL.replace(/\/+$/, "")}/assets/upload`, {
       method: "POST",
-      headers: { "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET },
+      headers: { ...ambientTenantHeader(), "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET },
       body: fd,
     });
     if (!res.ok) {
