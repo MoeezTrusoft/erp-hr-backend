@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1047,7 +1048,7 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     coverPhotoUrl: coverPhoto?.url,
   };
 
-  const employee = await prisma.$transaction(async (tx) => {
+  const employee = await tenantTransaction(prisma, async (tx) => {
     const createData = employeeDataFromContract(employeeData, actorId);
     createData.tenant_id = verifiedTenantId;
     const created = await tx.employee.create({
@@ -1110,7 +1111,7 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
       where: { id: created.id },
       select: employeeProfileSelect,
     });
-  });
+  }, { tenantId: verifiedTenantId });
 
   await logAction({
     employeeId: actorId,
@@ -1171,7 +1172,7 @@ export const updateEmployee = async (id, payload, actorId) => {
     coverPhotoUrl: coverPhoto?.url,
   };
 
-  const employee = await prisma.$transaction(async (tx) => {
+  const employee = await tenantTransaction(prisma, async (tx) => {
     await tx.employee.update({
       where: { id: employeeId },
       data: employeeDataFromContract(employeeData, actorId, existing),
@@ -1202,7 +1203,7 @@ export const updateEmployee = async (id, payload, actorId) => {
       where: { id: employeeId },
       select: employeeProfileSelect,
     });
-  });
+  }, { tenantId: existing.tenant_id });
 
   await logAction({
     employeeId: actorId,

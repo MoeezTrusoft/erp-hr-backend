@@ -20,6 +20,30 @@
 // denies genuinely context-less callers before they reach here).
 import { mcpCtx } from '../mcp/context.js';
 
+// INTERACTIVE-TRANSACTION helper. The $allOperations extension below sets the
+// GUC in its OWN batch $transaction, which does NOT apply to the connection of
+// an interactive `prisma.$transaction(async (tx) => …)` — so writes to RLS
+// tables inside an interactive tx fail the WITH CHECK (hr_current_tenant() is
+// NULL there). Any interactive transaction that touches an RLS table must run
+// through this helper, which sets app.tenant_id (tenant ctx) / app.tenant_bypass
+// (SYSTEM ctx) as the FIRST statement inside the tx. Pass an explicit tenantId
+// when the caller has the verified tenant in hand (e.g. createEmployee); else it
+// falls back to the ambient mcpCtx tenant.
+export function tenantTransaction(client, fn, opts = {}) {
+    return client.$transaction(async (tx) => {
+        const store = mcpCtx.getStore();
+        if (opts.system || store?.system) {
+            await tx.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`;
+        } else {
+            const t = opts.tenantId ?? store?.user?.tenantId;
+            if (t) {
+                await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t)}, true)`;
+            }
+        }
+        return fn(tx);
+    }, opts.txOptions);
+}
+
 // Pilot tables under FORCE ROW LEVEL SECURITY. Prisma MODEL names (the extension
 // keys on `model`), not physical table names. Extended beyond the original
 // 3-table pilot to the Tier-1 high-PII tables (bank details, comp/salary,
