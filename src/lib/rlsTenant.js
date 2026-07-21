@@ -20,7 +20,22 @@
 // denies genuinely context-less callers before they reach here).
 import { mcpCtx } from '../mcp/context.js';
 
-const RLS_MODELS = new Set(['Attendance', 'LeaveRequest', 'PerformanceReview']);
+// Pilot tables under FORCE ROW LEVEL SECURITY. Prisma MODEL names (the extension
+// keys on `model`), not physical table names. Extended beyond the original
+// 3-table pilot to the Tier-1 high-PII tables (bank details, comp/salary,
+// emergency contacts) — all reached only via the ORM (no raw SQL), all callers
+// already gated by tenantScope, none scanned by cross-tenant jobs. Each table's
+// DB policy carries the `OR app.tenant_bypass='on'` clause so SYSTEM jobs still
+// see across tenants. Physical tables: bank_details, employment_terms,
+// EmergencyContacts (see hr_rls_pilot_extend migration).
+const RLS_MODELS = new Set([
+    'Attendance',
+    'LeaveRequest',
+    'PerformanceReview',
+    'BankDetail',
+    'EmploymentTerms',
+    'EmergencyContacts',
+]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
