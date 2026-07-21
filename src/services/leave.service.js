@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import { withTenant, tenantData } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -889,7 +890,7 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
   // write, validate-before-write). The event is ids-only + tenant-scoped from
   // the leave request's verified tenant; a non-conformant event throws and
   // rolls back the status update (a bad event never escapes).
-  const update = await prisma.$transaction(async (tx) => {
+  const update = await tenantTransaction(prisma, async (tx) => {
     const row = await tx.leaveRequest.update({
       where: { id: leaveRequestId },
       data: { status: newStatus },
@@ -967,7 +968,7 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
   });
 
   // M1-HR: the status flip + hr.leave.rejected.v1 outbox event are atomic.
-  const update = await prisma.$transaction(async (tx) => {
+  const update = await tenantTransaction(prisma, async (tx) => {
     const row = await tx.leaveRequest.update({
       where: { id: leaveRequestId },
       data: { status: 'REJECTED' },

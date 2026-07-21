@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -75,7 +76,7 @@ export const createAttendanceService = async (data) => {
   // atomic (outbox-on-write, validate-before-write). The event is ids-only +
   // tenant-scoped; when the row carries no tenant the builder fails-closed and
   // the write still succeeds (no event).
-  const attendanceIn = await prisma.$transaction(async (tx) => {
+  const attendanceIn = await tenantTransaction(prisma, async (tx) => {
     const row = existing
       ? await tx.attendance.update({
         where: { id: existing.id },
@@ -138,7 +139,7 @@ export const checkOutServiceWithTimestamp = async (employeeId, timestamp, tenant
 
   // M1-HR: the check-out write + hr.attendance.recorded.v1 (action=checkout)
   // outbox event are atomic.
-  const checkOut = await prisma.$transaction(async (tx) => {
+  const checkOut = await tenantTransaction(prisma, async (tx) => {
     const row = await tx.attendance.update({
       where: { id: attendance.id },
       data: { check_out: checkOutTime, total_hours: totalHours }

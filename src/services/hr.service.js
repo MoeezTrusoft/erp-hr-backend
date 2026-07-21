@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import {
   enqueueEmployeeLifecycle,
@@ -287,7 +288,7 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl, c
   // commit or roll back together. The C4 encryption $extends and payroll engine
   // are untouched — we still write through the same singleton client, just
   // wrapped in an interactive transaction so the outbox row is atomic with it.
-  const employee = await prisma.$transaction(async (tx) => {
+  const employee = await tenantTransaction(prisma, async (tx) => {
     const created = await tx.employee.create({ data: parsedData });
     await emitEmployeeLifecycle(tx, created, "hired", ctx);
     return created;
@@ -468,7 +469,7 @@ export const updateEmployeeService = async (id, data, updatedBy, ctx = {}) => {
 
   // A.4: the update and its hr.employee.lifecycle.v1 (phase=transferred) event
   // commit or roll back together.
-  const updated = await prisma.$transaction(async (tx) => {
+  const updated = await tenantTransaction(prisma, async (tx) => {
     const row = await tx.employee.update({
       where: { id: Number(id) },
       data: {
@@ -504,7 +505,7 @@ export const deleteEmployeeService = async (id, deletedBy, ctx = {}) => {
   // A.4: emit hr.employee.lifecycle.v1 (phase=terminated) BEFORE the row is
   // deleted (the mapper needs the still-present employee), all in ONE tx so the
   // event and the deletion are atomic.
-  await prisma.$transaction(async (tx) => {
+  await tenantTransaction(prisma, async (tx) => {
     await emitEmployeeLifecycle(tx, exists, "terminated", ctx, {
       terminationCause: ctx.terminationCause,
     });

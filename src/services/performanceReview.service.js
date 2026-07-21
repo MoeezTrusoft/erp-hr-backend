@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -51,7 +52,7 @@ export const submitReviewService = async (id, body, submittedBy, tenantId) => {
   // M1-HR: the review FINALIZED flip + hr.performance.review_finalized.v1
   // outbox event are atomic (outbox-on-write, validate-before-write). Ids-only,
   // tenant-scoped from the review's verified tenant.
-  const submitted = await prisma.$transaction(async (tx) => {
+  const submitted = await tenantTransaction(prisma, async (tx) => {
     const row = await tx.performanceReview.update({
       where: { id: Number(id) },
       data: {

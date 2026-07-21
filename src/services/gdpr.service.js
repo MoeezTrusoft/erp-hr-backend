@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { scopedEmployeeWhere } from "../lib/tenancy.js";
 
 // HR-SEC-02 / HR-SEC-07 — GDPR "right to be forgotten" + tenant isolation.
@@ -72,7 +73,7 @@ export const exportEmployeeData = async (employeeId, tenantId) => {
 export const eraseEmployeeData = async (employeeId, tenantId) => {
   const id = Number(employeeId);
 
-  const report = await prisma.$transaction(async (tx) => {
+  const report = await tenantTransaction(prisma, async (tx) => {
     // Fail-closed tenant gate: a wrong-tenant id 404s with ZERO writes.
     await resolveInTenant(tx, id, tenantId);
 

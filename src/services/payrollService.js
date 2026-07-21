@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import { redactC4 } from "../lib/c4Redaction.js";
 import * as money from "../lib/money.js";
@@ -692,7 +693,7 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
   // hr.payroll.run_finalized.v1 outbox event commit or roll back together
   // (outbox-on-write, validate-before-write). The event is ids-only +
   // tenant-scoped from the run's verified tenant.
-  await prisma.$transaction(async (tx) => {
+  await tenantTransaction(prisma, async (tx) => {
     await tx.payrollPayslip.updateMany({
       where: withTenant(tenantId, { payrollRunId: id }),
       data: { status: 'FINALIZED' }
