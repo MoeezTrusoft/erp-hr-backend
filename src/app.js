@@ -106,7 +106,9 @@ export const createApp = () => {
     // Prometheus/Grafana can compute Rate / Error / p95 per route.
     attachHttpRequestDurationMetric(register);
 
-    app.use(express.json());
+    // Document uploads (employee/profile docs) can arrive as base64 in the JSON
+    // body; the express default (100kb) trips them with 413. Env-tunable ceiling.
+    app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "25mb" }));
 
     const allowedOrigins = process.env.ALLOWED_DOMAINS
         ?.split(",")
