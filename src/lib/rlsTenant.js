@@ -38,8 +38,6 @@ const RLS_MODELS = new Set([
     // Payroll + Timesheet transactional tables (audit: ORM-only, no cross-tenant
     // SYSTEM sweep — the only SYSTEM contexts, reminder-queue + outbox-dispatcher,
     // never read these; all callers gated by tenantScope via REST/MCP tenant ctx).
-    // The two *reference* tables (PayrollEarningType / PayrollDeductionType) are
-    // intentionally EXCLUDED pending a null-tenant (global-row) data check.
     'PayrollRun',
     'PayrollPayslip',
     'PayrollEarning',
@@ -49,6 +47,10 @@ const RLS_MODELS = new Set([
     'Timesheet',
     'TimeEntry',
     'TimeApproval',
+    // Payroll reference/lookup tables — data check confirmed 0 null-tenant
+    // (global) rows, so FORCE RLS hides nothing; per-tenant config only.
+    'PayrollEarningType',
+    'PayrollDeductionType',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
