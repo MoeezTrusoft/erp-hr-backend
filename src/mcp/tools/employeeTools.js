@@ -399,8 +399,12 @@ export function registerEmployeeTools(server) {
       systemEmail: z.string().optional().describe("Login email for the system account (falls back to workEmail/personalEmail)."),
       password: z.string().min(8).optional().describe("Login password. Omit → HR auto-generates a one-time password and returns it in systemAccount.temporaryPassword."),
       roleId: z.union([z.string(), z.number()]).optional().describe("RBAC role id (integer) for the login. Required when createSystemAccount is true."),
-      permissions: z.array(z.object({ permissionId: z.union([z.string(), z.number()]), granted: z.boolean().optional() })).optional().describe("Optional per-permission overrides for the login."),
-      permissionMap: z.array(z.object({ permissionId: z.union([z.string(), z.number()]), granted: z.boolean().optional() })).optional().describe("Alias for permissions."),
+      permissions: z.array(z.object({ permissionId: z.union([z.string(), z.number()]), granted: z.boolean().optional() })).optional().describe("Optional per-permission overrides for the login: [{permissionId, granted}]."),
+      // FE-compat: accept the canonical array OR the FE's legacy map form; a map is tolerated (not applied).
+      permissionMap: z.any().optional().describe("FE-compat alias for permissions. Prefer the array form [{permissionId, granted}]; a legacy map is accepted but ignored."),
+      // FE-compat aliases (some callers send these instead of the canonical fields).
+      email: z.string().optional().describe("FE-compat alias — login email; prefer systemEmail. Falls back to workEmail/personalEmail."),
+      company: z.union([z.string(), z.number()]).optional().describe("FE-compat alias for companyId."),
     },
     withToolError(async (args) => {
       const { user, permissions, correlationId } = getCtx();

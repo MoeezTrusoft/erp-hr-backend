@@ -210,6 +210,8 @@ const parseJsonArray = (value) => {
 
 const normalizeContractPayload = (payload = {}) => ({
   ...payload,
+  // FE-compat: `company` is an alias for `companyId` (canonical wins).
+  companyId: payload.companyId ?? payload.company,
   emergencyContacts: parseJsonArray(payload.emergencyContacts),
   documents: parseJsonArray(payload.documents),
 });
@@ -346,17 +348,22 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
 // null when none are supplied so create/update can skip banking entirely.
 // accountNumber / iban are C4-encrypted transparently on write.
 const bankFieldsFromContract = (data) => {
+  // FE-compat: banking may arrive TOP-LEVEL (canonical) OR nested in
+  // additionalFields (the FE's current shape, keys `bank`/`distribution`/…).
+  // Top-level wins; additionalFields fills the gaps so the primary bank row is
+  // created either way.
+  const af = data.additionalFields && typeof data.additionalFields === "object" ? data.additionalFields : {};
   const map = {
-    bankName: data.bankName,
-    accountTitle: data.accountTitle,
-    accountNumber: data.accountNumber,
-    iban: data.iban,
-    branch: data.branch,
-    disbursementMethod: data.disbursementMethod,
-    routingNumber: data.routingNumber,
-    accountType: data.accountType,
+    bankName: data.bankName ?? af.bankName ?? af.bank,
+    accountTitle: data.accountTitle ?? af.accountTitle,
+    accountNumber: data.accountNumber ?? af.accountNumber,
+    iban: data.iban ?? af.iban,
+    branch: data.branch ?? af.branch,
+    disbursementMethod: data.disbursementMethod ?? af.disbursementMethod ?? af.distribution,
+    routingNumber: data.routingNumber ?? af.routingNumber,
+    accountType: data.accountType ?? af.accountType,
   };
-  const present = Object.fromEntries(Object.entries(map).filter(([, v]) => v !== undefined));
+  const present = Object.fromEntries(Object.entries(map).filter(([, v]) => v !== undefined && v !== ""));
   return Object.keys(present).length ? present : null;
 };
 
@@ -1185,12 +1192,20 @@ const maybeProvisionSystemAccount = async (data, employee) => {
   const generatedPassword = providedPassword ? null : randomBytes(12).toString("base64url");
   const password = providedPassword || generatedPassword;
 
-  const overrides = (data.permissions?.length ? data.permissions : data.permissionMap) || [];
+  // FE-compat: overrides come from `permissions` (canonical array) or `permissionMap`.
+  // Only the array form is applied; a legacy MAP (e.g. {"4-VIEW":"RESOURCE"}) is
+  // ignored (the role's base permissions still apply) so it can't crash .filter.
+  const overrides = Array.isArray(data.permissions) && data.permissions.length
+    ? data.permissions
+    : Array.isArray(data.permissionMap)
+      ? data.permissionMap
+      : [];
   const permissions = overrides
-    .filter((p) => p.permissionId != null)
+    .filter((p) => p && p.permissionId != null)
     .map((p) => ({ permissionId: p.permissionId, granted: p.granted !== false }));
 
-  const loginEmail = data.systemEmail || data.workEmail || data.personalEmail || null;
+  // FE-compat: honor a top-level `email` alias for the login before falling back.
+  const loginEmail = data.systemEmail || data.email || data.workEmail || data.personalEmail || null;
   const payload = {
     first_name: data.firstName,
     last_name: data.lastName,

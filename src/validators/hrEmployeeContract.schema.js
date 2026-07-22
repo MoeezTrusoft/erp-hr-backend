@@ -79,6 +79,10 @@ const employeeBase = {
   employeeCode: optionalString,
   jobTitle: optionalString,
   companyId: optionalInt,
+  // FE-compat alias: some callers send `company` (int) instead of `companyId`.
+  company: optionalInt,
+  // FE-compat alias: some callers send a top-level `email` for the login account.
+  email: optionalEmail,
   positionId: optionalInt,
   departmentId: optionalInt,
   businessUnitId: optionalInt,
@@ -134,9 +138,11 @@ const employeeBase = {
   permissions: z
     .array(z.object({ permissionId: optionalInt, granted: z.coerce.boolean().optional().default(true) }))
     .optional(),
-  permissionMap: z
-    .array(z.object({ permissionId: optionalInt, granted: z.coerce.boolean().optional().default(true) }))
-    .optional(),
+  // FE-compat: accept EITHER the canonical array [{permissionId,granted}] OR the
+  // FE's legacy map form ({"<resId>-ACTION":"SCOPE"}). Tolerant (z.any) so a map
+  // no longer hard-fails (-32602); the service only applies the array form and
+  // ignores a map (the role's base permissions still apply). Prefer `permissions`.
+  permissionMap: z.any().optional(),
 };
 
 // Only firstName + lastName are required at create time. jobTitle, hireDate,
