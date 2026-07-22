@@ -1,5 +1,6 @@
 import * as leaveService from '../services/leave.service.js';
 import { createRequisitionController } from './requisition.controller.js';
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2 / T-P2.2 — the verified tenant arrives on req.user.tenantId (set by
 // internalServiceGuard from the signed service-JWT claim; T-P2.1) — NEVER from
@@ -12,7 +13,7 @@ export const getLeavePolicies = async (req, res) => {
     const policies = await leaveService.getLeavePolicies(req.query);
     res.json({ success: true, data: policies });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -24,7 +25,7 @@ export const getLeavePolicyById = async (req, res) => {
     }
     res.json({ success: true, data: policy });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -76,7 +77,7 @@ export const getLeaveRequests = async (req, res) => {
     const requests = await leaveService.getLeaveRequests(filters);
     res.json({ success: true, data: requests });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -94,7 +95,7 @@ export const getLeaveRequestById = async (req, res) => {
 
     res.json({ success: true, data: request });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -132,7 +133,7 @@ export const getPendingApprovals = async (req, res) => {
     const approvals = await leaveService.getPendingApprovals(req.user.id, req.user.role);
     res.json({ success: true, data: approvals });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -141,7 +142,7 @@ export const getLeaveRequestApprovals = async (req, res) => {
     const approvals = await leaveService.getLeaveRequestApprovals(parseInt(req.params.id));
     res.json({ success: true, data: approvals });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -184,7 +185,7 @@ export const getLeaveBalances = async (req, res) => {
     const balances = await leaveService.getLeaveBalances(req.query);
     res.json({ success: true, data: balances });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -198,7 +199,7 @@ export const getEmployeeLeaveBalances = async (req, res) => {
     const balances = await leaveService.getEmployeeLeaveBalances(employeeId);
     res.json({ success: true, data: balances });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -229,7 +230,7 @@ export const getAccrualHistory = async (req, res) => {
     const history = await leaveService.getAccrualHistory(req.query);
     res.json({ success: true, data: history });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -238,7 +239,7 @@ export const getHolidays = async (req, res) => {
     const holidays = await leaveService.getHolidays(req.query);
     res.json({ success: true, data: holidays });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -247,7 +248,7 @@ export const getHolidayCalendar = async (req, res) => {
     const calendar = await leaveService.getHolidayCalendar(req.user.id);
     res.json({ success: true, data: calendar });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 

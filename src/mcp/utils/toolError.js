@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import logger from "../../lib/logger.js";
+import { toJsonRpcError } from "./mcpErrorMap.js";
 
 // LOG-4: HR MCP tools accept flat top-level C4-sensitive fields (iban, ntn,
 // baseSalary, accountNumber, ...). The pino `*.<field>` redact globs only reach
@@ -28,13 +29,26 @@ export function withToolError(fn, toolName = "unknown_tool") {
       logger.debug({ toolName, argsHash: hashArgs(args) }, "MCP tool start");
       return await fn(args);
     } catch (err) {
+      // ERR-5: map the error to the SAME HR-nnnn the REST facade returns,
+      // carried in error.data.code with a leak-safe message (ERR-3: 5xx never
+      // emits the raw err.message / Prisma / RLS detail to the caller).
+      const jsonrpc = toJsonRpcError(err);
       logger.error({
         toolName,
         argsHash: hashArgs(args),
         err,
-        status: err?.status || 500,
+        code: jsonrpc.data.code,
+        jsonrpcCode: jsonrpc.code,
       }, "MCP tool failed");
-      const body = { error: err.message, status: err.status || 500 };
+      // `status` retained for back-compat with existing tool clients/tests that
+      // key on the HTTP-ish status; `code` (HR-nnnn) + `jsonrpc` are the ERR-5
+      // additions machine clients should branch on. `error` is leak-safe (ERR-3).
+      const body = {
+        error: jsonrpc.message,
+        status: err?.status || err?.httpStatus || err?.statusCode || 500,
+        code: jsonrpc.data.code,
+        jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
+      };
       return {
         isError: true,
         content: [{ type: "text", text: JSON.stringify(body) }],

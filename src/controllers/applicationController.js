@@ -1,5 +1,6 @@
 // src/controllers/applicationController.js
 import * as applicationService from "../services/applicationService.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createApplication = async (req, res) => {
     try {
@@ -61,10 +62,7 @@ export const listApplications = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 

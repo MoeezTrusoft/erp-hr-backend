@@ -1,4 +1,5 @@
 import * as service from "../services/performanceCycleService.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped cycle service so tenant B cannot read/mutate tenant A's cycles.
@@ -31,10 +32,7 @@ export const getAllCycles = async (req, res) => {
       data,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message || "Failed to fetch performance cycles",
-    });
+    respondServerError(req, res, error);
   }
 };
 

@@ -1,4 +1,5 @@
 import * as logService from "../services/log.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped audit-log service so a tenant never reads another tenant's audit trail.
@@ -11,7 +12,7 @@ export const getAll = async (req, res) => {
     const logs = await logService.getAllLogs(req.user.id, ip, tenantOf(req));
     res.status(200).json({ success: true, data: logs });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    respondServerError(req, res, err);
   }
 };
 
@@ -25,6 +26,6 @@ export const getById = async (req, res) => {
     }
     res.status(200).json({ success: true, data: log });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    respondServerError(req, res, err);
   }
 };

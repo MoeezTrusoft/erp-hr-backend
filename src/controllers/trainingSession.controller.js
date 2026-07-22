@@ -1,4 +1,5 @@
 import * as svc from "../services/trainingSession.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped training-session service so tenant B cannot read/mutate tenant A's
@@ -17,7 +18,7 @@ export const listSessions = async (req, res) => {
         const { courseId, page, limit } = req.query;
         const result = await svc.listSessions({ courseId, page: Number(page) || 1, limit: Number(limit) || 20, tenantId: tenantOf(req) });
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    } catch (e) { respondServerError(req, res, e); }
 };
 
 export const updateSession = async (req, res) => {

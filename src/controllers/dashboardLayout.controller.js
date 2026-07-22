@@ -2,6 +2,7 @@ import {
   saveDashboardLayout,
  // getDashboardLayout
 } from "../services/dashboardLayout.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const saveLayoutController = async (req, res) => {
   try {
@@ -31,10 +32,7 @@ export const saveLayoutController = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    respondServerError(req, res, error);
   }
 };
 
@@ -51,9 +49,6 @@ export const saveLayoutController = async (req, res) => {
 //     });
 
 //   } catch (error) {
-//     res.status(500).json({
-//       success: false,
-//       message: error.message
-//     });
+//     respondServerError(req, res, error);
 //   }
 // };

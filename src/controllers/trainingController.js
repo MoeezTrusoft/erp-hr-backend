@@ -1,5 +1,6 @@
 // src/controllers/trainingController.js
 import * as trainingService from '../services/trainingService.js';
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — the verified tenant arrives ONLY on req.user.tenantId (set by
 // internalServiceGuard from the signed service-JWT claim; T-P2.1), NEVER from a
@@ -33,10 +34,7 @@ export const getCourses = async (req, res) => {
             data: result
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -55,10 +53,7 @@ export const getCourse = async (req, res) => {
                 message: error.message
             });
         }
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -134,9 +129,6 @@ export const getCategories = async (req, res) => {
             data: categories
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };

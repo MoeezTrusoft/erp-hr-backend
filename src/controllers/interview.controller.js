@@ -1,4 +1,5 @@
 import * as svc from "../services/interview.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const scheduleInterview = async (req, res) => {
     try {
@@ -12,7 +13,7 @@ export const listInterviews = async (req, res) => {
         const { applicationId, page, limit } = req.query;
         const result = await svc.listInterviews({ applicationId, page: Number(page) || 1, limit: Number(limit) || 20 });
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    } catch (e) { respondServerError(req, res, e); }
 };
 
 export const updateInterview = async (req, res) => {

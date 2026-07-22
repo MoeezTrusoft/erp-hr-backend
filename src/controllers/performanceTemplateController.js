@@ -1,4 +1,5 @@
 import * as templateService from "../services/performanceTemplateService.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped template service so tenant B cannot read/mutate tenant A's templates.
@@ -31,10 +32,7 @@ export const getAllTemplates = async (req, res) => {
       data,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message || "Failed to fetch performance templates",
-    });
+    respondServerError(req, res, error);
   }
 };
 

@@ -1,4 +1,5 @@
 import * as performanceService from "../services/performance.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createPerformanceReview = async (req, res) => {
   try {
@@ -15,7 +16,7 @@ export const getAllReviews = async (req, res) => {
     const reviews = await performanceService.getAllReviews();
     res.json({ success: true, reviews });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -27,7 +28,7 @@ export const listEmployeeNineBox = async (req, res) => {
     const data = await performanceService.getEmployeeNineBox(tenantId);
     res.status(200).json({ success: true, data });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    respondServerError(req, res, error);
   }
 };
 

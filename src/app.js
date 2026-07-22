@@ -70,6 +70,7 @@ import {
 } from "./lib/httpMetrics.js";
 import { attachRequestId } from "./utils/apiContract.js";
 import { attachCorrelationId } from "./middlewares/correlationId.middleware.js";
+import { errorHandler } from "./middlewares/error.middleware.js";
 import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 
 import onboardingRoutes from "./routes/onboarding.routes.js";
@@ -232,6 +233,13 @@ export const createApp = () => {
     // present, outbox dispatcher heartbeat, key/cert expiry). Mounted at the
     // top level alongside /readyz so probes reach it without the /api guard.
     app.use(createComplianceHealthRouter());
+
+    // ERR-1: the SINGLE terminal error middleware — mounted LAST, after every
+    // route. Any thrown AppError / ZodError / Prisma error / unexpected bug that
+    // reaches next(err) (Express 5 auto-forwards async rejections) is logged in
+    // full server-side and rendered as the canonical ErrorEnvelope, with 5xx
+    // bodies genericized so no stack/SQL/RLS detail leaks to clients (ERR-3).
+    app.use(errorHandler);
 
     return app;
 };

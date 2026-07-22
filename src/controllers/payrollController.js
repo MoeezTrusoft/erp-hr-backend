@@ -1,6 +1,7 @@
 import * as payrollService from '../services/payrollService.js';
 import * as bankFileService from '../services/bankFileService.js';
 import { auditC4Read } from '../lib/c4Access.js';
+import { respondServerError } from '../utils/httpError.js';
 
 // HR-04 / T-P2.2 — every payroll request is scoped to the VERIFIED tenant on
 // req.user.tenantId (set by internalServiceGuard from the service-JWT claim —
@@ -19,7 +20,7 @@ export const getPayrollRuns = async (req, res) => {
         });
         res.json({ success: true, data: result });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -34,7 +35,7 @@ export const getPayrollRunById = async (req, res) => {
         await auditC4Read(req.user, { action: 'PAYROLL_RUN_READ', target: id });
         res.json({ success: true, data: payrollRun });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -130,7 +131,7 @@ export const getEarningTypes = async (req, res) => {
         const earningTypes = await payrollService.getEarningTypes(tenantOf(req));
         res.json({ success: true, data: earningTypes });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -161,7 +162,7 @@ export const getDeductionTypes = async (req, res) => {
         const deductionTypes = await payrollService.getDeductionTypes(tenantOf(req));
         res.json({ success: true, data: deductionTypes });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -203,7 +204,7 @@ export const getEmployeePayrollData = async (req, res) => {
         await auditC4Read(req.user, { action: 'EMPLOYEE_PAYROLL_DATA_READ', target: employeeId });
         res.json({ success: true, data });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -250,7 +251,7 @@ export const getPayslips = async (req, res) => {
         });
         res.json({ success: true, data: result });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -271,7 +272,7 @@ export const getPayslipById = async (req, res) => {
         await auditC4Read(req.user, { action: 'PAYSLIP_READ', target: id });
         res.json({ success: true, data: payslip });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -303,7 +304,7 @@ export const getEmployeePayslips = async (req, res) => {
         });
         res.json({ success: true, data: result });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -314,7 +315,7 @@ export const getTaxRates = async (req, res) => {
         const taxRates = await payrollService.getTaxRates(countryCode, tenantOf(req));
         res.json({ success: true, data: taxRates });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -341,6 +342,6 @@ export const getAuditLogs = async (req, res) => {
         });
         res.json({ success: true, data: result });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };

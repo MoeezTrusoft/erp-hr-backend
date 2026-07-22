@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { getMcpServer } from "./mcpServer.js";
 import { mcpCtx, buildContextFromHeaders } from "./context.js";
 import logger from "../lib/logger.js";
+import { toJsonRpcError } from "./utils/mcpErrorMap.js";
 
 const router = express.Router();
 
@@ -33,11 +34,17 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
       await transport.handleRequest(req, res, body);
     });
   } catch (err) {
-    logger.error({ err, mcpRequestId: body?.id ?? null }, "MCP request failed");
+    // ERR-3/ERR-5: log the full error server-side; return a leak-safe JSON-RPC
+    // error with the HR-nnnn in error.data.code (never the raw err.message).
+    const jsonrpc = toJsonRpcError(err);
+    logger.error(
+      { err, code: jsonrpc.data.code, jsonrpcCode: jsonrpc.code, mcpRequestId: body?.id ?? null },
+      "MCP request failed"
+    );
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: "2.0",
-        error: { code: -32603, message: "Internal server error" },
+        error: jsonrpc,
         id: body?.id ?? null,
       });
     }

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { GENERIC_INTERNAL } from "../constants/errorCodes.js";
 
 export const attachRequestId = (req, res, next) => {
   req.requestId = req.headers["x-request-id"] || randomUUID();
@@ -27,12 +28,19 @@ export const sendContractError = (
   statusCode = 500,
   code = "SERVER_ERROR"
 ) => {
-  const message = error?.message || "Something went wrong";
+  // ERR-3: a 5xx never emits the raw error.message (could be Prisma/RLS/internal
+  // detail). Genericize the client-facing message + code for server errors; keep
+  // client-safe messages for 4xx. The full error is logged by the caller.
+  const isServer = statusCode >= 500;
+  const message = isServer
+    ? GENERIC_INTERNAL.message
+    : (error?.message || "Something went wrong");
+  const safeCode = isServer ? GENERIC_INTERNAL.code : code;
 
   return res.status(statusCode).json({
     success: false,
     message,
-    errors: [{ code, message }],
+    errors: [{ code: safeCode, message }],
     requestId: res.req?.requestId,
   });
 };

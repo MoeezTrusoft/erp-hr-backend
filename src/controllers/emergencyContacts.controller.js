@@ -5,6 +5,7 @@ import {
   updateEmergencyContact,
   deleteEmergencyContact
 } from "../services/emergencyContacts.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped emergency-contact service so tenant B cannot read/mutate tenant A's
@@ -33,7 +34,7 @@ export const create = async (req, res) => {
 
     res.status(201).json({ success: true,  message: "Emergency Contact Created successfully",data: result });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    respondServerError(req, res, err);
   }
 };
 
@@ -43,7 +44,7 @@ export const getAll = async (req, res) => {
     const result = await getAllEmergencyContacts(tenantOf(req));
     res.status(200).json({ success: true, data: result });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    respondServerError(req, res, err);
   }
 };
 
@@ -57,7 +58,7 @@ export const getById = async (req, res) => {
 
     res.status(200).json({ success: true, data: result });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    respondServerError(req, res, err);
   }
 };
 
@@ -81,7 +82,7 @@ export const update = async (req, res) => {
 
     res.status(200).json({ success: true,message: "Emergency Contact Updated successfully", data: result });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    respondServerError(req, res, err);
   }
 };
 
@@ -95,6 +96,6 @@ export const remove = async (req, res) => {
 
     res.status(200).json({ success: true, message: "Deleted successfully", data: result });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    respondServerError(req, res, err);
   }
 };

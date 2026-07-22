@@ -1,4 +1,5 @@
 import * as svc from "../services/talentPool.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped talent-pool service so tenant B cannot read/mutate tenant A's pools.
@@ -9,7 +10,7 @@ export const listPools = async (req, res) => {
         const { page, limit } = req.query;
         const result = await svc.listPools({ page: Number(page) || 1, limit: Number(limit) || 20, tenantId: tenantOf(req) });
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    } catch (e) { respondServerError(req, res, e); }
 };
 
 export const addToPool = async (req, res) => {

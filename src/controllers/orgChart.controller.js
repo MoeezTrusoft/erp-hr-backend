@@ -1,4 +1,5 @@
 import * as svc from "../services/orgChart.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped org-chart service so a tenant's chart never includes another tenant's
@@ -10,7 +11,7 @@ export const getOrgChart = async (req, res) => {
     const data = await svc.getOrgChart(tenantOf(req));
     res.status(200).json({ success: true, message: "Success", data });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    respondServerError(req, res, e);
   }
 };
 

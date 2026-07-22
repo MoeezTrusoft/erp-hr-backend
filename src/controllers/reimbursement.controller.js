@@ -1,4 +1,5 @@
 import * as svc from "../services/reimbursement.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped reimbursement service so tenant B cannot read/mutate tenant A's claims.
@@ -19,7 +20,7 @@ export const listClaims = async (req, res) => {
     const data = await svc.listClaims({ employeeId: req.query.employeeId, status: req.query.status, tenantId: tenantOf(req) });
     res.status(200).json({ success: true, message: "Success", data });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    respondServerError(req, res, e);
   }
 };
 

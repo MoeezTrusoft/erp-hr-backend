@@ -1,5 +1,6 @@
 import * as analyticsService from '../services/analyticsService.js';
 import logger from '../lib/logger.js';
+import { respondServerError } from '../utils/httpError.js';
 
 /**
  * Standard Report Controllers
@@ -36,10 +37,7 @@ export const getHeadcountReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Headcount Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -75,10 +73,7 @@ export const getTurnoverReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Turnover Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -113,10 +108,7 @@ export const getSalaryReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Salary Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -142,10 +134,7 @@ export const getLeaveBalancesReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Leave Balances Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -181,10 +170,7 @@ export const getAbsenceReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Absence Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -210,10 +196,7 @@ export const getEEOReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'EEO Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -240,10 +223,7 @@ export const getRecruitmentPipelineReport = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Recruitment Pipeline Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -271,10 +251,7 @@ export const getDashboardKPIs = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Dashboard KPIs Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -308,10 +285,7 @@ export const getPositionDashboard = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Position Dashboard Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -344,10 +318,7 @@ export const getRecruitmentDashboard = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Recruitment Dashboard Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -380,10 +351,7 @@ export const getPerformanceDashboard = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Performance Dashboard Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -420,10 +388,7 @@ export const getPayrollKpis = async (req, res) => {
         });
     } catch (error) {
         logger.error({ err: error }, 'Payroll KPIs Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 
@@ -481,10 +446,7 @@ export const exportReport = async (req, res) => {
         res.send(result);
     } catch (error) {
         logger.error({ err: error }, 'Export Report Error');
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        respondServerError(req, res, error);
     }
 };
 

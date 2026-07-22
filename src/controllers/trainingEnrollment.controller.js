@@ -1,4 +1,5 @@
 import * as enrollmentService from "../services/trainingEnrollment.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped training-enrollment service so tenant B cannot read/mutate tenant A's
@@ -19,7 +20,7 @@ export const getAllEnrollments = async (req, res) => {
     const result = await enrollmentService.getEnrollments(tenantOf(req));
     res.status(200).json({ success: true, data: result });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    respondServerError(req, res, error);
   }
 };
 

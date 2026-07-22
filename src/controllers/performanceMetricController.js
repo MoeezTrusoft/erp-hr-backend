@@ -1,5 +1,6 @@
 // src/controllers/performanceMetricController.js
 import * as metricService from "../services/performanceMetricService.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createMetric = async (req, res) => {
     try {
@@ -54,10 +55,7 @@ export const listMetrics = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 

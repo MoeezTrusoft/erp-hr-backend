@@ -1,4 +1,5 @@
 import * as courseService from "../services/trainingCourse.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // (already tenant-scoped) trainingCourse service so tenant B cannot read/mutate
@@ -19,7 +20,7 @@ export const getAllCourses = async (req, res) => {
     const result = await courseService.getAllCourses(tenantOf(req));
     res.status(200).json({ success: true, message: "Success", data: result });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -89,6 +90,6 @@ export const getGlobalAnalyticsOverview = async (req, res) => {
     const result = await courseService.getGlobalAnalyticsOverview();
     res.status(200).json({ success: true, message: "Success", data: result });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    respondServerError(req, res, error);
   }
 };

@@ -9,6 +9,7 @@ import {
   createEmployeeMediaRecordService,
   getEmployeeMediaIdService,
 } from "../services/hr.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // ======================== CREATE ========================
 export const createEmployee = async (req, res) => {
@@ -176,7 +177,7 @@ export const getAllEmployees = async (req, res) => {
     const employees = await getAllEmployeesService();
     return res.status(200).json({ success: true, data: employees });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return respondServerError(req, res, error);
   }
 };
 

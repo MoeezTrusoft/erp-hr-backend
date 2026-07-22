@@ -1,6 +1,7 @@
 // src/controllers/candidateController.js
 import * as candidateService from "../services/candidateService.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 
 export const createCandidate = async (req, res) => {
@@ -202,9 +203,6 @@ export const listCandidates = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };

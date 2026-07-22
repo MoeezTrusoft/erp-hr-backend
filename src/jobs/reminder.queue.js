@@ -17,6 +17,8 @@
 // without a live Redis; server boot passes the real BullMQ ones. Guarded like
 // the outbox loop: NODE_ENV=test or an absent REDIS_URL ⇒ a disabled no-op
 // handle (never spawns a worker/timer). pino only; bounded logs.
+import { randomUUID } from 'node:crypto';
+
 import { Queue as BullQueue, Worker as BullWorker } from 'bullmq';
 import IORedis from 'ioredis';
 
@@ -88,14 +90,20 @@ export function buildReminderProcessor({
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
     return async function reminderProcessor(job) {
-        return mcpCtx.run({ system: true }, async () => {
+        // LOG-3: a scheduled job carries a correlationId minted at enqueue (or a
+        // fresh one for a legacy job with none) so its logs and any events it
+        // emits join back to one chain. Bind it on the SYSTEM ctx so downstream
+        // side-effects (event envelopes) can read it.
+        const correlationId = job?.data?.correlationId || randomUUID();
+        const data = { ...(job?.data || {}), correlationId };
+        return mcpCtx.run({ system: true, correlationId }, async () => {
             switch (job.name) {
                 case JOB_REVIEW_REMINDER:
-                    return reviewReminder(job.data);
+                    return reviewReminder(data);
                 case JOB_DOCUMENT_EXPIRY:
-                    return documentExpiry(job.data);
+                    return documentExpiry(data);
                 case JOB_RETENTION_SWEEP:
-                    return retentionSweep(job.data);
+                    return retentionSweep(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

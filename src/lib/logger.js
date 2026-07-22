@@ -25,6 +25,10 @@ const options = {
     level,
     mixin: traceContextMixin,
     base: {
+        // LOG-2 / LOG-7 (§15.1 / OTel): the canonical resource identifier is
+        // `svc`. `service` is retained for a migration window so existing
+        // dashboards keyed on it don't break; new joins should key on `svc`.
+        svc: 'erp-hr-backend',
         service: 'erp-hr-backend',
         env: process.env.NODE_ENV || 'development',
     },
@@ -40,8 +44,13 @@ const options = {
             'req.headers["x-internal-secret"]',
             'req.headers["x-service-authorization"]',
             'req.headers.cookie',
+            'authorization',
+            'cookie',
             '*.password',
             '*.token',
+            '*.secret',
+            '*.authorization',
+            '*.cookie',
             // C4: salary / compensation
             'baseSalary',
             'bonusTarget',

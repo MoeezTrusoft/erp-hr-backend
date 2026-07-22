@@ -1,4 +1,5 @@
 import * as svc from "../services/employeeSkill.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped employee-skill service so tenant B cannot read/mutate tenant A's skills.
@@ -9,7 +10,7 @@ export const listSkills = async (req, res) => {
     const data = await svc.listSkills(tenantOf(req));
     res.status(200).json({ success: true, message: "Success", data });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    respondServerError(req, res, e);
   }
 };
 

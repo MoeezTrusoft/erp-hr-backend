@@ -1,5 +1,6 @@
 // src/controllers/enrollmentController.js
 import * as enrollmentService from '../services/enrollmentService.js';
+import { respondServerError } from '../utils/httpError.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped enrollment service so tenant B cannot read/mutate tenant A's enrollments.
@@ -49,10 +50,7 @@ export const getUserEnrollments = async (req, res) => {
             data: result
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -65,10 +63,7 @@ export const getCourseEnrollments = async (req, res) => {
             data: result
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -152,10 +147,7 @@ export const getEmployeeTranscript = async (req, res) => {
             data: transcript
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -168,9 +160,6 @@ export const getComplianceStatus = async (req, res) => {
             data: compliance
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
+        return respondServerError(req, res, error);
     }
 };

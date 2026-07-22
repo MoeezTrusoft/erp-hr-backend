@@ -1,4 +1,5 @@
 import * as svc from "../services/onboarding.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // ── Checklists ──────────────────────────────────────────────────────────────
 
@@ -18,7 +19,7 @@ export const listChecklists = async (req, res) => {
         const result = await svc.listChecklists({ page: Number(page) || 1, limit: Number(limit) || 20 });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(500).json({ success: false, message: e.message });
+        respondServerError(req, res, e);
     }
 };
 
