@@ -378,6 +378,10 @@ export function registerEmployeeTools(server) {
       coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
       documents: z.array(z.any()).optional().describe("Each item may carry fileBase64 (+fileName) for the BE to upload, OR an existing mediaId."),
+      // Free-form JSON blob stored on the employee. FE-compat: banking may be nested
+      // here (keys bank/accountNumber/iban/…) — the BE also reads it as a fallback to
+      // create the primary bank row. MUST be declared or the MCP SDK strips it.
+      additionalFields: z.record(z.string(), z.any()).optional().describe("Free-form extras (taxSlab, eobi, payDate, onboardingStartDate, location, and FE-nested banking)."),
       // Tax + banking (consolidated profile). ntn + iban are encrypted at rest.
       ntn: z.string().optional().describe("Pakistan National Tax Number (encrypted at rest)"),
       bankName: z.string().optional(),
