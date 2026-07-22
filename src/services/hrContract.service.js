@@ -1188,7 +1188,9 @@ const maybeProvisionSystemAccount = async (data, employee) => {
     email: loginEmail,
     phone: data.mobilePhone,
     gender: data.gender,
-    hire_date: data.hireDate,
+    // RBAC's rbac_employee_create requires hire_date as a non-empty STRING; the
+    // contract schema coerced hireDate to a Date, so serialize to ISO here.
+    hire_date: data.hireDate instanceof Date ? data.hireDate.toISOString() : data.hireDate,
     status: employee.status || employee.employement_status,
     roles: [{ roleId, ...(permissions.length ? { permissions } : {}) }],
     password,

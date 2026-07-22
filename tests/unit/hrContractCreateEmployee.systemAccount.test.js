@@ -128,8 +128,11 @@ describe("hrContract.createEmployee — RBAC system-account orchestration", () =
       hrEmployeeId: 101,
       mediaId: 555,
     });
-    // hire_date maps through (Zod coerces to a Date).
-    expect(payload.hire_date).toBeInstanceOf(Date);
+    // hire_date maps through as an ISO STRING (RBAC's rbac_employee_create tool
+    // requires a string; the contract Zod coerced hireDate to a Date, serialized
+    // to ISO in the payload builder).
+    expect(typeof payload.hire_date).toBe("string");
+    expect(payload.hire_date).toBe(new Date("2026-01-01").toISOString());
     // roles[0] carries roleId + the mapped permission overrides.
     expect(payload.roles).toEqual([
       { roleId: 7, permissions: [{ permissionId: 12, granted: true }, { permissionId: 13, granted: false }] },

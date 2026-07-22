@@ -50,39 +50,135 @@ const actorIdentityHeaders = () => {
   return headers;
 };
 
+// Parse a Streamable-HTTP MCP reply body into the JSON-RPC result object. The
+// transport answers with either a plain JSON envelope (enableJsonResponse) OR a
+// text/event-stream frame ("event: message\ndata: {…}\n\n"); tolerate both so a
+// server-side transport tweak can't silently break provisioning. Returns the
+// parsed JSON-RPC message ({ result | error }), or null when unparseable.
+const parseMcpBody = (body) => {
+  if (body && typeof body === "object") return body; // axios already JSON-parsed
+  if (typeof body !== "string") return null;
+  const trimmed = body.trim();
+  if (!trimmed) return null;
+  // SSE frame: pull the last non-empty `data:` line and JSON-parse it.
+  if (/^event:|^data:/m.test(trimmed)) {
+    const dataLines = trimmed
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("data:"))
+      .map((l) => l.slice(5).trim())
+      .filter(Boolean);
+    const last = dataLines[dataLines.length - 1];
+    if (!last) return null;
+    try {
+      return JSON.parse(last);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+};
+
 /**
  * Provision a login User in RBAC for a freshly-created HR employee.
- * POST {rbac}/api/employee — creates User (bcrypt password, roleId,
- * User.employeeId link, permission overrides). Authorized by RBAC against the
- * ACTING USER (forwarded via actorIdentityHeaders), NOT HR's service identity.
  *
- * @param {object} payload  RBAC POST /api/employee body (see employee.service.create).
+ * Calls the RBAC MCP tool `rbac_employee_create` at POST {rbac}/mcp (JSON-RPC
+ * tools/call). This is the ALREADY-AUTHORIZED path the FE uses via the gateway:
+ * /mcp is mounted behind RBAC's internalServiceGuard + gatewayIdentity, so HR's
+ * EdDSA service JWT passes the boundary, the forwarded X-User-* identity headers
+ * populate gatewayIdentity, and the tool runs
+ * assertPermission(permissions, "POST", "/rbac/api/employee", isAdmin) against
+ * the acting user (needs rbac:create). No user Bearer token is required — unlike
+ * the REST route /api/employee (authenticate), which HR could not satisfy.
+ *
+ * @param {object} payload  the rbac_employee_create arguments: first_name,
+ *   last_name, job_title, email, phone, gender, hire_date, status, roles,
+ *   password, hrEmployeeId, mediaId.
  * @param {object} [actorHeaders]  extra headers to merge (rarely needed).
  * @returns {Promise<{ ok: true, user: object } | { ok: false, status?: number, error: string, code?: string }>}
- *   — a 4xx from RBAC (403 forbidden, duplicate email/phone, invalid roleId) is
- *   RETURNED (never thrown) with its message so the caller can surface it; a
- *   network/transport error is also returned as { ok:false, error } (fail-soft).
+ *   — a tool/authz error (403 forbidden, duplicate email/phone, invalid roleId)
+ *   is RETURNED (never thrown) with its message; a network/transport error is
+ *   also returned as { ok:false, error } (fail-soft).
  */
 export async function createRbacSystemAccount(payload, actorHeaders = {}) {
+  const rpc = {
+    jsonrpc: "2.0",
+    id: `hr-syscacct-${Date.now()}`,
+    method: "tools/call",
+    params: { name: "rbac_employee_create", arguments: payload },
+  };
   try {
     const res = await rbacApi.request({
-      url: "/api/employee",
+      url: "/mcp",
       method: "POST",
-      headers: withInternalAuth({ ...actorIdentityHeaders(), ...actorHeaders }),
-      data: payload,
+      headers: withInternalAuth({
+        ...actorIdentityHeaders(),
+        ...actorHeaders,
+        "Content-Type": "application/json",
+        // MCP StreamableHTTP transport REQUIRES the SSE accept alongside JSON.
+        Accept: "application/json, text/event-stream",
+      }),
+      data: rpc,
+      // The transport may answer as an SSE frame; take the raw text and parse
+      // it ourselves (parseMcpBody handles JSON and SSE).
+      responseType: "text",
+      transitional: { silentJSONParsing: false },
     });
-    const body = res?.data;
-    const user = body?.employee ?? body?.user ?? body?.data ?? body ?? null;
+
+    const rpcMsg = parseMcpBody(res?.data);
+    // JSON-RPC transport-level error (e.g. malformed request, method not found).
+    if (rpcMsg?.error) {
+      const e = rpcMsg.error;
+      return { ok: false, status: null, error: e.message || "RBAC MCP error", code: e.data?.code ?? e.code };
+    }
+
+    const result = rpcMsg?.result;
+    const text = result?.content?.[0]?.text;
+    // Tool-level error: withToolError returns { isError:true, content:[{text:
+    // JSON.stringify({error,status})}] } instead of throwing.
+    if (result?.isError) {
+      let parsed = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = {};
+      }
+      const error = parsed.error || "RBAC system-account provisioning failed";
+      logger.warn(
+        { status: parsed.status ?? null, error, hrEmployeeId: payload?.hrEmployeeId },
+        "rbac.client: rbac_employee_create tool error — employee kept, login provisioning did not"
+      );
+      return { ok: false, status: parsed.status ?? null, error, code: parsed.code };
+    }
+
+    // Success: content[0].text is the created user JSON ({ id, ... }).
+    let user = null;
+    if (text) {
+      try {
+        user = JSON.parse(text);
+      } catch {
+        user = null;
+      }
+    }
     return { ok: true, user };
   } catch (err) {
+    // Transport/network failure (or a boundary 401/403 from internalServiceGuard
+    // / gatewayIdentity before the tool ran). Fail-soft.
     const status = err?.response?.status ?? null;
-    const body = err?.response?.data;
-    const error = body?.message || body?.error || err?.message || "RBAC system-account provisioning failed";
+    const parsedErr = parseMcpBody(err?.response?.data);
+    const error =
+      parsedErr?.error?.message ||
+      parsedErr?.message ||
+      err?.message ||
+      "RBAC system-account provisioning failed";
     logger.warn(
       { status, error, hrEmployeeId: payload?.hrEmployeeId },
       "rbac.client: createRbacSystemAccount failed — employee kept, login provisioning did not"
     );
-    return { ok: false, status, error, code: body?.code };
+    return { ok: false, status, error, code: parsedErr?.error?.data?.code };
   }
 }
 
