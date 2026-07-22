@@ -154,11 +154,13 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}) {
       return { ok: false, status: parsed.status ?? null, error, code: parsed.code };
     }
 
-    // Success: content[0].text is the created user JSON ({ id, ... }).
+    // Success: content[0].text is the RBAC controller envelope
+    // { success: true, employee: { id, ... } }. Unwrap to the created User.
     let user = null;
     if (text) {
       try {
-        user = JSON.parse(text);
+        const parsed = JSON.parse(text);
+        user = parsed?.employee || parsed?.user || parsed;
       } catch {
         user = null;
       }
