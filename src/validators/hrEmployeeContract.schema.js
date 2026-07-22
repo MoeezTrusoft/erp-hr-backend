@@ -119,6 +119,24 @@ const employeeBase = {
   // (DAM asset) and parseResume:true are supplied. See resumeParsing.service.js.
   resumeMediaId: optionalInt,
   parseResume: z.coerce.boolean().optional().default(false),
+  // Single-call orchestration: when createSystemAccount is true, createEmployee
+  // ALSO provisions a login User in RBAC (POST /api/employee) after the HR row
+  // commits — the FE makes one call instead of two. All fields are OPTIONAL so
+  // existing callers are unaffected, and none of them leak into the Employee DB
+  // row (employeeDataFromContract ignores them; they are used only to build the
+  // RBAC payload). systemEmail overrides the login email (falls back to
+  // work/personal email); roleId + password are required for the RBAC call, else
+  // provisioning is skipped. permissions are per-permission grant/deny overrides.
+  createSystemAccount: z.coerce.boolean().optional().default(false),
+  systemEmail: optionalEmail,
+  password: z.preprocess(emptyToUndefined, z.string().min(8).optional()),
+  roleId: optionalInt,
+  permissions: z
+    .array(z.object({ permissionId: optionalInt, granted: z.coerce.boolean().optional().default(true) }))
+    .optional(),
+  permissionMap: z
+    .array(z.object({ permissionId: optionalInt, granted: z.coerce.boolean().optional().default(true) }))
+    .optional(),
 };
 
 // Only firstName + lastName are required at create time. jobTitle, hireDate,

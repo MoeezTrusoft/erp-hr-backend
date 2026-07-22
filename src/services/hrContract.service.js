@@ -1145,8 +1145,76 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     }
   }
 
+  // Single-call orchestration: when the caller opts in with createSystemAccount,
+  // provision the login User in RBAC AFTER the HR row (+ media) is committed, so
+  // the FE makes ONE call instead of two. Best-effort — mirrors the resumeParsing
+  // pattern above: a provisioning failure NEVER fails the employee create; the
+  // outcome is attached as `systemAccount`. Skipped entirely when not opted in.
+  const systemAccount = await maybeProvisionSystemAccount(data, employee);
+
   const profile = employeeContractProfile(employee);
-  return resumeParsing ? { ...profile, resumeParsing } : profile;
+  return {
+    ...profile,
+    ...(resumeParsing ? { resumeParsing } : {}),
+    ...(systemAccount ? { systemAccount } : {}),
+  };
+};
+
+// Build the RBAC POST /api/employee body from the created employee + the
+// system-account contract fields, then call RBAC. Single source of the payload
+// mapping (used only by createEmployee). Returns the `systemAccount` response
+// object, or null when the caller did not opt in. NEVER throws — a hard failure
+// is reported as { status: 'failed', ... } so the employee create still returns.
+const maybeProvisionSystemAccount = async (data, employee) => {
+  if (data.createSystemAccount !== true) return null;
+
+  const roleId = data.roleId;
+  const password = data.password;
+  // Guard: RBAC requires a role + a login secret; skip (don't call) without both.
+  if (!roleId || !password) {
+    return { status: "skipped", reason: "roleId and password required" };
+  }
+
+  const overrides = (data.permissions?.length ? data.permissions : data.permissionMap) || [];
+  const permissions = overrides
+    .filter((p) => p.permissionId != null)
+    .map((p) => ({ permissionId: p.permissionId, granted: p.granted !== false }));
+
+  const loginEmail = data.systemEmail || data.workEmail || data.personalEmail || null;
+  const payload = {
+    first_name: data.firstName,
+    last_name: data.lastName,
+    job_title: data.jobTitle,
+    email: loginEmail,
+    phone: data.mobilePhone,
+    gender: data.gender,
+    hire_date: data.hireDate,
+    status: employee.status || employee.employement_status,
+    roles: [{ roleId, ...(permissions.length ? { permissions } : {}) }],
+    password,
+    hrEmployeeId: employee.id, // the new HR employee id (User.employeeId link)
+    mediaId: employee.employee_media_id, // profile-photo media id, when present
+  };
+
+  try {
+    const { createRbacSystemAccount } = await import("./rbac.client.js");
+    const result = await createRbacSystemAccount(payload);
+    if (result?.ok) {
+      return { userId: result.user?.id ?? null, status: "created" };
+    }
+    return {
+      status: "failed",
+      error: result?.error || "RBAC system-account provisioning failed",
+      ...(result?.status != null ? { httpStatus: result.status } : {}),
+      ...(result?.code ? { code: result.code } : {}),
+    };
+  } catch (err) {
+    logger.warn(
+      { err: err?.message, employeeId: employee.id },
+      "createEmployee: system-account provisioning threw (non-fatal)"
+    );
+    return { status: "failed", error: err?.message || "system-account provisioning failed" };
+  }
 };
 
 export const updateEmployee = async (id, payload, actorId) => {

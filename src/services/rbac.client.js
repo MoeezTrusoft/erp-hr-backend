@@ -10,6 +10,7 @@
 import axios from "axios";
 import logger from "../lib/logger.js";
 import { signServiceJwtEdDSA, ambientTenantHeader } from "../lib/serviceJwt.js";
+import { mcpCtx } from "../mcp/context.js";
 
 const RBAC_BASE_URL = process.env.RBAC_SERVICE_URL || "http://localhost:3001";
 const RBAC_TIMEOUT = parseInt(process.env.RBAC_SERVICE_TIMEOUT || "10000", 10);
@@ -22,6 +23,68 @@ const withInternalAuth = (headers = {}) => {
   if (token) merged["X-Service-Authorization"] = `Bearer ${token}`;
   return merged;
 };
+
+// Rebuild the acting user's gateway-identity headers from the ambient MCP/REST
+// context (mcpCtx), so a HR→RBAC call carries the SAME principal HR was invoked
+// for. RBAC authorizes POST /api/employee against this user (gatewayIdentity →
+// assertPermission needs rbac:create); forwarding these is what lets RBAC see
+// the REAL operator, not HR's service identity. The values mirror exactly what
+// buildContextFromHeaders read off the inbound request (X-User-Id /
+// X-User-Permissions / X-User-Roles / X-Is-Admin), so nothing is escalated here
+// — a user lacking rbac:create still gets a 403 from RBAC.
+const actorIdentityHeaders = () => {
+  const store = mcpCtx.getStore();
+  const user = store?.user;
+  if (!user) return {};
+  const headers = {};
+  if (user.userId != null) headers["X-User-Id"] = String(user.userId);
+  if (user.email) headers["X-User-Email"] = String(user.email);
+  if (user.employeeId != null) headers["X-Employee-Id"] = String(user.employeeId);
+  // Roles + permissions travel as JSON exactly as RBAC's gatewayIdentity parses
+  // them (parseJsonHeader). permissions come from the top-level ctx.permissions
+  // blob (the entitlement map the gateway forwarded), roles from user.roles.
+  if (store.permissions !== undefined) headers["X-User-Permissions"] = JSON.stringify(store.permissions ?? {});
+  if (user.roles !== undefined) headers["X-User-Roles"] = JSON.stringify(user.roles ?? []);
+  // isAdmin is fail-closed to false in HR's verified context; forward verbatim.
+  headers["X-Is-Admin"] = user.isAdmin ? "true" : "false";
+  return headers;
+};
+
+/**
+ * Provision a login User in RBAC for a freshly-created HR employee.
+ * POST {rbac}/api/employee — creates User (bcrypt password, roleId,
+ * User.employeeId link, permission overrides). Authorized by RBAC against the
+ * ACTING USER (forwarded via actorIdentityHeaders), NOT HR's service identity.
+ *
+ * @param {object} payload  RBAC POST /api/employee body (see employee.service.create).
+ * @param {object} [actorHeaders]  extra headers to merge (rarely needed).
+ * @returns {Promise<{ ok: true, user: object } | { ok: false, status?: number, error: string, code?: string }>}
+ *   — a 4xx from RBAC (403 forbidden, duplicate email/phone, invalid roleId) is
+ *   RETURNED (never thrown) with its message so the caller can surface it; a
+ *   network/transport error is also returned as { ok:false, error } (fail-soft).
+ */
+export async function createRbacSystemAccount(payload, actorHeaders = {}) {
+  try {
+    const res = await rbacApi.request({
+      url: "/api/employee",
+      method: "POST",
+      headers: withInternalAuth({ ...actorIdentityHeaders(), ...actorHeaders }),
+      data: payload,
+    });
+    const body = res?.data;
+    const user = body?.employee ?? body?.user ?? body?.data ?? body ?? null;
+    return { ok: true, user };
+  } catch (err) {
+    const status = err?.response?.status ?? null;
+    const body = err?.response?.data;
+    const error = body?.message || body?.error || err?.message || "RBAC system-account provisioning failed";
+    logger.warn(
+      { status, error, hrEmployeeId: payload?.hrEmployeeId },
+      "rbac.client: createRbacSystemAccount failed — employee kept, login provisioning did not"
+    );
+    return { ok: false, status, error, code: body?.code };
+  }
+}
 
 /**
  * Resolve the RBAC user linked to an HR employee id.
