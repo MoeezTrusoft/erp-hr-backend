@@ -17,6 +17,7 @@ import {
 import * as hrContractService from "../../services/hrContract.service.js";
 import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
 import { getEmployeeProfileTab } from "../../services/employeeProfileTabs.service.js";
+import logger from "../../lib/logger.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -197,7 +198,10 @@ export async function mcpUpdateOffboarding(user, id, data) {
 }
 
 export async function mcpCreateEmergencyContact(user, data) {
-  console.log("mcpCreateEmergencyContact called with data:", data);
+  // LOG-1: NEVER log the raw `data` — emergency-contact fields (name, phone,
+  // relationship) are PII and console.* bypasses the pino redact surface. Trace
+  // at debug with the tool name only.
+  logger.debug({ toolName: "mcpCreateEmergencyContact" }, "MCP tool called");
   return runController(createEmergencyContactController, { user, body: data });
 }
 

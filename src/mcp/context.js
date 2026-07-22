@@ -18,13 +18,25 @@ export function getCtx() {
 }
 
 export function buildContextFromHeaders(req) {
-  // T-P2.2/T-P2.6: the tenant is the VERIFIED RBAC Company.uuid claim the
-  // gateway forwards alongside the x-user-* context family (x-tenant-id). It is
-  // an opaque uuid STRING — pass it through verbatim, never coerce; absent →
-  // null (fail-closed). Downstream mutations (e.g. hr_employee_create) scope the
-  // write + the emitted lifecycle event by this value only, never the body.
-  const rawTenant = req.headers["x-tenant-id"];
+  // SEC-5 / X-02 (MCP twin of the HR-03 REST fix): the tenant and the admin
+  // flag are IDENTITY that must come from the VERIFIED service-JWT claim
+  // (populated on req.internalService by internalServiceGuard, which runs
+  // before this router — see app.js "/mcp" mount), NEVER from the spoofable
+  // x-tenant-id / x-is-admin request headers. A mesh peer holding a valid
+  // service JWT for tenant A could otherwise set x-tenant-id:<tenantB> +
+  // x-is-admin:true and escalate cross-tenant + reveal C4 PII (salary/bank/
+  // IBAN/NTN). Mirroring internalService.middleware.js lines 65-72, we take the
+  // tenant from the verified claim only (opaque RBAC Company.uuid STRING — pass
+  // through verbatim, never coerce), and fail closed to null when absent.
+  const verified = req.internalService;
+  const rawTenant = verified?.tenantId;
   const tenantId = typeof rawTenant === "string" && rawTenant.trim() ? rawTenant.trim() : null;
+  // SEC-5: x-is-admin is client-forgeable and is NOT honored as authority. The
+  // verified service-JWT carries no admin flag, so admin status fails closed to
+  // false here — exactly as the REST path treats it (assertPermission ignores
+  // the flag; C4-reveal paths require the hr:payroll VIEW grant). Gateway-
+  // resolved entitlements still arrive via x-user-permissions behind the guard.
+  const isAdmin = false;
   // A.5: the request correlation id (minted by attachCorrelationId on the edge)
   // so an emitted EventEnvelope.correlationId chains HTTP → event end-to-end.
   const rawCorrelation = req.headers["x-correlation-id"] || req.correlationId;
@@ -36,7 +48,7 @@ export function buildContextFromHeaders(req) {
       userId: req.headers["x-user-id"],
       email: req.headers["x-user-email"],
       roles: parseHeaderJson(req.headers["x-user-roles"], []),
-      isAdmin: req.headers["x-is-admin"] === "true",
+      isAdmin,
       employeeId: req.headers["x-employee-id"],
       tenantId,
     },
