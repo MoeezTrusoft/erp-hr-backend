@@ -1,7 +1,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import logger from "../lib/logger.js";
-import { ambientTenantHeader } from "../lib/serviceJwt.js";
+import { ambientTenantHeader, signServiceJwtEdDSA } from "../lib/serviceJwt.js";
 
 const DAM_BASE_URL = process.env.DAM_SERVICE_URL || "http://localhost:3002/api";
 const DAM_TIMEOUT = parseInt(process.env.DAM_SERVICE_TIMEOUT || "1000000", 10);
@@ -11,17 +11,25 @@ const damApi = axios.create({
   timeout: DAM_TIMEOUT,
 });
 
-// DAM authenticates internal callers by X-Internal-Secret ALONE. Attaching an
-// HR-signed X-Service-Authorization JWT (HS256, self-issuer) that DAM cannot
-// verify makes it hard-401 "Invalid service token" — so we deliberately do NOT
-// send it. (Same reason uploadFileToDAM sends the secret only.) Since there is
-// no verifiable JWT to carry a tid claim to DAM, the ambient tenant rides as a
-// trusted X-Tenant-Id header, which DAM's legacy-secret lane now reads.
-const withInternalSecret = (headers = {}) => ({
-    ...headers,
-    ...ambientTenantHeader(),
-    "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
-});
+// DAM now authenticates HR on the EdDSA service-JWT plane: it verifies the
+// X-Service-Authorization token against HR's registered public key (kid
+// hr-svc-45d91377) and only falls back to X-Internal-Secret when NO service JWT
+// is present. So we attach BOTH — the same EdDSA token rbac.client.js sends
+// (signServiceJwtEdDSA, carrying a tid claim), plus X-Internal-Secret as the
+// retained legacy fallback and the ambient X-Tenant-Id header for defense in
+// depth. NOTE: DAM does not silently downgrade — if a service JWT is present
+// but invalid it 401s even with a valid secret, so the token must be a genuine
+// HR EdDSA token (aud "internal", iss "erp-hr").
+const withInternalSecret = (headers = {}) => {
+    const merged = {
+        ...headers,
+        ...ambientTenantHeader(),
+        "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
+    };
+    const token = signServiceJwtEdDSA(); // DAM verifies HR on the EdDSA plane (kid hr-svc-45d91377)
+    if (token) merged["X-Service-Authorization"] = `Bearer ${token}`;
+    return merged;
+};
 
 export async function damRequest(endpoint, method = "GET", body = {}, headers = {}) {
     try {
@@ -129,11 +137,13 @@ export async function uploadFileToDAM(file, type = "avatar") {
       file.originalname || "upload.bin"
     );
 
-    // ONLY the internal secret — DAM hard-401s ("Invalid service token") when an
-    // HR-signed X-Service-Authorization JWT it can't verify is also present.
+    // Attach the EdDSA service JWT (DAM verifies HR on the EdDSA plane) plus the
+    // retained X-Internal-Secret fallback and ambient tenant header — same auth
+    // shape as withInternalSecret above. (fetch, not axios, so we build headers
+    // inline here; the token/secret/tenant channels are identical.)
     const res = await fetch(`${DAM_BASE_URL.replace(/\/+$/, "")}/assets/upload`, {
       method: "POST",
-      headers: { ...ambientTenantHeader(), "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET },
+      headers: withInternalSecret(),
       body: fd,
     });
     if (!res.ok) {
