@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
@@ -1169,11 +1170,20 @@ const maybeProvisionSystemAccount = async (data, employee) => {
   if (data.createSystemAccount !== true) return null;
 
   const roleId = data.roleId;
-  const password = data.password;
-  // Guard: RBAC requires a role + a login secret; skip (don't call) without both.
-  if (!roleId || !password) {
-    return { status: "skipped", reason: "roleId and password required" };
+  // Guard: a login must have a role. Skip (don't call RBAC) without one.
+  if (!roleId) {
+    return { status: "skipped", reason: "roleId required" };
   }
+  // Password is optional. If the operator supplied one, use it. Otherwise HR
+  // generates a strong one-time password and RETURNS it in the response (SMTP is
+  // not wired, so it can't be emailed) — the admin hands it to the employee, who
+  // changes it on first login. base64url of 12 random bytes => ~16 chars (>=8).
+  const providedPassword =
+    typeof data.password === "string" && data.password.trim().length > 0
+      ? data.password.trim()
+      : null;
+  const generatedPassword = providedPassword ? null : randomBytes(12).toString("base64url");
+  const password = providedPassword || generatedPassword;
 
   const overrides = (data.permissions?.length ? data.permissions : data.permissionMap) || [];
   const permissions = overrides
@@ -1202,7 +1212,15 @@ const maybeProvisionSystemAccount = async (data, employee) => {
     const { createRbacSystemAccount } = await import("./rbac.client.js");
     const result = await createRbacSystemAccount(payload);
     if (result?.ok) {
-      return { userId: result.user?.id ?? null, status: "created" };
+      return {
+        userId: result.user?.id ?? null,
+        status: "created",
+        // Show-once: only present when HR auto-generated the password (operator
+        // supplied none). Never returned when the operator chose the password.
+        ...(generatedPassword
+          ? { temporaryPassword: generatedPassword, passwordGenerated: true }
+          : {}),
+      };
     }
     return {
       status: "failed",
