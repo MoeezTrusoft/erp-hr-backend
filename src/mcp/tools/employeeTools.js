@@ -391,6 +391,16 @@ export function registerEmployeeTools(server) {
       // Opt-in AI resume parsing: only runs when BOTH are set.
       resumeMediaId: z.union([z.string(), z.number()]).optional().describe("DAM asset id of the resume to parse"),
       parseResume: z.coerce.boolean().optional().describe("Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create"),
+      // Single-call login provisioning: when createSystemAccount is true, HR also
+      // creates the RBAC login User (needs roleId). password is OPTIONAL — if
+      // omitted HR generates a one-time password and returns it in
+      // response.data.systemAccount.temporaryPassword. Caller needs rbac:employee:CREATE.
+      createSystemAccount: z.coerce.boolean().optional().describe("Also provision the RBAC login User for this employee (requires roleId)."),
+      systemEmail: z.string().optional().describe("Login email for the system account (falls back to workEmail/personalEmail)."),
+      password: z.string().min(8).optional().describe("Login password. Omit → HR auto-generates a one-time password and returns it in systemAccount.temporaryPassword."),
+      roleId: z.union([z.string(), z.number()]).optional().describe("RBAC role id (integer) for the login. Required when createSystemAccount is true."),
+      permissions: z.array(z.object({ permissionId: z.union([z.string(), z.number()]), granted: z.boolean().optional() })).optional().describe("Optional per-permission overrides for the login."),
+      permissionMap: z.array(z.object({ permissionId: z.union([z.string(), z.number()]), granted: z.boolean().optional() })).optional().describe("Alias for permissions."),
     },
     withToolError(async (args) => {
       const { user, permissions, correlationId } = getCtx();
