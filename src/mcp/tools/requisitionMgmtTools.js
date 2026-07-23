@@ -45,7 +45,7 @@ const manageListShape = {
     .optional()
     .describe("Filter by requisition status"),
   priority: z.string().optional().describe("Filter by priority (Low|Medium|High|Urgent)"),
-  departmentId: z.coerce.number().int().optional().describe("Filter by department (BusinessUnit id)"),
+  departmentId: z.coerce.number().int().optional().describe("Filter by department (RBAC Department.id)"),
   sort: z.enum(["createdAt", "title", "priority", "status"]).optional(),
   order: z.enum(["asc", "desc"]).optional(),
 };

@@ -31,6 +31,7 @@ import { registerLeaveManagementTools } from "./tools/leaveManagementTools.js";
 import { registerOvertimeShiftTools } from "./tools/overtimeShiftTools.js";
 import { registerOvertimeManagerTools } from "./tools/overtimeManagerTools.js";
 import { registerShiftTemplateSwapTools } from "./tools/shiftTemplateSwapTools.js";
+import { registerOrgTools } from "./tools/orgTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -135,4 +136,5 @@ export function registerAllTools(server) {
   registerOvertimeShiftTools(server);
   registerOvertimeManagerTools(server);
   registerShiftTemplateSwapTools(server);
+  registerOrgTools(server);
 }

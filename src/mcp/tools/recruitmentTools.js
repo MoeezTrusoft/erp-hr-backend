@@ -169,7 +169,7 @@ export function registerRecruitmentTools(server) {
     {
       title: z.string().min(1).describe("Requisition title, e.g. 'Senior Backend Engineer'"),
       positionId: z.string().optional().describe("Position id (references Position); numeric string"),
-      departmentId: z.string().optional().describe("Department/BusinessUnit id; numeric string"),
+      departmentId: z.string().optional().describe("RBAC Department.id; numeric string"),
       employeeId: z.string().optional().describe("Employee id the requisition is linked to (numeric string); also a requester fallback"),
       requestedById: z.string().min(1).describe("Hiring manager employee id (references Employee, requestedById); numeric string. Required — the requisition has a NOT-NULL requester."),
       openings: z.number().int().positive().optional().describe("Number of open seats; defaults to 1"),
@@ -192,7 +192,7 @@ export function registerRecruitmentTools(server) {
       id: z.string().min(1).describe("JobRequisition id to update; numeric string"),
       title: z.string().optional().describe("Requisition title"),
       positionId: z.string().optional().describe("Position id (references Position); numeric string"),
-      departmentId: z.string().optional().describe("Department/BusinessUnit id; numeric string"),
+      departmentId: z.string().optional().describe("RBAC Department.id; numeric string"),
       employeeId: z.string().optional().describe("Linked employee id; numeric string"),
       requestedById: z.string().optional().describe("Hiring manager employee id (references Employee); numeric string"),
       openings: z.number().int().positive().optional().describe("Number of open seats"),

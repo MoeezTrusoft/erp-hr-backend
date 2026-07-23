@@ -8,6 +8,17 @@
 // Tenant-scoped by tenantId (RBAC Company.uuid; nullable → matches null rows,
 // consistent with applicationService). Singleton prisma per ARCH-01 §5.3–5.4.
 import prisma from "../lib/prisma.js";
+import { listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
+
+// Fetch the tenant's RBAC departments once per request and index by id, so each
+// card can show its requisition's department name. Fail-soft → empty map.
+async function buildDeptMap() {
+  try {
+    return new Map((await listDepartments()).map((d) => [d.id, d]));
+  } catch {
+    return new Map();
+  }
+}
 
 // Board stage order (left → right). Matches Application.stage enum values.
 export const PIPELINE_STAGES = [
@@ -39,7 +50,7 @@ function deriveYearsExperience(parsedResume) {
   return null;
 }
 
-function toCard(application) {
+function toCard(application, deptMap) {
   const candidate = application.candidate ?? {};
   const firstName = candidate.firstName ?? "";
   const lastName = candidate.lastName ?? "";
@@ -49,11 +60,18 @@ function toCard(application) {
     ? [{ type: "resume", mediaId: candidate.resumeMediaId }]
     : [];
 
+  // department comes from the card's requisition (JobRequisition.departmentId is
+  // an RBAC Department.id), resolved via the per-request RBAC dept map.
+  const departmentId = application.jobRequisition?.departmentId ?? null;
+  const department = departmentId != null && deptMap ? (deptMap.get(departmentId) ?? null) : null;
+
   return {
     applicationId: application.id,
     candidateId: application.candidateId,
     name,
     position: application.jobRequisition?.title ?? null,
+    departmentId,
+    department,
     yearsExperience: deriveYearsExperience(candidate.parsedResume),
     appliedDate: application.appliedAt,
     status: application.status,
@@ -113,12 +131,13 @@ export const getPipelineBoard = async ({
     orderBy: buildOrderBy(sort),
   });
 
+  const deptMap = await buildDeptMap();
   const byStage = new Map(PIPELINE_STAGES.map((stage) => [stage, []]));
   for (const application of applications) {
     const bucket = byStage.get(application.stage);
     // Only board known stages; unknown/legacy stages are skipped so the column
     // set stays fixed (applied…rejected).
-    if (bucket) bucket.push(toCard(application));
+    if (bucket) bucket.push(toCard(application, deptMap));
   }
 
   const columns = PIPELINE_STAGES.map((stage) => {
@@ -163,8 +182,9 @@ export const listPipelineCards = async ({
     prisma.application.count({ where }),
   ]);
 
+  const deptMap = await buildDeptMap();
   return {
-    items: rows.map(toCard),
+    items: rows.map((r) => toCard(r, deptMap)),
     total,
     page: safePage,
     pageSize: safePageSize,

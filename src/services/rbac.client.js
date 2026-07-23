@@ -226,3 +226,59 @@ export async function getUserByEmployeeId(employeeId) {
     return empty;
   }
 }
+
+// ─── RBAC ORG READS (departments live in RBAC, scoped to the tenant's Company) ──
+// These let HR read the authoritative org structure from RBAC over the internal
+// service plane. The acting user's identity headers are forwarded so RBAC scopes
+// the result to THAT operator's company (resolveActorTenant). Fail-soft: on any
+// error return an empty result so an HR read never breaks when RBAC is degraded.
+
+/**
+ * List the acting user's company's departments from RBAC.
+ * @returns {Promise<Array<{ id:number, name:string, description?:string|null }>>}
+ */
+export async function listDepartments() {
+  try {
+    const res = await rbacApi.request({
+      url: "/api/department",
+      method: "GET",
+      headers: withInternalAuth(actorIdentityHeaders()),
+    });
+    const body = res?.data;
+    const arr = body?.departments ?? body?.data ?? (Array.isArray(body) ? body : []);
+    return (Array.isArray(arr) ? arr : [])
+      .map((d) => ({ id: d.id, name: d.name, description: d.description ?? null }))
+      .filter((d) => d.id != null && d.name);
+  } catch (err) {
+    logger.warn(
+      { err: err?.message, status: err?.response?.status },
+      "rbac.client: listDepartments failed — department will be null"
+    );
+    return [];
+  }
+}
+
+/**
+ * Get one RBAC department by id (tenant-scoped by the acting user's company).
+ * @returns {Promise<{ id:number, name:string, description?:string|null }|null>}
+ */
+export async function getDepartmentById(id) {
+  if (id == null) return null;
+  try {
+    const res = await rbacApi.request({
+      url: `/api/department/${encodeURIComponent(id)}`,
+      method: "GET",
+      headers: withInternalAuth(actorIdentityHeaders()),
+    });
+    const body = res?.data;
+    const d = body?.department ?? body?.data ?? body ?? null;
+    if (!d || d.id == null) return null;
+    return { id: d.id, name: d.name, description: d.description ?? null };
+  } catch (err) {
+    logger.warn(
+      { err: err?.message, status: err?.response?.status, id },
+      "rbac.client: getDepartmentById failed — department will be null"
+    );
+    return null;
+  }
+}

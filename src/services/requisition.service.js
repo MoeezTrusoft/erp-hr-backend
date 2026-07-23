@@ -2,6 +2,7 @@ import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -41,15 +42,11 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
     notes: `Create Requisition"${createRequi.id}" Created successfully`,
   });
 
-  // JobRequisition.departmentId is a raw Int (references BusinessUnit.id, HR's
-  // department model) with no Prisma relation, so resolve it explicitly and
-  // attach `department` to the response for the caller/FE. Tenant-scoped.
-  const department = createRequi.departmentId
-    ? await prisma.businessUnit.findFirst({
-        where: scopedWhere(tenantId, { id: createRequi.departmentId }),
-        select: { id: true, name: true },
-      })
-    : null;
+  // Department is owned by RBAC (Company → Department); JobRequisition.departmentId
+  // is an RBAC Department.id. Resolve it over the internal service plane and
+  // attach `department`{id,name} to the response for the caller/FE. Fail-soft:
+  // department is null if RBAC is unavailable — the requisition still returns.
+  const department = await getDepartmentById(createRequi.departmentId);
 
   return { ...createRequi, department };
 };
