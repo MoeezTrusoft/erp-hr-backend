@@ -535,6 +535,10 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      // At least one media source is required; fail at the boundary.
+      if (!rest.mediaId && !rest.fileBase64) {
+        throw Object.assign(new Error("Provide either mediaId or fileBase64"), { status: 400 });
+      }
       const data = await mcpUploadEmployeeProfilePhoto(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_profile_photo_attach")
@@ -547,6 +551,10 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      // At least one media source is required; fail at the boundary.
+      if (!rest.mediaId && !rest.fileBase64) {
+        throw Object.assign(new Error("Provide either mediaId or fileBase64"), { status: 400 });
+      }
       const data = await mcpUploadEmployeeCoverPhoto(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_cover_photo_attach")
@@ -573,6 +581,11 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
+      // Conditional requirement: exactly one media source must be supplied.
+      // Fail at the boundary instead of deep in createEmployeeDocument.
+      if (!rest.mediaId && !rest.fileBase64) {
+        throw Object.assign(new Error("Provide either mediaId or fileBase64"), { status: 400 });
+      }
       const data = await mcpCreateEmployeeDocument(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_document_create")
@@ -591,7 +604,8 @@ export function registerEmployeeTools(server) {
       requirements: z.string().optional(),
       jobCode: z.string().optional(),
       isActive: z.coerce.boolean().optional(),
-      gradeLevelId: z.string().optional(),
+      // gradeLevelId removed: Position has no gradeLevelId column and the service
+      // never persisted it (declared-but-ignored). Re-add only with a real column.
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -668,7 +682,29 @@ export function registerEmployeeTools(server) {
     "Record an employee lifecycle event (promotion, transfer, termination, etc.)",
     {
       employeeId: z.string().min(1),
-      eventType: z.string().min(1).describe("e.g. PROMOTION, TRANSFER, TERMINATION"),
+      // LifecycleEventType enum. Friendly aliases (PROMOTION/TRANSFER/TERMINATION/
+      // RESIGNATION/HIRE) are normalised to the enum in the service.
+      eventType: z
+        .enum([
+          "HIRED",
+          "PROMOTED",
+          "TRANSFERRED",
+          "DEMOTED",
+          "LEAVE_OF_ABSENCE",
+          "RETURN_FROM_LEAVE",
+          "ROLE_CHANGED",
+          "SALARY_CHANGED",
+          "OFFBOARDING_STARTED",
+          "TERMINATED",
+          "RESIGNED",
+          // friendly aliases (normalised server-side)
+          "PROMOTION",
+          "TRANSFER",
+          "TERMINATION",
+          "RESIGNATION",
+          "HIRE",
+        ])
+        .describe("Lifecycle event type (HIRED, PROMOTED, TRANSFERRED, TERMINATED, …)"),
       effectiveDate: z.string().describe("ISO 8601 date"),
       notes: z.string().optional(),
     },

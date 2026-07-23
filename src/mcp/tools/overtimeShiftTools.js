@@ -28,7 +28,10 @@ export function registerOvertimeShiftTools(server) {
     "hr_overtime_shift_overview",
     "Current shift, this month's approved/pending overtime hours, and the monthly overtime limit",
     {
-      employeeId: z.union([z.number(), z.string()]).optional(),
+      employeeId: z
+        .union([z.number(), z.string()])
+        .optional()
+        .describe("Employee id (references Employee.id); omit for the tenant default"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -42,7 +45,10 @@ export function registerOvertimeShiftTools(server) {
     "hr_shift_schedule_week",
     "Current week's shift schedule (Mon..Sun) from the employee's work schedule; off days flagged",
     {
-      employeeId: z.union([z.number(), z.string()]).optional(),
+      employeeId: z
+        .union([z.number(), z.string()])
+        .optional()
+        .describe("Employee id (references Employee.id); omit for the tenant default"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -57,9 +63,12 @@ export function registerOvertimeShiftTools(server) {
     "Paginated overtime request history (tenant-scoped, newest first)",
     {
       employeeId: z.union([z.number(), z.string()]).optional(),
-      status: z.enum(["PENDING", "APPROVED", "REJECTED"]).optional(),
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
+      status: z
+        .enum(["PENDING", "APPROVED", "REJECTED"])
+        .optional()
+        .describe("Status filter — one of PENDING | APPROVED | REJECTED"),
+      page: z.coerce.number().int().positive().optional().describe("1-based page number; defaults to 1"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Rows per page; defaults to 20"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -73,11 +82,13 @@ export function registerOvertimeShiftTools(server) {
     "hr_overtime_request_create",
     "Create an overtime request (status PENDING)",
     {
-      employeeId: z.union([z.number(), z.string()]),
-      date: z.string().describe("ISO 8601 date/datetime"),
-      hours: z.coerce.number().positive(),
-      project: z.string().optional(),
-      reason: z.string().optional(),
+      employeeId: z
+        .union([z.number(), z.string()])
+        .describe("Employee id the overtime is for (references Employee.id)"),
+      date: z.string().describe("ISO 8601 date YYYY-MM-DD the overtime was worked"),
+      hours: z.coerce.number().positive().describe("Overtime hours worked; must be > 0"),
+      project: z.string().optional().describe("Optional project/cost-center label"),
+      reason: z.string().optional().describe("Optional justification note"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -91,8 +102,12 @@ export function registerOvertimeShiftTools(server) {
     "hr_overtime_request_decide",
     "Approve or reject an overtime request; sets decidedAt and approver to the caller",
     {
-      id: z.union([z.number(), z.string()]),
-      decision: z.enum(["approve", "reject"]),
+      id: z
+        .union([z.number(), z.string()])
+        .describe("OvertimeRequest id to decide (references OvertimeRequest.id)"),
+      decision: z
+        .enum(["approve", "reject"])
+        .describe("Decision — one of approve | reject"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

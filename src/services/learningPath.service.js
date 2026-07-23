@@ -5,10 +5,10 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // learning-path reads/writes fail-closed so tenant B never reads/mutates tenant
 // A's learning paths, path-courses, or path-enrollments.
 
-export const createPath = async ({ title, description, targetRole, categoryId, createdById, tenantId }) => {
+export const createPath = async ({ name, description, targetRole, categoryId, createdById, tenantId }) => {
     return prisma.learningPath.create({
         data: scopedData(tenantId, {
-            title,
+            name,
             description,
             targetRole,
             categoryId: categoryId ? Number(categoryId) : null,

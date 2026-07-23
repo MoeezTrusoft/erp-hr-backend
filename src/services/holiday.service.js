@@ -628,7 +628,7 @@ export const createHoliday = async (data,createdById) => {
   });
 
 await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(createdById),
     type: "Create", // 👈 changed from CREATE to UPDATE
     module: "Holiday ",
     result: "SUCCESS",

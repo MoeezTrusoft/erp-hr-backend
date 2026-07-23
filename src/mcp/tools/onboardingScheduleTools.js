@@ -36,7 +36,11 @@ export function registerOnboardingScheduleTools(server) {
   server.tool(
     "hr_onboarding_schedule_list",
     "List onboarding schedule sessions for a checklist (candidate, role, joining date, timing, assignee)",
-    { checklistId: z.union([z.string(), z.number()]) },
+    {
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("Onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+    },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
@@ -49,14 +53,16 @@ export function registerOnboardingScheduleTools(server) {
     "hr_onboarding_schedule_create",
     "Create an onboarding schedule session for a checklist",
     {
-      checklistId: z.union([z.string(), z.number()]),
-      title: z.string().min(1),
-      sessionDate: z.string().optional().describe("ISO 8601 date/datetime"),
-      fromTime: z.string().optional().describe('e.g. "09:00"'),
-      toTime: z.string().optional().describe('e.g. "10:00"'),
-      sessionType: z.string().optional().describe("orientation | training | meeting"),
-      location: z.string().optional().describe("room or link"),
-      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner"),
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+      title: z.string().min(1).describe("Session title"),
+      sessionDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD (or datetime)"),
+      fromTime: z.string().optional().describe('Start time, free-form "HH:mm" e.g. "09:00"'),
+      toTime: z.string().optional().describe('End time, free-form "HH:mm" e.g. "10:00"'),
+      sessionType: z.string().optional().describe("Free-form session type e.g. orientation | training | meeting"),
+      location: z.string().optional().describe("Room name or meeting link"),
+      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner (references Employee)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -70,14 +76,14 @@ export function registerOnboardingScheduleTools(server) {
     "hr_onboarding_schedule_update",
     "Update an onboarding schedule session",
     {
-      id: z.union([z.string(), z.number()]),
-      title: z.string().min(1).optional(),
-      sessionDate: z.string().optional().describe("ISO 8601 date/datetime"),
-      fromTime: z.string().optional(),
-      toTime: z.string().optional(),
-      sessionType: z.string().optional(),
-      location: z.string().optional(),
-      assigneeId: z.coerce.number().int().optional(),
+      id: z.union([z.string(), z.number()]).describe("Onboarding session id (references OnboardingSession; Number()-coerced)"),
+      title: z.string().min(1).optional().describe("Session title"),
+      sessionDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD (or datetime)"),
+      fromTime: z.string().optional().describe('Start time, free-form "HH:mm" e.g. "11:00"'),
+      toTime: z.string().optional().describe('End time, free-form "HH:mm" e.g. "12:00"'),
+      sessionType: z.string().optional().describe("Free-form session type e.g. orientation | training | meeting"),
+      location: z.string().optional().describe("Room name or meeting link"),
+      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner (references Employee)"),
     },
     withToolError(async ({ id, ...patch }) => {
       const { user, permissions } = getCtx();
@@ -92,7 +98,11 @@ export function registerOnboardingScheduleTools(server) {
   server.tool(
     "hr_onboarding_documents_list",
     "List onboarding documents for a checklist (name, type, uploaded date, sign status, mediaId)",
-    { checklistId: z.union([z.string(), z.number()]) },
+    {
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("Onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+    },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
@@ -105,12 +115,14 @@ export function registerOnboardingScheduleTools(server) {
     "hr_onboarding_document_add",
     "Attach an already-uploaded DAM document (by mediaId) to an onboarding checklist. Upload the media via the DAM upload tool first, then pass the resulting mediaId here.",
     {
-      checklistId: z.union([z.string(), z.number()]),
-      employeeId: z.coerce.number().int(),
-      title: z.string().min(1),
-      mediaId: z.coerce.number().int().describe("DAM media id of the already-uploaded file"),
-      category: z.string().optional(),
-      requiresSign: z.boolean().optional(),
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+      employeeId: z.coerce.number().int().describe("Employee id the document belongs to (references Employee)"),
+      title: z.string().min(1).describe("Document display name"),
+      mediaId: z.coerce.number().int().describe("DAM media id of the already-uploaded file (references DAM Media)"),
+      category: z.string().optional().describe("Free-form document category e.g. offer | contract | policy"),
+      requiresSign: z.boolean().optional().describe("Whether the document needs a signature; defaults to false"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

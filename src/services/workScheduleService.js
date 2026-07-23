@@ -130,7 +130,7 @@ export const updateWorkSchedule = async (id, data,updatedBy,tenantId) => {
     });
 
     await logAction({
-    employeeId: Number(createdBy),
+    employeeId: Number(updatedBy),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Work Scheduler ",
     result: "SUCCESS",
@@ -153,7 +153,7 @@ export const deleteWorkSchedule = async (id,deletedBy,tenantId) => {
         where: { id: parseInt(id) }
     });
   await logAction({
-    employeeId: Number(createdBy), 
+    employeeId: Number(deletedBy),
     type: "Deleted", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Work Scheduler ",
     result: "SUCCESS",

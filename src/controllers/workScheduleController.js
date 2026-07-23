@@ -21,7 +21,9 @@ const getWorkSchedules = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/work-schedules
 // @access  Private
 const createWorkSchedule = asyncHandler(async (req, res) => {
-    const employeeId = req.headers['employee-id'];
+    // Honor an explicit employeeId in the body (HR admin creating a schedule FOR
+    // an employee); fall back to the caller's session employee-id header.
+    const employeeId = req.body?.employeeId || req.headers['employee-id'];
     const scheduleData = {
         ...req.body,
         employeeId: employeeId

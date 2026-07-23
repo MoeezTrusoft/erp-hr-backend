@@ -1449,6 +1449,7 @@ model PayrollDeductionType {
   description String?
   type        PayElementType @default(DEDUCTION)
   rate        Float?
+  preTax      Boolean        @default(false) // whether the deduction is applied pre-tax (hr_payroll_deduction_type_create)
   created_at  DateTime       @default(now())
   updated_at  DateTime       @updatedAt
 
@@ -1739,7 +1740,7 @@ enum SurveyType {
 model OnboardingChecklist {
   id          Int              @id @default(autoincrement())
   employeeId  Int
-  title       String
+  title       String @default("Employee Onboarding")
   startDate   DateTime
   targetDate  DateTime?
   status      OnboardingStatus @default(NOT_STARTED)
@@ -1794,7 +1795,7 @@ model OnboardingTask {
   title        String
   description  String?
   stage        String?          // pre_joining | pre_boarding | first_week | equipment
-  assigneeType TaskAssigneeType
+  assigneeType TaskAssigneeType @default(HR)
   assigneeId   Int?
   dueDate      DateTime?
   completed    Boolean          @default(false)
@@ -1876,6 +1877,8 @@ enum InterviewType {
   BEHAVIORAL
   PANEL
   FINAL
+  ONSITE
+  VIDEO
 }
 
 enum InterviewStatus {
@@ -2409,7 +2412,7 @@ model DevelopmentPlan {
   employeeId   Int
   title        String
   description  String?
-  startDate    DateTime
+  startDate    DateTime @default(now())
   endDate      DateTime?
   reviewedById Int?
   created_at   DateTime  @default(now())

@@ -661,7 +661,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
   return create;
 };
 
-export const cancelLeaveRequest = async (id, employeeId) => {
+export const cancelLeaveRequest = async (id, employeeId, reason) => {
   const existingRequest = await prisma.leaveRequest.findUnique({
     where: { id }
   });
@@ -680,7 +680,9 @@ export const cancelLeaveRequest = async (id, employeeId) => {
 
   const update = await prisma.leaveRequest.update({
     where: { id },
-    data: { status: 'CANCELLED' },
+    // Persist the optional cancellation reason (LeaveRequest.reason) so a caller-
+    // supplied note is not silently dropped.
+    data: { status: 'CANCELLED', ...(reason != null && reason !== '' ? { reason } : {}) },
     include: {
       updatedBy: {
         select: {

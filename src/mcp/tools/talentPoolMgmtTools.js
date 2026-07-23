@@ -79,8 +79,8 @@ export function registerTalentPoolMgmtTools(server) {
     "hr_talent_pool_move_to_pipeline",
     "Move a talent-pool candidate into a job's pipeline by creating an application (stage applied, status open). No-op if the candidate already has an application for that requisition.",
     {
-      candidateId: z.union([z.string(), z.number()]),
-      jobRequisitionId: z.union([z.string(), z.number()]),
+      candidateId: z.coerce.number().int().positive().describe("Candidate id (references Candidate)"),
+      jobRequisitionId: z.coerce.number().int().positive().describe("Job requisition id (references JobRequisition)"),
     },
     withToolError(async ({ candidateId, jobRequisitionId }) => {
       const { user, permissions } = getCtx();
@@ -100,8 +100,8 @@ export function registerTalentPoolMgmtTools(server) {
     "hr_talent_pool_invite",
     "Invite a talent-pool candidate to apply: records an 'Invited to apply' note on the pool membership (or candidate). If a jobRequisitionId is given, also moves them into that job's pipeline.",
     {
-      candidateId: z.union([z.string(), z.number()]),
-      jobRequisitionId: z.union([z.string(), z.number()]).optional(),
+      candidateId: z.coerce.number().int().positive().describe("Candidate id (references Candidate)"),
+      jobRequisitionId: z.coerce.number().int().positive().optional().describe("Optional job requisition id (references JobRequisition); when given, also moves the candidate into that job's pipeline"),
     },
     withToolError(async ({ candidateId, jobRequisitionId }) => {
       const { user, permissions } = getCtx();

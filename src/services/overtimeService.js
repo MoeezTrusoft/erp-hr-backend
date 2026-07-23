@@ -47,7 +47,7 @@ export const updateOvertimeRule = async (id, data,updatedBy,tenantId) => {
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Over Time",
     result: "SUCCESS",
-    notes: `Over Time "${cid}" Updated successfully`,
+    notes: `Over Time "${id}" Updated successfully`,
   });
 
     return update;

@@ -14,12 +14,16 @@ export const createApplication = async ({
 }) => {
     const create = await prisma.application.create({
         data: {
-            candidateId,
-            jobRequisitionId,
+            // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
+            // numeric strings from the MCP boundary) to align with sibling services.
+            candidateId: Number(candidateId),
+            jobRequisitionId: Number(jobRequisitionId),
             stage,
             status,
             tenantId: tenantId ?? null,
-            createdById: Number(createdById) ?? null,
+            // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
+            // finite creator id, else null (createdById is nullable).
+            createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
         },
         include: {
             candidate: true,

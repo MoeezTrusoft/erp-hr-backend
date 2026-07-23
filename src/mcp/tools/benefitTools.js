@@ -49,8 +49,8 @@ export function registerBenefitTools(server) {
     "hr_benefit_plan_list",
     "List benefit plans (optionally filter by type/active)",
     {
-      type: z.enum(["HEALTH", "RETIREMENT", "ALLOWANCE", "OTHER"]).optional(),
-      active: z.boolean().optional(),
+      type: z.enum(["HEALTH", "RETIREMENT", "ALLOWANCE", "OTHER"]).optional().describe("Filter by benefit type — one of HEALTH | RETIREMENT | ALLOWANCE | OTHER (BenefitType enum)"),
+      active: z.boolean().optional().describe("Filter by active flag"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -63,7 +63,7 @@ export function registerBenefitTools(server) {
   server.tool(
     "hr_benefit_plan_get",
     "Get a single benefit plan by id",
-    { id: z.string().min(1) },
+    { id: z.string().min(1).describe("Benefit plan id (numeric string) — BenefitPlan.id") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", BENEFITS_KEY, user.isAdmin);
@@ -76,12 +76,12 @@ export function registerBenefitTools(server) {
     "hr_benefit_plan_create",
     "Create a benefit plan",
     {
-      name: z.string().min(1),
-      type: z.enum(["HEALTH", "RETIREMENT", "ALLOWANCE", "OTHER"]),
-      description: z.string().optional(),
-      employerContribution: z.number().nonnegative().optional(),
-      employeeContribution: z.number().nonnegative().optional(),
-      active: z.boolean().optional(),
+      name: z.string().min(1).describe("Benefit plan name — BenefitPlan.name"),
+      type: z.enum(["HEALTH", "RETIREMENT", "ALLOWANCE", "OTHER"]).describe("Benefit type — one of HEALTH | RETIREMENT | ALLOWANCE | OTHER (BenefitType enum)"),
+      description: z.string().optional().describe("Optional description — BenefitPlan.description"),
+      employerContribution: z.number().nonnegative().optional().describe("Employer contribution in major units (>= 0)"),
+      employeeContribution: z.number().nonnegative().optional().describe("Employee contribution in major units (>= 0)"),
+      active: z.boolean().optional().describe("Active flag (defaults to true when omitted)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -95,13 +95,13 @@ export function registerBenefitTools(server) {
     "hr_benefit_plan_update",
     "Update a benefit plan",
     {
-      id: z.string().min(1),
-      name: z.string().min(1).optional(),
-      type: z.enum(["HEALTH", "RETIREMENT", "ALLOWANCE", "OTHER"]).optional(),
-      description: z.string().optional(),
-      employerContribution: z.number().nonnegative().optional(),
-      employeeContribution: z.number().nonnegative().optional(),
-      active: z.boolean().optional(),
+      id: z.string().min(1).describe("Benefit plan id (numeric string) — BenefitPlan.id to update"),
+      name: z.string().min(1).optional().describe("Benefit plan name — BenefitPlan.name"),
+      type: z.enum(["HEALTH", "RETIREMENT", "ALLOWANCE", "OTHER"]).optional().describe("Benefit type — one of HEALTH | RETIREMENT | ALLOWANCE | OTHER (BenefitType enum)"),
+      description: z.string().optional().describe("Optional description — BenefitPlan.description"),
+      employerContribution: z.number().nonnegative().optional().describe("Employer contribution in major units (>= 0)"),
+      employeeContribution: z.number().nonnegative().optional().describe("Employee contribution in major units (>= 0)"),
+      active: z.boolean().optional().describe("Active flag"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -114,7 +114,7 @@ export function registerBenefitTools(server) {
   server.tool(
     "hr_benefit_plan_delete",
     "Delete a benefit plan",
-    { id: z.string().min(1) },
+    { id: z.string().min(1).describe("Benefit plan id (numeric string) — BenefitPlan.id to delete") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", BENEFITS_KEY, user.isAdmin);
@@ -128,9 +128,9 @@ export function registerBenefitTools(server) {
     "hr_benefit_enroll",
     "Enroll an employee into a benefit plan",
     {
-      employeeId: z.string().min(1),
-      benefitPlanId: z.string().min(1),
-      electedAmount: z.number().nonnegative().optional(),
+      employeeId: z.string().min(1).describe("Employee id (numeric string) — Employee.id to enroll"),
+      benefitPlanId: z.string().min(1).describe("Benefit plan id (numeric string) — BenefitPlan.id to enroll into"),
+      electedAmount: z.number().nonnegative().optional().describe("Elected contribution amount in major units (>= 0)"),
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -144,8 +144,8 @@ export function registerBenefitTools(server) {
     "hr_benefit_unenroll",
     "Unenroll an employee from a benefit plan",
     {
-      employeeId: z.string().min(1),
-      benefitPlanId: z.string().min(1),
+      employeeId: z.string().min(1).describe("Employee id (numeric string) — Employee.id to unenroll"),
+      benefitPlanId: z.string().min(1).describe("Benefit plan id (numeric string) — BenefitPlan.id to unenroll from"),
     },
     withToolError(async ({ employeeId, benefitPlanId }) => {
       const { user, permissions } = getCtx();
@@ -159,8 +159,8 @@ export function registerBenefitTools(server) {
     "hr_employee_benefits_list",
     "List an employee's benefit enrollments",
     {
-      employeeId: z.string().min(1),
-      status: z.string().optional(),
+      employeeId: z.string().min(1).describe("Employee id (numeric string) — Employee.id whose enrollments to list"),
+      status: z.enum(["ACTIVE", "WAIVED", "TERMINATED"]).optional().describe("Filter by enrollment status — one of ACTIVE | WAIVED | TERMINATED (EmployeeBenefitStatus enum); defaults to ACTIVE when omitted"),
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();

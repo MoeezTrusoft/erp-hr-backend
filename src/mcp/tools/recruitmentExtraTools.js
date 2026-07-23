@@ -29,12 +29,12 @@ export function registerRecruitmentExtraTools(server) {
     "hr_recruitment_cost_config_set",
     "Set/update the tenant's recruitment cost inputs. Missing fields keep their current value. Makes cost-per-hire real (analytics stops using illustrative constants).",
     {
-      period: z.string().optional(),
-      jobAds: z.number().optional(),
-      agencyFees: z.number().optional(),
-      tools: z.number().optional(),
-      other: z.number().optional(),
-      currency: z.string().optional(),
+      period: z.string().optional().describe('Cost period key; default "all"'),
+      jobAds: z.number().optional().describe("Job-advertising spend; rounded to int; default 0"),
+      agencyFees: z.number().optional().describe("Recruitment-agency fees; rounded to int; default 0"),
+      tools: z.number().optional().describe("Recruiting tools/software spend; rounded to int; default 0"),
+      other: z.number().optional().describe("Other recruitment costs; rounded to int; default 0"),
+      currency: z.string().optional().describe("ISO 4217 currency code; default PKR"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -48,9 +48,9 @@ export function registerRecruitmentExtraTools(server) {
     "hr_candidate_resume_upload",
     "Upload a resume file for a candidate to DAM and set the candidate's resumeMediaId. Accepts raw base64 or a data: URI.",
     {
-      candidateId: z.union([z.string(), z.number()]),
+      candidateId: z.union([z.string(), z.number()]).describe("Candidate id (references Candidate); numeric string or number"),
       fileBase64: z.string().describe("Raw base64 or data: URI of the resume (PDF/DOCX)"),
-      fileName: z.string().optional(),
+      fileName: z.string().optional().describe("Resume filename; defaults to resume-<candidateId>.pdf"),
     },
     withToolError(async ({ candidateId, fileBase64, fileName }) => {
       const { user, permissions } = getCtx();

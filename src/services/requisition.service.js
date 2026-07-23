@@ -9,7 +9,7 @@ import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimi
 
 // ✅ Create a new requisition
 export const createRequisition = async (data, requestedBy, tenantId) => {
-  const { title, description, departmentId, positionId, employeeId, openings, status } = data;
+  const { title, description, departmentId, positionId, employeeId, openings, status, priority } = data;
   if (!title) throw new Error("Title  are required");
   const requesterId = requestedBy || employeeId;
   if (!requesterId) throw new Error("Hiring manager is required");
@@ -23,6 +23,7 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
       requestedById: Number(requesterId),
       employeeId: employeeId ? Number(employeeId) : null,
       openings: openings ? Number(openings) : 1,
+      priority: priority ?? undefined, // persisted (JobRequisition.priority String?): Low | Medium | High | Urgent
       status: status || "DRAFT",
     }),
     include: {
@@ -169,7 +170,7 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
 
 // ✅ Update requisition
 export const updateRequisition = async (id, data, updatedBy, tenantId) => {
-  const { title, description, departmentId, positionId, employeeId, openings, status } = data;
+  const { title, description, departmentId, positionId, employeeId, openings, status, priority, requestedById } = data;
 
   // API-2 — optimistic-concurrency guard (opt-in via expectedVersion; threaded
   // through the MCP body / REST payload). Absent ⇒ no reject.
@@ -185,7 +186,9 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   if (departmentId !== undefined) updateData.departmentId = departmentId ? Number(departmentId) : null;
   if (positionId !== undefined) updateData.positionId = positionId ? Number(positionId) : null;
   if (employeeId !== undefined) updateData.employeeId = employeeId ? Number(employeeId) : null;
+  if (requestedById) updateData.requestedById = Number(requestedById); // NOT-NULL FK — only reassign when a truthy id is supplied
   if (openings !== undefined) updateData.openings = openings ? Number(openings) : undefined;
+  if (priority !== undefined) updateData.priority = priority; // JobRequisition.priority String?: Low | Medium | High | Urgent
   if (status !== undefined) updateData.status = status;
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.

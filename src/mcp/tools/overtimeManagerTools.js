@@ -42,8 +42,8 @@ export function registerOvertimeManagerTools(server) {
     "hr_shift_roster_week",
     "Weekly team shift roster (7 days). One row per employee with a per-day shift; days with no assignment show as off. Optional department filter",
     {
-      department: z.string().optional(),
-      weekStart: z.string().optional().describe("ISO date; defaults to the current week (Monday)"),
+      department: z.string().optional().describe("Department name filter (businessUnit.name); case-insensitive"),
+      weekStart: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; defaults to the current week (Monday)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -81,9 +81,9 @@ export function registerOvertimeManagerTools(server) {
     "hr_ot_pending_approvals_list",
     "Paginated list of PENDING overtime requests (manager approval queue). Optional department filter",
     {
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
-      department: z.string().optional(),
+      page: z.coerce.number().int().positive().optional().describe("1-based page number; defaults to 1"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Rows per page; defaults to 20"),
+      department: z.string().optional().describe("Department name filter (businessUnit.name); case-insensitive"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -100,16 +100,28 @@ export function registerOvertimeManagerTools(server) {
       assignments: z
         .array(
           z.object({
-            employeeId: z.union([z.number(), z.string()]),
-            date: z.string().describe("ISO 8601 date/datetime"),
-            shiftType: z.enum(["morning", "evening", "night"]),
-            workMode: z.enum(["remote", "hybrid", "onsite"]),
-            fromTime: z.string().optional(),
-            toTime: z.string().optional(),
-            templateId: z.union([z.number(), z.string()]).optional(),
+            employeeId: z
+              .union([z.number(), z.string()])
+              .describe("Employee id (references Employee.id)"),
+            date: z.string().describe("ISO 8601 date YYYY-MM-DD"),
+            shiftType: z
+              .enum(["morning", "evening", "night"])
+              .optional()
+              .describe("Shift band — one of morning | evening | night; defaults to morning"),
+            workMode: z
+              .enum(["remote", "hybrid", "onsite"])
+              .optional()
+              .describe("Work mode — one of remote | hybrid | onsite; defaults to onsite"),
+            fromTime: z.string().optional().describe('Start time, e.g. "09:00"'),
+            toTime: z.string().optional().describe('End time, e.g. "17:00"'),
+            templateId: z
+              .union([z.number(), z.string()])
+              .optional()
+              .describe("Optional ShiftTemplate id to source the shift from"),
           })
         )
-        .min(1),
+        .min(1)
+        .describe("Non-empty array of shift assignments to bulk-create"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

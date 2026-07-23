@@ -22,7 +22,6 @@ export const createGoalService = async (data, createdBy, tenantId) => {
       end_date: new Date(end_date),
       target_value: target_value ? Number(target_value) : null,
       status: "PENDING",
-      employeeId: number(createdBy),
     }),
      employee: {
         select: {

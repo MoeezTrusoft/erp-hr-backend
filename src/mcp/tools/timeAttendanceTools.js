@@ -40,15 +40,15 @@ export function registerTimeAttendanceTools(server) {
     "hr_attendance_records_dashboard",
     "Paginated attendance records for the dashboard grid (worked/overtime/target hours, pending flag). Supports search, status/department/date filters, and sort.",
     {
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
+      page: z.coerce.number().int().positive().optional().describe("1-based page number"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Rows per page"),
       q: z.string().optional().describe("Search by employee name"),
-      status: z.enum(["PRESENT", "ABSENT", "LATE"]).optional(),
+      status: z.enum(["PRESENT", "ABSENT", "LATE"]).optional().describe("enum StatusAttendance — one of PRESENT | ABSENT | LATE"),
       department: z.string().optional().describe("Business unit name"),
-      from: z.string().optional().describe("YYYY-MM-DD date filter start"),
-      to: z.string().optional().describe("YYYY-MM-DD date filter end"),
-      sort: z.enum(["date", "status", "workedHours"]).optional(),
-      order: z.enum(["asc", "desc"]).optional(),
+      from: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; date filter start"),
+      to: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; date filter end"),
+      sort: z.enum(["date", "status", "workedHours"]).optional().describe("Sort key — one of date | status | workedHours"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -62,14 +62,14 @@ export function registerTimeAttendanceTools(server) {
     "hr_attendance_dashboard_export",
     "Export attendance records (csv|pdf|png) with the same filters as the records grid. Returns base64 file content.",
     {
-      format: z.enum(["csv", "pdf", "png"]),
-      q: z.string().optional(),
-      status: z.enum(["PRESENT", "ABSENT", "LATE"]).optional(),
-      department: z.string().optional(),
-      from: z.string().optional(),
-      to: z.string().optional(),
-      sort: z.enum(["date", "status", "workedHours"]).optional(),
-      order: z.enum(["asc", "desc"]).optional(),
+      format: z.enum(["csv", "pdf", "png"]).describe("Export format — one of csv | pdf | png"),
+      q: z.string().optional().describe("Search by employee name"),
+      status: z.enum(["PRESENT", "ABSENT", "LATE"]).optional().describe("enum StatusAttendance — one of PRESENT | ABSENT | LATE"),
+      department: z.string().optional().describe("Business unit name"),
+      from: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; date filter start"),
+      to: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; date filter end"),
+      sort: z.enum(["date", "status", "workedHours"]).optional().describe("Sort key — one of date | status | workedHours"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -83,9 +83,9 @@ export function registerTimeAttendanceTools(server) {
     "hr_attendance_pending_approvals",
     "List time & attendance items awaiting approval (best-effort from SUBMITTED timesheets): employee, request name, date, time hours, reason.",
     {
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
-      order: z.enum(["asc", "desc"]).optional(),
+      page: z.coerce.number().int().positive().optional().describe("1-based page number"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Rows per page"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

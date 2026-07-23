@@ -75,6 +75,13 @@ export const createOffboarding = async ({
 }) => {
   const empId = Number(employeeId);
 
+  // OffboardingChecklist.exitDate is NOT NULL — fail fast instead of letting a
+  // null insert Prisma-reject deep in the tx. The tool schema requires
+  // lastWorkingDate, so this only trips on a direct/legacy caller.
+  if (!exitDate) {
+    throw new Error("exitDate (lastWorkingDate) is required");
+  }
+
   // Phase 3: emit terminated lifecycle event in the SAME tx as checklist create.
   const employee = await prisma.employee.findFirst({
     where: scopedEmployeeWhere(tenantId, { id: empId }),

@@ -58,11 +58,12 @@ const normalizeTaskUpdate = (data = {}) => {
 
 // ── Checklists ──────────────────────────────────────────────────────────────
 
-export const createChecklist = async ({ employeeId, title, startDate, targetCompletionDate, targetDate, notes, tenantId }) => {
+export const createChecklist = async ({ employeeId, title, templateId, template, startDate, targetCompletionDate, targetDate, notes, tenantId }) => {
     return prisma.onboardingChecklist.create({
         data: scopedData(tenantId, {
             employeeId: Number(employeeId),
             title: title || "Employee Onboarding",
+            template: templateId || template || null,
             startDate: startDate ? new Date(startDate) : new Date(),
             targetDate: targetCompletionDate || targetDate ? new Date(targetCompletionDate || targetDate) : null,
             notes,
@@ -188,12 +189,16 @@ export const listDocuments = async (checklistId, tenantId) => {
     });
 };
 
-export const signDocument = async (docId, tenantId) => {
+export const signDocument = async (docId, { signedBy, tenantId } = {}) => {
     const existing = await prisma.onboardingDocument.findFirst({ where: scopedWhere(tenantId, { id: Number(docId) }) });
     if (!existing) throw new Error("Document not found");
+    const signerId = signedBy !== undefined && signedBy !== null && String(signedBy) !== "" ? Number(signedBy) : null;
     return prisma.onboardingDocument.update({
         where: { id: Number(docId) },
-        data: { signedAt: new Date() },
+        data: {
+            signedAt: new Date(),
+            ...(signerId != null && !Number.isNaN(signerId) ? { signedByEmpId: signerId } : {}),
+        },
     });
 };
 

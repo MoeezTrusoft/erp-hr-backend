@@ -6,15 +6,30 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // stamped on creates, fail-closed so tenant B never reads or writes tenant A's
 // employee lifecycle history.
 
+// Friendly aliases → LifecycleEventType enum, so callers can send PROMOTION etc.
+const LIFECYCLE_EVENT_ALIASES = {
+    PROMOTION: "PROMOTED",
+    TRANSFER: "TRANSFERRED",
+    TERMINATION: "TERMINATED",
+    RESIGNATION: "RESIGNED",
+    HIRE: "HIRED",
+};
+
+const normalizeLifecycleEventType = (value) => {
+    if (!value) return value;
+    const upper = String(value).trim().toUpperCase();
+    return LIFECYCLE_EVENT_ALIASES[upper] || upper;
+};
+
 export const logEvent = async ({ employeeId, type, effectiveDate, notes, performedById, metadata, tenantId }) => {
     return prisma.employeeLifecycleEvent.create({
         data: scopedData(tenantId, {
             employeeId: Number(employeeId),
-            eventType,
+            eventType: normalizeLifecycleEventType(type),
             effectiveDate: effectiveDate ? new Date(effectiveDate) : new Date(),
-            description,
-            performedById: performedById ? Number(performedById) : null,
-            metadata: metadata || {},
+            description: notes ?? null,
+            // Prisma column is createdById (there is no performedById/metadata column).
+            createdById: performedById ? Number(performedById) : null,
         }),
     });
 };

@@ -110,7 +110,7 @@ export const listDocuments = async (req, res) => {
 
 export const signDocument = async (req, res) => {
     try {
-        const result = await svc.signDocument(req.params.docId);
+        const result = await svc.signDocument(req.params.docId, { signedBy: req.body?.signedBy });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
         res.status(400).json({ success: false, message: e.message });

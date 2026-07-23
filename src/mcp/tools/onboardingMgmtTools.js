@@ -18,7 +18,10 @@ export function registerOnboardingMgmtTools(server) {
       page: z.coerce.number().int().min(1).default(1),
       pageSize: z.coerce.number().int().min(1).max(100).default(10),
       q: z.string().optional().describe("Search: employee name or checklist title"),
-      status: z.enum(["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "OVERDUE"]).optional(),
+      status: z
+        .enum(["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "OVERDUE"])
+        .optional()
+        .describe("OnboardingStatus filter — one of NOT_STARTED | IN_PROGRESS | COMPLETED | OVERDUE"),
       sort: z.string().optional().describe("startDate | targetDate | status | title | completedAt"),
       order: z.enum(["asc", "desc"]).optional(),
     },

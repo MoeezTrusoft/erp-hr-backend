@@ -44,7 +44,7 @@ function resolveStatus(checkInTs, providedStatus) {
 }
 
 export const createAttendanceService = async (data) => {
-  const { employeeId, date, check_in, status, timestamp, tenantId } = data;
+  const { employeeId, date, check_in, status, timestamp, notes, tenantId } = data;
 
   if (!employeeId) throw new Error("employeeId is required");
 
@@ -85,6 +85,7 @@ export const createAttendanceService = async (data) => {
             ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
             : parsedCheckIn,
           status: computedStatus,
+          ...(notes !== undefined ? { remarks: notes } : {}),
         },
       })
       : await tx.attendance.create({
@@ -93,6 +94,7 @@ export const createAttendanceService = async (data) => {
           date: start,
           check_in: parsedCheckIn,
           status: computedStatus,
+          ...(notes !== undefined ? { remarks: notes } : {}),
         }),
       });
 

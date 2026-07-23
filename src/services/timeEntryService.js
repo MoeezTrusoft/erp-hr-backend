@@ -1,5 +1,6 @@
 import prisma from "../lib/prisma.js";
 import { AppError } from '../utils/AppError.js';
+import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args object /
@@ -143,10 +144,10 @@ export const deleteTimeEntry = async (id, userId, tenantId) => {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
 
-    const deleted =  prisma.timeEntry.delete({
+    const deleted =  await prisma.timeEntry.delete({
         where: { id: parseInt(id) }
     });
-    
+
       await logAction({
     employeeId: Number(userId),
     type: "Deleted", // 👈 changed from CREATE to UPDATE

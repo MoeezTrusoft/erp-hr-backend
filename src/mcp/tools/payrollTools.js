@@ -118,9 +118,10 @@ export function registerPayrollTools(server) {
     "hr_payroll_run_create",
     "Create a new payroll run",
     {
-      period: z.string().describe("Payroll period (e.g. 2024-01)"),
-      payGroupId: z.string().optional(),
-      notes: z.string().optional(),
+      periodStart: z.string().describe("Payroll period start — ISO 8601 date YYYY-MM-DD (PayrollRun.periodStart)"),
+      periodEnd: z.string().describe("Payroll period end — ISO 8601 date YYYY-MM-DD (PayrollRun.periodEnd)"),
+      countryCode: z.string().length(2).describe("ISO 3166-1 alpha-2 country code (2 letters, e.g. US, PK) — PayrollRun.countryCode"),
+      currencyCode: z.string().length(3).describe("ISO 4217 currency code (3 letters, e.g. USD, PKR) — PayrollRun.currencyCode"),
       // API-3: optional idempotency key. Retrying a payroll-run create with the
       // same key replays the first run instead of creating a duplicate run.
       idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this payroll run create without producing a duplicate."),
@@ -154,7 +155,7 @@ export function registerPayrollTools(server) {
   server.tool(
     "hr_payroll_run_finalize",
     "Finalize a processed payroll run",
-    { id: z.string().min(1) },
+    { id: z.string().min(1).describe("Payroll run id (numeric string) — PayrollRun.id to finalize") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
@@ -166,7 +167,7 @@ export function registerPayrollTools(server) {
   server.tool(
     "hr_payroll_run_delete",
     "Cancel/delete a payroll run",
-    { id: z.string().min(1) },
+    { id: z.string().min(1).describe("Payroll run id (numeric string) — PayrollRun.id to cancel/delete") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:payroll", user.isAdmin);
@@ -191,11 +192,11 @@ export function registerPayrollTools(server) {
     "hr_payroll_employment_terms_create",
     "Create employment terms (salary, benefits) for an employee",
     {
-      employeeId: z.string().min(1),
-      baseSalary: z.number().positive(),
-      currency: z.string().default("USD"),
-      effectiveDate: z.string().describe("ISO 8601 date"),
-      payFrequency: z.enum(["MONTHLY", "BI_WEEKLY", "WEEKLY"]).optional(),
+      employeeId: z.string().min(1).describe("Employee id (numeric string) — Employee.id the terms belong to"),
+      baseSalary: z.number().positive().describe("Base salary in major units (C4-encrypted at rest) — EmploymentTerms.baseSalary"),
+      currency: z.string().default("USD").describe("ISO 4217 currency code (default USD) — EmploymentTerms.currency"),
+      effectiveFrom: z.string().describe("Effective-from date — ISO 8601 date YYYY-MM-DD (EmploymentTerms.effectiveFrom)"),
+      payFrequency: z.enum(["WEEKLY", "BI_WEEKLY", "SEMI_MONTHLY", "MONTHLY"]).describe("Pay frequency — one of WEEKLY | BI_WEEKLY | SEMI_MONTHLY | MONTHLY (PayFrequency enum)"),
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -207,11 +208,15 @@ export function registerPayrollTools(server) {
 
   server.tool(
     "hr_payroll_assignment_create",
-    "Assign an employee to a payroll group",
+    "Assign a recurring earning/deduction line to an employee",
     {
-      employeeId: z.string().min(1),
-      payGroupId: z.string().min(1),
-      effectiveDate: z.string().describe("ISO 8601 date"),
+      employeeId: z.string().min(1).describe("Employee id (numeric string) — Employee.id the assignment belongs to"),
+      earningTypeId: z.coerce.number().int().positive().optional().describe("PayrollEarningType.id this line pays (mutually exclusive with deductionTypeId)"),
+      deductionTypeId: z.coerce.number().int().positive().optional().describe("PayrollDeductionType.id this line deducts (mutually exclusive with earningTypeId)"),
+      amount: z.number().optional().describe("Fixed amount in major units (PayrollAssignment.amount)"),
+      rate: z.number().optional().describe("Rate/multiplier applied instead of a fixed amount (PayrollAssignment.rate)"),
+      effectiveFrom: z.string().describe("Effective-from date — ISO 8601 date YYYY-MM-DD (PayrollAssignment.effectiveFrom)"),
+      effectiveTo: z.string().optional().describe("Effective-to date — ISO 8601 date YYYY-MM-DD; open-ended if omitted (PayrollAssignment.effectiveTo)"),
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -225,10 +230,10 @@ export function registerPayrollTools(server) {
     "hr_payroll_earning_type_create",
     "Create a new earning type",
     {
-      name: z.string().min(1),
-      code: z.string().min(1),
-      taxable: z.boolean().optional(),
-      description: z.string().optional(),
+      name: z.string().min(1).describe("Earning type display name — PayrollEarningType.name"),
+      code: z.string().min(1).describe("Unique earning code within the tenant — PayrollEarningType.code"),
+      isTaxable: z.boolean().optional().describe("Whether this earning is taxable (defaults to true) — PayrollEarningType.isTaxable"),
+      description: z.string().optional().describe("Optional description — PayrollEarningType.description"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -242,10 +247,10 @@ export function registerPayrollTools(server) {
     "hr_payroll_deduction_type_create",
     "Create a new deduction type",
     {
-      name: z.string().min(1),
-      code: z.string().min(1),
-      preTax: z.boolean().optional(),
-      description: z.string().optional(),
+      name: z.string().min(1).describe("Deduction type display name — PayrollDeductionType.name"),
+      code: z.string().min(1).describe("Unique deduction code within the tenant — PayrollDeductionType.code"),
+      preTax: z.boolean().optional().describe("Whether the deduction is applied pre-tax (defaults to false) — PayrollDeductionType.preTax (pending migration)"),
+      description: z.string().optional().describe("Optional description — PayrollDeductionType.description"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

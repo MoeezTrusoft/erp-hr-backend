@@ -35,14 +35,17 @@ export function registerOnboardingDashboardTools(server) {
     "hr_onboarding_dashboard_get",
     "Onboarding dashboard: returns { summary:{ total, completed, inProgress, notStarted, overdue }, items:[{ id, employeeId, newHireName, role, department, startDate, stage, currentStage, manager, progress, members, readyToCollect, status }], page, pageSize, total, totalPages, sort, order, filters }. Supports page/pageSize, q (name/title), status, department or businessUnitId, and sort (startDate|status|progress).",
     {
-      page: z.number().int().positive().optional(),
-      pageSize: z.number().int().positive().optional(),
+      page: z.number().int().positive().optional().describe("1-based page number (default 1)"),
+      pageSize: z.number().int().positive().optional().describe("Rows per page (default 20)"),
       q: z.string().optional().describe("Search by new-hire name or checklist title"),
-      status: z.string().optional().describe("NOT_STARTED|IN_PROGRESS|COMPLETED|OVERDUE"),
+      status: z
+        .string()
+        .optional()
+        .describe("OnboardingStatus filter — one of NOT_STARTED | IN_PROGRESS | COMPLETED | OVERDUE"),
       department: z.string().optional().describe("Business unit name filter"),
-      businessUnitId: z.union([z.number(), z.string()]).optional(),
-      sort: z.enum(["startDate", "status", "progress"]).optional(),
-      order: z.enum(["asc", "desc"]).optional(),
+      businessUnitId: z.union([z.number(), z.string()]).optional().describe("BusinessUnit id filter (alternative to department name)"),
+      sort: z.enum(["startDate", "status", "progress"]).optional().describe("Sort field — one of startDate | status | progress (default startDate)"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc (default desc)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -56,16 +59,22 @@ export function registerOnboardingDashboardTools(server) {
     "hr_onboarding_add_new_hire",
     "Add a new hire to the onboarding dashboard: creates an OnboardingChecklist (status NOT_STARTED, stage pre_joining) and seeds default tasks for the chosen template. Returns the created checklist with employee + tasks.",
     {
-      employeeId: z.union([z.number(), z.string()]).describe("Employee id"),
-      startDate: z.string().describe("ISO 8601 date"),
-      department: z.string().optional(),
-      managerId: z.union([z.number(), z.string()]).optional(),
-      template: z.string().optional().describe("default|engineering|sales (drives seeded tasks)"),
+      employeeId: z.union([z.number(), z.string()]).describe("Employee id of the new hire (Number()-coerced server-side)"),
+      startDate: z.string().describe("ISO 8601 date YYYY-MM-DD — the new hire's start date"),
+      department: z.string().optional().describe("Department hint echoed back in _hints (not persisted on the checklist)"),
+      managerId: z.union([z.number(), z.string()]).optional().describe("Manager Employee id hint echoed back in _hints (not persisted)"),
+      template: z.string().optional().describe("Seed template — one of default | engineering | sales (drives the seeded task set)"),
       members: z
-        .array(z.object({ employeeId: z.union([z.number(), z.string()]), name: z.string().optional(), role: z.string().optional() }))
+        .array(
+          z.object({
+            employeeId: z.union([z.number(), z.string()]).describe("Team member Employee id"),
+            name: z.string().optional().describe("Display name"),
+            role: z.string().optional().describe("Team member role, e.g. MANAGER"),
+          })
+        )
         .optional()
         .describe("Assigned onboarding team members"),
-      title: z.string().optional(),
+      title: z.string().optional().describe("Checklist title (service defaults to \"Onboarding\" when omitted)"),
       // API-3: optional idempotency key. Retrying an add-new-hire with the same
       // key replays the first checklist instead of creating a duplicate.
       idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this onboarding create without producing a duplicate checklist."),
@@ -88,13 +97,16 @@ export function registerOnboardingDashboardTools(server) {
     "hr_onboarding_export",
     "Export the onboarding dashboard list as csv/pdf/png. Columns: New Hire, Role, Department, Manager, Start Date, Stage, Progress, Status. Accepts the same filters as the dashboard (q/status/department/businessUnitId/sort/order). Returns { format, fileName, mimeType, count, base64 }.",
     {
-      format: z.enum(["csv", "pdf", "png"]).default("csv"),
-      q: z.string().optional(),
-      status: z.string().optional(),
-      department: z.string().optional(),
-      businessUnitId: z.union([z.number(), z.string()]).optional(),
-      sort: z.enum(["startDate", "status", "progress"]).optional(),
-      order: z.enum(["asc", "desc"]).optional(),
+      format: z.enum(["csv", "pdf", "png"]).default("csv").describe("Export format — one of csv | pdf | png (default csv)"),
+      q: z.string().optional().describe("Search by new-hire name or checklist title"),
+      status: z
+        .string()
+        .optional()
+        .describe("OnboardingStatus filter — one of NOT_STARTED | IN_PROGRESS | COMPLETED | OVERDUE"),
+      department: z.string().optional().describe("Business unit name filter"),
+      businessUnitId: z.union([z.number(), z.string()]).optional().describe("BusinessUnit id filter (alternative to department name)"),
+      sort: z.enum(["startDate", "status", "progress"]).optional().describe("Sort field — one of startDate | status | progress (default startDate)"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc (default desc)"),
     },
     withToolError(async ({ format, ...filters }) => {
       const { user, permissions } = getCtx();
@@ -121,7 +133,7 @@ export function registerOnboardingDashboardTools(server) {
     "hr_onboarding_quick_progress",
     "Quick-progress popover for one onboarding checklist: returns { id, newHireName, progress, tasksTotal, tasksDone, byStage:[{ stage, total, done }] }.",
     {
-      id: z.union([z.number(), z.string()]).describe("Onboarding checklist id"),
+      id: z.union([z.number(), z.string()]).describe("OnboardingChecklist id"),
     },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();

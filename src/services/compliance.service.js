@@ -42,7 +42,10 @@ export const listChecklistItems = async (checklistId, tenantId) => {
 export const updateItem = async (id, data, tenantId) => {
   const existing = await prisma.complianceItem.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Compliance item not found");
-  const payload = { ...data };
+  // Only whitelist real columns; `evidence` (a free-text note) maps to ComplianceItem.notes.
+  const payload = {};
+  if (data.status !== undefined) payload.status = data.status;
+  if (data.evidence !== undefined) payload.notes = data.evidence;
   if (data.status === "COMPLETED") payload.completedAt = new Date();
   return prisma.complianceItem.update({ where: { id: Number(id) }, data: payload });
 };

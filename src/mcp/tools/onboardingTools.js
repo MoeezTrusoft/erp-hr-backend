@@ -52,9 +52,14 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_checklist_create",
     "Create an onboarding checklist for a new employee",
     {
-      employeeId: z.string().min(1),
-      templateId: z.string().optional().describe("Use a predefined template"),
-      startDate: z.string().optional().describe("ISO 8601 date"),
+      employeeId: z.string().min(1).describe("Employee id this checklist is for (references Employee; Number()-coerced)"),
+      title: z.string().min(1).optional().describe("Checklist title; defaults to 'Employee Onboarding' when omitted"),
+      templateId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Onboarding template name; persisted to OnboardingChecklist.template (seeds no tasks)"),
+      startDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; defaults to today when omitted"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -68,9 +73,12 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_checklist_update",
     "Update an onboarding checklist",
     {
-      id: z.string().min(1),
-      status: z.string().optional(),
-      notes: z.string().optional(),
+      id: z.string().min(1).describe("Onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+      status: z
+        .enum(["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "OVERDUE"])
+        .optional()
+        .describe("OnboardingStatus — one of NOT_STARTED | IN_PROGRESS | COMPLETED | OVERDUE"),
+      notes: z.string().optional().describe("Free-text checklist notes"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -84,11 +92,15 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_task_add",
     "Add a task to an onboarding checklist",
     {
-      checklistId: z.string().min(1),
-      title: z.string().min(1),
-      description: z.string().optional(),
-      dueDate: z.string().optional().describe("ISO 8601 date"),
-      assigneeId: z.string().optional(),
+      checklistId: z.string().min(1).describe("Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+      title: z.string().min(1).describe("Task title"),
+      description: z.string().optional().describe("Task description"),
+      assigneeType: z
+        .enum(["HR", "MANAGER", "NEW_HIRE", "IT"])
+        .optional()
+        .describe("TaskAssigneeType — one of HR | MANAGER | NEW_HIRE | IT; defaults to HR when omitted"),
+      dueDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD"),
+      assigneeId: z.string().optional().describe("Employee id of the task assignee (references Employee; Number()-coerced)"),
     },
     withToolError(async ({ checklistId, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -102,9 +114,12 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_task_update",
     "Update an onboarding task (mark complete, update notes)",
     {
-      taskId: z.string().min(1),
-      status: z.string().optional().describe("e.g. PENDING, IN_PROGRESS, COMPLETED"),
-      notes: z.string().optional(),
+      taskId: z.string().min(1).describe("Onboarding task id (references OnboardingTask; Number()-coerced)"),
+      status: z
+        .enum(["PENDING", "IN_PROGRESS", "COMPLETED"])
+        .optional()
+        .describe("Virtual status mapped to the `completed` boolean: COMPLETED → completed=true; PENDING/IN_PROGRESS → completed=false"),
+      notes: z.string().optional().describe("Free-text notes; written to the task `description` column"),
     },
     withToolError(async ({ taskId, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -130,8 +145,11 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_document_sign",
     "Mark an onboarding document as signed",
     {
-      docId: z.string().min(1),
-      signedBy: z.string().optional(),
+      docId: z.string().min(1).describe("Onboarding document id (references OnboardingDocument; Number()-coerced)"),
+      signedBy: z
+        .string()
+        .optional()
+        .describe("Employee id of the signer (references Employee; persisted to OnboardingDocument.signedByEmpId)"),
     },
     withToolError(async ({ docId, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -145,8 +163,8 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_buddy_assign",
     "Assign an onboarding buddy to a new employee",
     {
-      checklistId: z.string().min(1),
-      buddyId: z.string().min(1).describe("Employee ID of the buddy"),
+      checklistId: z.string().min(1).describe("Onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+      buddyId: z.string().min(1).describe("Employee id of the buddy (references Employee; Number()-coerced)"),
     },
     withToolError(async ({ checklistId, buddyId }) => {
       const { user, permissions } = getCtx();
@@ -160,9 +178,11 @@ export function registerOnboardingTools(server) {
     "hr_onboarding_survey_submit",
     "Submit a 30/60/90-day onboarding survey",
     {
-      employeeId: z.string().min(1),
-      surveyType: z.enum(["30_DAY", "60_DAY", "90_DAY"]),
-      responses: z.record(z.string(), z.unknown()).describe("Survey question responses"),
+      employeeId: z.string().min(1).describe("Employee id whose latest checklist the survey binds to (references Employee; Number()-coerced)"),
+      surveyType: z
+        .enum(["30_DAY", "60_DAY", "90_DAY"])
+        .describe("Survey milestone (wire form) — one of 30_DAY | 60_DAY | 90_DAY; stored as SurveyType DAY_30/DAY_60/DAY_90"),
+      responses: z.record(z.string(), z.unknown()).describe("Survey question responses keyed by question id; stored verbatim as JSON"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

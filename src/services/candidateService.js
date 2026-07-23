@@ -63,7 +63,9 @@ export const createCandidate = async ({
                 notes,
                 resumeMediaId: resumeMediaId != null ? Number(resumeMediaId) : null,
                 tenantId: tenantId ?? null,
-                createdById: Number(createdById) ?? null,
+                // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
+                // finite creator id, else null (createdById is nullable).
+                createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
             },
         });
 
@@ -114,8 +116,9 @@ export const updateCandidate = async ({
             where: { id, tenantId: tenantId ?? null, ...versionWhere },
             data: {
                 ...data,
-                  createdById: Number(updatedById),
-                // if you later add updatedById column, set it here
+                // Do NOT overwrite createdById on update — it records the original
+                // creator, not the updater. (No updatedById column yet; when one is
+                // added, set it here instead.)
                 version: { increment: 1 },
             },
         });

@@ -10,7 +10,7 @@ import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js"
 
 // ✅ Create new performance review
 export const createPerformanceReview = async (data,createdBy,tenantId) => {
-  const { employeeId, reviewerId, period_start, period_end,cycleId, comments } = data;
+  const { employeeId, reviewerId, period_start, period_end,cycleId, comments, reviewType } = data;
 
   if (!employeeId || !period_start || !period_end)
     throw new Error("employeeId, period_start, and period_end are required");
@@ -28,6 +28,7 @@ export const createPerformanceReview = async (data,createdBy,tenantId) => {
       period_start: new Date(period_start),
       period_end: new Date(period_end),
       comments,
+      ...(reviewType ? { type: reviewType } : {}),
       createdById: Number(createdBy)
     }),
      createdBy: {
@@ -153,7 +154,8 @@ export const updateReview = async (id, data,updatedBy,tenantId) => {
   const updated = await prisma.performanceReview.update({
     where: { id: Number(id) },
     data: {
-      overall_rating: data.overall_rating ?? existing.overall_rating,
+      // Tool sends `overallRating`; accept the snake_case alias too for back-compat.
+      overall_rating: data.overallRating ?? data.overall_rating ?? existing.overall_rating,
       comments: data.comments ?? existing.comments,
       status: data.status ?? existing.status,
       updatedById: Number(updatedBy),

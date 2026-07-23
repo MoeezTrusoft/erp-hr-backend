@@ -6,13 +6,13 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // param; folded into training reads and stamped on creates, fail-closed so
 // tenant B never reads/mutates tenant A's certifications/transcripts.
 
-export const createCertification = async ({ employeeId, title, issuedBy, issuedAt, expiryDate, courseId, tenantId }) => {
+export const createCertification = async ({ employeeId, name, issuedBy, issuedDate, expiryDate, courseId, tenantId }) => {
     return prisma.certification.create({
         data: scopedData(tenantId, {
             employeeId: Number(employeeId),
-            title,
+            name,
             issuedBy,
-            issuedAt: issuedAt ? new Date(issuedAt) : new Date(),
+            issuedAt: issuedDate ? new Date(issuedDate) : new Date(),
             expiryDate: expiryDate ? new Date(expiryDate) : null,
             courseId: courseId ? Number(courseId) : null,
         }),

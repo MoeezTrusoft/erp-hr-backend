@@ -100,11 +100,9 @@ export function registerLearningTools(server) {
     "Create a new training course",
     {
       title: z.string().min(1),
-      categoryId: z.string().optional(),
+      categoryId: z.string().min(1).describe("Training category id (references TrainingCategory.id; required NOT NULL FK)"),
       description: z.string().optional(),
-      duration: z.number().optional().describe("Duration in hours"),
-      mandatory: z.boolean().optional(),
-      externalUrl: z.string().url().optional(),
+      durationHours: z.number().int().positive().optional().describe("Course duration in hours (TrainingCourse.durationHours)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -118,11 +116,11 @@ export function registerLearningTools(server) {
     "hr_training_course_update",
     "Update a training course",
     {
-      id: z.string().min(1),
+      id: z.string().min(1).describe("Training course id (references TrainingCourse.id)"),
       title: z.string().optional(),
       description: z.string().optional(),
-      duration: z.number().optional(),
-      status: z.string().optional(),
+      durationHours: z.number().int().positive().optional().describe("Course duration in hours (TrainingCourse.durationHours)"),
+      status: z.enum(["DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"]).optional().describe("Course status — one of DRAFT | ACTIVE | COMPLETED | CANCELLED"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -160,9 +158,8 @@ export function registerLearningTools(server) {
     "hr_training_enrollment_create",
     "Enroll an employee in a training course",
     {
-      employeeId: z.string().min(1),
-      courseId: z.string().min(1),
-      dueDate: z.string().optional().describe("ISO 8601 date"),
+      employeeId: z.string().min(1).describe("Employee to enroll (references Employee.id)"),
+      courseId: z.string().min(1).describe("Training course id (references TrainingCourse.id)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -176,9 +173,8 @@ export function registerLearningTools(server) {
     "hr_training_enrollment_bulk",
     "Enroll multiple employees in a course at once",
     {
-      courseId: z.string().min(1),
-      employeeIds: z.array(z.string()).min(1),
-      dueDate: z.string().optional().describe("ISO 8601 date"),
+      courseId: z.string().min(1).describe("Training course id (references TrainingCourse.id)"),
+      employeeIds: z.array(z.string()).min(1).describe("Employee ids to enroll (each references Employee.id)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -192,8 +188,8 @@ export function registerLearningTools(server) {
     "hr_training_enrollment_update_status",
     "Update the status of a training enrollment",
     {
-      id: z.string().min(1),
-      status: z.enum(["ENROLLED", "IN_PROGRESS", "COMPLETED", "FAILED", "WITHDRAWN"]),
+      id: z.string().min(1).describe("Training enrollment id (references TrainingEnrollment.id)"),
+      status: z.enum(["ENROLLED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]).describe("Enrollment status — one of ENROLLED | IN_PROGRESS | COMPLETED | CANCELLED"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -207,9 +203,8 @@ export function registerLearningTools(server) {
     "hr_training_enrollment_update_progress",
     "Update training progress for an enrollment",
     {
-      id: z.string().min(1),
-      progress: z.number().min(0).max(100).describe("Progress percentage"),
-      notes: z.string().optional(),
+      id: z.string().min(1).describe("Training enrollment id (references TrainingEnrollment.id)"),
+      progress: z.number().min(0).max(100).describe("Progress percentage (0-100)"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -223,8 +218,7 @@ export function registerLearningTools(server) {
     "hr_training_enrollment_cancel",
     "Cancel a training enrollment",
     {
-      id: z.string().min(1),
-      reason: z.string().optional(),
+      id: z.string().min(1).describe("Training enrollment id (references TrainingEnrollment.id)"),
     },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
@@ -238,11 +232,11 @@ export function registerLearningTools(server) {
     "hr_certification_create",
     "Add a certification record for an employee",
     {
-      employeeId: z.string().min(1),
-      name: z.string().min(1),
-      issuedBy: z.string().optional(),
-      issuedDate: z.string().describe("ISO 8601 date"),
-      expiryDate: z.string().optional().describe("ISO 8601 date"),
+      employeeId: z.string().min(1).describe("Employee the certification belongs to (references Employee.id)"),
+      name: z.string().min(1).describe("Certification name (persisted to Certification.name, NOT NULL)"),
+      issuedBy: z.string().optional().describe("Issuing authority/body"),
+      issuedDate: z.string().describe("ISO 8601 date YYYY-MM-DD — issue date (Certification.issuedAt)"),
+      expiryDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — expiry date"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -256,10 +250,9 @@ export function registerLearningTools(server) {
     "hr_learning_path_create",
     "Create a learning path",
     {
-      name: z.string().min(1),
+      name: z.string().min(1).describe("Learning path name (persisted to LearningPath.name, NOT NULL)"),
       description: z.string().optional(),
-      targetRole: z.string().optional(),
-      courseIds: z.array(z.string()).optional().describe("Ordered list of course IDs"),
+      targetRole: z.string().optional().describe("Target role/track the path prepares for"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

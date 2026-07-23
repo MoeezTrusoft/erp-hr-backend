@@ -12,12 +12,20 @@ import { offerSentEvent } from "./hrEvents.js";
 // (fail-closed); offers carry compensation, so isolation is sensitive.
 
 export const createOffer = async ({ applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, createdById, tenantId }) => {
+    // Offer.candidateId / jobRequisitionId / salary are NOT-NULL columns (salary is
+    // a C4-encrypted String). Assert the required FKs/amount are present so we never
+    // write NaN into an Int FK or null into a NOT-NULL column.
+    const candidateFk = Number(candidateId);
+    if (!Number.isFinite(candidateFk)) throw new Error("candidateId is required");
+    const requisitionFk = Number(jobRequisitionId);
+    if (!Number.isFinite(requisitionFk)) throw new Error("jobRequisitionId is required");
+    if (salary == null || salary === "") throw new Error("baseSalary is required");
     return prisma.offer.create({
         data: scopedData(tenantId, {
             applicationId: applicationId ? Number(applicationId) : null,
-            candidateId: Number(candidateId),
-            jobRequisitionId: jobRequisitionId ? Number(jobRequisitionId) : null,
-            salary: salary ? Number(salary) : null,
+            candidateId: candidateFk,
+            jobRequisitionId: requisitionFk,
+            salary: String(salary), // NOT-NULL String column (C4-encrypted at rest)
             currency: currency || "USD",
             startDate: startDate ? new Date(startDate) : null,
             expiryDate: expiryDate ? new Date(expiryDate) : null,
@@ -96,9 +104,12 @@ export const updateOffer = async (id, { applicationId, candidateId, jobRequisiti
     const expected = normalizeExpectedVersion(expectedVersion);
     const data = {};
     if (applicationId !== undefined) data.applicationId = applicationId ? Number(applicationId) : null;
-    if (candidateId !== undefined) data.candidateId = Number(candidateId);
-    if (jobRequisitionId !== undefined) data.jobRequisitionId = jobRequisitionId ? Number(jobRequisitionId) : null;
-    if (salary !== undefined) data.salary = salary ? Number(salary) : null;
+    // candidateId / jobRequisitionId are NOT-NULL FKs: only overwrite when a truthy
+    // value is supplied so a partial update (or an explicit null) never clobbers
+    // them to 0/NaN.
+    if (candidateId) data.candidateId = Number(candidateId);
+    if (jobRequisitionId) data.jobRequisitionId = Number(jobRequisitionId);
+    if (salary !== undefined && salary != null && salary !== "") data.salary = String(salary); // NOT-NULL C4-encrypted String column
     if (currency !== undefined) data.currency = currency || "USD";
     if (startDate !== undefined) data.startDate = startDate ? new Date(startDate) : null;
     if (expiryDate !== undefined) data.expiryDate = expiryDate ? new Date(expiryDate) : null;

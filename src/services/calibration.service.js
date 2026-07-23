@@ -11,7 +11,7 @@ export const createCalibrationSessionService = async (data, createdBy, tenantId)
   if (!name || !cycleId) throw new Error("name and cycleId are required");
 
   const create = await prisma.calibrationSession.create({
-    data: scopedData(tenantId, { name, cycleId }),
+    data: scopedData(tenantId, { name, cycleId: Number(cycleId) }),
   });
   await logAction({
     employeeId: Number(createdBy),
@@ -28,28 +28,29 @@ export const createCalibrationSessionService = async (data, createdBy, tenantId)
 export const adjustRatingService = async (data, calibrated_by_employee_id, tenantId) => {
   const { reviewId, old_rating, new_rating, justification } = data;
 
-  if (!reviewId || !new_rating)
-    throw new Error("reviewId, new_rating and calibrated_by are required");
+  if (reviewId == null || new_rating == null || old_rating == null)
+    throw new Error("reviewId, new_rating and old_rating are required");
 
+  const reviewIdNum = Number(reviewId);
   const review = await prisma.performanceReview.findFirst({
-    where: scopedWhere(tenantId, { id: reviewId }),
+    where: scopedWhere(tenantId, { id: reviewIdNum }),
   });
   if (!review) throw new Error("Review not found");
 
   const adjustment = await prisma.ratingAdjustment.create({
     data: scopedData(tenantId, {
-      reviewId,
-      old_rating,
-      new_rating,
+      reviewId: reviewIdNum,
+      old_rating: Number(old_rating),
+      new_rating: Number(new_rating),
       justification,
-      calibrated_by_employee_id: calibrated_by_employee_id,
+      calibrated_by_employee_id: calibrated_by_employee_id ? Number(calibrated_by_employee_id) : null,
     }),
   });
 
   // Update the main review rating (pre-read above already proved tenant scope)
   await prisma.performanceReview.update({
-    where: { id: reviewId },
-    data: { overall_rating: new_rating },
+    where: { id: reviewIdNum },
+    data: { overall_rating: Number(new_rating) },
   });
 
    await logAction({

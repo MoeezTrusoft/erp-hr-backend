@@ -28,8 +28,12 @@ function getCtx() {
   return ctx;
 }
 
-const shiftTypeEnum = z.enum(["morning", "evening", "night"]);
-const workModeEnum = z.enum(["remote", "hybrid", "onsite"]);
+const shiftTypeEnum = z
+  .enum(["morning", "evening", "night"])
+  .describe("Shift band — one of morning | evening | night");
+const workModeEnum = z
+  .enum(["remote", "hybrid", "onsite"])
+  .describe("Work mode — one of remote | hybrid | onsite");
 const id = z.union([z.number(), z.string()]);
 
 export function registerShiftTemplateSwapTools(server) {
@@ -38,13 +42,13 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_template_list",
     "List shift templates with the assigned-employee count per template (tenant-scoped)",
     {
-      q: z.string().optional(),
+      q: z.string().optional().describe("Free-text search on template name (case-insensitive)"),
       shiftType: shiftTypeEnum.optional(),
       workMode: workModeEnum.optional(),
-      sort: z.string().optional(),
-      order: z.enum(["asc", "desc"]).optional(),
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
+      sort: z.string().optional().describe("Sort field — one of name | fromTime | toTime | shiftType | workMode | createdAt | id"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc"),
+      page: z.coerce.number().int().positive().optional().describe("1-based page number; defaults to 1"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Rows per page; defaults to 20"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -58,10 +62,10 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_template_create",
     "Create a shift template",
     {
-      name: z.string(),
-      fromTime: z.string().describe('e.g. "09:00"'),
-      toTime: z.string().describe('e.g. "17:00"'),
-      shiftType: shiftTypeEnum.optional(),
+      name: z.string().min(1).describe("Template display name"),
+      fromTime: z.string().min(1).describe('Start time, e.g. "09:00"'),
+      toTime: z.string().min(1).describe('End time, e.g. "17:00"'),
+      shiftType: shiftTypeEnum.optional().describe("Shift band — one of morning | evening | night; defaults to morning"),
       workMode: workModeEnum.optional(),
     },
     withToolError(async (args) => {
@@ -76,12 +80,12 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_template_update",
     "Update editable fields of a shift template",
     {
-      id,
-      name: z.string().optional(),
-      fromTime: z.string().optional(),
-      toTime: z.string().optional(),
+      id: id.describe("ShiftTemplate id to update (references ShiftTemplate.id)"),
+      name: z.string().min(1).optional().describe("New template name"),
+      fromTime: z.string().min(1).optional().describe('New start time, e.g. "09:00"'),
+      toTime: z.string().min(1).optional().describe('New end time, e.g. "17:00"'),
       shiftType: shiftTypeEnum.optional(),
-      workMode: workModeEnum.nullable().optional(),
+      workMode: workModeEnum.nullable().optional().describe("Work mode — one of remote | hybrid | onsite; null clears it"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -95,7 +99,7 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_template_delete",
     "Hard-delete a shift template (tenant-scoped)",
     {
-      id,
+      id: id.describe("ShiftTemplate id to delete (references ShiftTemplate.id)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -110,11 +114,14 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_swap_list",
     "List shift swap requests (paginated, tenant-scoped); requester/target/approver resolved to names",
     {
-      status: z.enum(["PENDING", "APPROVED", "REJECTED", "WITHDRAWN"]).optional(),
-      sort: z.string().optional(),
-      order: z.enum(["asc", "desc"]).optional(),
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
+      status: z
+        .enum(["PENDING", "APPROVED", "REJECTED", "WITHDRAWN"])
+        .optional()
+        .describe("Status filter — one of PENDING | APPROVED | REJECTED | WITHDRAWN"),
+      sort: z.string().optional().describe("Sort field — one of fromDate | toDate | status | createdAt | decidedAt | id"),
+      order: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc"),
+      page: z.coerce.number().int().positive().optional().describe("1-based page number; defaults to 1"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Rows per page; defaults to 20"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -128,12 +135,12 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_swap_create",
     "Create a shift swap request (status PENDING)",
     {
-      requesterId: id,
-      targetId: id.optional(),
-      fromDate: z.string().describe("ISO 8601 date/datetime"),
-      toDate: z.string().optional(),
+      requesterId: id.describe("Employee id requesting the swap (references Employee.id)"),
+      targetId: id.optional().describe("Employee id to swap with (references Employee.id)"),
+      fromDate: z.string().describe("ISO 8601 date YYYY-MM-DD — the requester's shift date"),
+      toDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — the target's shift date"),
       shiftType: shiftTypeEnum.optional(),
-      reason: z.string().optional(),
+      reason: z.string().optional().describe("Optional reason for the swap"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -147,12 +154,12 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_swap_update",
     "Update a shift swap request (only while PENDING)",
     {
-      id,
-      targetId: id.nullable().optional(),
-      fromDate: z.string().optional(),
-      toDate: z.string().nullable().optional(),
-      shiftType: shiftTypeEnum.nullable().optional(),
-      reason: z.string().nullable().optional(),
+      id: id.describe("ShiftSwapRequest id to update (references ShiftSwapRequest.id); must be PENDING"),
+      targetId: id.nullable().optional().describe("Employee id to swap with (references Employee.id); null clears it"),
+      fromDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — the requester's shift date"),
+      toDate: z.string().nullable().optional().describe("ISO 8601 date YYYY-MM-DD; null clears it"),
+      shiftType: shiftTypeEnum.nullable().optional().describe("Shift band — one of morning | evening | night; null clears it"),
+      reason: z.string().nullable().optional().describe("Reason for the swap; null clears it"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -166,8 +173,10 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_shift_swap_decide",
     "Approve, reject, or withdraw a shift swap request; sets decidedAt (approve/reject stamp the caller as approver)",
     {
-      id,
-      decision: z.enum(["approve", "reject", "withdraw"]),
+      id: id.describe("ShiftSwapRequest id to decide (references ShiftSwapRequest.id)"),
+      decision: z
+        .enum(["approve", "reject", "withdraw"])
+        .describe("Decision — one of approve | reject | withdraw"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -186,7 +195,7 @@ export function registerShiftTemplateSwapTools(server) {
     "hr_overtime_request_withdraw",
     "Withdraw an overtime request (status WITHDRAWN); approve/reject use hr_overtime_request_decide",
     {
-      id,
+      id: id.describe("OvertimeRequest id to withdraw (references OvertimeRequest.id)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

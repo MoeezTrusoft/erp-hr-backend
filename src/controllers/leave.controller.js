@@ -120,10 +120,11 @@ export const cancelLeaveRequest = async (req, res) => {
   try {
     const leaveRequestId = Number(req.params.id);
      const updatedById = req.headers['employee-id'];
-    const request = await leaveService.cancelLeaveRequest({
-     id: leaveRequestId,
-    employeeId: Number(updatedById)
-  });
+    const request = await leaveService.cancelLeaveRequest(
+      leaveRequestId,
+      Number(updatedById),
+      req.body?.reason
+    );
     res.json({ success: true, data: request });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });

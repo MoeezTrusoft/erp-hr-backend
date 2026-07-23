@@ -36,7 +36,10 @@ export function registerLeaveManagementTools(server) {
     "hr_leave_balances_summary",
     "Leave balances grouped by type (annual/sick/casual/maternity/other). With employeeId → that employee; else tenant-wide aggregate.",
     {
-      employeeId: z.union([z.string(), z.number()]).optional(),
+      employeeId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Employee id (Employee.id) to scope to; omit → tenant-wide aggregate"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -75,9 +78,12 @@ export function registerLeaveManagementTools(server) {
     "hr_leave_request_decide",
     "Approve or reject a leave request (unified). reason required when decision=reject. Records an approval row and updates status.",
     {
-      id: z.union([z.string(), z.number()]).describe("Leave request ID"),
-      decision: z.enum(["approve", "reject"]),
-      reason: z.string().optional().describe("Required when decision=reject"),
+      id: z.union([z.string(), z.number()]).describe("Leave request ID (LeaveRequest.id)"),
+      decision: z.enum(["approve", "reject"]).describe("Decision — one of approve | reject"),
+      reason: z
+        .string()
+        .optional()
+        .describe("Conditionally required: MUST be non-empty when decision=reject (enforced server-side, 400 otherwise); stored as LeaveRequestApproval.comments"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

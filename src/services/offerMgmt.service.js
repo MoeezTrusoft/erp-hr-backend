@@ -277,6 +277,25 @@ export const createOfferFull = async (input, { tenantId, createdById, showSensit
     salaryFrequency,
   } = input;
 
+  // Guard the three NOT-NULL FKs (Offer.applicationId @unique, candidateId,
+  // jobRequisitionId) fail-closed: reject with a clean 400 rather than letting a
+  // missing/invalid id become null and hit a raw Prisma NOT-NULL error.
+  const applicationIdNum = num(applicationId);
+  const candidateIdNum = num(candidateId);
+  const jobRequisitionIdNum = num(jobRequisitionId);
+  for (const [field, value] of [
+    ["applicationId", applicationIdNum],
+    ["candidateId", candidateIdNum],
+    ["jobRequisitionId", jobRequisitionIdNum],
+  ]) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw Object.assign(new Error(`${field} is required`), { status: 400 });
+    }
+  }
+  if (baseSalary == null || !Number.isFinite(Number(baseSalary))) {
+    throw Object.assign(new Error("baseSalary is required"), { status: 400 });
+  }
+
   const compensation = {
     baseSalary: num(baseSalary),
     currency,
@@ -299,11 +318,11 @@ export const createOfferFull = async (input, { tenantId, createdById, showSensit
 
   const created = await prisma.offer.create({
     data: scopedData(tenantId, {
-      applicationId: applicationId != null ? Number(applicationId) : null,
-      candidateId: candidateId != null ? Number(candidateId) : null,
-      jobRequisitionId: jobRequisitionId != null ? Number(jobRequisitionId) : null,
+      applicationId: applicationIdNum,
+      candidateId: candidateIdNum,
+      jobRequisitionId: jobRequisitionIdNum,
       // C4: written as a String; the extension encrypts on write, decrypts on read.
-      salary: baseSalary != null ? String(baseSalary) : null,
+      salary: String(baseSalary),
       currency,
       startDate: startDate ? new Date(startDate) : null,
       status: "DRAFT",

@@ -87,7 +87,12 @@ export function registerSelfTools(server) {
     "hr_self_leave_request",
     "Submit a leave request as the current employee",
     {
-      leaveType: z.string().min(1),
+      // Required: the LeaveBalance/LeavePolicy lookup keys off this id. Without it
+      // createLeaveRequest can never resolve a balance/policy and always throws.
+      leavePolicyId: z.union([z.string(), z.number()]).describe("Leave policy id (resolves the balance + policy)"),
+      // Optional metadata; the service derives the leave type from the policy, so
+      // this is not required and is not persisted directly.
+      leaveType: z.string().min(1).optional(),
       startDate: z.string().describe("ISO 8601 date"),
       endDate: z.string().describe("ISO 8601 date"),
       reason: z.string().optional(),
@@ -102,10 +107,10 @@ export function registerSelfTools(server) {
   server.tool(
     "hr_self_checkin",
     "Employee self-service check-in",
-    {
-      location: z.string().optional(),
-      notes: z.string().optional(),
-    },
+    // No caller-supplied fields: employeeId is auto-injected from ctx and the
+    // Attendance model has no location/notes columns, so nothing else is
+    // persisted. (Previously-declared location/notes were silently discarded.)
+    {},
     withToolError(async (args) => {
       const { user } = getCtx();
       const data = await mcpSelfCheckin(user, args);

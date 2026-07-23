@@ -30,7 +30,7 @@ export function registerOnboardingPortalTools(server) {
     "hr_onboarding_preboarding_get",
     "Get the pre-boarding readiness board for an onboarding checklist (4 grouped boolean checklists + a completion summary)",
     {
-      id: z.union([z.string(), z.number()]).describe("Onboarding checklist id"),
+      id: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
     },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
@@ -44,14 +44,17 @@ export function registerOnboardingPortalTools(server) {
     "hr_onboarding_preboarding_update",
     "Update the pre-boarding board — either a single { group, key, value } toggle or a full `preboarding` object. Recomputes readyToCollect and returns the refreshed board.",
     {
-      id: z.union([z.string(), z.number()]).describe("Onboarding checklist id"),
-      group: z.enum(["readiness", "itSetup", "engagement", "workspace"]).optional(),
-      key: z.string().optional().describe("Item key within the group"),
-      value: z.boolean().optional().describe("New boolean value for the item"),
+      id: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
+      group: z
+        .enum(["readiness", "itSetup", "engagement", "workspace"])
+        .optional()
+        .describe("Single-toggle mode: preboarding group — one of readiness | itSetup | engagement | workspace"),
+      key: z.string().optional().describe("Single-toggle mode: item key within the group"),
+      value: z.boolean().optional().describe("Single-toggle mode: new boolean value for the item"),
       preboarding: z
         .record(z.string(), z.record(z.string(), z.boolean()))
         .optional()
-        .describe("Full preboarding object (the 4 groups of booleans)"),
+        .describe("Full-object mode: the complete preboarding object (the 4 groups of booleans). Provide EITHER this OR (group + key + value)."),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -65,19 +68,20 @@ export function registerOnboardingPortalTools(server) {
     "hr_onboarding_feedback_submit",
     "Submit new-hire onboarding feedback (role clarity / team support / onboarding process ratings + comments) for a checklist",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("Onboarding checklist id"),
+      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id the feedback is stored against"),
       employeeId: z
         .union([z.string(), z.number()])
         .optional()
-        .describe("Defaults to the checklist's new hire when omitted"),
+        .describe("Employee id — defaults to the checklist's own new hire when omitted"),
       ratings: z
         .object({
-          roleClarity: z.union([z.number(), z.string()]).optional(),
-          teamSupport: z.union([z.number(), z.string()]).optional(),
-          onboardingProcess: z.union([z.number(), z.string()]).optional(),
+          roleClarity: z.union([z.number(), z.string()]).optional().describe("Role-clarity rating (e.g. 1-5)"),
+          teamSupport: z.union([z.number(), z.string()]).optional().describe("Team-support rating (e.g. 1-5)"),
+          onboardingProcess: z.union([z.number(), z.string()]).optional().describe("Onboarding-process rating (e.g. 1-5)"),
         })
-        .passthrough(),
-      comments: z.string().optional(),
+        .passthrough()
+        .describe("Ratings object — required. Extra keys are passed through and stored under responses.ratings"),
+      comments: z.string().optional().describe("Free-text feedback comments"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -91,7 +95,7 @@ export function registerOnboardingPortalTools(server) {
     "hr_onboarding_feedback_view",
     "View submitted onboarding feedback for a checklist, shaped as a table (candidate, role, ratings, comments, submittedAt)",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("Onboarding checklist id"),
+      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
     },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
@@ -105,8 +109,8 @@ export function registerOnboardingPortalTools(server) {
     "hr_onboarding_note_add",
     "Append a note to an onboarding checklist's activity log",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("Onboarding checklist id"),
-      text: z.string().min(1),
+      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
+      text: z.string().min(1).describe("Note body text"),
     },
     withToolError(async ({ checklistId, text }) => {
       const { user, permissions } = getCtx();
@@ -121,7 +125,7 @@ export function registerOnboardingPortalTools(server) {
     "hr_onboarding_activity_list",
     "List an onboarding checklist's activity log newest-first, with entries grouped by day (Today / Yesterday / date)",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("Onboarding checklist id"),
+      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
     },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();

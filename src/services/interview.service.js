@@ -6,27 +6,51 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // so tenant B can never read/mutate tenant A's interviews/scorecards.
 
 export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes, tenantId }) => {
-    return prisma.interview.create({
-        data: scopedData(tenantId, {
-            applicationId: Number(applicationId),
-            interviewType: interviewType || type || "PANEL",
-            scheduledAt: new Date(scheduledAt),
-            durationMinutes: durationMinutes || 60,
-            location,
-            notes,
-            interviewers: interviewerIds?.length
-                ? { create: interviewerIds.map(id => ({ employeeId: Number(id), ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
-                : undefined,
-        }),
-        include: {
-            interviewers: {
-                include: {
-                    employee: {
-                        select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
+    // Scheduling an interview also advances the linked application's pipeline
+    // stage to "interview" (parity with hr_application_update_stage), so the
+    // recruitment board stays coherent without a separate manual move. The two
+    // writes are atomic (one tx) and tenant-scoped. The stage move is guarded so
+    // it never REGRESSES an application already further along or closed
+    // (offer/hired/rejected) — a follow-up interview must not undo an offer.
+    const scheduledDate = new Date(scheduledAt);
+    if (Number.isNaN(scheduledDate.getTime())) {
+        throw new Error("scheduledAt must be a valid ISO 8601 datetime");
+    }
+    return prisma.$transaction(async (tx) => {
+        const interview = await tx.interview.create({
+            data: scopedData(tenantId, {
+                applicationId: Number(applicationId),
+                interviewType: interviewType || type || "PANEL",
+                scheduledAt: scheduledDate,
+                durationMinutes: durationMinutes || 60,
+                location,
+                notes,
+                interviewers: interviewerIds?.length
+                    ? { create: interviewerIds.map(id => ({ employeeId: Number(id), ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
+                    : undefined,
+            }),
+            include: {
+                interviewers: {
+                    include: {
+                        employee: {
+                            select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
+                        },
                     },
                 },
             },
-        },
+        });
+
+        if (applicationId != null) {
+            await tx.application.updateMany({
+                where: scopedWhere(tenantId, {
+                    id: Number(applicationId),
+                    stage: { notIn: ["interview", "offer", "hired", "rejected"] },
+                }),
+                data: { stage: "interview" },
+            });
+        }
+
+        return interview;
     });
 };
 

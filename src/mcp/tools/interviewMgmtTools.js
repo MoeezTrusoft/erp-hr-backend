@@ -24,10 +24,10 @@ function getCtx() {
 }
 
 const ratingsSchema = z.object({
-  technicalSkills: z.coerce.number().int().min(1).max(5),
-  problemSolving: z.coerce.number().int().min(1).max(5),
-  communication: z.coerce.number().int().min(1).max(5),
-  cultureFit: z.coerce.number().int().min(1).max(5),
+  technicalSkills: z.coerce.number().int().min(1).max(5).describe("Integer 1-5"),
+  problemSolving: z.coerce.number().int().min(1).max(5).describe("Integer 1-5"),
+  communication: z.coerce.number().int().min(1).max(5).describe("Integer 1-5"),
+  cultureFit: z.coerce.number().int().min(1).max(5).describe("Integer 1-5"),
 });
 
 export function registerInterviewMgmtTools(server) {
@@ -37,7 +37,7 @@ export function registerInterviewMgmtTools(server) {
     {
       q: z.string().optional().describe("Search by candidate name"),
       status: z.string().optional().describe("SCHEDULED | COMPLETED | CANCELLED | NO_SHOW"),
-      interviewType: z.string().optional().describe("PHONE_SCREEN | TECHNICAL | BEHAVIORAL | PANEL | FINAL"),
+      interviewType: z.string().optional().describe("PHONE_SCREEN | TECHNICAL | BEHAVIORAL | PANEL | FINAL | ONSITE | VIDEO"),
       decision: z.string().optional().describe("NEXT_ROUND | HOLD | REJECTED"),
       sort: z.string().optional().describe("Sort field (default scheduledAt)"),
       order: z.enum(["asc", "desc"]).optional(),
@@ -70,12 +70,12 @@ export function registerInterviewMgmtTools(server) {
     "hr_interview_score",
     "Submit interview feedback: upsert the caller's scorecard (ratings, overall score, recommendation, comments) and set the interview decision/outcome.",
     {
-      interviewId: z.union([z.string(), z.number()]),
-      ratings: ratingsSchema,
-      decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]),
-      recommendation: z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]),
-      comments: z.string().optional(),
-      reviewerId: z.union([z.string(), z.number()]).optional().describe("Reviewer employee id; defaults to the caller's employeeId. Provide when the caller has no employeeId (e.g. an admin scoring on someone's behalf)."),
+      interviewId: z.coerce.number().int().positive().describe("Interview id (references Interview)"),
+      ratings: ratingsSchema.describe("Scorecard ratings; each of technicalSkills, problemSolving, communication, cultureFit is an integer 1-5. Stored as the NOT-NULL scores JSON; overallScore is their average."),
+      decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]).describe("Interview outcome decision — one of NEXT_ROUND | HOLD | REJECTED"),
+      recommendation: z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]).describe("Reviewer recommendation — one of STRONG_HIRE | HIRE | HOLD | REJECTED"),
+      comments: z.string().optional().describe("Free-text reviewer comments (stored as the scorecard notes)"),
+      reviewerId: z.coerce.number().int().positive().optional().describe("Reviewer employee id (references Employee); defaults to the caller's employeeId. Provide when the caller has no employeeId (e.g. an admin scoring on someone's behalf) — the service 400s if neither is present."),
     },
     withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId }) => {
       const { user, permissions } = getCtx();
@@ -97,8 +97,8 @@ export function registerInterviewMgmtTools(server) {
     "hr_interview_set_outcome",
     "Set an interview outcome decision (and mark it COMPLETED).",
     {
-      interviewId: z.union([z.string(), z.number()]),
-      decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]),
+      interviewId: z.coerce.number().int().positive().describe("Interview id (references Interview)"),
+      decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]).describe("Interview outcome decision — one of NEXT_ROUND | HOLD | REJECTED; setting it also marks the interview COMPLETED"),
     },
     withToolError(async ({ interviewId, decision }) => {
       const { user, permissions } = getCtx();

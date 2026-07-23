@@ -7,11 +7,12 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // stamped on creates, fail-closed so tenant B never reads or mutates tenant A's
 // reimbursement claims. (Does not touch the payroll engine / C4 surface.)
 
-export const createClaim = async ({ employeeId, title, amount, currency, category, notes, tenantId }) => {
+export const createClaim = async ({ employeeId, title, description, amount, currency, category, notes, tenantId }) => {
   return prisma.reimbursementClaim.create({
     data: scopedData(tenantId, {
       employeeId: Number(employeeId),
-      title,
+      // The tool sends `description`; ReimbursementClaim.title is the NOT NULL column.
+      title: title || description,
       amount: Number(amount),
       currency: currency || "USD",
       category,
