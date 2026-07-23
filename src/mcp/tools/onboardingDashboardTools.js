@@ -12,6 +12,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { exportRows } from "../../lib/export.util.js";
 import {
   getOnboardingDashboard,
@@ -65,11 +66,20 @@ export function registerOnboardingDashboardTools(server) {
         .optional()
         .describe("Assigned onboarding team members"),
       title: z.string().optional(),
+      // API-3: optional idempotency key. Retrying an add-new-hire with the same
+      // key replays the first checklist instead of creating a duplicate.
+      idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this onboarding create without producing a duplicate checklist."),
     },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
+    withToolError(async ({ idempotencyKey, ...args }) => {
+      const ctx = getCtx();
+      const { user, permissions } = ctx;
       assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
-      const data = await addNewHire(args, user.tenantId);
+      const { value: data } = await runMcpIdempotent({
+        toolName: "hr_onboarding_add_new_hire",
+        idempotencyKey,
+        ctx,
+        run: () => addNewHire(args, user.tenantId),
+      });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_onboarding_add_new_hire")
   );

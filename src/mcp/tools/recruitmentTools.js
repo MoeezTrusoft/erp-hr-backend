@@ -28,6 +28,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
@@ -141,12 +142,16 @@ export function registerRecruitmentTools(server) {
 
   server.tool(
     "hr_candidates_list",
-    "List candidates (paginated) for the HR recruitment screen",
+    "List candidates (paginated) for the HR recruitment screen. Supports offset (page/pageSize) OR opaque keyset pagination: pass the `cursor` returned as `nextCursor` to fetch the next page.",
     {
       page: z.coerce.number().int().positive().optional(),
       pageSize: z.coerce.number().int().positive().optional(),
       search: z.string().optional(),
       tags: z.string().optional().describe("Comma-separated tag ids"),
+      // API-4: opaque keyset cursor. Optional/additive — when supplied the list
+      // pages by keyset (createdAt desc, id desc) instead of offset. Echo back
+      // the `nextCursor` from the previous response; never construct it yourself.
+      cursor: z.string().optional().describe("Opaque keyset cursor from a prior response's nextCursor. Additive: omit to use page/pageSize offset paging."),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -409,11 +414,20 @@ export function registerRecruitmentTools(server) {
       startDate: z.string().describe("ISO 8601 date"),
       expiryDate: z.string().optional().describe("ISO 8601 date"),
       benefits: z.string().optional(),
+      // API-3: optional idempotency key. Retrying an offer create with the same
+      // key replays the first offer instead of creating a duplicate.
+      idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this offer create without producing a duplicate."),
     },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
+    withToolError(async ({ idempotencyKey, ...args }) => {
+      const ctx = getCtx();
+      const { user, permissions } = ctx;
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
-      const data = await mcpCreateOffer(user, args);
+      const { value: data } = await runMcpIdempotent({
+        toolName: "hr_offer_create",
+        idempotencyKey,
+        ctx,
+        run: () => mcpCreateOffer(user, args),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

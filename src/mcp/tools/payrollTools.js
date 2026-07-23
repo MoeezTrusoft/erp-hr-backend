@@ -23,6 +23,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
@@ -120,11 +121,20 @@ export function registerPayrollTools(server) {
       period: z.string().describe("Payroll period (e.g. 2024-01)"),
       payGroupId: z.string().optional(),
       notes: z.string().optional(),
+      // API-3: optional idempotency key. Retrying a payroll-run create with the
+      // same key replays the first run instead of creating a duplicate run.
+      idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this payroll run create without producing a duplicate."),
     },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
+    withToolError(async ({ idempotencyKey, ...args }) => {
+      const ctx = getCtx();
+      const { user, permissions } = ctx;
       assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
-      const data = await mcpCreatePayrollRun(user, args);
+      const { value: data } = await runMcpIdempotent({
+        toolName: "hr_payroll_run_create",
+        idempotencyKey,
+        ctx,
+        run: () => mcpCreatePayrollRun(user, args),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import logger from "../../lib/logger.js";
 import { getEmployeeCompensation } from "../../services/employeeCompensation.service.js";
 import { listEmployeeActivity } from "../../services/employeeActivity.service.js";
@@ -409,14 +410,23 @@ export function registerEmployeeTools(server) {
       // FE-compat aliases (some callers send these instead of the canonical fields).
       email: z.string().optional().describe("FE-compat alias — login email; prefer systemEmail. Falls back to workEmail/personalEmail."),
       company: z.union([z.string(), z.number()]).optional().describe("FE-compat alias for companyId."),
+      // API-3: optional idempotency key. When supplied, a retried create replays
+      // the first result instead of inserting a duplicate employee.
+      idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this create without producing a duplicate."),
     },
-    withToolError(async (args) => {
-      const { user, permissions, correlationId } = getCtx();
+    withToolError(async ({ idempotencyKey, ...args }) => {
+      const ctx = getCtx();
+      const { user, permissions, correlationId } = ctx;
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       // A.4/A.5: pass the request correlationId so the in-tx
       // hr.employee.lifecycle.v1 envelope chains HTTP → event end-to-end. The
       // verified tenant rides on user.tenantId (set by buildContextFromHeaders).
-      const data = await mcpCreateEmployee(user, args, { correlationId });
+      const { value: data } = await runMcpIdempotent({
+        toolName: "hr_employee_create",
+        idempotencyKey,
+        ctx,
+        run: () => mcpCreateEmployee(user, args, { correlationId }),
+      });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_employee_create")
   );

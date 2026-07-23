@@ -180,7 +180,9 @@ export const listCandidates = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const { search, tags, page, limit } = req.query;
+        // API-4: `cursor` is an optional, additive keyset pagination param;
+        // absent → unchanged offset/page behavior.
+        const { search, tags, page, limit, cursor } = req.query;
 
         const tagIds = tags
             ? String(tags)
@@ -195,6 +197,7 @@ export const listCandidates = async (req, res) => {
             tagIds,
             page: page ? Number(page) : 1,
             limit: limit ? Number(limit) : 20,
+            cursor: cursor || undefined,
         });
 
         return res.status(200).json({

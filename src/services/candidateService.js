@@ -3,6 +3,11 @@ import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { upsertTags } from "./tagService.js";
 import { logAction } from "../utils/logs.js";
+import {
+  decodeCursor,
+  keysetWhere,
+  nextCursorFrom,
+} from "../mcp/utils/cursorPagination.js";
 
 /**
  * Create candidate with optional tags (skill names).
@@ -178,10 +183,11 @@ export const listCandidates = async ({
     tagIds = [],
     page = 1,
     limit = 20,
+    cursor, // API-4: opaque keyset cursor (optional; additive, back-compatible)
 }) => {
     const skip = (page - 1) * limit;
 
-    const where = {
+    const baseWhere = {
         tenantId: tenantId ?? null,
         status: "active",
         ...(search
@@ -204,20 +210,33 @@ export const listCandidates = async ({
             : {}),
     };
 
+    // API-4: keyset pagination is OPT-IN via `cursor`. When present we page by
+    // (createdAt desc, id desc) and drop the offset (skip) — this is stable under
+    // concurrent inserts and avoids a growing OFFSET scan on deep pages. When
+    // absent the original offset/page behavior is preserved verbatim.
+    const decoded = decodeCursor(cursor);
+    const useCursor = decoded != null;
+    const where = useCursor
+        ? { AND: [baseWhere, keysetWhere(decoded, { castId: Number })] }
+        : baseWhere;
+
     const [items, total] = await Promise.all([
         prisma.candidate.findMany({
             where,
             include: {
                 tags: { include: { tag: true } },
             },
-            orderBy: { createdAt: "desc" },
-            skip,
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            ...(useCursor ? {} : { skip }),
             take: limit,
         }),
-        prisma.candidate.count({ where }),
+        prisma.candidate.count({ where: baseWhere }),
     ]);
 
-    return { items, total, page, limit };
+    // nextCursor is emitted ALONGSIDE the existing page fields; clients that
+    // ignore it are unaffected.
+    const nextCursor = nextCursorFrom(items, limit);
+    return { items, total, page, limit, nextCursor };
 };
 
 export const updateCandidateResumeMedia = async ({ id, mediaId }) => {

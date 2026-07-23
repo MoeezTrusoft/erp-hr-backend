@@ -62,17 +62,39 @@ function extractTotal(payload, rows) {
   return rows.length;
 }
 
+// Find an opaque keyset cursor anywhere in a (possibly wrapped) controller
+// payload. API-4 — surfaced ALONGSIDE the offset/page fields so cursor-aware
+// callers can page forward while offset callers are unaffected.
+function findNextCursor(payload, depth = 0) {
+  if (payload && typeof payload === "object" && depth < 4) {
+    if (typeof payload.nextCursor === "string" && payload.nextCursor) return payload.nextCursor;
+    for (const key of NEST_KEYS) {
+      if (payload[key] && typeof payload[key] === "object") {
+        const found = findNextCursor(payload[key], depth + 1);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
 // Normalize any controller payload into the FE-expected paginated list envelope.
 export function toListEnvelope(payload, { page = 1, pageSize } = {}) {
   const rows = extractRows(payload);
   const resolvedPage = Number(page) > 0 ? Number(page) : 1;
   const resolvedPageSize = Number(pageSize) > 0 ? Number(pageSize) : rows.length;
-  return {
+  const envelope = {
     items: rows,
     total: extractTotal(payload, rows),
     page: resolvedPage,
     pageSize: resolvedPageSize,
   };
+  // API-4: pass through an opaque nextCursor when the underlying service emits
+  // one. Additive — clients that only read items/total/page/pageSize are
+  // unaffected, and it's null/absent for services that don't support keyset.
+  const nextCursor = findNextCursor(payload);
+  if (nextCursor) envelope.nextCursor = nextCursor;
+  return envelope;
 }
 
 // Build the controller `query` from FE list args: pagination is mapped to the
