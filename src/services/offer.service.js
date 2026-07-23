@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { uploadFileToDAM } from "./dam.media.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -59,7 +60,7 @@ export const sendOffer = async (id, tenantId, ctx = {}) => {
     const existing = await assertOfferInTenant(id, tenantId);
     // M1-HR: the SENT flip + hr.recruitment.offer_sent.v1 outbox event are
     // atomic (outbox-on-write, validate-before-write). Ids-only, tenant-scoped.
-    return prisma.$transaction(async (tx) => {
+    return tenantTransaction(prisma, async (tx) => {
         const row = await tx.offer.update({ where: { id: Number(id) }, data: { status: "SENT", sentAt: new Date() } });
         const event = offerSentEvent(
             { id: row.id, candidateId: row.candidateId, tenantId: row.tenantId ?? existing.tenantId ?? tenantId },

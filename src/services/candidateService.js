@@ -1,5 +1,6 @@
 // src/services/candidateService.js
 import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { upsertTags } from "./tagService.js";
 import { logAction } from "../utils/logs.js";
 
@@ -45,7 +46,7 @@ export const createCandidate = async ({
         createdById,
     });
 
-    return prisma.$transaction(async (tx) => {
+    return tenantTransaction(prisma, async (tx) => {
         const candidate = await tx.candidate.create({
             data: {
                 firstName,
@@ -97,7 +98,7 @@ export const updateCandidate = async ({
     tagNames,
     updatedById,
 }) => {
-    return prisma.$transaction(async (tx) => {
+    return tenantTransaction(prisma, async (tx) => {
         await tx.candidate.updateMany({
             where: { id, tenantId: tenantId ?? null },
             data: {

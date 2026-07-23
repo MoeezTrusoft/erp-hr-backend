@@ -15,6 +15,7 @@
 // fail-closed so tenant B never reads/mutates tenant A's exit checklists.
 
 import prisma from "../lib/prisma.js";           // FIX: was config/prisma.js
+import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { uploadFileToDAM } from "./dam.media.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { scopedEmployeeWhere } from "../lib/tenancy.js";
@@ -80,7 +81,7 @@ export const createOffboarding = async ({
     select: lifecycleSourceSelect,
   });
 
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(prisma, async (tx) => {
     const checklist = await tx.offboardingChecklist.create({
       data: {
         ...scopedData(tenantId, {

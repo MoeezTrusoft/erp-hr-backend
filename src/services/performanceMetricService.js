@@ -1,5 +1,6 @@
 // src/services/performanceMetricService.js
 import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 
 /**
  * Create metric
@@ -63,7 +64,7 @@ export const deactivateMetric = async ({ id, tenantId }) => {
  * payload: [{ metricId, rating, comment }, ...]
  */
 export const upsertReviewItems = async ({ reviewId, tenantId, items }) => {
-    return prisma.$transaction(async (tx) => {
+    return tenantTransaction(prisma, async (tx) => {
         const review = await tx.performanceReview.findFirst({
             where: { id: reviewId, tenantId: tenantId ?? null },
         });

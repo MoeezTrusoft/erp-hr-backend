@@ -75,6 +75,27 @@ const RLS_MODELS = new Set([
     // (global) rows, so FORCE RLS hides nothing; per-tenant config only.
     'PayrollEarningType',
     'PayrollDeductionType',
+    // TEN-2 fleet extend (2026-07-23): the remaining 78 tenant-owned HR tables,
+    // all forced by 20260723020000_hr_rls_fleet_extend with a DEFAULT
+    // hr_current_tenant() create-stamp net. (Employee [tenant_id column] and
+    // OutboxEvent [NOT NULL infra] deferred to a dedicated follow-up.)
+    'DashboardLayout', 'EmployeeMedia', 'BusinessUnit', 'GradeLevel', 'Log', 'Leave',
+    'LeavePolicy', 'LeaveRequestApproval', 'LeaveBalance', 'ApprovalWorkflow',
+    'ApprovalWorkflowStep', 'Region', 'HolidayCalendar', 'Holiday', 'EmployeeHolidayCalendar',
+    'OvertimeRule', 'ShiftTemplate', 'ShiftAssignment', 'ShiftSwapRequest', 'OvertimeRequest',
+    'WorkSchedule', 'Source', 'ReviewFeedback', 'Position', 'JobRequisition',
+    'RequisitionApproval', 'JobPosting', 'TrainingCategory', 'TrainingCourse',
+    'TrainingEnrollment', 'PerformanceCycle', 'PerformanceTemplate', 'Goal', 'GoalProgress',
+    'GoalAlignment', 'ReviewReminder', 'CalibrationSession', 'RatingAdjustment', 'TaxRate',
+    'Tag', 'Candidate', 'CandidateSkill', 'CandidateTag', 'Application', 'PerformanceMetric',
+    'PerformanceReviewItem', 'OnboardingChecklist', 'OnboardingSession', 'OnboardingTask',
+    'OnboardingDocument', 'OnboardingBuddy', 'OnboardingSurvey', 'Interview',
+    'InterviewInterviewer', 'InterviewScorecard', 'Offer', 'TalentPool', 'RecruitmentCostConfig',
+    'LearningPath', 'LearningPathCourse', 'LearningPathEnrollment', 'TrainingSession',
+    'TrainingSessionAttendee', 'Certification', 'Recognition', 'Skill', 'EmployeeSkill',
+    'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',
+    'ComplianceItem', 'DocumentExpiryAlert', 'DevelopmentPlan', 'DevelopmentPlanItem',
+    'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

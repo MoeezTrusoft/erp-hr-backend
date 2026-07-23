@@ -1671,7 +1671,7 @@ export const updatePosition = async (id, data) => {
   const existing = await prisma.position.findUnique({ where: { id: Number(id) } });
   if (!existing) throw new Error("Position not found");
 
-  const position = await prisma.$transaction(async (tx) => {
+  const position = await tenantTransaction(prisma, async (tx) => {
     const updated = await tx.position.update({
       where: { id: Number(id) },
       data: {
@@ -1700,7 +1700,7 @@ export const updatePosition = async (id, data) => {
 };
 
 export const updatePositionStatus = async (id, isActive) => {
-  const position = await prisma.$transaction(async (tx) => {
+  const position = await tenantTransaction(prisma, async (tx) => {
     const updated = await tx.position.update({
       where: { id: Number(id) },
       data: { isActive },
@@ -1820,7 +1820,7 @@ const transitionRequisition = async ({ id, status, actorId, comments }) => {
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
   if (!requisition) throw new Error("Requisition not found");
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const updated = await tenantTransaction(prisma, async (tx) => {
     if (["APPROVED", "REJECTED"].includes(status)) {
       await tx.requisitionApproval.create({
         data: {
