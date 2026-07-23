@@ -8,6 +8,7 @@ import {
   keysetWhere,
   nextCursorFrom,
 } from "../mcp/utils/cursorPagination.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 
 /**
  * Create candidate with optional tags (skill names).
@@ -102,16 +103,29 @@ export const updateCandidate = async ({
     data,
     tagNames,
     updatedById,
+    expectedVersion,
 }) => {
+    // API-2 — optimistic-concurrency guard (opt-in). Absent ⇒ no reject.
+    const expected = normalizeExpectedVersion(expectedVersion);
     return tenantTransaction(prisma, async (tx) => {
-        await tx.candidate.updateMany({
-            where: { id, tenantId: tenantId ?? null },
+        // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
+        const versionWhere = expected == null ? {} : { version: expected };
+        const { count } = await tx.candidate.updateMany({
+            where: { id, tenantId: tenantId ?? null, ...versionWhere },
             data: {
                 ...data,
                   createdById: Number(updatedById),
                 // if you later add updatedById column, set it here
+                version: { increment: 1 },
             },
         });
+        if (count === 0 && expected != null) {
+            const fresh = await tx.candidate.findFirst({
+                where: { id, tenantId: tenantId ?? null },
+                select: { version: true },
+            });
+            throw preconditionFailedError(fresh?.version);
+        }
 
         if (Array.isArray(tagNames)) {
             const tags = await upsertTags({

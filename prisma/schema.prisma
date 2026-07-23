@@ -228,6 +228,10 @@ model Employee {
   created_at           DateTime  @default(now())
   updated_at           DateTime  @updatedAt
 
+  // API-2 — optimistic-concurrency guard. Bumped on every _update write; a
+  // caller-supplied expectedVersion that no longer matches → HR-4120 (412).
+  version              Int       @default(0)
+
   // NEW FIELDS
   // Pakistan National Tax Number. Additive nullable; C4-encrypted at rest via the
   // prisma C4 extension (C4_FIELDS.employee.ntn) — plaintext string in memory.
@@ -509,6 +513,9 @@ model LeavePolicy {
   createdById Int
   updatedBy   Employee? @relation("LeavePolicyUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -1014,6 +1021,9 @@ model Position {
   JobRequisition JobRequisition[]
   // createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
 
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
@@ -1044,6 +1054,9 @@ model JobRequisition {
   employee     Employee?             @relation(fields: [employeeId], references: [id])
   applications Application[]
   offers       Offer[]
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -1200,6 +1213,9 @@ model Goal {
   parentGoal      GoalAlignment[] @relation("GoalAlignmentsParent")
   alignedGoal     GoalAlignment[] @relation("GoalAlignmentsChild")
   goal            GoalAlignment[]
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -1601,6 +1617,9 @@ model Candidate {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
   tags           CandidateTag[]
   applications   Application[]
   talentPools    TalentPool[]
@@ -1965,6 +1984,9 @@ model Offer {
   application    Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   candidate      Candidate      @relation(fields: [candidateId], references: [id])
   jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 

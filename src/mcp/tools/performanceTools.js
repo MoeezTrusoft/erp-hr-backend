@@ -126,6 +126,7 @@ export function registerPerformanceTools(server) {
       targetDate: z.string().optional(),
       status: z.string().optional(),
       weight: z.number().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

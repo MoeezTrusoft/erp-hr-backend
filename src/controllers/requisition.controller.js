@@ -7,6 +7,7 @@ import {
   getByIdRequisitions,
   updateRequisition,
 } from "../services/requisition.service.js";
+import { respondPreconditionAware } from "../utils/httpError.js";
 
 // Verified tenant from the service-JWT claim (mapped to req.user.tenantId by the
 // gateway / MCP runner); `?? null` keeps it out of the scopedWhere fail-open
@@ -91,6 +92,9 @@ export const updateRequisitionController = async (req, res) => {
     const result = await updateRequisition(id, req.body, updatedBy, tenantOf(req));
     res.status(200).json({ success: true, data: result });
   } catch (error) {
+    // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion; every
+    // other error keeps the existing 400 behavior.
+    if (respondPreconditionAware(res, error)) return;
     res.status(400).json({ success: false, message: error.message });
   }
 };

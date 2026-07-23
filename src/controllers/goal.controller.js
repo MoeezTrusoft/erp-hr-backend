@@ -1,4 +1,5 @@
 import *as goalService from "../services/goal.service.js";
+import { respondPreconditionAware } from "../utils/httpError.js";
 
 export const createGoal = async (req, res) => {
   try {
@@ -29,6 +30,8 @@ export const updateGoal = async (req, res) => {
     const updated = await goalService.updateGoalService(id, req.body, updatedBy);
     res.status(200).json({ success: true, goal: updated });
   } catch (error) {
+    // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
+    if (respondPreconditionAware(res, error)) return;
     res.status(400).json({ success: false, message: error.message });
   }
 };

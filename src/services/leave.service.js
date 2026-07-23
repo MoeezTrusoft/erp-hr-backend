@@ -4,7 +4,7 @@ import { logAction } from "../utils/logs.js";
 import { withTenant, tenantData } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { leaveApprovedEvent, leaveRejectedEvent } from "./hrEvents.js";
-import { assertIfMatch } from "../lib/optimisticConcurrency.js";
+import { assertIfMatch, normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 
 // C.2 / T-P2.2 / T-P2.6 — leave is a representative newly-scoped HR family. The
 // verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the controller
@@ -291,6 +291,11 @@ export const createLeavePolicy = async (data,createdById) => {
 };
 
 export const updateLeavePolicy = async (id, data,updatedById) => {
+  // API-2 — pull the optional optimistic-concurrency guard out of the payload so
+  // it is NOT spread into the Prisma `data` (it is not a column). Absent ⇒ no reject.
+  const { expectedVersion: rawExpectedVersion, ...policyData } = data ?? {};
+  const expectedVersion = normalizeExpectedVersion(rawExpectedVersion);
+
   const existingPolicy = await prisma.leavePolicy.findUnique({
     where: { id }
   });
@@ -299,13 +304,24 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
     throw new Error('Leave policy not found');
   }
 
-  const update = await prisma.leavePolicy.update({
-    where: { id },
+  // API-2 — atomic compare-and-set + version bump.
+  const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+  const { count } = await prisma.leavePolicy.updateMany({
+    where: { id, ...versionWhere },
     data: {
-      ...data,
+      ...policyData,
       updatedById: updatedById,
-      updated_at: new Date()
+      updated_at: new Date(),
+      version: { increment: 1 },
     },
+  });
+  if (count === 0 && expectedVersion != null) {
+    const fresh = await prisma.leavePolicy.findUnique({ where: { id }, select: { version: true } });
+    throw preconditionFailedError(fresh?.version);
+  }
+
+  const update = await prisma.leavePolicy.findUnique({
+    where: { id },
     include: {
       approvalWorkflow: {
         include: {

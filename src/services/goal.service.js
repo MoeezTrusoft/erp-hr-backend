@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into goal reads and stamped on creates, fail-closed when present.
@@ -60,6 +61,9 @@ export const getGoalsService = async (employeeId, tenantId) => {
 export const updateGoalService = async (id, data,updatedBy,tenantId) => {
   const { title, description, progress, status } = data;
 
+  // API-2 — optimistic-concurrency guard (opt-in via expectedVersion). Absent ⇒ no reject.
+  const expectedVersion = normalizeExpectedVersion(data?.expectedVersion);
+
   // Find existing goal (tenant-scoped pre-read; cross-tenant id → not-found)
   const existing = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Goal not found");
@@ -69,29 +73,32 @@ export const updateGoalService = async (id, data,updatedBy,tenantId) => {
 
    if (newCurrentValue < progress){
     throw new Error("Progress can not be greater than current progress value");
-    
+
    }
 
 
-  // Update goal
-  const update = await prisma.goal.update({
-    where: { id: Number(id) },
+  // Update goal — API-2 atomic compare-and-set + version bump, tenant-scoped.
+  const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+  const { count } = await prisma.goal.updateMany({
+    where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
     data: {
       title: title ?? existing.title,
       description: description ?? existing.description,
       progress: progress ?? existing.progress,
       current_value: newCurrentValue,
       status: status ?? existing.status,
-      updatedById: Number(updatedBy)
+      updatedById: Number(updatedBy),
+      version: { increment: 1 },
     },
-     updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
   });
+  if (count === 0 && expectedVersion != null) {
+    const fresh = await prisma.goal.findFirst({
+      where: scopedWhere(tenantId, { id: Number(id) }),
+      select: { version: true },
+    });
+    throw preconditionFailedError(fresh?.version);
+  }
+  const update = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
 
    await logAction({
     employeeId: Number(updatedBy),

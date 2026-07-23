@@ -2,6 +2,7 @@ import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { uploadFileToDAM } from "./dam.media.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { offerSentEvent } from "./hrEvents.js";
 
@@ -89,8 +90,10 @@ export const uploadOfferLetter = async (id, file, tenantId) => {
     });
 };
 
-export const updateOffer = async (id, { applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, status }, tenantId) => {
+export const updateOffer = async (id, { applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, status, expectedVersion }, tenantId) => {
     await assertOfferInTenant(id, tenantId);
+    // API-2 — optimistic-concurrency guard (opt-in). Absent ⇒ no reject.
+    const expected = normalizeExpectedVersion(expectedVersion);
     const data = {};
     if (applicationId !== undefined) data.applicationId = applicationId ? Number(applicationId) : null;
     if (candidateId !== undefined) data.candidateId = Number(candidateId);
@@ -101,8 +104,19 @@ export const updateOffer = async (id, { applicationId, candidateId, jobRequisiti
     if (expiryDate !== undefined) data.expiryDate = expiryDate ? new Date(expiryDate) : null;
     if (notes !== undefined) data.notes = notes;
     if (status !== undefined) data.status = status;
-    return prisma.offer.update({
-        where: { id: Number(id) },
-        data,
+
+    // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
+    const versionWhere = expected == null ? {} : { version: expected };
+    const { count } = await prisma.offer.updateMany({
+        where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
+        data: { ...data, version: { increment: 1 } },
     });
+    if (count === 0 && expected != null) {
+        const fresh = await prisma.offer.findFirst({
+            where: scopedWhere(tenantId, { id: Number(id) }),
+            select: { version: true },
+        });
+        throw preconditionFailedError(fresh?.version);
+    }
+    return prisma.offer.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
 };

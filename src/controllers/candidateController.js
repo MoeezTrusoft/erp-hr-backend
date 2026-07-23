@@ -1,7 +1,7 @@
 // src/controllers/candidateController.js
 import * as candidateService from "../services/candidateService.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
-import { respondServerError } from '../utils/httpError.js';
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 
 
 export const createCandidate = async (req, res) => {
@@ -89,6 +89,7 @@ export const updateCandidate = async (req, res) => {
             notes,
             status,
             tags, // array of tag names
+            expectedVersion, // API-2 — optimistic-concurrency guard (optional)
         } = req.body;
 
         const candidate = await candidateService.updateCandidate({
@@ -104,6 +105,7 @@ export const updateCandidate = async (req, res) => {
             },
             tagNames: Array.isArray(tags) ? tags : undefined,
             updatedById,
+            expectedVersion,
         });
 
         if (!candidate) {
@@ -119,6 +121,8 @@ export const updateCandidate = async (req, res) => {
             data: candidate,
         });
     } catch (error) {
+        // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
+        if (respondPreconditionAware(res, error)) return;
         return res.status(400).json({
             success: false,
             message: error.message,

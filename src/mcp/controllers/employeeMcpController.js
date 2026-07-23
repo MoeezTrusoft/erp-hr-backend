@@ -130,7 +130,10 @@ export async function mcpCreateEmployee(user, data, ctx = {}) {
 }
 
 export async function mcpUpdateEmployee(user, id, data) {
-  return hrContractService.updateEmployee(id, data, user?.employeeId || user?.userId);
+  // API-2 — pull the optional optimistic-concurrency guard out of the tool args
+  // and thread it to the service as ctx.expectedVersion (opt-in If-Match).
+  const { expectedVersion, ...rest } = data ?? {};
+  return hrContractService.updateEmployee(id, rest, user?.employeeId || user?.userId, { expectedVersion });
 }
 
 export async function mcpDeleteEmployee(user, id) {
@@ -167,7 +170,9 @@ export async function mcpCreatePosition(user, data) {
 }
 
 export async function mcpUpdatePosition(user, id, data) {
-  return hrContractService.updatePosition(id, data);
+  // API-2 — thread the optional optimistic-concurrency guard (see mcpUpdateEmployee).
+  const { expectedVersion, ...rest } = data ?? {};
+  return hrContractService.updatePosition(id, rest, { expectedVersion });
 }
 
 export const mcpGetPositionByPositionId = (user, id) => runController(getPositionByIdController, { user, params: { id: String(id) } });

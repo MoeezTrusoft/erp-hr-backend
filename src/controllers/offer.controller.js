@@ -1,5 +1,5 @@
 import * as svc from "../services/offer.service.js";
-import { respondServerError } from '../utils/httpError.js';
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 
 export const createOffer = async (req, res) => {
     try {
@@ -55,5 +55,9 @@ export const updateOffer = async (req, res) => {
         const { id } = req.params;
         const result = await svc.updateOffer(id, req.body);
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(400).json({ success: false, message: e.message }); }
+    } catch (e) {
+        // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
+        if (respondPreconditionAware(res, e)) return;
+        res.status(400).json({ success: false, message: e.message });
+    }
 };

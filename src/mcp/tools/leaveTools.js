@@ -199,6 +199,7 @@ export function registerLeaveTools(server) {
       name: z.string().optional(),
       daysPerYear: z.number().int().optional(),
       carryOver: z.boolean().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

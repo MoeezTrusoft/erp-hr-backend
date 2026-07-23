@@ -486,6 +486,7 @@ export function registerEmployeeTools(server) {
       disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
       routingNumber: z.string().optional(),
       accountType: z.string().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -614,6 +615,7 @@ export function registerEmployeeTools(server) {
       requirements: z.string().optional(),
       jobCode: z.string().optional(),
       isActive: z.coerce.boolean().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

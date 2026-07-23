@@ -11,6 +11,7 @@ import {
 import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js";
 import { exportRows } from "../lib/export.util.js";
 import { scopedEmployeeWhere, scopedWhere, scopedData } from "../lib/tenancy.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import {
   createEmployeeContractSchema,
   createEmployeeDocumentSchema,
@@ -154,6 +155,7 @@ const positionRow = (position) => {
     requisitionCount: position._count?.JobRequisition || 0,
     createdAt: position.createdAt,
     updatedAt: position.updatedAt,
+    version: position.version, // API-2 — optimistic-concurrency version
   };
 };
 
@@ -402,6 +404,7 @@ const upsertPrimaryBankDetail = async (tx, employeeId, tenantId, bank) => {
 
 const employeeProfileSelect = {
   ...compactEmployeeSelect,
+  version: true, // API-2 — optimistic-concurrency version for If-Match chaining
   ntn: true,
   bankDetails: {
     orderBy: [{ isPrimary: "desc" }, { created_at: "desc" }],
@@ -451,6 +454,7 @@ const employeeContractProfile = (employee) => {
   const primaryBank = employee.bankDetails?.[0] || null;
   return {
   summary,
+  version: employee.version, // API-2 — the new version, for optimistic-concurrency chaining
   ntn: employee.ntn ? maskTail(employee.ntn) : null,
   banking: primaryBank
     ? {
@@ -1252,10 +1256,14 @@ const maybeProvisionSystemAccount = async (data, employee) => {
   }
 };
 
-export const updateEmployee = async (id, payload, actorId) => {
+export const updateEmployee = async (id, payload, actorId, ctx = {}) => {
   const employeeId = Number(id);
   const existing = await prisma.employee.findUnique({ where: { id: employeeId } });
   if (!existing) throw new Error("Employee not found");
+
+  // API-2 — optimistic-concurrency guard. Opt-in: only enforced when the caller
+  // supplies an expectedVersion (the version they last read). Absent ⇒ no reject.
+  const expectedVersion = normalizeExpectedVersion(ctx.expectedVersion);
 
   const data = updateEmployeeContractSchema.parse(normalizeContractPayload(payload));
   await assertEmployeeReferences(data, employeeId);
@@ -1276,10 +1284,22 @@ export const updateEmployee = async (id, payload, actorId) => {
   };
 
   const employee = await tenantTransaction(prisma, async (tx) => {
-    await tx.employee.update({
-      where: { id: employeeId },
-      data: employeeDataFromContract(employeeData, actorId, existing),
+    // API-2 — atomic compare-and-set on version. When expectedVersion is supplied
+    // the write only lands if the row is still at that version; otherwise it lands
+    // unconditionally. Either way version is bumped so concurrent editors observe
+    // the advance. count===0 with a supplied expectedVersion ⇒ stale (412).
+    const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+    const { count } = await tx.employee.updateMany({
+      where: { id: employeeId, ...versionWhere },
+      data: {
+        ...employeeDataFromContract(employeeData, actorId, existing),
+        version: { increment: 1 },
+      },
     });
+    if (count === 0 && expectedVersion != null) {
+      const fresh = await tx.employee.findUnique({ where: { id: employeeId }, select: { version: true } });
+      throw preconditionFailedError(fresh?.version);
+    }
 
     if (data.emergencyContacts?.length > 0) {
       await tx.emergencyContacts.deleteMany({ where: { employee_Id: employeeId } });
@@ -1667,19 +1687,32 @@ export const createPosition = async (data, actorId, tenantId) => {
   return positionRow(position);
 };
 
-export const updatePosition = async (id, data) => {
+export const updatePosition = async (id, data, ctx = {}) => {
   const existing = await prisma.position.findUnique({ where: { id: Number(id) } });
   if (!existing) throw new Error("Position not found");
 
+  // API-2 — optimistic-concurrency guard (opt-in via expectedVersion).
+  const expectedVersion = normalizeExpectedVersion(ctx.expectedVersion);
+
   const position = await tenantTransaction(prisma, async (tx) => {
-    const updated = await tx.position.update({
-      where: { id: Number(id) },
+    // API-2 — atomic compare-and-set + version bump (see updateEmployee).
+    const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+    const { count } = await tx.position.updateMany({
+      where: { id: Number(id), ...versionWhere },
       data: {
         title: data.title,
         description: buildPositionDescription(data, existing.description),
         isActive: data.isActive,
         jobCode: data.jobCode,
+        version: { increment: 1 },
       },
+    });
+    if (count === 0 && expectedVersion != null) {
+      const fresh = await tx.position.findUnique({ where: { id: Number(id) }, select: { version: true } });
+      throw preconditionFailedError(fresh?.version);
+    }
+    const updated = await tx.position.findUnique({
+      where: { id: Number(id) },
       include: { _count: { select: { employees: true, JobRequisition: true } } },
     });
 

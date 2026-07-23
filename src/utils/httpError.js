@@ -40,4 +40,34 @@ export function respondServerError(req, res, err, fallbackStatus = 500) {
     res.status(norm.httpStatus).json(buildErrorEnvelope(norm, req?.correlationId));
 }
 
+/**
+ * API-2 — controller helper for the optimistic-concurrency (412) case.
+ *
+ * The 5 controller-backed `hr_*_update` paths (requisition/candidate/offer/goal/
+ * leave-policy) historically catch every error into a flat 400. That would
+ * collapse a stale-write PreconditionFailedError (HR-4120) into a 400 and drop
+ * its `currentVersion`. This helper detects that specific error and emits a
+ * proper 412 body carrying `code` + `currentVersion`, which `_runner.js` then
+ * re-throws so `toJsonRpcError` surfaces JSON-RPC -32009 with data.currentVersion.
+ *
+ * Returns true when it handled (responded to) the error; false when the caller
+ * should fall back to its existing catch behavior (unchanged for every other error).
+ *
+ * @param {import('express').Response} res
+ * @param {any} error
+ * @returns {boolean}
+ */
+export function respondPreconditionAware(res, error) {
+    const status = error?.httpStatus || error?.statusCode || error?.status;
+    const isPrecondition = status === 412 || error?.code === 'HR-4120';
+    if (!isPrecondition) return false;
+    res.status(412).json({
+        success: false,
+        code: 'HR-4120',
+        message: error?.message || 'Precondition failed',
+        ...(error?.currentVersion !== undefined ? { currentVersion: error.currentVersion } : {}),
+    });
+    return true;
+}
+
 export default respondServerError;

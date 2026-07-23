@@ -91,3 +91,48 @@ export function etagOf(row) {
     const v = versionOf(row);
     return v == null ? null : `"${v}"`;
 }
+
+/**
+ * API-2 — normalize a caller-supplied optimistic-concurrency guard into an
+ * integer expected version (or null when absent). Accepts a bare number
+ * (`expectedVersion`) or an If-Match header value. Unlike `parseIfMatch` this
+ * accepts 0 (the `version` column defaults to 0), so a freshly-created row
+ * (version=0) can still be guarded.
+ *
+ * @param {string|number|null|undefined} raw
+ * @returns {number|null}
+ */
+export function normalizeExpectedVersion(raw) {
+    if (raw == null) return null;
+    if (typeof raw === 'number') return Number.isInteger(raw) && raw >= 0 ? raw : null;
+    const cleaned = String(raw).trim().replace(/^W\//i, '').replace(/^"(.*)"$/, '$1').trim();
+    if (!/^\d+$/.test(cleaned)) return null;
+    const n = Number.parseInt(cleaned, 10);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * API-2 — build the canonical HR-4120 (412 PRECONDITION_FAILED) error for a
+ * stale optimistic-concurrency write. The row's CURRENT version is attached as
+ * `.currentVersion` so the MCP mapper (mcpErrorMap.js) surfaces it in the
+ * JSON-RPC -32009 `data.currentVersion`, letting the client re-read and retry.
+ *
+ * Returns a plain Error carrying { status:412, httpStatus:412, statusCode:412,
+ * code:'HR-4120', currentVersion } — enough for the terminal error middleware
+ * (status 412 → HR-4120) and toJsonRpcError to render it consistently without
+ * pulling AppError into this low-level lib.
+ *
+ * @param {number|null|undefined} currentVersion  the row's live version, if known.
+ */
+export function preconditionFailedError(currentVersion) {
+    const err = new Error('Precondition failed: the resource was modified by another writer');
+    err.name = 'PreconditionFailedError';
+    err.status = 412;
+    err.httpStatus = 412;
+    err.statusCode = 412;
+    err.code = 'HR-4120';
+    if (currentVersion !== undefined && currentVersion !== null) {
+        err.currentVersion = currentVersion;
+    }
+    return err;
+}

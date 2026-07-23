@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -170,6 +171,10 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
 export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   const { title, description, departmentId, positionId, employeeId, openings, status } = data;
 
+  // API-2 — optimistic-concurrency guard (opt-in via expectedVersion; threaded
+  // through the MCP body / REST payload). Absent ⇒ no reject.
+  const expectedVersion = normalizeExpectedVersion(data?.expectedVersion);
+
   // Tenant-scoped pre-read so a cross-tenant id cannot be mutated (fail-closed).
   const existing = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Requisition not found");
@@ -183,9 +188,22 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   if (openings !== undefined) updateData.openings = openings ? Number(openings) : undefined;
   if (status !== undefined) updateData.status = status;
 
-  const updatedRequi = await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: updateData,
+  // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
+  const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+  const { count } = await prisma.jobRequisition.updateMany({
+    where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
+    data: { ...updateData, version: { increment: 1 } },
+  });
+  if (count === 0 && expectedVersion != null) {
+    const fresh = await prisma.jobRequisition.findFirst({
+      where: scopedWhere(tenantId, { id: Number(id) }),
+      select: { version: true },
+    });
+    throw preconditionFailedError(fresh?.version);
+  }
+
+  const updatedRequi = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       position: true,
       requestedBy: true,

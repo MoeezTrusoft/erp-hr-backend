@@ -80,7 +80,13 @@ export async function runController(controller, { user = {}, params = {}, query 
 
   if (statusCode >= 400) {
     const message = payload?.message || payload?.error || "Request failed";
-    throw Object.assign(new Error(message), { status: statusCode, data: payload });
+    const err = Object.assign(new Error(message), { status: statusCode, data: payload });
+    // API-2 — preserve the HR-nnnn code and the optimistic-concurrency
+    // currentVersion the controller surfaced (e.g. a 412 HR-4120) so the MCP
+    // error mapper (toJsonRpcError) can emit -32009 with data.currentVersion.
+    if (payload?.code) err.code = payload.code;
+    if (payload?.currentVersion !== undefined) err.currentVersion = payload.currentVersion;
+    throw err;
   }
 
   // A 204/empty controller (e.g. updateStage/updateStatus/delete) leaves payload

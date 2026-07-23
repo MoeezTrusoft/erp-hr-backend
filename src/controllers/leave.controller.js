@@ -1,6 +1,6 @@
 import * as leaveService from '../services/leave.service.js';
 import { createRequisitionController } from './requisition.controller.js';
-import { respondServerError } from '../utils/httpError.js';
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 
 // C.2 / T-P2.2 — the verified tenant arrives on req.user.tenantId (set by
 // internalServiceGuard from the signed service-JWT claim; T-P2.1) — NEVER from
@@ -52,6 +52,8 @@ export const updateLeavePolicy = async (req, res) => {
     );
     res.json({ success: true, data: policy });
   } catch (error) {
+    // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
+    if (respondPreconditionAware(res, error)) return;
     res.status(400).json({ success: false, error: error.message });
   }
 };

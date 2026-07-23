@@ -207,6 +207,7 @@ export function registerRecruitmentTools(server) {
       description: z.string().optional(),
       targetDate: z.string().optional().describe("ISO 8601 date"),
       justification: z.string().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -291,6 +292,7 @@ export function registerRecruitmentTools(server) {
       email: z.string().email().optional(),
       phone: z.string().optional(),
       status: z.string().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -446,6 +448,7 @@ export function registerRecruitmentTools(server) {
       expiryDate: z.string().optional().describe("ISO 8601 date"),
       benefits: z.string().optional(),
       status: z.string().optional(),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
