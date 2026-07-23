@@ -6,6 +6,9 @@ import {
   mcpBulkTrainingEnrollment,
   mcpCancelTrainingEnrollment,
   mcpCreateCertification,
+  mcpGetCertification,
+  mcpUpdateCertification,
+  mcpDeleteCertification,
   mcpCreateLearningPath,
   mcpCreateTrainingCategory,
   mcpCreateTrainingCourse,
@@ -243,6 +246,66 @@ export function registerLearningTools(server) {
       assertPermission(permissions, "POST", "hr:learning", user.isAdmin);
       const data = await mcpCreateCertification(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_certifications_list",
+    "List certification records (optionally filtered by employee), paginated",
+    {
+      employeeId: z.string().optional().describe("Filter to one employee (references Employee.id); omit for all"),
+      page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
+      limit: z.coerce.number().int().positive().max(100).optional().describe("Page size (default 20, max 100)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:learning", user.isAdmin);
+      const data = await mcpListCertifications(user, args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_certification_get",
+    "Get a single certification record by id",
+    { id: z.string().min(1).describe("Certification id (references Certification.id)") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:learning", user.isAdmin);
+      const data = await mcpGetCertification(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_certification_update",
+    "Update a certification record",
+    {
+      id: z.string().min(1).describe("Certification id (references Certification.id)"),
+      name: z.string().min(1).optional().describe("Certification name (Certification.name)"),
+      issuedBy: z.string().optional().describe("Issuing authority/body"),
+      issuedDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — issue date (Certification.issuedAt)"),
+      expiryDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — expiry date; null/empty clears it"),
+      credentialId: z.string().optional().describe("External credential id / license number"),
+      courseId: z.string().optional().describe("Linked training course id (references TrainingCourse.id)"),
+    },
+    withToolError(async ({ id, ...rest }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:learning", user.isAdmin);
+      const data = await mcpUpdateCertification(user, id, rest);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_certification_delete",
+    "Delete a certification record",
+    { id: z.string().min(1).describe("Certification id (references Certification.id)") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:learning", user.isAdmin);
+      const data = await mcpDeleteCertification(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data ?? { success: true, id: String(id) }) }] };
     })
   );
 

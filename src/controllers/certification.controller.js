@@ -16,6 +16,13 @@ export const listCertifications = async (req, res) => {
     } catch (e) { respondServerError(req, res, e); }
 };
 
+export const getCertification = async (req, res) => {
+    try {
+        const result = await svc.getCertification(req.params.id);
+        res.status(200).json({ success: true, message: "Success", data: result });
+    } catch (e) { res.status(404).json({ success: false, message: e.message }); }
+};
+
 export const updateCertification = async (req, res) => {
     try {
         const result = await svc.updateCertification(req.params.id, req.body);

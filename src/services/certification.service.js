@@ -29,10 +29,30 @@ export const listCertifications = async ({ employeeId, page = 1, limit = 20, ten
     return { items, total, page, limit };
 };
 
+export const getCertification = async (id, tenantId) => {
+    const existing = await prisma.certification.findFirst({
+        where: scopedWhere(tenantId, { id: Number(id) }),
+        include: {
+            employee: { select: { id: true, employee_name: true, first_name: true, last_name: true } },
+            course: { select: { id: true, title: true } },
+        },
+    });
+    if (!existing) throw new Error("Certification not found");
+    return existing;
+};
+
 export const updateCertification = async (id, data, tenantId) => {
     const existing = await prisma.certification.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
     if (!existing) throw new Error("Certification not found");
-    return prisma.certification.update({ where: { id: Number(id) }, data });
+    // normalize incoming fields to Prisma column types/shapes
+    const patch = {};
+    if (data.name !== undefined) patch.name = data.name;
+    if (data.issuedBy !== undefined) patch.issuedBy = data.issuedBy;
+    if (data.issuedDate !== undefined) patch.issuedAt = data.issuedDate ? new Date(data.issuedDate) : null;
+    if (data.expiryDate !== undefined) patch.expiryDate = data.expiryDate ? new Date(data.expiryDate) : null;
+    if (data.credentialId !== undefined) patch.credentialId = data.credentialId;
+    if (data.courseId !== undefined) patch.courseId = data.courseId ? Number(data.courseId) : null;
+    return prisma.certification.update({ where: { id: Number(id) }, data: patch });
 };
 
 export const deleteCertification = async (id, tenantId) => {
