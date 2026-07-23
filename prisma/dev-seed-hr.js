@@ -19,6 +19,7 @@
  * extension is applied on write exactly as the app expects (ARCH-01 §5.3).
  */
 import prisma from "../src/lib/prisma.js";
+import { mcpCtx } from "../src/mcp/context.js"; // run the seed under a tenant context so FORCE-RLS writes pass
 
 const TENANT = "14c350e8-d0bc-4ee9-90c7-dea2b7a7a007";
 
@@ -42,6 +43,16 @@ async function getOrCreate(model, find, create) {
   const existing = await prisma[model].findFirst({ where: find });
   if (existing) return existing;
   return prisma[model].create({ data: create });
+}
+
+// Prisma 7 (strict) rejects a non-unique `where` in upsert. This idempotent
+// helper replicates upsert semantics keyed on an arbitrary (non-unique) filter:
+// find-by-filter → update-by-id if present, else create. Returns the row, so the
+// call-site shape is identical to the upsert it replaces.
+async function upsertBy(model, where, createData, updateData) {
+  const existing = await prisma[model].findFirst({ where });
+  if (existing) return prisma[model].update({ where: { id: existing.id }, data: updateData });
+  return prisma[model].create({ data: createData });
 }
 
 // ── 1. Departments (BusinessUnit) ────────────────────────────────────────────
@@ -202,14 +213,15 @@ async function main() {
     );
   }
 
-  // 3. Positions (jobCode unique → upsert)
+  // 3. Positions (jobCode NOT db-unique → upsertBy find/update/create)
   const posByCode = {};
   for (const p of POSITIONS) {
-    posByCode[p.jobCode] = await prisma.position.upsert({
-      where: { jobCode: p.jobCode },
-      update: { title: p.title, isActive: true, tenantId: TENANT },
-      create: { jobCode: p.jobCode, title: p.title, isActive: true, tenantId: TENANT },
-    });
+    posByCode[p.jobCode] = await upsertBy(
+      "position",
+      { jobCode: p.jobCode },
+      { jobCode: p.jobCode, title: p.title, isActive: true, tenantId: TENANT },
+      { title: p.title, isActive: true, tenantId: TENANT }
+    );
   }
 
   // 4. Employees — two passes so managerId can reference seeded rows.
@@ -555,7 +567,7 @@ async function main() {
   console.log("HR dev seed complete.");
 }
 
-main()
+mcpCtx.run({ user: { tenantId: TENANT }, permissions: {} }, () => main())
   .then(async () => {
     await prisma.$disconnect();
   })

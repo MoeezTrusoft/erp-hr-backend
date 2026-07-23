@@ -1,5 +1,6 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
@@ -16,7 +17,7 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
     if (Number.isNaN(scheduledDate.getTime())) {
         throw new Error("scheduledAt must be a valid ISO 8601 datetime");
     }
-    return prisma.$transaction(async (tx) => {
+    return tenantTransaction(prisma, async (tx) => {
         const interview = await tx.interview.create({
             data: scopedData(tenantId, {
                 applicationId: Number(applicationId),
