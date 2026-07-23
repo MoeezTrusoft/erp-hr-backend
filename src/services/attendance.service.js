@@ -17,10 +17,14 @@ function parseCheckInInput({ date, check_in, timestamp }) {
     return ts;
   }
 
-  if (!date) throw new Error("date is required");
-  if (!check_in) throw new Error("check_in is required");
+  // A check-in defaults to "now": omitting date/check_in stamps the punch at the
+  // server's current date + time (the common self-service case). Callers may
+  // still pass an explicit date/check_in to backfill a specific moment.
+  const now = new Date();
+  const day = date || now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const time = check_in || now.toTimeString().slice(0, 8); // HH:MM:SS
 
-  const parsed = new Date(`${date} ${check_in}`);
+  const parsed = new Date(`${day} ${time}`);
   if (Number.isNaN(parsed.getTime())) throw new Error("Invalid check_in/date value");
   return parsed;
 }
