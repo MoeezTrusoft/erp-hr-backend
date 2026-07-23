@@ -15,7 +15,16 @@ const tenantOf = (req) => req.user?.tenantId ?? null;
 
 export const createRequisitionController = async (req, res) => {
   try {
-    const requestedBy = req.headers['employee-id'] || req.headers['x-employee-id'] || req.body.employeeId;
+    // The tool schema exposes `requestedById` (the hiring manager, defaults to
+    // the creator) — honor it first, then fall back to the acting employee id
+    // (header) or a body-supplied employeeId. Previously requestedById was
+    // silently ignored, so a caller without an employee-linked account (e.g. an
+    // admin) hit "Hiring manager is required" despite supplying it.
+    const requestedBy =
+      req.body.requestedById ||
+      req.headers['employee-id'] ||
+      req.headers['x-employee-id'] ||
+      req.body.employeeId;
     const result = await createRequisition(req.body, requestedBy, tenantOf(req));
     res.status(201).json({ success: true, data: result });
   } catch (error) {
