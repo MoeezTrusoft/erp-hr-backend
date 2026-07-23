@@ -41,7 +41,17 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
     notes: `Create Requisition"${createRequi.id}" Created successfully`,
   });
 
-  return createRequi;
+  // JobRequisition.departmentId is a raw Int (references BusinessUnit.id, HR's
+  // department model) with no Prisma relation, so resolve it explicitly and
+  // attach `department` to the response for the caller/FE. Tenant-scoped.
+  const department = createRequi.departmentId
+    ? await prisma.businessUnit.findFirst({
+        where: scopedWhere(tenantId, { id: createRequi.departmentId }),
+        select: { id: true, name: true },
+      })
+    : null;
+
+  return { ...createRequi, department };
 };
 
 // ✅ Get all requisitions
