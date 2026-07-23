@@ -93,6 +93,9 @@ const RLS_MODELS = new Set([
     'InterviewInterviewer', 'InterviewScorecard', 'Offer', 'TalentPool', 'RecruitmentCostConfig',
     'LearningPath', 'LearningPathCourse', 'LearningPathEnrollment', 'TrainingSession',
     'TrainingSessionAttendee', 'Certification', 'Recognition', 'Skill', 'EmployeeSkill',
+    // Course-catalog (LMS) tables — new in 20260724_hr_course_catalog. FORCE-RLS
+    // with a DEFAULT hr_current_tenant() create-stamp, same as the fleet.
+    'CourseSection', 'CourseLecture', 'CourseOutcome', 'CourseReview',
     'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',
     'ComplianceItem', 'DocumentExpiryAlert', 'DevelopmentPlan', 'DevelopmentPlanItem',
     'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',

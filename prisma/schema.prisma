@@ -74,6 +74,20 @@ enum EnrollmentStatus {
   CANCELLED
 }
 
+// Certification lifecycle for the Certifications & Transcripts screen KPIs.
+// ACTIVE   — valid, not expired.
+// RENEWAL  — due for renewal (expiring soon / renewal in progress).
+// INACTIVE — archived/revoked/superseded (not counted as active).
+// EXPIRED  — past expiryDate. NOTE: expiry is ALSO derived dynamically from
+//            expiryDate at read time so a stale ACTIVE row past its date still
+//            counts as expired in the KPIs.
+enum CertificationStatus {
+  ACTIVE
+  RENEWAL
+  INACTIVE
+  EXPIRED
+}
+
 enum CycleStatus {
   DRAFT
   ACTIVE
@@ -257,6 +271,8 @@ model Employee {
   approvals             RequisitionApproval[]
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
+  coursesCreated        TrainingCourse[]      @relation("CourseCreatedBy")
+  courseReviews         CourseReview[]
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
   actionBy              Log[]                 @relation("ActionBy")
@@ -1123,16 +1139,112 @@ model TrainingCourse {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
+  // ── Course-catalog (LMS) fields — Course Catalog + Course View screens ──
+  courseCode        String? // human catalog code, e.g. "WD-101" (unique per tenant)
+  subtitle          String? // short tagline under the title on the course view
+  introVideoMediaId Int? // DAM asset ID for the course introduction video
+  language          String? // primary language of instruction, e.g. "English"
+  createdById       Int? // Employee who authored the course ("created by")
+  tags              String[] @default([]) // free-form catalog tags (card chips)
+  relatedTopics     String[] @default([]) // related topics shown on the course view
+  requirements      String[] @default([]) // prerequisites, rendered as bullets
+  ratingAvg         Float    @default(0) // denormalized avg of course_reviews.rating (0-5)
+  ratingCount       Int      @default(0) // denormalized count of course_reviews
+
   category       TrainingCategory     @relation(fields: [categoryId], references: [id])
   instructor     Employee?            @relation(fields: [instructorId], references: [id])
+  createdBy      Employee?            @relation("CourseCreatedBy", fields: [createdById], references: [id])
   enrollments    TrainingEnrollment[]
   sessions       TrainingSession[]
   pathCourses    LearningPathCourse[]
   certifications Certification[]
+  sections       CourseSection[]
+  outcomes       CourseOutcome[]
+  reviews        CourseReview[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([categoryId])
+  @@index([courseCode])
+}
+
+// A named group of lectures within a course (e.g. "Introduction to Web
+// Development"). The course view shows each section with its lecture count and
+// summed duration.
+model CourseSection {
+  id        Int    @id @default(autoincrement())
+  courseId  Int
+  title     String
+  sortOrder Int    @default(0)
+
+  course   TrainingCourse  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lectures CourseLecture[]
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_sections")
+}
+
+// A single lecture (video) inside a section. The video asset lives in DAM
+// (videoMediaId); durationSeconds is the "length" the FE renders (as minutes).
+model CourseLecture {
+  id              Int      @id @default(autoincrement())
+  sectionId       Int
+  title           String
+  videoMediaId    Int? // DAM asset ID for the lecture video
+  durationSeconds Int      @default(0) // lecture length in seconds
+  sortOrder       Int      @default(0)
+  isPreview       Boolean  @default(false) // free preview (viewable without enrollment)
+  createdAt       DateTime @default(now())
+
+  section CourseSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([sectionId])
+  @@map("course_lectures")
+}
+
+// A learning outcome shown on the course view ("What you'll learn"): each has a
+// title and an optional description.
+model CourseOutcome {
+  id          Int     @id @default(autoincrement())
+  courseId    Int
+  title       String
+  description String?
+  sortOrder   Int     @default(0)
+
+  course TrainingCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_outcomes")
+}
+
+// A learner rating/review. Feeds the denormalized TrainingCourse.ratingAvg /
+// ratingCount shown on the catalog + course view.
+model CourseReview {
+  id         Int      @id @default(autoincrement())
+  courseId   Int
+  employeeId Int?
+  rating     Int // 1-5
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  course   TrainingCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  employee Employee?      @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_reviews")
 }
 
 model TrainingEnrollment {
@@ -2147,16 +2259,18 @@ model TrainingSessionAttendee {
 }
 
 model Certification {
-  id                 Int       @id @default(autoincrement())
+  id                 Int                 @id @default(autoincrement())
   employeeId         Int
   courseId           Int?
   name               String
+  category           String? // certification category (card chip on the Certifications screen)
+  status             CertificationStatus @default(ACTIVE) // lifecycle for KPI counts (expiry also derived from expiryDate)
   issuedBy           String?
   issuedAt           DateTime?
   expiryDate         DateTime?
   credentialId       String?
   certificateMediaId Int?
-  created_at         DateTime  @default(now())
+  created_at         DateTime            @default(now())
 
   employee Employee        @relation(fields: [employeeId], references: [id])
   course   TrainingCourse? @relation(fields: [courseId], references: [id])

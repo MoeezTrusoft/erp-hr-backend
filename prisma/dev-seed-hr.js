@@ -564,6 +564,379 @@ async function main() {
   }
   console.log(`Attendance: ${attCreated} new rows (target ~${EMPLOYEES.length * ATTENDANCE_DATES.length}).`);
 
+  // 12. Course Catalog + Certifications (LMS) — coherent data so the Course
+  // Catalog, Course View, Transcripts and Certifications screens render real
+  // rows. New-model tenantId is stamped by the RLS extension / column DEFAULT
+  // hr_current_tenant() under the ambient tenant context, so seed creates do NOT
+  // pass tenantId. Parent rows are created first, then children reference the
+  // returned id sequentially (no nested create) so each row's GUC/default
+  // applies cleanly. Idempotent-ish: guarded on the course courseCode.
+  const CERT_BASE = new Date("2026-07-23T00:00:00.000Z");
+  const plusDays = (base, n) => new Date(base.getTime() + n * 86_400_000);
+
+  // Reuse a handful of real employees as authors / instructors / enrollees /
+  // reviewers / certification owners.
+  const lmsEmps = await prisma.employee.findMany({ take: 8 });
+
+  // Training categories (name is not db-unique → getOrCreate find/create).
+  const CATEGORY_NAMES = ["Web Development", "Data & AI", "Compliance"];
+  const catByName = {};
+  for (const name of CATEGORY_NAMES) {
+    catByName[name] = await getOrCreate(
+      "trainingCategory",
+      { name },
+      { name, description: `${name} courses` }
+    );
+  }
+
+  // Full course specs — each with sections/lectures/outcomes/reviews.
+  const COURSES = [
+    {
+      courseCode: "WD-101",
+      title: "Complete Web Development Bootcamp",
+      subtitle: "Go from zero to full-stack developer",
+      category: "Web Development",
+      mode: "ONLINE",
+      durationHours: 40,
+      tags: ["html", "css", "javascript", "react"],
+      relatedTopics: ["JavaScript", "React", "Node.js"],
+      requirements: ["A computer with internet", "No prior experience needed"],
+      description:
+        "A hands-on bootcamp covering HTML, CSS, JavaScript, React and Node.js to build and ship real web applications.",
+      sections: [
+        {
+          title: "Getting Started with the Web",
+          lectures: [
+            { title: "Welcome & Course Overview", dur: 420 },
+            { title: "How the Web Works", dur: 780 },
+            { title: "Setting Up Your Editor", dur: 540 },
+            { title: "Your First HTML Page", dur: 900 },
+          ],
+        },
+        {
+          title: "Styling with CSS",
+          lectures: [
+            { title: "CSS Fundamentals", dur: 660 },
+            { title: "The Box Model", dur: 720 },
+            { title: "Flexbox & Grid", dur: 1080 },
+            { title: "Responsive Design", dur: 960 },
+            { title: "CSS Project: Landing Page", dur: 1200 },
+          ],
+        },
+        {
+          title: "JavaScript & React",
+          lectures: [
+            { title: "JavaScript Basics", dur: 840 },
+            { title: "DOM Manipulation", dur: 720 },
+            { title: "Intro to React", dur: 1020 },
+            { title: "React Hooks", dur: 1140 },
+            { title: "Building a React App", dur: 1200 },
+            { title: "Deploying Your App", dur: 600 },
+          ],
+        },
+      ],
+      outcomes: [
+        { title: "Build responsive websites", description: "Structure and style pages that work on any device." },
+        { title: "Write modern JavaScript", description: "Use ES modules, promises and async/await confidently." },
+        { title: "Create React applications", description: "Compose components and manage state with hooks." },
+        { title: "Deploy to production", description: "Ship a full-stack app to a live URL." },
+      ],
+      reviews: [
+        { rating: 5, comment: "Best bootcamp I've taken — clear and practical." },
+        { rating: 4, comment: "Great pacing, wish there was more on testing." },
+        { rating: 5, comment: "The React section alone was worth it." },
+        { rating: 4, comment: "Solid fundamentals, hands-on projects helped." },
+        { rating: 5, comment: "Highly recommend for beginners." },
+      ],
+    },
+    {
+      courseCode: "DS-201",
+      title: "Data Science & Machine Learning",
+      subtitle: "From data wrangling to predictive models",
+      category: "Data & AI",
+      mode: "HYBRID",
+      durationHours: 60,
+      tags: ["python", "pandas", "machine-learning", "statistics"],
+      relatedTopics: ["Python", "Pandas", "scikit-learn"],
+      requirements: ["Basic Python knowledge", "High-school level math"],
+      description:
+        "Learn to clean and analyze data, visualize insights, and train machine-learning models with Python.",
+      sections: [
+        {
+          title: "Foundations of Data Science",
+          lectures: [
+            { title: "What is Data Science?", dur: 480 },
+            { title: "Python for Data", dur: 900 },
+            { title: "NumPy Essentials", dur: 780 },
+            { title: "Pandas DataFrames", dur: 1020 },
+          ],
+        },
+        {
+          title: "Exploratory Analysis",
+          lectures: [
+            { title: "Data Cleaning", dur: 840 },
+            { title: "Descriptive Statistics", dur: 720 },
+            { title: "Data Visualization", dur: 960 },
+            { title: "Feature Engineering", dur: 1080 },
+          ],
+        },
+        {
+          title: "Machine Learning",
+          lectures: [
+            { title: "Supervised Learning", dur: 1140 },
+            { title: "Regression Models", dur: 1020 },
+            { title: "Classification Models", dur: 1080 },
+            { title: "Model Evaluation", dur: 900 },
+          ],
+        },
+      ],
+      outcomes: [
+        { title: "Wrangle real datasets", description: "Clean, merge and reshape data with Pandas." },
+        { title: "Visualize insights", description: "Communicate findings with clear charts." },
+        { title: "Train ML models", description: "Build and evaluate regression and classification models." },
+        { title: "Avoid common pitfalls", description: "Recognize overfitting and data leakage." },
+      ],
+      reviews: [
+        { rating: 5, comment: "Deep and practical, great real-world datasets." },
+        { rating: 4, comment: "Challenging but rewarding." },
+        { rating: 4, comment: "Loved the ML evaluation module." },
+      ],
+    },
+    {
+      courseCode: "CMP-100",
+      title: "Workplace Safety & Compliance",
+      subtitle: "Stay compliant and keep your team safe",
+      category: "Compliance",
+      mode: "OFFLINE",
+      durationHours: 8,
+      tags: ["safety", "compliance", "policy"],
+      relatedTopics: ["Occupational Safety", "Data Privacy", "Ethics"],
+      requirements: ["No prerequisites"],
+      description:
+        "Mandatory training on workplace safety procedures, data privacy and the company code of conduct.",
+      sections: [
+        {
+          title: "Health & Safety",
+          lectures: [
+            { title: "Emergency Procedures", dur: 600 },
+            { title: "Ergonomics at Work", dur: 480 },
+            { title: "Incident Reporting", dur: 540 },
+            { title: "Fire Safety", dur: 420 },
+          ],
+        },
+        {
+          title: "Data & Conduct",
+          lectures: [
+            { title: "Data Privacy Basics", dur: 660 },
+            { title: "Handling Sensitive Data", dur: 720 },
+            { title: "Code of Conduct", dur: 540 },
+            { title: "Reporting Violations", dur: 480 },
+          ],
+        },
+        {
+          title: "Assessment",
+          lectures: [
+            { title: "Compliance Scenarios", dur: 600 },
+            { title: "Final Knowledge Check", dur: 300 },
+            { title: "Certification Steps", dur: 360 },
+            { title: "Wrap-up & Resources", dur: 300 },
+          ],
+        },
+      ],
+      outcomes: [
+        { title: "Respond to emergencies", description: "Follow correct emergency and evacuation procedures." },
+        { title: "Protect sensitive data", description: "Apply data-privacy rules to daily work." },
+        { title: "Uphold the code of conduct", description: "Recognize and report policy violations." },
+        { title: "Pass the compliance check", description: "Meet the mandatory annual requirement." },
+      ],
+      reviews: [
+        { rating: 4, comment: "Clear and to the point." },
+        { rating: 3, comment: "Necessary, if a bit dry." },
+        { rating: 5, comment: "The scenarios made it stick." },
+        { rating: 4, comment: "Good refresher on data privacy." },
+      ],
+    },
+  ];
+
+  let lmsCourses = 0;
+  let lmsSections = 0;
+  let lmsLectures = 0;
+  let lmsOutcomes = 0;
+  let lmsReviews = 0;
+  const courseByCode = {};
+
+  for (const c of COURSES) {
+    // Guard: skip the whole block if this course already exists.
+    const already = await prisma.trainingCourse.findFirst({ where: { courseCode: c.courseCode } });
+    if (already) {
+      courseByCode[c.courseCode] = already;
+      continue;
+    }
+
+    const author = lmsEmps[lmsCourses % lmsEmps.length];
+    const instructor = lmsEmps[(lmsCourses + 1) % lmsEmps.length];
+    const course = await prisma.trainingCourse.create({
+      data: {
+        title: c.title,
+        subtitle: c.subtitle,
+        description: c.description,
+        courseCode: c.courseCode,
+        language: "English",
+        mode: c.mode,
+        durationHours: c.durationHours,
+        tags: c.tags,
+        relatedTopics: c.relatedTopics,
+        requirements: c.requirements,
+        introVideoMediaId: 1001 + lmsCourses,
+        createdById: author.id,
+        instructorId: instructor.id,
+        status: "ACTIVE",
+        categoryId: catByName[c.category].id,
+      },
+    });
+    courseByCode[c.courseCode] = course;
+    lmsCourses += 1;
+
+    // Sections + their lectures (sequential; first lecture of first section is preview).
+    let sIdx = 0;
+    for (const s of c.sections) {
+      const section = await prisma.courseSection.create({
+        data: { courseId: course.id, title: s.title, sortOrder: sIdx },
+      });
+      lmsSections += 1;
+      let lIdx = 0;
+      for (const lec of s.lectures) {
+        await prisma.courseLecture.create({
+          data: {
+            sectionId: section.id,
+            title: lec.title,
+            videoMediaId: 2001 + lmsLectures,
+            durationSeconds: lec.dur,
+            sortOrder: lIdx,
+            isPreview: sIdx === 0 && lIdx === 0,
+          },
+        });
+        lmsLectures += 1;
+        lIdx += 1;
+      }
+      sIdx += 1;
+    }
+
+    // Outcomes.
+    let oIdx = 0;
+    for (const o of c.outcomes) {
+      await prisma.courseOutcome.create({
+        data: { courseId: course.id, title: o.title, description: o.description, sortOrder: oIdx },
+      });
+      lmsOutcomes += 1;
+      oIdx += 1;
+    }
+
+    // Reviews from different employees.
+    let rIdx = 0;
+    for (const rv of c.reviews) {
+      const reviewer = lmsEmps[(lmsCourses + rIdx) % lmsEmps.length];
+      await prisma.courseReview.create({
+        data: { courseId: course.id, employeeId: reviewer.id, rating: rv.rating, comment: rv.comment },
+      });
+      lmsReviews += 1;
+      rIdx += 1;
+    }
+
+    // Denormalize rating avg/count from the reviews just created.
+    const ratings = c.reviews.map((r) => r.rating);
+    const ratingCount = ratings.length;
+    const ratingAvg = Math.round((ratings.reduce((a, b) => a + b, 0) / ratingCount) * 100) / 100;
+    await prisma.trainingCourse.update({
+      where: { id: course.id },
+      data: { ratingAvg, ratingCount },
+    });
+  }
+  console.log(
+    `LMS courses: +${lmsCourses} (sections ${lmsSections}, lectures ${lmsLectures}, outcomes ${lmsOutcomes}, reviews ${lmsReviews}).`
+  );
+
+  // Enrollments — mix of statuses so the transcript screen has data. Keyed on
+  // (courseId, employeeId) via findFirst → idempotent.
+  const ENROLLMENTS = [
+    { code: "WD-101", empIdx: 0, status: "COMPLETED", progress: 100, completed: 30, score: 92 },
+    { code: "WD-101", empIdx: 1, status: "IN_PROGRESS", progress: 55 },
+    { code: "WD-101", empIdx: 2, status: "ENROLLED", progress: 0 },
+    { code: "DS-201", empIdx: 3, status: "COMPLETED", progress: 100, completed: 45, score: 88 },
+    { code: "DS-201", empIdx: 4, status: "IN_PROGRESS", progress: 40 },
+    { code: "CMP-100", empIdx: 0, status: "COMPLETED", progress: 100, completed: 15, score: 95 },
+    { code: "CMP-100", empIdx: 5, status: "COMPLETED", progress: 100, completed: 20, score: 78 },
+    { code: "CMP-100", empIdx: 6, status: "ENROLLED", progress: 0 },
+  ];
+  let lmsEnrollments = 0;
+  for (const en of ENROLLMENTS) {
+    const course = courseByCode[en.code];
+    const emp = lmsEmps[en.empIdx % lmsEmps.length];
+    const existing = await prisma.trainingEnrollment.findFirst({
+      where: { courseId: course.id, employeeId: emp.id },
+    });
+    if (existing) continue;
+    await prisma.trainingEnrollment.create({
+      data: {
+        courseId: course.id,
+        employeeId: emp.id,
+        status: en.status,
+        progress: en.progress,
+        completionDate: en.status === "COMPLETED" ? plusDays(CERT_BASE, -(en.completed || 30)) : null,
+        score: en.status === "COMPLETED" ? en.score ?? null : null,
+      },
+    });
+    lmsEnrollments += 1;
+  }
+  console.log(`LMS enrollments: +${lmsEnrollments}.`);
+
+  // Certifications — spread across ALL KPI buckets. Keyed on (employeeId, name)
+  // via findFirst → idempotent. Owners cycle through the reused employees.
+  const CERTIFICATIONS = [
+    // ACTIVE (3–4): expiry well in the future or null.
+    { empIdx: 0, name: "AWS Certified Solutions Architect", category: "Technical", status: "ACTIVE", issuedBy: "Amazon Web Services", issued: -400, expiry: 330, course: "WD-101" },
+    { empIdx: 1, name: "Certified Kubernetes Administrator", category: "Technical", status: "ACTIVE", issuedBy: "CNCF", issued: -200, expiry: 500 },
+    { empIdx: 2, name: "Professional Scrum Master", category: "Technical", status: "ACTIVE", issuedBy: "Scrum.org", issued: -120, expiry: null },
+    { empIdx: 3, name: "ISO 9001 Auditor", category: "Compliance", status: "ACTIVE", issuedBy: "ISO", issued: -300, expiry: 400 },
+    // RENEWAL / expiring soon (1–2): expiryDate within ~45 days of base.
+    { empIdx: 4, name: "First Aid Certification", category: "Safety", status: "RENEWAL", issuedBy: "Red Crescent", issued: -700, expiry: 30, course: "CMP-100" },
+    { empIdx: 5, name: "OSHA Safety Certification", category: "Safety", status: "ACTIVE", issuedBy: "OSHA", issued: -350, expiry: 20 },
+    // INACTIVE (1).
+    { empIdx: 6, name: "Legacy PCI-DSS Assessor", category: "Compliance", status: "INACTIVE", issuedBy: "PCI SSC", issued: -900, expiry: -60 },
+    // EXPIRED (1–2): expiryDate in the past.
+    { empIdx: 7, name: "Google Analytics Certification", category: "Technical", status: "EXPIRED", issuedBy: "Google", issued: -800, expiry: -120 },
+    { empIdx: 0, name: "GDPR Data Protection Certification", category: "Compliance", status: "EXPIRED", issuedBy: "IAPP", issued: -750, expiry: -30 },
+  ];
+  let lmsCerts = 0;
+  const certBuckets = { ACTIVE: 0, RENEWAL: 0, INACTIVE: 0, EXPIRED: 0 };
+  for (const ct of CERTIFICATIONS) {
+    const emp = lmsEmps[ct.empIdx % lmsEmps.length];
+    const existing = await prisma.certification.findFirst({
+      where: { employeeId: emp.id, name: ct.name },
+    });
+    if (existing) {
+      certBuckets[ct.status] += 1;
+      continue;
+    }
+    await prisma.certification.create({
+      data: {
+        employeeId: emp.id,
+        courseId: ct.course ? courseByCode[ct.course]?.id ?? null : null,
+        name: ct.name,
+        category: ct.category,
+        status: ct.status,
+        issuedBy: ct.issuedBy,
+        issuedAt: plusDays(CERT_BASE, ct.issued),
+        expiryDate: ct.expiry === null ? null : plusDays(CERT_BASE, ct.expiry),
+      },
+    });
+    lmsCerts += 1;
+    certBuckets[ct.status] += 1;
+  }
+  console.log(
+    `LMS certifications: +${lmsCerts} (ACTIVE ${certBuckets.ACTIVE}, RENEWAL ${certBuckets.RENEWAL}, INACTIVE ${certBuckets.INACTIVE}, EXPIRED ${certBuckets.EXPIRED}).`
+  );
+
   console.log("HR dev seed complete.");
 }
 

@@ -24,6 +24,10 @@ import {
   mcpUpdateTrainingEnrollmentProgress,
   mcpUpdateTrainingEnrollmentStatus,
 } from "../controllers/learningMcpController.js";
+import {
+  getCertificationKpis,
+  getEmployeeTranscript,
+} from "../../services/certification.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -240,6 +244,8 @@ export function registerLearningTools(server) {
       issuedBy: z.string().optional().describe("Issuing authority/body"),
       issuedDate: z.string().describe("ISO 8601 date YYYY-MM-DD — issue date (Certification.issuedAt)"),
       expiryDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — expiry date"),
+      category: z.string().optional().describe("Certification category/grouping label (Certification.category), e.g. 'Cloud', 'Safety', 'Compliance'"),
+      status: z.enum(["ACTIVE", "RENEWAL", "INACTIVE", "EXPIRED"]).optional().describe("Certification lifecycle — one of ACTIVE | RENEWAL | INACTIVE | EXPIRED. Defaults ACTIVE. Note: EXPIRED is also derived automatically when expiryDate is past."),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -250,8 +256,38 @@ export function registerLearningTools(server) {
   );
 
   server.tool(
+    "hr_certifications_kpis",
+    "Certifications & Transcripts screen KPI tiles: counts of certifications by effective lifecycle status (active, renewals, inactive, expired) plus total. Each certification is bucketed into exactly one status so the four counts sum to total. Effective status precedence: INACTIVE > EXPIRED (status EXPIRED or expiryDate in the past) > RENEWAL (status RENEWAL or expiryDate within 60 days) > ACTIVE.",
+    {},
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:learning", user.isAdmin);
+      const kpis = await getCertificationKpis(user.tenantId);
+      return { content: [{ type: "text", text: JSON.stringify(kpis) }] };
+    }, "hr_certifications_kpis")
+  );
+
+  server.tool(
+    "hr_employee_transcript",
+    "Learner transcript for the Certifications & Transcripts screen: an employee's completed training courses (with category, completion date, score, progress) plus their certification cards. Defaults to the caller's own employee if employeeId is omitted.",
+    {
+      employeeId: z.coerce.number().int().positive().optional().describe("Employee whose transcript to fetch (references Employee.id). Omit to use the calling user's own employeeId from context."),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:learning", user.isAdmin);
+      const employeeId = args.employeeId ?? user.employeeId;
+      if (!employeeId) {
+        throw Object.assign(new Error("employeeId is required (no employeeId in context)"), { status: 400 });
+      }
+      const data = await getEmployeeTranscript({ tenantId: user.tenantId, employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_transcript")
+  );
+
+  server.tool(
     "hr_certifications_list",
-    "List certification records (optionally filtered by employee), paginated",
+    "List certification records as Certifications & Transcripts cards (optionally filtered by employee), paginated. Each card includes: category, title (certification name), completedOn (issue date), owner (employee full name) + ownerId, effective status (ACTIVE | RENEWAL | INACTIVE | EXPIRED, derived from status + expiryDate), issuedBy, expiryDate, credentialId, courseId, certificateMediaId.",
     {
       employeeId: z.string().optional().describe("Filter to one employee (references Employee.id); omit for all"),
       page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
@@ -288,6 +324,8 @@ export function registerLearningTools(server) {
       expiryDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — expiry date; null/empty clears it"),
       credentialId: z.string().optional().describe("External credential id / license number"),
       courseId: z.string().optional().describe("Linked training course id (references TrainingCourse.id)"),
+      category: z.string().optional().describe("Certification category/grouping label (Certification.category), e.g. 'Cloud', 'Safety', 'Compliance'"),
+      status: z.enum(["ACTIVE", "RENEWAL", "INACTIVE", "EXPIRED"]).optional().describe("Certification lifecycle — one of ACTIVE | RENEWAL | INACTIVE | EXPIRED. Defaults ACTIVE. Note: EXPIRED is also derived automatically when expiryDate is past."),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
