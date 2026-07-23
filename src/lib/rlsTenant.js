@@ -96,6 +96,8 @@ const RLS_MODELS = new Set([
     'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',
     'ComplianceItem', 'DocumentExpiryAlert', 'DevelopmentPlan', 'DevelopmentPlanItem',
     'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',
+    // Deferred D1/D2 (2026-07-23): Employee (tenant_id col) + OutboxEvent.
+    'Employee', 'OutboxEvent',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
