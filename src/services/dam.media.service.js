@@ -4,7 +4,15 @@ import logger from "../lib/logger.js";
 import { ambientTenantHeader, signServiceJwtEdDSA } from "../lib/serviceJwt.js";
 
 const DAM_BASE_URL = process.env.DAM_SERVICE_URL || "http://localhost:3002/api";
-const DAM_TIMEOUT = parseInt(process.env.DAM_SERVICE_TIMEOUT || "1000000", 10);
+// RES-2: bound every cross-boundary DAM call. The legacy DAM_SERVICE_TIMEOUT
+// default was 1_000_000ms (~16.6 min) — effectively unbounded, so a stalled DAM
+// upstream could hang an HR request indefinitely. We now use two conservative,
+// env-tunable budgets (DAM_SERVICE_TIMEOUT is still honoured as a fallback for
+// existing deployments):
+//   * DAM_HTTP_TIMEOUT_MS        (default 10s) — metadata / GET / normal requests
+//   * DAM_HTTP_UPLOAD_TIMEOUT_MS (default 30s) — multipart uploads + byte downloads
+const DAM_TIMEOUT = parseInt(process.env.DAM_HTTP_TIMEOUT_MS || process.env.DAM_SERVICE_TIMEOUT || "10000", 10);
+const DAM_UPLOAD_TIMEOUT = parseInt(process.env.DAM_HTTP_UPLOAD_TIMEOUT_MS || "30000", 10);
 
 const damApi = axios.create({
   baseURL: DAM_BASE_URL,
@@ -91,7 +99,7 @@ export async function downloadDamAssetBuffer(mediaId) {
     try {
       const res = await axios.get(url, {
         responseType: "arraybuffer",
-        timeout: DAM_TIMEOUT,
+        timeout: DAM_UPLOAD_TIMEOUT, // RES-2: byte download — allow the larger budget
         headers: withInternalSecret(),
         maxRedirects: 5,
       });
@@ -107,6 +115,7 @@ export async function downloadDamAssetBuffer(mediaId) {
   try {
     const res = await damApi.get(`/assets/video-stream/${mediaId}`, {
       responseType: "arraybuffer",
+      timeout: DAM_UPLOAD_TIMEOUT, // RES-2: byte download — allow the larger budget
       headers: withInternalSecret(),
       maxRedirects: 5,
     });
@@ -141,11 +150,24 @@ export async function uploadFileToDAM(file, type = "avatar") {
     // retained X-Internal-Secret fallback and ambient tenant header — same auth
     // shape as withInternalSecret above. (fetch, not axios, so we build headers
     // inline here; the token/secret/tenant channels are identical.)
-    const res = await fetch(`${DAM_BASE_URL.replace(/\/+$/, "")}/assets/upload`, {
-      method: "POST",
-      headers: withInternalSecret(),
-      body: fd,
-    });
+    //
+    // RES-2: native fetch has NO built-in timeout, so an unresponsive DAM would
+    // hang this upload forever. Bound it with an AbortController + setTimeout
+    // (DAM_HTTP_UPLOAD_TIMEOUT_MS, default 30s). The timer is always cleared in
+    // `finally` so no timer leaks whether the upload succeeds, errors, or aborts.
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), DAM_UPLOAD_TIMEOUT);
+    let res;
+    try {
+      res = await fetch(`${DAM_BASE_URL.replace(/\/+$/, "")}/assets/upload`, {
+        method: "POST",
+        headers: withInternalSecret(),
+        body: fd,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res.ok) {
       logger.error({ status: res.status, body: (await res.text()).slice(0, 300) }, "DAM upload failed");
       return [];

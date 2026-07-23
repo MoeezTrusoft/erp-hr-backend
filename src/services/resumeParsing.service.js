@@ -16,6 +16,11 @@ import { downloadDamAssetBuffer } from "./dam.media.service.js";
 
 const OPENAI_MODEL = process.env.OPENAI_RESUME_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const MAX_RESUME_CHARS = parseInt(process.env.RESUME_MAX_CHARS || "24000", 10);
+// RES-2: the OpenAI call was effectively unbounded. openai@^6 exposes a
+// client-level `timeout` (ms) that governs each request (and can be overridden
+// per-request); we set it on the client and pass it again on responses.create as
+// a belt-and-braces deadline. Default 30s.
+const OPENAI_TIMEOUT_MS = parseInt(process.env.OPENAI_TIMEOUT_MS || "30000", 10);
 const LEVELS = ["Beginner", "Intermediate", "Advanced", "Expert"];
 
 const depError = (pkg) =>
@@ -35,7 +40,7 @@ async function getOpenAIClient() {
   } catch {
     throw depError("openai");
   }
-  return new OpenAI({ apiKey });
+  return new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: 2 });
 }
 
 // ---- text extraction (lazy pdf-parse / mammoth) ----
@@ -173,13 +178,16 @@ async function parseResumeText(text) {
     return { skills: [], competencies: [], certifications: [], warning: "resume text was empty or too short" };
   }
   const client = await getOpenAIClient();
-  const response = await client.responses.create({
-    model: OPENAI_MODEL,
-    input: buildPrompt(text),
-    text: { format: { type: "json_object" } },
-    temperature: 0.2,
-    max_output_tokens: 3000,
-  });
+  const response = await client.responses.create(
+    {
+      model: OPENAI_MODEL,
+      input: buildPrompt(text),
+      text: { format: { type: "json_object" } },
+      temperature: 0.2,
+      max_output_tokens: 3000,
+    },
+    { timeout: OPENAI_TIMEOUT_MS } // RES-2: per-request deadline (belt-and-braces alongside the client timeout)
+  );
 
   let parsed = {};
   try {
