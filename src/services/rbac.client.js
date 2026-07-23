@@ -229,56 +229,74 @@ export async function getUserByEmployeeId(employeeId) {
 
 // ─── RBAC ORG READS (departments live in RBAC, scoped to the tenant's Company) ──
 // These let HR read the authoritative org structure from RBAC over the internal
-// service plane. The acting user's identity headers are forwarded so RBAC scopes
-// the result to THAT operator's company (resolveActorTenant). Fail-soft: on any
-// error return an empty result so an HR read never breaks when RBAC is degraded.
+// service plane — via RBAC's MCP endpoint (/mcp), NOT its REST /api routes
+// (those sit behind a USER `authenticate` middleware HR can't satisfy; /mcp sits
+// behind internalServiceGuard + gatewayIdentity, which the service-JWT + the
+// forwarded acting-user headers DO satisfy). Authorization still applies: RBAC's
+// department tools assert the acting user's `/rbac/api/department` VIEW grant, so
+// a user without it gets an empty result. Fail-soft: any error → empty result so
+// an HR read never breaks when RBAC is degraded or the grant is absent.
+
+// Low-level JSON-RPC call to a RBAC MCP method (tools/call or resources/read).
+// Returns the parsed JSON-RPC `result`, or throws on transport/tool error.
+async function rbacMcp(method, params) {
+  const rpc = { jsonrpc: "2.0", id: `hr-${Date.now()}`, method, params };
+  const res = await rbacApi.request({
+    url: "/mcp",
+    method: "POST",
+    headers: withInternalAuth({
+      ...actorIdentityHeaders(),
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    }),
+    data: rpc,
+    responseType: "text",
+    transitional: { silentJSONParsing: false },
+  });
+  const rpcMsg = parseMcpBody(res?.data);
+  if (rpcMsg?.error) throw new Error(rpcMsg.error.message || "RBAC MCP error");
+  const result = rpcMsg?.result;
+  // tools/call returns content[]; resources/read returns contents[]. Tool-level
+  // errors come back as { isError:true, content:[{text: JSON({error,status})}] }.
+  if (result?.isError) {
+    let p = {};
+    try { p = JSON.parse(result?.content?.[0]?.text ?? "{}"); } catch { /* leak-safe */ }
+    throw new Error(p.error || "RBAC tool error");
+  }
+  const text = result?.content?.[0]?.text ?? result?.contents?.[0]?.text;
+  return text ? JSON.parse(text) : null;
+}
 
 /**
- * List the acting user's company's departments from RBAC.
+ * List the acting user's company's departments from RBAC (resource rbac://departments).
  * @returns {Promise<Array<{ id:number, name:string, description?:string|null }>>}
  */
 export async function listDepartments() {
   try {
-    const res = await rbacApi.request({
-      url: "/api/department",
-      method: "GET",
-      headers: withInternalAuth(actorIdentityHeaders()),
-    });
-    const body = res?.data;
-    const arr = body?.departments ?? body?.data ?? (Array.isArray(body) ? body : []);
+    const data = await rbacMcp("resources/read", { uri: "rbac://departments" });
+    const arr = data?.departments ?? data?.data ?? (Array.isArray(data) ? data : []);
     return (Array.isArray(arr) ? arr : [])
       .map((d) => ({ id: d.id, name: d.name, description: d.description ?? null }))
       .filter((d) => d.id != null && d.name);
   } catch (err) {
-    logger.warn(
-      { err: err?.message, status: err?.response?.status },
-      "rbac.client: listDepartments failed — department will be null"
-    );
+    logger.warn({ err: err?.message }, "rbac.client: listDepartments failed — department will be null");
     return [];
   }
 }
 
 /**
- * Get one RBAC department by id (tenant-scoped by the acting user's company).
+ * Get one RBAC department by id (tool rbac_department_get, tenant-scoped by company).
  * @returns {Promise<{ id:number, name:string, description?:string|null }|null>}
  */
 export async function getDepartmentById(id) {
   if (id == null) return null;
   try {
-    const res = await rbacApi.request({
-      url: `/api/department/${encodeURIComponent(id)}`,
-      method: "GET",
-      headers: withInternalAuth(actorIdentityHeaders()),
-    });
-    const body = res?.data;
-    const d = body?.department ?? body?.data ?? body ?? null;
+    const data = await rbacMcp("tools/call", { name: "rbac_department_get", arguments: { id: String(id) } });
+    const d = data?.department ?? data?.data ?? data ?? null;
     if (!d || d.id == null) return null;
     return { id: d.id, name: d.name, description: d.description ?? null };
   } catch (err) {
-    logger.warn(
-      { err: err?.message, status: err?.response?.status, id },
-      "rbac.client: getDepartmentById failed — department will be null"
-    );
+    logger.warn({ err: err?.message, id }, "rbac.client: getDepartmentById failed — department will be null");
     return null;
   }
 }
