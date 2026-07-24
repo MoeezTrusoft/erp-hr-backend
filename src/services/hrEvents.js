@@ -124,6 +124,35 @@ export function offerSentEvent(offer, ctx = {}) {
     });
 }
 
+// ── Documents (compliance / expiry) ──────────────────────────────────────────
+// HR Reports → Document Expiry Alerts: a manually-sent reminder for an
+// employee's about-to-expire (or expired) document. HR only EMITS this event;
+// the actual in-app notification is produced DOWNSTREAM by notification-hub if
+// it has a mapper for `hr.document.expiry_reminder.v1`. The email channel is
+// intentionally disabled at the source (see EMAIL_ENABLED in
+// documentExpiryReport.service.js); channels.email is threaded through as false
+// so a downstream mapper never fans an email out until it is flipped on.
+export function documentExpiryReminderEvent(media, ctx = {}, extra = {}) {
+    // The EmployeeMedia row carries snake_case ids/fields; tolerate nulls and
+    // string-ify every id (baseArgs pulls tenantId off the row, fail-closed).
+    const documentName =
+        media?.file_name || media?.title || 'Document';
+    return baseArgs('hr.document.expiry_reminder.v1', media, ctx, {
+        aggregateType: 'EmployeeMedia',
+        aggregateId: media?.id,
+        payload: {
+            employeeMediaId: media?.id != null ? String(media.id) : null,
+            employeeId: media?.employee_id != null ? String(media.employee_id) : null,
+            documentName,
+            expiryDate: media?.expiry_date ?? null,
+            message: extra?.message ?? null,
+            // email channel intentionally disabled — flip EMAIL_ENABLED /
+            // notification-hub mapper when ready.
+            channels: { inApp: true, email: extra?.emailEnabled === true },
+        },
+    });
+}
+
 // ── Performance ──────────────────────────────────────────────────────────────
 export function performanceReviewFinalizedEvent(review, ctx = {}) {
     return baseArgs('hr.performance.review_finalized.v1', review, ctx, {

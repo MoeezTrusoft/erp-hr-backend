@@ -937,6 +937,62 @@ async function main() {
     `LMS certifications: +${lmsCerts} (ACTIVE ${certBuckets.ACTIVE}, RENEWAL ${certBuckets.RENEWAL}, INACTIVE ${certBuckets.INACTIVE}, EXPIRED ${certBuckets.EXPIRED}).`
   );
 
+  // ── 13. Employee documents (EmployeeMedia) with expiry dates ─────────────
+  // Feeds the HR Reports → Document Expiry Alerts screen. expiry_date is a
+  // STRING (ISO). Dates are relative to 2026-07-23 and span ALL KPI buckets:
+  //   2 expired (past), 2 expiring<=30d, 1 expiring<=60d, 1 expiring<=90d,
+  //   2 healthy (>90d). Idempotent: keyed on (employee_id, file_name). No
+  //   tenantId passed — the ambient RLS create-net default stamps it.
+  const DOC_BASE = new Date("2026-07-23T00:00:00.000Z");
+  const isoDay = (n) => plusDays(DOC_BASE, n).toISOString();
+  const EMPLOYEE_DOCS = [
+    // expired (2)
+    { empIdx: 0, title: "Passport", file_name: "Passport.pdf", category: "Identity", expiry: -45 },
+    { empIdx: 1, title: "Work Visa", file_name: "Work Visa.pdf", category: "Legal", expiry: -10 },
+    // expiring within 30d (2)
+    { empIdx: 2, title: "Work Permit", file_name: "Work Permit.pdf", category: "Legal", expiry: 12 },
+    { empIdx: 3, title: "National ID", file_name: "National ID.pdf", category: "Identity", expiry: 28 },
+    // expiring within 60d (1)
+    { empIdx: 4, title: "Employment Contract", file_name: "Contract.pdf", category: "Contract", expiry: 50 },
+    // expiring within 90d (1)
+    { empIdx: 5, title: "Medical Certificate", file_name: "Medical Certificate.pdf", category: "Legal", expiry: 80 },
+    // healthy > 90d (2)
+    { empIdx: 6, title: "Driving License", file_name: "Driving License.pdf", category: "Identity", expiry: 200 },
+    { empIdx: 7, title: "NDA Agreement", file_name: "NDA.pdf", category: "Contract", expiry: 400 },
+  ];
+  let docsCreated = 0;
+  const docBuckets = { expired: 0, expiring30: 0, expiring60: 0, expiring90: 0, healthy: 0 };
+  for (const doc of EMPLOYEE_DOCS) {
+    const emp = lmsEmps[doc.empIdx % lmsEmps.length];
+    if (doc.expiry < 0) docBuckets.expired += 1;
+    else if (doc.expiry <= 30) docBuckets.expiring30 += 1;
+    else if (doc.expiry <= 60) docBuckets.expiring60 += 1;
+    else if (doc.expiry <= 90) docBuckets.expiring90 += 1;
+    else docBuckets.healthy += 1;
+
+    const existing = await prisma.employeeMedia.findFirst({
+      where: { employee_id: emp.id, file_name: doc.file_name },
+    });
+    if (existing) continue;
+    await prisma.employeeMedia.create({
+      data: {
+        title: doc.title,
+        file_name: doc.file_name,
+        category: doc.category,
+        mime_type: "application/pdf",
+        media_id: 900000 + docsCreated,
+        expiry_date: isoDay(doc.expiry),
+        uploaded_at: plusDays(DOC_BASE, -365),
+        employee_id: emp.id,
+        status: "active",
+      },
+    });
+    docsCreated += 1;
+  }
+  console.log(
+    `Employee documents (EmployeeMedia): +${docsCreated} (expired ${docBuckets.expired}, <=30d ${docBuckets.expiring30}, <=60d ${docBuckets.expiring60}, <=90d ${docBuckets.expiring90}, healthy ${docBuckets.healthy}).`
+  );
+
   console.log("HR dev seed complete.");
 }
 

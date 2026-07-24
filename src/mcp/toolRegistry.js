@@ -33,6 +33,7 @@ import { registerOvertimeManagerTools } from "./tools/overtimeManagerTools.js";
 import { registerShiftTemplateSwapTools } from "./tools/shiftTemplateSwapTools.js";
 import { registerOrgTools } from "./tools/orgTools.js";
 import { registerCatalogTools } from "./tools/catalogTools.js";
+import { registerReportsTools } from "./tools/reportsTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -139,4 +140,5 @@ export function registerAllTools(server) {
   registerShiftTemplateSwapTools(server);
   registerOrgTools(server);
   registerCatalogTools(server);
+  registerReportsTools(server);
 }
