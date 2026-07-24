@@ -38,6 +38,7 @@ import { registerTimesheetReportTools } from "./tools/timesheetReportTools.js";
 import { registerAttendanceOpsTools } from "./tools/attendanceOpsTools.js";
 import { registerLeaveReportTools } from "./tools/leaveReportTools.js";
 import { registerOvertimeShiftReportTools } from "./tools/overtimeShiftReportTools.js";
+import { registerAuditTrailTools } from "./tools/auditTrailTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -149,4 +150,5 @@ export function registerAllTools(server) {
   registerAttendanceOpsTools(server);
   registerLeaveReportTools(server);
   registerOvertimeShiftReportTools(server);
+  registerAuditTrailTools(server);
 }
