@@ -1648,6 +1648,83 @@ async function main() {
     console.log(`Payroll runtime: runs +${runCount}, payslips +${slipCount}, claims +${claimCount}.`);
   }
 
+  // ── 16. Onboarding Portal (new-hire self-service screen) ────────────────────
+  {
+    const emps = await prisma.employee.findMany({
+      where: { tenant_id: TENANT },
+      take: 6,
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    if (emps.length >= 4) {
+      const [nh, mgr, buddy, resp] = emps;
+      // A recent join date so the directory new-hire window (90d) also tags them.
+      const joinRecent = new Date(NOW.getTime() - 12 * 86_400_000);
+      await prisma.employee.update({ where: { id: nh.id }, data: { managerId: mgr.id, joining_date: joinRecent } });
+
+      const checklist = await upsertBy(
+        "onboardingChecklist",
+        { employeeId: nh.id },
+        { employeeId: nh.id, title: "Employee Onboarding", startDate: joinRecent, status: "IN_PROGRESS", tenantId: TENANT },
+        { status: "IN_PROGRESS" }
+      );
+
+      await upsertBy(
+        "onboardingBuddy",
+        { checklistId: checklist.id },
+        { checklistId: checklist.id, buddyId: buddy.id, tenantId: TENANT },
+        { buddyId: buddy.id }
+      );
+
+      // Tasks span the FE categories; responsible = a real employee (resp/mgr).
+      const taskSpecs = [
+        { title: "Provision laptop & SSO access", category: "IT_ACCESS_SETUP", due: "2026-07-05", who: resp.id, done: true },
+        { title: "Assign desk & access card", category: "WORKSPACE_EQUIPMENT", due: "2026-07-06", who: resp.id, done: false },
+        { title: "Complete orientation session", category: "ORIENTATION_TRAINING", due: "2026-07-07", who: mgr.id, done: false },
+        { title: "Submit signed offer & tax docs", category: "HR_DOCUMENTATION", due: "2026-07-04", who: resp.id, done: true },
+        { title: "Meet the team", category: "TEAM_INTRODUCTION", due: "2026-07-08", who: mgr.id, done: false },
+        { title: "Acknowledge code of conduct", category: "COMPLIANCE_POLICY", due: "2026-07-09", who: mgr.id, done: false },
+      ];
+      let onbTasks = 0;
+      for (const t of taskSpecs) {
+        const exists = await prisma.onboardingTask.findFirst({ where: { checklistId: checklist.id, title: t.title } });
+        if (exists) continue;
+        await prisma.onboardingTask.create({
+          data: {
+            checklistId: checklist.id,
+            title: t.title,
+            category: t.category,
+            assigneeId: t.who,
+            dueDate: d(t.due),
+            completed: t.done,
+            completedAt: t.done ? d(t.due) : null,
+            tenantId: TENANT,
+          },
+        });
+        onbTasks++;
+      }
+
+      // One submitted feedback (radio answers matching the canonical options).
+      const fbExists = await prisma.onboardingFeedback.findFirst({ where: { checklistId: checklist.id } });
+      if (!fbExists) {
+        await prisma.onboardingFeedback.create({
+          data: {
+            checklistId: checklist.id,
+            employeeId: nh.id,
+            tenantId: TENANT,
+            comments: "Great start — the team has been very welcoming.",
+            responses: [
+              { questionId: "role_clarity", question: "How clear are your role and responsibilities?", answer: "Clear" },
+              { questionId: "team_support", question: "How supported do you feel by your team?", answer: "Very supported" },
+              { questionId: "overall_experience", question: "Overall, how would you rate your onboarding experience?", answer: "Good" },
+            ],
+          },
+        });
+      }
+      console.log(`Onboarding portal: checklist ${checklist.id}, tasks +${onbTasks}, buddy + feedback seeded.`);
+    }
+  }
+
   console.log("HR dev seed complete.");
 }
 
