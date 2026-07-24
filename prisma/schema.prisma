@@ -167,6 +167,33 @@ enum PayFrequency {
   MONTHLY
 }
 
+// Payroll Setup — how a salary component's amount is derived.
+enum ComputationType {
+  FIXED // a flat amount (value)
+  PERCENTAGE // value% of the reference base (BASIC/GROSS)
+  FORMULA // safe-evaluated expression (payrollFormula.js)
+}
+
+// Payroll Setup — draft/publish lifecycle for the whole config set (PayrollConfigMeta).
+enum ConfigStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// Payroll Setup — row-level active/inactive toggle shown in the tax-slab and
+// approval-matrix tables (enable/disable without deleting).
+enum RowStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// Payroll Setup — anchor for a Cycle & Calendar boundary (period start/end, pay date).
+enum CalendarAnchor {
+  FIXED_DATE // an explicit date is supplied
+  FIRST_OF_MONTH // day 1 of the month
+  LAST_OF_MONTH // last day of the month
+}
+
 enum TimeEntryType {
   CLOCK_IN
   CLOCK_OUT
@@ -292,6 +319,7 @@ model Employee {
   coursesCreated        TrainingCourse[]      @relation("CourseCreatedBy")
   courseReviews         CourseReview[]
   attendanceAnomalies   AttendanceAnomaly[]
+  payrollApprovalRoles  PayrollApprovalMatrix[] @relation("PayrollApprover")
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
   actionBy              Log[]                 @relation("ActionBy")
@@ -423,10 +451,16 @@ model GradeLevel {
   id          Int      @id @default(autoincrement())
   name        String // e.g., "G5", "Senior", "Associate"
   description String?
+  // Payroll Setup — salary band for the grade (nullable; major units).
+  minSalary    Float?
+  midSalary    Float?
+  maxSalary    Float?
+  bandCurrency String? // ISO 4217, e.g. "PKR"
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 
-  employees Employee[]
+  employees        Employee[]
+  salaryComponents SalaryComponent[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -1714,6 +1748,10 @@ model TaxRate {
   bracketMin    Float
   bracketMax    Float?
   rate          Float
+  // Payroll Setup (FBR-style slabs): baseTax = cumulative tax up to bracketMin;
+  // status toggles a slab active/inactive without deleting it.
+  baseTax       Float     @default(0)
+  status        RowStatus @default(ACTIVE)
   effectiveFrom DateTime
   effectiveTo   DateTime?
   created_at    DateTime  @default(now())
@@ -1721,6 +1759,147 @@ model TaxRate {
 
   @@index([tenantId])
   @@map("tax_rates")
+}
+
+// ==================== PAYROLL SETUP (config screen) ====================
+
+// Salary Structure — a unified, state-of-the-art salary component. `computation`
+// selects how the amount is derived: FIXED (value), PERCENTAGE (value% of a base),
+// or FORMULA (safe-evaluated expression referencing other component codes + the
+// payroll variables BASIC/GROSS/DAYS_WORKED/WORKING_DAYS/LWP_DAYS). Optionally
+// scoped to a grade band via gradeLevelId.
+model SalaryComponent {
+  id           Int             @id @default(autoincrement())
+  code         String // referenced by other components' formulas (unique per tenant)
+  name         String
+  type         PayElementType // EARNING | DEDUCTION
+  computation  ComputationType @default(FIXED)
+  value        Float? // FIXED amount or PERCENTAGE percent (0-100)
+  formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
+  taxable      Boolean         @default(true)
+  active       Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  gradeLevelId Int? // optional band/grade scoping
+  status       ConfigStatus    @default(DRAFT) // draft until the config is published
+  version      Int             @default(1)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  gradeLevel GradeLevel? @relation(fields: [gradeLevelId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([code])
+  @@index([gradeLevelId])
+  @@map("salary_components")
+}
+
+// Cycle & Calendar — one config row per tenant. Period/pay-date boundaries use a
+// CalendarAnchor (+ explicit date when FIXED_DATE). attendanceCutoff also LOCKS
+// shift/OT entry edits; approvalsClose bars approvals after it; payDateWeekendShift
+// pulls a weekend pay date earlier to the nearest working day.
+model PayrollCalendar {
+  id                 Int            @id @default(autoincrement())
+  payFrequency       PayFrequency   @default(MONTHLY)
+  periodStartAnchor  CalendarAnchor @default(FIRST_OF_MONTH)
+  periodStartDate    DateTime?
+  periodEndAnchor    CalendarAnchor @default(LAST_OF_MONTH)
+  periodEndDate      DateTime?
+  attendanceCutoff   DateTime? // date+time; locks shift + OT entries
+  approvalsClose     DateTime? // date+time; no approvals after
+  payDateAnchor      CalendarAnchor @default(LAST_OF_MONTH)
+  payDate            DateTime?
+  payDateWeekendShift Boolean       @default(true)
+  status             ConfigStatus   @default(DRAFT)
+  version            Int            @default(1)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@map("payroll_calendars")
+}
+
+// Approval Matrix — an ordered approval level for payroll (higher level = higher
+// authority). Optional monetary threshold + an auto-escalate deadline.
+model PayrollApprovalMatrix {
+  id                Int       @id @default(autoincrement())
+  level             Int // 1,2,3 … (higher = higher authority)
+  role              String // approving role/title
+  approverId        Int? // resolved Employee approver
+  thresholdRequired Boolean   @default(false)
+  thresholdAmount   Float? // amount at/above which this level is required
+  autoEscalateAfter DateTime? // date+time after which the request escalates
+  status            RowStatus @default(ACTIVE)
+  version           Int       @default(1)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  approver Employee? @relation("PayrollApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([level])
+  @@map("payroll_approval_matrix")
+}
+
+// Pay Rules — one config row per tenant: the six policy toggles + parameters.
+model PayrollRuleConfig {
+  id                       Int          @id @default(autoincrement())
+  midMonthJoinerProration  Boolean      @default(true) // pro-rate by calendar days from join date
+  midMonthExitSettlement   Boolean      @default(true) // final settlement + gratuity + leave encashment
+  lwpRecovery              Boolean      @default(true) // monthly basic ÷ working days × LWP days
+  complianceHold           Boolean      @default(true) // block disbursement on unfiled EOBI/PSSF
+  garnishmentRecovery      Boolean      @default(true) // loan/garnishment recovery
+  garnishmentCapPct        Float        @default(33) // cap as % of net pay; roll balance forward
+  offCycleRelease          Boolean      @default(true) // single-employee off-cycle disbursement
+  status                   ConfigStatus @default(DRAFT)
+  version                  Int          @default(1)
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@map("payroll_rule_config")
+}
+
+// Draft/Publish state for the whole payroll config set (one row per tenant).
+// "Publish changes" flips DRAFT config rows → PUBLISHED, bumps publishedVersion,
+// and writes a PayrollConfigSnapshot.
+model PayrollConfigMeta {
+  id               Int          @id @default(autoincrement())
+  status           ConfigStatus @default(DRAFT)
+  draftVersion     Int          @default(1)
+  publishedVersion Int          @default(0)
+  hasUnpublished   Boolean      @default(true)
+  publishedAt      DateTime?
+  publishedById    Int?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@map("payroll_config_meta")
+}
+
+// An immutable published snapshot of the entire payroll config (for export + audit).
+model PayrollConfigSnapshot {
+  id            Int      @id @default(autoincrement())
+  version       Int
+  config        Json // full config set at publish time
+  publishedById Int?
+  publishedAt   DateTime @default(now())
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([version])
+  @@map("payroll_config_snapshots")
 }
 
 model PayrollAuditLog {

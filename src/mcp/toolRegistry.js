@@ -39,6 +39,10 @@ import { registerAttendanceOpsTools } from "./tools/attendanceOpsTools.js";
 import { registerLeaveReportTools } from "./tools/leaveReportTools.js";
 import { registerOvertimeShiftReportTools } from "./tools/overtimeShiftReportTools.js";
 import { registerAuditTrailTools } from "./tools/auditTrailTools.js";
+import { registerSalaryComponentTools } from "./tools/salaryComponentTools.js";
+import { registerPayrollConfigTools } from "./tools/payrollConfigTools.js";
+import { registerPayrollSetupActionsTools } from "./tools/payrollSetupActionsTools.js";
+import { registerPayrollPreviewTools } from "./tools/payrollPreviewTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -151,4 +155,8 @@ export function registerAllTools(server) {
   registerLeaveReportTools(server);
   registerOvertimeShiftReportTools(server);
   registerAuditTrailTools(server);
+  registerSalaryComponentTools(server);
+  registerPayrollConfigTools(server);
+  registerPayrollSetupActionsTools(server);
+  registerPayrollPreviewTools(server);
 }

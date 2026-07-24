@@ -98,6 +98,9 @@ const RLS_MODELS = new Set([
     'CourseSection', 'CourseLecture', 'CourseOutcome', 'CourseReview',
     // Attendance anomaly/correction requests — new in 20260724_hr_attendance_anomaly.
     'AttendanceAnomaly',
+    // Payroll Setup config tables — new in 20260724_hr_payroll_setup.
+    'SalaryComponent', 'PayrollCalendar', 'PayrollApprovalMatrix', 'PayrollRuleConfig',
+    'PayrollConfigMeta', 'PayrollConfigSnapshot',
     'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',
     'ComplianceItem', 'DocumentExpiryAlert', 'DevelopmentPlan', 'DevelopmentPlanItem',
     'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',

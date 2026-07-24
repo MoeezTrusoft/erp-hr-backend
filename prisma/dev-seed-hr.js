@@ -1428,6 +1428,113 @@ async function main() {
       `(PENDING ${screenLeaveCounts.PENDING}, APPROVED ${screenLeaveCounts.APPROVED}, REJECTED ${screenLeaveCounts.REJECTED}).`
   );
 
+  // ── 14. Payroll Setup config (salary components, tax slabs, approval matrix,
+  //         calendar, rules, grade bands) — the Payroll Setup screen. Idempotent.
+  {
+    // Grade bands (PKR) on existing grades so the test-payslip has a BASIC base.
+    const bands = {
+      G1: [60000, 80000, 100000],
+      G2: [90000, 120000, 150000],
+      G4: [200000, 260000, 320000],
+      G5: [350000, 450000, 600000],
+    };
+    let bandCount = 0;
+    for (const [name, [mn, md, mx]] of Object.entries(bands)) {
+      const g = await prisma.gradeLevel.findFirst({ where: { name } });
+      if (g) {
+        await prisma.gradeLevel.update({
+          where: { id: g.id },
+          data: { minSalary: mn, midSalary: md, maxSalary: mx, bandCurrency: "PKR" },
+        });
+        bandCount++;
+      }
+    }
+
+    // Salary components (BASIC comes from the grade band base; these are on top).
+    const components = [
+      { code: "HRA", name: "House Rent Allowance", type: "EARNING", computation: "FORMULA", formula: "BASIC * 0.4", taxable: true, sortOrder: 1 },
+      { code: "MEDICAL", name: "Medical Allowance", type: "EARNING", computation: "FIXED", value: 5000, taxable: false, sortOrder: 2 },
+      { code: "TRANSPORT", name: "Transport Allowance", type: "EARNING", computation: "FIXED", value: 3000, taxable: false, sortOrder: 3 },
+      { code: "BONUS", name: "Performance Bonus", type: "EARNING", computation: "PERCENTAGE", value: 10, taxable: true, sortOrder: 4 },
+      { code: "PF", name: "Provident Fund", type: "DEDUCTION", computation: "FORMULA", formula: "BASIC * 0.05", taxable: false, sortOrder: 5 },
+      { code: "EOBI", name: "EOBI Contribution", type: "DEDUCTION", computation: "FIXED", value: 370, taxable: false, sortOrder: 6 },
+      { code: "LOAN", name: "Staff Loan Recovery", type: "DEDUCTION", computation: "FIXED", value: 8000, taxable: false, sortOrder: 7 },
+    ];
+    let compCount = 0;
+    for (const c of components) {
+      const exists = await prisma.salaryComponent.findFirst({ where: { code: c.code } });
+      if (!exists) {
+        await prisma.salaryComponent.create({ data: { ...c, active: true, status: "DRAFT" } });
+        compCount++;
+      }
+    }
+
+    // FBR-style monthly tax slabs (baseTax + rate on excess over `from`).
+    const slabs = [
+      { bracketMin: 0, bracketMax: 50000, baseTax: 0, rate: 0 },
+      { bracketMin: 50000, bracketMax: 100000, baseTax: 0, rate: 0.05 },
+      { bracketMin: 100000, bracketMax: 200000, baseTax: 2500, rate: 0.15 },
+      { bracketMin: 200000, bracketMax: null, baseTax: 17500, rate: 0.25 },
+    ];
+    let slabCount = 0;
+    for (const s of slabs) {
+      const exists = await prisma.taxRate.findFirst({ where: { bracketMin: s.bracketMin, countryCode: "PK" } });
+      if (!exists) {
+        await prisma.taxRate.create({
+          data: { ...s, countryCode: "PK", status: "ACTIVE", effectiveFrom: new Date("2026-07-01") },
+        });
+        slabCount++;
+      }
+    }
+
+    // Approval matrix (higher level = higher authority) with approver employees.
+    const emps = await prisma.employee.findMany({ take: 6, orderBy: { id: "asc" } });
+    const matrix = [
+      { level: 1, role: "Team Lead", thresholdRequired: false, approverId: emps[0]?.id },
+      { level: 2, role: "HR Manager", thresholdRequired: true, thresholdAmount: 500000, approverId: emps[1]?.id },
+      { level: 3, role: "Finance Director", thresholdRequired: true, thresholdAmount: 2000000, approverId: emps[2]?.id },
+    ];
+    let matrixCount = 0;
+    for (const m of matrix) {
+      const exists = await prisma.payrollApprovalMatrix.findFirst({ where: { level: m.level } });
+      if (!exists) {
+        await prisma.payrollApprovalMatrix.create({ data: { ...m, status: "ACTIVE" } });
+        matrixCount++;
+      }
+    }
+
+    // Cycle & Calendar (singleton).
+    if (!(await prisma.payrollCalendar.findFirst({}))) {
+      await prisma.payrollCalendar.create({
+        data: {
+          payFrequency: "MONTHLY",
+          periodStartAnchor: "FIRST_OF_MONTH",
+          periodEndAnchor: "LAST_OF_MONTH",
+          attendanceCutoff: new Date("2026-07-25T18:00:00.000Z"),
+          approvalsClose: new Date("2026-07-27T18:00:00.000Z"),
+          payDateAnchor: "LAST_OF_MONTH",
+          payDateWeekendShift: true,
+          status: "DRAFT",
+        },
+      });
+    }
+
+    // Pay rules (singleton, defaults).
+    if (!(await prisma.payrollRuleConfig.findFirst({}))) {
+      await prisma.payrollRuleConfig.create({ data: { status: "DRAFT" } });
+    }
+
+    // Config meta (singleton, unpublished draft).
+    if (!(await prisma.payrollConfigMeta.findFirst({}))) {
+      await prisma.payrollConfigMeta.create({ data: { status: "DRAFT", draftVersion: 1, publishedVersion: 0, hasUnpublished: true } });
+    }
+
+    console.log(
+      `Payroll Setup: grade-bands ${bandCount}, components +${compCount}, tax-slabs +${slabCount}, ` +
+        `approval-levels +${matrixCount}; calendar/rules/meta ensured.`
+    );
+  }
+
   console.log("HR dev seed complete.");
 }
 
