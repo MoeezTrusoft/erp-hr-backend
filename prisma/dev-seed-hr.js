@@ -1535,6 +1535,119 @@ async function main() {
     );
   }
 
+  // ── 15. Payroll RUNTIME (runs + payslips + claims) for the Payroll-This-Month,
+  //         My-Payslip, and Claims screens. Idempotent.
+  {
+    const r2 = (n) => Math.round(n * 100) / 100;
+    // Ensure earning/deduction types (by unique code).
+    const etBasic = await getOrCreate("payrollEarningType", { code: "BASIC" }, { code: "BASIC", name: "Basic Salary", type: "EARNING", isTaxable: true });
+    const etHra = await getOrCreate("payrollEarningType", { code: "HRA" }, { code: "HRA", name: "House Rent Allowance", type: "EARNING", isTaxable: true });
+    const etMed = await getOrCreate("payrollEarningType", { code: "MEDICAL" }, { code: "MEDICAL", name: "Medical Allowance", type: "EARNING", isTaxable: false });
+    const dtTax = await getOrCreate("payrollDeductionType", { code: "TAX" }, { code: "TAX", name: "Income Tax", type: "DEDUCTION", preTax: false });
+    const dtPf = await getOrCreate("payrollDeductionType", { code: "PF" }, { code: "PF", name: "Provident Fund", type: "DEDUCTION", preTax: true });
+
+    const payEmps = await prisma.employee.findMany({ take: 10, orderBy: { id: "asc" } });
+    const statuses = ["DISTRIBUTED", "APPROVED", "DRAFT", "HOLD"];
+    // 6 monthly runs (Feb–Jul 2026). Line items only on the latest (July) run.
+    const months = [1, 2, 3, 4, 5, 6]; // month index (Feb=1 .. Jul=6) → 2026-0(2..7)
+    let runCount = 0;
+    let slipCount = 0;
+    for (const m of months) {
+      const mm = m + 1; // 2..7
+      const periodStart = new Date(Date.UTC(2026, mm - 1, 1));
+      const periodEnd = new Date(Date.UTC(2026, mm - 1, mm === 2 ? 28 : 30));
+      const isLatest = mm === 7;
+      let run = await prisma.payrollRun.findFirst({ where: { periodStart, periodEnd } });
+      if (!run) {
+        run = await prisma.payrollRun.create({
+          data: {
+            periodStart, periodEnd, countryCode: "PK", currencyCode: "PKR",
+            status: isLatest ? "COMPLETED" : "FINALIZED",
+            processedAt: periodEnd, processedBy: payEmps[0]?.id ?? null,
+            employeeCount: payEmps.length,
+          },
+        });
+        runCount++;
+      }
+      let runGross = 0, runDed = 0, runNet = 0;
+      for (let i = 0; i < payEmps.length; i++) {
+        const emp = payEmps[i];
+        const drift = 0.95 + m * 0.01; // slight month-over-month growth
+        const base = r2((80000 + i * 12000) * drift);
+        const hra = r2(base * 0.4);
+        const med = 5000;
+        const gross = r2(base + hra + med);
+        const tax = r2(gross * 0.1);
+        const pf = r2(base * 0.05);
+        const totalDed = r2(tax + pf);
+        const net = r2(gross - totalDed);
+        runGross = r2(runGross + gross); runDed = r2(runDed + totalDed); runNet = r2(runNet + net);
+        const existing = await prisma.payrollPayslip.findFirst({ where: { payrollRunId: run.id, employeeId: emp.id } });
+        if (existing) continue;
+        const status = isLatest ? statuses[i % statuses.length] : "DISTRIBUTED";
+        const slip = await prisma.payrollPayslip.create({
+          data: {
+            payrollRunId: run.id, employeeId: emp.id, grossAmount: gross, totalDeductions: totalDed, netAmount: net,
+            status,
+            distributedAt: status === "DISTRIBUTED" ? periodEnd : null,
+            approvedAt: status === "APPROVED" || status === "DISTRIBUTED" ? periodEnd : null,
+            approvedById: status === "APPROVED" || status === "DISTRIBUTED" ? payEmps[0]?.id ?? null : null,
+          },
+        });
+        slipCount++;
+        if (isLatest) {
+          await prisma.payrollEarning.create({ data: { payslipId: slip.id, earningTypeId: etBasic.id, amount: base, description: "Basic" } });
+          await prisma.payrollEarning.create({ data: { payslipId: slip.id, earningTypeId: etHra.id, amount: hra, description: "HRA" } });
+          await prisma.payrollEarning.create({ data: { payslipId: slip.id, earningTypeId: etMed.id, amount: med, description: "Medical" } });
+          await prisma.payrollDeduction.create({ data: { payslipId: slip.id, deductionTypeId: dtTax.id, amount: tax, description: "Income Tax" } });
+          await prisma.payrollDeduction.create({ data: { payslipId: slip.id, deductionTypeId: dtPf.id, amount: pf, description: "Provident Fund" } });
+        }
+      }
+      await prisma.payrollRun.update({ where: { id: run.id }, data: { totalGross: runGross, totalDeductions: runDed, totalNet: runNet } });
+    }
+
+    // Claims with items + approval chains + varied statuses.
+    const claimSpecs = [
+      { title: "Client dinner — Karachi", category: "Meals", status: "SUBMITTED", items: [{ name: "Dinner", amount: 8500 }, { name: "Cab", amount: 1500 }] },
+      { title: "Conference travel — Lahore", category: "Travel", status: "APPROVED", items: [{ name: "Air ticket", amount: 32000 }, { name: "Hotel 2 nights", amount: 24000 }] },
+      { title: "Laptop accessories", category: "Equipment", status: "REJECTED", items: [{ name: "Monitor", amount: 45000 }] },
+      { title: "Team lunch", category: "Meals", status: "NEEDS_INFO", items: [{ name: "Lunch (8 pax)", amount: 12000 }] },
+      { title: "Home internet reimbursement", category: "Utilities", status: "PAID", items: [{ name: "Internet — July", amount: 6000 }] },
+      { title: "Taxi to airport", category: "Travel", status: "SUBMITTED", items: [{ name: "Airport cab", amount: 3200 }] },
+    ];
+    let claimCount = 0;
+    for (let i = 0; i < claimSpecs.length; i++) {
+      const spec = claimSpecs[i];
+      const emp = payEmps[i % payEmps.length];
+      const exists = await prisma.reimbursementClaim.findFirst({ where: { title: spec.title, employeeId: emp.id } });
+      if (exists) continue;
+      const amount = r2(spec.items.reduce((s, it) => s + it.amount, 0));
+      const claim = await prisma.reimbursementClaim.create({
+        data: {
+          employeeId: emp.id, title: spec.title, category: spec.category, amount, currency: "PKR",
+          status: spec.status, submittedAt: new Date("2026-07-10"),
+          approvedById: ["APPROVED", "PAID"].includes(spec.status) ? payEmps[0]?.id ?? null : null,
+          approvedAt: ["APPROVED", "PAID"].includes(spec.status) ? new Date("2026-07-12") : null,
+          paidAt: spec.status === "PAID" ? new Date("2026-07-15") : null,
+          rejectedReason: spec.status === "REJECTED" ? "Outside policy limit" : null,
+        },
+      });
+      for (const it of spec.items) {
+        await prisma.claimItem.create({ data: { claimId: claim.id, name: it.name, amount: it.amount } });
+      }
+      // 2-step approval chain (Manager → Finance).
+      const chainDecided = ["APPROVED", "PAID"].includes(spec.status) ? "APPROVED" : spec.status === "REJECTED" ? "REJECTED" : "PENDING";
+      await prisma.claimApproval.create({ data: { claimId: claim.id, level: 1, role: "Manager", approverId: payEmps[0]?.id ?? null, status: chainDecided === "PENDING" ? "PENDING" : "APPROVED", decidedAt: chainDecided === "PENDING" ? null : new Date("2026-07-11") } });
+      await prisma.claimApproval.create({ data: { claimId: claim.id, level: 2, role: "Finance", approverId: payEmps[1]?.id ?? null, status: chainDecided, decidedAt: chainDecided === "PENDING" ? null : new Date("2026-07-12") } });
+      if (spec.status === "NEEDS_INFO") {
+        await prisma.claimInformation.create({ data: { claimId: claim.id, requestedById: payEmps[0]?.id ?? null, question: "Please attach the itemized receipt.", status: "PENDING" } });
+      }
+      claimCount++;
+    }
+
+    console.log(`Payroll runtime: runs +${runCount}, payslips +${slipCount}, claims +${claimCount}.`);
+  }
+
   console.log("HR dev seed complete.");
 }
 

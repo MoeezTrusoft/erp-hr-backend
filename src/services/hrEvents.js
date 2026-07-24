@@ -86,6 +86,23 @@ export function payrollRunFinalizedEvent(run, ctx = {}) {
     });
 }
 
+// HR-PAYSLIP-QN: an employee raised a question against their own payslip from
+// the My-Payslip self-service screen. ids-only payload (no PII) so downstream
+// consumers (notification-hub → notify payroll admins) react to the identity +
+// the state change. Null-tolerant + string-ified ids like the other builders.
+export function payslipQuestionRaisedEvent(question, ctx = {}) {
+    return baseArgs('hr.payslip.question_raised.v1', question, ctx, {
+        aggregateType: 'PayslipQuestion',
+        aggregateId: question?.id,
+        payload: {
+            payslipQuestionId: question?.id != null ? String(question.id) : null,
+            payslipId: question?.payslipId != null ? String(question.payslipId) : null,
+            employeeId: question?.employeeId != null ? String(question.employeeId) : null,
+            question: question?.question ?? null,
+        },
+    });
+}
+
 // ── Attendance ───────────────────────────────────────────────────────────────
 export function attendanceRecordedEvent(att, ctx = {}) {
     return baseArgs('hr.attendance.recorded.v1', att, ctx, {

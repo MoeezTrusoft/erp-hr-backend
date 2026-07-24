@@ -150,9 +150,11 @@ enum PayrollRunStatus {
 }
 
 enum PayslipStatus {
-  DRAFT
-  FINALIZED
-  DISTRIBUTED
+  DRAFT // pending (not yet approved)
+  APPROVED // approved for disbursement
+  HOLD // held back (blocking issue / manual hold)
+  FINALIZED // run finalized / locked
+  DISTRIBUTED // disbursed to the employee
 }
 
 enum PayElementType {
@@ -320,6 +322,7 @@ model Employee {
   courseReviews         CourseReview[]
   attendanceAnomalies   AttendanceAnomaly[]
   payrollApprovalRoles  PayrollApprovalMatrix[] @relation("PayrollApprover")
+  claimApprovals        ClaimApproval[]         @relation("ClaimApprover")
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
   actionBy              Log[]                 @relation("ActionBy")
@@ -1564,6 +1567,10 @@ model PayrollPayslip {
   ruleVersion     String?
   distributedAt   DateTime?
   status          PayslipStatus @default(DRAFT)
+  // Payroll-This-Month bulk actions (approve/hold/disburse) audit.
+  approvedById    Int?
+  approvedAt      DateTime?
+  holdReason      String?
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
 
@@ -1572,6 +1579,7 @@ model PayrollPayslip {
   employee        Employee           @relation(fields: [employeeId], references: [id])
   earnings        PayrollEarning[]
   deductions      PayrollDeduction[]
+  questions       PayslipQuestion[]
   logs            Log[]
   PayrollAuditLog PayrollAuditLog[]
 
@@ -2669,10 +2677,31 @@ enum IDPItemStatus {
 
 enum ReimbursementStatus {
   DRAFT
-  SUBMITTED
+  SUBMITTED // pending review
+  NEEDS_INFO // info requested from the claimant
   APPROVED
   REJECTED
-  PAID
+  WITHDRAWN
+  PAID // reimbursed
+}
+
+// Claims & Reimbursements — a single step in a claim's ordered approval chain.
+enum ClaimApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Claims & Reimbursements — status of a request-for-information on a claim.
+enum ClaimInfoStatus {
+  PENDING // HR asked, awaiting the claimant's response
+  RESPONDED
+}
+
+// My Payslip — status of an employee's question raised on a payslip.
+enum PayslipQuestionStatus {
+  OPEN
+  ANSWERED
 }
 
 // HR-BENEFITS-04 — per-employee benefits (health / retirement / allowances).
@@ -2792,6 +2821,7 @@ model ReimbursementClaim {
   id             Int                 @id @default(autoincrement())
   employeeId     Int
   title          String
+  description    String?
   amount         Float
   currency       String              @default("USD")
   category       String?
@@ -2800,18 +2830,106 @@ model ReimbursementClaim {
   submittedAt    DateTime?
   approvedById   Int?
   approvedAt     DateTime?
+  rejectedReason String?
   paidAt         DateTime?
   notes          String?
   created_at     DateTime            @default(now())
   updated_at     DateTime            @updatedAt
 
-  employee   Employee  @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
-  approvedBy Employee? @relation("ReimbursementApprover", fields: [approvedById], references: [id])
+  employee    Employee            @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
+  approvedBy  Employee?           @relation("ReimbursementApprover", fields: [approvedById], references: [id])
+  items       ClaimItem[]
+  approvals   ClaimApproval[]
+  infoRequests ClaimInformation[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
   @@map("reimbursement_claims")
+}
+
+// Claims & Reimbursements — a claim line item (name/description/amount + optional
+// DAM attachment).
+model ClaimItem {
+  id          Int      @id @default(autoincrement())
+  claimId     Int
+  name        String
+  description String?
+  amount      Float
+  mediaId     Int? // DAM attachment asset id
+  createdAt   DateTime @default(now())
+
+  claim ReimbursementClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([claimId])
+  @@map("claim_items")
+}
+
+// Claims & Reimbursements — one ordered step in a claim's approval chain.
+model ClaimApproval {
+  id         Int                 @id @default(autoincrement())
+  claimId    Int
+  level      Int // step order (1,2,3…)
+  role       String?
+  approverId Int?
+  status     ClaimApprovalStatus @default(PENDING)
+  comments   String?
+  decidedAt  DateTime?
+  createdAt  DateTime            @default(now())
+
+  claim    ReimbursementClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  approver Employee?          @relation("ClaimApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([claimId])
+  @@map("claim_approvals")
+}
+
+// Claims & Reimbursements — a request-for-information (HR ↔ claimant Q&A).
+model ClaimInformation {
+  id            Int             @id @default(autoincrement())
+  claimId       Int
+  requestedById Int?
+  question      String
+  response      String?
+  status        ClaimInfoStatus @default(PENDING)
+  requestedAt   DateTime        @default(now())
+  respondedAt   DateTime?
+
+  claim ReimbursementClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([claimId])
+  @@map("claim_information")
+}
+
+// My Payslip — an employee's question raised on one of their payslips (routed to HR).
+model PayslipQuestion {
+  id            Int                   @id @default(autoincrement())
+  payslipId     Int
+  employeeId    Int
+  question      String
+  status        PayslipQuestionStatus @default(OPEN)
+  response      String?
+  respondedById Int?
+  respondedAt   DateTime?
+  createdAt     DateTime              @default(now())
+
+  payslip PayrollPayslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([payslipId])
+  @@index([employeeId])
+  @@map("payslip_questions")
 }
 
 // HR-BENEFITS-04 — a benefit plan a tenant offers (health / retirement /
