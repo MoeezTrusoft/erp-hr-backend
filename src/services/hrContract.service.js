@@ -876,6 +876,50 @@ const EMPLOYEE_SORTS = Object.keys(EMPLOYEE_ORDER_BY);
 const buildEmployeeOrderBy = (sort, order, fallback = "created_at") =>
   (EMPLOYEE_ORDER_BY[sort] || EMPLOYEE_ORDER_BY[fallback])(order);
 
+// A directory row is tagged a "new hire" when the employee has an OPEN
+// onboarding checklist (status != COMPLETED) OR joined within this many days.
+const NEW_HIRE_WINDOW_DAYS = Number(process.env.NEW_HIRE_WINDOW_DAYS || 90);
+
+// Batch-resolve new-hire status for a page of directory rows (never N+1): one
+// findMany over the page's employee ids picks up any onboarding checklist, and a
+// hire/joining-date window is the fallback. Returns rows enriched with
+// `isNewHire` (bool) + `onboardingStatus` (checklist status or null).
+async function enrichNewHire(rows, tenantId) {
+  const ids = rows.map((r) => r.id).filter((v) => v != null);
+  const statusById = new Map();
+  if (ids.length) {
+    try {
+      const checklists = await prisma.onboardingChecklist.findMany({
+        where: scopedWhere(tenantId, { employeeId: { in: ids } }),
+        select: { employeeId: true, status: true, startDate: true },
+        orderBy: { startDate: "desc" },
+      });
+      // Keep the most relevant checklist per employee: an OPEN one wins, else latest.
+      for (const c of checklists) {
+        const prev = statusById.get(c.employeeId);
+        const isOpen = c.status !== "COMPLETED";
+        if (!prev || (isOpen && prev.status === "COMPLETED")) {
+          statusById.set(c.employeeId, { status: c.status });
+        }
+      }
+    } catch {
+      // Fail-soft: without the map we fall back to the date window only.
+    }
+  }
+  const now = Date.now();
+  const windowMs = NEW_HIRE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  return rows.map((r) => {
+    const cl = statusById.get(r.id) || null;
+    const hasOpenOnboarding = !!cl && cl.status !== "COMPLETED";
+    const withinWindow = r.hireDate ? now - new Date(r.hireDate).getTime() <= windowMs : false;
+    return {
+      ...r,
+      isNewHire: hasOpenOnboarding || withinWindow,
+      onboardingStatus: cl?.status ?? null,
+    };
+  });
+}
+
 export const listEmployees = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "created_at" });
   const { where, filters } = buildEmployeeListWhere(query, tenantId, list.q);
@@ -893,11 +937,13 @@ export const listEmployees = async (query, tenantId) => {
     prisma.employee.count({ where }),
   ]);
 
+  const rows = await enrichNewHire(items.map(employeeDirectoryRow), tenantId);
+
   return buildListPayload({
     ...list,
     total,
     filters,
-    items: items.map(employeeDirectoryRow),
+    items: rows,
   });
 };
 

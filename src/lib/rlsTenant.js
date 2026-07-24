@@ -89,7 +89,7 @@ const RLS_MODELS = new Set([
     'GoalAlignment', 'ReviewReminder', 'CalibrationSession', 'RatingAdjustment', 'TaxRate',
     'Tag', 'Candidate', 'CandidateSkill', 'CandidateTag', 'Application', 'PerformanceMetric',
     'PerformanceReviewItem', 'OnboardingChecklist', 'OnboardingSession', 'OnboardingTask',
-    'OnboardingDocument', 'OnboardingBuddy', 'OnboardingSurvey', 'Interview',
+    'OnboardingDocument', 'OnboardingBuddy', 'OnboardingSurvey', 'OnboardingFeedback', 'Interview',
     'InterviewInterviewer', 'InterviewScorecard', 'Offer', 'TalentPool', 'RecruitmentCostConfig',
     'LearningPath', 'LearningPathCourse', 'LearningPathEnrollment', 'TrainingSession',
     'TrainingSessionAttendee', 'Certification', 'Recognition', 'Skill', 'EmployeeSkill',

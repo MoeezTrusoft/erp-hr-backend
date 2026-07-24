@@ -383,6 +383,8 @@ model Employee {
   onboardingDocuments  OnboardingDocument[]
   onboardingSurveys    OnboardingSurvey[]
   buddyAssignments     OnboardingBuddy[]     @relation("BuddyRelation")
+  onboardingTaskAssignments OnboardingTask[] @relation("OnboardingTaskAssignee")
+  onboardingFeedbacks  OnboardingFeedback[]  @relation("OnboardingFeedbackEmployee")
 
   // Recruitment relations
   interviewPanels          InterviewInterviewer[]
@@ -2084,6 +2086,19 @@ enum SurveyType {
   DAY_90
 }
 
+// Onboarding-task category — the FE "Onboarding Portal" groups tasks by the KIND
+// of setup (orthogonal to `stage`, which is the WHEN). Labels for the FE live in
+// src/lib/onboardingTaxonomy.js (ONBOARDING_TASK_CATEGORY_LABELS).
+enum OnboardingTaskCategory {
+  IT_ACCESS_SETUP
+  WORKSPACE_EQUIPMENT
+  ORIENTATION_TRAINING
+  HR_DOCUMENTATION
+  TEAM_INTRODUCTION
+  COMPLIANCE_POLICY
+  OTHER
+}
+
 // ==================== ONBOARDING MODELS ====================
 
 model OnboardingChecklist {
@@ -2110,6 +2125,7 @@ model OnboardingChecklist {
   surveys   OnboardingSurvey[]
   sessions  OnboardingSession[]
   buddy     OnboardingBuddy?
+  portalFeedback OnboardingFeedback?
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -2139,26 +2155,31 @@ model OnboardingSession {
 }
 
 model OnboardingTask {
-  id           Int              @id @default(autoincrement())
+  id           Int                     @id @default(autoincrement())
   checklistId  Int
   title        String
   description  String?
-  stage        String?          // pre_joining | pre_boarding | first_week | equipment
-  assigneeType TaskAssigneeType @default(HR)
-  assigneeId   Int?
+  stage        String?                 // pre_joining | pre_boarding | first_week | equipment
+  category     OnboardingTaskCategory? @default(OTHER) // FE Onboarding-Portal grouping (IT & Access, Workspace, ...)
+  assigneeType TaskAssigneeType        @default(HR)
+  assigneeId   Int?                    // responsible employee (any employee, incl. the onboarding person)
   dueDate      DateTime?
-  completed    Boolean          @default(false)
+  completed    Boolean                 @default(false)
   completedAt  DateTime?
-  sortOrder    Int              @default(0)
+  sortOrder    Int                     @default(0)
   mediaId      Int?
-  created_at   DateTime         @default(now())
-  updated_at   DateTime         @updatedAt
+  created_at   DateTime                @default(now())
+  updated_at   DateTime                @updatedAt
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  // Responsible employee — no DB-level FK (assigneeId may reference legacy ids);
+  // Prisma resolves the join at query time so the portal can show their profile.
+  assignee  Employee?           @relation("OnboardingTaskAssignee", fields: [assigneeId], references: [id])
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([assigneeId])
   @@map("onboarding_tasks")
 }
 
@@ -2216,6 +2237,31 @@ model OnboardingSurvey {
   @@unique([checklistId, type])
   @@index([tenantId])
   @@map("onboarding_surveys")
+}
+
+// New-hire onboarding-experience feedback (FE Onboarding Portal → "Submit
+// feedback"). A radio-questionnaire distinct from the DAY_30/60/90 surveys:
+// `responses` is [{ questionId, question, answer }] validated against the
+// canonical questions in src/lib/onboardingTaxonomy.js. One submission per
+// checklist (upserted) so a re-submit overwrites.
+model OnboardingFeedback {
+  id          Int       @id @default(autoincrement())
+  checklistId Int       @unique
+  employeeId  Int
+  responses   Json?     // [{ questionId, question, answer }]
+  comments    String?
+  submittedAt DateTime  @default(now())
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  employee  Employee            @relation("OnboardingFeedbackEmployee", fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@map("onboarding_feedback")
 }
 
 // ==================== RECRUITMENT COMPLETION ENUMS ====================

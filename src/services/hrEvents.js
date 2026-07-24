@@ -170,6 +170,30 @@ export function documentExpiryReminderEvent(media, ctx = {}, extra = {}) {
     });
 }
 
+// ── Onboarding ───────────────────────────────────────────────────────────────
+// FE Onboarding Portal → "Send reminder". HR only EMITS this; notification-hub
+// produces the in-app notification downstream if it maps `hr.onboarding.task_reminder.v1`.
+// The responsible employee (task assignee) is the recipient. Email channel is
+// intentionally disabled at the source until the mapper is flipped on.
+export function onboardingTaskReminderEvent(task, ctx = {}, extra = {}) {
+    // `task` carries the row's tenantId (baseArgs pulls it, fail-closed).
+    return baseArgs('hr.onboarding.task_reminder.v1', task, ctx, {
+        aggregateType: 'OnboardingTask',
+        aggregateId: task?.id,
+        payload: {
+            taskId: task?.id != null ? String(task.id) : null,
+            checklistId: task?.checklistId != null ? String(task.checklistId) : null,
+            employeeId: extra?.employeeId != null ? String(extra.employeeId) : null,
+            // the responsible employee the reminder is addressed to
+            recipientId: extra?.recipientId != null ? String(extra.recipientId) : null,
+            subject: extra?.subject ?? null,
+            message: extra?.message ?? null,
+            dueDate: task?.dueDate ?? null,
+            channels: { inApp: true, email: extra?.emailEnabled === true },
+        },
+    });
+}
+
 // ── Performance ──────────────────────────────────────────────────────────────
 export function performanceReviewFinalizedEvent(review, ctx = {}) {
     return baseArgs('hr.performance.review_finalized.v1', review, ctx, {
