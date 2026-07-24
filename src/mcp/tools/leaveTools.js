@@ -141,6 +141,10 @@ export function registerLeaveTools(server) {
     {
       id: z.string().min(1).describe("Leave request ID (LeaveRequest.id)"),
       comments: z.string().optional().describe("Optional approver note; persisted on the LeaveRequestApproval row"),
+      approverId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Employee id to record as the approver. Optional — defaults to the caller's own employeeId (resolved from userId/email for a super-admin without a session employee)."),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -156,6 +160,10 @@ export function registerLeaveTools(server) {
     {
       id: z.string().min(1).describe("Leave request ID (LeaveRequest.id)"),
       reason: z.string().min(1).describe("Reason for rejection; persisted to the LeaveRequestApproval.comments column"),
+      approverId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Employee id to record as the reviewer. Optional — defaults to the caller's own employeeId (resolved from userId/email for a super-admin without a session employee)."),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

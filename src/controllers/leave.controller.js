@@ -103,13 +103,18 @@ export const getLeaveRequestById = async (req, res) => {
 
 export const createLeaveRequest = async (req, res) => {
   try {
-    
-    const employeeId = req.headers['employee-id'];
-    const request = await leaveService.createLeaveRequest({
-      ...req.body,
-     // employeeId: req.user.id,
-      createdById: employeeId
-    }, undefined, tenantOf(req));
+    // createdById is the service's SECOND POSITIONAL arg — the prior bug passed
+    // it inside `data` (where the service ignores it) and `undefined` here, so
+    // parseInt(undefined) => NaN broke the createdById FK write. Thread the
+    // resolved creator (MCP path stamps req.body.createdById), then the session
+    // header, then the request's own subject (self-service).
+    const createdById =
+      req.body.createdById ?? req.headers['employee-id'] ?? req.body.employeeId;
+    const request = await leaveService.createLeaveRequest(
+      { ...req.body },
+      createdById,
+      tenantOf(req)
+    );
     res.status(201).json({ success: true, data: request });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -151,13 +156,17 @@ export const getLeaveRequestApprovals = async (req, res) => {
 
 export const approveLeaveRequest = async (req, res) => {
   try {
-    const employeeId = req.headers['employee-id'];
+    // Prefer the reviewer the MCP layer resolved (body.approverId) over the
+    // session header — the header is empty for a super-admin with no linked
+    // Employee, which used to stamp a NaN approverId FK.
+    const approverId = req.body.approverId ?? req.headers['employee-id'];
+    const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.approveLeaveRequest(
       parseInt(req.params.id),
       {
         ...req.body,
-        approverId: employeeId,
-        createdById: employeeId
+        approverId,
+        createdById
       }
     );
     res.json({ success: true, data: result });
@@ -168,13 +177,14 @@ export const approveLeaveRequest = async (req, res) => {
 
 export const rejectLeaveRequest = async (req, res) => {
   try {
-    const createdBy = req.headers['employee-id'];
+    const approverId = req.body.approverId ?? req.headers['employee-id'];
+    const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.rejectLeaveRequest(
       parseInt(req.params.id),
       {
         ...req.body,
-        approverId:  createdBy,
-        createdById:  createdBy
+        approverId,
+        createdById
       }
     );
     res.json({ success: true, data: result });

@@ -20,6 +20,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -109,13 +110,19 @@ export function registerLeaveReportTools(server) {
           { status: 400 }
         );
       }
+      // createdById must be a valid Employee; a super-admin has no session
+      // employeeId, so resolve via userId/email and fall back to the subject.
+      const createdById = await resolveActingEmployeeId(user, {
+        tenantId: user.tenantId,
+        fallbackEmployeeId: employeeId,
+      });
       const data = await requestLeave({
         tenantId: user.tenantId,
         employeeId,
         startDate: args.startDate,
         endDate: args.endDate,
         reason: args.reason,
-        createdById: user.employeeId ?? employeeId,
+        createdById,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_leave_request_submit")
@@ -135,17 +142,37 @@ export function registerLeaveReportTools(server) {
         .optional()
         .describe("Leave type to assign — REQUIRED when decision=approve; resolved to a LeavePolicy by leaveTypeCode. Ignored on reject."),
       comments: z.string().optional().describe("Optional reviewer note, persisted on the approval row."),
+      approverId: z
+        .coerce.number()
+        .int()
+        .optional()
+        .describe("Employee id to record as the reviewer. Optional — defaults to the caller's own employeeId (resolved from userId/email when the caller is a super-admin without a session employee). Pass this to decide on behalf of a specific HR reviewer."),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
+      // The approval row's approverId/createdById are NOT-NULL Employee FKs.
+      // A super-admin carries no session employeeId, so resolve one (explicit
+      // arg → session → userId → email); fail with a clear, actionable 400.
+      const approverId = await resolveActingEmployeeId(user, {
+        explicit: args.approverId,
+        tenantId: user.tenantId,
+      });
+      if (approverId == null) {
+        throw Object.assign(
+          new Error(
+            "Could not resolve the acting reviewer. Pass approverId, or link an Employee to your account."
+          ),
+          { status: 400 }
+        );
+      }
       const data = await decideLeave({
         tenantId: user.tenantId,
         id: args.id,
         decision: args.decision,
         leaveType: args.leaveType,
         comments: args.comments,
-        approverId: user.employeeId,
+        approverId,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_leave_decide")

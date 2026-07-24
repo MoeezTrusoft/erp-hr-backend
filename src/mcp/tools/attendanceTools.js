@@ -27,6 +27,18 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
+import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
+
+// Build the `user` handed to an owner-gated write (time-entry update/delete).
+// MCP context hard-forces isAdmin=false (SEC-5), so the service's owner gate
+// (`!isAdmin && entry.employeeId !== Number(userId)`) can never be bypassed by
+// the admin flag. Authority instead comes from the permission bitmask: holding
+// the resource action (EDIT/DELETE) lets an HR grant-holder act on ANY
+// employee's entry, while a self-service employee still owner-matches their own.
+async function actingUserFor(user, permissions, action) {
+  const employeeId = await resolveActingEmployeeId(user, { tenantId: user.tenantId });
+  return { ...user, isAdmin: canManage(permissions, "hr:attendance", action), employeeId };
+}
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -286,7 +298,8 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const data = await mcpUpdateTimeEntry(user, id, rest);
+      const actingUser = await actingUserFor(user, permissions, "EDIT");
+      const data = await mcpUpdateTimeEntry(actingUser, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -298,7 +311,8 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
-      const data = await mcpDeleteTimeEntry(user, id);
+      const actingUser = await actingUserFor(user, permissions, "DELETE");
+      const data = await mcpDeleteTimeEntry(actingUser, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

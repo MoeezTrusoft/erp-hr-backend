@@ -16,6 +16,7 @@ import {
   runLeaveAccruals,
 } from "../../controllers/leave.controller.js";
 import { getHolidays, createHoliday } from "../../controllers/holiday.controller.js";
+import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 
 export const mcpListLeaveRequests = (user, query = {}) => runController(getLeaveRequests, { user, query });
 export const mcpListLeavePolicies = (user) => runController(getLeavePolicies, { user });
@@ -57,20 +58,70 @@ export const mcpCreateLeaveRequest = async (user, data) => {
   if (body.leaveType && !body.leavePolicyId) {
     body.leavePolicyId = await resolveLeavePolicyId(body.leaveType);
   }
-  if (!body.employeeId) {
-    body.employeeId = user.employeeId || user.userId;
+  // The acting employee (may be null for a super-admin with no linked Employee).
+  const actingId = await resolveActingEmployeeId(user, { tenantId: user.tenantId });
+  // Subject of the request: an explicit employeeId (on-behalf) wins; else the
+  // caller's own resolved employee (self-service).
+  if (!body.employeeId) body.employeeId = actingId ?? undefined;
+  // Creator FK must be a valid Employee — NEVER NaN. Acting employee, else fall
+  // back to the request's own subject (a self-service create by that employee).
+  body.createdById =
+    actingId ??
+    (await resolveActingEmployeeId(user, {
+      tenantId: user.tenantId,
+      fallbackEmployeeId: body.employeeId,
+    }));
+  if (body.createdById == null) {
+    throw Object.assign(
+      new Error(
+        "Could not resolve an acting employee for this leave request. " +
+          "Pass a valid employeeId, or link an Employee to your account."
+      ),
+      { status: 400 }
+    );
   }
   return runController(createLeaveRequest, { user, body });
 };
-export const mcpApproveLeaveRequest = (user, id, data) => runController(approveLeaveRequest, { user, params: { id: String(id) }, body: data });
-// The service (and its outbox reason) reads `comments`; the tool exposes the
-// rejection note as `reason` (matching the FE + Bruno callers) so map it here.
-export const mcpRejectLeaveRequest = (user, id, { reason, ...rest } = {}) =>
-  runController(rejectLeaveRequest, {
+// approverId/createdById on the approval row are NOT-NULL Employee FKs. A
+// super-admin carries no session employeeId (no x-employee-id), so resolve one
+// (explicit arg → session → userId → email) and thread it on the body; the
+// controller prefers it over the empty header. Fail with a clear 400.
+const resolveReviewerOrThrow = async (user, explicit) => {
+  const approverId = await resolveActingEmployeeId(user, { explicit, tenantId: user.tenantId });
+  if (approverId == null) {
+    throw Object.assign(
+      new Error(
+        "Could not resolve the acting reviewer. Pass approverId, or link an Employee to your account."
+      ),
+      { status: 400 }
+    );
+  }
+  return approverId;
+};
+
+export const mcpApproveLeaveRequest = async (user, id, { approverId: explicit, ...rest } = {}) => {
+  const approverId = await resolveReviewerOrThrow(user, explicit);
+  return runController(approveLeaveRequest, {
     user,
     params: { id: String(id) },
-    body: { ...rest, ...(reason !== undefined ? { comments: reason } : {}) },
+    body: { ...rest, approverId, createdById: approverId },
   });
+};
+// The service (and its outbox reason) reads `comments`; the tool exposes the
+// rejection note as `reason` (matching the FE + Bruno callers) so map it here.
+export const mcpRejectLeaveRequest = async (user, id, { reason, approverId: explicit, ...rest } = {}) => {
+  const approverId = await resolveReviewerOrThrow(user, explicit);
+  return runController(rejectLeaveRequest, {
+    user,
+    params: { id: String(id) },
+    body: {
+      ...rest,
+      approverId,
+      createdById: approverId,
+      ...(reason !== undefined ? { comments: reason } : {}),
+    },
+  });
+};
 export const mcpCancelLeaveRequest = (user, id, data) => runController(cancelLeaveRequest, { user, params: { id: String(id) }, body: data });
 
 export const mcpCreateLeavePolicy = (user, data) => {

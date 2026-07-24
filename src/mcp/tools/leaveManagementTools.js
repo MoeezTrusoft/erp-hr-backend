@@ -21,6 +21,7 @@ import {
   getNext30Coverage,
   getLeaveByTypeReport,
 } from "../../services/leaveManagement.service.js";
+import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -84,11 +85,30 @@ export function registerLeaveManagementTools(server) {
         .string()
         .optional()
         .describe("Conditionally required: MUST be non-empty when decision=reject (enforced server-side, 400 otherwise); stored as LeaveRequestApproval.comments"),
+      approverId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Employee id to record as the reviewer. Optional — defaults to the caller's own employeeId (resolved from userId/email for a super-admin without a session employee). 400 if none resolves."),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
-      const data = await decideLeaveRequest(args, user, user.tenantId);
+      // decideLeaveRequest reads user.employeeId as the approver (NOT-NULL FK).
+      // A super-admin has none, so resolve one and hand the service a synthetic
+      // user carrying it; fail with a clear, actionable 400 otherwise.
+      const approverId = await resolveActingEmployeeId(user, {
+        explicit: args.approverId,
+        tenantId: user.tenantId,
+      });
+      if (approverId == null) {
+        throw Object.assign(
+          new Error(
+            "Could not resolve the acting reviewer. Pass approverId, or link an Employee to your account."
+          ),
+          { status: 400 }
+        );
+      }
+      const data = await decideLeaveRequest(args, { ...user, employeeId: approverId }, user.tenantId);
       return ok(data);
     }, "hr_leave_request_decide")
   );
