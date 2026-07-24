@@ -4,6 +4,11 @@ import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { attendanceRecordedEvent } from "./hrEvents.js";
+import {
+  deriveAttendanceStatus,
+  resolveShiftStartMin,
+  normalizeWorkMode,
+} from "../lib/attendanceStatus.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field (on the data
 // object) / trailing param; folded into attendance reads and stamped on the
@@ -37,18 +42,21 @@ function getDayRange(dt) {
   return { start, end };
 }
 
+// Status is derived by the shared attendanceStatus helper so check-in, the
+// biometric device sync and the dev seed all agree — and so HALF_DAY (≥30min
+// late) is produced, not just PRESENT/LATE. An explicit caller-provided status
+// still overrides (manual correction). The helper reads its shift-start/grace
+// from the HR_* env family (HR_DEFAULT_SHIFT_START / HR_LATE_GRACE_MIN /
+// HR_HALF_DAY_MIN); we pass the resolved shift-start explicitly for the date so
+// the window is date-anchored rather than reading the legacy
+// ATTENDANCE_LATE_GRACE_MINUTES / ATTENDANCE_SHIFT_START pair.
 function resolveStatus(checkInTs, providedStatus) {
   if (providedStatus) return String(providedStatus).toUpperCase();
-  const shiftStartRaw = process.env.ATTENDANCE_SHIFT_START || "09:00";
-  const graceMinutes = Number(process.env.ATTENDANCE_LATE_GRACE_MINUTES || 15);
-  const [h, m] = shiftStartRaw.split(":").map(Number);
-  const cutoff = new Date(checkInTs);
-  cutoff.setHours(Number.isInteger(h) ? h : 9, Number.isInteger(m) ? m + graceMinutes : graceMinutes, 0, 0);
-  return checkInTs > cutoff ? "LATE" : "PRESENT";
+  return deriveAttendanceStatus(checkInTs, resolveShiftStartMin({ date: checkInTs }));
 }
 
 export const createAttendanceService = async (data) => {
-  const { employeeId, date, check_in, status, timestamp, notes, tenantId } = data;
+  const { employeeId, date, check_in, status, timestamp, notes, tenantId, work_mode } = data;
 
   if (!employeeId) throw new Error("employeeId is required");
 
@@ -56,6 +64,7 @@ export const createAttendanceService = async (data) => {
   if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
 
   // ✅ Ensure employee exists (tenant-scoped on snake_case tenant_id when present)
+  // Also loads the employee's default work_mode for the day's work-mode fallback.
   const employee = await prisma.employee.findFirst({
     where: scopedEmployeeWhere(tenantId, { id: empId }),
   });
@@ -64,6 +73,12 @@ export const createAttendanceService = async (data) => {
   const parsedCheckIn = parseCheckInInput({ date, check_in, timestamp });
   const { start, end } = getDayRange(parsedCheckIn);
   const computedStatus = resolveStatus(parsedCheckIn, status);
+
+  // The day's work_mode: prefer an explicitly-provided work_mode on the check-in
+  // input, else fall back to the employee's default work_mode (Employee is
+  // snake_case). Normalized to canonical Remote|Onsite|Hybrid (null if unknown).
+  const computedWorkMode =
+    normalizeWorkMode(work_mode) ?? normalizeWorkMode(employee.work_mode);
 
   const existing = await prisma.attendance.findFirst({
     where: scopedWhere(tenantId, {
@@ -89,6 +104,7 @@ export const createAttendanceService = async (data) => {
             ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
             : parsedCheckIn,
           status: computedStatus,
+          ...(computedWorkMode ? { work_mode: computedWorkMode } : {}),
           ...(notes !== undefined ? { remarks: notes } : {}),
         },
       })
@@ -98,6 +114,7 @@ export const createAttendanceService = async (data) => {
           date: start,
           check_in: parsedCheckIn,
           status: computedStatus,
+          ...(computedWorkMode ? { work_mode: computedWorkMode } : {}),
           ...(notes !== undefined ? { remarks: notes } : {}),
         }),
       });

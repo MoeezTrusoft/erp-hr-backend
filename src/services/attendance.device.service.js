@@ -1,5 +1,11 @@
 import net from "node:net";
 import prisma from "../lib/prisma.js";
+import {
+  deriveAttendanceStatus,
+  resolveShiftStartMin,
+  parseClockToMinutes,
+  normalizeWorkMode,
+} from "../lib/attendanceStatus.js";
 const DEFAULT_DEVICE_HOST = process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202";
 const DEFAULT_DEVICE_PORT = Number(process.env.ATTENDANCE_DEVICE_PORT || 4370);
 const DEFAULT_TIMEOUT_MS = Number(process.env.ATTENDANCE_DEVICE_TIMEOUT_MS || 3000);
@@ -77,7 +83,7 @@ async function resolveEmployeeFromPunch(punch) {
     if (Number.isInteger(employeeId) && employeeId > 0) {
       const employee = await prisma.employee.findUnique({
         where: { id: employeeId },
-        select: { id: true, employee_code: true, employee_name: true },
+        select: { id: true, employee_code: true, employee_name: true, work_mode: true },
       });
       if (employee) return employee;
     }
@@ -87,7 +93,7 @@ async function resolveEmployeeFromPunch(punch) {
     const code = String(employeeCodeRaw).trim();
     const employee = await prisma.employee.findFirst({
       where: { employee_code: code },
-      select: { id: true, employee_code: true, employee_name: true },
+      select: { id: true, employee_code: true, employee_name: true, work_mode: true },
     });
     if (employee) return employee;
   }
@@ -244,7 +250,14 @@ export async function syncAttendanceFromPunches({
 
     const { start, end } = dayRange(parseDateInput(punchDay));
     const lateCutoff = buildLateCutoff(checkIn, shiftStart, lateGraceMinutes);
-    const calculatedStatus = checkIn > lateCutoff ? "LATE" : "PRESENT";
+    // Route status through the shared helper so synced punches also yield
+    // HALF_DAY (≥30min late), not just PRESENT/LATE. shiftStart (the sync param,
+    // default "09:00") sets the shift-start minutes; the helper's env-tuned
+    // grace/half-day thresholds then decide the bucket.
+    const deviceShiftStartMin = resolveShiftStartMin({
+      shiftStartMinutes: parseClockToMinutes(shiftStart),
+    });
+    const calculatedStatus = deriveAttendanceStatus(checkIn, deviceShiftStartMin);
 
     const existing = await prisma.attendance.findFirst({
       where: {
@@ -265,7 +278,10 @@ export async function syncAttendanceFromPunches({
       return existing?.check_out || checkOut || null;
     })();
     const totalHours = calculateTotalHours(mergedCheckIn, mergedCheckOut);
-    const mergedStatus = mergedCheckIn > lateCutoff ? "LATE" : "PRESENT";
+    const mergedStatus = deriveAttendanceStatus(mergedCheckIn, deviceShiftStartMin);
+    // The day's work_mode is taken from the employee's default work_mode
+    // (Employee is snake_case), normalized to canonical Remote|Onsite|Hybrid.
+    const workMode = normalizeWorkMode(employee.work_mode);
 
     if (dryRun) {
       summary.details.push({
@@ -288,6 +304,7 @@ export async function syncAttendanceFromPunches({
           check_out: mergedCheckOut,
           total_hours: totalHours ?? undefined,
           status: mergedStatus,
+          ...(workMode ? { work_mode: workMode } : {}),
           remarks: "Synced from biometric device",
         },
       });
@@ -311,6 +328,7 @@ export async function syncAttendanceFromPunches({
           check_out: mergedCheckOut,
           total_hours: totalHours ?? undefined,
           status: calculatedStatus,
+          ...(workMode ? { work_mode: workMode } : {}),
           remarks: "Created from biometric device",
         },
       });

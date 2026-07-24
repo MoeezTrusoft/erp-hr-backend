@@ -20,6 +20,7 @@
  */
 import prisma from "../src/lib/prisma.js";
 import { mcpCtx } from "../src/mcp/context.js"; // run the seed under a tenant context so FORCE-RLS writes pass
+import { deriveAttendanceStatus, resolveShiftStartMin } from "../src/lib/attendanceStatus.js"; // seed status must agree with the app write-path
 
 const TENANT = "14c350e8-d0bc-4ee9-90c7-dea2b7a7a007";
 
@@ -563,6 +564,185 @@ async function main() {
     }
   }
   console.log(`Attendance: ${attCreated} new rows (target ~${EMPLOYEES.length * ATTENDANCE_DATES.length}).`);
+
+  // 11b. Current-month attendance (July 2026) — a realistic month-to-date grid
+  // for ~10 employees across working days (Mon–Sat) so the current-month
+  // attendance / timesheet screens render live, coherent data. Status is derived
+  // by the SAME shared helper the app write-path uses (deriveAttendanceStatus +
+  // resolveShiftStartMin), so seed and app agree. Idempotent: keyed on
+  // (employeeId, exact date) → re-runs add none. No tenantId passed — the ambient
+  // RLS create-net default stamps it.
+  const monthEmployees = await prisma.employee.findMany({ take: 10 });
+  const monthBase = new Date("2026-07-01");
+  const monthEnd = new Date("2026-07-24"); // month-to-date
+  const isoDate = (dt) =>
+    `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+  // Normalize minute overflow into the hour (callers pass e.g. m=60/75 for
+  // 10:00 / 10:15) so we never build an invalid "HH:60" clock string.
+  const atUtc = (dateStr, h, m) => {
+    const hh = h + Math.floor(m / 60);
+    const mm = m % 60;
+    return new Date(`${dateStr}T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00.000Z`);
+  };
+
+  // Work days: Mon–Sat (skip Sunday, getUTCDay() === 0).
+  const workDays = [];
+  for (let dt = new Date(monthBase); dt <= monthEnd; dt = new Date(dt.getTime() + 86_400_000)) {
+    if (dt.getUTCDay() !== 0) workDays.push(isoDate(dt));
+  }
+
+  // Deterministic mix: mostly PRESENT (on-time), a scatter of LATE, HALF_DAY,
+  // ABSENT, plus a few missing check-outs. Work-mode mostly Onsite with some
+  // Remote/Hybrid. Keyed off (employee index, day index) so it's stable.
+  const WORK_MODES = ["Onsite", "Onsite", "Onsite", "Remote", "Hybrid"];
+  const monthBuckets = { PRESENT: 0, LATE: 0, HALF_DAY: 0, ABSENT: 0 };
+  let monthAttCreated = 0;
+  for (let di = 0; di < workDays.length; di += 1) {
+    const dateStr = workDays[di];
+    const dateAtMidnight = d(dateStr);
+    const shiftStartMin = resolveShiftStartMin({ date: dateAtMidnight });
+    for (let ei = 0; ei < monthEmployees.length; ei += 1) {
+      const emp = monthEmployees[ei];
+      const seq = ei * 3 + di; // spread the pattern across the grid
+
+      let check_in = null;
+      let check_out = null;
+      let total_hours = null;
+      let remarks = null;
+      const work_mode = WORK_MODES[(ei + di) % WORK_MODES.length];
+
+      if (seq % 13 === 5) {
+        // ABSENT — no punch.
+        remarks = "No punch recorded";
+      } else if (seq % 11 === 4) {
+        // HALF_DAY — arrives 09:45–10:30 (≥30min late).
+        check_in = atUtc(dateStr, 9, 45 + (seq % 3) * 15); // 09:45 / 10:00 / 10:15
+        // half-days leave early; a couple have no check-out ("-").
+        if (seq % 2 === 0) {
+          check_out = atUtc(dateStr, 14, seq % 30);
+          total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        }
+        remarks = "Half day";
+      } else if (seq % 5 === 2) {
+        // LATE — arrives 09:10–09:25.
+        check_in = atUtc(dateStr, 9, 10 + (seq % 4) * 5); // 09:10..09:25
+        check_out = atUtc(dateStr, 17, 30 + (seq % 20));
+        total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        remarks = "Late arrival";
+      } else {
+        // PRESENT — on-time, 08:55–09:00.
+        check_in = atUtc(dateStr, seq % 2 === 0 ? 8 : 9, seq % 2 === 0 ? 55 + (seq % 5) : seq % 1);
+        // leave check_out null on a few present days to exercise the "-" case.
+        if (seq % 7 !== 3) {
+          check_out = atUtc(dateStr, 17, (seq % 60));
+          total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        }
+      }
+
+      // Status derived by the shared helper so seed == app write-path.
+      const status = deriveAttendanceStatus(check_in, shiftStartMin);
+      monthBuckets[status] += 1;
+
+      const existing = await prisma.attendance.findFirst({
+        where: { employeeId: emp.id, date: dateAtMidnight },
+      });
+      if (existing) continue;
+      await prisma.attendance.create({
+        data: {
+          employeeId: emp.id,
+          date: dateAtMidnight,
+          check_in,
+          check_out,
+          total_hours,
+          status,
+          work_mode: status === "ABSENT" ? null : work_mode,
+          remarks,
+        },
+      });
+      monthAttCreated += 1;
+    }
+  }
+  console.log(
+    `July-2026 attendance: +${monthAttCreated} rows across ${workDays.length} work days ` +
+      `(PRESENT ${monthBuckets.PRESENT}, LATE ${monthBuckets.LATE}, HALF_DAY ${monthBuckets.HALF_DAY}, ABSENT ${monthBuckets.ABSENT}).`
+  );
+
+  // 11c. Attendance anomalies (~6) — "Inform Abnormality" requests feeding the
+  // Timesheet pending-approvals list + Leave & Anomaly screen. Mostly PENDING,
+  // a couple decided. Idempotent: keyed on (employeeId, type, date). No tenantId
+  // passed — ambient RLS default stamps it.
+  const ANOMALIES = [
+    { empIdx: 0, type: "LATE_CHECKIN", date: "2026-07-03", from: [9, 30], to: [9, 45], status: "PENDING", reason: "Traffic on the ring road; requesting late-mark waiver." },
+    { empIdx: 1, type: "MISSING_CHECKOUT", date: "2026-07-07", from: [17, 30], to: [18, 30], status: "PENDING", reason: "Forgot to punch out after client call." },
+    { empIdx: 2, type: "ABSENT", date: "2026-07-09", from: null, to: null, status: "PENDING", reason: "Was on approved field visit; attendance not recorded." },
+    { empIdx: 3, type: "OTHER", date: "2026-07-11", from: [9, 0], to: [13, 0], status: "PENDING", reason: "Worked from partner office; device did not capture punch.", detail: "Off-site at partner premises" },
+    { empIdx: 4, type: "LATE_CHECKIN", date: "2026-07-02", from: [9, 20], to: [9, 30], status: "APPROVED", reason: "Medical appointment in the morning.", decided: true },
+    { empIdx: 5, type: "MISSING_CHECKOUT", date: "2026-07-04", from: [18, 0], to: [19, 0], status: "REJECTED", reason: "No prior approval for overtime stay.", decided: true },
+  ];
+  const anomToTime = (dateStr, hm) => (hm ? atUtc(dateStr, hm[0], hm[1]) : null);
+  const anomBuckets = { PENDING: 0, APPROVED: 0, REJECTED: 0 };
+  let anomCreated = 0;
+  for (const a of ANOMALIES) {
+    const emp = monthEmployees[a.empIdx % monthEmployees.length];
+    const dateAtMidnight = d(a.date);
+    anomBuckets[a.status] += 1;
+    const existing = await prisma.attendanceAnomaly.findFirst({
+      where: { employeeId: emp.id, type: a.type, date: dateAtMidnight },
+    });
+    if (existing) continue;
+    await prisma.attendanceAnomaly.create({
+      data: {
+        employeeId: emp.id,
+        type: a.type,
+        reason: a.reason,
+        detail: a.detail ?? null,
+        date: dateAtMidnight,
+        fromTime: anomToTime(a.date, a.from),
+        toTime: anomToTime(a.date, a.to),
+        status: a.status,
+        reviewerId: a.decided ? hrManager.id : null,
+        reviewNote: a.decided ? (a.status === "APPROVED" ? "Approved — supporting reason accepted." : "Rejected — no prior approval.") : null,
+        decidedAt: a.decided ? atUtc(a.date, 12, 0) : null,
+      },
+    });
+    anomCreated += 1;
+  }
+  console.log(
+    `Attendance anomalies: +${anomCreated} (PENDING ${anomBuckets.PENDING}, APPROVED ${anomBuckets.APPROVED}, REJECTED ${anomBuckets.REJECTED}).`
+  );
+
+  // 11d. Overtime requests (~4, all PENDING) — feeds the pending-approvals feed
+  // with overtime items. July 2026, hours 1–4. Idempotent: keyed on
+  // (employeeId, date, reason). No tenantId passed — ambient RLS default stamps.
+  const OVERTIME = [
+    { empIdx: 0, date: "2026-07-08", hours: 2, from: "18:00", to: "20:00", reason: "Production release window support." },
+    { empIdx: 2, date: "2026-07-10", hours: 3, from: "18:30", to: "21:30", reason: "Sprint deadline — feature completion." },
+    { empIdx: 5, date: "2026-07-15", hours: 1.5, from: "17:30", to: "19:00", reason: "Month-end reconciliation." },
+    { empIdx: 7, date: "2026-07-18", hours: 4, from: "17:00", to: "21:00", reason: "Client demo preparation." },
+  ];
+  let otCreated = 0;
+  for (const o of OVERTIME) {
+    const emp = monthEmployees[o.empIdx % monthEmployees.length];
+    const dateAtMidnight = d(o.date);
+    const existing = await prisma.overtimeRequest.findFirst({
+      where: { employeeId: emp.id, date: dateAtMidnight, reason: o.reason },
+    });
+    if (existing) continue;
+    await prisma.overtimeRequest.create({
+      data: {
+        employeeId: emp.id,
+        date: dateAtMidnight,
+        hours: o.hours,
+        rate: 1.5,
+        fromTime: o.from,
+        toTime: o.to,
+        reason: o.reason,
+        status: "PENDING",
+      },
+    });
+    otCreated += 1;
+  }
+  console.log(`Overtime requests: +${otCreated} (all PENDING).`);
 
   // 12. Course Catalog + Certifications (LMS) — coherent data so the Course
   // Catalog, Course View, Transcripts and Certifications screens render real

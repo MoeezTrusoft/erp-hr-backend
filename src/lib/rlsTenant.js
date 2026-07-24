@@ -96,6 +96,8 @@ const RLS_MODELS = new Set([
     // Course-catalog (LMS) tables — new in 20260724_hr_course_catalog. FORCE-RLS
     // with a DEFAULT hr_current_tenant() create-stamp, same as the fleet.
     'CourseSection', 'CourseLecture', 'CourseOutcome', 'CourseReview',
+    // Attendance anomaly/correction requests — new in 20260724_hr_attendance_anomaly.
+    'AttendanceAnomaly',
     'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',
     'ComplianceItem', 'DocumentExpiryAlert', 'DevelopmentPlan', 'DevelopmentPlanItem',
     'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',

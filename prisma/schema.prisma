@@ -31,6 +31,24 @@ enum StatusAttendance {
   PRESENT
   ABSENT
   LATE
+  HALF_DAY // check-in later than shift-start + HALF_DAY grace (default 30 min)
+}
+
+// Attendance anomaly / correction requests — the "Inform Abnormality" action and
+// the Timesheet pending-approvals feed. Employee-raised; HR approves/rejects.
+enum AnomalyType {
+  LATE_CHECKIN
+  MISSING_CHECKIN
+  MISSING_CHECKOUT
+  EARLY_CHECKOUT
+  ABSENT
+  OTHER
+}
+
+enum AnomalyStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum LeaveStatus {
@@ -273,6 +291,7 @@ model Employee {
   TrainingCourse        TrainingCourse[]
   coursesCreated        TrainingCourse[]      @relation("CourseCreatedBy")
   courseReviews         CourseReview[]
+  attendanceAnomalies   AttendanceAnomaly[]
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
   actionBy              Log[]                 @relation("ActionBy")
@@ -467,6 +486,7 @@ model Attendance {
   check_out   DateTime?
   total_hours Float?
   status      StatusAttendance @default(ABSENT)
+  work_mode   String? // Remote | Onsite | Hybrid — the day's work mode (WFH/Remote KPI). Mirrors Employee.work_mode values.
   remarks     String?
 
   created_at DateTime @default(now())
@@ -478,6 +498,34 @@ model Attendance {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+}
+
+// Attendance anomaly / correction request. Raised by an employee ("Inform
+// Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
+// pending-approvals list and the Leave & Anomaly screen.
+model AttendanceAnomaly {
+  id         Int           @id @default(autoincrement())
+  employeeId Int
+  type       AnomalyType
+  reason     String?
+  detail     String? // free text for OTHER {specify}
+  date       DateTime? // the affected work date
+  fromTime   DateTime? // time-range start
+  toTime     DateTime? // time-range end
+  status     AnomalyStatus @default(PENDING)
+  reviewerId Int? // Employee id of the HR reviewer (no relation — plain ref)
+  reviewNote String?
+  decidedAt  DateTime?
+  createdAt  DateTime      @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([status])
+  @@map("attendance_anomalies")
 }
 
 model Leave {
