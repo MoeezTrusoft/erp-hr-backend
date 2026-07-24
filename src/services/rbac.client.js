@@ -285,6 +285,25 @@ export async function listDepartments() {
 }
 
 /**
+ * List the acting company's RBAC roles (resource rbac://roles) for name→id
+ * resolution during bulk employee import. Fail-soft to [] so import degrades to
+ * "role not found" flags rather than throwing.
+ * @returns {Promise<Array<{ id:number, name:string }>>}
+ */
+export async function listRoles() {
+  try {
+    const data = await rbacMcp("resources/read", { uri: "rbac://roles" });
+    const arr = data?.roles ?? data?.data ?? data?.items ?? (Array.isArray(data) ? data : []);
+    return (Array.isArray(arr) ? arr : [])
+      .map((r) => ({ id: r.id, name: r.name ?? r.roleName }))
+      .filter((r) => r.id != null && r.name);
+  } catch (err) {
+    logger.warn({ err: err?.message }, "rbac.client: listRoles failed — role will not resolve");
+    return [];
+  }
+}
+
+/**
  * Get one RBAC department by id (tool rbac_department_get, tenant-scoped by company).
  * @returns {Promise<{ id:number, name:string, description?:string|null }|null>}
  */

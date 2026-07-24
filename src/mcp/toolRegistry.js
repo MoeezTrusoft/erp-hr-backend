@@ -47,6 +47,7 @@ import { registerPayrollDashboardTools } from "./tools/payrollDashboardTools.js"
 import { registerMyPayslipTools } from "./tools/myPayslipTools.js";
 import { registerClaimsTools } from "./tools/claimsTools.js";
 import { registerOnboardingPortalScreenTools } from "./tools/onboardingPortalScreenTools.js";
+import { registerEmployeeImportTools } from "./tools/employeeImportTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -167,4 +168,5 @@ export function registerAllTools(server) {
   registerMyPayslipTools(server);
   registerClaimsTools(server);
   registerOnboardingPortalScreenTools(server);
+  registerEmployeeImportTools(server);
 }
