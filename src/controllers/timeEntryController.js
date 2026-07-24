@@ -46,7 +46,7 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
 // @access  Private
 export const updateTimeEntry = asyncHandler(async (req, res) => {
    const  userId = req.headers['employee-id'];
-    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, userId, req.user?.tenantId);
+    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, userId, req.user?.tenantId, req.user?.isAdmin);
 
     res.json({
         success: true,
@@ -59,7 +59,7 @@ export const updateTimeEntry = asyncHandler(async (req, res) => {
 // @access  Private
 export const deleteTimeEntry = asyncHandler(async (req, res) => {
     const userId = req.headers['employee-id'];
-    await timeEntryService.deleteTimeEntry(req.params.id, userId, req.user?.tenantId);
+    await timeEntryService.deleteTimeEntry(req.params.id, userId, req.user?.tenantId, req.user?.isAdmin);
 
     res.json({
         success: true,

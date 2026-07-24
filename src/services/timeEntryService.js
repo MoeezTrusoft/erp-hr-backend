@@ -76,7 +76,7 @@ export const createTimeEntry = async (data) => {
     return create;
 };
 
-export const updateTimeEntry = async (id, data, userId, tenantId) => {
+export const updateTimeEntry = async (id, data, userId, tenantId, isAdmin = false) => {
     const entry = await prisma.timeEntry.findFirst({
         where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
@@ -86,9 +86,11 @@ export const updateTimeEntry = async (id, data, userId, tenantId) => {
         throw new AppError('Time entry not found', 404);
     }
 
-    // Check permission — userId arrives as a header/string; entry.employeeId is a
-    // number. Compare numerically so a legitimate owner is not spuriously 403'd.
-    if (entry.employeeId !== Number(userId)) {
+    // Ownership gate — a self-service employee may only edit their OWN entry.
+    // An admin / HR manager (tool already asserted hr:attendance EDIT) manages any
+    // entry in their tenant, so bypass the owner check for them. userId arrives as
+    // a header/string; entry.employeeId is a number — compare numerically.
+    if (!isAdmin && entry.employeeId !== Number(userId)) {
         throw new AppError('Not authorized to update this time entry', 403);
     }
 
@@ -131,7 +133,7 @@ export const updateTimeEntry = async (id, data, userId, tenantId) => {
     return update;
 };
 
-export const deleteTimeEntry = async (id, userId, tenantId) => {
+export const deleteTimeEntry = async (id, userId, tenantId, isAdmin = false) => {
     const entry = await prisma.timeEntry.findFirst({
         where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
@@ -141,7 +143,8 @@ export const deleteTimeEntry = async (id, userId, tenantId) => {
         throw new AppError('Time entry not found', 404);
     }
 
-    if (entry.employeeId !== Number(userId)) {
+    // Admin / HR manager bypasses the self-service owner gate (see updateTimeEntry).
+    if (!isAdmin && entry.employeeId !== Number(userId)) {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
 
