@@ -36,6 +36,8 @@ import { registerCatalogTools } from "./tools/catalogTools.js";
 import { registerReportsTools } from "./tools/reportsTools.js";
 import { registerTimesheetReportTools } from "./tools/timesheetReportTools.js";
 import { registerAttendanceOpsTools } from "./tools/attendanceOpsTools.js";
+import { registerLeaveReportTools } from "./tools/leaveReportTools.js";
+import { registerOvertimeShiftReportTools } from "./tools/overtimeShiftReportTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -145,4 +147,6 @@ export function registerAllTools(server) {
   registerReportsTools(server);
   registerTimesheetReportTools(server);
   registerAttendanceOpsTools(server);
+  registerLeaveReportTools(server);
+  registerOvertimeShiftReportTools(server);
 }

@@ -744,6 +744,171 @@ async function main() {
   }
   console.log(`Overtime requests: +${otCreated} (all PENDING).`);
 
+  // ── 11e. Overtime & Shift Management screen data ──────────────────────────
+  // Feeds the read tools: shift templates (+assigned counts), this-week shift
+  // roster, shift-swap requests, and a 6-month OT spread across all four
+  // statuses (with 1–2 employees exceeding 75% of the 24h monthly limit so the
+  // at-risk / approaching-limit surfaces have rows). All idempotent (skip-if-
+  // present on a stable natural key). No tenantId passed — the ambient RLS
+  // create-net default stamps it. Reuses `monthEmployees` (10 employees).
+
+  // 11e-i. Shift templates (Morning / Evening / Night). Keyed on name.
+  const SHIFT_TEMPLATES = [
+    { name: "Morning", fromTime: "09:00", toTime: "17:00", shiftType: "morning", workMode: "onsite" },
+    { name: "Evening", fromTime: "14:00", toTime: "22:00", shiftType: "evening", workMode: "hybrid" },
+    { name: "Night", fromTime: "22:00", toTime: "06:00", shiftType: "night", workMode: "onsite" },
+  ];
+  const templateByName = {};
+  let tmplCreated = 0;
+  for (const t of SHIFT_TEMPLATES) {
+    const existing = await prisma.shiftTemplate.findFirst({ where: { name: t.name } });
+    templateByName[t.name] = existing
+      ? existing
+      : await prisma.shiftTemplate.create({ data: t });
+    if (!existing) tmplCreated += 1;
+  }
+  console.log(`Shift templates: +${tmplCreated} (target ${SHIFT_TEMPLATES.length}).`);
+
+  // 11e-ii. Shift assignments for the current week (Mon 2026-07-20 .. Sun
+  // 2026-07-26) across the first ~8 employees. Mix of shiftTypes; a couple of
+  // off days; some rows carry overtimeHours. Keyed on (employeeId, exact date).
+  const WEEK_MON = "2026-07-20"; // Monday of the current week (July 2026)
+  const weekDayIso = (offset) => {
+    const base = new Date(`${WEEK_MON}T00:00:00.000Z`);
+    base.setUTCDate(base.getUTCDate() + offset);
+    return isoDate(base);
+  };
+  // day offsets 0..6 (Mon..Sun); each entry: shiftType or "off", + optional OT.
+  const ROSTER_PLAN = [
+    // empIdx 0 — morning week, Sat/Sun off, some OT
+    { empIdx: 0, tmpl: "Morning", days: ["morning","morning","morning","morning","morning","off","off"], ot: [0,0,1.5,0,2,0,0] },
+    { empIdx: 1, tmpl: "Morning", days: ["morning","morning","off","morning","morning","off","off"], ot: [0,0,0,0,1,0,0] },
+    { empIdx: 2, tmpl: "Evening", days: ["evening","evening","evening","evening","evening","off","off"], ot: [0,1,0,0,0,0,0] },
+    { empIdx: 3, tmpl: "Evening", days: ["evening","evening","evening","off","evening","off","off"], ot: [0,0,0,0,0,0,0] },
+    { empIdx: 4, tmpl: "Night", days: ["night","night","night","night","off","off","off"], ot: [0,0,2,0,0,0,0] },
+    { empIdx: 5, tmpl: "Morning", days: ["morning","morning","morning","morning","morning","off","off"], ot: [0,0,0,0,0,0,0] },
+    { empIdx: 6, tmpl: "Evening", days: ["evening","off","evening","evening","evening","off","off"], ot: [0,0,0,1.5,0,0,0] },
+    { empIdx: 7, tmpl: "Night", days: ["night","night","off","night","night","off","off"], ot: [0,0,0,0,0,0,0] },
+  ];
+  const TEMPLATE_TIMES = {
+    morning: { from: "09:00", to: "17:00" },
+    evening: { from: "14:00", to: "22:00" },
+    night: { from: "22:00", to: "06:00" },
+  };
+  let saCreated = 0;
+  for (const plan of ROSTER_PLAN) {
+    const emp = monthEmployees[plan.empIdx % monthEmployees.length];
+    const tmpl = templateByName[plan.tmpl];
+    for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+      const kind = plan.days[dayOffset];
+      const dateAtMidnight = d(weekDayIso(dayOffset));
+      const existing = await prisma.shiftAssignment.findFirst({
+        where: { employeeId: emp.id, date: dateAtMidnight },
+      });
+      if (existing) continue;
+      const isOff = kind === "off";
+      const times = isOff ? null : TEMPLATE_TIMES[kind];
+      await prisma.shiftAssignment.create({
+        data: {
+          employeeId: emp.id,
+          date: dateAtMidnight,
+          shiftType: isOff ? "morning" : kind,
+          workMode: "onsite",
+          status: isOff ? "off" : "on_shift",
+          fromTime: times?.from ?? null,
+          toTime: times?.to ?? null,
+          overtimeHours: plan.ot[dayOffset] || 0,
+          templateId: isOff ? null : tmpl?.id ?? null,
+        },
+      });
+      saCreated += 1;
+    }
+  }
+  console.log(`Shift assignments (this week): +${saCreated}.`);
+
+  // 11e-iii. Shift-swap requests (a few PENDING). Keyed on (requesterId,
+  // targetId, fromDate).
+  const SWAPS = [
+    { reqIdx: 0, tgtIdx: 5, fromDate: "2026-07-22", toDate: "2026-07-22", shiftType: "morning", reason: "Doctor's appointment — need the morning off." },
+    { reqIdx: 2, tgtIdx: 3, fromDate: "2026-07-23", toDate: "2026-07-24", shiftType: "evening", reason: "Family event; swapping two evening shifts." },
+    { reqIdx: 4, tgtIdx: 7, fromDate: "2026-07-25", toDate: "2026-07-25", shiftType: "night", reason: "Prefer a day shift this week." },
+  ];
+  let swapCreated = 0;
+  for (const s of SWAPS) {
+    const requester = monthEmployees[s.reqIdx % monthEmployees.length];
+    const target = monthEmployees[s.tgtIdx % monthEmployees.length];
+    const fromDate = d(s.fromDate);
+    const existing = await prisma.shiftSwapRequest.findFirst({
+      where: { requesterId: requester.id, targetId: target.id, fromDate },
+    });
+    if (existing) continue;
+    await prisma.shiftSwapRequest.create({
+      data: {
+        requesterId: requester.id,
+        targetId: target.id,
+        fromDate,
+        toDate: d(s.toDate),
+        shiftType: s.shiftType,
+        reason: s.reason,
+        status: "PENDING",
+      },
+    });
+    swapCreated += 1;
+  }
+  console.log(`Shift-swap requests: +${swapCreated} (all PENDING).`);
+
+  // 11e-iv. 6-month OT spread (Feb 2026 → Jul 2026) across all four statuses so
+  // the trend chart has data. Two employees (empIdx 0 & 2) get large APPROVED OT
+  // THIS month (July) so they exceed 75% of the 24h limit (18h) → at-risk /
+  // approaching-limit. Keyed on (employeeId, date, reason).
+  const OT_SPREAD = [
+    // Older months (trend history) — mixed statuses.
+    { empIdx: 1, date: "2026-02-11", hours: 3, status: "APPROVED", reason: "OT spread: Feb release support." },
+    { empIdx: 3, date: "2026-02-18", hours: 2, status: "REJECTED", reason: "OT spread: Feb overrun (rejected)." },
+    { empIdx: 2, date: "2026-03-06", hours: 4, status: "APPROVED", reason: "OT spread: Mar migration window." },
+    { empIdx: 4, date: "2026-03-20", hours: 2.5, status: "WITHDRAWN", reason: "OT spread: Mar (withdrawn)." },
+    { empIdx: 0, date: "2026-04-09", hours: 5, status: "APPROVED", reason: "OT spread: Apr feature push." },
+    { empIdx: 5, date: "2026-04-22", hours: 1.5, status: "PENDING", reason: "OT spread: Apr pending." },
+    { empIdx: 6, date: "2026-05-07", hours: 3, status: "APPROVED", reason: "OT spread: May audit prep." },
+    { empIdx: 3, date: "2026-05-19", hours: 2, status: "REJECTED", reason: "OT spread: May (rejected)." },
+    { empIdx: 1, date: "2026-06-04", hours: 4, status: "APPROVED", reason: "OT spread: Jun release." },
+    { empIdx: 7, date: "2026-06-16", hours: 2, status: "PENDING", reason: "OT spread: Jun pending." },
+    // Current month (July) — push two employees over 75% of 24h (>=18h approved).
+    { empIdx: 0, date: "2026-07-02", hours: 8, status: "APPROVED", reason: "OT spread: Jul at-risk block A1." },
+    { empIdx: 0, date: "2026-07-09", hours: 7, status: "APPROVED", reason: "OT spread: Jul at-risk block A2." },
+    { empIdx: 0, date: "2026-07-16", hours: 5, status: "APPROVED", reason: "OT spread: Jul at-risk block A3." },
+    { empIdx: 2, date: "2026-07-03", hours: 9, status: "APPROVED", reason: "OT spread: Jul at-risk block B1." },
+    { empIdx: 2, date: "2026-07-11", hours: 10, status: "APPROVED", reason: "OT spread: Jul at-risk block B2." },
+    // A couple more July rows across the other statuses for the current bucket.
+    { empIdx: 4, date: "2026-07-14", hours: 3, status: "REJECTED", reason: "OT spread: Jul (rejected)." },
+    { empIdx: 6, date: "2026-07-17", hours: 2, status: "WITHDRAWN", reason: "OT spread: Jul (withdrawn)." },
+  ];
+  let otSpreadCreated = 0;
+  for (const o of OT_SPREAD) {
+    const emp = monthEmployees[o.empIdx % monthEmployees.length];
+    const dateAtMidnight = d(o.date);
+    const existing = await prisma.overtimeRequest.findFirst({
+      where: { employeeId: emp.id, date: dateAtMidnight, reason: o.reason },
+    });
+    if (existing) continue;
+    await prisma.overtimeRequest.create({
+      data: {
+        employeeId: emp.id,
+        date: dateAtMidnight,
+        hours: o.hours,
+        rate: 1.5,
+        reason: o.reason,
+        status: o.status,
+        decidedAt:
+          o.status === "APPROVED" || o.status === "REJECTED"
+            ? new Date(`${o.date}T12:00:00.000Z`)
+            : null,
+      },
+    });
+    otSpreadCreated += 1;
+  }
+  console.log(`Overtime 6-month spread: +${otSpreadCreated} (mixed statuses; 2 employees at-risk in July).`);
+
   // 12. Course Catalog + Certifications (LMS) — coherent data so the Course
   // Catalog, Course View, Transcripts and Certifications screens render real
   // rows. New-model tenantId is stamped by the RLS extension / column DEFAULT
@@ -1171,6 +1336,96 @@ async function main() {
   }
   console.log(
     `Employee documents (EmployeeMedia): +${docsCreated} (expired ${docBuckets.expired}, <=30d ${docBuckets.expiring30}, <=60d ${docBuckets.expiring60}, <=90d ${docBuckets.expiring90}, healthy ${docBuckets.healthy}).`
+  );
+
+  // ── Leave & Anomaly screen — screen-shaped leave data ────────────────────────
+  // The Leave & Anomaly Management screen buckets leave by the canonical type
+  // CODES ANNUAL/SICK/CASUAL/MATERNITY (distinct from the legacy AL/SL/CL/UL
+  // policies above). Ensure a policy exists for each of those four codes, then
+  // seed ~10 leave requests submitted THIS month (July 2026): a mix of PENDING
+  // (no type — leavePolicyId null), APPROVED (with a type spread across the four
+  // policies), and REJECTED. Idempotent on (employeeId, startDate, reason).
+  const LR_BASE = new Date("2026-07-01T00:00:00.000Z");
+  const lrDay = (n) => new Date(LR_BASE.getTime() + n * 86_400_000);
+
+  const SCREEN_LEAVE_POLICIES = [
+    { code: "ANNUAL", name: "Annual Leave (Screen)" },
+    { code: "SICK", name: "Sick Leave (Screen)" },
+    { code: "CASUAL", name: "Casual Leave (Screen)" },
+    { code: "MATERNITY", name: "Maternity Leave (Screen)" },
+  ];
+  const screenPolicyByCode = {};
+  for (const p of SCREEN_LEAVE_POLICIES) {
+    screenPolicyByCode[p.code] = await getOrCreate(
+      "leavePolicy",
+      { leaveTypeCode: p.code, tenantId: TENANT },
+      {
+        name: p.name,
+        description: `${p.name} policy`,
+        leaveTypeCode: p.code,
+        accrualRate: 0,
+        accrualPeriod: "NONE",
+        carryForwardAllowed: false,
+        maxCarryForward: 0,
+        active: true,
+        createdById: hrManager.id,
+        tenantId: TENANT,
+      }
+    );
+  }
+
+  // ~10 rows: submittedAt (created_at) in July, dates single-day + ranges, a
+  // mix of statuses. `type` null → PENDING; a code → APPROVED with that policy.
+  const SCREEN_LEAVE_REQUESTS = [
+    { emp: "DEV-004", start: 2, end: 4, status: "PENDING", type: null, reason: "Family trip" },
+    { emp: "DEV-005", start: 7, end: 7, status: "PENDING", type: null, reason: "Personal errand" },
+    { emp: "DEV-011", start: 9, end: 12, status: "PENDING", type: null, reason: "Out of town" },
+    { emp: "DEV-002", start: 1, end: 5, status: "APPROVED", type: "ANNUAL", reason: "Summer vacation" },
+    { emp: "DEV-016", start: 3, end: 3, status: "APPROVED", type: "SICK", reason: "Fever" },
+    { emp: "DEV-020", start: 6, end: 6, status: "APPROVED", type: "CASUAL", reason: "Family function" },
+    { emp: "DEV-012", start: 8, end: 21, status: "APPROVED", type: "MATERNITY", reason: "Maternity leave" },
+    { emp: "DEV-017", start: 10, end: 11, status: "APPROVED", type: "SICK", reason: "Flu recovery" },
+    { emp: "DEV-013", start: 14, end: 16, status: "REJECTED", type: null, reason: "Short-staffed period" },
+    { emp: "DEV-022", start: 18, end: 18, status: "REJECTED", type: null, reason: "Insufficient balance" },
+  ];
+
+  let screenLeaveCreated = 0;
+  const screenLeaveCounts = { PENDING: 0, APPROVED: 0, REJECTED: 0 };
+  for (const lr of SCREEN_LEAVE_REQUESTS) {
+    const emp = empByCode[lr.emp];
+    if (!emp) continue;
+    const startDate = lrDay(lr.start);
+    const endDate = lrDay(lr.end);
+    const existing = await prisma.leaveRequest.findFirst({
+      where: { employeeId: emp.id, startDate, reason: lr.reason, tenantId: TENANT },
+    });
+    if (existing) {
+      screenLeaveCounts[lr.status] += 1;
+      continue;
+    }
+    // totalDays: inclusive whole-day span for the seed (screen still recomputes
+    // Mon–Sat working days on live submits; seed rows just carry a plausible n).
+    const totalDays = Math.round((endDate - startDate) / 86_400_000) + 1;
+    await prisma.leaveRequest.create({
+      data: {
+        employeeId: emp.id,
+        leavePolicyId: lr.type ? screenPolicyByCode[lr.type].id : null,
+        startDate,
+        endDate,
+        totalDays,
+        reason: lr.reason,
+        status: lr.status,
+        created_at: lrDay(lr.start), // submittedAt within July
+        createdById: emp.id,
+      },
+    });
+    screenLeaveCreated += 1;
+    screenLeaveCounts[lr.status] += 1;
+  }
+  console.log(
+    `Leave & Anomaly (screen): policies ANNUAL/SICK/CASUAL/MATERNITY ensured; ` +
+      `+${screenLeaveCreated} leave requests ` +
+      `(PENDING ${screenLeaveCounts.PENDING}, APPROVED ${screenLeaveCounts.APPROVED}, REJECTED ${screenLeaveCounts.REJECTED}).`
   );
 
   console.log("HR dev seed complete.");

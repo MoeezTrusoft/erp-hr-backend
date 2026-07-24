@@ -591,7 +591,9 @@ model LeavePolicy {
 model LeaveRequest {
   id            Int                @id @default(autoincrement())
   employeeId    Int
-  leavePolicyId Int
+  // Nullable: the leave TYPE (= LeavePolicy) is assigned by HR at approval, not
+  // chosen by the employee at request time. A pending request may have no policy.
+  leavePolicyId Int?
   startDate     DateTime
   endDate       DateTime
   totalDays     Float
@@ -601,7 +603,7 @@ model LeaveRequest {
 
   // Relations
   employee    Employee               @relation(fields: [employeeId], references: [id])
-  leavePolicy LeavePolicy            @relation(fields: [leavePolicyId], references: [id])
+  leavePolicy LeavePolicy?           @relation(fields: [leavePolicyId], references: [id])
   approvals   LeaveRequestApproval[]
 
   // Audit
