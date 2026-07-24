@@ -23,10 +23,14 @@ export const getTimeEntries = asyncHandler(async (req, res) => {
 // @access  Private
 export const createTimeEntry = asyncHandler(async (req, res) => {
 
-    const employeeId = req.headers['employee-id'];
+    // On-behalf create: an explicit body.employeeId (manager/HR acting for another
+    // employee, gated upstream by hr:attendance CREATE) wins; otherwise fall back
+    // to the caller's own employee id from the session header (self-service).
+    const employeeId = req.body.employeeId || req.headers['employee-id'];
     const entryData = {
         ...req.body,
-        employeeId: employeeId
+        employeeId: employeeId,
+        tenantId: req.user?.tenantId,
     };
 
     const entry = await timeEntryService.createTimeEntry(entryData);
@@ -42,7 +46,7 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
 // @access  Private
 export const updateTimeEntry = asyncHandler(async (req, res) => {
    const  userId = req.headers['employee-id'];
-    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, userId);
+    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, userId, req.user?.tenantId);
 
     res.json({
         success: true,
@@ -55,7 +59,7 @@ export const updateTimeEntry = asyncHandler(async (req, res) => {
 // @access  Private
 export const deleteTimeEntry = asyncHandler(async (req, res) => {
     const userId = req.headers['employee-id'];
-    await timeEntryService.deleteTimeEntry(req.params.id, userId);
+    await timeEntryService.deleteTimeEntry(req.params.id, userId, req.user?.tenantId);
 
     res.json({
         success: true,

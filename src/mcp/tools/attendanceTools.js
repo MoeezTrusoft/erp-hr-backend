@@ -248,8 +248,9 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_time_entry_create",
-    "Create a manual time entry for the calling employee (entry_type MANUAL_ENTRY). work_date is derived from start_time.",
+    "Create a manual time entry (entry_type MANUAL_ENTRY). Defaults to the calling employee; an explicit employeeId lets a manager/HR (holding hr:attendance CREATE) log on behalf of another employee in the same tenant. work_date is derived from start_time.",
     {
+      employeeId: z.string().optional().describe("Employee id (numeric string) to log the entry for. Optional — defaults to the calling employee's session id. Provide only when creating on behalf of another employee."),
       start_time: z.string().describe("ISO 8601 datetime; also seeds work_date"),
       end_time: z.string().optional().describe("ISO 8601 datetime; omit for an open-ended entry (no duration)"),
       work_type: z.enum(["REGULAR", "OVERTIME", "HOLIDAY", "VACATION", "SICK"]).optional().describe("enum WorkType — one of REGULAR | OVERTIME | HOLIDAY | VACATION | SICK; defaults to REGULAR"),
@@ -259,8 +260,15 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      if (!user.employeeId) throw Object.assign(new Error("No employeeId in session"), { status: 400 });
-      const data = await mcpCreateTimeEntry(user, args);
+      // Explicit arg wins (on-behalf); else the session's bound employee (self).
+      const employeeId = args.employeeId ?? user.employeeId;
+      if (!employeeId) {
+        throw Object.assign(
+          new Error("employeeId is required (no employee bound to the session)"),
+          { status: 400 }
+        );
+      }
+      const data = await mcpCreateTimeEntry(user, { ...args, employeeId: String(employeeId) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

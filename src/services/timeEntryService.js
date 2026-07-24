@@ -86,8 +86,9 @@ export const updateTimeEntry = async (id, data, userId, tenantId) => {
         throw new AppError('Time entry not found', 404);
     }
 
-    // Check permission
-    if (entry.employeeId !== userId) {
+    // Check permission — userId arrives as a header/string; entry.employeeId is a
+    // number. Compare numerically so a legitimate owner is not spuriously 403'd.
+    if (entry.employeeId !== Number(userId)) {
         throw new AppError('Not authorized to update this time entry', 403);
     }
 
@@ -140,7 +141,7 @@ export const deleteTimeEntry = async (id, userId, tenantId) => {
         throw new AppError('Time entry not found', 404);
     }
 
-    if (entry.employeeId !== userId) {
+    if (entry.employeeId !== Number(userId)) {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
 

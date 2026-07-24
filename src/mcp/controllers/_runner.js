@@ -75,7 +75,21 @@ export async function runController(controller, { user = {}, params = {}, query 
   try {
     await controller(req, res);
   } catch (error) {
-    throw Object.assign(new Error(error?.message || "Controller execution failed"), { status: 500 });
+    // Preserve error fidelity across the MCP boundary. A controller/service that
+    // throws an AppError (404/403/400/412, ...) MUST surface with its real status
+    // and HR-nnnn code — otherwise the MCP mapper genericises everything to a 500
+    // HR-5000 (e.g. a "not found" reads as "Internal server error"). Only truly
+    // untyped throws fall back to 500.
+    const status =
+      error?.statusCode || error?.httpStatus || error?.status || 500;
+    const err = Object.assign(
+      new Error(error?.message || "Controller execution failed"),
+      { status }
+    );
+    if (error?.code) err.code = error.code;
+    if (error?.details !== undefined) err.details = error.details;
+    if (error?.currentVersion !== undefined) err.currentVersion = error.currentVersion;
+    throw err;
   }
 
   if (statusCode >= 400) {
