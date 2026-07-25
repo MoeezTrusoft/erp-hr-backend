@@ -1877,6 +1877,30 @@ model PayrollRuleConfig {
   @@map("payroll_rule_config")
 }
 
+// Payroll Setup → Pay Rules: discrete, tenant-owned policy rules (an array on
+// the screen). Each rule carries a human title + description; the backend
+// camel-cases the title into a stable `ruleKey` (e.g. "Mid Month Joiner
+// Proration" → "midMonthJoinerProration") used as the row's machine key
+// (unique per tenant). Distinct from the singleton PayrollRuleConfig toggles.
+model PayrollRule {
+  id          Int          @id @default(autoincrement())
+  ruleKey     String // camelCased from title; unique per tenant (machine key)
+  title       String // human-entered rule title
+  description String? // human-entered rule description
+  enabled     Boolean      @default(true)
+  sortOrder   Int          @default(0)
+  status      ConfigStatus @default(DRAFT) // draft until the config set is published
+  version     Int          @default(1)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, ruleKey])
+  @@index([tenantId])
+  @@map("payroll_rules")
+}
+
 // Draft/Publish state for the whole payroll config set (one row per tenant).
 // "Publish changes" flips DRAFT config rows → PUBLISHED, bumps publishedVersion,
 // and writes a PayrollConfigSnapshot.
