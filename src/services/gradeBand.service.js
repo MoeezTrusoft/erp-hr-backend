@@ -10,7 +10,7 @@
 // tenant via scopedWhere(tenantId, where); a single update runs under ambient
 // ctx so the RLS extension auto-wraps the write with the tenant GUC.
 import prisma from "../lib/prisma.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 
 function badRequest(message) {
@@ -179,7 +179,8 @@ export async function deleteGradeLevel({ tenantId, id }) {
   // would otherwise dangle (Employee.gradeLevelId) or silently detach
   // (SalaryComponent.gradeLevelId ON DELETE SET NULL). Surface a clear reason.
   const [employeeCount, componentCount] = await Promise.all([
-    prisma.employee.count({ where: scopedWhere(tenantId, { gradeLevelId: gradeId }) }),
+    // Employee is snake_case tenant_id — scopedEmployeeWhere, not scopedWhere.
+    prisma.employee.count({ where: scopedEmployeeWhere(tenantId, { gradeLevelId: gradeId }) }),
     prisma.salaryComponent.count({ where: scopedWhere(tenantId, { gradeLevelId: gradeId }) }),
   ]);
   if (employeeCount > 0) {
