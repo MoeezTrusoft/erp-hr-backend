@@ -537,7 +537,11 @@ async function buildAnnotated(results) {
   return Buffer.from(buf).toString("base64");
 }
 
-// ── Ensure the standard allowance SalaryComponents exist (idempotent) ────────
+// ── Ensure the standard allowance SalaryComponents exist + are authoritative ──
+// The total-salary segregation only "works perfect" if these components carry
+// the exact PERCENTAGE-of-BASIC values, so we create missing ones AND correct
+// any pre-existing component that shares a standard code (e.g. a stale HRA left
+// over from earlier config) to the standard EARNING/PERCENTAGE definition.
 async function ensureSalaryComponents(tenantId) {
   const codes = SALARY_SPLIT.map((s) => s.code);
   const existing = await prisma.salaryComponent.findMany({
@@ -548,10 +552,18 @@ async function ensureSalaryComponents(tenantId) {
   let sort = 10;
   for (const s of SALARY_SPLIT) {
     sort += 10;
-    if (have.has(s.code)) continue;
+    const value = round2(componentPctOfBasic(s.pctOfTotal));
+    if (have.has(s.code)) {
+      // Correct a pre-existing component to the standard segregation config.
+      await prisma.salaryComponent.updateMany({
+        where: scopedWhere(tenantId, { code: s.code }),
+        data: { name: s.name, type: "EARNING", computation: "PERCENTAGE", value, taxable: true, active: true },
+      }).catch((e) => logger.warn({ code: s.code, err: e?.message }, "employee import: salary component correct failed"));
+      continue;
+    }
     await createSalaryComponent({
       tenantId, code: s.code, name: s.name, type: "EARNING", computation: "PERCENTAGE",
-      value: round2(componentPctOfBasic(s.pctOfTotal)), taxable: true, active: true, sortOrder: sort,
+      value, taxable: true, active: true, sortOrder: sort,
     }).catch((e) => logger.warn({ code: s.code, err: e?.message }, "employee import: salary component ensure failed"));
   }
 }
