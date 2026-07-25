@@ -91,9 +91,12 @@ async function resolveEmployeeFromPunch(punch) {
 
   if (employeeCodeRaw !== undefined && employeeCodeRaw !== null && String(employeeCodeRaw).trim() !== "") {
     const code = String(employeeCodeRaw).trim();
+    // The device enrollment ID maps to Employee.biometric_id first (the dedicated
+    // device key), then falls back to employee_code for staff enrolled before
+    // biometric_id was populated.
     const employee = await prisma.employee.findFirst({
-      where: { employee_code: code },
-      select: { id: true, employee_code: true, employee_name: true, work_mode: true },
+      where: { OR: [{ biometric_id: code }, { employee_code: code }] },
+      select: { id: true, employee_code: true, biometric_id: true, employee_name: true, work_mode: true },
     });
     if (employee) return employee;
   }

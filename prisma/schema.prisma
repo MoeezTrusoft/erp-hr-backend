@@ -251,6 +251,8 @@ model Employee {
   preferred_name       String?
   nationality_id_type  String?
   employee_code        String?   @db.VarChar(50)
+  biometric_id         String?   @db.VarChar(64) // ZKTeco device enrollment user-ID; attendance punches join on this (falls back to employee_code). Bulk-import "Biometric / Device ID".
+  login_password       String?   // C4-encrypted (AES-256-GCM envelope) copy of the auto-generated login password, for HR read-back via hr_employee_login_password_get. RBAC holds the real hash.
   date_of_birth        DateTime?
   joining_date         DateTime?
   probation_end_date   DateTime?
@@ -411,6 +413,8 @@ model Employee {
   documentExpiryAlerts   DocumentExpiryAlert[]
   // HR-BENEFITS-04 — benefit enrollments for this employee.
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
+
+  @@index([biometric_id])
 }
 
 model EmployeeMedia {
