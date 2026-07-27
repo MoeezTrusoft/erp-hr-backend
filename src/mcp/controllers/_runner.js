@@ -93,7 +93,27 @@ export async function runController(controller, { user = {}, params = {}, query 
 
   if (statusCode >= 400) {
     const message = payload?.message || payload?.error || "Request failed";
-    const err = Object.assign(new Error(message), { status: statusCode, data: payload });
+    // ERR-3: Sanitize the error message — if it contains raw Prisma/DB detail,
+    // replace with a human-readable message. Never leak internal implementation
+    // details to MCP clients.
+    let safeMessage = message;
+    if (typeof message === 'string' && (
+      message.includes('Foreign key constraint') ||
+      message.includes('Unique constraint') ||
+      message.includes('prisma.') ||
+      message.includes('Invalid prisma.') ||
+      message.includes('violation') ||
+      message.includes('constraint')
+    )) {
+      if (message.includes('Foreign key constraint') || message.includes('fkey')) {
+        safeMessage = 'Related record not found. Please verify the referenced IDs exist.';
+      } else if (message.includes('Unique constraint') || message.includes('unique')) {
+        safeMessage = 'A record with this value already exists.';
+      } else {
+        safeMessage = 'Invalid request. Please check your input.';
+      }
+    }
+    const err = Object.assign(new Error(safeMessage), { status: statusCode, data: payload });
     // API-2 — preserve the HR-nnnn code and the optimistic-concurrency
     // currentVersion the controller surfaced (e.g. a 412 HR-4120) so the MCP
     // error mapper (toJsonRpcError) can emit -32009 with data.currentVersion.

@@ -169,4 +169,83 @@ export function registerBenefitTools(server) {
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
+
+  // ── KPI / DASHBOARD ─────────────────────────────────────────────────────────
+  server.tool(
+    "hr_benefit_kpi",
+    "Get Benefits & Enrollments KPI summary (Active plans, Open enrollment, Total enrollments, Monthly gross contribution)",
+    {},
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", BENEFITS_KEY, user.isAdmin);
+
+      // Import prisma directly for aggregation queries (lighter than a full service)
+      const prisma = (await import("../../config/prisma.js")).default;
+      const tenantId = user.tenantId;
+
+      const [activePlans, totalPlans, activeEnrollments, totalEnrollments, contributionSums] =
+        await Promise.all([
+          // Active benefit plans
+          prisma.benefitPlan.count({
+            where: { ...(tenantId ? { tenantId } : {}), active: true },
+          }),
+          // Total benefit plans
+          prisma.benefitPlan.count({
+            where: { ...(tenantId ? { tenantId } : {}) },
+          }),
+          // Active enrollments (employees currently enrolled)
+          prisma.employeeBenefit.count({
+            where: { ...(tenantId ? { tenantId } : {}), status: "ACTIVE" },
+          }),
+          // Total enrollments (all statuses)
+          prisma.employeeBenefit.count({
+            where: { ...(tenantId ? { tenantId } : {}) },
+          }),
+          // Sum of employer + employee contributions for active enrollments
+          prisma.employeeBenefit.aggregate({
+            where: { ...(tenantId ? { tenantId } : {}), status: "ACTIVE" },
+            _sum: { electedAmountMinor: true },
+          }),
+        ]);
+
+      // Fetch active plans to sum their employer/employee contributions
+      const activePlanDefs = await prisma.benefitPlan.findMany({
+        where: { ...(tenantId ? { tenantId } : {}), active: true },
+        select: {
+          employerContributionMinor: true,
+          employeeContributionMinor: true,
+        },
+      });
+
+      const totalEmployerContribMinor = activePlanDefs.reduce(
+        (sum, p) => sum + (p.employerContributionMinor || 0), 0
+      );
+      const totalEmployeeContribMinor = activePlanDefs.reduce(
+        (sum, p) => sum + (p.employeeContributionMinor || 0), 0
+      );
+
+      // Monthly gross = (employer + employee) contributions per enrolled employee
+      // If electedAmountMinor is set on enrollments, use that; otherwise use plan defaults
+      const electedTotal = contributionSums._sum.electedAmountMinor || 0;
+      const monthlyGrossMinor = activeEnrollments > 0
+        ? (electedTotal > 0 ? electedTotal : (totalEmployerContribMinor + totalEmployeeContribMinor) * activeEnrollments)
+        : 0;
+
+      const kpi = {
+        activePlans,
+        totalPlans,
+        openEnrollment: totalPlans - activePlans, // plans not yet active
+        activeEnrollments,
+        totalEnrollments,
+        monthlyGross: monthlyGrossMinor / 100, // convert minor units to major
+        monthlyGrossCurrency: "USD", // default; could be derived from plan
+        breakdown: {
+          totalEmployerContribMinor,
+          totalEmployeeContribMinor,
+        },
+      };
+
+      return { content: [{ type: "text", text: JSON.stringify(kpi) }] };
+    }, "hr_benefit_kpi")
+  );
 }

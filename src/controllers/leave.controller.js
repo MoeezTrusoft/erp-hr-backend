@@ -73,7 +73,7 @@ export const getLeaveRequests = async (req, res) => {
   try {
     // If user is not HR/Manager, only show their own requests
     const filters = req.user.role === 'EMPLOYEE'
-      ? { ...req.query, employeeId: requireEmployeeActor(req.user) }
+      ? { ...req.query, employeeId: await requireEmployeeActor(req.user) }
       : { ...req.query };
     filters.tenantId = tenantOf(req);
 
@@ -92,7 +92,7 @@ export const getLeaveRequestById = async (req, res) => {
     }
 
     // Check if user has permission to view this request
-    if (req.user.role === 'EMPLOYEE' && request.employeeId !== requireEmployeeActor(req.user)) {
+    if (req.user.role === 'EMPLOYEE' && request.employeeId !== await requireEmployeeActor(req.user)) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
@@ -125,7 +125,7 @@ export const createLeaveRequest = async (req, res) => {
 export const cancelLeaveRequest = async (req, res) => {
   try {
     const leaveRequestId = Number(req.params.id);
-     const updatedById = requireEmployeeActor(req.user);
+     const updatedById = await requireEmployeeActor(req.user);
     const request = await leaveService.cancelLeaveRequest(
       leaveRequestId,
       Number(updatedById),
@@ -139,7 +139,7 @@ export const cancelLeaveRequest = async (req, res) => {
 
 export const getPendingApprovals = async (req, res) => {
   try {
-    const approvals = await leaveService.getPendingApprovals(requireEmployeeActor(req.user), req.user.role);
+    const approvals = await leaveService.getPendingApprovals(await requireEmployeeActor(req.user), req.user.role);
     res.json({ success: true, data: approvals });
   } catch (error) {
     respondServerError(req, res, error);
@@ -160,7 +160,7 @@ export const approveLeaveRequest = async (req, res) => {
     // Prefer the reviewer the MCP layer resolved (body.approverId) over the
     // session header — the header is empty for a super-admin with no linked
     // Employee, which used to stamp a NaN approverId FK.
-    const approverId = req.body.approverId ?? requireEmployeeActor(req.user);
+    const approverId = req.body.approverId ?? await requireEmployeeActor(req.user);
     const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.approveLeaveRequest(
       parseInt(req.params.id),
@@ -178,7 +178,7 @@ export const approveLeaveRequest = async (req, res) => {
 
 export const rejectLeaveRequest = async (req, res) => {
   try {
-    const approverId = req.body.approverId ?? requireEmployeeActor(req.user);
+    const approverId = req.body.approverId ?? await requireEmployeeActor(req.user);
     const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.rejectLeaveRequest(
       parseInt(req.params.id),
@@ -207,7 +207,7 @@ export const getEmployeeLeaveBalances = async (req, res) => {
   try {
     // Employees can only view their own balances
     const employeeId = req.user.role === 'EMPLOYEE'
-      ? requireEmployeeActor(req.user)
+      ? await requireEmployeeActor(req.user)
       : parseInt(req.params.employeeId);
 
     const balances = await leaveService.getEmployeeLeaveBalances(employeeId);
@@ -259,7 +259,7 @@ export const getHolidays = async (req, res) => {
 
 export const getHolidayCalendar = async (req, res) => {
   try {
-    const calendar = await leaveService.getHolidayCalendar(requireEmployeeActor(req.user));
+    const calendar = await leaveService.getHolidayCalendar(await requireEmployeeActor(req.user));
     res.json({ success: true, data: calendar });
   } catch (error) {
     respondServerError(req, res, error);

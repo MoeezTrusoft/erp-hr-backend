@@ -8,8 +8,8 @@ import { requireEmployeeActor } from '../lib/employeeActor.js';
 export const getTimeEntries = asyncHandler(async (req, res) => {
     const { startDate, endDate, employeeId } = req.query;
     const targetEmployeeId = req.user?.role === 'EMPLOYEE'
-        ? requireEmployeeActor(req.user)
-        : employeeId || requireEmployeeActor(req.user);
+        ? await requireEmployeeActor(req.user)
+        : employeeId || await requireEmployeeActor(req.user);
     const entries = await timeEntryService.getTimeEntries({
         employeeId: targetEmployeeId,
         startDate,
@@ -32,8 +32,8 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
     // employee, gated upstream by hr:attendance CREATE) wins; otherwise fall back
     // to the caller's own employee id from the session header (self-service).
     const employeeId = req.user?.role === 'EMPLOYEE'
-        ? requireEmployeeActor(req.user)
-        : req.body.employeeId || requireEmployeeActor(req.user);
+        ? await requireEmployeeActor(req.user)
+        : req.body.employeeId || await requireEmployeeActor(req.user);
     const entryData = {
         ...req.body,
         employeeId: employeeId,
@@ -52,7 +52,7 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
 // @route   PUT /api/time-attendance/entries/:id
 // @access  Private
 export const updateTimeEntry = asyncHandler(async (req, res) => {
-    const employeeId = requireEmployeeActor(req.user);
+    const employeeId = await requireEmployeeActor(req.user);
     const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, employeeId, req.user?.tenantId, req.user?.isAdmin);
 
     res.json({
@@ -65,7 +65,7 @@ export const updateTimeEntry = asyncHandler(async (req, res) => {
 // @route   DELETE /api/time-attendance/entries/:id
 // @access  Private
 export const deleteTimeEntry = asyncHandler(async (req, res) => {
-    const employeeId = requireEmployeeActor(req.user);
+    const employeeId = await requireEmployeeActor(req.user);
     await timeEntryService.deleteTimeEntry(req.params.id, employeeId, req.user?.tenantId, req.user?.isAdmin);
 
     res.json({
@@ -79,7 +79,7 @@ export const deleteTimeEntry = asyncHandler(async (req, res) => {
 // @access  Private
 export const clockIn = asyncHandler(async (req, res) => {
 
-    const employeeId = requireEmployeeActor(req.user);
+    const employeeId = await requireEmployeeActor(req.user);
     const { location, note, sourceId } = req.body;
 
     const entry = await timeEntryService.clockIn({
@@ -100,7 +100,7 @@ export const clockIn = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/clock-out
 // @access  Private
 export const clockOut = asyncHandler(async (req, res) => {
-    const employeeId = requireEmployeeActor(req.user);
+    const employeeId = await requireEmployeeActor(req.user);
     const { location, note, sourceId } = req.body;
 
     const entry = await timeEntryService.clockOut({
@@ -121,7 +121,7 @@ export const clockOut = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/break-start
 // @access  Private
 export const startBreak = asyncHandler(async (req, res) => {
-    const employeeId = requireEmployeeActor(req.user);
+    const employeeId = await requireEmployeeActor(req.user);
     const { note, sourceId } = req.body;
 
     const entry = await timeEntryService.startBreak({
@@ -141,7 +141,7 @@ export const startBreak = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/break-end
 // @access  Private
 export const endBreak = asyncHandler(async (req, res) => {
-    const employeeId = requireEmployeeActor(req.user);
+    const employeeId = await requireEmployeeActor(req.user);
     const { note, sourceId } = req.body;
 
     const entry = await timeEntryService.endBreak({
@@ -161,7 +161,7 @@ export const endBreak = asyncHandler(async (req, res) => {
 // @route   GET /api/time-attendance/current-status
 // @access  Private
 export const getCurrentStatus = asyncHandler(async (req, res) => {
-    const status = await timeEntryService.getCurrentStatus(requireEmployeeActor(req.user));
+    const status = await timeEntryService.getCurrentStatus(await requireEmployeeActor(req.user));
 
     res.json({
         success: true,

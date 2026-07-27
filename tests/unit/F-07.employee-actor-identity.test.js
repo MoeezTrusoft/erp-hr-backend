@@ -102,11 +102,11 @@ describe("F-07 signed employee actor identity", () => {
   });
 
   it("denies self-service for an account with no employee link instead of using userId", async () => {
-    expect(() => selfMcp.mcpGetSelfAttendance({
+    await expect(selfMcp.mcpGetSelfAttendance({
       userId: 7,
       employeeId: null,
       roles: ["EMPLOYEE"],
-    })).toThrow(expect.objectContaining({ status: 403, code: "HR-0701" }));
+    })).rejects.toThrow(expect.objectContaining({ status: 403, code: "HR-0701" }));
   });
 
   it("keeps listed self and ownership paths free of ambiguous req.user.id", () => {

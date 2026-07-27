@@ -45,7 +45,7 @@ export function registerResumeTools(server) {
         employeeId,
         mediaId: resumeMediaId,
         tenantId: user.tenantId ?? null,
-        actorId: requireEmployeeActor(user),
+        actorId: await requireEmployeeActor(user),
       });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_resume_employee_ingest")

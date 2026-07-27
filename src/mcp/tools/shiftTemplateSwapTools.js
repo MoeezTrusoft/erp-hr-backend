@@ -182,7 +182,7 @@ export function registerShiftTemplateSwapTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const approverEmployeeId = requireEmployeeActor(user);
+      const approverEmployeeId = await requireEmployeeActor(user);
       const data = await decideShiftSwap(
         { ...args, approverEmployeeId },
         user.tenantId

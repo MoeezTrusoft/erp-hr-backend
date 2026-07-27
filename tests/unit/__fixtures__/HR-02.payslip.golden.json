@@ -3,8 +3,9 @@
   "ruleVersion": "v1:a184471ec3bce6b5",
   "ratesEffectiveAt": "2026-06-30T00:00:00.000Z",
   "grossAmount": "7197.5300",
-  "totalDeductions": "1139.5100",
-  "netAmount": "6058.0200",
+  "totalDeductions": "1690.1100",
+  "netAmount": "5507.4200",
+  "prorationFactor": 1,
   "earnings": [
     {
       "earningTypeId": null,
@@ -22,6 +23,16 @@
       "deductionTypeId": 21,
       "amount": "200.0000",
       "description": "Health Insurance"
+    },
+    {
+      "deductionTypeId": null,
+      "amount": "446.2400",
+      "description": "Social Security (FICA)"
+    },
+    {
+      "deductionTypeId": null,
+      "amount": "104.3600",
+      "description": "Medicare (FICA)"
     },
     {
       "deductionTypeId": null,

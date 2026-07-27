@@ -360,6 +360,7 @@ model Employee {
   Timesheet          Timesheet[]
   TimeApproval       TimeApproval[]
   WorkSchedule       WorkSchedule[]
+  loans              Loan[]
 
   // Leave Management relations
   leavePoliciesCreated     LeavePolicy[]             @relation("LeavePolicyCreatedBy")
@@ -1772,6 +1773,54 @@ model PayrollAssignment {
   // F-DB-08: active employee assignments are evaluated by effective window.
   @@index([tenantId, employeeId, isActive, effectiveFrom(sort: Desc), id(sort: Desc)], map: "payroll_assignments_tenant_employee_active_effective_id_idx")
   @@map("payroll_assignments")
+}
+
+model Loan {
+  id                Int       @id @default(autoincrement())
+  tenantId          String?   @db.Uuid
+  employeeId        Int
+  principalMinor    Int       // Loan amount in minor units (cents)
+  interestRatePct   Float?    @default(0) // Annual interest rate %
+  tenureMonths      Int       // Number of monthly installments
+  disbursementDate  DateTime
+  status            LoanStatus @default(ACTIVE)
+  outstandingMinor  Int       // Remaining balance in minor units
+  monthlyInstallmentMinor Int // Fixed monthly deduction in minor units
+  reason            String?
+  createdById       Int?
+  approvedById      Int?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  employee  Employee @relation(fields: [employeeId], references: [id])
+  repayments LoanRepayment[]
+
+  @@index([tenantId, employeeId, status])
+  @@index([tenantId, status])
+  @@map("loans")
+}
+
+model LoanRepayment {
+  id             Int      @id @default(autoincrement())
+  tenantId       String?  @db.Uuid
+  loanId         Int
+  amountMinor    Int      // Amount deducted this installment
+  payrollRunId   Int?     // Link to the payroll run that deducted it
+  payslipId      Int?     // Link to the payslip line
+  deductedAt     DateTime @default(now())
+  note           String?
+
+  loan Loan @relation(fields: [loanId], references: [id])
+
+  @@index([tenantId, loanId, deductedAt])
+  @@map("loan_repayments")
+}
+
+enum LoanStatus {
+  ACTIVE
+  PAID_OFF
+  WRITTEN_OFF
+  DEFAULTED
 }
 
 model BankDetail {

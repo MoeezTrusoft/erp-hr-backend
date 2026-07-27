@@ -509,7 +509,7 @@ export function registerEmployeeTools(server) {
         user,
         id,
         status,
-        requireEmployeeActor(user)
+        await requireEmployeeActor(user)
       );
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_status_update")

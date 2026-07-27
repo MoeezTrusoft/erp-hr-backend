@@ -124,7 +124,10 @@ export const cancelPayrollRun = async (req, res) => {
         await payrollService.cancelPayrollRun(parseInt(id), cancelledBy, tenantOf(req));
         res.json({ success: true, message: 'Payroll run cancelled successfully' });
     } catch (error) {
-        res.status(400).json({ success: false, error: error.message });
+        // ERR-3: Normalize error to avoid leaking raw Prisma/DB messages to clients
+        const { normalizeError } = await import('../middlewares/error.middleware.js');
+        const norm = normalizeError(error);
+        res.status(norm.httpStatus).json({ success: false, code: norm.code, message: norm.message });
     }
 };
 
@@ -196,7 +199,7 @@ export const getEmployeePayrollData = async (req, res) => {
         const { employeeId } = req.params;
 
         // Check if user has permission to view this employee's data
-        if (req.user.role === 'EMPLOYEE' && requireEmployeeActor(req.user) !== parseInt(employeeId)) {
+        if (req.user.role === 'EMPLOYEE' && await requireEmployeeActor(req.user) !== parseInt(employeeId)) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
@@ -267,7 +270,7 @@ export const getPayslipById = async (req, res) => {
         }
 
         // Check if user has permission to view this payslip
-        if (req.user.role === 'EMPLOYEE' && requireEmployeeActor(req.user) !== payslip.employeeId) {
+        if (req.user.role === 'EMPLOYEE' && await requireEmployeeActor(req.user) !== payslip.employeeId) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
@@ -296,7 +299,7 @@ export const getEmployeePayslips = async (req, res) => {
         const { page = 1, limit = 10 } = req.query;
 
         // Check if user has permission to view this employee's payslips
-        if (req.user.role === 'EMPLOYEE' && requireEmployeeActor(req.user) !== parseInt(employeeId)) {
+        if (req.user.role === 'EMPLOYEE' && await requireEmployeeActor(req.user) !== parseInt(employeeId)) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 

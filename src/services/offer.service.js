@@ -20,6 +20,15 @@ export const createOffer = async ({ applicationId, candidateId, jobRequisitionId
     const requisitionFk = Number(jobRequisitionId);
     if (!Number.isFinite(requisitionFk)) throw new Error("jobRequisitionId is required");
     if (salary == null || salary === "") throw new Error("baseSalary is required");
+
+    // Validate FK existence to prevent Prisma FK constraint violations
+    const [candidate, requisition] = await Promise.all([
+        prisma.candidate.findUnique({ where: { id: candidateFk }, select: { id: true } }),
+        prisma.jobRequisition.findUnique({ where: { id: requisitionFk }, select: { id: true } }),
+    ]);
+    if (!candidate) throw new Error(`Candidate #${candidateFk} not found`);
+    if (!requisition) throw new Error(`Job requisition #${requisitionFk} not found`);
+
     return prisma.offer.create({
         data: scopedData(tenantId, {
             applicationId: applicationId ? Number(applicationId) : null,
@@ -82,10 +91,86 @@ export const sendOffer = async (id, tenantId, ctx = {}) => {
 
 export const respondOffer = async (id, accepted, tenantId) => {
     await assertOfferInTenant(id, tenantId);
-    return prisma.offer.update({
+
+    const updated = await prisma.offer.update({
         where: { id: Number(id) },
         data: { status: accepted ? "ACCEPTED" : "DECLINED", respondedAt: new Date() },
     });
+
+    // AUTO-PROVISION: When offer is accepted, create Employee + EmploymentTerms + PayrollAssignment
+    if (accepted) {
+        const offer = await prisma.offer.findUnique({
+            where: { id: Number(id) },
+            include: {
+                application: { include: { candidate: true } },
+            },
+        });
+
+        if (offer?.application?.candidate) {
+            const candidate = offer.application.candidate;
+            const salaryStr = String(offer.salary || '0');
+            const salaryNum = parseFloat(salaryStr) || 0;
+
+            // 1) Create Employee from Candidate data
+            const employee = await prisma.employee.create({
+                data: {
+                    tenant_id: tenantId ?? null,
+                    first_name: candidate.firstName,
+                    last_name: candidate.lastName || '',
+                    email: candidate.email || `${candidate.firstName.toLowerCase()}@company.com`,
+                    personal_contact: candidate.phone || null,
+                    hire_date: offer.startDate || new Date(),
+                    date_of_birth: null,
+                    employee_type: offer.employmentType || 'FULL_TIME',
+                    employement_status: 'active',
+                    status: 'active',
+                    job_title: offer.notes || 'New Hire',
+                    createdById: offer.createdById || null,
+                },
+            });
+
+            // 2) Create EmploymentTerms from Offer salary
+            const employmentTerm = await prisma.employmentTerms.create({
+                data: {
+                    tenantId: tenantId ?? null,
+                    employeeId: employee.id,
+                    baseSalary: salaryStr,
+                    currency: offer.currency || 'USD',
+                    payFrequency: 'MONTHLY',
+                    effectiveFrom: offer.startDate || new Date(),
+                },
+            });
+
+            // 3) Resolve or create BASE_SALARY earning type
+            let earningType = await prisma.payrollEarningType.findFirst({
+                where: { ...(tenantId ? { tenantId } : {}), code: 'BASE_SALARY' },
+            });
+            if (!earningType) {
+                earningType = await prisma.payrollEarningType.create({
+                    data: {
+                        tenantId: tenantId ?? null,
+                        code: 'BASE_SALARY',
+                        name: 'Base Salary',
+                        computation: 'FIXED',
+                    },
+                });
+            }
+
+            // 4) Create PayrollAssignment for base salary
+            await prisma.payrollAssignment.create({
+                data: {
+                    tenantId: tenantId ?? null,
+                    employeeId: employee.id,
+                    earningTypeId: earningType.id,
+                    amount: salaryNum,
+                    effectiveFrom: offer.startDate || new Date(),
+                    isActive: true,
+                },
+            });
+        }
+    }
+
+    return updated;
 };
 
 export const uploadOfferLetter = async (id, file, tenantId) => {

@@ -7,23 +7,23 @@ import { requireEmployeeActor } from "../../lib/employeeActor.js";
 export const mcpGetSelfProfile = (user) => runController(getSelfProfile, { user });
 export const mcpGetSelfLeaveBalances = (user) => runController(listSelfLeaveBalances, { user });
 export const mcpGetSelfPayslips = (user) => runController(listSelfPayslips, { user });
-export const mcpGetSelfAttendance = (user) =>
-  runController(getEmployeeAttendance, { user, params: { id: String(requireEmployeeActor(user)) } });
+export const mcpGetSelfAttendance = async (user) =>
+  runController(getEmployeeAttendance, { user, params: { id: String(await requireEmployeeActor(user)) } });
 
 export const mcpUpdateSelfProfile = (user, data) => runController(updateSelfProfile, { user, body: data });
-export const mcpCreateSelfLeaveRequest = (user, data) =>
+export const mcpCreateSelfLeaveRequest = async (user, data) =>
   runController(createLeaveRequest, {
     user,
     body: {
       ...data,
-      employeeId: requireEmployeeActor(user),
+      employeeId: await requireEmployeeActor(user),
     },
   });
-export const mcpSelfCheckin = (user, data) =>
+export const mcpSelfCheckin = async (user, data) =>
   runController(checkIn, {
     user,
     body: {
       ...data,
-      employeeId: requireEmployeeActor(user),
+      employeeId: await requireEmployeeActor(user),
     },
   });

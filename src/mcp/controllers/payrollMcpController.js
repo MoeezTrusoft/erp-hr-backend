@@ -17,7 +17,7 @@ import {
   exportBankDisbursementFile,
 } from "../../controllers/payrollController.js";
 
-export const mcpListPayrollRuns = (user) => runController(getPayrollRuns, { user });
+export const mcpListPayrollRuns = (user, query = {}) => runController(getPayrollRuns, { user, query });
 export const mcpListPayslips = (user, query = {}) => runController(getPayslips, { user, query });
 export const mcpListEarningTypes = (user) => runController(getEarningTypes, { user });
 export const mcpListDeductionTypes = (user) => runController(getDeductionTypes, { user });

@@ -53,6 +53,35 @@ export function normalizeError(err) {
         };
     }
 
+    // Prisma known request errors → human-readable messages (ERR-3: never leak raw Prisma detail)
+    if (err?.name === 'PrismaClientKnownRequestError' || err?.code?.startsWith('P') || err?.meta?.cause) {
+        const prismaCode = err?.code || '';
+        let message = 'A database error occurred';
+        let httpStatus = 400;
+        if (prismaCode === 'P2002') {
+            message = 'A record with this value already exists (duplicate constraint)';
+            httpStatus = 409;
+        } else if (prismaCode === 'P2003') {
+            message = 'Related record not found (foreign key constraint)';
+            httpStatus = 400;
+        } else if (prismaCode === 'P2025') {
+            message = 'Record not found';
+            httpStatus = 404;
+        } else if (prismaCode === 'P2014') {
+            message = 'Required related record is missing';
+            httpStatus = 400;
+        } else if (prismaCode.startsWith('P')) {
+            message = 'Invalid database operation';
+        }
+        return {
+            httpStatus,
+            code: defaultCodeForStatus(httpStatus),
+            message,
+            details: undefined,
+            isOperational: true,
+        };
+    }
+
     // A typed AppError, or ANY error carrying a numeric HTTP status (a legacy
     // service error such as `Object.assign(new Error(msg), { status: 403 })` or
     // the benefit.service `err(code, message, statusCode)` helper). Trust the

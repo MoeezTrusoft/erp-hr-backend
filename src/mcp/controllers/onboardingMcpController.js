@@ -14,10 +14,10 @@ import {
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 export const mcpListOnboardingChecklists = (user) => runController(listChecklists, { user });
-export const mcpListOnboardingSurveys = (user, employeeId) =>
+export const mcpListOnboardingSurveys = async (user, employeeId) =>
   runController(getSurveys, {
     user,
-    params: { employeeId: String(employeeId || requireEmployeeActor(user)) },
+    params: { employeeId: String(employeeId || await requireEmployeeActor(user)) },
   });
 
 export const mcpCreateOnboardingChecklist = (user, data) => runController(createChecklist, { user, body: data });

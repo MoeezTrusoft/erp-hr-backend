@@ -71,7 +71,7 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     const nullableModels = [...schema.matchAll(/model\s+(\w+)\s*\{([\s\S]*?)\n\}/g)]
       .filter(([, , body]) => /\b(?:tenantId|tenant_id)\s+String\?/.test(body))
       .map(([, name]) => name);
-    expect(nullableModels).toHaveLength(112);
+    expect(nullableModels).toHaveLength(114);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

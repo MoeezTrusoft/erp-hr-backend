@@ -85,6 +85,41 @@ const PERIOD_FACTORS = {
  * scale deterministically. SEMI_MONTHLY is the first half of an exact even
  * 2-way split so half*2 === monthly (no half-cent drift).
  */
+/**
+ * Calculate the proration factor for an employee based on hire/termination
+ * dates relative to the payroll period. Returns a value between 0 and 1.
+ *   1.0 = employee active for the full period
+ *   0.5 = employee started mid-period (half month)
+ *   0.0 = employee not active during this period at all
+ *
+ * @param {Date|string} periodStart
+ * @param {Date|string} periodEnd
+ * @param {Date|string|null} hireDate
+ * @param {Date|string|null} termDate - termination date, null if still active
+ */
+export const computeProrationFactor = (periodStart, periodEnd, hireDate, termDate) => {
+    const pStart = new Date(periodStart).getTime();
+    const pEnd = new Date(periodEnd).getTime();
+    if (pEnd < pStart) return 1n; // malformed period, default full
+
+    const totalDays = Math.max(1, Math.round((pEnd - pStart) / 86400000) + 1);
+    const effectiveStart = hireDate ? Math.max(pStart, new Date(hireDate).getTime()) : pStart;
+    const effectiveEnd = termDate ? Math.min(pEnd, new Date(termDate).getTime()) : pEnd;
+
+    if (effectiveEnd < effectiveStart) return 0n; // not active in this period
+
+    const activeDays = Math.round((effectiveEnd - effectiveStart) / 86400000) + 1;
+    return BigInt(Math.round((activeDays / totalDays) * 1_000_000)); // scale to 1e6 for precision
+};
+
+/**
+ * Apply proration to a minor-unit amount. `factor` is in scale 1e6 (1_000_000 = 100%).
+ */
+const applyProration = (amountMinor, factor) => {
+    if (factor >= 1_000_000n) return amountMinor;
+    return (amountMinor * factor) / 1_000_000n;
+};
+
 export const calculatePeriodSalaryMinor = (employmentTerm, payrollRun) => {
     const currency = employmentTerm.currency || payrollRun?.currencyCode || 'USD';
     const monthlyMinor = money.decimalToMinor(employmentTerm.baseSalary, currency);
@@ -165,35 +200,171 @@ export const computeRuleVersion = (sortedRows, asOf) => {
 };
 
 /**
+ * Compute country-specific statutory deductions (mandatory contributions).
+ * Returns an array of deduction line items. Rules are embedded here to keep
+ * the engine self-contained — external tax-rate tables handle income tax,
+ * while statutory deductions are fixed-per-country with known rates.
+ *
+ * Supported countries:
+ *   PK — EOBI (employer + employee), Social Security (employer-only)
+ *   US — FICA (Social Security 6.2% + Medicare 1.45%)
+ *   UK — National Insurance (NI) Employee
+ *   IN — EPF (Employee Provident Fund 12%) + ESI (1.75%)
+ */
+const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD') => {
+    const lines = [];
+    const cc = (countryCode || '').toUpperCase();
+    if (grossMinor <= 0n) return lines;
+
+    if (cc === 'PK') {
+        // Pakistan: EOBI employee contribution = 1% of gross (capped at PKR 17,000 ceiling)
+        const eobiEmployee = grossMinor / 100n; // 1%
+        lines.push({
+            deductionTypeId: null,
+            amount: money.minorToDecimal(eobiEmployee, currency),
+            description: 'EOBI (Employee)',
+        });
+        // Social Security (PESSI/SESSI): employee share is 0% (employer-only),
+        // but some companies deduct a nominal amount — include as 0 for transparency.
+    } else if (cc === 'US') {
+        // Social Security: 6.2% on first $176,100 annualized
+        const annualized = grossMinor * 12n;
+        const ssCap = money.decimalToMinor('176100', 'USD');
+        const taxable = annualized > ssCap ? ssCap / 12n : grossMinor;
+        const ss = (taxable * 620n) / 10000n; // 6.2%
+        lines.push({
+            deductionTypeId: null,
+            amount: money.minorToDecimal(ss, currency),
+            description: 'Social Security (FICA)',
+        });
+        // Medicare: 1.45% (no cap)
+        const medicare = (grossMinor * 145n) / 10000n; // 1.45%
+        lines.push({
+            deductionTypeId: null,
+            amount: money.minorToDecimal(medicare, currency),
+            description: 'Medicare (FICA)',
+        });
+    } else if (cc === 'GB') {
+        // UK National Insurance (NI) — Class 1 Employee: 8% on £12,570–£50,270
+        const annualizedMinor = grossMinor * 12n;
+        const lowerEarnings = money.decimalToMinor('12570', 'GBP');
+        const upperEarnings = money.decimalToMinor('50270', 'GBP');
+        const annualExcess = annualizedMinor > lowerEarnings ? annualizedMinor - lowerEarnings : 0n;
+        const annualCap = upperEarnings - lowerEarnings;
+        const niable = annualExcess > annualCap ? annualCap : annualExcess;
+        const ni = (niable * 8n) / 100n / 12n; // 8% annualized, monthly
+        if (ni > 0n) {
+            lines.push({
+                deductionTypeId: null,
+                amount: money.minorToDecimal(ni, currency),
+                description: 'National Insurance (NI)',
+            });
+        }
+    } else if (cc === 'IN') {
+        // EPF: 12% of basic (approximated as gross for simplicity)
+        const epf = (grossMinor * 12n) / 100n;
+        lines.push({
+            deductionTypeId: null,
+            amount: money.minorToDecimal(epf, currency),
+            description: 'EPF (Employee Provident Fund)',
+        });
+        // ESI: 1.75% (applicable if gross < ₹21,000/month)
+        const esiCap = money.decimalToMinor('21000', 'INR');
+        if (grossMinor < esiCap) {
+            const esi = (grossMinor * 175n) / 10000n; // 1.75%
+            lines.push({
+                deductionTypeId: null,
+                amount: money.minorToDecimal(esi, currency),
+                description: 'ESI (Employee State Insurance)',
+            });
+        }
+    }
+
+    return lines;
+};
+
+/**
  * Build the canonical payslip object for one employee, PURELY (no DB). All money
  * is computed in integer minor units and emitted as major-unit Numbers at the
  * boundary. Earnings/deductions are produced in a FIXED order so the serialized
  * payslip is byte-stable (the golden-file determinism contract):
- *   earnings:   [ base salary, then each rate/flat earning assignment in order ]
- *   deductions: [ each deduction assignment in order, then each tax bracket line ]
+ *   earnings:   [ base salary, overtime, employer benefits, then each rate/flat earning assignment ]
+ *   deductions: [ employee benefits, loans, LWP, each deduction assignment, then each tax bracket line ]
+ *
+ * @param {Object} bridges - Auto-populated data from other HR modules
+ * @param {Array} bridges.overtimeLines - Approved overtime hours for the period
+ * @param {Array} bridges.lwpDays - Unpaid leave days for the period
+ * @param {Array} bridges.benefitLines - Active employee benefit contributions
+ * @param {Array} bridges.loanLines - Active loan deductions
  *
  * @returns {{ employeeId, ruleVersion, ratesEffectiveAt, grossAmount,
  *             totalDeductions, netAmount, earnings:[], deductions:[] }}
  */
-export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf }) => {
+export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf, bridges = {} }) => {
     const at = asOf || payrollRun?.periodEnd;
     const earnings = [];
     const deductions = [];
     const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
     let grossMinor = 0n;
 
-    // 1) Base salary (if the employee has employment terms).
+    // PRORATION: compute factor from employee hire/term dates vs payroll period.
+    const prorationFactor = computeProrationFactor(
+        payrollRun.periodStart,
+        payrollRun.periodEnd,
+        employee?.hire_date || employee?.hireDate,
+        employee?.term_date || employee?.terminationDate,
+    );
+
+    // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
     if (employmentTerm) {
-        const baseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
+        let baseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
+        const isProrated = prorationFactor > 0n && prorationFactor < 1_000_000n;
+        if (isProrated) {
+            baseMinor = applyProration(baseMinor, prorationFactor);
+        }
         earnings.push({
             earningTypeId: employmentTerm.baseSalaryEarningTypeId ?? null,
             amount: money.minorToDecimal(baseMinor, currency),
-            description: `Base salary for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`,
+            description: isProrated
+                ? `Base salary (prorated ${(Number(prorationFactor) / 10000).toFixed(1)}%) for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`
+                : `Base salary for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`,
         });
         grossMinor = money.add(grossMinor, baseMinor);
     }
 
-    // 2) Assignment-driven earnings & deductions, in declared order. A flat
+    // 2) BRIDGE: Overtime → Earning (approved OT hours × hourly rate × OT multiplier)
+    if (bridges.overtimeLines?.length > 0 && employmentTerm) {
+        const monthlyBaseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
+        const hourlyMinor = monthlyBaseMinor / 176n; // ~22 working days × 8 hours
+        for (const ot of bridges.overtimeLines) {
+            const otAmountMinor = BigInt(Math.round(ot.hours * Number(hourlyMinor) * (ot.rate || 1.5)));
+            if (otAmountMinor > 0n) {
+                earnings.push({
+                    earningTypeId: null,
+                    amount: money.minorToDecimal(otAmountMinor, currency),
+                    description: `Overtime (${ot.hours}h × ${ot.rate || 1.5}x) — ${ot.date || ''}`,
+                });
+                grossMinor = money.add(grossMinor, otAmountMinor);
+            }
+        }
+    }
+
+    // 3) BRIDGE: Employer benefit contributions → Earning
+    if (bridges.benefitLines?.length > 0) {
+        for (const b of bridges.benefitLines) {
+            if (b.employerContributionMinor > 0) {
+                const amt = BigInt(b.employerContributionMinor);
+                earnings.push({
+                    earningTypeId: null,
+                    amount: money.minorToDecimal(amt, currency),
+                    description: `Employer: ${b.planName || 'Benefit'}`,
+                });
+                grossMinor = money.add(grossMinor, amt);
+            }
+        }
+    }
+
+    // 4) Assignment-driven earnings & deductions, in declared order. A flat
     //    `amount` is taken verbatim; a `rate` applies to gross-so-far (matching
     //    the legacy semantics) — both in minor units, rounded half-up once.
     for (const assignment of assignments) {
@@ -219,7 +390,63 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         }
     }
 
-    // 3) Versioned tax: select the effective rows, compute progressive tax in
+    // 5) BRIDGE: Employee benefit contributions → Deduction
+    if (bridges.benefitLines?.length > 0) {
+        for (const b of bridges.benefitLines) {
+            if (b.employeeContributionMinor > 0) {
+                deductions.push({
+                    deductionTypeId: null,
+                    amount: money.minorToDecimal(BigInt(b.employeeContributionMinor), currency),
+                    description: `Benefit: ${b.planName || 'Plan'}`,
+                });
+            }
+        }
+    }
+
+    // 6) BRIDGE: Loan repayments → Deduction (with garnishment cap at 40% of gross)
+    if (bridges.loanLines?.length > 0) {
+        const grossLimit = grossMinor * 40n / 100n; // 40% garnishment cap
+        let loanTotalMinor = 0n;
+        for (const loan of bridges.loanLines) {
+            const loanMinor = BigInt(loan.amountMinor || 0);
+            const cappedMinor = loanTotalMinor + loanMinor > grossLimit
+                ? grossLimit - loanTotalMinor
+                : loanMinor;
+            if (cappedMinor > 0n) {
+                deductions.push({
+                    deductionTypeId: null,
+                    amount: money.minorToDecimal(cappedMinor, currency),
+                    description: loan.name || 'Loan Repayment',
+                    loanId: loan.loanId,
+                });
+                loanTotalMinor += cappedMinor;
+            }
+        }
+    }
+
+    // 7) BRIDGE: LWP (Leave Without Pay) → Deduction
+    if (bridges.lwpDays > 0 && employmentTerm) {
+        const baseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
+        const workingDays = payrollRun.countryCode === 'PK' ? 26 : 22; // Pakistan: 26, others: 22
+        const lwpMinor = (baseMinor * BigInt(bridges.lwpDays)) / BigInt(workingDays);
+        if (lwpMinor > 0n) {
+            deductions.push({
+                deductionTypeId: null,
+                amount: money.minorToDecimal(lwpMinor, currency),
+                description: `LWP Recovery (${bridges.lwpDays} days)`,
+            });
+        }
+    }
+
+    // 7b) STATUTORY DEDUCTIONS: Country-specific mandatory contributions.
+    //     Applied AFTER voluntary deductions but BEFORE income tax so the
+    //     statutory amounts reduce the taxable base where applicable.
+    const statutoryLines = computeStatutoryDeductions(grossMinor, payrollRun.countryCode, currency);
+    for (const line of statutoryLines) {
+        deductions.push(line);
+    }
+
+    // 8) Versioned tax: select the effective rows, compute progressive tax in
     //    minor units, record the rule version. One combined tax line keeps the
     //    payslip deterministic and matches the table-driven figure.
     const sorted = selectEffectiveTaxRates(taxRateRows, { countryCode: payrollRun.countryCode, asOf: at });
@@ -243,6 +470,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         grossAmount: money.minorToDecimal(grossMinor, currency),
         totalDeductions: money.minorToDecimal(totalDeductionsMinor, currency),
         netAmount: money.minorToDecimal(netMinor, currency),
+        prorationFactor: prorationFactor >= 1_000_000n ? 1.0 : Number(prorationFactor) / 1_000_000,
         earnings,
         deductions,
     };
@@ -446,6 +674,68 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 ? { ...employee.employmentTerms[0], baseSalaryEarningTypeId }
                 : null;
 
+            // ── BRIDGE DATA: Fetch overtime, leave, benefits, loans for this employee ──
+            const [overtimeRequests, unpaidLeaves, employeeBenefits, activeLoans] = await Promise.all([
+                // Approved overtime requests within the payroll period
+                prisma.overtimeRequest.findMany({
+                    where: withTenant(tenantId, {
+                        employeeId: employee.id,
+                        status: "APPROVED",
+                        date: { gte: payrollRun.periodStart, lte: payrollRun.periodEnd },
+                    }),
+                    select: { date: true, hours: true, rate: true },
+                }),
+                // Unpaid leave (LWP) days within the period
+                prisma.leaveRequest.findMany({
+                    where: withTenant(tenantId, {
+                        employeeId: employee.id,
+                        status: "APPROVED",
+                        startDate: { lte: payrollRun.periodEnd },
+                        endDate: { gte: payrollRun.periodStart },
+                    }),
+                    select: { totalDays: true, leavePolicy: { select: { leaveTypeCode: true } } },
+                }),
+                // Active benefit enrollments with plan details
+                prisma.employeeBenefit.findMany({
+                    where: withTenant(tenantId, {
+                        employeeId: employee.id,
+                        status: "ACTIVE",
+                    }),
+                    include: { benefitPlan: { select: { name: true, employerContributionMinor: true, employeeContributionMinor: true } } },
+                }),
+                // Active loans with outstanding balance
+                prisma.loan.findMany({
+                    where: withTenant(tenantId, {
+                        employeeId: employee.id,
+                        status: "ACTIVE",
+                        outstandingMinor: { gt: 0 },
+                    }),
+                    select: { id: true, monthlyInstallmentMinor: true, outstandingMinor: true },
+                }),
+            ]);
+
+            // Build bridge data
+            const bridges = {
+                overtimeLines: overtimeRequests.map(ot => ({
+                    date: ot.date?.toISOString().split('T')[0],
+                    hours: ot.hours,
+                    rate: ot.rate,
+                })),
+                lwpDays: unpaidLeaves
+                    .filter(l => l.leavePolicy?.leaveTypeCode === 'UNPAID' || l.leavePolicy?.leaveTypeCode === 'LWP')
+                    .reduce((sum, l) => sum + (l.totalDays || 0), 0),
+                benefitLines: employeeBenefits.map(eb => ({
+                    planName: eb.benefitPlan?.name,
+                    employerContributionMinor: eb.benefitPlan?.employerContributionMinor || 0,
+                    employeeContributionMinor: eb.electedAmountMinor || eb.benefitPlan?.employeeContributionMinor || 0,
+                })),
+                loanLines: activeLoans.map(loan => ({
+                    loanId: loan.id,
+                    name: `Loan Repayment (ID:${loan.id})`,
+                    amountMinor: loan.monthlyInstallmentMinor,
+                })),
+            };
+
             // Build the canonical payslip with the REAL, deterministic engine.
             const built = buildPayslipFromInputs({
                 employee,
@@ -453,7 +743,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 assignments: employee.payrollAssignments,
                 payrollRun,
                 taxRateRows: allCountryRates,
-                asOf: ratesEffectiveAt
+                asOf: ratesEffectiveAt,
+                bridges,
             });
 
             // Map the engine's null-typed tax line to the resolved deduction type.
@@ -484,7 +775,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             if (existing) {
                 await prisma.payrollEarning.deleteMany({ where: { payslipId: existing.id } });
                 await prisma.payrollDeduction.deleteMany({ where: { payslipId: existing.id } });
-                return prisma.payrollPayslip.update({
+                const updated = await prisma.payrollPayslip.update({
                     where: { id: existing.id },
                     data: {
                         grossAmount: built.grossAmount,
@@ -497,9 +788,45 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     },
                     include: { earnings: true, deductions: true }
                 });
+                // Record loan repayments for this payslip
+                for (const loan of bridges.loanLines || []) {
+                    const loanDeduction = built.deductions.find(d => d.loanId === loan.loanId);
+                    if (loanDeduction) {
+                        const deductMinor = money.decimalToMinor(loanDeduction.amount, currency);
+                        if (deductMinor > 0n) {
+                            await prisma.loanRepayment.create({
+                                data: {
+                                    tenantId: tenantId ?? null,
+                                    loanId: loan.loanId,
+                                    amountMinor: Number(deductMinor),
+                                    payrollRunId: id,
+                                    payslipId: updated.id,
+                                },
+                            });
+                            await prisma.loan.update({
+                                where: { id: loan.loanId },
+                                data: { outstandingMinor: { decrement: Number(deductMinor) } },
+                            });
+                        }
+                    }
+                }
+                // AUDIT: Log the re-process event for this payslip
+                await prisma.payrollAuditLog.create({
+                    data: {
+                        tenantId: tenantId ?? null,
+                        action: 'PAYSLIP_REPROCESSED',
+                        details: `Payslip re-processed for employee ${employee.id}`,
+                        payrollRunId: id,
+                        payslipId: updated.id,
+                        employeeId: employee.id,
+                        oldValues: { grossAmount: existing.grossAmount, totalDeductions: existing.totalDeductions, netAmount: existing.netAmount },
+                        newValues: { grossAmount: built.grossAmount, totalDeductions: built.totalDeductions, netAmount: built.netAmount, prorationFactor: built.prorationFactor },
+                    },
+                });
+                return updated;
             }
 
-            return prisma.payrollPayslip.create({
+            const created = await prisma.payrollPayslip.create({
                 data: {
                     tenantId: tenantId ?? null,
                     payrollRunId: id,
@@ -517,6 +844,50 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     deductions: true
                 }
             });
+            // Record loan repayments for this payslip
+            for (const loan of bridges.loanLines || []) {
+                const loanDeduction = built.deductions.find(d => d.loanId === loan.loanId);
+                if (loanDeduction) {
+                    const deductMinor = money.decimalToMinor(loanDeduction.amount, currency);
+                    if (deductMinor > 0n) {
+                        await prisma.loanRepayment.create({
+                            data: {
+                                tenantId: tenantId ?? null,
+                                loanId: loan.loanId,
+                                amountMinor: Number(deductMinor),
+                                payrollRunId: id,
+                                payslipId: created.id,
+                            },
+                        });
+                        await prisma.loan.update({
+                            where: { id: loan.loanId },
+                            data: { outstandingMinor: { decrement: Number(deductMinor) } },
+                        });
+                    }
+                }
+            }
+            // AUDIT: Log the initial payslip creation
+            await prisma.payrollAuditLog.create({
+                data: {
+                    tenantId: tenantId ?? null,
+                    action: 'PAYSLIP_CREATED',
+                    details: `Payslip created for employee ${employee.id}`,
+                    payrollRunId: id,
+                    payslipId: created.id,
+                    employeeId: employee.id,
+                    oldValues: null,
+                    newValues: {
+                        grossAmount: built.grossAmount,
+                        totalDeductions: built.totalDeductions,
+                        netAmount: built.netAmount,
+                        ruleVersion: built.ruleVersion,
+                        prorationFactor: built.prorationFactor,
+                        earningsCount: earnings.length,
+                        deductionsCount: deductions.length,
+                    },
+                },
+            });
+            return created;
         });
 
         const payslips = await Promise.all(payslipPromises);
@@ -771,6 +1142,16 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId) => {
     throw new Error('Cannot cancel a completed payroll run');
   }
 
+  // Create audit log BEFORE deleting the run (FK constraint requires the run to exist)
+  await prisma.payrollAuditLog.create({
+    data: {
+      tenantId: tenantId ?? null,
+      action: 'PAYROLL_CANCELLED',
+      details: 'Payroll run cancelled',
+      payrollRunId: id
+    }
+  });
+
   await prisma.payrollPayslip.deleteMany({
     where: withTenant(tenantId, { payrollRunId: id })
   });
@@ -779,15 +1160,6 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId) => {
   // a cross-tenant id deletes zero rows (we already verified ownership above).
   await prisma.payrollRun.deleteMany({
     where: withTenant(tenantId, { id })
-  });
-
-  await prisma.payrollAuditLog.create({
-    data: {
-      tenantId: tenantId ?? null,
-      action: 'PAYROLL_CANCELLED',
-      details: 'Payroll run cancelled',
-      payrollRunId: id
-    }
   });
 
   await logAction({

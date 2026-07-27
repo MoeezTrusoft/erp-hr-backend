@@ -115,6 +115,22 @@ export function registerPayrollTools(server) {
   );
 
   server.tool(
+    "hr_payroll_run_list",
+    "List payroll runs with optional status filter and pagination",
+    {
+      status: z.enum(["PENDING", "PROCESSING", "COMPLETED", "APPROVED", "FINALIZED", "CANCELLED", "FAILED"]).optional().describe("Filter by payroll run status"),
+      page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
+      pageSize: z.coerce.number().int().positive().optional().describe("Page size (default 20, max 100)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      const data = await mcpListPayrollRuns(user, toListQuery(args));
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_payroll_run_list")
+  );
+
+  server.tool(
     "hr_payroll_run_create",
     "Create a new payroll run",
     {
@@ -308,6 +324,59 @@ export function registerPayrollTools(server) {
       if (format) query.format = format;
       const data = await mcpExportYearEndTaxForms(user, taxYear, query);
       return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data) }] };
+    })
+  );
+
+  // ── PAYSLIP PDF GENERATION ────────────────────────────────────────────────
+  server.tool(
+    "hr_payslip_pdf",
+    "Generate a payslip PDF for a given payslip ID (returns base64-encoded PDF)",
+    {
+      payslipId: z.string().min(1).describe("Payslip ID to generate PDF for"),
+    },
+    withToolError(async ({ payslipId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+
+      const { default: prisma } = await import("../../lib/prisma.js");
+      const { generatePayslipPdf } = await import("../../services/payslipPdfService.js");
+
+      const payslip = await prisma.payrollPayslip.findFirst({
+        where: { id: Number(payslipId), ...(user.tenantId ? { tenantId: user.tenantId } : {}) },
+        include: {
+          employee: { select: { first_name: true, last_name: true, job_title: true, department: true } },
+          earnings: true,
+          deductions: true,
+          payrollRun: { select: { periodStart: true, periodEnd: true, currencyCode: true, countryCode: true } },
+        },
+      });
+      if (!payslip) throw Object.assign(new Error("Payslip not found"), { status: 404 });
+
+      const pdfBuffer = await generatePayslipPdf({
+        employeeName: `${payslip.employee?.first_name || ""} ${payslip.employee?.last_name || ""}`.trim(),
+        employeeId: payslip.employeeId,
+        department: payslip.employee?.department,
+        jobTitle: payslip.employee?.job_title,
+        periodStart: payslip.payrollRun?.periodStart?.toISOString().split("T")[0],
+        periodEnd: payslip.payrollRun?.periodEnd?.toISOString().split("T")[0],
+        payDate: payslip.payrollRun?.periodEnd?.toISOString().split("T")[0],
+        earnings: (payslip.earnings || []).map((e) => ({ description: e.description, amount: e.amount })),
+        deductions: (payslip.deductions || []).map((d) => ({ description: d.description, amount: d.amount })),
+        prorationFactor: payslip.prorationFactor,
+        ruleVersion: payslip.ruleVersion,
+      }, { currency: payslip.payrollRun?.currencyCode || "PKR" });
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            payslipId: payslip.id,
+            employeeId: payslip.employeeId,
+            pdfBase64: pdfBuffer.toString("base64"),
+            mime: "application/pdf",
+          }),
+        }],
+      };
     })
   );
 }

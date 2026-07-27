@@ -123,7 +123,7 @@ export async function mcpCreateEmployee(user, data, ctx = {}) {
   // service-JWT claim — never the request body) and the request correlationId so
   // createEmployee writes tenant_id and emits the hr.employee.lifecycle.v1 event
   // in-tx. actorId stays the acting principal.
-  const actorEmployeeId = requireEmployeeActor(user);
+  const actorEmployeeId = await requireEmployeeActor(user);
   return hrContractService.createEmployee(data, actorEmployeeId, {
     tenantId: user?.tenantId ?? null,
     correlationId: ctx.correlationId,
@@ -136,7 +136,7 @@ export async function mcpUpdateEmployee(user, id, data) {
   // API-2 — pull the optional optimistic-concurrency guard out of the tool args
   // and thread it to the service as ctx.expectedVersion (opt-in If-Match).
   const { expectedVersion, ...rest } = data ?? {};
-  return hrContractService.updateEmployee(id, rest, requireEmployeeActor(user), { expectedVersion });
+  return hrContractService.updateEmployee(id, rest, await requireEmployeeActor(user), { expectedVersion });
 }
 
 export async function mcpDeleteEmployee(user, id) {
@@ -144,15 +144,15 @@ export async function mcpDeleteEmployee(user, id) {
 }
 
 export async function mcpUploadEmployeeProfilePhoto(user, id, data) {
-  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, requireEmployeeActor(user));
+  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, await requireEmployeeActor(user));
 }
 
 export async function mcpUploadEmployeeCoverPhoto(user, id, data) {
-  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, requireEmployeeActor(user));
+  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, await requireEmployeeActor(user));
 }
 
 export async function mcpCreateEmployeeDocument(user, employeeId, data) {
-  return hrContractService.createEmployeeDocument(employeeId, data, null, requireEmployeeActor(user));
+  return hrContractService.createEmployeeDocument(employeeId, data, null, await requireEmployeeActor(user));
 }
 
 export async function mcpGetPositions(user) {
@@ -168,7 +168,7 @@ export async function mcpCreatePosition(user, data) {
   // buildContextFromHeaders from the gateway-forwarded X-Tenant-Id header)
   // so the created Position row is correctly tenant-scoped.
   const tenantId = user?.tenantId ?? null;
-  const actorId = requireEmployeeActor(user);
+  const actorId = await requireEmployeeActor(user);
   return hrContractService.createPosition(data, actorId, tenantId);
 }
 

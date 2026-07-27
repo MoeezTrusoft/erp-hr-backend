@@ -56,7 +56,7 @@ export function registerAttendanceTools(server) {
     { description: "Get current user's attendance records" },
     async (uri) => {
       const { user } = getCtx();
-      const employeeId = requireEmployeeActor(user);
+      const employeeId = await requireEmployeeActor(user);
       const data = await mcpGetAttendanceByEmployee(user, employeeId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
