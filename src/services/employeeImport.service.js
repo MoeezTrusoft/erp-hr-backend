@@ -121,20 +121,17 @@ function applyValidations(ws, { dynamicRanges = {}, rows = VALIDATION_ROWS } = {
   });
 }
 
-// ── Tenant lists that back the dynamic dropdowns (manager/grade/dept/position) ─
+// ── Tenant lists that back the dynamic dropdowns (grade/dept/position) ─────────
+// NB: Manager is intentionally NOT sourced here — its dropdown points at the
+// Employee Code column of the sheet being filled (see generateImportTemplate),
+// so the managers are the employees being registered in this same sheet.
 async function buildTemplateLists(tenantId) {
-  const [departments, positions, grades, employees] = await Promise.all([
+  const [departments, positions, grades] = await Promise.all([
     listDepartments().catch(() => []),
     prisma.position.findMany({ where: scopedWhere(tenantId, {}), select: { title: true }, orderBy: { title: "asc" } }).catch(() => []),
     prisma.gradeLevel.findMany({ where: scopedWhere(tenantId, {}), select: { name: true }, orderBy: { name: "asc" } }).catch(() => []),
-    prisma.employee.findMany({ where: scopedEmployeeWhere(tenantId, {}), select: { employee_code: true, employee_name: true, first_name: true, last_name: true }, orderBy: { id: "asc" } }).catch(() => []),
   ]);
-  const managerLabel = (e) => {
-    const nm = e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(" ") || "(unnamed)";
-    return e.employee_code ? `${nm} (${e.employee_code})` : nm;
-  };
   return {
-    manager: employees.map(managerLabel),
     grade: grades.map((g) => g.name).filter(Boolean),
     department: departments.map((d) => d.name).filter(Boolean),
     position: positions.map((p) => p.title).filter(Boolean),
@@ -151,10 +148,9 @@ export async function generateImportTemplate({ tenantId } = {}) {
   // Hidden Lists sheet backing the manager/grade/department/position dropdowns.
   const listSheet = wb.addWorksheet("Lists");
   const dynCols = [
-    { key: "manager", col: "A", title: "Managers" },
-    { key: "grade", col: "B", title: "Grades" },
-    { key: "department", col: "C", title: "Departments" },
-    { key: "position", col: "D", title: "Positions" },
+    { key: "grade", col: "A", title: "Grades" },
+    { key: "department", col: "B", title: "Departments" },
+    { key: "position", col: "C", title: "Positions" },
   ];
   const dynamicRanges = {};
   dynCols.forEach((d, idx) => {
@@ -168,6 +164,12 @@ export async function generateImportTemplate({ tenantId } = {}) {
 
   const ws = wb.addWorksheet("Employees");
   writeHeader(ws, false);
+  // Manager dropdown = the Employee Code column of THIS sheet, so any code the
+  // HR user types above becomes a selectable manager. The link is resolved to
+  // the newly-created employee on commit (second pass in runEmployeeImport).
+  const codeColIdx = IMPORT_COLUMNS.findIndex((c) => c.key === "employee_code") + 1;
+  const codeLetter = ws.getColumn(codeColIdx).letter;
+  dynamicRanges.manager = `$${codeLetter}$2:$${codeLetter}$${VALIDATION_ROWS}`;
   applyValidations(ws, { dynamicRanges });
 
   const ex = wb.addWorksheet("Example (do not import)");
@@ -180,7 +182,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
     personal_email: "ayesha.khan@gmail.com", work_email: "ayesha.khan@bookcraft.pk",
     mobile_phone: "+92 300 1234567", city: "Karachi", country: "Pakistan",
     job_title: "Software Engineer", department: "Engineering", position: "Software Engineer",
-    grade: lists.grade?.[0] || "M3", manager: lists.manager?.[0] || "Ali Raza (EMP-0078)",
+    grade: lists.grade?.[0] || "M3", manager: "",
     employment_type: "Full-time", employment_status: "Active",
     hire_date: "2026-07-01", joining_date: "2026-07-01", work_mode: "On-site", fte: 1,
     emergency_contact_name: "Sara Khan", emergency_contact_relationship: "Sibling",
@@ -192,6 +194,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
     first_name: "Bilal", last_name: "Ahmed", employee_code: "EMP-1043", biometric_id: "1043",
     gender: "Male", work_email: "bilal.ahmed@bookcraft.pk", mobile_phone: "03011234567",
     job_title: "Accountant", department: "Finance", employment_type: "Full-time",
+    manager: "EMP-1042", // reports to Ayesha (row above) — an in-sheet manager
     hire_date: "2026-06-15", work_mode: "Hybrid", total_salary: 150000, salary_currency: "PKR",
     create_login: "no",
   }));
@@ -204,7 +207,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
     ["2", "Columns marked * are REQUIRED (First Name, Last Name). Everything else is optional but recommended."],
     ["3", "Wherever you see a small arrow in a cell, click it and PICK from the dropdown (Gender, Marital Status, Department, Grade, Manager, Employment Type/Status, Work Mode, Currency, Create Login, Emergency Contact Relationship). Dates open a simple date entry — type them as YYYY-MM-DD (e.g. 2026-07-01)."],
     ["4", "Employee Code (ERP) is your internal code. The Biometric / Device ID (★) is SEPARATE — set it to the exact user-ID enrolled on the attendance device so punches auto-map. Keep both UNIQUE."],
-    ["5", "Manager is chosen from the dropdown as Name (EMP-CODE). Department / Position / Grade are matched to existing records — if you type something unknown it is flagged with the closest suggestion."],
+    ["5", "Manager: pick from the dropdown, which lists the Employee Codes you enter in THIS sheet — so a manager and their reports can all be added together (the manager just needs to be a row here too, or already exist by their Employee Code). Department / Position / Grade are matched to existing records — unknown values are flagged with the closest suggestion."],
     ["6", "Total Monthly Salary: enter ONE number (gross). The system automatically splits it into Basic 45%, House Rent 20%, Transport 15%, Medical 12.5%, Utilities 7.5%."],
     ["7", "Create Login = Yes gives the employee an ERP login. The role and a secure password are assigned AUTOMATICALLY — you do not enter them. Retrieve passwords later with the 'read login password' action."],
     ["8", "Emergency Contact: fill the one contact's name, relationship, phone and (optional) email."],
@@ -336,6 +339,7 @@ function validateRow(rec, lk, { dayFirst, upsert }, seen) {
   const direct = {}; // Employee columns the create contract cannot set → post-write patch
   const emergency = {}; // one EmergencyContacts row
   const salary = {}; // { total, currency }
+  let pendingManagerCode = null; // manager is another row in this sheet → link post-create
   const set = (key, value) => {
     const col = COLUMN_BY_KEY[key];
     if (value === "" || value == null) return;
@@ -400,8 +404,22 @@ function validateRow(rec, lk, { dayFirst, upsert }, seen) {
       set(key, id); // direct → gradeLevelId
     } else if (col.lookup === "manager") {
       const id = resolveManager(raw, lk);
-      if (id == null) { issues.push({ key, msg: `Manager '${cleanCell(raw)}' not found — pick from the dropdown (Name (EMP-CODE)).`, severity: "error" }); continue; }
-      set(key, id);
+      if (id != null) { set(key, id); }
+      else {
+        // Not an existing employee — maybe the manager is another person being
+        // registered in THIS sheet. Defer the link until every row is created.
+        const mv = cleanCell(raw);
+        const paren = mv.match(/\(([^)]+)\)\s*$/);
+        const mcode = (paren ? paren[1] : mv).trim().toLowerCase();
+        if (mcode && mcode === cleanCell(rec.employee_code).toLowerCase()) {
+          issues.push({ key, msg: `An employee cannot be their own manager.`, severity: "error" });
+        } else if (mcode && lk.sheetCodes?.has(mcode)) {
+          pendingManagerCode = mcode;
+          issues.push({ key, msg: `Manager is another employee in this sheet (${paren ? paren[1] : mv}) — will be linked after import.`, severity: "warn" });
+        } else {
+          issues.push({ key, msg: `Manager '${mv}' not found — pick from the dropdown (an Employee Code entered in this sheet, or an existing employee's code).`, severity: "error" });
+        }
+      }
     } else if (key === "biometric_id") {
       set(key, cleanCell(raw)); // direct → biometric_id (uniqueness checked below)
     } else {
@@ -467,7 +485,7 @@ function validateRow(rec, lk, { dayFirst, upsert }, seen) {
   const hasError = issues.some((i) => i.severity === "error");
   const status = hasError ? "ERROR" : fixes.length || issues.length ? "FIXED" : "OK";
   return {
-    status, fixes, issues, action,
+    status, fixes, issues, action, pendingManagerCode,
     createArgs: out, directColumns: direct,
     emergency: emergency.name ? emergency : null,
     salary: salary.total != null ? { total: salary.total, currency: salary.currency || "PKR" } : null,
@@ -577,6 +595,9 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
 
   const needsRoles = rows.some((r) => normalizeEnum("create_login", r.rec.create_login).value === "yes");
   const lk = await buildLookups(tenantId, needsRoles);
+  // Employee Codes present in this upload — a manager cell may reference one of
+  // these (an employee being registered alongside its reports in the same sheet).
+  lk.sheetCodes = new Set(rows.map(({ rec }) => cleanCell(rec.employee_code).toLowerCase()).filter(Boolean));
 
   const seen = { codes: new Map(), emails: new Map(), biometrics: new Map() };
   const results = [];
@@ -586,10 +607,14 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
     results.push({ rowNumber, rec, ...v });
   }
 
-  const committed = { created: 0, updated: 0, failed: 0, logins: 0, emergencyContacts: 0, salaries: 0 };
+  const committed = { created: 0, updated: 0, failed: 0, logins: 0, emergencyContacts: 0, salaries: 0, managersLinked: 0 };
   if (!dryRun) {
     // Create the standard salary components once, up-front, if any row has salary.
     if (results.some((r) => r.status !== "ERROR" && r.salary)) await ensureSalaryComponents(tenantId);
+
+    // employee_code → id, seeded with existing employees; grows as we create the
+    // sheet's rows so a later row can name an earlier one as its manager.
+    const codeToNewId = new Map(lk.codeToId);
 
     for (const res of results) {
       if (res.status === "ERROR") continue;
@@ -617,6 +642,11 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
           if (data?.systemAccount) committed.logins++;
           res.commit = { ok: true, summary: `Created employee #${empId ?? "?"}${data?.systemAccount ? " · login provisioned" : ""}` };
         }
+
+        // Record this row's id so a later row can name it as a manager.
+        res.__empId = empId != null ? Number(empId) : null;
+        const rcode = cleanCell(res.rec.employee_code).toLowerCase();
+        if (rcode && res.__empId != null) codeToNewId.set(rcode, res.__empId);
 
         // Direct Employee columns the create contract can't set (work_mode,
         // biometric_id, gradeLevelId) + the C4-encrypted login password.
@@ -660,6 +690,24 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
         res.status = "ERROR";
         res.commit = { error: err?.message || "create failed" };
         logger.warn({ rowNumber: res.rowNumber, err: err?.message }, "employee import: row commit failed");
+      }
+    }
+
+    // Second pass: link managers that referenced another employee in THIS sheet
+    // (that manager's Employee row didn't exist until the pass above created it).
+    for (const res of results) {
+      if (res.status === "ERROR" || !res.pendingManagerCode || res.__empId == null) continue;
+      const mgrId = codeToNewId.get(res.pendingManagerCode);
+      if (mgrId == null) {
+        logger.warn({ rowNumber: res.rowNumber, code: res.pendingManagerCode }, "employee import: in-sheet manager code did not resolve (that row may have been skipped)");
+        continue;
+      }
+      if (mgrId === res.__empId) continue; // self — already guarded in validation
+      try {
+        await mcpUpdateEmployee(user, String(res.__empId), { managerId: mgrId });
+        committed.managersLinked++;
+      } catch (e) {
+        logger.warn({ rowNumber: res.rowNumber, empId: res.__empId, mgrId, err: e?.message }, "employee import: manager link failed");
       }
     }
   }

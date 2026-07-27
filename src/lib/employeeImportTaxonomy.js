@@ -45,7 +45,7 @@ export const IMPORT_COLUMNS = [
   { key: "department", kind: "opt", label: "Department", lookup: "department", dynamic: "department", create: "departmentId", note: "Pick from the dropdown (existing departments). Unknown names are flagged with the nearest suggestion." },
   { key: "position", kind: "opt", label: "Position", lookup: "position", dynamic: "position", create: "positionId", note: "Pick from the dropdown (existing positions). Unknown = flagged." },
   { key: "grade", kind: "opt", label: "Grade Level", lookup: "grade", dynamic: "grade", direct: "gradeLevelId", note: "Pick from the dropdown (existing grade levels). Unknown = flagged." },
-  { key: "manager", kind: "opt", label: "Manager", lookup: "manager", dynamic: "manager", create: "managerId", note: "Pick the manager from the dropdown — shown as Name (EMP-CODE). Unknown = flagged." },
+  { key: "manager", kind: "opt", label: "Manager", lookup: "manager", dynamic: "manager", create: "managerId", note: "Pick the manager's Employee Code from the dropdown — these are the codes you enter in THIS sheet, so a manager and their reports can be added together. (An existing employee's code works too.)" },
   { key: "employment_type", kind: "opt", label: "Employment Type", enum: ["Full-time", "Part-time", "Contract", "Intern", "Temporary"], create: "employmentType", note: "Pick from the dropdown. Synonyms auto-fixed (FT/Permanent → Full-time)." },
   { key: "employment_status", kind: "opt", label: "Employment Status", enum: ["Active", "Inactive", "On Leave", "Terminated"], create: "employmentStatus", note: "Pick from the dropdown. Blank defaults to Active." },
   { key: "hire_date", kind: "opt", label: "Hire Date", date: true, create: "hireDate", note: "Pick a date. YYYY-MM-DD preferred." },
