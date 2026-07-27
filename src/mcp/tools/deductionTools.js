@@ -8,6 +8,7 @@
 //   hr_deduction_update — Update a deduction component
 //   hr_deduction_delete — Delete a deduction component
 import { z } from "zod";
+import logger from "../../lib/logger.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -32,12 +33,22 @@ export function registerDeductionTools(server) {
 
       const { default: prisma } = await import("../../lib/prisma.js");
       const tFilter = user.tenantId ? { tenantId: user.tenantId } : {};
+      const dedFilter = { ...tFilter, type: "DEDUCTION" };
 
-      const [activeComponents, totalComponents, activeLoans] = await Promise.all([
-        prisma.salaryComponent.count({ where: { ...tFilter, type: "DEDUCTION", active: true } }),
-        prisma.salaryComponent.count({ where: { ...tFilter, type: "DEDUCTION" } }),
-        prisma.loan.count({ where: { ...tFilter, status: "ACTIVE" } }),
-      ]);
+      let activeComponents = 0;
+      let totalComponents = 0;
+      let activeLoans = 0;
+      try {
+        activeComponents = await prisma.salaryComponent.count({ where: { ...dedFilter, active: true } });
+        totalComponents = await prisma.salaryComponent.count({ where: dedFilter });
+      } catch (err) {
+        logger.error({ err, tenantId: user.tenantId }, "salaryComponent count failed");
+      }
+      try {
+        activeLoans = await prisma.loan.count({ where: { ...tFilter, status: "ACTIVE" } });
+      } catch (err) {
+        logger.error({ err, tenantId: user.tenantId }, "loan count failed");
+      }
 
       return {
         content: [{ type: "text", text: JSON.stringify({ activeComponents, totalComponents, activeLoans }) }],
