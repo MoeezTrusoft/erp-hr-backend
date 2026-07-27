@@ -11,7 +11,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 
-const DEDUCTIONS_KEY = "hr:deductions";
+const DEDUCTIONS_KEY = "hr:payroll";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
