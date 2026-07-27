@@ -30,7 +30,7 @@ import {
     computeRuleVersion,
     buildPayslipFromInputs,
 } from '../../src/services/payrollService.js';
-import { allocateEvenly, fromMajor, toMajor, sum } from '../../src/lib/money.js';
+import { allocateEvenly, fromMajor, mulRate, sum } from '../../src/lib/money.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GOLDEN_PATH = join(__dirname, '__fixtures__', 'HR-02.payslip.golden.json');
@@ -139,18 +139,18 @@ describe('HR-02 deterministic versioned payroll engine — golden file', () => {
         const slip = buildFixturePayslip();
         const grossMinor = fromMajor(slip.grossAmount);
 
-        const legacyFlat = toMajor(Math.round(grossMinor * 0.2)); // old 15%+5%
+        const legacyFlat = mulRate(grossMinor, '0.2'); // old 15%+5%
         const taxLine = slip.deductions
             .filter((d) => /tax/i.test(d.description))
-            .reduce((acc, d) => acc + d.amount, 0);
+            .reduce((acc, d) => acc + fromMajor(d.amount), 0n);
 
-        expect(taxLine).toBeGreaterThan(0);
-        expect(taxLine).not.toBeCloseTo(legacyFlat, 2);
+        expect(taxLine).toBeGreaterThan(0n);
+        expect(taxLine).not.toBe(legacyFlat);
 
         // And exactly the progressive figure computed by the engine helper.
         const sorted = selectEffectiveTaxRates(taxRateRows, { countryCode: 'US', asOf: ASOF });
         const expectedTaxMinor = computeProgressiveTaxMinor(grossMinor, sorted);
-        expect(fromMajor(taxLine)).toBe(expectedTaxMinor);
+        expect(taxLine).toBe(expectedTaxMinor);
     });
 
     it('a change to the bracket rate changes the resulting tax predictably', () => {
@@ -162,7 +162,7 @@ describe('HR-02 deterministic versioned payroll engine — golden file', () => {
         const higherTax = computeProgressiveTaxMinor(grossMinor, higher);
 
         // top bracket 0.20 -> 0.30 on the 2000 above 5000 => +200.00 => +20000 minor
-        expect(higherTax - baseTax).toBe(fromMajor(200));
+        expect(higherTax - baseTax).toBe(fromMajor('200'));
     });
 
     it('money is exact integer minor-units: a third-of-salary split reconciles to the cent', () => {
@@ -172,7 +172,7 @@ describe('HR-02 deterministic versioned payroll engine — golden file', () => {
         expect(shares).toHaveLength(3);
         expect(sum(shares)).toBe(totalMinor); // no cent lost
         // largest-remainder: first shares carry the extra cents deterministically
-        expect(shares[0] - shares[2] === 0 || shares[0] - shares[2] === 1).toBe(true);
+        expect(shares[0] - shares[2] === 0n || shares[0] - shares[2] === 1n).toBe(true);
     });
 
     it('semi-monthly /2 on an odd-cent salary is total-preserving (no half-cent drift)', () => {
@@ -191,7 +191,7 @@ describe('HR-02 deterministic versioned payroll engine — golden file', () => {
 
         expect(periodFirstHalf).toBe(firstHalf); // deterministic: returns the first half
         expect(firstHalf + secondHalf).toBe(monthlyMinor); // total-preserving to the cent
-        expect(firstHalf - secondHalf).toBe(1); // the odd cent lands on the first half
+        expect(firstHalf - secondHalf).toBe(1n); // the odd cent lands on the first half
     });
 
     it('the payslip net reconciles: gross - totalDeductions === net, to the cent', () => {

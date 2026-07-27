@@ -25,6 +25,7 @@ import {
   deleteOutcome,
   updateCourseCatalogFields,
 } from "../../services/courseCatalog.service.js";
+import prisma from "../../lib/prisma.js";
 
 // getCtx: read the verified request store. Throws 401 if unauthenticated. We
 // also surface user.employeeId (present on the ctx user when the caller is an
@@ -487,5 +488,115 @@ export function registerCatalogTools(server) {
       const data = await deleteOutcome({ tenantId: user.tenantId, id: args.id });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_course_outcome_delete")
+  );
+
+  server.tool(
+    "hr_course_outcome_list",
+    "List learning outcomes for a course.",
+    {
+      courseId: z.coerce.number().int().describe("TrainingCourse.id (required)."),
+    },
+    withToolError(async ({ courseId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      const data = await prisma.courseOutcome.findMany({
+        where: { courseId },
+        orderBy: { sortOrder: "asc" },
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_course_outcome_list")
+  );
+
+  server.tool(
+    "hr_course_outcome_get",
+    "Get a single course learning outcome by ID.",
+    {
+      id: z.coerce.number().int().describe("CourseOutcome.id (required)."),
+    },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      const data = await prisma.courseOutcome.findUnique({ where: { id } });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_course_outcome_get")
+  );
+
+  server.tool(
+    "hr_course_outcome_update",
+    "Update a course learning outcome.",
+    {
+      id: z.coerce.number().int().describe("CourseOutcome.id (required)."),
+      title: z.string().optional().describe("Updated title"),
+      description: z.string().optional().describe("Updated description"),
+      sortOrder: z.coerce.number().int().optional().describe("Updated sort order"),
+    },
+    withToolError(async ({ id, ...data }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
+      const result = await prisma.courseOutcome.update({ where: { id }, data });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_course_outcome_update")
+  );
+
+  // ── COURSE REVIEW ──────────────────────────────────────────────────────────
+  server.tool(
+    "hr_course_review_list",
+    "List reviews for a course.",
+    {
+      courseId: z.coerce.number().int().describe("TrainingCourse.id (required)."),
+    },
+    withToolError(async ({ courseId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      const data = await prisma.courseReview.findMany({
+        where: { courseId },
+        orderBy: { createdAt: "desc" },
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_course_review_list")
+  );
+
+  server.tool(
+    "hr_course_review_get",
+    "Get a single course review by ID.",
+    {
+      id: z.coerce.number().int().describe("CourseReview.id (required)."),
+    },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      const data = await prisma.courseReview.findUnique({ where: { id } });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_course_review_get")
+  );
+
+  server.tool(
+    "hr_course_review_update",
+    "Update a course review (rating or comment).",
+    {
+      id: z.coerce.number().int().describe("CourseReview.id (required)."),
+      rating: z.number().int().min(1).max(5).optional().describe("Updated rating (1-5)"),
+      comment: z.string().optional().describe("Updated comment"),
+    },
+    withToolError(async ({ id, ...data }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
+      const result = await prisma.courseReview.update({ where: { id }, data });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_course_review_update")
+  );
+
+  server.tool(
+    "hr_course_review_delete",
+    "Delete a course review.",
+    {
+      id: z.coerce.number().int().describe("CourseReview.id (required)."),
+    },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", RESOURCE, user.isAdmin);
+      await prisma.courseReview.delete({ where: { id } });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
+    }, "hr_course_review_delete")
   );
 }

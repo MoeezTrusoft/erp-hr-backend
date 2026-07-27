@@ -30,6 +30,8 @@
 //     reconciliation: { grossPay, totalDeductions, netPay, payslipCount, runIds }
 //   }
 
+import { decimalToMinor, minorToWireDecimal } from './money.js';
+
 // ── CSV helpers ──────────────────────────────────────────────────────────────
 // Minimal RFC-4180 field quoting: wrap in quotes and double internal quotes
 // when the value contains a comma, quote or newline. Numbers/null render plain.
@@ -43,7 +45,13 @@ const csvField = (value) => {
 const csvLine = (cells) => cells.map(csvField).join(',');
 
 // Major-unit money for CSV: always two decimals (statutory forms are 2dp).
-const money2 = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '0.00');
+const money2 = (value) => {
+    try {
+        return minorToWireDecimal(decimalToMinor(value, 'USD'), 'USD');
+    } catch {
+        return '0.00';
+    }
+};
 
 const addr = (recipient) => recipient?.address ?? {};
 

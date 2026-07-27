@@ -9,7 +9,7 @@ import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 // is tenant-narrowed.
 
 function requireEmployeeId(req) {
-  const employeeId = Number(req.headers["x-employee-id"] || 0);
+  const employeeId = Number(req.user?.employeeId || 0);
   if (!employeeId) throw new Error("Missing employee identity");
   return employeeId;
 }

@@ -1,14 +1,19 @@
 import asyncHandler from 'express-async-handler';
 import * as timesheetService from '../services/timesheetService.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
 
 // @desc    Get timesheets for employee
 // @route   GET /api/time-attendance/timesheets
 // @access  Private
 const getTimesheets = asyncHandler(async (req, res) => {
     const { periodStart, periodEnd, status, employeeId } = req.query;
+    const targetEmployeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : employeeId || requireEmployeeActor(req.user);
 
     const timesheets = await timesheetService.getTimesheets({
-        employeeId: employeeId || req.user.id,
+        employeeId: targetEmployeeId,
+        tenantId: req.user?.tenantId,
         periodStart,
         periodEnd,
         status
@@ -24,7 +29,11 @@ const getTimesheets = asyncHandler(async (req, res) => {
 // @route   GET /api/time-attendance/timesheets/:id
 // @access  Private
 const getTimesheetById = asyncHandler(async (req, res) => {
-    const timesheet = await timesheetService.getTimesheetById(req.params.id, req.user.id);
+    const timesheet = await timesheetService.getTimesheetById(
+        req.params.id,
+        requireEmployeeActor(req.user),
+        req.user?.tenantId
+    );
 
     res.json({
         success: true,
@@ -36,10 +45,13 @@ const getTimesheetById = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets
 // @access  Private
 const createTimesheet = asyncHandler(async (req, res) => {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : req.body?.employeeId || requireEmployeeActor(req.user);
     const timesheetData = {
         ...req.body,
-        employeeId: employeeId
+        employeeId,
+        tenantId: req.user?.tenantId
     };
 
     const timesheet = await timesheetService.createTimesheet(timesheetData);
@@ -54,8 +66,8 @@ const createTimesheet = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets/:id/submit
 // @access  Private
 const submitTimesheet = asyncHandler(async (req, res) => {
-    const userId = req.headers['employee-id'];
-    const timesheet = await timesheetService.submitTimesheet(req.params.id, userId);
+    const employeeId = requireEmployeeActor(req.user);
+    const timesheet = await timesheetService.submitTimesheet(req.params.id, employeeId, req.user?.tenantId);
 
     res.json({
         success: true,
@@ -68,7 +80,7 @@ const submitTimesheet = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets/:id/approve
 // @access  Private
 const approveTimesheet = asyncHandler(async (req, res) => {
-    const approverId = req.headers['employee-id'];
+    const approverId = requireEmployeeActor(req.user);
     const { comments } = req.body;
 
     const timesheet = await timesheetService.approveTimesheet(
@@ -88,7 +100,7 @@ const approveTimesheet = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/timesheets/:id/reject
 // @access  Private
 const rejectTimesheet = asyncHandler(async (req, res) => {
-    const approverId = req.headers['employee-id'];
+    const approverId = requireEmployeeActor(req.user);
     const { comments } = req.body;
 
     const timesheet = await timesheetService.rejectTimesheet(

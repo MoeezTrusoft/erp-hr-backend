@@ -9,10 +9,11 @@
 // Tenant provenance is the SAME async-local context the MCP facade and the REST
 // context middleware set (mcpCtx: { user: { tenantId } }). The tenant column is
 // `tenantId` on the C.2 tables and `tenant_id` on Employee (REQ-007) — resolved
-// per model from the schema (DMMF). A verified-null tenant scopes to null-tenant
-// rows (fail-closed, matches withTenant), never a span across tenants. SYSTEM
-// contexts (jobs / bootstrap) opt out explicitly via mcpCtx.run({ system:true }).
+// per model from the schema (DMMF). Interactive contexts require a UUID tenant;
+// nullable rows remain available only to explicit migration/backfill SYSTEM
+// contexts via mcpCtx.run({ system:true }).
 import { Prisma } from '@prisma/client';
+import { NIL as NIL_UUID, validate as isUuid } from 'uuid';
 import { mcpCtx } from '../mcp/context.js';
 
 // model -> tenant column ('tenantId' | 'tenant_id'), derived from the schema.
@@ -47,9 +48,14 @@ export const tenantScopeExtension = (client) =>
                         );
                     }
 
-                    // Verified tenant (RBAC Company.uuid); null → scope to null-tenant
-                    // rows only (fail-closed), never another tenant's data.
-                    const tenantId = store.user?.tenantId ?? null;
+                    const rawTenant = store.user?.tenantId;
+                    const tenantId = typeof rawTenant === 'string' ? rawTenant.trim() : '';
+                    if (!isUuid(tenantId) || tenantId === NIL_UUID) {
+                        throw new Error(
+                            `HR-4031: ${model}.${operation} requires a valid interactive tenant UUID. ` +
+                            `Use mcpCtx.run({ system: true }) only for explicit jobs or migration/backfill work.`,
+                        );
+                    }
                     const a = args ? { ...args } : {};
                     if (WHERE_OPS.has(operation)) {
                         a.where = { ...(a.where ?? {}), [col]: tenantId };

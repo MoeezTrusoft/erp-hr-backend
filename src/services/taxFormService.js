@@ -88,14 +88,14 @@ const validateTaxYear = (taxYear) => {
 
 // Per-recipient running accumulator in integer minor units (cents).
 const newAccumulator = () => ({
-    taxableWagesMinor: 0,
-    grossPayMinor: 0,
-    totalDeductionsMinor: 0,
-    netPayMinor: 0,
-    federalTaxMinor: 0,
-    socialSecurityMinor: 0,
-    medicareMinor: 0,
-    stateTaxMinor: 0,
+    taxableWagesMinor: 0n,
+    grossPayMinor: 0n,
+    totalDeductionsMinor: 0n,
+    netPayMinor: 0n,
+    federalTaxMinor: 0n,
+    socialSecurityMinor: 0n,
+    medicareMinor: 0n,
+    stateTaxMinor: 0n,
     payslipCount: 0,
     runIds: new Set(),
 });
@@ -298,9 +298,9 @@ export const generateYearEndTaxForms = async (
         payslipCount: payslips.length,
         w2Count: w2.length,
         form1099Count: form1099.length,
-        totalW2WagesMinor: w2.reduce((s, r) => s + money.fromMajor(r.boxes.box1_wagesTipsOtherComp), 0),
-        totalW2FederalWithheldMinor: w2.reduce((s, r) => s + money.fromMajor(r.boxes.box2_federalIncomeTaxWithheld), 0),
-        total1099CompMinor: form1099.reduce((s, r) => s + money.fromMajor(r.boxes.box1_nonemployeeCompensation), 0),
+        totalW2WagesMinor: money.minorToWire(w2.reduce((s, r) => s + money.fromMajor(r.boxes.box1_wagesTipsOtherComp), 0n)),
+        totalW2FederalWithheldMinor: money.minorToWire(w2.reduce((s, r) => s + money.fromMajor(r.boxes.box2_federalIncomeTaxWithheld), 0n)),
+        total1099CompMinor: money.minorToWire(form1099.reduce((s, r) => s + money.fromMajor(r.boxes.box1_nonemployeeCompensation), 0n)),
     };
 
     // STRUCTURED LOG — counts + totals + MASKED tins only. The plaintext SSN/EIN
@@ -339,9 +339,9 @@ const emptySummary = (year) => ({
     payslipCount: 0,
     w2Count: 0,
     form1099Count: 0,
-    totalW2WagesMinor: 0,
-    totalW2FederalWithheldMinor: 0,
-    total1099CompMinor: 0,
+    totalW2WagesMinor: '0',
+    totalW2FederalWithheldMinor: '0',
+    total1099CompMinor: '0',
 });
 
 /**

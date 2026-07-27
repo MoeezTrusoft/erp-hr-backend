@@ -244,9 +244,9 @@ export async function ingestEmployeeResume({ employeeId, mediaId, tenantId = nul
 
   const skillsWritten = [];
   for (const item of items) {
-    // Skill catalog is globally unique by name; set/refresh its category.
+    // F-DB-03: the skill catalog key is tenant-qualified.
     const skill = await prisma.skill.upsert({
-      where: { name: item.name },
+      where: { tenantId_name: { tenantId: tenant, name: item.name } },
       create: { name: item.name, category: item.category, tenantId: tenant },
       update: { category: item.category },
       select: { id: true, name: true, category: true },

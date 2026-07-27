@@ -16,17 +16,20 @@ export const saveDashboardLayout = async (employeeId, dashboardType, layout, ten
   if (!employeeExists) {
     throw new Error(`Employee with id ${userId} does not exist`);
   }
-  // 2️⃣ Upsert the dashboard layout, scoped to the tenant. findUnique-by-unique
-  // can't carry tenantId, so look up + branch (create stamps the tenant).
-  const existing = await prisma.dashboardLayout.findFirst({
-    where: scopedWhere(tenantId, { dashboardType }),
+  // F-DB-03: the natural key is tenant + employee + dashboard type. The
+  // database-backed upsert removes the old read/branch race and never lets one
+  // employee overwrite another employee's layout in the same tenant.
+  return prisma.dashboardLayout.upsert({
+    where: {
+      tenantId_employeeId_dashboardType: {
+        tenantId,
+        employeeId: userId,
+        dashboardType,
+      },
+    },
+    update: { layout },
+    create: scopedData(tenantId, { employeeId: userId, dashboardType, layout }),
   });
-
-  const dashboard = existing
-    ? await prisma.dashboardLayout.update({ where: { id: existing.id }, data: { layout } })
-    : await prisma.dashboardLayout.create({ data: scopedData(tenantId, { employeeId: userId, dashboardType, layout }) });
-
-  return dashboard;
 
 //   return await prisma.dashboardLayout.upsert({
 //     where: {

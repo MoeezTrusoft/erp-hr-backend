@@ -76,7 +76,7 @@ export const createTimeEntry = async (data) => {
     return create;
 };
 
-export const updateTimeEntry = async (id, data, userId, tenantId, isAdmin = false) => {
+export const updateTimeEntry = async (id, data, actorEmployeeId, tenantId, isAdmin = false) => {
     const entry = await prisma.timeEntry.findFirst({
         where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
@@ -88,9 +88,9 @@ export const updateTimeEntry = async (id, data, userId, tenantId, isAdmin = fals
 
     // Ownership gate — a self-service employee may only edit their OWN entry.
     // An admin / HR manager (tool already asserted hr:attendance EDIT) manages any
-    // entry in their tenant, so bypass the owner check for them. userId arrives as
+    // entry in their tenant, so bypass the owner check for them. employeeId arrives as
     // a header/string; entry.employeeId is a number — compare numerically.
-    if (!isAdmin && entry.employeeId !== Number(userId)) {
+    if (!isAdmin && entry.employeeId !== Number(actorEmployeeId)) {
         throw new AppError('Not authorized to update this time entry', 403);
     }
 
@@ -124,7 +124,7 @@ export const updateTimeEntry = async (id, data, userId, tenantId, isAdmin = fals
     });
 
       await logAction({
-    employeeId: Number(userId),
+    employeeId: Number(actorEmployeeId),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Time Entry",
     result: "SUCCESS",
@@ -133,7 +133,7 @@ export const updateTimeEntry = async (id, data, userId, tenantId, isAdmin = fals
     return update;
 };
 
-export const deleteTimeEntry = async (id, userId, tenantId, isAdmin = false) => {
+export const deleteTimeEntry = async (id, actorEmployeeId, tenantId, isAdmin = false) => {
     const entry = await prisma.timeEntry.findFirst({
         where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
@@ -144,7 +144,7 @@ export const deleteTimeEntry = async (id, userId, tenantId, isAdmin = false) => 
     }
 
     // Admin / HR manager bypasses the self-service owner gate (see updateTimeEntry).
-    if (!isAdmin && entry.employeeId !== Number(userId)) {
+    if (!isAdmin && entry.employeeId !== Number(actorEmployeeId)) {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
 
@@ -153,7 +153,7 @@ export const deleteTimeEntry = async (id, userId, tenantId, isAdmin = false) => 
     });
 
       await logAction({
-    employeeId: Number(userId),
+    employeeId: Number(actorEmployeeId),
     type: "Deleted", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Time Entry",
     result: "SUCCESS",

@@ -1,6 +1,7 @@
 import * as leaveService from '../services/leave.service.js';
 import { createRequisitionController } from './requisition.controller.js';
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
 
 // C.2 / T-P2.2 — the verified tenant arrives on req.user.tenantId (set by
 // internalServiceGuard from the signed service-JWT claim; T-P2.1) — NEVER from
@@ -32,7 +33,7 @@ export const getLeavePolicyById = async (req, res) => {
 export const createLeavePolicy = async (req, res) => {
   try {
 
-     const employeeId = req.headers['employee-id'];
+     const employeeId = req.user?.employeeId;
     const policy = await leaveService.createLeavePolicy({
       ...req.body,
       createdById: employeeId
@@ -45,7 +46,7 @@ export const createLeavePolicy = async (req, res) => {
 
 export const updateLeavePolicy = async (req, res) => {
   try {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = req.user?.employeeId;
     const policy = await leaveService.updateLeavePolicy(
       parseInt(req.params.id),
       { ...req.body, updatedById: parseInt(employeeId)}
@@ -60,7 +61,7 @@ export const updateLeavePolicy = async (req, res) => {
 
 export const deleteLeavePolicy = async (req, res) => {
   try {
-    const deletedBy = req.headers['employee-id'];
+    const deletedBy = req.user?.employeeId;
     await leaveService.deleteLeavePolicy(parseInt(req.params.id), deletedBy);
     res.json({ success: true, message: 'Leave policy deleted successfully' });
   } catch (error) {
@@ -72,7 +73,7 @@ export const getLeaveRequests = async (req, res) => {
   try {
     // If user is not HR/Manager, only show their own requests
     const filters = req.user.role === 'EMPLOYEE'
-      ? { ...req.query, employeeId: req.user.id }
+      ? { ...req.query, employeeId: requireEmployeeActor(req.user) }
       : { ...req.query };
     filters.tenantId = tenantOf(req);
 
@@ -91,7 +92,7 @@ export const getLeaveRequestById = async (req, res) => {
     }
 
     // Check if user has permission to view this request
-    if (req.user.role === 'EMPLOYEE' && request.employeeId !== req.user.id) {
+    if (req.user.role === 'EMPLOYEE' && request.employeeId !== requireEmployeeActor(req.user)) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
@@ -109,7 +110,7 @@ export const createLeaveRequest = async (req, res) => {
     // resolved creator (MCP path stamps req.body.createdById), then the session
     // header, then the request's own subject (self-service).
     const createdById =
-      req.body.createdById ?? req.headers['employee-id'] ?? req.body.employeeId;
+      req.body.createdById ?? req.user?.employeeId ?? req.body.employeeId;
     const request = await leaveService.createLeaveRequest(
       { ...req.body },
       createdById,
@@ -124,7 +125,7 @@ export const createLeaveRequest = async (req, res) => {
 export const cancelLeaveRequest = async (req, res) => {
   try {
     const leaveRequestId = Number(req.params.id);
-     const updatedById = req.headers['employee-id'];
+     const updatedById = requireEmployeeActor(req.user);
     const request = await leaveService.cancelLeaveRequest(
       leaveRequestId,
       Number(updatedById),
@@ -138,7 +139,7 @@ export const cancelLeaveRequest = async (req, res) => {
 
 export const getPendingApprovals = async (req, res) => {
   try {
-    const approvals = await leaveService.getPendingApprovals(req.user.id, req.user.role);
+    const approvals = await leaveService.getPendingApprovals(requireEmployeeActor(req.user), req.user.role);
     res.json({ success: true, data: approvals });
   } catch (error) {
     respondServerError(req, res, error);
@@ -159,7 +160,7 @@ export const approveLeaveRequest = async (req, res) => {
     // Prefer the reviewer the MCP layer resolved (body.approverId) over the
     // session header — the header is empty for a super-admin with no linked
     // Employee, which used to stamp a NaN approverId FK.
-    const approverId = req.body.approverId ?? req.headers['employee-id'];
+    const approverId = req.body.approverId ?? requireEmployeeActor(req.user);
     const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.approveLeaveRequest(
       parseInt(req.params.id),
@@ -177,7 +178,7 @@ export const approveLeaveRequest = async (req, res) => {
 
 export const rejectLeaveRequest = async (req, res) => {
   try {
-    const approverId = req.body.approverId ?? req.headers['employee-id'];
+    const approverId = req.body.approverId ?? requireEmployeeActor(req.user);
     const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.rejectLeaveRequest(
       parseInt(req.params.id),
@@ -206,7 +207,7 @@ export const getEmployeeLeaveBalances = async (req, res) => {
   try {
     // Employees can only view their own balances
     const employeeId = req.user.role === 'EMPLOYEE'
-      ? req.user.id
+      ? requireEmployeeActor(req.user)
       : parseInt(req.params.employeeId);
 
     const balances = await leaveService.getEmployeeLeaveBalances(employeeId);
@@ -218,7 +219,7 @@ export const getEmployeeLeaveBalances = async (req, res) => {
 
 export const updateLeaveBalance = async (req, res) => {
   try {
-    const UpdatedBy = req.headers['employee-id'];
+    const UpdatedBy = req.user?.employeeId;
     const balance = await leaveService.updateLeaveBalance(
       parseInt(req.params.employeeId),
       { ...req.body, updatedById: UpdatedBy}
@@ -258,7 +259,7 @@ export const getHolidays = async (req, res) => {
 
 export const getHolidayCalendar = async (req, res) => {
   try {
-    const calendar = await leaveService.getHolidayCalendar(req.user.id);
+    const calendar = await leaveService.getHolidayCalendar(requireEmployeeActor(req.user));
     res.json({ success: true, data: calendar });
   } catch (error) {
     respondServerError(req, res, error);
@@ -267,7 +268,7 @@ export const getHolidayCalendar = async (req, res) => {
 
 export const createHoliday = async (req, res) => {
   try {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = req.user?.employeeId;
     const holiday = await leaveService.createHoliday({
       ...req.body,
       createdById: employeeId

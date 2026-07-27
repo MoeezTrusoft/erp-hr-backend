@@ -35,6 +35,11 @@ export const attachHrContext = (req, res, next) => {
 };
 
 export const requireHrUser = (req, res, next) => {
+  const verifiedClaims = req.internalService?.claims;
+  if (verifiedClaims && (verifiedClaims.userId != null || verifiedClaims.uid != null ||
+    verifiedClaims.employeeId != null || verifiedClaims.eid != null)) {
+    return next();
+  }
   if (!req.user?.userId && !req.user?.employeeId) {
     return res.status(401).json({
       success: false,
@@ -59,6 +64,11 @@ export const requireHrUser = (req, res, next) => {
 //       additionally self-scopes (employee viewing their OWN data); an EMPLOYEE
 //       is allowed through and the controller enforces id-ownership.
 export const requirePermission = (resourceKey, { allowSelf = false } = {}) => (req, res, next) => {
+  // F-02: production REST routes have already passed the authoritative central
+  // policy. Keep this legacy middleware as defense-in-depth for isolated router
+  // consumers/tests without reinterpreting the central semantic action (run,
+  // approve, post, self, export) as a generic HTTP verb.
+  if (req.authz?.policy?.permission) return next();
   const action = METHOD_ACTION[String(req.method).toUpperCase()];
   const perms = req.user?.permissions;
   if (action && hasPermission(perms, resourceKey, action)) return next();

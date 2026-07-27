@@ -29,6 +29,7 @@ import {
   createAttendanceStreamPublisher,
 } from "./services/attendanceRealtime.publisher.js";
 import { startHrOutboxDispatcher } from "./jobs/outbox.loop.js";
+import { startSystemAccountProvisioningWorker } from "./jobs/system-account-provisioning.loop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,6 +84,8 @@ logger.info({
 // unset). Mirrors how comms wires startRealtimeBridge / the gateway wires
 // startNotifyConsumer.
 const outboxDispatcher = startHrOutboxDispatcher();
+// F-03: reconcile durable account intents independently of request success.
+const accountProvisioningWorker = startSystemAccountProvisioningWorker();
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
@@ -111,6 +114,11 @@ async function gracefulShutdown() {
     await outboxDispatcher.stop();
   } catch (err) {
     logger.warn({ err: { message: err?.message } }, "hr outbox loop: stop failed during shutdown");
+  }
+  try {
+    await accountProvisioningWorker.stop();
+  } catch (err) {
+    logger.warn({ err: { message: err?.message } }, "F-03 provisioning worker: stop failed during shutdown");
   }
   server.close(() => process.exit(0));
 }

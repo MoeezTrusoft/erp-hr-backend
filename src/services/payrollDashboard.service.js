@@ -73,12 +73,12 @@ export async function resolveCurrentRun({ tenantId, runId } = {}) {
   // Fall back to the latest run of any kind if none have payslips yet.
   const withPayslips = await prisma.payrollRun.findFirst({
     where: scopedWhere(tenantId, { payslips: { some: {} } }),
-    orderBy: { periodEnd: "desc" },
+    orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
   });
   if (withPayslips) return withPayslips;
   return prisma.payrollRun.findFirst({
     where: scopedWhere(tenantId, {}),
-    orderBy: { periodEnd: "desc" },
+    orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
   });
 }
 
@@ -87,7 +87,7 @@ async function resolvePreviousRun({ tenantId, run }) {
   if (!run) return null;
   return prisma.payrollRun.findFirst({
     where: scopedWhere(tenantId, { periodEnd: { lt: run.periodEnd } }),
-    orderBy: { periodEnd: "desc" },
+    orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
   });
 }
 

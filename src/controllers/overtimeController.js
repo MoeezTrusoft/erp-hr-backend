@@ -1,5 +1,6 @@
 import asyncHandler from 'express-async-handler';
 import * as overtimeService from '../services/overtimeService.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
 
 // @desc    Get overtime rules
 // @route   GET /api/time-attendance/overtime-rules
@@ -17,7 +18,7 @@ const getOvertimeRules = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/overtime-rules
 // @access  Private
 const createOvertimeRule = asyncHandler(async (req, res) => {
-    const createdBy = req.headers['employee-id'];
+    const createdBy = requireEmployeeActor(req.user);
     const rule = await overtimeService.createOvertimeRule(req.body, createdBy);
 
     res.status(201).json({
@@ -30,7 +31,7 @@ const createOvertimeRule = asyncHandler(async (req, res) => {
 // @route   PUT /api/time-attendance/overtime-rules/:id
 // @access  Private
 const updateOvertimeRule = asyncHandler(async (req, res) => {
-    const updatedBy = req.headers['employee-id'];
+    const updatedBy = requireEmployeeActor(req.user);
     const rule = await overtimeService.updateOvertimeRule(req.params.id, req.body,updatedBy);
 
     res.json({
@@ -43,7 +44,7 @@ const updateOvertimeRule = asyncHandler(async (req, res) => {
 // @route   DELETE /api/time-attendance/overtime-rules/:id
 // @access  Private
 const deleteOvertimeRule = asyncHandler(async (req, res) => {
-    const deletedBy = req.headers['employee-id'];
+    const deletedBy = requireEmployeeActor(req.user);
     await overtimeService.deleteOvertimeRule(req.params.id, deletedBy);
 
     res.json({
@@ -57,11 +58,15 @@ const deleteOvertimeRule = asyncHandler(async (req, res) => {
 // @access  Private
 const calculateOvertime = asyncHandler(async (req, res) => {
     const { employeeId, periodStart, periodEnd } = req.query;
+    const targetEmployeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : employeeId || requireEmployeeActor(req.user);
 
     const overtime = await overtimeService.calculateOvertime({
-        employeeId: employeeId || req.user.id,
+        employeeId: targetEmployeeId,
         periodStart,
-        periodEnd
+        periodEnd,
+        tenantId: req.user?.tenantId
     });
 
     res.json({

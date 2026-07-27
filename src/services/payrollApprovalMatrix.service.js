@@ -6,7 +6,7 @@
 //   role               (String — the approving role)
 //   approverId         (Int? — a specific Employee approver, optional)
 //   thresholdRequired  (Bool — level engages only above thresholdAmount)
-//   thresholdAmount    (Float? — the amount that triggers this level)
+//   thresholdAmount    (Decimal(18,4)? — the amount that triggers this level)
 //   autoEscalateAfter  (DateTime? — SLA after which the item auto-escalates)
 //   status             (ACTIVE | INACTIVE, RowStatus)
 //
@@ -18,6 +18,7 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { decimalToPersistence } from "../lib/money.js";
 
 const APPROVER_SELECT = {
     select: { id: true, employee_name: true, first_name: true, last_name: true, photo_url: true },
@@ -39,7 +40,7 @@ function toRow(r) {
         role: r.role,
         approver: flattenApprover(r.approver),
         thresholdRequired: r.thresholdRequired,
-        thresholdAmount: r.thresholdAmount,
+        thresholdAmount: r.thresholdAmount == null ? null : decimalToPersistence(r.thresholdAmount),
         autoEscalateAfter: r.autoEscalateAfter,
         status: r.status,
     };
@@ -79,7 +80,7 @@ export async function createApprovalLevel({
             approverId: approverId === undefined || approverId === null ? null : Number(approverId),
             thresholdRequired: Boolean(thresholdRequired),
             thresholdAmount:
-                thresholdAmount === undefined || thresholdAmount === null ? null : Number(thresholdAmount),
+                thresholdAmount === undefined || thresholdAmount === null ? null : decimalToPersistence(thresholdAmount),
             autoEscalateAfter: coerceEscalate(autoEscalateAfter) ?? null,
             status: status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
             version: 1,
@@ -106,7 +107,7 @@ export async function updateApprovalLevel({ tenantId, id, ...fields }) {
     }
     if (fields.thresholdRequired !== undefined) data.thresholdRequired = Boolean(fields.thresholdRequired);
     if (fields.thresholdAmount !== undefined) {
-        data.thresholdAmount = fields.thresholdAmount === null ? null : Number(fields.thresholdAmount);
+        data.thresholdAmount = fields.thresholdAmount === null ? null : decimalToPersistence(fields.thresholdAmount);
     }
     if (fields.autoEscalateAfter !== undefined) data.autoEscalateAfter = coerceEscalate(fields.autoEscalateAfter);
     if (fields.status !== undefined) data.status = fields.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";

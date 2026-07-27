@@ -200,7 +200,7 @@ export async function listLeaveTable({
     prisma.leaveRequest.count({ where }),
     prisma.leaveRequest.findMany({
       where,
-      orderBy: { [sortField]: dir },
+      orderBy: [{ [sortField]: dir }, { id: dir }],
       skip: (pageNum - 1) * size,
       take: size,
       include: {

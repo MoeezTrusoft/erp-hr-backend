@@ -416,15 +416,18 @@ describe('C.2-completion — Employee-table services (snake_case tenant_id)', ()
     it('self.getSelfProfile scopes the employee read by tenant_id (cross-tenant -> not found)', async () => {
         prismaMock.employee.findFirst.mockImplementation(async ({ where }) =>
             where.id === 5 && where.tenant_id === TENANT_A ? { id: 5, tenant_id: TENANT_A } : null);
-        const reqA = { headers: { 'x-employee-id': '5' }, user: { tenantId: TENANT_A } };
-        const reqB = { headers: { 'x-employee-id': '5' }, user: { tenantId: TENANT_B } };
+        const reqA = { headers: { 'x-employee-id': '999' }, user: { employeeId: 5, tenantId: TENANT_A } };
+        const reqB = { headers: { 'x-employee-id': '999' }, user: { employeeId: 5, tenantId: TENANT_B } };
         expect(await selfSvc.getSelfProfile(reqA)).toMatchObject({ id: 5 });
         expect(await selfSvc.getSelfProfile(reqB)).toBeNull();
     });
 
     it('self.listSelfPayslips scopes the payslip read by tenantId', async () => {
         prismaMock.payrollPayslip.findMany.mockResolvedValue([]);
-        await selfSvc.listSelfPayslips({ headers: { 'x-employee-id': '5' }, user: { tenantId: TENANT_A } });
+        await selfSvc.listSelfPayslips({
+            headers: { 'x-employee-id': '999' },
+            user: { employeeId: 5, tenantId: TENANT_A },
+        });
         expect(hasTenantPredicate(prismaMock.payrollPayslip.findMany.mock.calls[0][0].where, TENANT_A)).toBe(true);
     });
 });
@@ -438,7 +441,7 @@ describe('C.2-completion — requireTenant fail-closed on a sensitive create', (
         expect(prismaMock.trainingSession.create).not.toHaveBeenCalled();
     });
 
-    it('requireTenant itself is fail-closed (null/undefined/empty all throw)', () => {
+    it('requireTenant rejects null/undefined/empty values', () => {
         expect(() => requireTenant(null)).toThrow(/tenant/i);
         expect(() => requireTenant(undefined)).toThrow(/tenant/i);
         expect(() => requireTenant('')).toThrow(/tenant/i);

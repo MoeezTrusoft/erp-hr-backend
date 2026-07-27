@@ -6,7 +6,7 @@ import { scopedWhere } from "../lib/tenancy.js";
 // audit-log reads are tenant-scoped fail-closed so one tenant never reads
 // another tenant's audit trail.
 
-export const getAllLogs = async (userId, ip, tenantId) => {
+export const getAllLogs = async (employeeId, ip, tenantId) => {
   const logs = await prisma.log.findMany({
     where: scopedWhere(tenantId, {}),
     include: {
@@ -17,7 +17,7 @@ export const getAllLogs = async (userId, ip, tenantId) => {
   });
 
   await logAction({
-    userId,
+    employeeId,
     type: "READ_ALL",
     module: "Log",
     result: "Success",
@@ -29,7 +29,7 @@ export const getAllLogs = async (userId, ip, tenantId) => {
 
 };
 
-export const getLogById = async (id, userId, ip, tenantId) => {
+export const getLogById = async (id, employeeId, ip, tenantId) => {
   const log = await prisma.log.findFirst({
     where: scopedWhere(tenantId, { id: parseInt(id) }),
     include: {
@@ -41,7 +41,7 @@ export const getLogById = async (id, userId, ip, tenantId) => {
   if (!log) {
 
     await logAction({
-      userId,
+      employeeId,
       type: "READ_ONE",
       module: "Log",
       result: "Fail",
@@ -52,7 +52,7 @@ export const getLogById = async (id, userId, ip, tenantId) => {
   }
 
   await logAction({
-    userId,
+    employeeId,
     type: "READ_ONE",
     module: "Log",
     result: "Success",

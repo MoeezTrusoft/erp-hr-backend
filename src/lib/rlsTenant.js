@@ -108,6 +108,8 @@ const RLS_MODELS = new Set([
     'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',
     // Deferred D1/D2 (2026-07-23): Employee (tenant_id col) + OutboxEvent.
     'Employee', 'OutboxEvent',
+    // F-03 — tenant-owned durable RBAC provisioning projection.
+    'SystemAccountProvisioning',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

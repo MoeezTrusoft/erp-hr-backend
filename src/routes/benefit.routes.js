@@ -2,15 +2,11 @@ import express from "express";
 import * as ctrl from "../controllers/benefit.controller.js";
 import { requirePermission } from "../middlewares/hrContext.middleware.js";
 
-// HR-BENEFITS-04 — deny-by-default authz on the benefits surface. Every route
-// requires the `hr:benefits` entitlement for the HTTP method's action (VIEW /
-// CREATE / EDIT / DELETE), resolved from the gateway-verified permission blob
-// (req.user.permissions). The forgeable `x-is-admin` header is never honored —
-// a real HR/benefits admin carries the permission. Reads/writes are additionally
-// tenant-scoped in the service (cross-tenant → 404).
-const gate = requirePermission("hr:benefits");
-
+// HR-BENEFITS-04 compatibility gate for isolated router consumers. Production
+// requests first pass F-02's verified-scope policy; forged x-user-* headers are
+// never authorization truth. Service queries remain tenant-scoped.
 const router = express.Router();
+const gate = requirePermission("hr:benefits");
 
 // Benefit plans
 router.post("/plans", gate, ctrl.createPlan);

@@ -5,14 +5,12 @@ import { requirePermission } from '../middlewares/hrContext.middleware.js';
 
 
 const router = express.Router();
-
-// HR-03: deny-by-default authz on the C4 payroll surface. `admin` requires the
-// hr:payroll permission for the method's action; `self` additionally lets an
-// EMPLOYEE through to routes the controller self-scopes (own data only).
 const admin = requirePermission('hr:payroll');
 const self = requirePermission('hr:payroll', { allowSelf: true });
 
-
+// HR-03 compatibility gates remain for isolated router consumers. In the
+// production app, F-02's centralized policy is authoritative and supplies the
+// semantic dotted grants (run/approve/post/export/self) before these handlers.
 // Payroll Runs (org-wide — admin only)
 router.get('/runs', admin, payrollController.getPayrollRuns);
 router.get('/runs/:id', admin, payrollController.getPayrollRunById);

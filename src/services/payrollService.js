@@ -23,10 +23,9 @@ import { assertIfMatch } from "../lib/optimisticConcurrency.js";
 //      run's period + country (see selectEffectiveTaxRates), records the
 //      ruleVersion / ratesEffectiveAt on the run + each payslip so a run is
 //      reproducible against the rates that were in effect.
-//   2. Does ALL arithmetic in INTEGER MINOR UNITS via src/lib/money.js
-//      (round-half-up), converting to major-unit Numbers only at the DB
-//      boundary. calculatePeriodSalaryMinor's /2 and *12/52 are exact and
-//      total-preserving.
+//   2. Does ALL arithmetic in BigInt INTEGER MINOR UNITS via src/lib/money.js
+//      (half-even), converting to exact decimal strings only at the Prisma
+//      boundary. calculatePeriodSalaryMinor's /2 and *12/52 are exact.
 //   3. Requires a human approver DISTINCT from the processor before FINALIZE
 //      (approvePayrollRun records approvedBy != processedBy; finalize blocks
 //      without it and rejects self-approval).
@@ -49,11 +48,10 @@ import { assertIfMatch } from "../lib/optimisticConcurrency.js";
 // rows. A cross-tenant single-read resolves to null/not-found (the controller
 // maps that to 404), never another tenant's data.
 //
-// `withTenant` folds the tenant predicate into a where-clause. We always apply
-// it (even when tenantId is null) so the scoping is fail-closed: a null tenant
-// only ever matches null-tenant (legacy/unbackfilled) rows, never another
-// tenant's data. C.2 promoted this to the shared src/lib/tenancy.js so the same
-// fail-closed definition scopes the rest of the HR tables — imported above.
+// `withTenant` folds the tenant predicate into a where-clause. Interactive
+// requests are rejected at the F-06 boundary unless tenantId is a UUID. Direct
+// null predicates remain only for explicit migration/backfill callers while
+// nullable legacy rows are being reconciled.
 
 // Coerce an actor id (header string / number) to an Int or null. Used to stamp
 // processedBy / approvedBy so the separation-of-duties check compares integers.
@@ -87,8 +85,9 @@ const PERIOD_FACTORS = {
  * scale deterministically. SEMI_MONTHLY is the first half of an exact even
  * 2-way split so half*2 === monthly (no half-cent drift).
  */
-export const calculatePeriodSalaryMinor = (employmentTerm /*, payrollRun */) => {
-    const monthlyMinor = money.fromMajor(employmentTerm.baseSalary);
+export const calculatePeriodSalaryMinor = (employmentTerm, payrollRun) => {
+    const currency = employmentTerm.currency || payrollRun?.currencyCode || 'USD';
+    const monthlyMinor = money.decimalToMinor(employmentTerm.baseSalary, currency);
     switch (employmentTerm.payFrequency) {
         case 'MONTHLY':
             return monthlyMinor;
@@ -118,7 +117,7 @@ export const selectEffectiveTaxRates = (rateRows, { countryCode, asOf }) => {
             const to = r.effectiveTo == null ? null : (r.effectiveTo instanceof Date ? r.effectiveTo : new Date(r.effectiveTo));
             return from.getTime() <= at.getTime() && (to === null || to.getTime() >= at.getTime());
         })
-        .sort((a, b) => a.bracketMin - b.bracketMin);
+        .sort((a, b) => money.compareDecimal(a.bracketMin, b.bracketMin));
 };
 
 /**
@@ -129,16 +128,16 @@ export const selectEffectiveTaxRates = (rateRows, { countryCode, asOf }) => {
  * (the TaxRate column shape) converted to minor units; the per-bracket multiply
  * rounds half-up once, then the bracket taxes are summed as integers — exact.
  */
-export const computeProgressiveTaxMinor = (grossMinor, sortedRows) => {
-    money.add(grossMinor, 0); // assert safe int
-    let taxMinor = 0;
+export const computeProgressiveTaxMinor = (grossMinor, sortedRows, currency = 'USD') => {
+    money.add(grossMinor, 0n); // assert integer minor units
+    let taxMinor = 0n;
     for (const row of sortedRows) {
-        const lowMinor = money.fromMajor(row.bracketMin);
-        const highMinor = row.bracketMax == null ? null : money.fromMajor(row.bracketMax);
+        const lowMinor = money.decimalToMinor(row.bracketMin, currency);
+        const highMinor = row.bracketMax == null ? null : money.decimalToMinor(row.bracketMax, currency);
         if (grossMinor <= lowMinor) continue; // gross hasn't reached this bracket
-        const upper = highMinor == null ? grossMinor : Math.min(grossMinor, highMinor);
+        const upper = highMinor == null || grossMinor < highMinor ? grossMinor : highMinor;
         const sliceMinor = upper - lowMinor;
-        if (sliceMinor <= 0) continue;
+        if (sliceMinor <= 0n) continue;
         taxMinor = money.add(taxMinor, money.mulRate(sliceMinor, row.rate));
     }
     return taxMinor;
@@ -155,9 +154,9 @@ export const computeRuleVersion = (sortedRows, asOf) => {
     const at = asOf instanceof Date ? asOf : new Date(asOf);
     const canonical = sortedRows.map((r) => ({
         countryCode: r.countryCode,
-        bracketMin: r.bracketMin,
-        bracketMax: r.bracketMax ?? null,
-        rate: r.rate,
+        bracketMin: String(r.bracketMin),
+        bracketMax: r.bracketMax == null ? null : String(r.bracketMax),
+        rate: String(r.rate),
         effectiveFrom: new Date(r.effectiveFrom).toISOString(),
         effectiveTo: r.effectiveTo == null ? null : new Date(r.effectiveTo).toISOString(),
     }));
@@ -180,14 +179,15 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     const at = asOf || payrollRun?.periodEnd;
     const earnings = [];
     const deductions = [];
-    let grossMinor = 0;
+    const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
+    let grossMinor = 0n;
 
     // 1) Base salary (if the employee has employment terms).
     if (employmentTerm) {
         const baseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
         earnings.push({
             earningTypeId: employmentTerm.baseSalaryEarningTypeId ?? null,
-            amount: money.toMajor(baseMinor),
+            amount: money.minorToDecimal(baseMinor, currency),
             description: `Base salary for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`,
         });
         grossMinor = money.add(grossMinor, baseMinor);
@@ -199,21 +199,21 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     for (const assignment of assignments) {
         if (assignment.earningType) {
             const amountMinor = assignment.amount != null
-                ? money.fromMajor(assignment.amount)
-                : money.mulRate(grossMinor, assignment.rate || 0);
+                ? money.decimalToMinor(assignment.amount, currency)
+                : money.mulRate(grossMinor, assignment.rate || '0');
             earnings.push({
                 earningTypeId: assignment.earningType.id,
-                amount: money.toMajor(amountMinor),
+                amount: money.minorToDecimal(amountMinor, currency),
                 description: assignment.earningType.name,
             });
             grossMinor = money.add(grossMinor, amountMinor);
         } else if (assignment.deductionType) {
             const amountMinor = assignment.amount != null
-                ? money.fromMajor(assignment.amount)
-                : money.mulRate(grossMinor, assignment.rate || 0);
+                ? money.decimalToMinor(assignment.amount, currency)
+                : money.mulRate(grossMinor, assignment.rate || '0');
             deductions.push({
                 deductionTypeId: assignment.deductionType.id,
-                amount: money.toMajor(amountMinor),
+                amount: money.minorToDecimal(amountMinor, currency),
                 description: assignment.deductionType.name,
             });
         }
@@ -224,25 +224,25 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     //    payslip deterministic and matches the table-driven figure.
     const sorted = selectEffectiveTaxRates(taxRateRows, { countryCode: payrollRun.countryCode, asOf: at });
     const ruleVersion = computeRuleVersion(sorted, at);
-    const taxMinor = computeProgressiveTaxMinor(grossMinor, sorted);
-    if (taxMinor > 0 || sorted.length > 0) {
+    const taxMinor = computeProgressiveTaxMinor(grossMinor, sorted, currency);
+    if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
             deductionTypeId: null,
-            amount: money.toMajor(taxMinor),
+            amount: money.minorToDecimal(taxMinor, currency),
             description: 'Income Tax',
         });
     }
 
-    const totalDeductionsMinor = money.sum(deductions.map((d) => money.fromMajor(d.amount)));
+    const totalDeductionsMinor = money.sum(deductions.map((d) => money.decimalToMinor(d.amount, currency)));
     const netMinor = money.sub(grossMinor, totalDeductionsMinor);
 
     return {
         employeeId: employee?.id ?? null,
         ruleVersion,
         ratesEffectiveAt: new Date(at).toISOString(),
-        grossAmount: money.toMajor(grossMinor),
-        totalDeductions: money.toMajor(totalDeductionsMinor),
-        netAmount: money.toMajor(netMinor),
+        grossAmount: money.minorToDecimal(grossMinor, currency),
+        totalDeductions: money.minorToDecimal(totalDeductionsMinor, currency),
+        netAmount: money.minorToDecimal(netMinor, currency),
         earnings,
         deductions,
     };
@@ -260,7 +260,7 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
             where,
             skip,
             take: parseInt(limit),
-            orderBy: { periodStart: 'desc' },
+            orderBy: [{ periodStart: 'desc' }, { id: 'desc' }],
             include: {
                 payslips: {
                     include: {
@@ -328,9 +328,13 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
     throw new Error('Payroll run already exists for the specified period');
   }
 
+  const exactData = { ...data };
+  for (const field of ['totalGross', 'totalDeductions', 'totalNet']) {
+    if (exactData[field] != null) exactData[field] = money.decimalToPersistence(exactData[field]);
+  }
   const create = await prisma.payrollRun.create({
     data: {
-      ...data,
+      ...exactData,
       tenantId: tenantId ?? null,
       status: 'PENDING'
     }
@@ -390,7 +394,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             { effectiveTo: { gte: payrollRun.periodStart } }
                         ]
                     }),
-                    orderBy: { effectiveFrom: 'desc' },
+                    orderBy: [{ effectiveFrom: 'desc' }, { id: 'desc' }],
                     take: 1
                 },
                 payrollAssignments: {
@@ -519,9 +523,18 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
 
         // Totals in integer minor units, then converted back once — exact, no
         // float drift across the per-payslip sum.
-        const totalGross = money.toMajor(money.sum(payslips.map((p) => money.fromMajor(p.grossAmount))));
-        const totalDeductions = money.toMajor(money.sum(payslips.map((p) => money.fromMajor(p.totalDeductions))));
-        const totalNet = money.toMajor(money.sum(payslips.map((p) => money.fromMajor(p.netAmount))));
+        const totalGross = money.minorToDecimal(
+            money.sum(payslips.map((p) => money.decimalToMinor(p.grossAmount, payrollRun.currencyCode))),
+            payrollRun.currencyCode,
+        );
+        const totalDeductions = money.minorToDecimal(
+            money.sum(payslips.map((p) => money.decimalToMinor(p.totalDeductions, payrollRun.currencyCode))),
+            payrollRun.currencyCode,
+        );
+        const totalNet = money.minorToDecimal(
+            money.sum(payslips.map((p) => money.decimalToMinor(p.netAmount, payrollRun.currencyCode))),
+            payrollRun.currencyCode,
+        );
 
         // Update payroll run with totals (scoped). Record the rule version +
         // as-of so the run is reproducible against the rates in effect.
@@ -879,7 +892,7 @@ export const getEmployeePayrollData = async (employeeId, tenantId) => {
     const [employmentTerms, assignments, bankDetails, payslips] = await Promise.all([
         prisma.employmentTerms.findMany({
             where: withTenant(tenantId, { employeeId }),
-            orderBy: { effectiveFrom: 'desc' }
+            orderBy: [{ effectiveFrom: 'desc' }, { id: 'desc' }]
         }),
         prisma.payrollAssignment.findMany({
             where: withTenant(tenantId, { employeeId, isActive: true }),
@@ -906,7 +919,7 @@ export const getEmployeePayrollData = async (employeeId, tenantId) => {
                     }
                 }
             },
-            orderBy: { created_at: 'desc' },
+            orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
             take: 6 // Last 6 payslips
         })
     ]);
@@ -943,6 +956,9 @@ export const createPayrollAssignment = async (data, createdBy, tenantId) => {
   // strip the non-column `createdBy` the controller folds into the payload
   // (legacy shape) so the scoped create only persists real columns + tenantId.
   const { createdBy: _ignored, ...assignmentData } = data;
+  if (assignmentData.amount != null) {
+    assignmentData.amount = money.decimalToPersistence(assignmentData.amount);
+  }
   const create = await prisma.payrollAssignment.create({
     data: { ...assignmentData, tenantId: tenantId ?? null },
     include: {
@@ -976,7 +992,7 @@ export const getPayslips = async ({ page, limit, payrollRunId, employeeId, tenan
             where: scoped,
             skip,
             take: parseInt(limit),
-            orderBy: { created_at: 'desc' },
+            orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
             include: {
                 employee: {
                     select: { id: true, first_name: true, last_name: true, job_title: true }
@@ -1080,7 +1096,7 @@ export const getEmployeePayslips = async (employeeId, { page, limit, tenantId })
             where,
             skip,
             take: parseInt(limit),
-            orderBy: { created_at: 'desc' },
+            orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
             include: {
                 payrollRun: true,
                 earnings: {
@@ -1114,13 +1130,17 @@ export const getTaxRates = async (countryCode, tenantId) => {
     const where = withTenant(tenantId, countryCode ? { countryCode } : {});
     return prisma.taxRate.findMany({
         where,
-        orderBy: { bracketMin: 'asc' }
+        orderBy: [{ bracketMin: 'asc' }, { id: 'asc' }]
     });
 };
 
 export const createTaxRate = async (data, createdBy, tenantId) => {
+  const exactData = { ...data };
+  for (const field of ['bracketMin', 'bracketMax', 'baseTax']) {
+    if (exactData[field] != null) exactData[field] = money.decimalToPersistence(exactData[field]);
+  }
   const create = await prisma.taxRate.create({
-    data: { ...data, tenantId: tenantId ?? null }
+    data: { ...exactData, tenantId: tenantId ?? null }
   });
 
   await logAction({
@@ -1147,7 +1167,7 @@ export const getAuditLogs = async ({ page, limit, payrollRunId, payslipId, tenan
             where: scoped,
             skip,
             take: parseInt(limit),
-            orderBy: { created_at: 'desc' },
+            orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
             include: {
                 payrollRun: {
                     select: { id: true, periodStart: true, periodEnd: true }

@@ -28,6 +28,7 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 // Build the `user` handed to an owner-gated write (time-entry update/delete).
 // MCP context hard-forces isAdmin=false (SEC-5), so the service's owner gate
@@ -55,8 +56,7 @@ export function registerAttendanceTools(server) {
     { description: "Get current user's attendance records" },
     async (uri) => {
       const { user } = getCtx();
-      const employeeId = user?.employeeId || user?.userId;
-      if (!employeeId) throw Object.assign(new Error("Employee ID not found in session"), { status: 400 });
+      const employeeId = requireEmployeeActor(user);
       const data = await mcpGetAttendanceByEmployee(user, employeeId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }

@@ -7,8 +7,8 @@
 // domain event via the transactional outbox).
 //
 // TENANCY: every read is folded through scopedWhere(tenantId, where) — the
-// FORCE-RLS extension additionally sets app.tenant_id, but the app-level scope
-// is the primary fence (fail-closed on a null/absent tenant). The self-scope
+// FORCE-RLS extension additionally sets app.tenant_id; F-06 rejects a missing
+// interactive tenant before this service executes. The employee self-scope
 // (employeeId) is applied on TOP so an authenticated employee can only ever
 // reach their own rows. questionPayslip runs inside a tenantTransaction so the
 // PayslipQuestion write + outbox enqueue share one RLS-bound connection.
@@ -63,7 +63,7 @@ async function resolvePayslip({ tenantId, employeeId, payslipId }) {
   return prisma.payrollPayslip.findFirst({
     where,
     include: PAYSLIP_INCLUDE,
-    orderBy: { payrollRun: { periodEnd: "desc" } },
+    orderBy: [{ payrollRun: { periodEnd: "desc" } }, { id: "desc" }],
   });
 }
 
@@ -274,7 +274,7 @@ export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize 
     prisma.payrollPayslip.findMany({
       where,
       include: { payrollRun: { select: { periodStart: true, periodEnd: true } } },
-      orderBy: { payrollRun: { periodEnd: "desc" } },
+      orderBy: [{ payrollRun: { periodEnd: "desc" } }, { id: "desc" }],
       skip,
       take,
     }),

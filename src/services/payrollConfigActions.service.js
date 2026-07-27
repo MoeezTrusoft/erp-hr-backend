@@ -53,10 +53,7 @@ export async function getGlobalKpis({ tenantId }) {
 
 // ── CONFIG STATUS ───────────────────────────────────────────────────────────
 export async function getConfigStatus({ tenantId }) {
-  const meta = await prisma.payrollConfigMeta.findFirst({
-    where: scopedWhere(tenantId, {}),
-    orderBy: [{ id: "asc" }],
-  });
+  const meta = await prisma.payrollConfigMeta.findUnique({ where: { tenantId } });
 
   // Derive hasUnpublished: no published snapshot yet, OR any config row is DRAFT.
   const [publishedSnapshots, draftComponent, draftCalendar, draftRules] =
@@ -142,16 +139,13 @@ export async function publishConfig({ tenantId, publishedById }) {
     const config = await buildConfigObjectTx(tx, tenantId);
 
     // 2. Next version = current publishedVersion + 1.
-    const meta = await tx.payrollConfigMeta.findFirst({
-      where: scopedWhere(tenantId, {}),
-      orderBy: [{ id: "asc" }],
-    });
+    const meta = await tx.payrollConfigMeta.findUnique({ where: { tenantId } });
     const version = (meta?.publishedVersion ?? 0) + 1;
     const publishedAt = new Date();
 
     // 3. Immutable snapshot of the config set.
     const snapshot = await tx.payrollConfigSnapshot.create({
-      data: { version, config, publishedById: publishedById ?? null, publishedAt },
+      data: { tenantId, version, config, publishedById: publishedById ?? null, publishedAt },
     });
 
     // 4. Flip every DRAFT config row → PUBLISHED.
@@ -171,28 +165,24 @@ export async function publishConfig({ tenantId, publishedById }) {
     ]);
 
     // 5. Upsert the meta row (create if none).
-    if (meta) {
-      await tx.payrollConfigMeta.update({
-        where: { id: meta.id },
-        data: {
-          status: "PUBLISHED",
-          publishedVersion: version,
-          hasUnpublished: false,
-          publishedAt,
-          publishedById: publishedById ?? null,
-        },
-      });
-    } else {
-      await tx.payrollConfigMeta.create({
-        data: {
-          status: "PUBLISHED",
-          publishedVersion: version,
-          hasUnpublished: false,
-          publishedAt,
-          publishedById: publishedById ?? null,
-        },
-      });
-    }
+    await tx.payrollConfigMeta.upsert({
+      where: { tenantId },
+      update: {
+        status: "PUBLISHED",
+        publishedVersion: version,
+        hasUnpublished: false,
+        publishedAt,
+        publishedById: publishedById ?? null,
+      },
+      create: {
+        tenantId,
+        status: "PUBLISHED",
+        publishedVersion: version,
+        hasUnpublished: false,
+        publishedAt,
+        publishedById: publishedById ?? null,
+      },
+    });
 
     return {
       version,
@@ -265,8 +255,8 @@ export async function exportConfig({ tenantId, version }) {
   const wanted = toIntOrNull(version);
 
   if (wanted != null) {
-    const snap = await prisma.payrollConfigSnapshot.findFirst({
-      where: scopedWhere(tenantId, { version: wanted }),
+    const snap = await prisma.payrollConfigSnapshot.findUnique({
+      where: { tenantId_version: { tenantId, version: wanted } },
     });
     if (!snap) throw notFound(`Payroll config snapshot version ${version} not found`);
     return { version: snap.version, publishedAt: snap.publishedAt, config: snap.config };

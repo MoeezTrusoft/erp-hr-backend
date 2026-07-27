@@ -6,7 +6,6 @@
 // tenantTransaction so the FORCE-RLS tenant GUC is set for both the read and the
 // create/update (PayrollRuleConfig is an RLS model — see src/lib/rlsTenant.js).
 import prisma from "../lib/prisma.js";
-import { scopedWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
 
@@ -41,10 +40,7 @@ function defaultRules() {
 }
 
 export async function getPayrollRules({ tenantId }) {
-  const row = await prisma.payrollRuleConfig.findFirst({
-    where: scopedWhere(tenantId, {}),
-    orderBy: [{ id: "asc" }],
-  });
+  const row = await prisma.payrollRuleConfig.findUnique({ where: { tenantId } });
   return row ?? defaultRules();
 }
 
@@ -63,20 +59,10 @@ export async function updatePayrollRules({ tenantId, ...toggles }) {
   }
 
   const row = await tenantTransaction(prisma, async (tx) => {
-    const existing = await tx.payrollRuleConfig.findFirst({
-      where: scopedWhere(tenantId, {}),
-      orderBy: [{ id: "asc" }],
-    });
-
-    // Editing the config always returns it to DRAFT and bumps the version.
-    if (!existing) {
-      return tx.payrollRuleConfig.create({
-        data: { ...data, status: "DRAFT", version: 1 },
-      });
-    }
-    return tx.payrollRuleConfig.update({
-      where: { id: existing.id },
-      data: { ...data, status: "DRAFT", version: (existing.version ?? 1) + 1 },
+    return tx.payrollRuleConfig.upsert({
+      where: { tenantId },
+      create: { tenantId, ...data, status: "DRAFT", version: 1 },
+      update: { ...data, status: "DRAFT", version: { increment: 1 } },
     });
   });
 

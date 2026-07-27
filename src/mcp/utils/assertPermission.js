@@ -14,7 +14,23 @@ const ACTION_TO_BIT = {
   EXPORT: 16,
 };
 
+const ACTION_TO_CANONICAL = {
+  VIEW: "read",
+  CREATE: "create",
+  EDIT: "update",
+  DELETE: "delete",
+  EXPORT: "export",
+};
+
 export function hasPermission(permissions, resourceKey, action) {
+  // F-02: REST authorization stores the verified service-JWT scope as the
+  // canonical dotted set. Legacy MCP/direct-router callers still use the
+  // bit/action blob below during the rollout.
+  if (Array.isArray(permissions)) {
+    const resource = String(resourceKey).replaceAll(":", ".");
+    const canonicalAction = ACTION_TO_CANONICAL[action];
+    return Boolean(canonicalAction && permissions.includes(`${resource}.${canonicalAction}`));
+  }
   const granted = permissions?.[resourceKey];
   if (!granted) return false;
   if (Array.isArray(granted)) return granted.includes(action);

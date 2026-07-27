@@ -2,9 +2,9 @@
 //
 // CRUD over the TaxRate model (table tax_rates). Each row is one FBR-style
 // income-tax slab:
-//   from       = bracketMin   (Float, ≥0)
-//   upto       = bracketMax   (Float?, null ⇒ open-ended top slab)
-//   base tax   = baseTax      (Float, cumulative tax owed up to bracketMin)
+//   from       = bracketMin   (Decimal(18,4), ≥0)
+//   upto       = bracketMax   (Decimal(18,4)?, null ⇒ open-ended top slab)
+//   base tax   = baseTax      (Decimal(18,4), cumulative tax owed to bracketMin)
 //   rate on excess = rate     (Float fraction 0–1, e.g. 0.15 ⇒ 15% on the
 //                              income ABOVE bracketMin)
 //   effective from = effectiveFrom (DateTime)
@@ -15,6 +15,7 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { compareDecimal, decimalToPersistence } from "../lib/money.js";
 
 // Rate is stored as a fraction (0–1). Callers are expected to pass a fraction,
 // but the FBR UI often thinks in percent — if a value >1 is passed we treat it
@@ -40,9 +41,9 @@ function round2(n) {
 function toRow(r) {
     return {
         id: r.id,
-        from: r.bracketMin,
-        upto: r.bracketMax,
-        baseTax: r.baseTax,
+        from: decimalToPersistence(r.bracketMin),
+        upto: r.bracketMax == null ? null : decimalToPersistence(r.bracketMax),
+        baseTax: decimalToPersistence(r.baseTax),
         rateOnExcess: r.rate,
         ratePct: round2(r.rate * 100),
         effectiveFrom: r.effectiveFrom,
@@ -61,20 +62,20 @@ export async function createTaxSlab({
     effectiveFrom,
     status = "ACTIVE",
 }) {
-    const min = Number(bracketMin);
-    if (Number.isNaN(min) || min < 0) {
+    const min = decimalToPersistence(bracketMin);
+    if (compareDecimal(min, '0') < 0) {
         throw Object.assign(new Error("bracketMin must be a number ≥ 0"), { status: 400 });
     }
     let max = null;
     if (bracketMax !== undefined && bracketMax !== null) {
-        max = Number(bracketMax);
-        if (Number.isNaN(max) || max <= min) {
+        max = decimalToPersistence(bracketMax);
+        if (compareDecimal(max, min) <= 0) {
             throw Object.assign(new Error("bracketMax must be greater than bracketMin (or null for the top slab)"), { status: 400 });
         }
     }
     const normRate = normalizeRate(rate);
-    const base = baseTax === undefined || baseTax === null ? 0 : Number(baseTax);
-    if (Number.isNaN(base) || base < 0) {
+    const base = decimalToPersistence(baseTax === undefined || baseTax === null ? '0' : baseTax);
+    if (compareDecimal(base, '0') < 0) {
         throw Object.assign(new Error("baseTax must be a number ≥ 0"), { status: 400 });
     }
     const from = effectiveFrom ? new Date(effectiveFrom) : new Date();
@@ -101,25 +102,24 @@ export async function updateTaxSlab({ tenantId, id, ...fields }) {
     const data = {};
     if (fields.countryCode !== undefined) data.countryCode = String(fields.countryCode).toUpperCase().slice(0, 2);
     if (fields.bracketMin !== undefined) {
-        const min = Number(fields.bracketMin);
-        if (Number.isNaN(min) || min < 0) throw Object.assign(new Error("bracketMin must be a number ≥ 0"), { status: 400 });
+        const min = decimalToPersistence(fields.bracketMin);
+        if (compareDecimal(min, '0') < 0) throw Object.assign(new Error("bracketMin must be a number ≥ 0"), { status: 400 });
         data.bracketMin = min;
     }
     if (fields.bracketMax !== undefined) {
         if (fields.bracketMax === null) {
             data.bracketMax = null;
         } else {
-            const max = Number(fields.bracketMax);
-            const min = data.bracketMin ?? Number.NEGATIVE_INFINITY;
-            if (Number.isNaN(max) || (Number.isFinite(min) && max <= min)) {
+            const max = decimalToPersistence(fields.bracketMax);
+            if (data.bracketMin != null && compareDecimal(max, data.bracketMin) <= 0) {
                 throw Object.assign(new Error("bracketMax must be greater than bracketMin (or null)"), { status: 400 });
             }
             data.bracketMax = max;
         }
     }
     if (fields.baseTax !== undefined) {
-        const base = Number(fields.baseTax);
-        if (Number.isNaN(base) || base < 0) throw Object.assign(new Error("baseTax must be a number ≥ 0"), { status: 400 });
+        const base = decimalToPersistence(fields.baseTax);
+        if (compareDecimal(base, '0') < 0) throw Object.assign(new Error("baseTax must be a number ≥ 0"), { status: 400 });
         data.baseTax = base;
     }
     if (fields.rate !== undefined) data.rate = normalizeRate(fields.rate);

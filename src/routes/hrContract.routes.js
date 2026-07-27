@@ -14,6 +14,8 @@ router.post("/dashboard-layout/reset", requireHrUser, controller.resetDashboardL
 router.get("/employees", controller.listEmployees);
 router.post("/employees", requireHrUser, controller.createEmployee);
 router.get("/employees/:id/quick-view", controller.getEmployeeQuickView);
+router.get("/system-account-provisioning/:id", requireHrUser, controller.getSystemAccountProvisioning);
+router.post("/system-account-provisioning/:id/retry", requireHrUser, controller.retrySystemAccountProvisioning);
 router.get("/employees/:id/profile", controller.getEmployeeProfile);
 router.get("/employees/:id/profile/overview", controller.getEmployeeProfileOverview);
 router.get("/employees/:id/documents", controller.getEmployeeDocuments);

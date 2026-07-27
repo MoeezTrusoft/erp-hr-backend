@@ -2,12 +2,13 @@ import { runController } from "./_runner.js";
 import { getSelfProfile, updateSelfProfile, listSelfPayslips, listSelfLeaveBalances } from "../../controllers/self.controller.js";
 import { createLeaveRequest } from "../../controllers/leave.controller.js";
 import { checkIn, getEmployeeAttendance } from "../../controllers/attendance.controller.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 export const mcpGetSelfProfile = (user) => runController(getSelfProfile, { user });
 export const mcpGetSelfLeaveBalances = (user) => runController(listSelfLeaveBalances, { user });
 export const mcpGetSelfPayslips = (user) => runController(listSelfPayslips, { user });
 export const mcpGetSelfAttendance = (user) =>
-  runController(getEmployeeAttendance, { user, params: { id: String(user.employeeId || user.userId || "") } });
+  runController(getEmployeeAttendance, { user, params: { id: String(requireEmployeeActor(user)) } });
 
 export const mcpUpdateSelfProfile = (user, data) => runController(updateSelfProfile, { user, body: data });
 export const mcpCreateSelfLeaveRequest = (user, data) =>
@@ -15,7 +16,7 @@ export const mcpCreateSelfLeaveRequest = (user, data) =>
     user,
     body: {
       ...data,
-      employeeId: Number(user.employeeId || user.userId),
+      employeeId: requireEmployeeActor(user),
     },
   });
 export const mcpSelfCheckin = (user, data) =>
@@ -23,6 +24,6 @@ export const mcpSelfCheckin = (user, data) =>
     user,
     body: {
       ...data,
-      employeeId: Number(user.employeeId || user.userId),
+      employeeId: requireEmployeeActor(user),
     },
   });

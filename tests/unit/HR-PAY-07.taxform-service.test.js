@@ -110,17 +110,17 @@ describe('(a) per-recipient W-2 + 1099-NEC totals from finalized runs', () => {
         expect(w2.recipient.employeeId).toBe(100);
         expect(w2.recipient.tin).toBe(SSN_ADA);
         // taxable wages: 5000 + 5000 (the 500 reimbursement is non-taxable, excluded)
-        expect(w2.boxes.box1_wagesTipsOtherComp).toBe(10000);
+        expect(w2.boxes.box1_wagesTipsOtherComp).toBe('10000.0000');
         // federal income tax withheld: 800 + 900
-        expect(w2.boxes.box2_federalIncomeTaxWithheld).toBe(1700);
+        expect(w2.boxes.box2_federalIncomeTaxWithheld).toBe('1700.0000');
         // social security tax: 310 + 341
-        expect(w2.boxes.box4_socialSecurityTaxWithheld).toBe(651);
+        expect(w2.boxes.box4_socialSecurityTaxWithheld).toBe('651.0000');
         // medicare tax: 72 + 80
-        expect(w2.boxes.box6_medicareTaxWithheld).toBe(152);
+        expect(w2.boxes.box6_medicareTaxWithheld).toBe('152.0000');
         // state income tax: 0 + 200
-        expect(w2.boxes.box17_stateIncomeTax).toBe(200);
+        expect(w2.boxes.box17_stateIncomeTax).toBe('200.0000');
         // reconciliation gross is the full gross (incl. the non-taxable line)
-        expect(w2.reconciliation.grossPay).toBe(10500);
+        expect(w2.reconciliation.grossPay).toBe('10500.0000');
         expect(w2.reconciliation.payslipCount).toBe(2);
         expect(w2.reconciliation.runIds).toEqual([10, 20]);
     });
@@ -133,8 +133,8 @@ describe('(a) per-recipient W-2 + 1099-NEC totals from finalized runs', () => {
         expect(nec.formType).toBe('1099-NEC');
         expect(nec.recipient.employeeId).toBe(200);
         expect(nec.recipient.tin).toBe(EIN_BOB);
-        expect(nec.boxes.box1_nonemployeeCompensation).toBe(9000);
-        expect(nec.boxes.box4_federalIncomeTaxWithheld).toBe(0);
+        expect(nec.boxes.box1_nonemployeeCompensation).toBe('9000.0000');
+        expect(nec.boxes.box4_federalIncomeTaxWithheld).toBe('0.0000');
         // the contractor is NOT also a W-2 recipient
         expect(out.w2.some((w) => w.recipient.employeeId === 200)).toBe(false);
     });

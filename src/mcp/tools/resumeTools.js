@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -44,7 +45,7 @@ export function registerResumeTools(server) {
         employeeId,
         mediaId: resumeMediaId,
         tenantId: user.tenantId ?? null,
-        actorId: user.employeeId || user.userId,
+        actorId: requireEmployeeActor(user),
       });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_resume_employee_ingest")

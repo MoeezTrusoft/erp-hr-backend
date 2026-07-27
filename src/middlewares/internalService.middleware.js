@@ -34,6 +34,7 @@
 // Nothing in this module logs the raw token or the legacy secret value.
 
 import logger from '../lib/logger.js';
+import { NIL as NIL_UUID, validate as isUuid } from 'uuid';
 import { extractServiceToken, verifyServiceRequest } from '../lib/serviceJwt.js';
 import {
     recordInternalBoundary,
@@ -58,18 +59,27 @@ export function internalServiceGuard(req, res, next) {
             // overwrites the (now-null) header-derived value on req.user so all
             // downstream consumers (which read req.user.tenantId) are scoped by
             // the verified tenant.
-            // REQ-007: the tenant claim is an opaque RBAC Company.uuid STRING
-            // (no longer the integer companyId). Thread it through verbatim —
-            // NEVER Number()/parseInt() it. Null (role without company) stays
-            // null so downstream scoping remains fail-closed.
-            const verifiedTenant = req.internalService.tenantId;
+            // F-06 / ARCH-00 §2.1: interactive HTTP requires a non-empty UUID
+            // tenant. Tenantless execution is reserved for explicit SYSTEM jobs,
+            // never represented by a tenantless service JWT.
+            const rawTenant = req.internalService.tenantId;
+            const verifiedTenant = typeof rawTenant === 'string' ? rawTenant.trim() : '';
+            if (!isUuid(verifiedTenant) || verifiedTenant === NIL_UUID) {
+                recordInternalBoundary({ source: 'rejected', outcome: 'reject' });
+                return res.status(403).json({
+                    success: false,
+                    message: 'Tenant context is required',
+                    errors: [{ code: 'HR-0601', message: 'A valid tenant UUID is required' }],
+                    requestId: req.requestId,
+                });
+            }
             if (req.user) {
-                req.user.tenantId = verifiedTenant != null ? verifiedTenant : null;
+                req.user.tenantId = verifiedTenant;
             }
             // Fleet-standard landing spot: req.tenantId mirrors the verified
             // tenant so handlers/services can read one canonical field across
             // services (alongside the existing req.user.tenantId).
-            req.tenantId = verifiedTenant != null ? verifiedTenant : null;
+            req.tenantId = verifiedTenant;
             recordInternalBoundary({ source: 'service-jwt', outcome: 'accept' });
             recordServiceJwtAccept('hr');
             return next();

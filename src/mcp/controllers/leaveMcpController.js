@@ -47,7 +47,7 @@ const resolveLeavePolicyId = async (leaveType) => {
 // verified token; without it the Prisma FK write fails with an opaque error, so
 // assert it up-front and return a clear 400 instead.
 const assertActingEmployee = (user) => {
-  const employeeId = user?.employeeId ?? user?.userId;
+  const employeeId = user?.employeeId;
   if (employeeId == null || employeeId === "" || Number.isNaN(Number(employeeId))) {
     throw Object.assign(new Error("Acting employee context is required"), { status: 400 });
   }

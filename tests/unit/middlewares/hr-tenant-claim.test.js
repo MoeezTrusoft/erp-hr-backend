@@ -50,7 +50,7 @@ describe('T-P2.1 HR tenant resolution', () => {
     expect(typeof req.user.tenantId).toBe('string'); // never numeric-coerced
   });
 
-  test('a verified token with no tenant claim yields null tenant (no header leakage)', async () => {
+  test('F-06 rejects a verified token with no tenant claim instead of entering the null partition', async () => {
     const token = mintSvcJwt({}); // no tid
     const req = {
       headers: { 'x-service-authorization': `Bearer ${token}`, 'x-tenant-id': '999' },
@@ -61,7 +61,11 @@ describe('T-P2.1 HR tenant resolution', () => {
 
     await internalServiceGuard(req, res, next);
 
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user.tenantId).toBeNull(); // never the spoofed 999
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      errors: [expect.objectContaining({ code: 'HR-0601' })],
+    }));
+    expect(req.user.tenantId).toBeNull(); // spoofed header was never trusted
   });
 });

@@ -17,38 +17,80 @@ const RBAC_TIMEOUT = parseInt(process.env.RBAC_SERVICE_TIMEOUT || "10000", 10);
 
 const rbacApi = axios.create({ baseURL: RBAC_BASE_URL, timeout: RBAC_TIMEOUT });
 
+const CANONICAL_PERMISSION = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/;
+
+const verifiedAmbientIdentity = () => {
+  const store = mcpCtx.getStore();
+  if (!store?.actorVerified || !store.user) return null;
+  const user = store.user;
+  // A verified service principal is still not a user. Emitting user metadata
+  // without a signed user id recreates the F-01 service-only JWT/header seam.
+  if (user.userId == null && user.employeeId == null) return null;
+  const rawPermissions = Array.isArray(store.permissions)
+    ? store.permissions
+    : typeof store.permissions === "string"
+      ? store.permissions.split(/[\s,]+/)
+      : [];
+  const permissions = [...new Set(rawPermissions.filter((permission) =>
+    typeof permission === "string" && CANONICAL_PERMISSION.test(permission)
+  ))];
+  return {
+    user: { ...user, roles: Array.isArray(user.roles) ? user.roles : [] },
+    permissions,
+  };
+};
+
+const signedActorClaims = () => {
+  const identity = verifiedAmbientIdentity();
+  if (!identity) return {};
+  const { user, permissions } = identity;
+  return {
+    ...(user.userId != null ? { userId: String(user.userId) } : {}),
+    ...(user.email ? { email: user.email } : {}),
+    ...(user.employeeId != null ? { employeeId: String(user.employeeId) } : {}),
+    roles: Array.isArray(user.roles) ? user.roles : [],
+    scope: permissions.join(" "),
+    permissions,
+  };
+};
+
 const withInternalAuth = (headers = {}) => {
   const merged = { ...headers, ...ambientTenantHeader(), "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
-  const token = signServiceJwtEdDSA(); // RBAC verifies HR on the EdDSA plane (carries tid)
+  // F-01/F-02: sign the same verified actor represented by compatibility
+  // headers. The tenant remains supplied by signServiceJwtEdDSA's ambient tid.
+  const token = signServiceJwtEdDSA(signedActorClaims());
   if (token) merged["X-Service-Authorization"] = `Bearer ${token}`;
   return merged;
 };
 
-// Rebuild the acting user's gateway-identity headers from the ambient MCP/REST
-// context (mcpCtx), so a HR→RBAC call carries the SAME principal HR was invoked
-// for. RBAC authorizes POST /api/employee against this user (gatewayIdentity →
-// assertPermission needs rbac:create); forwarding these is what lets RBAC see
-// the REAL operator, not HR's service identity. The values mirror exactly what
-// buildContextFromHeaders read off the inbound request (X-User-Id /
-// X-User-Permissions / X-User-Roles / X-Is-Admin), so nothing is escalated here
-// — a user lacking rbac:create still gets a 403 from RBAC.
+// Compatibility headers are rebuilt from the same verified ambient actor signed
+// into the service JWT. Raw inbound/request-supplied identity is never forwarded.
 const actorIdentityHeaders = () => {
-  const store = mcpCtx.getStore();
-  const user = store?.user;
-  if (!user) return {};
+  const identity = verifiedAmbientIdentity();
+  if (!identity) return {};
+  const { user, permissions } = identity;
   const headers = {};
   if (user.userId != null) headers["X-User-Id"] = String(user.userId);
   if (user.email) headers["X-User-Email"] = String(user.email);
   if (user.employeeId != null) headers["X-Employee-Id"] = String(user.employeeId);
-  // Roles + permissions travel as JSON exactly as RBAC's gatewayIdentity parses
-  // them (parseJsonHeader). permissions come from the top-level ctx.permissions
-  // blob (the entitlement map the gateway forwarded), roles from user.roles.
-  if (store.permissions !== undefined) headers["X-User-Permissions"] = JSON.stringify(store.permissions ?? {});
+  // Compatibility metadata mirrors the normalized claims signed above.
+  headers["X-User-Permissions"] = JSON.stringify(permissions);
   if (user.roles !== undefined) headers["X-User-Roles"] = JSON.stringify(user.roles ?? []);
   // isAdmin is fail-closed to false in HR's verified context; forward verbatim.
   headers["X-Is-Admin"] = user.isAdmin ? "true" : "false";
   return headers;
 };
+
+const withoutIdentityHeaders = (headers = {}) => Object.fromEntries(
+  Object.entries(headers).filter(([name]) => ![
+    "x-user-id",
+    "x-user-email",
+    "x-employee-id",
+    "x-user-roles",
+    "x-user-permissions",
+    "x-is-admin",
+  ].includes(name.toLowerCase()))
+);
 
 // Parse a Streamable-HTTP MCP reply body into the JSON-RPC result object. The
 // transport answers with either a plain JSON envelope (enableJsonResponse) OR a
@@ -97,16 +139,17 @@ const parseMcpBody = (body) => {
  * @param {object} payload  the rbac_employee_create arguments: first_name,
  *   last_name, job_title, email, phone, gender, hire_date, status, roles,
  *   password, hrEmployeeId, mediaId.
- * @param {object} [actorHeaders]  extra headers to merge (rarely needed).
+ * @param {object} [actorHeaders] extra non-identity headers; attempted X-User-*
+ *   overrides are discarded so headers cannot diverge from signed claims.
  * @returns {Promise<{ ok: true, user: object } | { ok: false, status?: number, error: string, code?: string }>}
  *   — a tool/authz error (403 forbidden, duplicate email/phone, invalid roleId)
  *   is RETURNED (never thrown) with its message; a network/transport error is
  *   also returned as { ok:false, error } (fail-soft).
  */
-export async function createRbacSystemAccount(payload, actorHeaders = {}) {
+export async function createRbacSystemAccount(payload, actorHeaders = {}, options = {}) {
   const rpc = {
     jsonrpc: "2.0",
-    id: `hr-syscacct-${Date.now()}`,
+    id: options.idempotencyKey || `hr-syscacct-${Date.now()}`,
     method: "tools/call",
     params: { name: "rbac_employee_create", arguments: payload },
   };
@@ -115,11 +158,17 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}) {
       url: "/mcp",
       method: "POST",
       headers: withInternalAuth({
+        ...withoutIdentityHeaders(actorHeaders),
         ...actorIdentityHeaders(),
-        ...actorHeaders,
         "Content-Type": "application/json",
         // MCP StreamableHTTP transport REQUIRES the SSE accept alongside JSON.
         Accept: "application/json, text/event-stream",
+        // F-03: the RBAC consumer must reserve this stable key and reject a
+        // mismatched fingerprint. Additive headers are safe before consumer rollout.
+        ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
+        ...(options.payloadFingerprint
+          ? { "X-Idempotency-Fingerprint": options.payloadFingerprint }
+          : {}),
       }),
       data: rpc,
       // The transport may answer as an SSE frame; take the raw text and parse

@@ -7,8 +7,8 @@
 //
 // Contract:
 //   withTenant(tenantId, where?)  → folds `tenantId` into the where-clause,
-//        fail-closed: a null/undefined tenant matches ONLY null-tenant rows
-//        (legacy/unbackfilled), never another tenant's data.
+//        null/undefined can target legacy rows only for migration/backfill code;
+//        F-06 rejects such interactive requests before service execution.
 //   requireTenant(tenantId)       → fail-closed assertion: a write/sensitive
 //        path that MUST run inside a tenant throws when none is present, so a
 //        missing tenant can never silently span tenants.
@@ -32,7 +32,7 @@ describe('withTenant', () => {
         });
     });
 
-    it('is fail-closed: a null tenant scopes to null-tenant rows only', () => {
+    it('preserves the explicit migration/backfill null-row predicate', () => {
         expect(withTenant(null, { id: 1 })).toEqual({ id: 1, tenantId: null });
         expect(withTenant(undefined, { id: 1 })).toEqual({ id: 1, tenantId: null });
     });
@@ -52,7 +52,7 @@ describe('requireTenant', () => {
         expect(requireTenant(TENANT_A)).toBe(TENANT_A);
     });
 
-    it('throws fail-closed when the tenant is missing (null/undefined/empty)', () => {
+    it('throws when the tenant is missing (null/undefined/empty)', () => {
         expect(() => requireTenant(null)).toThrow(/tenant/i);
         expect(() => requireTenant(undefined)).toThrow(/tenant/i);
         expect(() => requireTenant('')).toThrow(/tenant/i);
@@ -64,7 +64,7 @@ describe('tenantData', () => {
         expect(tenantData(TENANT_A, { name: 'x' })).toEqual({ name: 'x', tenantId: TENANT_A });
     });
 
-    it('fail-closed stamps null for a missing tenant (never another tenant)', () => {
+    it('preserves explicit migration/backfill creation in the null partition', () => {
         expect(tenantData(null, { name: 'x' })).toEqual({ name: 'x', tenantId: null });
     });
 

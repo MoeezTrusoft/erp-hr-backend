@@ -149,7 +149,7 @@ export const generateBankDisbursementFile = async (
     };
     const content = descriptor.build(rows, opts);
 
-    const totalMinor = rows.reduce((acc, r) => acc + r.amountMinor, 0);
+    const totalMinor = money.sum(rows.map((r) => r.amountMinor));
     const filename = `disbursement-run-${runId}.${descriptor.ext}`;
 
     // STRUCTURED LOG — counts + totals + MASKED accounts only. The full account
@@ -161,7 +161,7 @@ export const generateBankDisbursementFile = async (
             tenantId,
             format: fmt,
             rowCount: rows.length,
-            totalMinor,
+            totalMinor: money.minorToWire(totalMinor),
             accountsMasked: rows.map((r) => maskAccount(r.accountNumber)),
         },
         'bank disbursement file generated',
@@ -185,7 +185,7 @@ export const generateBankDisbursementFile = async (
         summary: {
             runId,
             rowCount: rows.length,
-            totalMinor,
+            totalMinor: money.minorToWire(totalMinor),
             currency: run.currencyCode || 'USD',
         },
     };

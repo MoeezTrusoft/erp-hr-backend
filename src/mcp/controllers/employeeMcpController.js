@@ -18,6 +18,7 @@ import * as hrContractService from "../../services/hrContract.service.js";
 import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
 import { getEmployeeProfileTab } from "../../services/employeeProfileTabs.service.js";
 import logger from "../../lib/logger.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -64,8 +65,8 @@ async function runController(controller, { user = {}, params = {}, query = {}, b
 
 // BLOCKER-1 / C.2 — thread the VERIFIED tenant (user.tenantId — the RBAC
 // Company.uuid from the service-JWT claim, NEVER a request header) into every
-// hrContract read so a tool can only ever see its own tenant's rows. `?? null`
-// keeps it fail-closed: a missing tenant scopes to null-tenant, never widens.
+// hrContract read so a tool can only ever see its own tenant's rows. F-06 rejects
+// tenantless interactive calls before a tool reaches this adapter.
 export async function mcpGetEmployees(user, args = {}) {
   return hrContractService.listEmployees(args, user?.tenantId ?? null);
 }
@@ -122,10 +123,12 @@ export async function mcpCreateEmployee(user, data, ctx = {}) {
   // service-JWT claim — never the request body) and the request correlationId so
   // createEmployee writes tenant_id and emits the hr.employee.lifecycle.v1 event
   // in-tx. actorId stays the acting principal.
-  return hrContractService.createEmployee(data, user?.employeeId || user?.userId, {
+  const actorEmployeeId = requireEmployeeActor(user);
+  return hrContractService.createEmployee(data, actorEmployeeId, {
     tenantId: user?.tenantId ?? null,
     correlationId: ctx.correlationId,
-    actorId: user?.employeeId || user?.userId,
+    actorId: actorEmployeeId,
+    actor: ctx.actor,
   });
 }
 
@@ -133,7 +136,7 @@ export async function mcpUpdateEmployee(user, id, data) {
   // API-2 — pull the optional optimistic-concurrency guard out of the tool args
   // and thread it to the service as ctx.expectedVersion (opt-in If-Match).
   const { expectedVersion, ...rest } = data ?? {};
-  return hrContractService.updateEmployee(id, rest, user?.employeeId || user?.userId, { expectedVersion });
+  return hrContractService.updateEmployee(id, rest, requireEmployeeActor(user), { expectedVersion });
 }
 
 export async function mcpDeleteEmployee(user, id) {
@@ -141,15 +144,15 @@ export async function mcpDeleteEmployee(user, id) {
 }
 
 export async function mcpUploadEmployeeProfilePhoto(user, id, data) {
-  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, user?.employeeId || user?.userId);
+  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, requireEmployeeActor(user));
 }
 
 export async function mcpUploadEmployeeCoverPhoto(user, id, data) {
-  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, user?.employeeId || user?.userId);
+  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, requireEmployeeActor(user));
 }
 
 export async function mcpCreateEmployeeDocument(user, employeeId, data) {
-  return hrContractService.createEmployeeDocument(employeeId, data, null, user?.employeeId || user?.userId);
+  return hrContractService.createEmployeeDocument(employeeId, data, null, requireEmployeeActor(user));
 }
 
 export async function mcpGetPositions(user) {
@@ -165,7 +168,7 @@ export async function mcpCreatePosition(user, data) {
   // buildContextFromHeaders from the gateway-forwarded X-Tenant-Id header)
   // so the created Position row is correctly tenant-scoped.
   const tenantId = user?.tenantId ?? null;
-  const actorId = user?.employeeId || user?.userId;
+  const actorId = requireEmployeeActor(user);
   return hrContractService.createPosition(data, actorId, tenantId);
 }
 

@@ -1,14 +1,19 @@
 import asyncHandler from 'express-async-handler';
 import * as workScheduleService from '../services/workScheduleService.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
 
 // @desc    Get work schedules
 // @route   GET /api/time-attendance/work-schedules
 // @access  Private
 const getWorkSchedules = asyncHandler(async (req, res) => {
     const { employeeId } = req.query;
+    const targetEmployeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : employeeId || requireEmployeeActor(req.user);
 
     const schedules = await workScheduleService.getWorkSchedules({
-        employeeId: employeeId || req.user.id
+        employeeId: targetEmployeeId,
+        tenantId: req.user?.tenantId
     });
 
     res.json({
@@ -23,10 +28,13 @@ const getWorkSchedules = asyncHandler(async (req, res) => {
 const createWorkSchedule = asyncHandler(async (req, res) => {
     // Honor an explicit employeeId in the body (HR admin creating a schedule FOR
     // an employee); fall back to the caller's session employee-id header.
-    const employeeId = req.body?.employeeId || req.headers['employee-id'];
+    const employeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : req.body?.employeeId || requireEmployeeActor(req.user);
     const scheduleData = {
         ...req.body,
-        employeeId: employeeId
+        employeeId,
+        tenantId: req.user?.tenantId
     };
 
     const schedule = await workScheduleService.createWorkSchedule(scheduleData);
@@ -41,7 +49,7 @@ const createWorkSchedule = asyncHandler(async (req, res) => {
 // @route   PUT /api/time-attendance/work-schedules/:id
 // @access  Private
 const updateWorkSchedule = asyncHandler(async (req, res) => {
-    const updatedBy = req.headers['employee-id'];
+    const updatedBy = requireEmployeeActor(req.user);
     const schedule = await workScheduleService.updateWorkSchedule(req.params.id, req.body,updatedBy);
 
     res.json({
@@ -54,7 +62,7 @@ const updateWorkSchedule = asyncHandler(async (req, res) => {
 // @route   DELETE /api/time-attendance/work-schedules/:id
 // @access  Private
 const deleteWorkSchedule = asyncHandler(async (req, res) => {
-    const deletedBy = req.headers['employee-id'];
+    const deletedBy = requireEmployeeActor(req.user);
     await workScheduleService.deleteWorkSchedule(req.params.id, deletedBy);
 
     res.json({
