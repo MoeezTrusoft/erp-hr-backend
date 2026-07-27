@@ -1,11 +1,12 @@
 // src/mcp/tools/deductionTools.js — Deductions screen MCP facade
 //
-// Two tools powering the Deductions screen:
+// Three tools powering the Deductions screen:
 //   hr_deduction_kpi   — KPI summary (active components, active loans, tax withheld, garnishments)
-//   hr_deduction_list  — Table rows (code, component, type, formula, frequency, employee, status)
+//   hr_deduction_get   — Single component by ID
+//   hr_deduction_list  — Table rows (code, component, type, formula, frequency, status)
 //
-// Follows the benefitTools.js / loanTools.js pattern: thin MCP wrappers that
-// query Prisma directly (lighter than a full service for read-only aggregates).
+// SalaryComponent is a config model (no employee relation). Employee-level
+// deductions live in PayrollAssignment (via deductionTypeId).
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -33,19 +34,14 @@ export function registerDeductionTools(server) {
       const tenantId = user.tenantId;
       const tFilter = tenantId ? { tenantId } : {};
 
-      const now = new Date();
-
       const [activeComponents, activeLoans, taxWithheld, garnishments] =
         await Promise.all([
-          // Active deduction salary components
           prisma.salaryComponent.count({
             where: { ...tFilter, type: "DEDUCTION", active: true },
           }),
-          // Active loans (outstanding balance > 0)
           prisma.loan.count({
             where: { ...tFilter, status: "ACTIVE" },
           }),
-          // Tax withheld: sum of payslip deductions whose type name contains "tax"
           prisma.payrollDeduction.aggregate({
             where: {
               ...tFilter,
@@ -53,7 +49,6 @@ export function registerDeductionTools(server) {
             },
             _sum: { amount: true },
           }),
-          // Garnishments: sum of payslip deductions whose type name contains "garnish"
           prisma.payrollDeduction.aggregate({
             where: {
               ...tFilter,
@@ -80,8 +75,8 @@ export function registerDeductionTools(server) {
   // ── GET ───────────────────────────────────────────────────────────────────
   server.tool(
     "hr_deduction_get",
-    "Get a single deduction component by ID with full details and assignment history",
-    { id: z.string().min(1).describe("Salary component ID (number)") },
+    "Get a single deduction component by ID with full details",
+    { id: z.string().min(1).describe("Salary component ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", DEDUCTIONS_KEY, user.isAdmin);
@@ -92,20 +87,6 @@ export function registerDeductionTools(server) {
 
       const component = await prisma.salaryComponent.findFirst({
         where: { id: Number(id), ...tFilter },
-        include: {
-          assignments: {
-            include: {
-              employee: {
-                select: {
-                  id: true,
-                  first_name: true,
-                  last_name: true,
-                  email: true,
-                },
-              },
-            },
-          },
-        },
       });
 
       if (!component) throw Object.assign(new Error("Deduction component not found"), { status: 404 });
@@ -121,18 +102,12 @@ export function registerDeductionTools(server) {
             computation: component.computation,
             formula: component.formula,
             value: component.value,
+            taxable: component.taxable,
             active: component.active,
             sortOrder: component.sortOrder,
+            status: component.status,
             createdAt: component.createdAt,
             updatedAt: component.updatedAt,
-            assignments: component.assignments.map((a) => ({
-              employeeId: a.employeeId,
-              employee: a.employee
-                ? `${a.employee.first_name || ""} ${a.employee.last_name || ""}`.trim()
-                : null,
-              amount: a.amount,
-              isActive: a.isActive,
-            })),
           }),
         }],
       };
@@ -142,7 +117,7 @@ export function registerDeductionTools(server) {
   // ── LIST ──────────────────────────────────────────────────────────────────
   server.tool(
     "hr_deduction_list",
-    "List deduction components with code, component, type, formula, frequency, employee, and status",
+    "List deduction components with code, component, type, formula, and status",
     {
       page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
       pageSize: z.coerce.number().int().positive().optional().describe("Page size (default 20, max 100)"),
@@ -170,25 +145,6 @@ export function registerDeductionTools(server) {
       const [components, total] = await Promise.all([
         prisma.salaryComponent.findMany({
           where,
-          include: {
-            assignments: {
-              include: {
-                employee: {
-                  select: {
-                    id: true,
-                    first_name: true,
-                    last_name: true,
-                    email: true,
-                    employmentTerms: {
-                      orderBy: { effectiveFrom: "desc" },
-                      take: 1,
-                      select: { payFrequency: true },
-                    },
-                  },
-                },
-              },
-            },
-          },
           orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
           skip,
           take: pageSize,
@@ -196,52 +152,23 @@ export function registerDeductionTools(server) {
         prisma.salaryComponent.count({ where }),
       ]);
 
-      // Flatten: each assignment becomes a row; components with no assignments
-      // still show once (with null employee).
-      const rows = [];
-      for (const component of components) {
-        if (component.assignments.length === 0) {
-          rows.push({
-            code: component.code,
-            component: component.name,
-            type: component.type,
-            formula: component.computation === "FORMULA"
-              ? component.formula
-              : component.computation === "PERCENTAGE"
-                ? `${component.value}%`
-                : component.value != null
-                  ? String(component.value)
-                  : null,
-            frequency: null,
-            employee: null,
-            employeeId: null,
-            status: component.active ? "ACTIVE" : "INACTIVE",
-          });
-        } else {
-          for (const a of component.assignments) {
-            rows.push({
-              code: component.code,
-              component: component.name,
-              type: component.type,
-              formula: component.computation === "FORMULA"
-                ? component.formula
-                : component.computation === "PERCENTAGE"
-                  ? `${component.value}%`
-                  : a.amount != null
-                    ? String(a.amount)
-                    : component.value != null
-                      ? String(component.value)
-                      : null,
-              frequency: a.employee?.employmentTerms?.[0]?.payFrequency || null,
-              employee: a.employee
-                ? `${a.employee.first_name || ""} ${a.employee.last_name || ""}`.trim()
-                : null,
-              employeeId: a.employeeId,
-              status: a.isActive ? "ACTIVE" : "INACTIVE",
-            });
-          }
-        }
-      }
+      const rows = components.map((c) => ({
+        id: c.id,
+        code: c.code,
+        component: c.name,
+        type: c.type,
+        computation: c.computation,
+        formula: c.computation === "FORMULA"
+          ? c.formula
+          : c.computation === "PERCENTAGE"
+            ? `${c.value}%`
+            : c.value != null
+              ? String(c.value)
+              : null,
+        taxable: c.taxable,
+        active: c.active,
+        status: c.status,
+      }));
 
       return {
         content: [{

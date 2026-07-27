@@ -4,7 +4,6 @@
 // DB-free: Prisma is mocked; tool→permission gate + dispatch is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
-// Mock Prisma — returns canned data for each query
 const mockPrisma = {
   salaryComponent: {
     count: jest.fn(async () => 5),
@@ -61,13 +60,12 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
   beforeEach(() => jest.clearAllMocks());
 
   it('happy path: dispatches and returns result', async () => {
-    // Mock findFirst to return a component for hr_deduction_get
     if (name === 'hr_deduction_get') {
       mockPrisma.salaryComponent.findFirst.mockResolvedValue({
         id: 1, code: 'TAX-FED', name: 'Federal Tax', type: 'DEDUCTION',
-        computation: 'FIXED', formula: null, value: 1500, active: true,
-        sortOrder: 0, createdAt: new Date(), updatedAt: new Date(),
-        assignments: [],
+        computation: 'FIXED', formula: null, value: 1500, taxable: true,
+        active: true, sortOrder: 0, status: 'PUBLISHED',
+        createdAt: new Date(), updatedAt: new Date(),
       });
     }
     const res = await call(name, args, { permissions: grant });
@@ -101,42 +99,63 @@ describe('DEDUCTION-SCENARIOS — hr_deduction_get edge cases', () => {
   it('returns component data when found', async () => {
     mockPrisma.salaryComponent.findFirst.mockResolvedValue({
       id: 1, code: 'TAX-FED', name: 'Federal Tax', type: 'DEDUCTION',
-      computation: 'FIXED', formula: null, value: 1500, active: true,
-      sortOrder: 0, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
-      assignments: [
-        { employeeId: 42, employee: { id: 42, first_name: 'John', last_name: 'Doe', email: 'john@test.com' }, amount: 1500, isActive: true },
-      ],
+      computation: 'FIXED', formula: null, value: 1500, taxable: true,
+      active: true, sortOrder: 0, status: 'PUBLISHED',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
     });
     const res = await call('hr_deduction_get', { id: '1' }, { permissions: { 'hr:payroll': ['VIEW'] } });
     const data = parse(res);
     expect(data.code).toBe('TAX-FED');
-    expect(data.assignments).toHaveLength(1);
-    expect(data.assignments[0].employee).toBe('John Doe');
+    expect(data.computation).toBe('FIXED');
+    expect(data.value).toBe(1500);
   });
 });
 
 describe('DEDUCTION-SCENARIOS — hr_deduction_list edge cases', () => {
   it('returns paginated results', async () => {
     mockPrisma.salaryComponent.findMany.mockResolvedValue([
-      { code: 'TAX-FED', name: 'Federal Tax', type: 'DEDUCTION', computation: 'FIXED', formula: null, value: 1500, active: true, assignments: [] },
+      { id: 1, code: 'TAX-FED', name: 'Federal Tax', type: 'DEDUCTION', computation: 'FIXED', formula: null, value: 1500, taxable: true, active: true, sortOrder: 0, status: 'PUBLISHED' },
     ]);
     mockPrisma.salaryComponent.count.mockResolvedValue(1);
     const res = await call('hr_deduction_list', { page: 1, pageSize: 10 }, { permissions: { 'hr:payroll': ['VIEW'] } });
     const data = parse(res);
-    expect(data.items).toBeDefined();
+    expect(data.items).toHaveLength(1);
     expect(data.total).toBe(1);
     expect(data.page).toBe(1);
+    expect(data.items[0].formula).toBe('1500');
+  });
+
+  it('formats PERCENTAGE computation correctly', async () => {
+    mockPrisma.salaryComponent.findMany.mockResolvedValue([
+      { id: 2, code: 'TAX-STATE', name: 'State Tax', type: 'DEDUCTION', computation: 'PERCENTAGE', formula: null, value: 7.5, taxable: true, active: true, sortOrder: 0, status: 'PUBLISHED' },
+    ]);
+    mockPrisma.salaryComponent.count.mockResolvedValue(1);
+    const res = await call('hr_deduction_list', {}, { permissions: { 'hr:payroll': ['VIEW'] } });
+    const data = parse(res);
+    expect(data.items[0].formula).toBe('7.5%');
+  });
+
+  it('formats FORMULA computation correctly', async () => {
+    mockPrisma.salaryComponent.findMany.mockResolvedValue([
+      { id: 3, code: 'DED-HEALTH', name: 'Health Insurance', type: 'DEDUCTION', computation: 'FORMULA', formula: 'base * 0.05', value: null, taxable: false, active: true, sortOrder: 0, status: 'PUBLISHED' },
+    ]);
+    mockPrisma.salaryComponent.count.mockResolvedValue(1);
+    const res = await call('hr_deduction_list', {}, { permissions: { 'hr:payroll': ['VIEW'] } });
+    const data = parse(res);
+    expect(data.items[0].formula).toBe('base * 0.05');
   });
 });
 
 describe('DEDUCTION-SCENARIOS — hr_deduction_kpi', () => {
-  it('returns KPI summary', async () => {
+  it('returns KPI summary with all fields', async () => {
     const res = await call('hr_deduction_kpi', {}, { permissions: { 'hr:payroll': ['VIEW'] } });
     const data = parse(res);
     expect(data).toHaveProperty('activeComponents');
     expect(data).toHaveProperty('activeLoans');
     expect(data).toHaveProperty('taxWithheld');
     expect(data).toHaveProperty('garnishments');
+    expect(typeof data.activeComponents).toBe('number');
+    expect(typeof data.activeLoans).toBe('number');
   });
 });
 
