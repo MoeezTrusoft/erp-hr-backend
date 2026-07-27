@@ -77,6 +77,68 @@ export function registerDeductionTools(server) {
     }, "hr_deduction_kpi")
   );
 
+  // ── GET ───────────────────────────────────────────────────────────────────
+  server.tool(
+    "hr_deduction_get",
+    "Get a single deduction component by ID with full details and assignment history",
+    { id: z.string().min(1).describe("Salary component ID (number)") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", DEDUCTIONS_KEY, user.isAdmin);
+
+      const { default: prisma } = await import("../../lib/prisma.js");
+      const tenantId = user.tenantId;
+      const tFilter = tenantId ? { tenantId } : {};
+
+      const component = await prisma.salaryComponent.findFirst({
+        where: { id: Number(id), ...tFilter },
+        include: {
+          assignments: {
+            include: {
+              employee: {
+                select: {
+                  id: true,
+                  first_name: true,
+                  last_name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!component) throw Object.assign(new Error("Deduction component not found"), { status: 404 });
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            id: component.id,
+            code: component.code,
+            name: component.name,
+            type: component.type,
+            computation: component.computation,
+            formula: component.formula,
+            value: component.value,
+            active: component.active,
+            sortOrder: component.sortOrder,
+            createdAt: component.createdAt,
+            updatedAt: component.updatedAt,
+            assignments: component.assignments.map((a) => ({
+              employeeId: a.employeeId,
+              employee: a.employee
+                ? `${a.employee.first_name || ""} ${a.employee.last_name || ""}`.trim()
+                : null,
+              amount: a.amount,
+              isActive: a.isActive,
+            })),
+          }),
+        }],
+      };
+    }, "hr_deduction_get")
+  );
+
   // ── LIST ──────────────────────────────────────────────────────────────────
   server.tool(
     "hr_deduction_list",
