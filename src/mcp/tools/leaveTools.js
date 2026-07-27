@@ -20,6 +20,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
+import prisma from "../../lib/prisma.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -273,6 +274,30 @@ export function registerLeaveTools(server) {
       assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
       const data = await mcpUpdateLeaveBalance(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_leave_balance_delete",
+    "Delete a leave balance record for an employee",
+    {
+      employeeId: z.string().min(1).describe("Employee id (Employee.id)"),
+      leavePolicyId: z
+        .union([z.string(), z.number()])
+        .describe("Leave policy id (LeavePolicy.id)"),
+    },
+    withToolError(async ({ employeeId, leavePolicyId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:leave", user.isAdmin);
+      await prisma.leaveBalance.delete({
+        where: {
+          employeeId_leavePolicyId: {
+            employeeId: Number(employeeId),
+            leavePolicyId: Number(leavePolicyId),
+          },
+        },
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
     })
   );
 

@@ -10,7 +10,7 @@
 // the write goes through tenantTransaction so it passes FORCE-RLS. pino only.
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { scopedData } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 
 // Schema-level defaults, surfaced as the shape returned before a tenant has
@@ -66,7 +66,7 @@ function coerceField(key, value) {
 }
 
 export async function getCalendar({ tenantId } = {}) {
-    const row = await prisma.payrollCalendar.findFirst({ where: scopedWhere(tenantId, {}) });
+    const row = await prisma.payrollCalendar.findUnique({ where: { tenantId } });
     return row || { ...DEFAULT_CALENDAR };
 }
 
@@ -80,20 +80,13 @@ export async function upsertCalendar({ tenantId, ...fields } = {}) {
     data.status = "DRAFT";
 
     return tenantTransaction(prisma, async (tx) => {
-        const existing = await tx.payrollCalendar.findFirst({ where: scopedWhere(tenantId, {}) });
-        if (existing) {
-            const updated = await tx.payrollCalendar.update({
-                where: { id: existing.id },
-                data: { ...data, version: (existing.version || 0) + 1 },
-            });
-            logger.info({ id: updated.id, tenantId, version: updated.version }, "payroll calendar updated");
-            return updated;
-        }
-        const created = await tx.payrollCalendar.create({
-            data: scopedData(tenantId, { ...data, version: 1 }),
+        const row = await tx.payrollCalendar.upsert({
+            where: { tenantId },
+            update: { ...data, version: { increment: 1 } },
+            create: scopedData(tenantId, { ...data, version: 1 }),
         });
-        logger.info({ id: created.id, tenantId }, "payroll calendar created");
-        return created;
+        logger.info({ id: row.id, tenantId, version: row.version }, "payroll calendar upserted");
+        return row;
     });
 }
 
@@ -165,7 +158,7 @@ export function resolvePayDate({ tenantId, year, month, calendar } = {}) {
  * cutoff is configured the window is never locked (returns false).
  */
 export async function isAttendanceLocked({ tenantId, at } = {}) {
-    const row = await prisma.payrollCalendar.findFirst({ where: scopedWhere(tenantId, {}) });
+    const row = await prisma.payrollCalendar.findUnique({ where: { tenantId } });
     if (!row || !row.attendanceCutoff) return false;
     const now = at ? new Date(at) : new Date();
     if (Number.isNaN(now.getTime())) return false;

@@ -28,7 +28,7 @@ export const createCandidate = async ({
 
       // 🔍 1. Validate if email already exists (before transaction)
     const existing = await prisma.candidate.findUnique({
-        where: { email }
+        where: { tenantId_email: { tenantId, email } }
     });
 
     if (existing) {

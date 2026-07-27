@@ -6,9 +6,9 @@
 // tenant B can never read/mutate tenant A's plans or enrollments; a cross-tenant
 // reference resolves to not-found, never another tenant's row.
 //
-// MONEY: employer/employee contributions and the employee's elected amount are
-// persisted in INTEGER MINOR UNITS (cents) via src/lib/money.js, and converted
-// back to major-unit Numbers at the API boundary (serialize helpers below).
+// MONEY: this legacy, non-payroll-core model persists bounded Prisma Int cents.
+// Its Number wire shape remains unchanged; F-12 exact Decimal persistence is
+// scoped to the payroll core models and must not silently alter this contract.
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { fromMajor, toMajor } from "../lib/money.js";
@@ -20,11 +20,11 @@ const err = (code, message, statusCode = 400) =>
 
 // Major-unit Number → integer minor units (null/undefined passes through).
 const toMinor = (major) =>
-  major === null || major === undefined || major === "" ? undefined : fromMajor(Number(major));
+  major === null || major === undefined || major === "" ? undefined : Number(fromMajor(String(major)));
 
 // Integer minor units → major-unit Number (null/undefined passes through).
 const toMajorOrNull = (minor) =>
-  minor === null || minor === undefined ? null : toMajor(minor);
+  minor === null || minor === undefined ? null : Number(toMajor(minor));
 
 // Boundary serializers — never leak the *Minor columns to the API.
 const serializePlan = (p) =>

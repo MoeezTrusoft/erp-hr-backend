@@ -272,7 +272,7 @@ describe('REQ-007 — tenant is an opaque uuid STRING (no int coercion)', () => 
         expect(hasTenantPredicate(prismaMock.payrollRun.findFirst.mock.calls[0][0].where, TENANT_A)).toBe(true);
     });
 
-    it('null tenant is fail-closed (matches only null-tenant rows, never coerced)', async () => {
+    it('preserves an explicit migration/backfill query for legacy null-tenant rows', async () => {
         prismaMock.payrollRun.findFirst.mockResolvedValue(null);
 
         await payroll.getPayrollRunById(10, null);

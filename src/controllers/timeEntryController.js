@@ -1,15 +1,20 @@
 import asyncHandler from 'express-async-handler';
 import * as timeEntryService from '../services/timeEntryService.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
 
 // @desc    Get time entries for employee
 // @route   GET /api/time-attendance/entries
 // @access  Private
 export const getTimeEntries = asyncHandler(async (req, res) => {
     const { startDate, endDate, employeeId } = req.query;
+    const targetEmployeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : employeeId || requireEmployeeActor(req.user);
     const entries = await timeEntryService.getTimeEntries({
-        employeeId: employeeId || req.user.id,
+        employeeId: targetEmployeeId,
         startDate,
-        endDate
+        endDate,
+        tenantId: req.user?.tenantId
     });
 
     res.json({
@@ -26,7 +31,9 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
     // On-behalf create: an explicit body.employeeId (manager/HR acting for another
     // employee, gated upstream by hr:attendance CREATE) wins; otherwise fall back
     // to the caller's own employee id from the session header (self-service).
-    const employeeId = req.body.employeeId || req.headers['employee-id'];
+    const employeeId = req.user?.role === 'EMPLOYEE'
+        ? requireEmployeeActor(req.user)
+        : req.body.employeeId || requireEmployeeActor(req.user);
     const entryData = {
         ...req.body,
         employeeId: employeeId,
@@ -45,8 +52,8 @@ export const createTimeEntry = asyncHandler(async (req, res) => {
 // @route   PUT /api/time-attendance/entries/:id
 // @access  Private
 export const updateTimeEntry = asyncHandler(async (req, res) => {
-   const  userId = req.headers['employee-id'];
-    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, userId, req.user?.tenantId, req.user?.isAdmin);
+    const employeeId = requireEmployeeActor(req.user);
+    const entry = await timeEntryService.updateTimeEntry(req.params.id, req.body, employeeId, req.user?.tenantId, req.user?.isAdmin);
 
     res.json({
         success: true,
@@ -58,8 +65,8 @@ export const updateTimeEntry = asyncHandler(async (req, res) => {
 // @route   DELETE /api/time-attendance/entries/:id
 // @access  Private
 export const deleteTimeEntry = asyncHandler(async (req, res) => {
-    const userId = req.headers['employee-id'];
-    await timeEntryService.deleteTimeEntry(req.params.id, userId, req.user?.tenantId, req.user?.isAdmin);
+    const employeeId = requireEmployeeActor(req.user);
+    await timeEntryService.deleteTimeEntry(req.params.id, employeeId, req.user?.tenantId, req.user?.isAdmin);
 
     res.json({
         success: true,
@@ -72,7 +79,7 @@ export const deleteTimeEntry = asyncHandler(async (req, res) => {
 // @access  Private
 export const clockIn = asyncHandler(async (req, res) => {
 
-    const employeeId = req.headers['employee-id'];
+    const employeeId = requireEmployeeActor(req.user);
     const { location, note, sourceId } = req.body;
 
     const entry = await timeEntryService.clockIn({
@@ -93,7 +100,7 @@ export const clockIn = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/clock-out
 // @access  Private
 export const clockOut = asyncHandler(async (req, res) => {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = requireEmployeeActor(req.user);
     const { location, note, sourceId } = req.body;
 
     const entry = await timeEntryService.clockOut({
@@ -114,7 +121,7 @@ export const clockOut = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/break-start
 // @access  Private
 export const startBreak = asyncHandler(async (req, res) => {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = requireEmployeeActor(req.user);
     const { note, sourceId } = req.body;
 
     const entry = await timeEntryService.startBreak({
@@ -134,7 +141,7 @@ export const startBreak = asyncHandler(async (req, res) => {
 // @route   POST /api/time-attendance/break-end
 // @access  Private
 export const endBreak = asyncHandler(async (req, res) => {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = requireEmployeeActor(req.user);
     const { note, sourceId } = req.body;
 
     const entry = await timeEntryService.endBreak({
@@ -154,7 +161,7 @@ export const endBreak = asyncHandler(async (req, res) => {
 // @route   GET /api/time-attendance/current-status
 // @access  Private
 export const getCurrentStatus = asyncHandler(async (req, res) => {
-    const status = await timeEntryService.getCurrentStatus(req.user.id);
+    const status = await timeEntryService.getCurrentStatus(requireEmployeeActor(req.user));
 
     res.json({
         success: true,

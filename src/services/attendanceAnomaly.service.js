@@ -173,7 +173,7 @@ export async function listAnomalies({
     prisma.attendanceAnomaly.count({ where }),
     prisma.attendanceAnomaly.findMany({
       where,
-      orderBy: { [sortField]: dir },
+      orderBy: [{ [sortField]: dir }, { id: dir }],
       skip: (pageNum - 1) * size,
       take: size,
       include: { employee: { select: EMPLOYEE_SELECT } },

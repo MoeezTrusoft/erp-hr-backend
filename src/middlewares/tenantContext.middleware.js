@@ -13,6 +13,10 @@ export const establishTenantContext = (req, _res, next) => {
         user: req.user || null,
         permissions: req.user?.permissions ?? {},
         correlationId: req.correlationId,
+        // F-02: this is only the pre-authorization tenant context. The route
+        // policy replaces user/permissions and flips this marker after deriving
+        // the actor from verified service-JWT claims.
+        actorVerified: false,
     };
     return mcpCtx.run(store, next);
 };

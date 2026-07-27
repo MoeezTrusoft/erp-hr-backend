@@ -11,10 +11,14 @@ import {
   submitSurvey,
   getSurveys,
 } from "../../controllers/onboarding.controller.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 export const mcpListOnboardingChecklists = (user) => runController(listChecklists, { user });
 export const mcpListOnboardingSurveys = (user, employeeId) =>
-  runController(getSurveys, { user, params: { employeeId: String(employeeId || user.employeeId || user.userId || "") } });
+  runController(getSurveys, {
+    user,
+    params: { employeeId: String(employeeId || requireEmployeeActor(user)) },
+  });
 
 export const mcpCreateOnboardingChecklist = (user, data) => runController(createChecklist, { user, body: data });
 export const mcpUpdateOnboardingChecklist = (user, id, data) => runController(updateChecklist, { user, params: { id: String(id) }, body: data });

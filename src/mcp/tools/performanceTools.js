@@ -282,24 +282,4 @@ export function registerPerformanceTools(server) {
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
-
-  // ── DEVELOPMENT PLANS ────────────────────────────────────────────────────
-
-  server.tool(
-    "hr_development_plan_create",
-    "Create an individual development plan (IDP) for an employee",
-    {
-      employeeId: z.string().min(1).describe("Employee the plan is for (references Employee.id)"),
-      title: z.string().min(1),
-      description: z.string().optional().describe("Plan description / objectives (persisted to DevelopmentPlan.description)"),
-      startDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — defaults to now() when omitted"),
-      endDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — plan target end"),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await mcpCreateDevelopmentPlan(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
 }

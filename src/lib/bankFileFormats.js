@@ -6,6 +6,8 @@
 // contract. These functions just lay bytes out per a wire format so they are
 // trivially unit-testable and reusable.
 //
+import { minorToWireDecimal } from './money.js';
+
 // Two formats:
 //   * NACHA ACH (US) — the fixed-width 94-char/record interbank file (File
 //     Header → Batch Header → Entry Detail per employee → Batch Control →
@@ -116,20 +118,20 @@ export const buildNachaFile = (rows, opts = {}) => {
 
     // 6 — Entry Detail (one per disbursement)
     let entryHash = 0;
-    let creditTotal = 0;
+    let creditTotal = 0n;
     rows.forEach((row, i) => {
         const rdfi = numField(row.routingNumber, 9);
         const rdfi8 = rdfi.slice(0, 8);
         const checkDigit = rdfi.slice(8, 9);
         entryHash += Number(rdfi8);
-        creditTotal += Number(row.amountMinor) || 0;
+        creditTotal += BigInt(row.amountMinor);
         lines.push(
             '6' +
             transactionCode(row.accountType) +
             rdfi8 +
             checkDigit +
             padRight(row.accountNumber, 17) +
-            numField(String(Math.round(row.amountMinor)), 10) +
+            numField(String(row.amountMinor), 10) +
             padRight(String(row.employeeId ?? ''), 15) +
             alnumUpper(row.name || '', 22) +
             '  ' +
@@ -205,7 +207,7 @@ export const buildBankCsv = (rows, opts = {}) => {
             r.accountNumber ?? '',
             (r.accountType || 'CHECKING').toUpperCase(),
             r.currency || opts.currency || 'USD',
-            (Number(r.amountMinor) / 100).toFixed(2),
+            minorToWireDecimal(r.amountMinor, r.currency || opts.currency || 'USD'),
         ]
             .map(csvEscape)
             .join(','),

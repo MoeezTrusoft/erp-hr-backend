@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
@@ -12,6 +11,10 @@ import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js
 import { exportRows } from "../lib/export.util.js";
 import { scopedEmployeeWhere, scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import {
+  buildSystemAccountProvisioningIntent,
+  publicProvisioningState,
+} from "../jobs/system-account-provisioning.js";
 import {
   createEmployeeContractSchema,
   createEmployeeDocumentSchema,
@@ -1053,6 +1056,13 @@ const lifecycleSourceSelect = {
 
 export const createEmployee = async (payload, actorId, ctx = {}) => {
   const data = createEmployeeContractSchema.parse(normalizeContractPayload(payload));
+  // F-03: provisioning must be tenant-scoped and valid before any aggregate
+  // side effect. The actual durable row is built after Employee has its id.
+  if (data.createSystemAccount === true) {
+    const tenantId = ctx.tenantId ?? null;
+    if (!tenantId) throw new Error("HR-0301: verified tenant is required for system-account provisioning");
+    if (!data.roleId) throw new Error("HR-0302: roleId is required for system-account provisioning");
+  }
   await assertEmployeeReferences(data);
   // Photos: accept an inline base64/data-URI upload OR a pre-existing mediaId.
   const profilePhoto = await resolveEmployeeMedia(
@@ -1106,7 +1116,7 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     coverPhotoUrl: coverPhoto?.url,
   };
 
-  const employee = await tenantTransaction(prisma, async (tx) => {
+  const createdResult = await tenantTransaction(prisma, async (tx) => {
     const createData = employeeDataFromContract(employeeData, actorId);
     createData.tenant_id = verifiedTenantId;
     const created = await tx.employee.create({
@@ -1165,11 +1175,17 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     // create path existed before. Verified tenant rides on the row.
     await upsertPrimaryBankDetail(tx, created.id, verifiedTenantId, bankFieldsFromContract(data));
 
-    return tx.employee.findUnique({
+    const employee = await tx.employee.findUnique({
       where: { id: created.id },
       select: employeeProfileSelect,
     });
+    const intentData = buildSystemAccountProvisioningIntent(data, employee, ctx);
+    const systemAccount = intentData
+      ? await tx.systemAccountProvisioning.create({ data: intentData })
+      : null;
+    return { employee, systemAccount };
   }, { tenantId: verifiedTenantId });
+  const { employee, systemAccount: provisioning } = createdResult;
 
   await logAction({
     employeeId: actorId,
@@ -1203,103 +1219,12 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     }
   }
 
-  // Single-call orchestration: when the caller opts in with createSystemAccount,
-  // provision the login User in RBAC AFTER the HR row (+ media) is committed, so
-  // the FE makes ONE call instead of two. Best-effort — mirrors the resumeParsing
-  // pattern above: a provisioning failure NEVER fails the employee create; the
-  // outcome is attached as `systemAccount`. Skipped entirely when not opted in.
-  const systemAccount = await maybeProvisionSystemAccount(data, employee);
-
   const profile = employeeContractProfile(employee);
   return {
     ...profile,
     ...(resumeParsing ? { resumeParsing } : {}),
-    ...(systemAccount ? { systemAccount } : {}),
+    ...(provisioning ? { systemAccount: publicProvisioningState(provisioning) } : {}),
   };
-};
-
-// Build the RBAC POST /api/employee body from the created employee + the
-// system-account contract fields, then call RBAC. Single source of the payload
-// mapping (used only by createEmployee). Returns the `systemAccount` response
-// object, or null when the caller did not opt in. NEVER throws — a hard failure
-// is reported as { status: 'failed', ... } so the employee create still returns.
-const maybeProvisionSystemAccount = async (data, employee) => {
-  if (data.createSystemAccount !== true) return null;
-
-  const roleId = data.roleId;
-  // Guard: a login must have a role. Skip (don't call RBAC) without one.
-  if (!roleId) {
-    return { status: "skipped", reason: "roleId required" };
-  }
-  // Password is optional. If the operator supplied one, use it. Otherwise HR
-  // generates a strong one-time password and RETURNS it in the response (SMTP is
-  // not wired, so it can't be emailed) — the admin hands it to the employee, who
-  // changes it on first login. base64url of 12 random bytes => ~16 chars (>=8).
-  const providedPassword =
-    typeof data.password === "string" && data.password.trim().length > 0
-      ? data.password.trim()
-      : null;
-  const generatedPassword = providedPassword ? null : randomBytes(12).toString("base64url");
-  const password = providedPassword || generatedPassword;
-
-  // FE-compat: overrides come from `permissions` (canonical array) or `permissionMap`.
-  // Only the array form is applied; a legacy MAP (e.g. {"4-VIEW":"RESOURCE"}) is
-  // ignored (the role's base permissions still apply) so it can't crash .filter.
-  const overrides = Array.isArray(data.permissions) && data.permissions.length
-    ? data.permissions
-    : Array.isArray(data.permissionMap)
-      ? data.permissionMap
-      : [];
-  const permissions = overrides
-    .filter((p) => p && p.permissionId != null)
-    .map((p) => ({ permissionId: p.permissionId, granted: p.granted !== false }));
-
-  // FE-compat: honor a top-level `email` alias for the login before falling back.
-  const loginEmail = data.systemEmail || data.email || data.workEmail || data.personalEmail || null;
-  const payload = {
-    first_name: data.firstName,
-    last_name: data.lastName,
-    job_title: data.jobTitle,
-    email: loginEmail,
-    phone: data.mobilePhone,
-    gender: data.gender,
-    // RBAC's rbac_employee_create requires hire_date as a non-empty STRING; the
-    // contract schema coerced hireDate to a Date, so serialize to ISO here.
-    hire_date: data.hireDate instanceof Date ? data.hireDate.toISOString() : data.hireDate,
-    status: employee.status || employee.employement_status,
-    roles: [{ roleId, ...(permissions.length ? { permissions } : {}) }],
-    password,
-    hrEmployeeId: employee.id, // the new HR employee id (User.employeeId link)
-    mediaId: employee.employee_media_id, // profile-photo media id, when present
-  };
-
-  try {
-    const { createRbacSystemAccount } = await import("./rbac.client.js");
-    const result = await createRbacSystemAccount(payload);
-    if (result?.ok) {
-      return {
-        userId: result.user?.id ?? null,
-        status: "created",
-        // Show-once: only present when HR auto-generated the password (operator
-        // supplied none). Never returned when the operator chose the password.
-        ...(generatedPassword
-          ? { temporaryPassword: generatedPassword, passwordGenerated: true }
-          : {}),
-      };
-    }
-    return {
-      status: "failed",
-      error: result?.error || "RBAC system-account provisioning failed",
-      ...(result?.status != null ? { httpStatus: result.status } : {}),
-      ...(result?.code ? { code: result.code } : {}),
-    };
-  } catch (err) {
-    logger.warn(
-      { err: err?.message, employeeId: employee.id },
-      "createEmployee: system-account provisioning threw (non-fatal)"
-    );
-    return { status: "failed", error: err?.message || "system-account provisioning failed" };
-  }
 };
 
 export const updateEmployee = async (id, payload, actorId, ctx = {}) => {

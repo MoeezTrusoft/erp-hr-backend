@@ -6,8 +6,8 @@
 //
 // TENANCY (C.2 / T-P2.1): every read/write is folded through the shared
 // tenancy helpers so a verified RBAC Company.uuid (tenantId, opaque string) is
-// applied fail-closed — a null tenant matches ONLY null-tenant rows and can
-// never widen across tenants. The verified tenant always wins over the body.
+// applied to every query. F-06 rejects tenantless interactive traffic before
+// this service executes. The verified tenant always wins over the body.
 //
 // DERIVATIONS (schema has no dedicated columns for these):
 //   * role / department  → the candidate's MOST-RECENT Application (by appliedAt

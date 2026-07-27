@@ -6,6 +6,7 @@
 // resolve the request context locally (getCtx over mcpCtx.getStore()) and pass
 // the verified tenant into the tenant-scoped service.
 import { z } from "zod";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -112,7 +113,7 @@ export function registerOvertimeShiftTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const approverEmployeeId = user.employeeId ?? user.userId;
+      const approverEmployeeId = requireEmployeeActor(user);
       const data = await decideOvertimeRequest(
         { ...args, approverEmployeeId },
         user.tenantId

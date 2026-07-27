@@ -8,8 +8,8 @@
 // the interview OUTCOME write path (Interview.decision + COMPLETED status).
 //
 // Tenant scoping: every read/write folds the VERIFIED tenant (req.user.tenantId,
-// an RBAC Company.uuid string) via scopedWhere/scopedData — fail-closed, a null
-// tenant matches only null-tenant rows and can never widen across tenants.
+// an RBAC Company.uuid string) via scopedWhere/scopedData. F-06 rejects
+// tenantless interactive traffic before this service executes.
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 

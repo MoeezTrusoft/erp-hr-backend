@@ -7,6 +7,7 @@
 // mcpCtx.getStore()) and threads the verified tenant into the tenant-scoped
 // service. Approve/reject of overtime stays on hr_overtime_request_decide.
 import { z } from "zod";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -181,7 +182,7 @@ export function registerShiftTemplateSwapTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const approverEmployeeId = user.employeeId ?? user.userId;
+      const approverEmployeeId = requireEmployeeActor(user);
       const data = await decideShiftSwap(
         { ...args, approverEmployeeId },
         user.tenantId

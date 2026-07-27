@@ -224,6 +224,15 @@ enum ApprovalDecision {
   REJECTED
 }
 
+// F-03 / ARCH-01 §3.5, §7-§9 — HR-owned system-account workflow states.
+enum SystemAccountProvisioningStatus {
+  PENDING
+  PROCESSING
+  RETRY_WAIT
+  SUCCEEDED
+  TERMINAL_FAILED
+}
+
 // ==================== MODELS ====================
 
 model DashboardLayout {
@@ -238,7 +247,7 @@ model DashboardLayout {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
-  @@unique([dashboardType])
+  @@unique([tenantId, employeeId, dashboardType])
   @@index([tenantId])
 }
 
@@ -258,13 +267,13 @@ model Employee {
   probation_end_date   DateTime?
   employee_type        String? // contract permenant etc..
   work_mode            String? // Remote | Onsite | Hybrid
-  remarks              String?
+  remarks              String? @db.Text
   marital_status       String?
   nationality          String?
   nationality_id_no    String?
   nationality_id       Int?
-  current_address      String?
-  permenant_address    String?
+  current_address      String? @db.Text
+  permenant_address    String? @db.Text
   city                 String?
   state                String?
   province             String?
@@ -415,6 +424,11 @@ model Employee {
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 
   @@index([biometric_id])
+  @@index([positionId])
+  @@index([businessUnitId])
+  @@index([gradeLevelId])
+  @@index([managerId])
+  @@index([reportToId])
 }
 
 model EmployeeMedia {
@@ -453,6 +467,7 @@ model BusinessUnit {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
 }
 
@@ -461,9 +476,9 @@ model GradeLevel {
   name        String // e.g., "G5", "Senior", "Associate"
   description String?
   // Payroll Setup — salary band for the grade (nullable; major units).
-  minSalary    Float?
-  midSalary    Float?
-  maxSalary    Float?
+  minSalary    Decimal?  @db.Decimal(18, 4)
+  midSalary    Decimal?  @db.Decimal(18, 4)
+  maxSalary    Decimal?  @db.Decimal(18, 4)
   bandCurrency String? // ISO 4217, e.g. "PKR"
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
@@ -473,6 +488,7 @@ model GradeLevel {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
 }
 
@@ -489,6 +505,7 @@ model EmergencyContacts {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employee_Id])
 }
 
 model Log {
@@ -540,7 +557,10 @@ model Attendance {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
-  @@index([tenantId])
+  // F-DB-07: employee history and latest-day reads are tenant-leading and
+  // deterministic when multiple marks share a date.
+  @@index([tenantId, employeeId, date(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_employee_date_id_idx")
+  @@index([tenantId, date(sort: Desc), check_in(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_date_checkin_id_idx")
 }
 
 // Attendance anomaly / correction request. Raised by an employee ("Inform
@@ -550,8 +570,8 @@ model AttendanceAnomaly {
   id         Int           @id @default(autoincrement())
   employeeId Int
   type       AnomalyType
-  reason     String?
-  detail     String? // free text for OTHER {specify}
+  reason     String? @db.Text
+  detail     String? @db.Text // free text for OTHER {specify}
   date       DateTime? // the affected work date
   fromTime   DateTime? // time-range start
   toTime     DateTime? // time-range end
@@ -565,7 +585,9 @@ model AttendanceAnomaly {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@index([tenantId])
+  // F-DB-07: the default HR review queue filters tenant + status and sorts by
+  // createdAt, with id as the stable pagination tie-break.
+  @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)], map: "attendance_anomalies_tenant_status_created_id_idx")
   @@index([employeeId])
   @@index([status])
   @@map("attendance_anomalies")
@@ -591,6 +613,7 @@ model Leave {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employeeId])
 }
 
 // ==================== LEAVE MANAGEMENT MODELS ====================
@@ -626,7 +649,7 @@ model LeavePolicy {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
-  @@unique([name])
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("leave_policies")
 }
@@ -663,6 +686,10 @@ model LeaveRequest {
   @@index([status])
   @@index([startDate, endDate])
   @@index([tenantId])
+  // F-DB-07: payslip leave-overlap accounting qualifies all four leading
+  // predicates; id makes equal ranges deterministic.
+  @@index([tenantId, employeeId, status, startDate, endDate, id], map: "leave_requests_tenant_employee_status_dates_id_idx")
+  @@index([tenantId, status, created_at(sort: Desc), id(sort: Desc)], map: "leave_requests_tenant_status_created_id_idx")
   @@map("leave_requests")
 }
 
@@ -733,7 +760,7 @@ model ApprovalWorkflow {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
-  @@unique([name])
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("approval_workflows")
 }
@@ -773,7 +800,7 @@ model Region {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
-  @@unique([name])
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("regions")
 }
@@ -800,6 +827,7 @@ model HolidayCalendar {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("holiday_calendars")
 }
@@ -942,6 +970,7 @@ model OvertimeRule {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("overtime_rules")
 }
@@ -956,6 +985,7 @@ model ShiftTemplate {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   tenantId   String?  @db.Uuid
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("shift_templates")
 }
@@ -1015,7 +1045,10 @@ model OvertimeRequest {
 
   tenantId String? @db.Uuid
   @@index([employeeId])
-  @@index([tenantId])
+  // F-DB-07: manager queue and employee-period aggregation have different
+  // selective prefixes; both carry date + id ordering.
+  @@index([tenantId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_status_date_id_idx")
+  @@index([tenantId, employeeId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_employee_status_date_id_idx")
   @@map("overtime_requests")
 }
 
@@ -1058,6 +1091,7 @@ model Source {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
 }
 
@@ -1071,7 +1105,7 @@ model PerformanceReview {
   period_start   DateTime?
   period_end     DateTime?
   overall_rating Float?
-  comments       String?
+  comments       String? @db.Text
   submittedAt    DateTime?
   status         ReviewStatus @default(IN_PROGRESS)
   type           ReviewType   @default(SELF)
@@ -1093,6 +1127,8 @@ model PerformanceReview {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employeeId])
+  @@index([cycleId])
 }
 
 model ReviewFeedback {
@@ -1112,6 +1148,8 @@ model ReviewFeedback {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([reviewId])
+  @@index([reviewerId])
 }
 
 model Position {
@@ -1135,6 +1173,7 @@ model Position {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, title])
   @@index([tenantId])
 }
 
@@ -1170,6 +1209,10 @@ model JobRequisition {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([positionId])
+  @@index([requestedById])
+  @@index([approvedById])
+  @@index([employeeId])
 }
 
 model RequisitionApproval {
@@ -1187,6 +1230,8 @@ model RequisitionApproval {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([requisitionId])
+  @@index([approverId])
 }
 
 model JobPosting {
@@ -1202,6 +1247,7 @@ model JobPosting {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([requisitionId])
 }
 
 model TrainingCategory {
@@ -1213,6 +1259,7 @@ model TrainingCategory {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
 }
 
@@ -1259,7 +1306,7 @@ model TrainingCourse {
 
   @@index([tenantId])
   @@index([categoryId])
-  @@index([courseCode])
+  @@unique([tenantId, courseCode])
 }
 
 // A named group of lectures within a course (e.g. "Introduction to Web
@@ -1357,6 +1404,8 @@ model TrainingEnrollment {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([courseId])
+  @@index([employeeId])
 }
 
 model PerformanceCycle {
@@ -1376,6 +1425,7 @@ model PerformanceCycle {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
 }
 
@@ -1392,6 +1442,7 @@ model PerformanceTemplate {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
 }
 
@@ -1525,9 +1576,9 @@ model PayrollRun {
   countryCode      String           @db.Char(2)
   currencyCode     String           @db.Char(3)
   status           PayrollRunStatus @default(PENDING)
-  totalGross       Float?           @default(0)
-  totalDeductions  Float?           @default(0)
-  totalNet         Float?           @default(0)
+  totalGross       Decimal?         @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalDeductions  Decimal?         @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalNet         Decimal?         @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   employeeCount    Int?             @default(0)
   processedAt      DateTime?
   // HR-02 / T-P4.1 — separation of duties + reproducibility.
@@ -1565,9 +1616,9 @@ model PayrollPayslip {
   tenantId        String?       @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   payrollRunId    Int
   employeeId      Int
-  grossAmount     Float
-  totalDeductions Float
-  netAmount       Float
+  grossAmount     Decimal        @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalDeductions Decimal        @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  netAmount       Decimal        @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   // HR-02 / T-P4.1 — the rule/rate version this payslip was computed against,
   // copied from its run so a single payslip is independently reproducible.
   ruleVersion     String?
@@ -1590,7 +1641,8 @@ model PayrollPayslip {
   PayrollAuditLog PayrollAuditLog[]
 
   @@unique([payrollRunId, employeeId])
-  @@index([tenantId])
+  // F-DB-08: employee payroll history is the dominant list/read path.
+  @@index([tenantId, employeeId, created_at(sort: Desc), id(sort: Desc)], map: "payroll_payslips_tenant_employee_created_id_idx")
   @@map("payroll_payslips")
 }
 
@@ -1598,7 +1650,7 @@ model PayrollEarning {
   id            Int      @id @default(autoincrement())
   payslipId     Int
   earningTypeId Int
-  amount        Float
+  amount        Decimal  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   description   String?
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
@@ -1617,7 +1669,7 @@ model PayrollDeduction {
   id              Int      @id @default(autoincrement())
   payslipId       Int
   deductionTypeId Int
-  amount          Float
+  amount          Decimal  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   description     String?
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
@@ -1635,7 +1687,7 @@ model PayrollDeduction {
 model PayrollEarningType {
   id          Int            @id @default(autoincrement())
   tenantId    String?        @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
-  code        String         @unique
+  code        String
   name        String
   description String?
   type        PayElementType @default(EARNING)
@@ -1647,6 +1699,7 @@ model PayrollEarningType {
   earnings    PayrollEarning[]
   assignments PayrollAssignment[]
 
+  @@unique([tenantId, code])
   @@index([tenantId])
   @@map("payroll_earning_types")
 }
@@ -1654,11 +1707,11 @@ model PayrollEarningType {
 model PayrollDeductionType {
   id          Int            @id @default(autoincrement())
   tenantId    String?        @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
-  code        String         @unique
+  code        String
   name        String
   description String?
   type        PayElementType @default(DEDUCTION)
-  rate        Float?
+  rate        Decimal? @db.Decimal(8, 6)
   preTax      Boolean        @default(false) // whether the deduction is applied pre-tax (hr_payroll_deduction_type_create)
   created_at  DateTime       @default(now())
   updated_at  DateTime       @updatedAt
@@ -1667,6 +1720,7 @@ model PayrollDeductionType {
   deductions  PayrollDeduction[]
   assignments PayrollAssignment[]
 
+  @@unique([tenantId, code])
   @@index([tenantId])
   @@map("payroll_deduction_types")
 }
@@ -1694,7 +1748,8 @@ model EmploymentTerms {
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
 
-  @@index([tenantId])
+  // F-DB-08: payroll selects the latest effective terms for each employee.
+  @@index([tenantId, employeeId, effectiveFrom(sort: Desc), id(sort: Desc)], map: "employment_terms_tenant_employee_effective_id_idx")
   @@map("employment_terms")
 }
 
@@ -1704,8 +1759,8 @@ model PayrollAssignment {
   employeeId      Int
   earningTypeId   Int?
   deductionTypeId Int?
-  amount          Float?
-  rate            Float?
+  amount          Decimal?  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  rate            Decimal? @db.Decimal(8, 6)
   effectiveFrom   DateTime
   effectiveTo     DateTime?
   isActive        Boolean   @default(true)
@@ -1717,7 +1772,8 @@ model PayrollAssignment {
   earningType   PayrollEarningType?   @relation(fields: [earningTypeId], references: [id])
   deductionType PayrollDeductionType? @relation(fields: [deductionTypeId], references: [id])
 
-  @@index([tenantId])
+  // F-DB-08: active employee assignments are evaluated by effective window.
+  @@index([tenantId, employeeId, isActive, effectiveFrom(sort: Desc), id(sort: Desc)], map: "payroll_assignments_tenant_employee_active_effective_id_idx")
   @@map("payroll_assignments")
 }
 
@@ -1759,19 +1815,21 @@ model TaxRate {
   id            Int       @id @default(autoincrement())
   tenantId      String?   @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   countryCode   String    @db.Char(2)
-  bracketMin    Float
-  bracketMax    Float?
-  rate          Float
+  bracketMin    Decimal   @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  bracketMax    Decimal?  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  rate          Decimal @db.Decimal(8, 6)
   // Payroll Setup (FBR-style slabs): baseTax = cumulative tax up to bracketMin;
   // status toggles a slab active/inactive without deleting it.
-  baseTax       Float     @default(0)
+  baseTax       Decimal   @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   status        RowStatus @default(ACTIVE)
   effectiveFrom DateTime
   effectiveTo   DateTime?
   created_at    DateTime  @default(now())
   updated_at    DateTime  @updatedAt
 
-  @@index([tenantId])
+  // F-DB-08: rule snapshots load one tenant/country and evaluate effective
+  // windows; id resolves equal effective dates deterministically.
+  @@index([tenantId, countryCode, effectiveFrom(sort: Desc), effectiveTo, id], map: "tax_rates_tenant_country_effective_id_idx")
   @@map("tax_rates")
 }
 
@@ -1788,7 +1846,7 @@ model SalaryComponent {
   name         String
   type         PayElementType // EARNING | DEDUCTION
   computation  ComputationType @default(FIXED)
-  value        Float? // FIXED amount or PERCENTAGE percent (0-100)
+  value        Decimal? @db.Decimal(18, 4) // FIXED amount or PERCENTAGE percent (0-100)
   formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
   taxable      Boolean         @default(true)
   active       Boolean         @default(true)
@@ -1803,8 +1861,8 @@ model SalaryComponent {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
+  @@unique([tenantId, code])
   @@index([tenantId])
-  @@index([code])
   @@index([gradeLevelId])
   @@map("salary_components")
 }
@@ -1832,7 +1890,7 @@ model PayrollCalendar {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@index([tenantId])
+  @@unique([tenantId])
   @@map("payroll_calendars")
 }
 
@@ -1844,7 +1902,7 @@ model PayrollApprovalMatrix {
   role              String // approving role/title
   approverId        Int? // resolved Employee approver
   thresholdRequired Boolean   @default(false)
-  thresholdAmount   Float? // amount at/above which this level is required
+  thresholdAmount   Decimal? @db.Decimal(18, 4) // F-12: amount at/above which this level is required
   autoEscalateAfter DateTime? // date+time after which the request escalates
   status            RowStatus @default(ACTIVE)
   version           Int       @default(1)
@@ -1877,7 +1935,7 @@ model PayrollRuleConfig {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@index([tenantId])
+  @@unique([tenantId])
   @@map("payroll_rule_config")
 }
 
@@ -1921,7 +1979,7 @@ model PayrollConfigMeta {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@index([tenantId])
+  @@unique([tenantId])
   @@map("payroll_config_meta")
 }
 
@@ -1936,7 +1994,7 @@ model PayrollConfigSnapshot {
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
   @@index([tenantId])
-  @@index([version])
+  @@unique([tenantId, version])
   @@map("payroll_config_snapshots")
 }
 
@@ -1957,7 +2015,8 @@ model PayrollAuditLog {
   payslip    PayrollPayslip? @relation(fields: [payslipId], references: [id])
   employee   Employee?       @relation(fields: [employeeId], references: [id])
 
-  @@index([tenantId])
+  // F-DB-08: tenant audit pagination is newest-first with a stable id tie-break.
+  @@index([tenantId, created_at(sort: Desc), id(sort: Desc)], map: "payroll_audit_logs_tenant_created_id_idx")
   @@map("payroll_audit_logs")
 }
 
@@ -1980,7 +2039,7 @@ model Candidate {
   id            Int      @id @default(autoincrement())
   firstName     String
   lastName      String?
-  email         String   @unique
+  email         String
   phone         String?
   source        String? // LinkedIn, Referral, etc.
   location      String? // city / region
@@ -2005,6 +2064,8 @@ model Candidate {
   talentPools    TalentPool[]
   offers         Offer[]
   candidateSkills CandidateSkill[]
+
+  @@unique([tenantId, email])
 }
 
 model CandidateSkill {
@@ -2060,6 +2121,8 @@ model Application {
   offer          Offer?
 
   @@unique([candidateId, jobRequisitionId])
+  @@index([candidateId])
+  @@index([jobRequisitionId])
 }
 
 model PerformanceMetric {
@@ -2158,6 +2221,7 @@ model OnboardingChecklist {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employeeId])
   @@map("onboarding_checklists")
 }
 
@@ -2342,6 +2406,7 @@ model Interview {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([applicationId])
   @@map("interviews")
 }
 
@@ -2393,8 +2458,8 @@ model Offer {
   startDate          DateTime?
   expiryDate         DateTime?
   status             OfferStatus @default(DRAFT)
-  offerLetterMediaId Int?
-  notes              String?
+   offerLetterMediaId Int?
+  notes              String? @db.Text
   sentAt             DateTime?
   respondedAt        DateTime?
   viewedAt           DateTime?
@@ -2417,6 +2482,8 @@ model Offer {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([candidateId])
+  @@index([jobRequisitionId])
   @@map("offers")
 }
 
@@ -2442,10 +2509,10 @@ model RecruitmentCostConfig {
   id         Int      @id @default(autoincrement())
   tenantId   String?  @db.Uuid
   period     String   @default("all") // e.g. "all" | "FY26"
-  jobAds     Int      @default(0)
-  agencyFees Int      @default(0)
-  tools      Int      @default(0)
-  other      Int      @default(0)
+  jobAds     Decimal  @default(0) @db.Decimal(18, 4)
+  agencyFees Decimal  @default(0) @db.Decimal(18, 4)
+  tools      Decimal  @default(0) @db.Decimal(18, 4)
+  other      Decimal  @default(0) @db.Decimal(18, 4)
   currency   String   @default("PKR")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -2589,6 +2656,8 @@ model Certification {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employeeId])
+  @@index([courseId])
   @@map("certifications")
 }
 
@@ -2637,7 +2706,7 @@ model Recognition {
 
 model Skill {
   id         Int      @id @default(autoincrement())
-  name       String   @unique
+  name       String
   category   String?
   created_at DateTime @default(now())
 
@@ -2645,6 +2714,7 @@ model Skill {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("skills")
 }
@@ -2730,6 +2800,7 @@ model OffboardingTask {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([checklistId])
   @@map("offboarding_tasks")
 }
 
@@ -2808,6 +2879,7 @@ model ComplianceChecklist {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@map("compliance_checklists")
 }
@@ -2832,6 +2904,8 @@ model ComplianceItem {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([checklistId])
+  @@index([employeeId])
   @@map("compliance_items")
 }
 
@@ -2850,6 +2924,7 @@ model DocumentExpiryAlert {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employeeId])
   @@map("document_expiry_alerts")
 }
 
@@ -2888,6 +2963,7 @@ model DevelopmentPlanItem {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([planId])
   @@map("development_plan_items")
 }
 
@@ -2896,7 +2972,7 @@ model ReimbursementClaim {
   employeeId     Int
   title          String
   description    String?
-  amount         Float
+  amount         Decimal @db.Decimal(18, 4)
   currency       String              @default("USD")
   category       String?
   receiptMediaId Int?
@@ -2919,6 +2995,7 @@ model ReimbursementClaim {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([employeeId])
   @@map("reimbursement_claims")
 }
 
@@ -2929,7 +3006,7 @@ model ClaimItem {
   claimId     Int
   name        String
   description String?
-  amount      Float
+  amount      Decimal @db.Decimal(18, 4)
   mediaId     Int? // DAM attachment asset id
   createdAt   DateTime @default(now())
 
@@ -3083,11 +3160,44 @@ model OutboxEvent {
   claimedBy      String?
   claimExpiresAt DateTime?
 
+  // F-DB-06: retained for tenant-scoped operational inspection. Dispatcher
+  // indexes are partial SQL indexes deployed outside Prisma transactions.
   @@index([tenantId, publishedAt])
-  @@index([publishedAt, createdAt])
-  // Dispatcher candidate scan (free or expired claim).
-  @@index([publishedAt, claimExpiresAt, createdAt])
   @@map("outbox_events")
+}
+
+// F-03 — durable projection of the RBAC account-provisioning intent. This row
+// commits with Employee and contains no plaintext password.
+model SystemAccountProvisioning {
+  id                 String                          @id @default(uuid()) @db.Uuid
+  tenantId           String                          @db.Uuid
+  employeeId         Int
+  status             SystemAccountProvisioningStatus @default(PENDING)
+  idempotencyKey     String                          @db.Uuid
+  payloadFingerprint String
+  payload             Json
+  actor               Json
+  correlationId       String?
+  attempts            Int                             @default(0)
+  maxAttempts         Int                             @default(5)
+  nextAttemptAt       DateTime?                       @default(now())
+  claimedAt           DateTime?
+  claimedBy           String?
+  claimExpiresAt      DateTime?
+  rbacUserId          String?
+  result              Json?
+  lastError           String?
+  lastErrorCode       String?
+  lastHttpStatus      Int?
+  manualRetryCount    Int                             @default(0)
+  createdAt           DateTime                        @default(now())
+  updatedAt           DateTime                        @updatedAt
+  completedAt         DateTime?
+
+  @@unique([tenantId, employeeId])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status, updatedAt])
+  @@map("system_account_provisioning")
 }
 
 // ==================== LEARNING PATH CATEGORY RELATION ====================

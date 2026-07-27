@@ -54,7 +54,7 @@ export const getTimesheets = async ({ employeeId, periodStart, periodEnd, status
     });
 };
 
-export const getTimesheetById = async (id, userId, tenantId) => {
+export const getTimesheetById = async (id, employeeId, tenantId) => {
     const timesheet = await prisma.timesheet.findFirst({
         where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: {
@@ -91,7 +91,7 @@ export const getTimesheetById = async (id, userId, tenantId) => {
     }
 
     // Check permission
-    if (timesheet.employeeId !== userId) {
+    if (timesheet.employeeId !== employeeId) {
         throw new AppError('Not authorized to view this timesheet', 403);
     }
 
@@ -174,7 +174,7 @@ export const createTimesheet = async (data) => {
     return getTimesheetById(timesheet.id, parseInt(employeeId), tenantId);
 };
 
-export const submitTimesheet = async (id, userId, tenantId) => {
+export const submitTimesheet = async (id, employeeId, tenantId) => {
     const timesheet = await prisma.timesheet.findFirst({
         where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
@@ -184,7 +184,7 @@ export const submitTimesheet = async (id, userId, tenantId) => {
         throw new AppError('Timesheet not found', 404);
     }
 
-    if (timesheet.employeeId !== userId) {
+    if (timesheet.employeeId !== employeeId) {
         throw new AppError('Not authorized to submit this timesheet', 403);
     }
 
@@ -219,7 +219,7 @@ export const submitTimesheet = async (id, userId, tenantId) => {
     });
 
       await logAction({
-    employeeId: Number(userId),
+    employeeId: Number(employeeId),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Time Sheet",
     result: "SUCCESS",

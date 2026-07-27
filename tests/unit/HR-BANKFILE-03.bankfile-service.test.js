@@ -122,7 +122,7 @@ describe('(a) FINALIZED run → valid file, one disbursement row per employee', 
         expect(out.format).toBe('nacha');
         expect(out.filename).toBe('disbursement-run-10.ach');
         expect(out.summary.rowCount).toBe(2);
-        expect(out.summary.totalMinor).toBe(250050 + 199999);
+        expect(out.summary.totalMinor).toBe('450049');
     });
 
     it('CSV: one data row per employee with major-unit amount + the real account', async () => {

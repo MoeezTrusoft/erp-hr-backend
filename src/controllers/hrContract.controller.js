@@ -1,5 +1,9 @@
 import * as hrContract from "../services/hrContract.service.js";
 import { sendContractError, sendContractSuccess } from "../utils/apiContract.js";
+import {
+  getSystemAccountProvisioning as getProvisioning,
+  retrySystemAccountProvisioning as retryProvisioning,
+} from "../jobs/system-account-provisioning.js";
 
 const actorId = (req) => req.user?.employeeId || req.user?.userId;
 // BLOCKER-1 / C.2 — the verified tenant rides ONLY on req.user.tenantId (set
@@ -58,6 +62,16 @@ export const createEmployee = handle(
 export const getEmployeeQuickView = handle(
   (req) => hrContract.getEmployeeQuickView(req.params.id, tenantOf(req)),
   "Employee quick view loaded"
+);
+
+export const getSystemAccountProvisioning = handle(
+  (req) => getProvisioning(req.params.id, tenantOf(req)),
+  "System-account provisioning state loaded"
+);
+
+export const retrySystemAccountProvisioning = handle(
+  (req) => retryProvisioning(req.params.id, tenantOf(req)),
+  "System-account provisioning queued for retry"
 );
 
 export const getEmployeeProfile = handle(

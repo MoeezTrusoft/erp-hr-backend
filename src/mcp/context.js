@@ -2,15 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 export const mcpCtx = new AsyncLocalStorage();
 
-function parseHeaderJson(value, fallback) {
-  if (!value) return fallback;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
-
 export function getCtx() {
   const ctx = mcpCtx.getStore();
   if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
@@ -26,17 +17,23 @@ export function buildContextFromHeaders(req) {
   // service JWT for tenant A could otherwise set x-tenant-id:<tenantB> +
   // x-is-admin:true and escalate cross-tenant + reveal C4 PII (salary/bank/
   // IBAN/NTN). Mirroring internalService.middleware.js lines 65-72, we take the
-  // tenant from the verified claim only (opaque RBAC Company.uuid STRING — pass
-  // through verbatim, never coerce), and fail closed to null when absent.
+  // tenant from the verified claim only (opaque RBAC Company.uuid STRING). F-06
+  // rejects an absent/non-UUID claim in internalServiceGuard before this router.
   const verified = req.internalService;
   const rawTenant = verified?.tenantId;
   const tenantId = typeof rawTenant === "string" && rawTenant.trim() ? rawTenant.trim() : null;
   // SEC-5: x-is-admin is client-forgeable and is NOT honored as authority. The
   // verified service-JWT carries no admin flag, so admin status fails closed to
-  // false here — exactly as the REST path treats it (assertPermission ignores
-  // the flag; C4-reveal paths require the hr:payroll VIEW grant). Gateway-
-  // resolved entitlements still arrive via x-user-permissions behind the guard.
+  // false here. Actor identity and canonical scope below come from its verified
+  // claims; compatibility X-User-* headers are not authorization inputs.
   const isAdmin = false;
+  const claims = verified?.claims || {};
+  const rawScope = claims.scope ?? claims.permissions;
+  const permissions = Array.isArray(rawScope)
+    ? rawScope.filter((item) => typeof item === "string")
+    : typeof rawScope === "string"
+      ? rawScope.split(/[\s,]+/).filter(Boolean)
+      : [];
   // A.5: the request correlation id (minted by attachCorrelationId on the edge)
   // so an emitted EventEnvelope.correlationId chains HTTP → event end-to-end.
   const rawCorrelation = req.headers["x-correlation-id"] || req.correlationId;
@@ -45,14 +42,15 @@ export function buildContextFromHeaders(req) {
 
   return {
     user: {
-      userId: req.headers["x-user-id"],
-      email: req.headers["x-user-email"],
-      roles: parseHeaderJson(req.headers["x-user-roles"], []),
+      userId: claims.userId ?? claims.uid ?? null,
+      email: claims.email ?? claims.userEmail ?? null,
+      roles: Array.isArray(claims.roles) ? claims.roles : [],
       isAdmin,
-      employeeId: req.headers["x-employee-id"],
+      employeeId: claims.employeeId ?? claims.eid ?? null,
       tenantId,
     },
-    permissions: parseHeaderJson(req.headers["x-user-permissions"], {}),
+    permissions,
     correlationId,
+    actorVerified: true,
   };
 }

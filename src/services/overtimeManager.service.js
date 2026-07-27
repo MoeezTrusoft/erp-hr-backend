@@ -337,7 +337,7 @@ export const listPendingOvertimeApprovals = async (
   const [rows, total] = await Promise.all([
     prisma.overtimeRequest.findMany({
       where,
-      orderBy: { date: "desc" },
+      orderBy: [{ date: "desc" }, { id: "desc" }],
       skip: list.skip,
       take: list.pageSize,
     }),

@@ -6,8 +6,8 @@
 //
 // TENANCY (T-P2.x / C.2): EmployeeMedia carries the verified tenant under the
 // camelCase `tenantId` column (RBAC Company.uuid from the signed service-JWT).
-// Every query here is tenant-scoped fail-closed — a null/missing tenant matches
-// ONLY null-tenant rows and can never widen across tenants. The document-action
+// Interactive requests require a UUID tenant at the F-06 boundary. Null-row
+// matching remains only for explicit legacy migration/backfill work. Document
 // helpers scope by { id, tenantId }; the write only lands when the row is both
 // the requested id AND in the caller's tenant, so a cross-tenant id 404s.
 //
@@ -28,8 +28,8 @@ const parseId = (value) => {
   return id;
 };
 
-// Tenant-scoped predicate for an EmployeeMedia row. `tenantId` folds in
-// fail-closed exactly like the shared tenancy helpers (null matches null rows).
+// Tenant-scoped predicate for an EmployeeMedia row. Interactive callers have
+// already passed the UUID tenant boundary; null is migration/backfill-only.
 const scopedMediaWhere = (documentId, tenantId) => ({
   id: parseId(documentId),
   tenantId: tenantId ?? null,

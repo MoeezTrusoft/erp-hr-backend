@@ -18,7 +18,6 @@ export async function runController(controller, { user = {}, params = {}, query 
       "x-forwarded-for": "127.0.0.1",
     },
     user: {
-      id: user.userId ? Number(user.userId) : undefined,
       userId: user.userId ? Number(user.userId) : undefined,
       employeeId: user.employeeId ? Number(user.employeeId) : undefined,
       email: user.email || undefined,

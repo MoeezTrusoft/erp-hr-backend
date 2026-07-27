@@ -148,7 +148,7 @@ export const checkOutServiceWithTimestamp = async (employeeId, timestamp, tenant
 
   const attendance = await prisma.attendance.findFirst({
     where: scopedWhere(tenantId, { employeeId: empId }),
-    orderBy: { date: "desc" }
+    orderBy: [{ date: "desc" }, { id: "desc" }]
   });
 
   if (!attendance || attendance.check_out)
@@ -191,7 +191,7 @@ export const checkOutServiceWithTimestamp = async (employeeId, timestamp, tenant
 export const getAttendanceByEmployee = async (employeeId, tenantId) => {
   return prisma.attendance.findMany({
     where: scopedWhere(tenantId, { employeeId }),
-    orderBy: { date: "desc" }
+    orderBy: [{ date: "desc" }, { id: "desc" }]
   });
 };
 
@@ -221,7 +221,7 @@ export const listAttendanceRecords = async ({ date, limit = 100, tenantId } = {}
         },
       },
     },
-    orderBy: [{ check_in: "desc" }, { date: "desc" }],
+    orderBy: [{ check_in: "desc" }, { date: "desc" }, { id: "desc" }],
     take: Number(limit) || 100,
   });
 };

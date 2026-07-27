@@ -1,5 +1,5 @@
 {
-  "name": "rbac-project",
+  "name": "erp-hr-backend",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -22,6 +22,8 @@
     "test:perf": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --testPathIgnorePatterns=/node_modules/ --testPathPatterns=performance\\.test\\.js$",
     "test:db:prepare": "node scripts/test-db-provision.js",
     "backfill:c4": "node scripts/backfill-c4-encryption.js",
+    "backfill:tenants": "node scripts/backfill-tenant-ids.js",
+    "db:indexes:deploy": "node scripts/apply-hr-indexes.js",
     "gate:p1": "bash scripts/gate-p1.sh"
   },
   "keywords": [],

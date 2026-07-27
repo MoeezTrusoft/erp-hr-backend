@@ -71,6 +71,10 @@ import {
 import { attachRequestId } from "./utils/apiContract.js";
 import { attachCorrelationId } from "./middlewares/correlationId.middleware.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
+import {
+    denyUnknownHrRoute,
+    mountAuthorizedHrRouter,
+} from "./middlewares/routeAuthorization.middleware.js";
 import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 
 import onboardingRoutes from "./routes/onboarding.routes.js";
@@ -165,52 +169,57 @@ export const createApp = () => {
     // extension auto-scopes every REST query (deny-by-default). Runs after the
     // guard has filled req.user.tenantId.
     app.use("/api", establishTenantContext);
-    app.use("/api/hr", hrContractRoutes);
-    app.use("/api/employee", hrRoutes);
-    app.use("/api/attendance", attendanceRoutes);
-    app.use("/api/performance", performanceRoutes);
-    app.use("/api/positions", positionRoutes);
-    app.use("/api/requisitions", requisitionRoutes);
-    app.use("/api/train_cat", traningCategoryRoutes);
-    app.use("/api/course", traningCourseRoutes);
-    app.use("/api/enrollment", traningEnrollmentRoutes);
-    app.use("/api/log", logRoutes);
-    app.use("/api/performance/cycles", performanceCycleRoutes);
-    app.use("/api/performance/templates", performanceTemplateRoutes);
-    app.use("/api/goals", goalsRoutes);
-    app.use("/api/goal-alignments", goalAllignmentRoutes);
-    app.use("/api/PerformanceReview", performanceReviewRoutes);
-    app.use("/api/calibration", calibrationRoutes);
-    app.use("/api/calibration/reports", calibrationReportRoutes);
-    app.use("/api/time-attendance", timeAttendanceRoutes);
-    app.use("/api/leaves", leaveRoutes);
-    app.use("/api/holidays", holidayRoutes);
-    app.use("/api/payroll", payrollRoutes);
-    app.use("/api/training", trainingRoutes);
-    app.use("/api/analytics", analyticsRoutes);
-    app.use("/api/recruitment", recruitmentRoutes);
-    app.use("/api/emergency-contacts", emergencyContactRoutes);
-    app.use("/api/employee-media", employeeMediaRoutes);
-    app.use("/api/dashboard-layout", dashboardLayoutRoutes);
-
-    app.use("/api/onboarding", onboardingRoutes);
-    app.use("/api/interviews", interviewRoutes);
-    app.use("/api/offers", offerRoutes);
-    app.use("/api/talent-pool", talentPoolRoutes);
-    app.use("/api/learning-paths", learningPathRoutes);
-    app.use("/api/training-sessions", trainingSessionRoutes);
-    app.use("/api/certifications", certificationRoutes);
-    app.use("/api/skills", employeeSkillRoutes);
-    app.use("/api/employee-lifecycle", employeeLifecycleRoutes);
-    app.use("/api/offboarding", offboardingRoutes);
-    app.use("/api/org-chart", orgChartRoutes);
-    app.use("/api/self", selfRoutes);
-    app.use("/api/compliance", complianceRoutes);
-    app.use("/api/development-plans", developmentPlanRoutes);
-    app.use("/api/reimbursements", reimbursementRoutes);
-    app.use("/api/gdpr", gdprRoutes);
-    app.use("/api/benefits", benefitRoutes);
-    app.use("/api/resume", resumeRoutes);
+    const authorizedRouters = [
+        ["/api/hr", hrContractRoutes],
+        ["/api/employee", hrRoutes],
+        ["/api/attendance", attendanceRoutes],
+        ["/api/performance", performanceRoutes],
+        ["/api/positions", positionRoutes],
+        ["/api/requisitions", requisitionRoutes],
+        ["/api/train_cat", traningCategoryRoutes],
+        ["/api/course", traningCourseRoutes],
+        ["/api/enrollment", traningEnrollmentRoutes],
+        ["/api/log", logRoutes],
+        ["/api/performance/cycles", performanceCycleRoutes],
+        ["/api/performance/templates", performanceTemplateRoutes],
+        ["/api/goals", goalsRoutes],
+        ["/api/goal-alignments", goalAllignmentRoutes],
+        ["/api/PerformanceReview", performanceReviewRoutes],
+        ["/api/calibration", calibrationRoutes],
+        ["/api/calibration/reports", calibrationReportRoutes],
+        ["/api/time-attendance", timeAttendanceRoutes],
+        ["/api/leaves", leaveRoutes],
+        ["/api/holidays", holidayRoutes],
+        ["/api/payroll", payrollRoutes],
+        ["/api/training", trainingRoutes],
+        ["/api/analytics", analyticsRoutes],
+        ["/api/recruitment", recruitmentRoutes],
+        ["/api/emergency-contacts", emergencyContactRoutes],
+        ["/api/employee-media", employeeMediaRoutes],
+        ["/api/dashboard-layout", dashboardLayoutRoutes],
+        ["/api/onboarding", onboardingRoutes],
+        ["/api/interviews", interviewRoutes],
+        ["/api/offers", offerRoutes],
+        ["/api/talent-pool", talentPoolRoutes],
+        ["/api/learning-paths", learningPathRoutes],
+        ["/api/training-sessions", trainingSessionRoutes],
+        ["/api/certifications", certificationRoutes],
+        ["/api/skills", employeeSkillRoutes],
+        ["/api/employee-lifecycle", employeeLifecycleRoutes],
+        ["/api/offboarding", offboardingRoutes],
+        ["/api/org-chart", orgChartRoutes],
+        ["/api/self", selfRoutes],
+        ["/api/compliance", complianceRoutes],
+        ["/api/development-plans", developmentPlanRoutes],
+        ["/api/reimbursements", reimbursementRoutes],
+        ["/api/gdpr", gdprRoutes],
+        ["/api/benefits", benefitRoutes],
+        ["/api/resume", resumeRoutes],
+    ];
+    for (const [path, router] of authorizedRouters) {
+        mountAuthorizedHrRouter(app, path, router);
+    }
+    app.use("/api", denyUnknownHrRoute);
 
     app.get("/metrics", async (_req, res) => {
         res.setHeader("Content-Type", register.contentType);

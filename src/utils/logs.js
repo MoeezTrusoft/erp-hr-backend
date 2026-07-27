@@ -10,7 +10,6 @@ const toIntOrNull = (value) => {
 };
 
 export const logAction = async ({
-    userId,
     employeeId,
     actionById,
     type,
@@ -22,8 +21,10 @@ export const logAction = async ({
 }) => {
     try {
         const os_name = os.platform();
-        const requestedEmployeeId = toIntOrNull(employeeId ?? userId);
-        const requestedActionById = toIntOrNull(actionById ?? employeeId ?? userId);
+        // F-07: both columns reference Employee.id. RBAC User.id is a distinct
+        // namespace and must never be substituted into either foreign key.
+        const requestedEmployeeId = toIntOrNull(employeeId);
+        const requestedActionById = toIntOrNull(actionById ?? employeeId);
 
         let validEmployeeId = null;
         let validActionById = null;

@@ -13,6 +13,7 @@
 import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
 const mockRequest = jest.fn();
+const mockSignServiceJwtEdDSA = jest.fn(() => "eddsa.hr.token");
 
 // axios.create() → a fake instance whose .request we drive.
 jest.unstable_mockModule("axios", () => ({
@@ -20,7 +21,7 @@ jest.unstable_mockModule("axios", () => ({
 }));
 // Deterministic service-JWT + tenant header so we can assert them.
 jest.unstable_mockModule("../../src/lib/serviceJwt.js", () => ({
-  signServiceJwtEdDSA: () => "eddsa.hr.token",
+  signServiceJwtEdDSA: mockSignServiceJwtEdDSA,
   ambientTenantHeader: () => ({ "X-Tenant-Id": "tenant-abc" }),
 }));
 
@@ -45,7 +46,8 @@ const PAYLOAD = {
 // Ambient acting-user context, exactly as buildContextFromHeaders would set it.
 const CTX = {
   user: { userId: "42", email: "op@corp.example", employeeId: "9", roles: ["hr_admin"], isAdmin: false },
-  permissions: { "/rbac/api/employee": ["POST"] },
+  permissions: ["rbac.employee.create", "hr.employee.read"],
+  actorVerified: true,
 };
 
 const runInCtx = (fn) => mcpCtx.run(CTX, fn);
@@ -75,6 +77,23 @@ describe("rbac.client createRbacSystemAccount — MCP transport + authz forwardi
     expect(result).toEqual({ ok: true, user: { id: 9001 } });
   });
 
+  it("F-03 sends the stable idempotency key and payload fingerprint", async () => {
+    mockRequest.mockResolvedValue({
+      data: { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ id: 9001 }) }] } },
+    });
+    const options = {
+      idempotencyKey: "7406c980-4ca2-5c54-9071-36f33c4b35f8",
+      payloadFingerprint: "a".repeat(64),
+    };
+
+    await runInCtx(() => createRbacSystemAccount(PAYLOAD, {}, options));
+
+    const req = mockRequest.mock.calls[0][0];
+    expect(req.data.id).toBe(options.idempotencyKey);
+    expect(req.headers["Idempotency-Key"]).toBe(options.idempotencyKey);
+    expect(req.headers["X-Idempotency-Fingerprint"]).toBe(options.payloadFingerprint);
+  });
+
   it("forwards the EdDSA service JWT, tenant, internal secret, MCP accept, AND the acting user's X-User-* headers", async () => {
     mockRequest.mockResolvedValue({
       data: { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ id: 1 }) }] } },
@@ -94,8 +113,67 @@ describe("rbac.client createRbacSystemAccount — MCP transport + authz forwardi
     expect(headers["X-User-Email"]).toBe("op@corp.example");
     expect(headers["X-Employee-Id"]).toBe("9");
     expect(headers["X-User-Roles"]).toBe(JSON.stringify(["hr_admin"]));
-    expect(headers["X-User-Permissions"]).toBe(JSON.stringify({ "/rbac/api/employee": ["POST"] }));
+    expect(headers["X-User-Permissions"]).toBe(JSON.stringify(CTX.permissions));
     expect(headers["X-Is-Admin"]).toBe("false");
+  });
+
+  it("F-01 signs the verified ambient actor and canonical scope to match compatibility headers", async () => {
+    mockRequest.mockResolvedValue({
+      data: { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ id: 1 }) }] } },
+    });
+
+    await runInCtx(() => createRbacSystemAccount(PAYLOAD));
+
+    expect(mockSignServiceJwtEdDSA).toHaveBeenCalledWith({
+      userId: "42",
+      email: "op@corp.example",
+      employeeId: "9",
+      roles: ["hr_admin"],
+      scope: "rbac.employee.create hr.employee.read",
+      permissions: ["rbac.employee.create", "hr.employee.read"],
+    });
+    const headers = mockRequest.mock.calls[0][0].headers;
+    expect(JSON.parse(headers["X-User-Roles"])).toEqual(["hr_admin"]);
+    expect(JSON.parse(headers["X-User-Permissions"])).toEqual(CTX.permissions);
+  });
+
+  it("F-01 never signs or forwards an unverified ambient header-shaped actor", async () => {
+    mockRequest.mockResolvedValue({
+      data: { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ id: 1 }) }] } },
+    });
+    const forged = {
+      user: { userId: "999", email: "forged@example.test", employeeId: "999", roles: ["SUPER_ADMIN"] },
+      permissions: ["rbac.employee.create"],
+      actorVerified: false,
+    };
+
+    await mcpCtx.run(forged, () => createRbacSystemAccount(PAYLOAD, {
+      "X-User-Id": "999",
+      "X-User-Permissions": JSON.stringify(["rbac.employee.create"]),
+    }));
+
+    expect(mockSignServiceJwtEdDSA).toHaveBeenCalledWith({});
+    const headers = mockRequest.mock.calls[0][0].headers;
+    expect(headers["X-User-Id"]).toBeUndefined();
+    expect(headers["X-User-Permissions"]).toBeUndefined();
+  });
+
+  it("F-01 does not attach user metadata to a verified service-only actor", async () => {
+    mockRequest.mockResolvedValue({
+      data: { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ id: 1 }) }] } },
+    });
+    const serviceOnly = {
+      user: { userId: null, employeeId: null, roles: [] },
+      permissions: ["rbac.employee.create"],
+      actorVerified: true,
+    };
+
+    await mcpCtx.run(serviceOnly, () => createRbacSystemAccount(PAYLOAD));
+
+    expect(mockSignServiceJwtEdDSA).toHaveBeenCalledWith({});
+    const headers = mockRequest.mock.calls[0][0].headers;
+    expect(headers["X-User-Roles"]).toBeUndefined();
+    expect(headers["X-User-Permissions"]).toBeUndefined();
   });
 
   it("parses a text/event-stream (SSE) success frame", async () => {

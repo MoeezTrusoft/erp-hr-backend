@@ -4,18 +4,18 @@
 // folding the VERIFIED tenant into every where-clause via a local `withTenant`.
 // C.2 extends the same pattern to the REMAINING tenant-bearing HR tables
 // (leave / attendance / performance / training / recruitment / onboarding /
-// offboarding / …). To keep ONE definition of "fail-closed tenant scoping" the
-// helper is promoted here and shared; payrollService re-imports it.
+// offboarding / …). The helper is promoted here and shared; payrollService
+// re-imports it.
 //
 // TENANT PROVENANCE (T-P2.1 / X-02): the tenant is the RBAC Company.uuid string
 // (REQ-007). It arrives ONLY on req.user.tenantId, set by internalServiceGuard
 // from the VERIFIED service-JWT claim — NEVER from the spoofable x-tenant-id
 // header. Controllers thread that value into the service call as `tenantId`.
 //
-// FAIL-CLOSED is the contract:
-//   * withTenant ALWAYS applies a tenantId predicate, even when the tenant is
-//     null. A null tenant matches ONLY null-tenant (legacy/unbackfilled) rows,
-//     so a missing tenant can never widen a query to another tenant's data.
+// Interactive requests require a UUID tenant at the F-06 HTTP/ORM boundaries.
+// The null behavior below is retained only for explicit legacy migration and
+// backfill callers while nullable columns are reconciled.
+//
 //   * The verified tenant ALWAYS wins over any tenantId that leaked into the
 //     caller's predicate / create-data — a forged tenantId can never override
 //     the value resolved from the signed claim.
@@ -24,7 +24,7 @@
  * Fold the verified tenant into a Prisma where-clause.
  * @param {string|null|undefined} tenantId  verified RBAC Company.uuid
  * @param {object} [where]                   caller predicate
- * @returns {object} where-clause with the tenant scope applied (fail-closed)
+ * @returns {object} where-clause with the tenant scope applied
  */
 export const withTenant = (tenantId, where = {}) => ({
     ...where,
@@ -49,9 +49,8 @@ export const requireTenant = (tenantId) => {
 };
 
 /**
- * Stamp the verified tenant onto a create's `data`. The verified tenant wins
- * over any tenantId already present (fail-closed); a missing tenant stamps null
- * (a null-tenant row), never another tenant.
+ * Stamp the tenant onto create data. Null is reserved for explicit legacy
+ * migration/backfill callers; interactive traffic is rejected before this.
  * @param {string|null|undefined} tenantId
  * @param {object} [data]
  * @returns {object} data with tenantId applied
@@ -68,7 +67,7 @@ export const tenantData = (tenantId, data = {}) => ({
  * read/write helpers WITHOUT a tenant. To thread the verified tenant into those
  * services without breaking the legacy path, `tenantId === undefined` means
  * "no tenant scoping requested" and the predicate is returned untouched. A
- * PRESENT value (including `null`) applies the fail-closed `withTenant` scope.
+ * PRESENT value (including `null`) applies `withTenant`; null is migration-only.
  *
  * This is the single shared definition of the leave/payroll `scopedWhere`
  * shim so every newly-threaded service folds the tenant the SAME way.
@@ -82,7 +81,7 @@ export const scopedWhere = (tenantId, where = {}) =>
 /**
  * C.2 — backward-compatible create-stamp counterpart to scopedWhere. When no
  * tenant is requested (`undefined`) the data is returned untouched (legacy);
- * a present value (incl. null) stamps the verified tenant fail-closed.
+ * a present value (including null) stamps the tenant (migration-only for null).
  * @param {string|null|undefined} tenantId
  * @param {object} [data]
  * @returns {object}
