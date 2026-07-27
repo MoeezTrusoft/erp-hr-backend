@@ -63,6 +63,7 @@ import { registerLearningPathTools } from "./tools/learningPathTools.js";
 import { registerLifecycleComplianceTools } from "./tools/lifecycleComplianceTools.js";
 import { registerDevelopmentPlanTools } from "./tools/developmentPlanTools.js";
 import { registerLoanTools } from "./tools/loanTools.js";
+import { registerDeductionTools } from "./tools/deductionTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 
@@ -199,4 +200,5 @@ export function registerAllTools(server) {
   registerLifecycleComplianceTools(server);
   registerDevelopmentPlanTools(server);
   registerLoanTools(server);
+  registerDeductionTools(server);
 }
