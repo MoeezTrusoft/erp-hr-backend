@@ -229,7 +229,7 @@ describe('C.2 offboarding — tenant scoping', () => {
 
     it('createOffboarding stamps tenantId', async () => {
         prismaMock.offboardingChecklist.create.mockResolvedValue({ id: 1 });
-        await offboarding.createOffboarding({ employeeId: 3, tenantId: TENANT_A });
+        await offboarding.createOffboarding({ employeeId: 3, exitDate: '2026-12-31', tenantId: TENANT_A });
         expect(prismaMock.offboardingChecklist.create.mock.calls[0][0].data.tenantId).toBe(TENANT_A);
     });
 });

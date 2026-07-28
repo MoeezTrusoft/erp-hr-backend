@@ -41,12 +41,12 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockTransaction.mockImplementation(async (fn) => {
     const tx = {
-      employee: { create: mockEmployeeCreate.mockResolvedValue(CREATED) },
+      $executeRaw: jest.fn().mockResolvedValue([]),
+      employee: { create: mockEmployeeCreate.mockResolvedValue(CREATED), findUnique: mockEmployeeFindUnique, update: jest.fn() },
       emergencyContacts: { createMany: mockEmergencyCreateMany },
       employeeMedia: { createMany: mockMediaCreateMany },
     };
     mockEmployeeFindUnique.mockResolvedValue({ ...CREATED, employeeMedia: [] });
-    tx.employee.findUnique = mockEmployeeFindUnique;
     return fn(tx);
   });
   mockUploadFileToDAM.mockResolvedValue({ raw: true });

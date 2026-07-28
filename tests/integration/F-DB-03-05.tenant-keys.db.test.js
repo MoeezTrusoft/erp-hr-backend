@@ -38,16 +38,18 @@ describeDatabase("F-DB-03/F-DB-04 two-tenant natural keys", () => {
   }, 180_000);
 
   afterAll(async () => {
-    await db?.end();
+    try { await db?.end(); } catch {}
     if (admin) {
-      await admin.query(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
-        [databaseName],
-      );
-      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-      await admin.end();
+      try {
+        await admin.query(
+          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+          [databaseName],
+        );
+      } catch {}
+      try { await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`); } catch {}
+      try { await admin.end(); } catch {}
     }
-  });
+  }, 60_000);
 
   test.each([
     ["payroll_earning_types", "code", "BASE", "name, type", "'Base salary', 'EARNING'", "updated_at"],

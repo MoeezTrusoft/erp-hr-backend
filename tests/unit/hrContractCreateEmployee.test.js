@@ -21,8 +21,10 @@ const mockMediaCreateMany = jest.fn();
 const mockTransaction = jest.fn();
 const mockLogAction = jest.fn();
 
+const mockEmployeeUpdate = jest.fn();
+
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique },
+  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: mockEmployeeUpdate },
   position: { findUnique: mockPositionFindUnique },
   region: { findUnique: mockRegionFindUnique },
   emergencyContacts: { createMany: mockEmergencyCreateMany },

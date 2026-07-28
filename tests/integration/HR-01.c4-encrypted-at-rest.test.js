@@ -31,8 +31,18 @@ const TENANT = '74010000-0000-4000-8000-000000000001';
 
 let dbAvailable = false;
 const created = { employees: [], terms: [], banks: [] };
+let savedEncryptionKey;
+let savedBlindIndexKey;
 
 beforeAll(async () => {
+    savedEncryptionKey = process.env.HR_C4_ENCRYPTION_KEY;
+    savedBlindIndexKey = process.env.HR_C4_BLIND_INDEX_KEY;
+    if (!process.env.HR_C4_ENCRYPTION_KEY) {
+        process.env.HR_C4_ENCRYPTION_KEY = 'RpGAX25dxV8Prwx61cTjO3Z48ESk+0qap3sXYRB5lIs=';
+    }
+    if (!process.env.HR_C4_BLIND_INDEX_KEY) {
+        process.env.HR_C4_BLIND_INDEX_KEY = '5VAHsWnr6plLECxn2g3sJZpnryiODjPshS9/w+/T3Zc=';
+    }
     try {
         await prisma.$queryRaw`SELECT 1`;
         dbAvailable = true;
@@ -42,6 +52,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+    if (savedEncryptionKey !== undefined) process.env.HR_C4_ENCRYPTION_KEY = savedEncryptionKey;
+    else delete process.env.HR_C4_ENCRYPTION_KEY;
+    if (savedBlindIndexKey !== undefined) process.env.HR_C4_BLIND_INDEX_KEY = savedBlindIndexKey;
+    else delete process.env.HR_C4_BLIND_INDEX_KEY;
     if (!dbAvailable) return;
     if (created.banks.length) await prisma.bankDetail.deleteMany({ where: { id: { in: created.banks } } });
     if (created.terms.length) await prisma.employmentTerms.deleteMany({ where: { id: { in: created.terms } } });

@@ -80,7 +80,7 @@ async function loadModules() {
 
 beforeAll(async () => {
   await loadModules();
-});
+}, 30000);
 
 function createApp(verifiedClaims) {
   const app = express();

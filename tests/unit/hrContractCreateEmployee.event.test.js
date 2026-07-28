@@ -30,12 +30,13 @@ const mockTransaction = jest.fn();
 const mockLogAction = jest.fn();
 
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique },
+  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: jest.fn() },
   position: { findUnique: mockPositionFindUnique },
   region: { findUnique: mockRegionFindUnique },
   emergencyContacts: { createMany: mockEmergencyCreateMany },
   employeeMedia: { createMany: mockMediaCreateMany },
   outboxEvent: { create: mockOutboxCreate },
+  $executeRaw: jest.fn().mockResolvedValue([]),
   $transaction: mockTransaction,
 };
 
