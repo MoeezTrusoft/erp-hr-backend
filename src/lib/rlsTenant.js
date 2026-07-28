@@ -110,6 +110,8 @@ const RLS_MODELS = new Set([
     'Employee', 'OutboxEvent',
     // F-03 — tenant-owned durable RBAC provisioning projection.
     'SystemAccountProvisioning',
+    // Loan management (20260727162833_loan_management) — added post-fleet.
+    'Loan', 'LoanRepayment',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

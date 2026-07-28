@@ -27,3 +27,12 @@ RITUAL: (start) read STATE.md + your phase task + cited doc sections;
           attendance socket retirement plan (BE-§7.2 / X-13).
 - **P3**  MCP facade to ARCH-05 §12 conformance (parity, outbox-on-tools,
           operations for heavy); naming decision executed (D-12).
+
+## LESSONS LEARNED
+- **Always check RBAC permissions exist before registering tools** — permission keys like `hr:deductions:VIEW` must be seeded in the DB or the tool returns 403.
+- **Always verify tools work end-to-end after deployment** — curl or Bruno test, not just `git push`.
+- **Always run tests before commit** — `node --experimental-vm-modules node_modules/jest/bin/jest.js`
+- **Server git pull before deploy** — deploy.sh uses the server's local repo, not the remote. Always `git pull` on the server before deploying.
+- **assertPermission expects HTTP methods (GET/POST/PUT/DELETE), NOT action names** — `METHOD_ACTION` maps POST→CREATE, PUT→EDIT. Passing "CREATE" directly silently bypasses the check.
+- **Check Prisma schema relations before including** — `SalaryComponent` has no `assignments` relation. Verify `@@map` and model relations before writing `include:` clauses.
+- **KPI aggregates must not use relation filters on unrelated models** — `PayrollDeduction` aggregate with `deductionType` filter can fail if the relation path is wrong. Use simple `count()` queries instead.
