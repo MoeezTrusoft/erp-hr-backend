@@ -21,6 +21,13 @@ export async function requireEmployeeActor(user) {
     return employeeId;
   }
 
+  // Admin bypass: admins without a linked Employee record can still act
+  // (e.g. create positions, create employees). Pass null as the actor —
+  // downstream services must handle null actor gracefully for admin callers.
+  if (user?.isAdmin === true) {
+    return null;
+  }
+
   // Fallback: look up Employee by email (work_email or email) within the tenant.
   const email = user?.email;
   if (email) {

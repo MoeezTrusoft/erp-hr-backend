@@ -22,12 +22,12 @@ export function buildContextFromHeaders(req) {
   const verified = req.internalService;
   const rawTenant = verified?.tenantId;
   const tenantId = typeof rawTenant === "string" && rawTenant.trim() ? rawTenant.trim() : null;
-  // SEC-5: x-is-admin is client-forgeable and is NOT honored as authority. The
-  // verified service-JWT carries no admin flag, so admin status fails closed to
-  // false here. Actor identity and canonical scope below come from its verified
-  // claims; compatibility X-User-* headers are not authorization inputs.
-  const isAdmin = false;
+  // SEC-5: x-is-admin is client-forgeable and is NOT honored as authority.
+  // The verified service-JWT carries `admin: true` when the caller IS an RBAC
+  // admin (serviceJwt.js:219), so we read it from the verified claims — NOT
+  // from the spoofable x-is-admin header.
   const claims = verified?.claims || {};
+  const isAdmin = claims.admin === true || claims.isAdmin === true;
   const rawScope = claims.scope ?? claims.permissions;
   const permissions = Array.isArray(rawScope)
     ? rawScope.filter((item) => typeof item === "string")
