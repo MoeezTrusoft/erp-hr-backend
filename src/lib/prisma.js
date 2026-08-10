@@ -42,7 +42,7 @@ const DATABASE_URL_WITH_TIMEOUT = withStatementTimeout(process.env.DATABASE_URL)
 // (and dev-time reloads) share exactly one encrypted client.
 const prisma =
     globalForPrisma.__hrPrisma ??
-    new PrismaClient({ adapter: new PrismaPg({ connectionString: DATABASE_URL_WITH_TIMEOUT }),
+    new PrismaClient({ adapter: new PrismaPg({ connectionString: DATABASE_URL_WITH_TIMEOUT, pool: { max: parseInt(process.env.DB_POOL_MAX, 10) || 5 } }),
         log: process.env.PRISMA_LOG_LEVEL
             ? process.env.PRISMA_LOG_LEVEL.split(',').map((s) => s.trim()).filter(Boolean)
             : ['warn', 'error'],
