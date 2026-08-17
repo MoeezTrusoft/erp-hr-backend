@@ -20,6 +20,11 @@ import {
 import {
   listGradeBands,
   upsertGradeBand,
+  createGradeLevel,
+  updateGradeLevel,
+  deleteGradeLevel,
+  assignComponentsToGrade,
+  unassignComponents,
 } from "../../services/gradeBand.service.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -160,5 +165,83 @@ export function registerSalaryComponentTools(server) {
       const data = await upsertGradeBand({ tenantId: user.tenantId, ...args });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_grade_band_upsert")
+  );
+
+  server.tool(
+    "hr_grade_create",
+    "Create a grade level (Payroll Setup → Salary Structure). name is required; description and the salary band (min/mid/max + currency) are optional. Validates minSalary <= midSalary <= maxSalary when all present.",
+    {
+      name: z.string().min(1).describe("Grade name, e.g. \"G5\" / \"Senior\" (GradeLevel.name)"),
+      description: z.string().optional().describe("Optional grade description (GradeLevel.description)"),
+      minSalary: z.coerce.number().optional().describe("Band minimum salary in major units (GradeLevel.minSalary)"),
+      midSalary: z.coerce.number().optional().describe("Band midpoint salary in major units (GradeLevel.midSalary)"),
+      maxSalary: z.coerce.number().optional().describe("Band maximum salary in major units (GradeLevel.maxSalary)"),
+      bandCurrency: z.string().optional().describe("ISO 4217 currency code for the band, e.g. PKR (GradeLevel.bandCurrency)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", RESOURCE, user.isAdmin);
+      const data = await createGradeLevel({ tenantId: user.tenantId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_grade_create")
+  );
+
+  server.tool(
+    "hr_grade_update",
+    "Rename a grade level or edit its description. Use hr_grade_band_upsert to change the salary band figures.",
+    {
+      id: z.coerce.number().int().describe("GradeLevel.id to update (required)"),
+      name: z.string().min(1).optional().describe("New grade name (GradeLevel.name)"),
+      description: z.string().optional().describe("New description (pass empty string to clear) (GradeLevel.description)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
+      const data = await updateGradeLevel({ tenantId: user.tenantId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_grade_update")
+  );
+
+  server.tool(
+    "hr_grade_delete",
+    "Delete a grade level. Refused (400) if any employee is assigned to the grade, or if any salary component is still assigned to it (unassign them first with hr_grade_unassign_components).",
+    {
+      id: z.coerce.number().int().describe("GradeLevel.id to delete (required)"),
+    },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", RESOURCE, user.isAdmin);
+      const data = await deleteGradeLevel({ tenantId: user.tenantId, id });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_grade_delete")
+  );
+
+  server.tool(
+    "hr_grade_assign_components",
+    "Assign one or more salary components to a grade level (sets SalaryComponent.gradeLevelId). A component belongs to at most one grade, so assigning moves it to this grade. Cross-tenant / unknown component ids are skipped (reported in `skipped`).",
+    {
+      gradeLevelId: z.coerce.number().int().describe("GradeLevel.id to assign the components to (required)"),
+      componentIds: z.array(z.coerce.number().int()).min(1).describe("SalaryComponent.id list to assign to this grade"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
+      const data = await assignComponentsToGrade({ tenantId: user.tenantId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_grade_assign_components")
+  );
+
+  server.tool(
+    "hr_grade_unassign_components",
+    "Unassign salary components from any grade (clears SalaryComponent.gradeLevelId → null). Cross-tenant / unknown ids are skipped (reported in `skipped`).",
+    {
+      componentIds: z.array(z.coerce.number().int()).min(1).describe("SalaryComponent.id list to detach from their grade"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
+      const data = await unassignComponents({ tenantId: user.tenantId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_grade_unassign_components")
   );
 }

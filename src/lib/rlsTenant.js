@@ -101,6 +101,8 @@ const RLS_MODELS = new Set([
     // Payroll Setup config tables — new in 20260724_hr_payroll_setup.
     'SalaryComponent', 'PayrollCalendar', 'PayrollApprovalMatrix', 'PayrollRuleConfig',
     'PayrollConfigMeta', 'PayrollConfigSnapshot',
+    // Payroll Setup Pay Rules (discrete rows) — new in 20260725120000_hr_payroll_rules.
+    'PayrollRule',
     // Payroll runtime + claims tables — new in 20260724_hr_payroll_runtime.
     'PayslipQuestion', 'ClaimItem', 'ClaimApproval', 'ClaimInformation',
     'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',

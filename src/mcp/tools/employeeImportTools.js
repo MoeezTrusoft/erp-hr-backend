@@ -7,9 +7,10 @@
 // Both return the file as base64 (same delivery pattern as hr_employees_export).
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { generateImportTemplate, runEmployeeImport } from "../../services/employeeImport.service.js";
+import { getLoginPasswords } from "../../services/loginCredential.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -21,12 +22,12 @@ export function registerEmployeeImportTools(server) {
   // ── Download the empty template (gate: hr:employee VIEW) ────────────────────
   server.tool(
     "hr_employees_import_template",
-    "Download the empty employee bulk-import spreadsheet (.xlsx) — headers, dropdowns, an Example tab and an Instructions tab. Returns the file as base64. Fill the 'Employees' tab and upload it to hr_employees_import.",
+    "Download the empty employee bulk-import spreadsheet (.xlsx) — friendly headers, dropdowns (gender/marital status/department/grade/manager/employment type/status/work mode/currency/create-login/emergency relationship), date pickers, an Example tab and an Instructions tab. Manager/department/position/grade dropdowns are pre-filled from THIS tenant's records. Returns the file as base64. Fill the 'Employees' tab and upload it to hr_employees_import.",
     {},
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
-      const data = await generateImportTemplate();
+      const data = await generateImportTemplate({ tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employees_import_template")
   );
@@ -72,5 +73,26 @@ export function registerEmployeeImportTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employees_import")
+  );
+
+  // ── Read back auto-generated login passwords (gate: hr:employee EXPORT) ──────
+  server.tool(
+    "hr_employee_login_password_get",
+    "Read the auto-generated login password(s) stored for imported employees (decrypted from the C4-encrypted copy). Pass employeeId for one, employeeIds for several, or all:true for every employee that has a stored password. SENSITIVE — gated on hr:employee EXPORT. Returns [{ employeeId, employeeCode, name, workEmail, loginEmail, password }].",
+    {
+      employeeId: z.coerce.number().int().optional().describe("Single Employee.id to read the password for."),
+      employeeIds: z.array(z.coerce.number().int()).optional().describe("Several Employee.id values to read passwords for."),
+      all: z.coerce.boolean().optional().describe("true = return every employee in the tenant that has a stored login password. Ignored if employeeId/employeeIds is given."),
+    },
+    withToolError(async ({ employeeId, employeeIds, all }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Reading credentials is elevated — require the EXPORT action on top of VIEW.
+      if (!hasPermission(permissions, "hr:employee", "EXPORT")) {
+        throw Object.assign(new Error("Insufficient permissions: hr:employee:EXPORT"), { status: 403 });
+      }
+      const data = await getLoginPasswords({ tenantId: user.tenantId, employeeId, employeeIds, all });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_login_password_get")
   );
 }

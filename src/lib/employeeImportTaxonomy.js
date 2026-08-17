@@ -7,51 +7,108 @@
 
 // ── Column contract ──────────────────────────────────────────────────────────
 // key      sheet header (snake_case) the user fills
+// label    friendly, non-technical column title shown to HR in the sheet header
 // required hard-required (row errors if blank)
 // kind     req | key | opt  (drives template header colour)
 // enum     canonical dropdown values (see ENUM_SYNONYMS for the fix map)
+// dynamic  a tenant-populated dropdown ("manager"|"grade"|"department"|
+//          "position") sourced from the hidden Lists sheet at template-gen time
+// group    non-employee-column groups handled specially on commit
+//          ("emergency" → EmergencyContacts row, "salary" → EmploymentTerms +
+//          auto-segregated SalaryComponents)
 // create   the hr_employee_create arg this column maps to (camelCase)
-// note     header comment shown in the template
+// direct   an Employee column the create contract can't set → post-write patch
+// note     hover help shown in the template (plain English, for HR)
 export const IMPORT_COLUMNS = [
-  { key: "first_name", kind: "req", required: true, create: "firstName", note: "REQUIRED. Given name. Auto-fixed: trimmed + Title-Cased." },
-  { key: "last_name", kind: "req", required: true, create: "lastName", note: "REQUIRED. Family name. Auto-fixed: trimmed + Title-Cased." },
-  { key: "middle_name", kind: "opt", create: "middleName", note: "Optional." },
-  { key: "preferred_name", kind: "opt", create: "preferredName", note: "Optional. Display / nickname." },
-  { key: "employee_code", kind: "key", create: "employeeCode", note: "BIOMETRIC KEY. Must equal the user-ID enrolled on the ZKTeco device so punches auto-map to this employee. Must be UNIQUE. Blank → auto-generated (biometric won't map until reconciled)." },
-  { key: "gender", kind: "opt", enum: ["Male", "Female", "Other"], create: "gender", note: "Dropdown. Synonyms auto-fixed (M/F → Male/Female)." },
-  { key: "date_of_birth", kind: "opt", date: true, create: "dateOfBirth", note: "Date. YYYY-MM-DD preferred; other formats auto-parsed." },
-  { key: "marital_status", kind: "opt", enum: ["Single", "Married", "Divorced", "Widowed"], create: "maritalStatus", note: "Dropdown." },
-  { key: "nationality", kind: "opt", create: "nationality", note: "e.g. Pakistani." },
-  { key: "national_id_type", kind: "opt", enum: ["CNIC", "Passport", "Driving License", "Other"], create: "nationalIdType", note: "Dropdown." },
-  { key: "national_id_number", kind: "opt", create: "nationalIdNumber", note: "e.g. CNIC 35202-1234567-8." },
-  { key: "personal_email", kind: "opt", email: true, create: "personalEmail", note: "Validated + lower-cased." },
-  { key: "work_email", kind: "opt", email: true, unique: true, create: "workEmail", note: "Validated + lower-cased. Must be unique." },
-  { key: "mobile_phone", kind: "opt", phone: true, create: "mobilePhone", note: "Auto-fixed: spaces/dashes stripped." },
-  { key: "work_phone", kind: "opt", phone: true, create: "workPhone", note: "Optional." },
-  { key: "current_address", kind: "opt", create: "residentialAddress", note: "Optional." },
-  { key: "city", kind: "opt", create: "city", note: "Optional." },
-  { key: "state_province", kind: "opt", create: "stateProvince", note: "Optional." },
-  { key: "country", kind: "opt", create: "country", note: "Optional. Defaults to Pakistan if blank." },
-  { key: "postal_code", kind: "opt", create: "postalCode", note: "Optional." },
-  { key: "job_title", kind: "opt", create: "jobTitle", note: "Free text, e.g. Software Engineer." },
-  { key: "department", kind: "opt", lookup: "department", create: "departmentId", note: "Match by NAME to an RBAC department. Unknown = flagged with nearest suggestion." },
-  { key: "position", kind: "opt", lookup: "position", create: "positionId", note: "Match by NAME to a position. Unknown = flagged." },
-  { key: "manager", kind: "opt", lookup: "manager", create: "managerId", note: "Direct supervisor — match by employee_code OR full name. Unknown = flagged." },
-  { key: "employment_type", kind: "opt", enum: ["Full-time", "Part-time", "Contract", "Intern", "Temporary"], create: "employmentType", note: "Dropdown. Synonyms auto-fixed (FT/Permanent → Full-time)." },
-  { key: "employment_status", kind: "opt", enum: ["Active", "Inactive", "On Leave", "Terminated"], create: "employmentStatus", note: "Dropdown. Blank defaults to Active." },
-  { key: "hire_date", kind: "opt", date: true, create: "hireDate", note: "Date. YYYY-MM-DD preferred." },
-  { key: "joining_date", kind: "opt", date: true, create: "joiningDate", note: "Date. YYYY-MM-DD preferred." },
-  { key: "probation_end_date", kind: "opt", date: true, create: "probationEndDate", note: "Date. YYYY-MM-DD preferred." },
-  { key: "work_mode", kind: "opt", enum: ["On-site", "Remote", "Hybrid"], direct: "work_mode", note: "Dropdown. Synonyms auto-fixed (WFH → Remote). Set directly on the employee post-create (not part of the create contract)." },
-  { key: "fte", kind: "opt", create: "fte", note: "Number 0.0–1.0. Blank defaults to 1. Out-of-range clamped." },
-  { key: "create_login", kind: "opt", enum: ["yes", "no"], create: "createSystemAccount", note: "Dropdown. 'yes' provisions an RBAC login." },
-  { key: "login_email", kind: "opt", email: true, create: "systemEmail", note: "Login email (create_login=yes). Blank → work_email then personal_email." },
-  { key: "role", kind: "opt", lookup: "role", create: "roleId", note: "RBAC role NAME — REQUIRED when create_login=yes. Match by name." },
-  { key: "password", kind: "opt", create: "password", note: "Optional. Blank = one-time password auto-generated and returned." },
+  { key: "first_name", kind: "req", required: true, label: "First Name", create: "firstName", note: "REQUIRED. Given name. Auto-fixed: trimmed + Title-Cased." },
+  { key: "last_name", kind: "req", required: true, label: "Last Name", create: "lastName", note: "REQUIRED. Family name. Auto-fixed: trimmed + Title-Cased." },
+  { key: "middle_name", kind: "opt", label: "Middle Name", create: "middleName", note: "Optional." },
+  { key: "preferred_name", kind: "opt", label: "Preferred / Nick Name", create: "preferredName", note: "Optional. Display / nickname." },
+  { key: "employee_code", kind: "key", label: "Employee Code (ERP)", create: "employeeCode", note: "The internal ERP code for this employee. Must be UNIQUE. Blank → auto-generated. (This is NOT the biometric device ID — that's the next column.)" },
+  { key: "biometric_id", kind: "key", label: "Biometric / Device ID", direct: "biometric_id", note: "★ BIOMETRIC KEY. The exact user-ID enrolled on the ZKTeco attendance device so punches auto-map to this employee. Must be UNIQUE. Optional (attendance won't auto-map until set)." },
+  { key: "gender", kind: "opt", label: "Gender", enum: ["Male", "Female", "Other"], create: "gender", note: "Pick from the dropdown. Synonyms auto-fixed (M/F → Male/Female)." },
+  { key: "date_of_birth", kind: "opt", label: "Date of Birth", date: true, create: "dateOfBirth", note: "Pick a date. YYYY-MM-DD preferred; other formats auto-parsed." },
+  { key: "marital_status", kind: "opt", label: "Marital Status", enum: ["Single", "Married", "Divorced", "Widowed"], create: "maritalStatus", note: "Pick from the dropdown." },
+  { key: "nationality", kind: "opt", label: "Nationality", create: "nationality", note: "e.g. Pakistani." },
+  { key: "national_id_type", kind: "opt", label: "National ID Type", enum: ["CNIC", "Passport", "Driving License", "Other"], create: "nationalIdType", note: "Pick from the dropdown." },
+  { key: "national_id_number", kind: "opt", label: "National ID Number", create: "nationalIdNumber", note: "e.g. CNIC 35202-1234567-8." },
+  { key: "personal_email", kind: "opt", label: "Personal Email", email: true, create: "personalEmail", note: "Validated + lower-cased." },
+  { key: "work_email", kind: "opt", label: "Work Email", email: true, unique: true, create: "workEmail", note: "Validated + lower-cased. Must be unique. Used as the login email if a login is created." },
+  { key: "mobile_phone", kind: "opt", label: "Mobile Phone", phone: true, create: "mobilePhone", note: "Auto-fixed: spaces/dashes stripped." },
+  { key: "work_phone", kind: "opt", label: "Work Phone", phone: true, create: "workPhone", note: "Optional." },
+  { key: "current_address", kind: "opt", label: "Current Address", create: "residentialAddress", note: "Optional." },
+  { key: "city", kind: "opt", label: "City", create: "city", note: "Optional." },
+  { key: "state_province", kind: "opt", label: "State / Province", create: "stateProvince", note: "Optional." },
+  { key: "country", kind: "opt", label: "Country", create: "country", note: "Optional. Defaults to Pakistan if blank." },
+  { key: "postal_code", kind: "opt", label: "Postal Code", create: "postalCode", note: "Optional." },
+  { key: "job_title", kind: "opt", label: "Job Title", create: "jobTitle", note: "Free text, e.g. Software Engineer." },
+  { key: "department", kind: "opt", label: "Department", lookup: "department", dynamic: "department", create: "departmentId", note: "Pick from the dropdown (existing departments). Unknown names are flagged with the nearest suggestion." },
+  { key: "position", kind: "opt", label: "Position", lookup: "position", dynamic: "position", create: "positionId", note: "Pick from the dropdown (existing positions). Unknown = flagged." },
+  { key: "grade", kind: "opt", label: "Grade Level", lookup: "grade", dynamic: "grade", direct: "gradeLevelId", note: "Pick from the dropdown (existing grade levels). Unknown = flagged." },
+  { key: "manager", kind: "opt", label: "Manager", lookup: "manager", dynamic: "manager", create: "managerId", note: "Pick the manager's Employee Code from the dropdown — these are the codes you enter in THIS sheet, so a manager and their reports can be added together. (An existing employee's code works too.)" },
+  { key: "employment_type", kind: "opt", label: "Employment Type", enum: ["Full-time", "Part-time", "Contract", "Intern", "Temporary"], create: "employmentType", note: "Pick from the dropdown. Synonyms auto-fixed (FT/Permanent → Full-time)." },
+  { key: "employment_status", kind: "opt", label: "Employment Status", enum: ["Active", "Inactive", "On Leave", "Terminated"], create: "employmentStatus", note: "Pick from the dropdown. Blank defaults to Active." },
+  { key: "hire_date", kind: "opt", label: "Hire Date", date: true, create: "hireDate", note: "Pick a date. YYYY-MM-DD preferred." },
+  { key: "joining_date", kind: "opt", label: "Joining Date", date: true, create: "joiningDate", note: "Pick a date. YYYY-MM-DD preferred." },
+  { key: "probation_end_date", kind: "opt", label: "Probation End Date", date: true, create: "probationEndDate", note: "Pick a date. YYYY-MM-DD preferred." },
+  { key: "work_mode", kind: "opt", label: "Work Mode", enum: ["On-site", "Remote", "Hybrid"], direct: "work_mode", note: "Pick from the dropdown. Synonyms auto-fixed (WFH → Remote)." },
+  { key: "fte", kind: "opt", label: "FTE (0-1)", create: "fte", note: "Number 0.0–1.0 (1 = full-time). Blank defaults to 1. Out-of-range clamped." },
+  { key: "emergency_contact_name", kind: "opt", label: "Emergency Contact Name", group: "emergency", note: "Full name of the emergency contact. Optional." },
+  { key: "emergency_contact_relationship", kind: "opt", label: "Emergency Contact Relationship", group: "emergency", enum: ["Spouse", "Parent", "Sibling", "Child", "Friend", "Relative", "Other"], note: "Pick from the dropdown." },
+  { key: "emergency_contact_phone", kind: "opt", label: "Emergency Contact Phone", group: "emergency", phone: true, note: "Phone of the emergency contact." },
+  { key: "emergency_contact_email", kind: "opt", label: "Emergency Contact Email", group: "emergency", email: true, note: "Email of the emergency contact (optional)." },
+  { key: "total_salary", kind: "opt", label: "Total Monthly Salary", group: "salary", money: true, note: "Total gross monthly salary. The system auto-splits it into Basic 45%, House Rent 20%, Transport 15%, Medical 12.5%, Utilities 7.5%." },
+  { key: "salary_currency", kind: "opt", label: "Salary Currency", group: "salary", enum: ["PKR", "USD", "EUR", "GBP", "AED", "SAR"], note: "Pick the currency (default PKR)." },
+  { key: "create_login", kind: "opt", label: "Create Login? (Yes/No)", enum: ["yes", "no"], create: "createSystemAccount", note: "Pick Yes to give this employee an ERP login. The role and a secure password are assigned automatically." },
+  { key: "login_email", kind: "opt", label: "Login Email", email: true, create: "systemEmail", note: "Login email (used only if Create Login = Yes). Blank → uses the Work Email." },
 ];
+
+// ── Salary auto-segregation ──────────────────────────────────────────────────
+// HR enters ONE figure (total monthly salary); the backend segregates it into a
+// standard structure. BASIC is stored on EmploymentTerms.baseSalary (the payroll
+// engine's base); the rest are EARNING SalaryComponents computed as a PERCENTAGE
+// of BASIC. The preview engine computes GROSS = BASIC + Σ(pct/100 · BASIC), so
+// each component's stored percent is (pctOfTotal / BASIC_PCT_OF_TOTAL · 100) and
+// GROSS reconstructs the entered total exactly.
+export const BASIC_PCT_OF_TOTAL = 45;
+export const SALARY_SPLIT = [
+  { code: "HRA", name: "House Rent Allowance", pctOfTotal: 20 },
+  { code: "CONV", name: "Transport Allowance", pctOfTotal: 15 },
+  { code: "MED", name: "Medical Allowance", pctOfTotal: 12.5 },
+  { code: "UTIL", name: "Utilities Allowance", pctOfTotal: 7.5 },
+];
+// Percent-of-BASIC to store on each SalaryComponent (see note above).
+export const componentPctOfBasic = (pctOfTotal) => (pctOfTotal / BASIC_PCT_OF_TOTAL) * 100;
+
+// Parse a money cell: strip currency symbols / thousands separators / spaces.
+export function parseMoney(raw) {
+  const c = cleanCell(raw);
+  if (c === "") return { value: null, valid: true, blank: true };
+  const n = Number(String(c).replace(/[^0-9.\-]/g, ""));
+  if (!Number.isFinite(n) || n < 0) return { value: null, valid: false };
+  return { value: Math.round(n * 100) / 100, valid: true, blank: false };
+}
 
 export const IMPORT_HEADERS = IMPORT_COLUMNS.map((c) => c.key);
 export const COLUMN_BY_KEY = Object.fromEntries(IMPORT_COLUMNS.map((c) => [c.key, c]));
+
+// Friendly header shown to HR (falls back to the machine key).
+export const headerLabel = (c) => c.label || c.key;
+
+// Resolve an uploaded header cell back to a column key. The template now uses
+// friendly labels ("First Name") as headers, but older sheets may use the
+// snake_case key ("first_name") — accept BOTH (and any punctuation/spacing).
+const normHeader = (s) =>
+  String(s == null ? "" : s).replace(/[*★]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export const HEADER_TO_KEY = (() => {
+  const m = {};
+  for (const c of IMPORT_COLUMNS) {
+    m[normHeader(c.key)] = c.key;
+    if (c.label) m[normHeader(c.label)] = c.key;
+  }
+  return m;
+})();
+export const headerToKey = (text) => HEADER_TO_KEY[normHeader(text)] || null;
 
 // ── Enum synonym maps (lowercased key → canonical) ───────────────────────────
 const syn = (canon, alts) => Object.fromEntries(alts.map((a) => [a.toLowerCase(), canon]));
@@ -94,6 +151,15 @@ export const ENUM_SYNONYMS = {
   create_login: {
     ...syn("yes", ["yes", "y", "true", "1", "t"]),
     ...syn("no", ["no", "n", "false", "0", "f", ""]),
+  },
+  emergency_contact_relationship: {
+    ...syn("Spouse", ["spouse", "husband", "wife", "partner"]),
+    ...syn("Parent", ["parent", "father", "mother", "dad", "mom", "mum", "guardian"]),
+    ...syn("Sibling", ["sibling", "brother", "sister", "bro", "sis"]),
+    ...syn("Child", ["child", "son", "daughter", "kid"]),
+    ...syn("Friend", ["friend", "colleague", "coworker", "co-worker"]),
+    ...syn("Relative", ["relative", "uncle", "aunt", "cousin", "nephew", "niece", "in-law", "family"]),
+    ...syn("Other", ["other", "o"]),
   },
 };
 

@@ -40,6 +40,7 @@ import { registerLeaveReportTools } from "./tools/leaveReportTools.js";
 import { registerOvertimeShiftReportTools } from "./tools/overtimeShiftReportTools.js";
 import { registerAuditTrailTools } from "./tools/auditTrailTools.js";
 import { registerSalaryComponentTools } from "./tools/salaryComponentTools.js";
+import { registerPayrollRuleTools } from "./tools/payrollRuleTools.js";
 import { registerPayrollConfigTools } from "./tools/payrollConfigTools.js";
 import { registerPayrollSetupActionsTools } from "./tools/payrollSetupActionsTools.js";
 import { registerPayrollPreviewTools } from "./tools/payrollPreviewTools.js";
@@ -177,6 +178,7 @@ export function registerAllTools(server) {
   registerOvertimeShiftReportTools(server);
   registerAuditTrailTools(server);
   registerSalaryComponentTools(server);
+  registerPayrollRuleTools(server);
   registerPayrollConfigTools(server);
   registerPayrollSetupActionsTools(server);
   registerPayrollPreviewTools(server);

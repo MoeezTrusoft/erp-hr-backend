@@ -260,6 +260,8 @@ model Employee {
   preferred_name       String?
   nationality_id_type  String?
   employee_code        String?   @db.VarChar(50)
+  biometric_id         String?   @db.VarChar(64) // ZKTeco device enrollment user-ID; attendance punches join on this (falls back to employee_code). Bulk-import "Biometric / Device ID".
+  login_password       String?   // C4-encrypted (AES-256-GCM envelope) copy of the auto-generated login password, for HR read-back via hr_employee_login_password_get. RBAC holds the real hash.
   date_of_birth        DateTime?
   joining_date         DateTime?
   probation_end_date   DateTime?
@@ -422,6 +424,7 @@ model Employee {
   // HR-BENEFITS-04 — benefit enrollments for this employee.
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 
+  @@index([biometric_id])
   @@index([positionId])
   @@index([businessUnitId])
   @@index([gradeLevelId])
@@ -1983,6 +1986,30 @@ model PayrollRuleConfig {
 
   @@unique([tenantId])
   @@map("payroll_rule_config")
+}
+
+// Payroll Setup → Pay Rules: discrete, tenant-owned policy rules (an array on
+// the screen). Each rule carries a human title + description; the backend
+// camel-cases the title into a stable `ruleKey` (e.g. "Mid Month Joiner
+// Proration" → "midMonthJoinerProration") used as the row's machine key
+// (unique per tenant). Distinct from the singleton PayrollRuleConfig toggles.
+model PayrollRule {
+  id          Int          @id @default(autoincrement())
+  ruleKey     String // camelCased from title; unique per tenant (machine key)
+  title       String // human-entered rule title
+  description String? // human-entered rule description
+  enabled     Boolean      @default(true)
+  sortOrder   Int          @default(0)
+  status      ConfigStatus @default(DRAFT) // draft until the config set is published
+  version     Int          @default(1)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, ruleKey])
+  @@index([tenantId])
+  @@map("payroll_rules")
 }
 
 // Draft/Publish state for the whole payroll config set (one row per tenant).
