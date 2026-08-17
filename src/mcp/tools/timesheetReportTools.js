@@ -73,8 +73,8 @@ export function registerTimesheetReportTools(server) {
     {
       q: z.string().optional().describe("Employee-name contains, case-insensitive."),
       status: z.enum(["on-time", "late", "half-day", "absent"]).optional().describe("Display status filter — one of on-time | late | half-day | absent (mapped to the stored enum)."),
-      from: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive start of the date range on Attendance.date."),
-      to: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive end of the date range on Attendance.date."),
+      from: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive start of the date range on Attendance.date. Defaults to the first day of the current calendar month — the SAME default as hr_timesheet_kpis, so both tools on this screen always describe the same window."),
+      to: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive end of the date range on Attendance.date. Defaults to the last day of the current calendar month. The applied window is echoed back as `period`."),
       employeeId: z.string().optional().describe("Exact employee id to filter by."),
       sortBy: z.enum(["date", "employee", "status", "checkIn"]).optional().describe("Sort column — one of date | employee | status | checkIn (default date)."),
       sortDir: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc (default desc)."),

@@ -373,13 +373,18 @@ export async function listCheckInOuts({
   const enumStatus = toEnumStatus(status);
   if (enumStatus) where.status = enumStatus;
 
-  const parsedFrom = parseDate(from);
-  const parsedTo = parseDate(to);
-  if (parsedFrom || parsedTo) {
-    where.date = {};
-    if (parsedFrom) where.date.gte = startOfDay(parsedFrom);
-    if (parsedTo) where.date.lte = endOfDay(parsedTo);
-  }
+  // [HR-TIMESHEET-WINDOW-01] This used to apply a date filter ONLY when from/to
+  // parsed, so a missing or blank window (a cleared date picker sends `from: ""`,
+  // and parseDate("") is null) meant ALL TIME — while hr_timesheet_kpis, on the
+  // same screen and the same nominal filter, defaulted to the current calendar
+  // month. The table then showed the newest rows in the database beside KPI
+  // tiles reading zero for the current month, and the two looked like they
+  // disagreed about whether the filter was applied. Same default in both now.
+  //
+  // It also bounds the query: every matching row is fetched and paginated in JS
+  // below, so "all time" meant loading the whole attendance table per call.
+  const period = resolvePeriod(from, to);
+  where.date = { gte: period.from, lte: period.to };
 
   if (employeeId != null && String(employeeId).trim() !== "") {
     const asNum = Number(employeeId);
@@ -458,9 +463,18 @@ export async function listCheckInOuts({
   const items = rows.slice(start, start + safeSize).map(({ _checkIn, ...rest }) => rest);
 
   logger.debug(
-    { tenantId, total, page: safePage, pageSize: safeSize, sortBy, sortDir },
+    { tenantId, total, page: safePage, pageSize: safeSize, sortBy, sortDir, from: period.from, to: period.to },
     "listCheckInOuts served"
   );
 
-  return { items, total, page: safePage, pageSize: safeSize };
+  // [HR-TIMESHEET-WINDOW-01] Echo the window that was actually applied, same
+  // shape hr_timesheet_kpis already returns. A caller can now show it, or assert
+  // the two tools agree, instead of inferring the filter from the rows.
+  return {
+    items,
+    total,
+    page: safePage,
+    pageSize: safeSize,
+    period: { from: period.from.toISOString(), to: period.to.toISOString() },
+  };
 }
