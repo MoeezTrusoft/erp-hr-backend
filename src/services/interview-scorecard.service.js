@@ -45,8 +45,16 @@ const currentTenantId = () => {
 export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data = {}, tenantId } = {}) => {
     const interview = Number(interviewId);
     const reviewer = Number(reviewerId);
-    if (!Number.isFinite(interview) || !Number.isFinite(reviewer)) {
-        throw Object.assign(new Error('interviewId and reviewerId are required to write a scorecard'), { status: 400 });
+    if (!Number.isInteger(interview) || interview <= 0) {
+        throw Object.assign(new Error('A valid interview id is required to write a scorecard'), { status: 400 });
+    }
+    // A scorecard is attributable evidence: never write one under a guessed or
+    // defaulted reviewer (callers used to fall back to employee id 1).
+    if (!Number.isInteger(reviewer) || reviewer <= 0) {
+        throw Object.assign(
+            new Error('A reviewer (employee) id is required to submit interview feedback'),
+            { status: 400 },
+        );
     }
 
     const tenant = tenantId ?? currentTenantId();

@@ -204,6 +204,19 @@ describe('HR-INTERVIEW-FEEDBACK-01 — interview feedback is re-submittable', ()
         expect(second.data.scorecards[0].tenantId).toBe(TENANT_A);
     });
 
+    it('refuses to file feedback when the caller has no reviewer identity', async () => {
+        if (!ready) return;
+        const { interviewId } = await seedInterview(TENANT_A);
+
+        // Previously `Number(reviewerId || 1)` silently attributed the scorecard
+        // to employee id 1 whenever the token carried no employeeId.
+        await expect(
+            asTenant(TENANT_A, async () => svc.updateInterview(interviewId, { feedback: FEEDBACK }, TENANT_A)),
+        ).rejects.toThrow(/reviewer \(employee\) id is required/i);
+
+        expect(await scorecardsOf(interviewId)).toHaveLength(0);
+    });
+
     it('refuses to overwrite a scorecard owned by another tenant', async () => {
         if (!ready) return;
         const { interviewId, reviewerId } = await seedInterview(TENANT_A);

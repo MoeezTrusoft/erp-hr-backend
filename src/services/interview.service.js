@@ -142,7 +142,17 @@ export const updateInterview = async (id, data = {}, tenantId) => {
 
     if (feedback) {
         const { ratings = {}, decision, recommendation, comments } = feedback;
-        const resolvedReviewerId = Number(reviewerId || 1);
+        // HR-INTERVIEW-FEEDBACK-01 — a scorecard is attributable evidence, so it
+        // must name a real reviewer. This used to fall back to employee id 1,
+        // silently filing feedback under whoever that is whenever the caller's
+        // token carried no employeeId. Fail loudly instead, like scoreInterview.
+        const resolvedReviewerId = Number(reviewerId);
+        if (!Number.isInteger(resolvedReviewerId) || resolvedReviewerId <= 0) {
+            throw Object.assign(
+                new Error("A reviewer (employee) id is required to submit interview feedback"),
+                { status: 400 },
+            );
+        }
         const scorePayload = {
             scores: ratings,
             overallScore: averageRating(ratings),
