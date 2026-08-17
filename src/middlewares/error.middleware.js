@@ -70,12 +70,37 @@ export function normalizeError(err) {
         } else if (prismaCode === 'P2014') {
             message = 'Required related record is missing';
             httpStatus = 400;
+        // [HR-PRISMA-TRANSIENT-01] Infrastructure failures are NOT client errors.
+        // These were all collapsed into "Invalid database operation" with HTTP 400,
+        // which is wrong twice over: it tells the caller they sent something bad
+        // when the database was unreachable or the pool was exhausted, and a 400 is
+        // not retried by anything. Reported from the FE as an intermittent
+        // "Invalid database operation" on Payroll Setup page load that cleared on
+        // reload — the signature of pool contention on concurrent KPI reads, made
+        // undiagnosable because the code was discarded.
+        //
+        // P2024 in particular is "Timed out fetching a new connection from the
+        // pool", which is what a burst of parallel reads does against the pool cap
+        // of 5 introduced by the DB_POOL_MAX change.
+        } else if (prismaCode === 'P2024') {
+            message = 'The database is busy (connection pool timeout) — please retry';
+            httpStatus = 503;
+        } else if (prismaCode === 'P1001' || prismaCode === 'P1002' || prismaCode === 'P1017') {
+            message = 'The database is unreachable — please retry';
+            httpStatus = 503;
+        } else if (prismaCode === 'P2028') {
+            message = 'The database transaction expired — please retry';
+            httpStatus = 503;
         } else if (prismaCode.startsWith('P')) {
             message = 'Invalid database operation';
         }
         return {
             httpStatus,
-            code: defaultCodeForStatus(httpStatus),
+            // ERR-3 still holds: the raw Prisma message and meta never leave the
+            // service. But the CODE is not sensitive, and without it a transient was
+            // indistinguishable from a malformed request — nobody could tell whether
+            // to retry or to fix their payload.
+            code: prismaCode || defaultCodeForStatus(httpStatus),
             message,
             details: undefined,
             isOperational: true,
