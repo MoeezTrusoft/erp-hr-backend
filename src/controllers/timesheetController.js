@@ -1,15 +1,19 @@
 import asyncHandler from 'express-async-handler';
 import * as timesheetService from '../services/timesheetService.js';
-import { requireEmployeeActor } from '../lib/employeeActor.js';
+import { requireEmployeeActor, resolveEmployeeActor } from '../lib/employeeActor.js';
 
 // @desc    Get timesheets for employee
 // @route   GET /api/time-attendance/timesheets
 // @access  Private
 const getTimesheets = asyncHandler(async (req, res) => {
     const { periodStart, periodEnd, status, employeeId } = req.query;
+    // REQ-HR-004: an EMPLOYEE is always pinned to their own record (hard
+    // requirement). Anyone else may pass an explicit employeeId; when they do
+    // not, fall back to their own record IF they have one — an operator account
+    // with no linked Employee gets the tenant-wide list rather than a 403.
     const targetEmployeeId = req.user?.role === 'EMPLOYEE'
         ? await requireEmployeeActor(req.user)
-        : employeeId || await requireEmployeeActor(req.user);
+        : employeeId || await resolveEmployeeActor(req.user);
 
     const timesheets = await timesheetService.getTimesheets({
         employeeId: targetEmployeeId,

@@ -25,7 +25,7 @@ import {
 } from "../controllers/attendanceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
-import { withToolError } from "../utils/toolError.js";
+import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
@@ -65,12 +65,15 @@ export function registerAttendanceTools(server) {
   server.resource(
     "hr_timesheets_list",
     "hr://timesheets",
-    { description: "List all employee timesheets" },
-    async (uri) => {
+    { description: "List employee timesheets. Scoped to the caller's own employee record when they have one; an EMPLOYEE role is always pinned to their own." },
+    // REQ-HR-004: unwrapped, this handler leaked a raw Prisma validation error
+    // ("Argument `employeeId` is missing", query shape and all) straight into
+    // the FE's error banner.
+    withResourceError(async (uri) => {
       const { user } = getCtx();
       const data = await mcpListTimesheets(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    }, "hr://timesheets")
   );
 
   server.resource(
@@ -250,12 +253,12 @@ export function registerAttendanceTools(server) {
   server.resource(
     "hr_time_entries_list",
     "hr://time-entries",
-    { description: "List all time entries" },
-    async (uri) => {
+    { description: "List time entries. Scoped to the caller's own employee record when they have one; an EMPLOYEE role is always pinned to their own." },
+    withResourceError(async (uri) => {
       const { user } = getCtx();
       const data = await mcpListTimeEntries(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    }, "hr://time-entries")
   );
 
   server.tool(

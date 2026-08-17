@@ -21,6 +21,51 @@ function hashArgs(args) {
   }
 }
 
+/**
+ * REQ-HR-004 — the resource twin of withToolError.
+ *
+ * MCP *tools* were wrapped; MCP *resources* were not, so an exception inside a
+ * resource handler escaped as whatever the underlying layer threw. A Prisma
+ * validation error therefore reached the browser as user-facing banner text,
+ * complete with the query shape and column names — an ERR-3 leak as well as a
+ * terrible error message.
+ *
+ * Same mapping as the tool wrapper (HR-nnnn in `code`, leak-safe message), in
+ * the `contents` envelope a resource read must return.
+ *
+ * @param {Function} fn resource handler: (uri, ...rest) => ({ contents: [...] })
+ * @param {string} resourceUri for logs
+ */
+export function withResourceError(fn, resourceUri = "unknown_resource") {
+  return async (uri, ...rest) => {
+    try {
+      return await fn(uri, ...rest);
+    } catch (err) {
+      const jsonrpc = toJsonRpcError(err);
+      logger.error({
+        resource: resourceUri,
+        err,
+        code: jsonrpc.data.code,
+        jsonrpcCode: jsonrpc.code,
+      }, "MCP resource read failed");
+      const body = {
+        error: jsonrpc.message,
+        status: err?.status || err?.httpStatus || err?.statusCode || 500,
+        code: jsonrpc.data.code,
+        jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
+      };
+      return {
+        isError: true,
+        contents: [{
+          uri: uri?.href ?? String(resourceUri),
+          mimeType: "application/json",
+          text: JSON.stringify(body),
+        }],
+      };
+    }
+  };
+}
+
 export function withToolError(fn, toolName = "unknown_tool") {
   return async (args) => {
     try {

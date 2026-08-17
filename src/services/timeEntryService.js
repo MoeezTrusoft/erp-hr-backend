@@ -8,7 +8,17 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // fail-closed so tenant B never reads/mutates tenant A's time entries.
 
 export const getTimeEntries = async ({ employeeId, startDate, endDate, tenantId }) => {
-    const where = scopedWhere(tenantId, { employeeId: parseInt(employeeId) });
+    // REQ-HR-004: `parseInt(undefined)` / `parseInt(null)` is NaN, and a NaN in
+    // an Int filter makes Prisma reject the whole query with
+    // "Argument `employeeId` is missing" — which reached the browser verbatim.
+    // A caller with no resolvable employee (an operator account) asked for the
+    // tenant's list, so scope by tenant only instead of building a broken
+    // filter. Tenancy is still enforced by scopedWhere + RLS.
+    const employeeFilter = Number.parseInt(employeeId, 10);
+    const where = scopedWhere(
+        tenantId,
+        Number.isInteger(employeeFilter) ? { employeeId: employeeFilter } : {},
+    );
 
     if (startDate && endDate) {
         where.work_date = {
