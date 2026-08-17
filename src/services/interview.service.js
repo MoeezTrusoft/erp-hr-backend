@@ -1,5 +1,6 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
@@ -150,29 +151,16 @@ export const updateInterview = async (id, data = {}, tenantId) => {
             submittedAt: new Date(),
         };
 
-        const existing = await prisma.interviewScorecard.findUnique({
-            where: {
-                interviewId_reviewerId: {
-                    interviewId,
-                    reviewerId: resolvedReviewerId,
-                },
-            },
+        // HR-INTERVIEW-FEEDBACK-01 — feedback must be re-submittable: one shared
+        // create-or-update keyed on the real unique index, so an existing (or
+        // legacy tenant-less) scorecard is updated instead of colliding on
+        // insert with "Unique constraint failed".
+        await upsertInterviewScorecard({
+            interviewId,
+            reviewerId: resolvedReviewerId,
+            data: scorePayload,
+            tenantId,
         });
-
-        if (existing) {
-            await prisma.interviewScorecard.update({
-                where: { id: existing.id },
-                data: scorePayload,
-            });
-        } else {
-            await prisma.interviewScorecard.create({
-                data: scopedData(tenantId, {
-                    interviewId,
-                    reviewerId: resolvedReviewerId,
-                    ...scorePayload,
-                }),
-            });
-        }
     }
 
     return prisma.interview.findFirst({
@@ -182,15 +170,24 @@ export const updateInterview = async (id, data = {}, tenantId) => {
 };
 
 export const submitScorecard = async ({ interviewId, reviewerId, scores, overallScore, recommendation, notes, tenantId }) => {
-    return prisma.interviewScorecard.create({
-        data: scopedData(tenantId, {
-            interviewId: Number(interviewId),
-            reviewerId: Number(reviewerId),
+    // HR-INTERVIEW-FEEDBACK-01 — was an unconditional create, so a reviewer
+    // could never revise their own scorecard (P2002 on the second submit).
+    const interview = await prisma.interview.findFirst({
+        where: scopedWhere(tenantId, { id: Number(interviewId) }),
+        select: { id: true },
+    });
+    if (!interview) throw Object.assign(new Error("Interview not found"), { status: 404 });
+
+    return upsertInterviewScorecard({
+        interviewId: Number(interviewId),
+        reviewerId: Number(reviewerId),
+        data: {
             scores: scores || {},
             overallScore: overallScore ? Number(overallScore) : null,
             recommendation,
             notes,
-        }),
+        },
+        tenantId,
     });
 };
 

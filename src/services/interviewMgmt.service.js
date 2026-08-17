@@ -12,6 +12,7 @@
 // tenantless interactive traffic before this service executes.
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 
 const RATING_KEYS = ["technicalSkills", "problemSolving", "communication", "cultureFit"];
 
@@ -262,24 +263,21 @@ export const scoreInterview = async ({
   const overallScore = averageOf(RATING_KEYS.map((k) => scores[k]));
   const submittedAt = new Date();
 
-  await prisma.interviewScorecard.upsert({
-    where: { interviewId_reviewerId: { interviewId: idNum, reviewerId: reviewer } },
-    create: scopedData(tenantId, {
-      interviewId: idNum,
-      reviewerId: reviewer,
-      scores,
-      overallScore,
-      recommendation: recommendation ?? null,
-      notes: comments ?? null,
-      submittedAt,
-    }),
-    update: {
+  // HR-INTERVIEW-FEEDBACK-01 — a plain prisma upsert still resolves the row
+  // through the tenant-scoped where, so a legacy tenant-less scorecard stays
+  // invisible to the lookup and then collides on the tenant-blind unique index.
+  // The shared writer resolves by the real key and adopts such rows.
+  await upsertInterviewScorecard({
+    interviewId: idNum,
+    reviewerId: reviewer,
+    data: {
       scores,
       overallScore,
       recommendation: recommendation ?? null,
       notes: comments ?? null,
       submittedAt,
     },
+    tenantId,
   });
 
   return getInterviewManaged({ id: idNum, tenantId });
