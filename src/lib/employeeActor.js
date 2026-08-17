@@ -50,3 +50,30 @@ export async function requireEmployeeActor(user) {
     code: "HR-0701",
   });
 }
+
+/**
+ * REQ-HR-001 — soft counterpart of requireEmployeeActor.
+ *
+ * Some writes are ADMINISTRATIVE: the actor is audit metadata (updatedById),
+ * not an authorization input. Authorization for those is already decided by
+ * assertPermission / the route policy before we get here, so refusing the write
+ * because the CALLER happens to have no linked Employee record adds no safety —
+ * it only makes the action impossible for RBAC-only accounts. That is exactly
+ * how hr_employee_status_update failed: every deactivate from the Employee
+ * Directory 403'd with HR-0701 for an admin whose account has employeeId: null.
+ *
+ * Use this when the actor is metadata. Keep requireEmployeeActor for
+ * self-service paths (attendance punch, own leave request, …) where the
+ * employee identity IS the subject of the action and a missing one is fatal.
+ *
+ * @param {object} user
+ * @returns {Promise<number|null>} the Employee id, or null when none resolves
+ */
+export async function resolveEmployeeActor(user) {
+  try {
+    return await requireEmployeeActor(user);
+  } catch (err) {
+    if (err?.code === "HR-0701") return null;
+    throw err;
+  }
+}

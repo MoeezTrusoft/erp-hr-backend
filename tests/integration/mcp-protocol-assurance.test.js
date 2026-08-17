@@ -318,7 +318,13 @@ describe("MCP-PROTOCOL-01 — HR MCP boundary auth denial", () => {
 
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toContain("not allowed");
+      // REQ-HR-003: the denial is a JSON-RPC envelope with an HR code now, so a
+      // peer service can tell it apart from the guard's 403 and a permission
+      // denial. Same status, same "not allowed" contract, diagnosable shape.
+      expect(body.jsonrpc).toBe("2.0");
+      expect(body.error.message).toContain("not allowed");
+      expect(body.error.message).toContain("x-mcp-internal");
+      expect(body.error.data.code).toBe("HR-0206");
     } finally {
       server.close();
     }

@@ -9,7 +9,23 @@ const router = express.Router();
 
 router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
   if (!req.headers["x-mcp-internal"]) {
-    return res.status(403).json({ error: "Direct MCP access not allowed" });
+    // REQ-HR-003: this used to answer a bare `{ error }` with no code and no
+    // JSON-RPC envelope, so a peer service (PM) saw only "403" and could not
+    // tell it apart from internalServiceGuard's rejection or a permission
+    // denial — it cost a round of cross-team debugging. Name the requirement.
+    logger.warn(
+      { path: req.originalUrl, service: req.internalService?.service ?? null },
+      "hr: /mcp call without x-mcp-internal",
+    );
+    return res.status(403).json({
+      jsonrpc: "2.0",
+      id: req.body?.id ?? null,
+      error: {
+        code: -32003,
+        message: "Direct MCP access not allowed: set the x-mcp-internal header on peer-service calls to HR /mcp",
+        data: { code: "HR-0206" },
+      },
+    });
   }
 
   const body = req.body;

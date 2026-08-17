@@ -4,7 +4,7 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import logger from "../../lib/logger.js";
-import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { requireEmployeeActor, resolveEmployeeActor } from "../../lib/employeeActor.js";
 import { getEmployeeCompensation } from "../../services/employeeCompensation.service.js";
 import { listEmployeeActivity } from "../../services/employeeActivity.service.js";
 import {
@@ -505,11 +505,16 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id, status }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      // REQ-HR-001: the actor is audit metadata here (Employee.updatedById),
+      // not an authorization input — assertPermission above already decided
+      // that. requireEmployeeActor made every deactivate 403 with HR-0701 for
+      // admins whose account has no linked Employee record, which is the normal
+      // shape of an RBAC-only operator account.
       const data = await mcpUpdateEmployeeStatus(
         user,
         id,
         status,
-        await requireEmployeeActor(user)
+        await resolveEmployeeActor(user)
       );
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_status_update")
