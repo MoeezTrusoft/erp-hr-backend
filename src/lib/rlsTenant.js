@@ -114,6 +114,10 @@ const RLS_MODELS = new Set([
     'SystemAccountProvisioning',
     // Loan management (20260727162833_loan_management) — added post-fleet.
     'Loan', 'LoanRepayment',
+    // Biometric device raw punches (HR-ATT-DEVICE-INTAKE-01) — FORCE-RLS; the
+    // ADMS/iclock intake writes under an explicit tenant context, so the GUC
+    // must be set for this model's ORM writes/reads too.
+    'AttendanceDevicePunch',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
