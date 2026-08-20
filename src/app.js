@@ -37,6 +37,7 @@ import { createComplianceHealthRouter } from "./routes/complianceHealth.routes.j
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
 import attendanceRoutes from "./routes/attendance.routes.js";
+import deviceAttendanceRoutes from "./routes/deviceAttendance.routes.js";
 import performanceRoutes from "./routes/performance.routes.js";
 import positionRoutes from "./routes/position.routes.js";
 import requisitionRoutes from "./routes/requisition.routes.js";
@@ -164,6 +165,11 @@ export const createApp = () => {
     // Browser clients should reach this service through the API gateway. The gateway
     // is responsible for rewriting /hr/api/hr/* to /api/hr/* and injecting the
     // internal secret plus x-user-* context headers before requests arrive here.
+    // HR-ATT-DEVICE-INTAKE-01: biometric device push intake. Mounted BEFORE the
+    // /api guard because the device cannot present a gateway service-JWT; the
+    // route has its own X-Intake-Key gate. Not proxied by the public gateway.
+    app.use("/device-attendance", deviceAttendanceRoutes);
+
     app.use("/api", internalServiceGuard);
     // Bind the verified tenant to the async context so the Prisma tenant-scope
     // extension auto-scopes every REST query (deny-by-default). Runs after the

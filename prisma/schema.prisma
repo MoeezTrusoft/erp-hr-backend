@@ -564,6 +564,34 @@ model Attendance {
   @@index([tenantId, date(sort: Desc), check_in(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_date_checkin_id_idx")
 }
 
+// HR-ATT-DEVICE-INTAKE-01 — durable raw store of every punch pushed by a
+// biometric device over ADMS/iclock. Kept separate from Attendance (the
+// rolled-up daily row): this is the append-only source of truth so a re-import
+// or a mapping fix can rebuild Attendance without re-contacting the device.
+// deviceUserId is the device enrolment id; it maps to Employee.biometric_id
+// when the punch is rolled up. Unmatched punches are still stored here.
+model AttendanceDevicePunch {
+  id           Int      @id @default(autoincrement())
+  sn           String   @db.VarChar(64) // device serial number (iclock SN=)
+  deviceUserId String   @db.VarChar(64) // enrolment id on the device
+  punchedAt    DateTime // punch timestamp as reported by the device
+  status       Int      @default(0) // device status byte: 0=check-in, 1=check-out, ...
+  verifyMode   Int      @default(0) // 1=fingerprint, 15=face, ...
+  workCode     Int      @default(0)
+  employeeId   Int? // resolved Employee.id, null when biometric_id is unknown
+  rawLine      String?  @db.Text // the exact tab-separated ATTLOG row, for replay
+  ingestedAt   DateTime @default(now())
+
+  tenantId String? @db.Uuid // create-stamped from the intake tenant; FORCE-RLS
+
+  // Idempotency: the device re-pushes the same rows on reconnect. One physical
+  // punch = one (tenant, device, user, time, status).
+  @@unique([tenantId, sn, deviceUserId, punchedAt, status], map: "attendance_device_punch_natural_key")
+  @@index([tenantId, deviceUserId, punchedAt(sort: Desc)], map: "attendance_device_punch_user_time_idx")
+  @@index([tenantId, employeeId, punchedAt(sort: Desc)], map: "attendance_device_punch_emp_time_idx")
+  @@map("attendance_device_punches")
+}
+
 // Attendance anomaly / correction request. Raised by an employee ("Inform
 // Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
 // pending-approvals list and the Leave & Anomaly screen.

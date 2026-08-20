@@ -24,6 +24,7 @@ import {
   mcpUpdateWorkSchedule,
 } from "../controllers/attendanceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
+import { listDevicePunches } from "../../services/attendance.device-intake.service.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
@@ -246,6 +247,30 @@ export function registerAttendanceTools(server) {
       const data = await mcpGetAttendanceByEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
+  );
+
+  // HR-ATT-DEVICE-INTAKE-01: fetch raw biometric-device punches for ANY / ALL
+  // employees. Filter by employeeId or the device enrolment id, plus a date
+  // window. Reads the durable AttendanceDevicePunch store the ADMS/iclock push
+  // intake writes; RLS-scoped to the caller's tenant.
+  server.tool(
+    "hr_attendance_device_punches_list",
+    "List raw biometric device punches (all employees), filterable by employee id, device id, date range",
+    {
+      employeeId: z.coerce.number().int().positive().optional(),
+      deviceUserId: z.string().optional().describe("Device enrolment id (Employee.biometric_id)"),
+      sn: z.string().optional().describe("Device serial number"),
+      from: z.string().optional().describe("ISO datetime lower bound (inclusive)"),
+      to: z.string().optional().describe("ISO datetime upper bound (inclusive)"),
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await listDevicePunches({ tenantId: user.tenantId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_device_punches_list")
   );
 
   // ── TIME ENTRIES ─────────────────────────────────────────────────────────
