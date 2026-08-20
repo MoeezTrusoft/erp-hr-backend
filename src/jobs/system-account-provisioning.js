@@ -80,6 +80,7 @@ export function buildSystemAccountProvisioningIntent(data, employee, ctx = {}) {
     roles: [{ roleId: data.roleId, ...(overrides.length ? { permissions: overrides } : {}) }],
     hrEmployeeId: employee.id,
     mediaId: employee.employee_media_id ?? null,
+    departmentId: data.departmentId ?? employee.departmentId ?? null,
   };
   const cleanPayload = Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
   const payloadFingerprint = digest(cleanPayload);
