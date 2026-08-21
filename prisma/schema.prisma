@@ -558,6 +558,11 @@ model Attendance {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  // HR-ATT-IMPORT-01: one attendance row per employee per day. `date` is stored
+  // at midnight (see the matching migration) so the DAY is the key — this is what
+  // makes a bulk import idempotent and re-runnable without doubling history.
+  @@unique([tenantId, employeeId, date], map: "Attendance_tenant_employee_day_key")
+
   // F-DB-07: employee history and latest-day reads are tenant-leading and
   // deterministic when multiple marks share a date.
   @@index([tenantId, employeeId, date(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_employee_date_id_idx")
