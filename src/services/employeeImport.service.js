@@ -658,6 +658,27 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
           );
         }
 
+        // Phase E3: Upsert Person record for biometric enrollment and link to Employee.
+        const biometricId = res.directColumns?.biometric_id;
+        if (empId != null && biometricId) {
+          try {
+            const person = await prisma.person.upsert({
+              where: { biometricId: String(biometricId).trim() },
+              update: {},
+              create: {
+                biometricId: String(biometricId).trim(),
+                email: res.createArgs?.systemEmail || res.createArgs?.workEmail || res.createArgs?.personalEmail || null,
+                first_name: res.createArgs?.firstName || null,
+                last_name: res.createArgs?.lastName || null,
+              },
+            });
+            await prisma.employee.update({
+              where: { id: Number(empId) },
+              data: { personId: person.id },
+            });
+          } catch { /* Person creation is best-effort */ }
+        }
+
         // Emergency contact + salary segregation — new records, create-only to
         // avoid duplicates when an existing employee_code is re-imported.
         if (empId != null && res.action === "create") {

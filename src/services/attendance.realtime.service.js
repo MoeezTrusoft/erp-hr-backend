@@ -102,14 +102,35 @@ function inferActionFromPunch(punch, status) {
 
 async function resolveEmployee(deviceUserId) {
   if (!deviceUserId) return null;
-  const id = Number(deviceUserId);
-  if (Number.isInteger(id) && id > 0) {
-    const byId = await prisma.employee.findUnique({ where: { id }, select: { id: true, employee_code: true, employee_name: true } });
-    if (byId) return byId;
+  const key = String(deviceUserId).trim();
+  if (!key) return null;
+
+  // Phase E3: Person.biometricId is the sole source of truth for biometric
+  // device enrollment. Resolve via Person first, then fall back to the legacy
+  // direct biometric_id column for employees not yet linked to a Person.
+  const person = await prisma.person.findUnique({
+    where: { biometricId: key },
+    select: { id: true },
+  });
+  if (person) {
+    const byPerson = await prisma.employee.findFirst({
+      where: { personId: person.id },
+      select: { id: true, employee_code: true, employee_name: true, tenant_id: true },
+    });
+    if (byPerson) return byPerson;
   }
+
+  // Fallback: direct biometric_id lookup (pre-E3 compat).
+  const byBio = await prisma.employee.findFirst({
+    where: { biometric_id: key },
+    select: { id: true, employee_code: true, employee_name: true, tenant_id: true },
+  });
+  if (byBio) return byBio;
+
+  // Fallback: match by employee_code (legacy path).
   return await prisma.employee.findFirst({
-    where: { employee_code: String(deviceUserId).trim() },
-    select: { id: true, employee_code: true, employee_name: true },
+    where: { employee_code: key },
+    select: { id: true, employee_code: true, employee_name: true, tenant_id: true },
   });
 }
 
@@ -123,16 +144,33 @@ async function resolveOrCreateEmployee(deviceUserId, userName) {
   const autoCreate = String(process.env.ATTENDANCE_AUTO_CREATE_EMPLOYEE || "true").toLowerCase() !== "false";
   if (!autoCreate) return null;
 
+  // When auto-creating, assign to the configured intake tenant.
+  const tenantId = process.env.HR_ATTENDANCE_INTAKE_TENANT_ID || null;
   const fallbackName = String(userName || "").trim() || `Device User ${key}`;
+
+  // Phase E3: Upsert Person record for the new biometric enrollment.
+  let personId = null;
+  try {
+    const person = await prisma.person.upsert({
+      where: { biometricId: key },
+      update: {},
+      create: { biometricId: key },
+    });
+    personId = person.id;
+  } catch { /* Person creation is best-effort */ }
+
   const created = await prisma.employee.create({
     data: {
       employee_code: key,
+      biometric_id: key,
+      personId,
       employee_name: fallbackName,
       status: "active",
       employement_status: "Active",
+      tenant_id: tenantId,
       remarks: "Auto-created from biometric device",
     },
-    select: { id: true, employee_code: true, employee_name: true },
+    select: { id: true, employee_code: true, employee_name: true, tenant_id: true },
   });
   log("Auto-created employee from device:", created);
   return created;
@@ -183,13 +221,17 @@ export async function ingestRealtimeDeviceEvent(rawEvent) {
     event.employeeId = employee.id;
     event.employeeName = employee.employee_name || rawEvent?.user_name || "";
 
+    // Tenant from the resolved employee — SOT for attendance scoping.
+    const tenantId = employee.tenant_id || null;
+
     if (action === "checkout") {
-      const saved = await checkOutServiceWithTimestamp(employee.id, timestamp.toISOString());
+      const saved = await checkOutServiceWithTimestamp(employee.id, timestamp.toISOString(), tenantId);
       event.attendanceId = saved?.id || null;
     } else {
       const saved = await createAttendanceService({
         employeeId: employee.id,
         timestamp: timestamp.toISOString(),
+        tenantId,
       });
       event.attendanceId = saved?.id || null;
     }
@@ -241,10 +283,12 @@ export async function ingestBootstrapDeviceEvents(rawEvents = []) {
 
     let employeeId = null;
     let employeeName = "";
+    let tenantId = null;
     try {
       const employee = await resolveOrCreateEmployee(deviceUserId || uid, item?.user_name);
       employeeId = employee?.id || null;
       employeeName = employee?.employee_name || item?.user_name || "";
+      tenantId = employee?.tenant_id || null;
     } catch {
       // Keep bootstrap event even if DB isn't reachable.
     }

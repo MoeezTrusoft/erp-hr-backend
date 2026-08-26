@@ -846,4 +846,53 @@ export function registerEmployeeTools(server) {
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
+
+  // E4: Cross-service employee resolution for Communication module.
+  // Accepts an array of RBAC userIds, returns employee display info.
+  server.tool(
+    "hr_employee_resolve",
+    "Resolve employee display info by RBAC userId (cross-service, batch)",
+    {
+      userIds: z.array(z.union([z.string(), z.number()])).min(1).max(100),
+    },
+    withToolError(async ({ userIds }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const prisma = (await import("../../lib/prisma.js")).default;
+      const tenantId = user.tenantId;
+      if (!tenantId) {
+        return { content: [{ type: "text", text: JSON.stringify({ results: {} }) }] };
+      }
+      const ids = userIds.map((id) => Number(id)).filter((id) => Number.isInteger(id));
+      if (!ids.length) {
+        return { content: [{ type: "text", text: JSON.stringify({ results: {} }) }] };
+      }
+      const rows = await prisma.employee.findMany({
+        where: { tenant_id: tenantId, userId: { in: ids } },
+        select: {
+          userId: true,
+          first_name: true,
+          last_name: true,
+          email: true,
+          work_email: true,
+          employee_name: true,
+        },
+      });
+      const results = {};
+      for (const r of rows) {
+        const firstName = r.first_name || null;
+        const lastName = r.last_name || null;
+        results[String(r.userId)] = {
+          firstName,
+          lastName,
+          email: r.work_email || r.email || null,
+          displayName:
+            r.employee_name ||
+            [firstName, lastName].filter(Boolean).join(" ") ||
+            null,
+        };
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ results }) }] };
+    })
+  );
 }
