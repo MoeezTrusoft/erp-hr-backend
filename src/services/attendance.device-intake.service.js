@@ -45,20 +45,47 @@ export function parseAttlogRow(line) {
 }
 
 /**
- * Resolve deviceUserId -> Employee.id for a batch. biometric_id is the dedicated
- * device key; employee_code is the pre-biometric fallback.
+ * Resolve deviceUserId -> Employee.id for a batch.
+ * Phase C: resolves through Person.biometricId → Employee.personId first,
+ * then falls back to direct biometric_id / employee_code lookup.
  */
 async function buildEmployeeMap(deviceUserIds) {
     const ids = [...new Set(deviceUserIds)].filter(Boolean);
     if (!ids.length) return new Map();
-    const employees = await prisma.employee.findMany({
-        where: { OR: [{ biometric_id: { in: ids } }, { employee_code: { in: ids } }] },
-        select: { id: true, biometric_id: true, employee_code: true },
+
+    // Phase C: resolve through Person table first
+    const persons = await prisma.person.findMany({
+        where: { biometricId: { in: ids } },
+        select: { id: true, biometricId: true },
     });
+
+    const personMap = new Map();
+    for (const p of persons) {
+        if (p.biometricId) personMap.set(p.biometricId, p.id);
+    }
+
     const map = new Map();
-    // biometric_id wins over employee_code on collision.
-    for (const e of employees) if (e.employee_code) map.set(e.employee_code, e.id);
-    for (const e of employees) if (e.biometric_id) map.set(e.biometric_id, e.id);
+
+    // Resolve via Person → Employee.personId (per-tenant via RLS)
+    for (const [bioId, personId] of personMap) {
+        const employee = await prisma.employee.findFirst({
+            where: { personId },
+            select: { id: true },
+        });
+        if (employee) map.set(bioId, employee.id);
+    }
+
+    // Fallback: direct biometric_id / employee_code lookup for non-Person employees
+    const unresolved = ids.filter(id => !map.has(id));
+    if (unresolved.length) {
+        const employees = await prisma.employee.findMany({
+            where: { OR: [{ biometric_id: { in: unresolved } }, { employee_code: { in: unresolved } }] },
+            select: { id: true, biometric_id: true, employee_code: true },
+        });
+        for (const e of employees) if (e.employee_code) map.set(e.employee_code, e.id);
+        for (const e of employees) if (e.biometric_id) map.set(e.biometric_id, e.id);
+    }
+
     return map;
 }
 

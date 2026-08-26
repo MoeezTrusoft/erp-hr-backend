@@ -91,12 +91,28 @@ async function resolveEmployeeFromPunch(punch) {
 
   if (employeeCodeRaw !== undefined && employeeCodeRaw !== null && String(employeeCodeRaw).trim() !== "") {
     const code = String(employeeCodeRaw).trim();
-    // The device enrollment ID maps to Employee.biometric_id first (the dedicated
-    // device key), then falls back to employee_code for staff enrolled before
-    // biometric_id was populated.
+
+    // Phase C: resolve deviceUserId → Person.biometricId → Employee (per-tenant).
+    // The Person table is the global identity anchor; Employee.personId links
+    // back. This enables multi-tenant biometric punches: the same Person can
+    // have Employee rows in multiple tenants, and RLS scopes the lookup.
+    const person = await prisma.person.findUnique({
+      where: { biometricId: code },
+      select: { id: true },
+    });
+
+    if (person) {
+      const employee = await prisma.employee.findFirst({
+        where: { personId: person.id },
+        select: { id: true, employee_code: true, employee_name: true, work_mode: true, tenant_id: true },
+      });
+      if (employee) return employee;
+    }
+
+    // Fallback: direct biometric_id / employee_code lookup (pre-Person migration)
     const employee = await prisma.employee.findFirst({
       where: { OR: [{ biometric_id: code }, { employee_code: code }] },
-      select: { id: true, employee_code: true, biometric_id: true, employee_name: true, work_mode: true },
+      select: { id: true, employee_code: true, biometric_id: true, employee_name: true, work_mode: true, tenant_id: true },
     });
     if (employee) return employee;
   }
@@ -331,6 +347,7 @@ export async function syncAttendanceFromPunches({
           check_out: mergedCheckOut,
           total_hours: totalHours ?? undefined,
           status: calculatedStatus,
+          tenantId: employee.tenant_id || null,
           ...(workMode ? { work_mode: workMode } : {}),
           remarks: "Created from biometric device",
         },

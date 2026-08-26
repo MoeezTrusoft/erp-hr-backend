@@ -261,19 +261,20 @@ model Employee {
   nationality_id_type  String?
   employee_code        String?   @db.VarChar(50)
   biometric_id         String?   @db.VarChar(64) // ZKTeco device enrollment user-ID; attendance punches join on this (falls back to employee_code). Bulk-import "Biometric / Device ID".
-  login_password       String?   // C4-encrypted (AES-256-GCM envelope) copy of the auto-generated login password, for HR read-back via hr_employee_login_password_get. RBAC holds the real hash.
+  personId             String?   @db.Uuid // Phase A: cross-tenant identity anchor → RBAC Person.id (enforced at app layer, not DB FK — cross-database)
+  login_password       String? // C4-encrypted (AES-256-GCM envelope) copy of the auto-generated login password, for HR read-back via hr_employee_login_password_get. RBAC holds the real hash.
   date_of_birth        DateTime?
   joining_date         DateTime?
   probation_end_date   DateTime?
   employee_type        String? // contract permenant etc..
   work_mode            String? // Remote | Onsite | Hybrid
-  remarks              String? @db.Text
+  remarks              String?   @db.Text
   marital_status       String?
   nationality          String?
   nationality_id_no    String?
   nationality_id       Int?
-  current_address      String? @db.Text
-  permenant_address    String? @db.Text
+  current_address      String?   @db.Text
+  permenant_address    String?   @db.Text
   city                 String?
   state                String?
   province             String?
@@ -302,7 +303,7 @@ model Employee {
 
   // API-2 — optimistic-concurrency guard. Bumped on every _update write; a
   // caller-supplied expectedVersion that no longer matches → HR-4120 (412).
-  version              Int       @default(0)
+  version Int @default(0)
 
   // NEW FIELDS
   // Pakistan National Tax Number. Additive nullable; C4-encrypted at rest via the
@@ -316,34 +317,34 @@ model Employee {
   tenureMonths   String? // Tenure in months (system-calculated)
 
   // Existing relations
-  emergencyContact      EmergencyContacts[]   @relation("RelationWithEmployee")
+  emergencyContact      EmergencyContacts[]     @relation("RelationWithEmployee")
   attendance            Attendance[]
   leaves                Leave[]
-  reviewsGiven          PerformanceReview[]   @relation("Reviewer")
-  reviewsReceived       PerformanceReview[]   @relation("EmployeeReviews")
-  feedbackGiven         ReviewFeedback[]      @relation("FeedbackByEmployee")
-  Position              Position?             @relation(fields: [positionId], references: [id])
+  reviewsGiven          PerformanceReview[]     @relation("Reviewer")
+  reviewsReceived       PerformanceReview[]     @relation("EmployeeReviews")
+  feedbackGiven         ReviewFeedback[]        @relation("FeedbackByEmployee")
+  Position              Position?               @relation(fields: [positionId], references: [id])
   positionId            Int?
-  requisitionsRequested JobRequisition[]      @relation("RequestedBy")
-  requisitionsApproved  JobRequisition[]      @relation("ApprovedBy")
+  requisitionsRequested JobRequisition[]        @relation("RequestedBy")
+  requisitionsApproved  JobRequisition[]        @relation("ApprovedBy")
   approvals             RequisitionApproval[]
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
-  coursesCreated        TrainingCourse[]      @relation("CourseCreatedBy")
+  coursesCreated        TrainingCourse[]        @relation("CourseCreatedBy")
   courseReviews         CourseReview[]
   attendanceAnomalies   AttendanceAnomaly[]
   payrollApprovalRoles  PayrollApprovalMatrix[] @relation("PayrollApprover")
   claimApprovals        ClaimApproval[]         @relation("ClaimApprover")
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
-  actionBy              Log[]                 @relation("ActionBy")
+  actionBy              Log[]                   @relation("ActionBy")
   logs                  Log[]
-  goalCreatedBy         Goal[]                @relation("GoalCreatedBy")
-  approvedBy            Goal[]                @relation("GoalApprover")
-  goalProgress          GoalProgress[]        @relation("GoalProgressCreatedBy")
-  feedBackBy            ReviewFeedback[]      @relation("FeedbackBy")
+  goalCreatedBy         Goal[]                  @relation("GoalCreatedBy")
+  approvedBy            Goal[]                  @relation("GoalApprover")
+  goalProgress          GoalProgress[]          @relation("GoalProgressCreatedBy")
+  feedBackBy            ReviewFeedback[]        @relation("FeedbackBy")
   ReviewReminder        ReviewReminder[]
-  calibratedBy          RatingAdjustment[]    @relation("CalibratedBy")
+  calibratedBy          RatingAdjustment[]      @relation("CalibratedBy")
 
   businessUnit BusinessUnit? @relation(fields: [businessUnitId], references: [id])
   gradeLevel   GradeLevel?   @relation(fields: [gradeLevelId], references: [id])
@@ -391,12 +392,12 @@ model Employee {
   dashboardLayouts      DashboardLayout[]
 
   // Onboarding relations
-  onboardingChecklists OnboardingChecklist[]
-  onboardingDocuments  OnboardingDocument[]
-  onboardingSurveys    OnboardingSurvey[]
-  buddyAssignments     OnboardingBuddy[]     @relation("BuddyRelation")
-  onboardingTaskAssignments OnboardingTask[] @relation("OnboardingTaskAssignee")
-  onboardingFeedbacks  OnboardingFeedback[]  @relation("OnboardingFeedbackEmployee")
+  onboardingChecklists      OnboardingChecklist[]
+  onboardingDocuments       OnboardingDocument[]
+  onboardingSurveys         OnboardingSurvey[]
+  buddyAssignments          OnboardingBuddy[]     @relation("BuddyRelation")
+  onboardingTaskAssignments OnboardingTask[]      @relation("OnboardingTaskAssignee")
+  onboardingFeedbacks       OnboardingFeedback[]  @relation("OnboardingFeedbackEmployee")
 
   // Recruitment relations
   interviewPanels          InterviewInterviewer[]
@@ -425,6 +426,7 @@ model Employee {
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 
   @@index([biometric_id])
+  @@index([personId])
   @@index([positionId])
   @@index([businessUnitId])
   @@index([gradeLevelId])
@@ -473,16 +475,16 @@ model BusinessUnit {
 }
 
 model GradeLevel {
-  id          Int      @id @default(autoincrement())
-  name        String // e.g., "G5", "Senior", "Associate"
-  description String?
+  id           Int      @id @default(autoincrement())
+  name         String // e.g., "G5", "Senior", "Associate"
+  description  String?
   // Payroll Setup — salary band for the grade (nullable; major units).
-  minSalary    Decimal?  @db.Decimal(18, 4)
-  midSalary    Decimal?  @db.Decimal(18, 4)
-  maxSalary    Decimal?  @db.Decimal(18, 4)
+  minSalary    Decimal? @db.Decimal(18, 4)
+  midSalary    Decimal? @db.Decimal(18, 4)
+  maxSalary    Decimal? @db.Decimal(18, 4)
   bandCurrency String? // ISO 4217, e.g. "PKR"
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
   employees        Employee[]
   salaryComponents SalaryComponent[]
@@ -562,7 +564,6 @@ model Attendance {
   // at midnight (see the matching migration) so the DAY is the key — this is what
   // makes a bulk import idempotent and re-runnable without doubling history.
   @@unique([tenantId, employeeId, date], map: "Attendance_tenant_employee_day_key")
-
   // F-DB-07: employee history and latest-day reads are tenant-leading and
   // deterministic when multiple marks share a date.
   @@index([tenantId, employeeId, date(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_employee_date_id_idx")
@@ -604,8 +605,8 @@ model AttendanceAnomaly {
   id         Int           @id @default(autoincrement())
   employeeId Int
   type       AnomalyType
-  reason     String? @db.Text
-  detail     String? @db.Text // free text for OTHER {specify}
+  reason     String?       @db.Text
+  detail     String?       @db.Text // free text for OTHER {specify}
   date       DateTime? // the affected work date
   fromTime   DateTime? // time-range start
   toTime     DateTime? // time-range end
@@ -1010,53 +1011,56 @@ model OvertimeRule {
 }
 
 model ShiftTemplate {
-  id         Int      @id @default(autoincrement())
-  name       String
-  fromTime   String   // "09:00"
-  toTime     String   // "17:00"
-  shiftType  String   @default("morning") // morning | evening | night
-  workMode   String?  // remote | hybrid | onsite
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tenantId   String?  @db.Uuid
+  id        Int      @id @default(autoincrement())
+  name      String
+  fromTime  String // "09:00"
+  toTime    String // "17:00"
+  shiftType String   @default("morning") // morning | evening | night
+  workMode  String? // remote | hybrid | onsite
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenantId  String?  @db.Uuid
+
   @@unique([tenantId, name])
   @@index([tenantId])
   @@map("shift_templates")
 }
 
 model ShiftAssignment {
-  id          Int      @id @default(autoincrement())
-  employeeId  Int
-  date        DateTime
-  shiftType   String   @default("morning") // morning | evening | night
-  workMode    String   @default("onsite")  // remote | hybrid | onsite
-  status      String   @default("on_shift") // on_shift | on_leave | off | holiday
-  fromTime    String?
-  toTime      String?
-  overtimeHours Float  @default(0)
-  templateId  Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tenantId    String?  @db.Uuid
+  id            Int      @id @default(autoincrement())
+  employeeId    Int
+  date          DateTime
+  shiftType     String   @default("morning") // morning | evening | night
+  workMode      String   @default("onsite") // remote | hybrid | onsite
+  status        String   @default("on_shift") // on_shift | on_leave | off | holiday
+  fromTime      String?
+  toTime        String?
+  overtimeHours Float    @default(0)
+  templateId    Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tenantId      String?  @db.Uuid
+
   @@index([employeeId, date])
   @@index([tenantId])
   @@map("shift_assignments")
 }
 
 model ShiftSwapRequest {
-  id           Int       @id @default(autoincrement())
-  requesterId  Int
-  targetId     Int?
-  fromDate     DateTime
-  toDate       DateTime?
-  shiftType    String?   // morning | evening | night
-  reason       String?
-  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
-  approverId   Int?
-  decidedAt    DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  tenantId     String?   @db.Uuid
+  id          Int       @id @default(autoincrement())
+  requesterId Int
+  targetId    Int?
+  fromDate    DateTime
+  toDate      DateTime?
+  shiftType   String? // morning | evening | night
+  reason      String?
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
+  approverId  Int?
+  decidedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  tenantId    String?   @db.Uuid
+
   @@index([tenantId])
   @@map("shift_swap_requests")
 }
@@ -1078,6 +1082,7 @@ model OvertimeRequest {
   updatedAt  DateTime  @updatedAt
 
   tenantId String? @db.Uuid
+
   @@index([employeeId])
   // F-DB-07: manager queue and employee-period aggregation have different
   // selective prefixes; both carry date + id ordering.
@@ -1139,7 +1144,7 @@ model PerformanceReview {
   period_start   DateTime?
   period_end     DateTime?
   overall_rating Float?
-  comments       String? @db.Text
+  comments       String?      @db.Text
   submittedAt    DateTime?
   status         ReviewStatus @default(IN_PROGRESS)
   type           ReviewType   @default(SELF)
@@ -1187,19 +1192,19 @@ model ReviewFeedback {
 }
 
 model Position {
-  id             Int              @id @default(autoincrement())
-  title          String
-  description    String?
-  band             String?        // job band / grade label
-  responsibilities String?        // free text or JSON string
-  requirements     String?        // free text or JSON string
-  createdById    Int?
-  jobCode        String?
-  isActive       Boolean          @default(true)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  employees      Employee[]
-  JobRequisition JobRequisition[]
+  id               Int              @id @default(autoincrement())
+  title            String
+  description      String?
+  band             String? // job band / grade label
+  responsibilities String? // free text or JSON string
+  requirements     String? // free text or JSON string
+  createdById      Int?
+  jobCode          String?
+  isActive         Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  employees        Employee[]
+  JobRequisition   JobRequisition[]
   // createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
 
   // API-2 — optimistic-concurrency guard (see Employee.version).
@@ -1221,8 +1226,8 @@ model JobRequisition {
   approvedById  Int?
   employeeId    Int?
   openings      Int               @default(1)
-  priority      String?           // Low | Medium | High | Urgent
-  requirements  String?           // free text / JSON string (description = JD)
+  priority      String? // Low | Medium | High | Urgent
+  requirements  String? // free text / JSON string (description = JD)
   status        RequisitionStatus @default(DRAFT)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
@@ -1338,9 +1343,9 @@ model TrainingCourse {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, courseCode])
   @@index([tenantId])
   @@index([categoryId])
-  @@unique([tenantId, courseCode])
 }
 
 // A named group of lectures within a course (e.g. "Introduction to Web
@@ -1650,9 +1655,9 @@ model PayrollPayslip {
   tenantId        String?       @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   payrollRunId    Int
   employeeId      Int
-  grossAmount     Decimal        @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
-  totalDeductions Decimal        @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
-  netAmount       Decimal        @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  grossAmount     Decimal       @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalDeductions Decimal       @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  netAmount       Decimal       @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   // HR-02 / T-P4.1 — the rule/rate version this payslip was computed against,
   // copied from its run so a single payslip is independently reproducible.
   ruleVersion     String?
@@ -1745,7 +1750,7 @@ model PayrollDeductionType {
   name        String
   description String?
   type        PayElementType @default(DEDUCTION)
-  rate        Decimal? @db.Decimal(8, 6)
+  rate        Decimal?       @db.Decimal(8, 6)
   preTax      Boolean        @default(false) // whether the deduction is applied pre-tax (hr_payroll_deduction_type_create)
   created_at  DateTime       @default(now())
   updated_at  DateTime       @updatedAt
@@ -1794,7 +1799,7 @@ model PayrollAssignment {
   earningTypeId   Int?
   deductionTypeId Int?
   amount          Decimal?  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
-  rate            Decimal? @db.Decimal(8, 6)
+  rate            Decimal?  @db.Decimal(8, 6)
   effectiveFrom   DateTime
   effectiveTo     DateTime?
   isActive        Boolean   @default(true)
@@ -1812,23 +1817,23 @@ model PayrollAssignment {
 }
 
 model Loan {
-  id                Int       @id @default(autoincrement())
-  tenantId          String?   @db.Uuid
-  employeeId        Int
-  principalMinor    Int       // Loan amount in minor units (cents)
-  interestRatePct   Float?    @default(0) // Annual interest rate %
-  tenureMonths      Int       // Number of monthly installments
-  disbursementDate  DateTime
-  status            LoanStatus @default(ACTIVE)
-  outstandingMinor  Int       // Remaining balance in minor units
+  id                      Int        @id @default(autoincrement())
+  tenantId                String?    @db.Uuid
+  employeeId              Int
+  principalMinor          Int // Loan amount in minor units (cents)
+  interestRatePct         Float?     @default(0) // Annual interest rate %
+  tenureMonths            Int // Number of monthly installments
+  disbursementDate        DateTime
+  status                  LoanStatus @default(ACTIVE)
+  outstandingMinor        Int // Remaining balance in minor units
   monthlyInstallmentMinor Int // Fixed monthly deduction in minor units
-  reason            String?
-  createdById       Int?
-  approvedById      Int?
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
+  reason                  String?
+  createdById             Int?
+  approvedById            Int?
+  created_at              DateTime   @default(now())
+  updated_at              DateTime   @updatedAt
 
-  employee  Employee @relation(fields: [employeeId], references: [id])
+  employee   Employee        @relation(fields: [employeeId], references: [id])
   repayments LoanRepayment[]
 
   @@index([tenantId, employeeId, status])
@@ -1837,14 +1842,14 @@ model Loan {
 }
 
 model LoanRepayment {
-  id             Int      @id @default(autoincrement())
-  tenantId       String?  @db.Uuid
-  loanId         Int
-  amountMinor    Int      // Amount deducted this installment
-  payrollRunId   Int?     // Link to the payroll run that deducted it
-  payslipId      Int?     // Link to the payslip line
-  deductedAt     DateTime @default(now())
-  note           String?
+  id           Int      @id @default(autoincrement())
+  tenantId     String?  @db.Uuid
+  loanId       Int
+  amountMinor  Int // Amount deducted this installment
+  payrollRunId Int? // Link to the payroll run that deducted it
+  payslipId    Int? // Link to the payslip line
+  deductedAt   DateTime @default(now())
+  note         String?
 
   loan Loan @relation(fields: [loanId], references: [id])
 
@@ -1860,28 +1865,28 @@ enum LoanStatus {
 }
 
 model BankDetail {
-  id                Int      @id @default(autoincrement())
-  tenantId          String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
-  employeeId        Int
-  bankName          String
+  id                 Int      @id @default(autoincrement())
+  tenantId           String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  employeeId         Int
+  bankName           String
   // HR-01 / T-P4.2 — C4 bank account encrypted at rest (AES-256-GCM envelope).
   // GCM uses a random IV so ciphertext differs per write, which would break the
   // old @@unique([employeeId, accountNumber]) and any lookup-by-account. The
   // accountNumberBidx column below holds a deterministic HMAC (blind index) of
   // the plaintext; uniqueness and equality lookups move to it (see the prisma
   // C4 extension). The encrypted value still lives in accountNumber.
-  accountNumber     String
-  accountNumberBidx String? // HR-01 / T-P4.2 — deterministic HMAC of the plaintext account for unique + lookup
-  routingNumber     String? // HR-01 / T-P4.2 — C4 routing number encrypted at rest
-  accountType       String   @default("CHECKING")
+  accountNumber      String
+  accountNumberBidx  String? // HR-01 / T-P4.2 — deterministic HMAC of the plaintext account for unique + lookup
+  routingNumber      String? // HR-01 / T-P4.2 — C4 routing number encrypted at rest
+  accountType        String   @default("CHECKING")
   // Consolidated-profile fields (additive nullable).
   accountTitle       String? // A/C Title — name the account is held under
   iban               String? // C4-encrypted at rest (C4_FIELDS.bankDetail.iban); embeds the account number
   branch             String? // bank branch name / code
   disbursementMethod String? // how net pay is disbursed: Bank Transfer | Cheque | Cash
-  isPrimary         Boolean  @default(true)
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
+  isPrimary          Boolean  @default(true)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
 
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
@@ -1899,7 +1904,7 @@ model TaxRate {
   countryCode   String    @db.Char(2)
   bracketMin    Decimal   @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   bracketMax    Decimal?  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
-  rate          Decimal @db.Decimal(8, 6)
+  rate          Decimal   @db.Decimal(8, 6)
   // Payroll Setup (FBR-style slabs): baseTax = cumulative tax up to bracketMin;
   // status toggles a slab active/inactive without deleting it.
   baseTax       Decimal   @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
@@ -1928,7 +1933,7 @@ model SalaryComponent {
   name         String
   type         PayElementType // EARNING | DEDUCTION
   computation  ComputationType @default(FIXED)
-  value        Decimal? @db.Decimal(18, 4) // FIXED amount or PERCENTAGE percent (0-100)
+  value        Decimal?        @db.Decimal(18, 4) // FIXED amount or PERCENTAGE percent (0-100)
   formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
   taxable      Boolean         @default(true)
   active       Boolean         @default(true)
@@ -1954,21 +1959,21 @@ model SalaryComponent {
 // shift/OT entry edits; approvalsClose bars approvals after it; payDateWeekendShift
 // pulls a weekend pay date earlier to the nearest working day.
 model PayrollCalendar {
-  id                 Int            @id @default(autoincrement())
-  payFrequency       PayFrequency   @default(MONTHLY)
-  periodStartAnchor  CalendarAnchor @default(FIRST_OF_MONTH)
-  periodStartDate    DateTime?
-  periodEndAnchor    CalendarAnchor @default(LAST_OF_MONTH)
-  periodEndDate      DateTime?
-  attendanceCutoff   DateTime? // date+time; locks shift + OT entries
-  approvalsClose     DateTime? // date+time; no approvals after
-  payDateAnchor      CalendarAnchor @default(LAST_OF_MONTH)
-  payDate            DateTime?
-  payDateWeekendShift Boolean       @default(true)
-  status             ConfigStatus   @default(DRAFT)
-  version            Int            @default(1)
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  id                  Int            @id @default(autoincrement())
+  payFrequency        PayFrequency   @default(MONTHLY)
+  periodStartAnchor   CalendarAnchor @default(FIRST_OF_MONTH)
+  periodStartDate     DateTime?
+  periodEndAnchor     CalendarAnchor @default(LAST_OF_MONTH)
+  periodEndDate       DateTime?
+  attendanceCutoff    DateTime? // date+time; locks shift + OT entries
+  approvalsClose      DateTime? // date+time; no approvals after
+  payDateAnchor       CalendarAnchor @default(LAST_OF_MONTH)
+  payDate             DateTime?
+  payDateWeekendShift Boolean        @default(true)
+  status              ConfigStatus   @default(DRAFT)
+  version             Int            @default(1)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
@@ -1984,7 +1989,7 @@ model PayrollApprovalMatrix {
   role              String // approving role/title
   approverId        Int? // resolved Employee approver
   thresholdRequired Boolean   @default(false)
-  thresholdAmount   Decimal? @db.Decimal(18, 4) // F-12: amount at/above which this level is required
+  thresholdAmount   Decimal?  @db.Decimal(18, 4) // F-12: amount at/above which this level is required
   autoEscalateAfter DateTime? // date+time after which the request escalates
   status            RowStatus @default(ACTIVE)
   version           Int       @default(1)
@@ -2002,18 +2007,18 @@ model PayrollApprovalMatrix {
 
 // Pay Rules — one config row per tenant: the six policy toggles + parameters.
 model PayrollRuleConfig {
-  id                       Int          @id @default(autoincrement())
-  midMonthJoinerProration  Boolean      @default(true) // pro-rate by calendar days from join date
-  midMonthExitSettlement   Boolean      @default(true) // final settlement + gratuity + leave encashment
-  lwpRecovery              Boolean      @default(true) // monthly basic ÷ working days × LWP days
-  complianceHold           Boolean      @default(true) // block disbursement on unfiled EOBI/PSSF
-  garnishmentRecovery      Boolean      @default(true) // loan/garnishment recovery
-  garnishmentCapPct        Float        @default(33) // cap as % of net pay; roll balance forward
-  offCycleRelease          Boolean      @default(true) // single-employee off-cycle disbursement
-  status                   ConfigStatus @default(DRAFT)
-  version                  Int          @default(1)
-  createdAt                DateTime     @default(now())
-  updatedAt                DateTime     @updatedAt
+  id                      Int          @id @default(autoincrement())
+  midMonthJoinerProration Boolean      @default(true) // pro-rate by calendar days from join date
+  midMonthExitSettlement  Boolean      @default(true) // final settlement + gratuity + leave encashment
+  lwpRecovery             Boolean      @default(true) // monthly basic ÷ working days × LWP days
+  complianceHold          Boolean      @default(true) // block disbursement on unfiled EOBI/PSSF
+  garnishmentRecovery     Boolean      @default(true) // loan/garnishment recovery
+  garnishmentCapPct       Float        @default(33) // cap as % of net pay; roll balance forward
+  offCycleRelease         Boolean      @default(true) // single-employee off-cycle disbursement
+  status                  ConfigStatus @default(DRAFT)
+  version                 Int          @default(1)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
@@ -2075,8 +2080,8 @@ model PayrollConfigSnapshot {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@index([tenantId])
   @@unique([tenantId, version])
+  @@index([tenantId])
   @@map("payroll_config_snapshots")
 }
 
@@ -2141,10 +2146,10 @@ model Candidate {
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
 
-  tags           CandidateTag[]
-  applications   Application[]
-  talentPools    TalentPool[]
-  offers         Offer[]
+  tags            CandidateTag[]
+  applications    Application[]
+  talentPools     TalentPool[]
+  offers          Offer[]
   candidateSkills CandidateSkill[]
 
   @@unique([tenantId, email])
@@ -2275,29 +2280,29 @@ enum OnboardingTaskCategory {
 // ==================== ONBOARDING MODELS ====================
 
 model OnboardingChecklist {
-  id          Int              @id @default(autoincrement())
-  employeeId  Int
-  title       String @default("Employee Onboarding")
-  startDate   DateTime
-  targetDate  DateTime?
-  status      OnboardingStatus @default(NOT_STARTED)
-  completedAt DateTime?
-  notes       String?
-  readyToCollect Boolean       @default(false)
-  currentStage   String?       // pre_joining | pre_boarding | first_week | equipment | complete
-  template       String?       // onboarding template name
-  preboarding    Json?         // { readiness:{}, itSetup:{}, engagement:{}, workspace:{} } booleans
-  memberAssignments Json?      // [{ employeeId, name, role }]
-  activityLog    Json?         // [{ at, actor, text }]
-  created_at  DateTime         @default(now())
-  updated_at  DateTime         @updatedAt
+  id                Int              @id @default(autoincrement())
+  employeeId        Int
+  title             String           @default("Employee Onboarding")
+  startDate         DateTime
+  targetDate        DateTime?
+  status            OnboardingStatus @default(NOT_STARTED)
+  completedAt       DateTime?
+  notes             String?
+  readyToCollect    Boolean          @default(false)
+  currentStage      String? // pre_joining | pre_boarding | first_week | equipment | complete
+  template          String? // onboarding template name
+  preboarding       Json? // { readiness:{}, itSetup:{}, engagement:{}, workspace:{} } booleans
+  memberAssignments Json? // [{ employeeId, name, role }]
+  activityLog       Json? // [{ at, actor, text }]
+  created_at        DateTime         @default(now())
+  updated_at        DateTime         @updatedAt
 
-  employee  Employee             @relation(fields: [employeeId], references: [id])
-  tasks     OnboardingTask[]
-  documents OnboardingDocument[]
-  surveys   OnboardingSurvey[]
-  sessions  OnboardingSession[]
-  buddy     OnboardingBuddy?
+  employee       Employee             @relation(fields: [employeeId], references: [id])
+  tasks          OnboardingTask[]
+  documents      OnboardingDocument[]
+  surveys        OnboardingSurvey[]
+  sessions       OnboardingSession[]
+  buddy          OnboardingBuddy?
   portalFeedback OnboardingFeedback?
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
@@ -2312,10 +2317,10 @@ model OnboardingSession {
   checklistId Int
   title       String
   sessionDate DateTime?
-  fromTime    String?   // "09:00"
-  toTime      String?   // "10:00"
-  sessionType String?   // orientation | training | meeting
-  location    String?   // room or link
+  fromTime    String? // "09:00"
+  toTime      String? // "10:00"
+  sessionType String? // orientation | training | meeting
+  location    String? // room or link
   assigneeId  Int?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -2323,6 +2328,7 @@ model OnboardingSession {
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
 
   tenantId String? @db.Uuid
+
   @@index([checklistId])
   @@index([tenantId])
   @@map("onboarding_sessions")
@@ -2333,10 +2339,10 @@ model OnboardingTask {
   checklistId  Int
   title        String
   description  String?
-  stage        String?                 // pre_joining | pre_boarding | first_week | equipment
+  stage        String? // pre_joining | pre_boarding | first_week | equipment
   category     OnboardingTaskCategory? @default(OTHER) // FE Onboarding-Portal grouping (IT & Access, Workspace, ...)
   assigneeType TaskAssigneeType        @default(HR)
-  assigneeId   Int?                    // responsible employee (any employee, incl. the onboarding person)
+  assigneeId   Int? // responsible employee (any employee, incl. the onboarding person)
   dueDate      DateTime?
   completed    Boolean                 @default(false)
   completedAt  DateTime?
@@ -2419,14 +2425,14 @@ model OnboardingSurvey {
 // canonical questions in src/lib/onboardingTaxonomy.js. One submission per
 // checklist (upserted) so a re-submit overwrites.
 model OnboardingFeedback {
-  id          Int       @id @default(autoincrement())
-  checklistId Int       @unique
+  id          Int      @id @default(autoincrement())
+  checklistId Int      @unique
   employeeId  Int
-  responses   Json?     // [{ questionId, question, answer }]
+  responses   Json? // [{ questionId, question, answer }]
   comments    String?
-  submittedAt DateTime  @default(now())
-  created_at  DateTime  @default(now())
-  updated_at  DateTime  @updatedAt
+  submittedAt DateTime @default(now())
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee            @relation("OnboardingFeedbackEmployee", fields: [employeeId], references: [id])
@@ -2476,7 +2482,7 @@ model Interview {
   durationMinutes Int             @default(60)
   location        String?
   status          InterviewStatus @default(SCHEDULED)
-  decision        String?         // NEXT_ROUND | HOLD | REJECTED (interview outcome)
+  decision        String? // NEXT_ROUND | HOLD | REJECTED (interview outcome)
   notes           String?
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
@@ -2540,16 +2546,16 @@ model Offer {
   startDate          DateTime?
   expiryDate         DateTime?
   status             OfferStatus @default(DRAFT)
-   offerLetterMediaId Int?
-  notes              String? @db.Text
+  offerLetterMediaId Int?
+  notes              String?     @db.Text
   sentAt             DateTime?
   respondedAt        DateTime?
   viewedAt           DateTime?
-  offerType          String?     // Standard | Contract | Internship | Promotion
-  employmentType     String?     // Full-time | Part-time | Contract
-  terms              Json?        // { probationMonths, noticePeriodDays, additionalTerms, specialClauses }
-  compensation       Json?        // { baseSalary, currency, bonus, allowances, benefits:[...] }
-  approvals          Json?        // { hiringManager, hrHead, finance } each { by, decision, at, reason }
+  offerType          String? // Standard | Contract | Internship | Promotion
+  employmentType     String? // Full-time | Part-time | Contract
+  terms              Json? // { probationMonths, noticePeriodDays, additionalTerms, specialClauses }
+  compensation       Json? // { baseSalary, currency, bonus, allowances, benefits:[...] }
+  approvals          Json? // { hiringManager, hrHead, finance } each { by, decision, at, reason }
   createdById        Int?
   created_at         DateTime    @default(now())
   updated_at         DateTime    @updatedAt
@@ -3015,7 +3021,7 @@ model DevelopmentPlan {
   employeeId   Int
   title        String
   description  String?
-  startDate    DateTime @default(now())
+  startDate    DateTime  @default(now())
   endDate      DateTime?
   reviewedById Int?
   created_at   DateTime  @default(now())
@@ -3054,7 +3060,7 @@ model ReimbursementClaim {
   employeeId     Int
   title          String
   description    String?
-  amount         Decimal @db.Decimal(18, 4)
+  amount         Decimal             @db.Decimal(18, 4)
   currency       String              @default("USD")
   category       String?
   receiptMediaId Int?
@@ -3068,10 +3074,10 @@ model ReimbursementClaim {
   created_at     DateTime            @default(now())
   updated_at     DateTime            @updatedAt
 
-  employee    Employee            @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
-  approvedBy  Employee?           @relation("ReimbursementApprover", fields: [approvedById], references: [id])
-  items       ClaimItem[]
-  approvals   ClaimApproval[]
+  employee     Employee           @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
+  approvedBy   Employee?          @relation("ReimbursementApprover", fields: [approvedById], references: [id])
+  items        ClaimItem[]
+  approvals    ClaimApproval[]
   infoRequests ClaimInformation[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
@@ -3088,7 +3094,7 @@ model ClaimItem {
   claimId     Int
   name        String
   description String?
-  amount      Decimal @db.Decimal(18, 4)
+  amount      Decimal  @db.Decimal(18, 4)
   mediaId     Int? // DAM attachment asset id
   createdAt   DateTime @default(now())
 
@@ -3257,24 +3263,24 @@ model SystemAccountProvisioning {
   status             SystemAccountProvisioningStatus @default(PENDING)
   idempotencyKey     String                          @db.Uuid
   payloadFingerprint String
-  payload             Json
-  actor               Json
-  correlationId       String?
-  attempts            Int                             @default(0)
-  maxAttempts         Int                             @default(5)
-  nextAttemptAt       DateTime?                       @default(now())
-  claimedAt           DateTime?
-  claimedBy           String?
-  claimExpiresAt      DateTime?
-  rbacUserId          String?
-  result              Json?
-  lastError           String?
-  lastErrorCode       String?
-  lastHttpStatus      Int?
-  manualRetryCount    Int                             @default(0)
-  createdAt           DateTime                        @default(now())
-  updatedAt           DateTime                        @updatedAt
-  completedAt         DateTime?
+  payload            Json
+  actor              Json
+  correlationId      String?
+  attempts           Int                             @default(0)
+  maxAttempts        Int                             @default(5)
+  nextAttemptAt      DateTime?                       @default(now())
+  claimedAt          DateTime?
+  claimedBy          String?
+  claimExpiresAt     DateTime?
+  rbacUserId         String?
+  result             Json?
+  lastError          String?
+  lastErrorCode      String?
+  lastHttpStatus     Int?
+  manualRetryCount   Int                             @default(0)
+  createdAt          DateTime                        @default(now())
+  updatedAt          DateTime                        @updatedAt
+  completedAt        DateTime?
 
   @@unique([tenantId, employeeId])
   @@unique([tenantId, idempotencyKey])

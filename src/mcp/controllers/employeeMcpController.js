@@ -140,7 +140,15 @@ export async function mcpUpdateEmployee(user, id, data) {
 }
 
 export async function mcpDeleteEmployee(user, id) {
-  return runController(deleteEmployee, { user, params: { id: String(id) } });
+  // RBAC-only admins have no linked Employee record (the normal operator shape —
+  // see hr_employee_status_update). The delete controller uses the employee-id
+  // header as audit actor metadata and rejects an empty value (HR-4040).
+  // F-07: use employeeId directly — never fall back to userId.
+  return runController(deleteEmployee, {
+    user,
+    params: { id: String(id) },
+    headers: { "employee-id": String(user.employeeId ?? "") },
+  });
 }
 
 export async function mcpUploadEmployeeProfilePhoto(user, id, data) {
