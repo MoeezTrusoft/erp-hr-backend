@@ -78,6 +78,7 @@ export function registerLifecycleComplianceTools(server) {
   server.tool(
     "hr_compliance_checklist_list",
     "List all compliance checklists",
+    {},
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:compliance", user.isAdmin);

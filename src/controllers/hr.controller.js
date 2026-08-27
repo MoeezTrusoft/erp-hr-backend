@@ -251,9 +251,12 @@ export const updateEmployee = async (req, res) => {
 export const deleteEmployee = async (req, res) => {
   try {
     const deletedBy = req.headers["employee-id"];
+    // EventEnvelope.actor.id is a STRING (contracts/src/envelopes.js) — the MCP
+    // runner coerces user.userId to Number, so stringify before threading.
+    const rawActor = req.user?.userId ?? deletedBy ?? null;
     const ctx = {
       correlationId: req.correlationId,
-      actorId: req.user?.userId ?? deletedBy ?? null,
+      actorId: rawActor != null && rawActor !== "" ? String(rawActor) : null,
       terminationCause: req.body?.terminationCause,
     };
     const result = await deleteEmployeeService(req.params.id, deletedBy, ctx);

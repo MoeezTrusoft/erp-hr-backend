@@ -56,7 +56,7 @@ if (process.env.REDIS_URL) {
     attendanceRedis = new Redis(process.env.REDIS_URL, {
       lazyConnect: false,
       maxRetriesPerRequest: 1,
-      enableOfflineQueue: false,
+      enableOfflineQueue: true,
     });
     attendanceRedis.on?.("error", (err) =>
       logger.warn({ err: { message: err?.message } }, "attendance realtime: redis error"));

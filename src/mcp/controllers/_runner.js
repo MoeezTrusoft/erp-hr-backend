@@ -1,4 +1,4 @@
-export async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
+export async function runController(controller, { user = {}, params = {}, query = {}, body = {}, headers: extraHeaders = {} } = {}) {
   const primaryRole = Array.isArray(user.roles) && user.roles.length
     ? String(user.roles[0])
     : user.isAdmin
@@ -16,6 +16,7 @@ export async function runController(controller, { user = {}, params = {}, query 
       "x-employee-id": user.employeeId ? String(user.employeeId) : "",
       "x-internal": "true",
       "x-forwarded-for": "127.0.0.1",
+      ...extraHeaders,
     },
     user: {
       userId: user.userId ? Number(user.userId) : undefined,
