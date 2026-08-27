@@ -64,7 +64,11 @@ export function internalServiceGuard(req, res, next) {
             // never represented by a tenantless service JWT.
             const rawTenant = req.internalService.tenantId;
             const verifiedTenant = typeof rawTenant === 'string' ? rawTenant.trim() : '';
-            if (!isUuid(verifiedTenant) || verifiedTenant === NIL_UUID) {
+            // MCP surface (/mcp): skip tenant check — tools/list is a cross-tenant
+            // discovery call and tools/call handles tenant context per-tool via
+            // buildContextFromHeaders. REST routes (/api) still require a tenant.
+            const isMcpSurface = req.path === '/mcp' || req.originalUrl?.startsWith('/mcp');
+            if (!isMcpSurface && (!isUuid(verifiedTenant) || verifiedTenant === NIL_UUID)) {
                 recordInternalBoundary({ source: 'rejected', outcome: 'reject' });
                 return res.status(403).json({
                     success: false,
