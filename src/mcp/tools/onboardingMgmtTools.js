@@ -7,7 +7,8 @@ import { listOnboarding } from "../../services/onboardingMgmt.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
-  return { user: ctx?.user || {}, permissions: ctx?.permissions || {} };
+  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  return { user: ctx.user, permissions: ctx?.permissions || {} };
 }
 
 export function registerOnboardingMgmtTools(server) {

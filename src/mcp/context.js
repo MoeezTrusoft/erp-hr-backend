@@ -22,6 +22,20 @@ export function buildContextFromHeaders(req) {
   const verified = req.internalService;
   const rawTenant = verified?.tenantId;
   const tenantId = typeof rawTenant === "string" && rawTenant.trim() ? rawTenant.trim() : null;
+
+  // F-06 / DEFECT_AUTH: a request that reaches the HR /mcp router with no
+  // verified service identity (no claims object and/or no tenant claim) is
+  // UNAUTHENTICATED. internalServiceGuard is supposed to reject this before the
+  // router (per the header comment), but we enforce it here as defense-in-depth
+  // so a missing/empty `internalService` can never be treated as an
+  // authenticated, tenant-scoped caller. Without this, getCtx()'s `!ctx?.user`
+  // check never fires (buildContextFromHeaders always returned a truthy `user`
+  // even with null tenantId), so every protected tool would have served
+  // unauthenticated traffic. Throw 401 — the outer router catch renders it
+  // leak-safe via normalizeError.
+  if (!verified?.claims || !tenantId) {
+    throw Object.assign(new Error("Unauthenticated: missing verified service identity"), { status: 401 });
+  }
   // SEC-5: x-is-admin is client-forgeable and is NOT honored as authority.
   // The verified service-JWT carries `admin: true` when the caller IS an RBAC
   // admin (serviceJwt.js:219), so we read it from the verified claims — NOT
