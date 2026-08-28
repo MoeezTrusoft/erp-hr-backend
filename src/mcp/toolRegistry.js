@@ -68,6 +68,112 @@ import { registerLoanTools } from "./tools/loanTools.js";
 import { registerDeductionTools } from "./tools/deductionTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
+import { normalizeError } from "../middlewares/error.middleware.js";
+import { toJsonRpcError } from "./utils/mcpErrorMap.js";
+import defaultLogger from "../lib/logger.js";
+import { mcpCtx } from "./context.js";
+
+// API-6 + ERR-3/ERR-2 (ARCH-05 §6–§7, ARCH-01 §4/§13) — central error seam.
+//
+// The MCP SDK's CallToolRequestSchema handler renders ANY error a tool callback
+// throws as `createToolError(error.message)` — i.e. the RAW prisma/ORM/stack
+// text, with NO HR-nnnn code and NO status (DEFECT_LEAK + DEFECT_CONTRACT). A
+// malformed payload that reaches a handler which throws a DB error would surface
+// a 5xx-grade raw message. We wrap every tool callback ONCE at the single
+// registration seam so a thrown error is normalized through the SAME
+// normalizeError()/buildErrorEnvelope() pipeline the REST terminal middleware
+// uses: generic message + HR-nnnn code for 5xx (no ORM/stack leak), client-safe
+// message + code for 4xx, and a leak-safe CallToolResult carrying code+status+
+// message. This is the MCP twin of the REST errorHandler (error.middleware.js).
+
+// Map a thrown error to a leak-safe MCP CallToolResult (isError:true), mirroring
+// the SAME envelope shape the per-handler withToolError() wrapper emits
+// ({ error, status, code, jsonrpc }) so clients/tests see one consistent
+// contract regardless of which seam caught the error. The full error is logged
+// server-side exactly once; the raw error text never reaches the caller.
+function safeToolErrorResult(err, toolName = "unknown_tool") {
+  const jsonrpc = toJsonRpcError(err);
+  const norm = normalizeError(err);
+  const store = mcpCtx.getStore();
+  const log = store?.log || defaultLogger;
+  const correlationId = store?.correlationId || undefined;
+  if (norm.httpStatus >= 500) {
+    log.error(
+      { toolName, argsHash: null, err, code: jsonrpc.data.code, jsonrpcCode: jsonrpc.code },
+      "MCP tool failed",
+    );
+  } else {
+    log.warn(
+      { toolName, code: jsonrpc.data.code, jsonrpcCode: jsonrpc.code, message: jsonrpc.message },
+      "MCP tool rejected",
+    );
+  }
+  const body = {
+    error: jsonrpc.message,
+    status: norm.httpStatus,
+    code: jsonrpc.data.code,
+    jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
+  };
+  if (correlationId) body.correlationId = correlationId;
+  return {
+    isError: true,
+    content: [{ type: "text", text: JSON.stringify(body) }],
+    structuredContent: body,
+  };
+}
+
+// Wrap the trailing tool callback so thrown errors become leak-safe CallToolResults.
+function withSafeToolCallbacks(server) {
+  if (server.__hrSafeWrapped) return server;
+  const originalTool = server.tool.bind(server);
+  server.tool = function wrappedTool(name, ...rest) {
+    try {
+      if (typeof name !== "string" || rest.length === 0) {
+        return originalTool(name, ...rest);
+      }
+      const cbIndex = rest.length - 1;
+      if (typeof rest[cbIndex] !== "function") {
+        return originalTool(name, ...rest);
+      }
+      const inferred = inferToolAnnotations(name);
+      const preCb = rest[cbIndex - 1];
+      const isExplicitAnnotations =
+        cbIndex - 1 >= 0 &&
+        preCb !== null &&
+        typeof preCb === "object" &&
+        !isZodRawShape(preCb);
+
+      // Wrap the trailing callback so any thrown error is sanitized. Success
+      // returns pass through untouched; only thrown errors are intercepted.
+      const originalCb = rest[cbIndex];
+      const wrappedCb = async (args, extra) => {
+        try {
+          return await originalCb(args, extra);
+        } catch (err) {
+          return safeToolErrorResult(err, name);
+        }
+      };
+
+      let next;
+      if (isExplicitAnnotations) {
+        next = rest.slice();
+        next[cbIndex - 1] = { ...inferred, ...preCb };
+        next[cbIndex] = wrappedCb;
+      } else {
+        // `inferred` is spliced immediately before the original callback, so the
+        // wrapped callback lands at the original callback's position + 1.
+        next = [...rest.slice(0, cbIndex), inferred, wrappedCb];
+      }
+      return originalTool(name, ...next);
+    } catch {
+      return originalTool(name, ...rest);
+    }
+  };
+  server.__hrSafeWrapped = true;
+  return server;
+}
+
+export { withSafeToolCallbacks, safeToolErrorResult };
 
 // API-6 — inject standard MCP tool annotations at the single registration seam.
 //
@@ -137,6 +243,7 @@ function withAnnotationInjection(server) {
 
 export function registerAllTools(server) {
   withAnnotationInjection(server);
+  withSafeToolCallbacks(server);
   registerEmployeeTools(server);
   registerAttendanceTools(server);
   registerLeaveTools(server);
