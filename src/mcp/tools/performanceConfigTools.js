@@ -37,7 +37,7 @@ export function registerPerformanceConfigTools(server) {
   server.tool(
     "hr_performance_cycle_list",
     "List all performance review cycles",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
@@ -109,7 +109,7 @@ export function registerPerformanceConfigTools(server) {
   server.tool(
     "hr_performance_template_list",
     "List all performance review templates",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:performance", user.isAdmin);

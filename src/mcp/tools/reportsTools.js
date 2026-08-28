@@ -30,7 +30,7 @@ export function registerReportsTools(server) {
     server.tool(
         "hr_document_expiry_kpis",
         "Document Expiry Alerts KPI counts (expired / expiring in 30-60-90 days / healthy / total) across all employee documents that have a parseable expiry date.",
-        {},
+        z.object({}),
         withToolError(async () => {
             const { user, permissions } = getCtx();
             assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);

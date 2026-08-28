@@ -258,7 +258,7 @@ export function registerLearningTools(server) {
   server.tool(
     "hr_certifications_kpis",
     "Certifications & Transcripts screen KPI tiles: counts of certifications by effective lifecycle status (active, renewals, inactive, expired) plus total. Each certification is bucketed into exactly one status so the four counts sum to total. Effective status precedence: INACTIVE > EXPIRED (status EXPIRED or expiryDate in the past) > RENEWAL (status RENEWAL or expiryDate within 60 days) > ACTIVE.",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:learning", user.isAdmin);

@@ -118,7 +118,7 @@ export function registerPayrollConfigTools(server) {
     server.tool(
         "hr_payroll_calendar_get",
         "Get the tenant's payroll cycle & calendar config (singleton; defaults if unset)",
-        {},
+        z.object({}),
         withToolError(async () => {
             const { user, permissions } = getCtx();
             assertPermission(permissions, "GET", RESOURCE, user.isAdmin);

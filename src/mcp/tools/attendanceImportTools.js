@@ -27,7 +27,7 @@ export function registerAttendanceImportTools(server) {
   server.tool(
     "hr_attendance_import_template",
     "Download the empty attendance bulk-import spreadsheet (.xlsx). One row per employee per day, with dropdowns for day_type / status / work_mode / leave_type / anomaly_type / anomaly_resolution, plus Example and Instructions tabs. Returns the file as base64. Fill the 'Attendance' tab and upload it to hr_attendance_import.",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);

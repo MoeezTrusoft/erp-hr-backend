@@ -19,7 +19,7 @@ export function registerOvertimeWorkScheduleTools(server) {
   server.tool(
     "hr_overtime_rule_list",
     "List all overtime rules",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);

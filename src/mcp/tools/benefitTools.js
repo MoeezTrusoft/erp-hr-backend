@@ -174,7 +174,7 @@ export function registerBenefitTools(server) {
   server.tool(
     "hr_benefit_kpi",
     "Get Benefits & Enrollments KPI summary (Active plans, Open enrollment, Total enrollments, Monthly gross contribution)",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", BENEFITS_KEY, user.isAdmin);

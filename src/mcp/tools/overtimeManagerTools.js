@@ -29,7 +29,7 @@ export function registerOvertimeManagerTools(server) {
   server.tool(
     "hr_ot_manager_overview",
     "Manager overview KPIs: team on shift now, pending OT approvals, total approved OT this month, employees at ≥90% of the monthly OT limit",
-    {},
+    z.object({}),
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
@@ -56,7 +56,7 @@ export function registerOvertimeManagerTools(server) {
   server.tool(
     "hr_ot_trend",
     "Monthly overtime trend over the last ~6 months for a bar chart: approved hours plus pending/approved/rejected counts per month",
-    {},
+    z.object({}),
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
@@ -68,7 +68,7 @@ export function registerOvertimeManagerTools(server) {
   server.tool(
     "hr_ot_at_risk",
     "Employees at risk of the monthly OT limit (approved OT this month ≥ 80% of the limit), with hours, limit, and pct",
-    {},
+    z.object({}),
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);

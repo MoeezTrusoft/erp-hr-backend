@@ -21,7 +21,7 @@ export function registerOrgTools(server) {
   server.tool(
     "hr_departments_list",
     "List the company's departments from RBAC (the authoritative org source), scoped to the caller's company. Use to populate department dropdowns (departmentId elsewhere = RBAC Department.id).",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);

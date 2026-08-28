@@ -23,7 +23,7 @@ export function registerEmployeeImportTools(server) {
   server.tool(
     "hr_employees_import_template",
     "Download the empty employee bulk-import spreadsheet (.xlsx) — friendly headers, dropdowns (gender/marital status/department/grade/manager/employment type/status/work mode/currency/create-login/emergency relationship), date pickers, an Example tab and an Instructions tab. Manager/department/position/grade dropdowns are pre-filled from THIS tenant's records. Returns the file as base64. Fill the 'Employees' tab and upload it to hr_employees_import.",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);

@@ -28,7 +28,7 @@ export function registerRecruitmentAnalyticsTools(server) {
   server.tool(
     "hr_recruitment_analytics_get",
     "Compute tenant-scoped recruitment analytics: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, and an ILLUSTRATIVE cost-per-hire / cost breakdown (constants, not DB spend — flagged illustrativeCostData:true).",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);

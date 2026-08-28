@@ -25,7 +25,7 @@ export function registerSkillTools(server) {
   server.tool(
     "hr_skill_list",
     "List all skills in the catalog",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);

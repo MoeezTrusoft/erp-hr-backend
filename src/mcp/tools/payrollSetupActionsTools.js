@@ -31,7 +31,7 @@ export function registerPayrollSetupActionsTools(server) {
   server.tool(
     "hr_payroll_rules_get",
     "Get the tenant's payroll Pay Rules (policy toggles + garnishment cap)",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
@@ -87,7 +87,7 @@ export function registerPayrollSetupActionsTools(server) {
   server.tool(
     "hr_payroll_global_kpis",
     "Get payroll-setup global KPIs (active employees, pay components, approval levels)",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
@@ -100,7 +100,7 @@ export function registerPayrollSetupActionsTools(server) {
   server.tool(
     "hr_payroll_config_status",
     "Get the payroll config draft/publish status (status, versions, unpublished flag)",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
@@ -113,7 +113,7 @@ export function registerPayrollSetupActionsTools(server) {
   server.tool(
     "hr_payroll_config_publish",
     "Publish the payroll config: snapshot + flip DRAFT rows to PUBLISHED + bump meta",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);

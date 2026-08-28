@@ -140,7 +140,7 @@ export function registerSalaryComponentTools(server) {
   server.tool(
     "hr_grade_band_list",
     "List grade levels with their salary bands (min/mid/max + currency) and salary-component counts",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE, user.isAdmin);

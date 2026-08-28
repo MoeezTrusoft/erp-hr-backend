@@ -64,7 +64,7 @@ export function registerOvertimeShiftReportTools(server) {
   server.tool(
     "hr_overtime_trend",
     "Overtime trend for the last 6 calendar months (including the current month): approved/pending/rejected hours and counts per month.",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
@@ -76,7 +76,7 @@ export function registerOvertimeShiftReportTools(server) {
   server.tool(
     "hr_shift_kpis",
     "Overtime & Shift KPI tiles: on-shift now, total employees, pending overtime, total approved overtime this month, and employees approaching the monthly OT limit.",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
@@ -109,7 +109,7 @@ export function registerOvertimeShiftReportTools(server) {
   server.tool(
     "hr_overtime_at_risk",
     "Employees at/over 75% of the monthly overtime limit (approved OT this month), sorted by hours descending.",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);

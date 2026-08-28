@@ -110,7 +110,7 @@ export function registerSelfTools(server) {
     // No caller-supplied fields: employeeId is auto-injected from ctx and the
     // Attendance model has no location/notes columns, so nothing else is
     // persisted. (Previously-declared location/notes were silently discarded.)
-    {},
+    z.object({}),
     withToolError(async (args) => {
       const { user } = getCtx();
       const data = await mcpSelfCheckin(user, args);

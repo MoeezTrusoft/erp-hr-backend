@@ -117,7 +117,7 @@ export function registerLeaveManagementTools(server) {
   server.tool(
     "hr_leave_next30_coverage",
     "Per-department coverage for the next 30 days (present vs on-leave, presentPct) plus a daily present/on-leave series.",
-    {},
+    z.object({}),
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:leave", user.isAdmin);

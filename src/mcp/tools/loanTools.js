@@ -18,7 +18,7 @@ export function registerLoanTools(server) {
   server.tool(
     "hr_loan_kpis",
     "Get loan management KPIs (active loans, total disbursed, outstanding, paid off)",
-    {},
+    z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", LOANS_KEY, user.isAdmin);
