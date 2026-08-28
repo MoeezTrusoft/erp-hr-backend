@@ -40,7 +40,7 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
   const ctx = buildContextFromHeaders(req);
 
   logger.info({ method: body?.method }, "hr: creating transport and server");
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   const server = getMcpServer();
   logger.info({ method: body?.method, toolCount: Object.keys(server._registeredTools || {}).length }, "hr: server created with tools");
 
