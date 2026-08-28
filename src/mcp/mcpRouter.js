@@ -44,6 +44,21 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const server = getMcpServer();
 
+  // Diagnostic: catch the _zod crash in tools/list and log which tool causes it
+  if (body?.method === "tools/list") {
+    const tools = server._registeredTools || {};
+    for (const [name, tool] of Object.entries(tools)) {
+      if (tool?.inputSchema) {
+        try {
+          const { normalizeObjectSchema } = await import("@modelcontextprotocol/sdk/server/zod-compat.js");
+          normalizeObjectSchema(tool.inputSchema);
+        } catch (e) {
+          logger.error({ toolName: name, err: e?.message, inputSchemaType: typeof tool.inputSchema, keys: Object.keys(tool.inputSchema || {}).slice(0, 5) }, "HR tool schema serialization failed");
+        }
+      }
+    }
+  }
+
   try {
     await mcpCtx.run(ctx, async () => {
       await server.connect(transport);
