@@ -42,18 +42,28 @@ export const tenantScopeExtension = (client) =>
                     const store = mcpCtx.getStore();
                     if (store?.system) return query(args);
                     if (!store) {
-                        throw new Error(
-                            `HR-4030: ${model}.${operation} ran without a tenant context (deny-by-default). ` +
-                            `Wrap the caller in the REST/MCP context or mcpCtx.run({ system: true }).`,
+                        // Fail-closed: typed 4xx (HR-4030) so the MCP facade maps it
+                        // to a clean forbidden error instead of genericising to HR-5000.
+                        throw Object.assign(
+                            new Error(
+                                `HR-4030: ${model}.${operation} ran without a tenant context (deny-by-default). ` +
+                                `Wrap the caller in the REST/MCP context or mcpCtx.run({ system: true }).`,
+                            ),
+                            { status: 403, code: 'HR-4030' },
                         );
                     }
 
                     const rawTenant = store.user?.tenantId;
                     const tenantId = typeof rawTenant === 'string' ? rawTenant.trim() : '';
                     if (!isUuid(tenantId) || tenantId === NIL_UUID) {
-                        throw new Error(
-                            `HR-4031: ${model}.${operation} requires a valid interactive tenant UUID. ` +
-                            `Use mcpCtx.run({ system: true }) only for explicit jobs or migration/backfill work.`,
+                        // Fail-closed: typed 4xx (HR-4031) so a missing/invalid tenant
+                        // reads as forbidden, never as an internal 5xx (HR-5000).
+                        throw Object.assign(
+                            new Error(
+                                `HR-4031: ${model}.${operation} requires a valid interactive tenant UUID. ` +
+                                `Use mcpCtx.run({ system: true }) only for explicit jobs or migration/backfill work.`,
+                            ),
+                            { status: 403, code: 'HR-4031' },
                         );
                     }
                     const a = args ? { ...args } : {};

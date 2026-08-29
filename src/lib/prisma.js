@@ -8,6 +8,15 @@
 // (nodemon, jest --watch) don't fan out to a new client per reload, but
 // production runs see exactly one. `src/config/prisma.js` re-exports
 // from this file so legacy `../config/prisma.js` imports keep working.
+// Load .env BEFORE the PrismaClient below is constructed. ESM hoists
+// `import { prisma }` (via app.js) above `dotenv.config()` in the service
+// entrypoint, so the client would otherwise be built with
+// process.env.DATABASE_URL === undefined and every DB-backed tool fails to
+// connect. Loading dotenv here guarantees the URL is present at construction
+// regardless of caller import order. Re-running config() is idempotent.
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { c4EncryptionExtension } from './c4Encryption.js';

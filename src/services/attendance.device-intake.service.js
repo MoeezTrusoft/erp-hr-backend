@@ -13,6 +13,7 @@
 // serves one company).
 
 import prisma from "../lib/prisma.js";
+import { Prisma } from "@prisma/client";
 import { mcpCtx } from "../mcp/context.js";
 import { syncAttendanceFromPunches } from "./attendance.device.service.js";
 import logger from "../lib/logger.js";
@@ -206,16 +207,35 @@ export async function listDevicePunches({
     }
 
     const run = async () => {
-        const [rows, total] = await Promise.all([
-            prisma.attendanceDevicePunch.findMany({
-                where,
-                orderBy: { punchedAt: "desc" },
-                take,
-                skip,
-            }),
-            prisma.attendanceDevicePunch.count({ where }),
-        ]);
-        return { rows, total, page: Math.max(Number(page) || 1, 1), pageSize: take };
+        try {
+            const [rows, total] = await Promise.all([
+                prisma.attendanceDevicePunch.findMany({
+                    where,
+                    orderBy: { punchedAt: "desc" },
+                    take,
+                    skip,
+                }),
+                prisma.attendanceDevicePunch.count({ where }),
+            ]);
+            return { rows, total, page: Math.max(Number(page) || 1, 1), pageSize: take };
+        } catch (err) {
+            // ERR-3 / fail-closed: a structural DB error (missing table P2021 or
+            // missing column P2022) must not escape as an unhandled 5xx that also
+            // leaks the internal schema name to the caller. Log the real cause
+            // server-side; return a clean 4xx so the tool degrades without a 5xx.
+            if (err instanceof Prisma.PrismaClientKnownRequestError &&
+                (err.code === "P2021" || err.code === "P2022")) {
+                logger.error(
+                    { code: err.code, model: err.meta?.modelName, table: err.meta?.table },
+                    "listDevicePunches: attendance device punch store not provisioned",
+                );
+                throw Object.assign(
+                    new Error("Attendance device punch store is not available"),
+                    { status: 404 },
+                );
+            }
+            throw err;
+        }
     };
 
     // When called outside an established MCP context (tests / internal), set one.
