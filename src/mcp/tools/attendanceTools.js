@@ -367,7 +367,7 @@ export function registerAttendanceTools(server) {
       effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
       total_hours_per_week: z.number().positive().describe("Contracted hours per week"),
       effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted"),
-      schedule_pattern: z.record(z.string()).optional().describe("JSON map of day -> shift window, e.g. { MON: '09:00-17:00' }"),
+      schedule_pattern: z.record(z.string(), z.any()).optional().describe("JSON map of day -> shift window, e.g. { MON: '09:00-17:00' }"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
     withToolError(async (args) => {
@@ -387,7 +387,7 @@ export function registerAttendanceTools(server) {
       effective_start_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD"),
       effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; null-out by omitting"),
       total_hours_per_week: z.number().positive().optional().describe("Contracted hours per week"),
-      schedule_pattern: z.record(z.string()).optional().describe("JSON map of day -> shift window"),
+      schedule_pattern: z.record(z.string(), z.any()).optional().describe("JSON map of day -> shift window"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
     withToolError(async ({ id, ...rest }) => {

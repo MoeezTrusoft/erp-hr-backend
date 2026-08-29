@@ -52,7 +52,7 @@ export function registerLifecycleComplianceTools(server) {
     {
       id: z.union([z.number(), z.string()]).describe("Event ID"),
       notes: z.string().optional().describe("Updated notes"),
-      metadata: z.record(z.any()).optional().describe("Updated metadata"),
+      metadata: z.record(z.string(), z.any()).optional().describe("Updated metadata"),
     },
     withToolError(async ({ id, ...data }) => {
       const { user, permissions } = getCtx();
