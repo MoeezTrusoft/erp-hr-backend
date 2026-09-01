@@ -139,9 +139,16 @@ export async function ingestDevicePunches({ sn, rows, tenantId, rollup = true })
     // device re-pushes on reconnect and the natural-key unique index dedupes.
     // NOTE tenantId is part of that key — re-pushing the same punch under a
     // different tenant duplicates it rather than deduping.
-    const res = await mcpCtx.run({ system: true }, () =>
-        prisma.attendanceDevicePunch.createMany({ data: createData, skipDuplicates: true }),
-    );
+    // The await MUST be inside the context callback. A Prisma call returns a lazy
+    // PrismaPromise: returning it unawaited hands the un-executed query back to
+    // mcpCtx.run, the async-local store unwinds, and the query then executes with
+    // no context — tenantScope denies it with HR-4030.
+    const res = await mcpCtx.run({ system: true }, async () => {
+        return await prisma.attendanceDevicePunch.createMany({
+            data: createData,
+            skipDuplicates: true,
+        });
+    });
     summary.rawStored = res.count;
 
     if (rollup) {
@@ -163,9 +170,9 @@ export async function ingestDevicePunches({ sn, rows, tenantId, rollup = true })
         summary.rollup = {};
         for (const [tid, punches] of byTenant) {
             try {
-                summary.rollup[tid] = await mcpCtx.run({ user: { tenantId: tid } }, () =>
-                    syncAttendanceFromPunches({ punches }),
-                );
+                summary.rollup[tid] = await mcpCtx.run({ user: { tenantId: tid } }, async () => {
+                    return await syncAttendanceFromPunches({ punches });
+                });
             } catch (err) {
                 // Raw rows are already durable; a roll-up failure must not lose
                 // them, and one tenant failing must not skip the others.
