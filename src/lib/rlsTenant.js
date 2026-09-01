@@ -118,6 +118,16 @@ const RLS_MODELS = new Set([
     // ADMS/iclock intake writes under an explicit tenant context, so the GUC
     // must be set for this model's ORM writes/reads too.
     'AttendanceDevicePunch',
+    // Attendance policy + deductions + anomaly approvals (HR-ATT-POLICY-01) —
+    // FORCE-RLS. Omitting a model here is SILENT and confusing: writes still
+    // succeed because tenantTransaction sets the tenant GUC explicitly, but
+    // ordinary reads run with no GUC, the tenant_isolation policy hides the row,
+    // and the service falls back to its defaults. The config appears to save and
+    // then never reads back.
+    'AttendancePolicyConfig',
+    'AttendanceDeductionRule',
+    'AttendanceApprovalLevel',
+    'AttendanceAnomalyApproval',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
