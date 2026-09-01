@@ -71,7 +71,12 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     const nullableModels = [...schema.matchAll(/model\s+(\w+)\s*\{([\s\S]*?)\n\}/g)]
       .filter(([, , body]) => /\b(?:tenantId|tenant_id)\s+String\?/.test(body))
       .map(([, name]) => name);
-    expect(nullableModels).toHaveLength(116);
+    // 116 + the 4 HR-ATT-POLICY-01 models (AttendancePolicyConfig,
+    // AttendanceDeductionRule, AttendanceApprovalLevel,
+    // AttendanceAnomalyApproval). They follow the same nullable-tenant
+    // convention as the rest of Payroll Setup, so they join the staged-backfill
+    // cohort rather than being exempted.
+    expect(nullableModels).toHaveLength(120);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

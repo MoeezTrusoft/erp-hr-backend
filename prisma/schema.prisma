@@ -32,6 +32,13 @@ enum StatusAttendance {
   ABSENT
   LATE
   HALF_DAY // check-in later than shift-start + HALF_DAY grace (default 30 min)
+  // HR-ATT-POLICY-01 — a punch pair that never completed. These are BLOCKING
+  // states, not shades of present: day_credit stays null and
+  // requires_regularization is set, so payroll holds the day instead of
+  // silently paying zero. They outrank LATE in the single-valued `status`
+  // column; the lateness itself is still recorded as a LATE_CHECKIN anomaly.
+  MISSING_CHECKIN
+  MISSING_CHECKOUT
 }
 
 // Attendance anomaly / correction requests — the "Inform Abnormality" action and
@@ -334,6 +341,10 @@ model Employee {
   courseReviews         CourseReview[]
   attendanceAnomalies   AttendanceAnomaly[]
   payrollApprovalRoles  PayrollApprovalMatrix[] @relation("PayrollApprover")
+
+  // HR-ATT-POLICY-01
+  attendanceAnomalyApprovals AttendanceAnomalyApproval[] @relation("AttendanceAnomalyApprover")
+  attendanceApprovalRoles    AttendanceApprovalLevel[]   @relation("AttendanceApprover")
   claimApprovals        ClaimApproval[]         @relation("ClaimApprover")
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
@@ -552,6 +563,13 @@ model Attendance {
   work_mode   String? // Remote | Onsite | Hybrid — the day's work mode (WFH/Remote KPI). Mirrors Employee.work_mode values.
   remarks     String?
 
+  // HR-ATT-POLICY-01 — the day's payable credit, in days: 1.0 full, 0.5 half,
+  // 0.0 unpaid. NULL means "not yet determined" (a MISSING_* day awaiting
+  // regularization). Payroll must read this rather than re-deriving policy from
+  // `status`, and must treat NULL as a hold, never as zero.
+  day_credit               Float?
+  requires_regularization  Boolean @default(false)
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -616,7 +634,26 @@ model AttendanceAnomaly {
   decidedAt  DateTime?
   createdAt  DateTime      @default(now())
 
-  employee Employee @relation(fields: [employeeId], references: [id])
+  // HR-ATT-POLICY-01 — the request form. Everything except `reason` is filled in
+  // by the system; the employee only explains themselves. Position/department
+  // are SNAPSHOTS taken at raise time: a transfer months later must not rewrite
+  // the record a decision was made on.
+  applicationDate    DateTime @default(now()) // defaults to the raise date
+  positionSnapshot   String?
+  departmentSnapshot String?
+  expectedTime       DateTime? // e.g. rostered shift start for a LATE_CHECKIN
+  actualTime         DateTime? // e.g. the punch that was actually recorded
+
+  // Dedup key for auto-raised anomalies. DISAPPROVED_LEAVE can arrive from BOTH
+  // a rejected LeaveRequest and a rejected regularization, so the generator
+  // upserts on this instead of creating one row per source.
+  sourceKind String? // 'DEVICE' | 'LEAVE_REQUEST' | 'REGULARIZATION' | 'MANUAL'
+  sourceRef  String? // e.g. "leaveRequest:123"
+
+  currentApprovalLevel Int @default(1)
+
+  employee  Employee                   @relation(fields: [employeeId], references: [id])
+  approvals AttendanceAnomalyApproval[]
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
@@ -625,7 +662,139 @@ model AttendanceAnomaly {
   @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)], map: "attendance_anomalies_tenant_status_created_id_idx")
   @@index([employeeId])
   @@index([status])
+  @@unique([tenantId, sourceKind, sourceRef], map: "attendance_anomalies_source_key")
   @@map("attendance_anomalies")
+}
+
+// HR-ATT-POLICY-01 — one decision per approval level, mirroring
+// LeaveRequestApproval. The chain is defined by AttendanceApprovalLevel.
+model AttendanceAnomalyApproval {
+  id           Int              @id @default(autoincrement())
+  anomalyId    Int
+  level        Int
+  approverId   Int
+  approverRole String
+  decision     ApprovalDecision
+  comments     String?
+  decidedAt    DateTime         @default(now())
+  createdAt    DateTime         @default(now())
+
+  anomaly  AttendanceAnomaly @relation(fields: [anomalyId], references: [id], onDelete: Cascade)
+  approver Employee          @relation("AttendanceAnomalyApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([anomalyId, level])
+  @@index([anomalyId])
+  @@index([approverId])
+  @@index([tenantId])
+  @@map("attendance_anomaly_approvals")
+}
+
+// ─── Payroll Setup · Attendance ────────────────────────────────────────────
+// These three models are part of the PAYROLL CONFIG SET: they carry
+// ConfigStatus + version and are flipped DRAFT→PUBLISHED and snapshotted by the
+// same "Publish changes" action as PayrollRuleConfig. A payroll run records the
+// config version it used, so re-running a period cannot silently change pay.
+
+// Thresholds the attendance evaluator reads. One row per tenant; a tenant with
+// no row falls back to the service-level defaults.
+model AttendancePolicyConfig {
+  id Int @id @default(autoincrement())
+
+  graceMinutes         Int @default(0) // PRESENT while check-in <= shiftStart + this
+  halfDayAfterMinutes  Int @default(30) // HALF_DAY once lateness >= this
+  earlyLeaveGraceMin   Int @default(0) // EARLY_CHECKOUT once check-out < shiftEnd - this
+  checkoutLeniencyMin  Int @default(240) // how long past shift end a check-out still counts
+  overtimeAfterMinutes Int @default(45) // OT only past this much beyond shift end
+  overtimeNeedsApproval Boolean @default(true)
+
+  // Duration bands as a PERCENTAGE of the rostered shift, never absolute hours:
+  // this fleet runs shifts from 3h (EMG 15:30-18:30) to 12h (Homenet 22:00-10:00),
+  // so a fixed "<4h = absent" rule would mark whole teams absent every day.
+  fullDayMinPercent Float @default(90)
+  halfDayMinPercent Float @default(50)
+
+  // Anti-passback: identical punches inside this window collapse to one.
+  duplicatePunchWindowMin Int @default(5)
+
+  // Sessionisation gap; mirrors ATTENDANCE_SHIFT_GAP_HOURS.
+  shiftGapHours Int @default(11)
+
+  defaultShiftStart String @default("09:00")
+
+  status    ConfigStatus @default(DRAFT)
+  version   Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId])
+  @@map("attendance_policy_config")
+}
+
+enum AttendanceDeductionRuleKey {
+  DISAPPROVED_LEAVE
+  LATE
+  MISSING_CHECKIN // deliberately separate from MISSING_CHECKOUT: a missing
+  MISSING_CHECKOUT // check-out is routine on this device, a missing check-in is not
+  EARLY_CHECKOUT
+}
+
+// "N occurrences in a period cost X days of salary." triggerCount = 1 means the
+// deduction applies per occurrence (how DISAPPROVED_LEAVE is used).
+model AttendanceDeductionRule {
+  id      Int                        @id @default(autoincrement())
+  ruleKey AttendanceDeductionRuleKey
+  enabled Boolean                    @default(false) // OFF until a dry-run is reviewed
+
+  triggerCount  Int   @default(1) // N
+  deductionDays Float @default(0.5) // X — fractional allowed (0.5 = half day)
+
+  // Counting window. PAY_PERIOD follows PayrollCalendar.
+  periodScope String @default("PAY_PERIOD") // 'PAY_PERIOD' | 'MONTH'
+
+  maxDeductionDaysPerPeriod Float? // cap per employee per period
+
+  status    ConfigStatus @default(DRAFT)
+  version   Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, ruleKey])
+  @@index([tenantId])
+  @@map("attendance_deduction_rules")
+}
+
+// The anomaly approval chain: level 1 first, ascending. A level whose approver
+// cannot be resolved is SKIPPED, not blocked — that is the "if the manager does
+// not exist, hop to the next" rule. `useEmployeeManager` resolves the approver
+// dynamically from the requester's manager instead of a fixed person.
+model AttendanceApprovalLevel {
+  id                  Int       @id @default(autoincrement())
+  level               Int // 1 = first approver
+  role                String // 'MANAGER' | 'HR' | 'MANAGEMENT' | free text
+  approverId          Int? // fixed approver; null when resolved dynamically
+  useEmployeeManager  Boolean   @default(false)
+  skipIfUnresolved    Boolean   @default(true)
+  autoEscalateAfterHours Int?
+
+  rowStatus RowStatus    @default(ACTIVE)
+  status    ConfigStatus @default(DRAFT)
+  version   Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  approver Employee? @relation("AttendanceApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, level])
+  @@index([tenantId])
+  @@map("attendance_approval_levels")
 }
 
 model Leave {
