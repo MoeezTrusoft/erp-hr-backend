@@ -5,6 +5,7 @@ import {
   resolveShiftStartMin,
   parseClockToMinutes,
   normalizeWorkMode,
+  minutesOfDay,
 } from "../lib/attendanceStatus.js";
 const DEFAULT_DEVICE_HOST = process.env.ATTENDANCE_DEVICE_HOST || "103.245.195.202";
 const DEFAULT_DEVICE_PORT = Number(process.env.ATTENDANCE_DEVICE_PORT || 4370);
@@ -42,6 +43,71 @@ function dayKey(date) {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+// A shift is a run of punches separated by less than this. Night shifts cross
+// midnight (20:00->05:00, 22:00->08:00), so grouping by calendar day splits one
+// shift into two zero-hour days — 380 of 1628 August shifts were wrong that way.
+// 11h separates them cleanly: the largest gap WITHIN a night shift is ~9h, the
+// smallest gap BETWEEN shifts is ~14h.
+const SESSION_GAP_MS =
+  Number(process.env.ATTENDANCE_SHIFT_GAP_HOURS || 11) * 60 * 60 * 1000;
+
+/**
+ * The date a punch's shift belongs to. If an Attendance row for this employee
+ * was opened less than SESSION_GAP_MS ago, this punch continues that shift and
+ * inherits its date — that is what carries a night shift past midnight. A live
+ * single punch at 05:00 is otherwise indistinguishable from a new morning.
+ */
+async function resolveShiftDate(employeeId, timestamp) {
+  const open = await prisma.attendance.findFirst({
+    where: {
+      employeeId,
+      check_in: { gte: new Date(timestamp.getTime() - SESSION_GAP_MS), lte: timestamp },
+    },
+    orderBy: { check_in: "desc" },
+    select: { date: true },
+  });
+  return dayKey(open?.date ?? timestamp);
+}
+
+/**
+ * Shift start for this employee, from work_schedules.schedule_pattern (loaded
+ * from the roster). Falls back to the caller's value when the employee has no
+ * schedule or a roster-driven one with no fixed clock range.
+ */
+async function resolveEmployeeShiftStart(employeeId, fallback, cache) {
+  if (cache.has(employeeId)) return cache.get(employeeId);
+  let value = fallback;
+  try {
+    const ws = await prisma.workSchedule.findFirst({
+      where: { employeeId },
+      orderBy: { effective_start_date: "desc" },
+      select: { schedule_pattern: true },
+    });
+    const from = ws?.schedule_pattern?.shift?.from;
+    if (typeof from === "string" && /^\d{1,2}:\d{2}$/.test(from)) value = from;
+  } catch {
+    // A missing/unreadable schedule must not fail the roll-up; the fallback
+    // shift start still yields a usable status.
+  }
+  cache.set(employeeId, value);
+  return value;
+}
+
+/**
+ * deriveAttendanceStatus compares minutes-of-day, so a 00:30 check-in against a
+ * 22:00 shift reads as 21.5h EARLY instead of 2.5h late. When the check-in sits
+ * far before the shift start it belongs to the previous day's shift, so express
+ * the start as a negative offset.
+ */
+function effectiveShiftStartMin(checkIn, shiftStartMin) {
+  if (shiftStartMin == null) return shiftStartMin;
+  // minutesOfDay() is UTC-based; use it rather than local getHours() so both
+  // sides of the comparison share one basis.
+  const mod = minutesOfDay(checkIn);
+  if (mod == null) return shiftStartMin;
+  return mod - shiftStartMin < -720 ? shiftStartMin - 1440 : shiftStartMin;
 }
 
 function parseTimestamp(raw) {
@@ -199,7 +265,9 @@ export async function syncAttendanceFromPunches({
   const grouped = new Map();
   const unresolved = [];
   const invalidPunches = [];
+  const shiftStartCache = new Map();
 
+  const resolvedPunches = [];
   for (const punch of punches) {
     const timestamp = parseTimestamp(punch?.timestamp);
     if (!timestamp) {
@@ -218,15 +286,35 @@ export async function syncAttendanceFromPunches({
       continue;
     }
 
-    const key = `${employee.id}|${dayKey(timestamp)}`;
+    resolvedPunches.push({ employee, timestamp, raw: punch });
+  }
+
+  // Chronological per employee: a punch can only continue the session before it.
+  resolvedPunches.sort(
+    (a, b) => a.employee.id - b.employee.id || a.timestamp - b.timestamp,
+  );
+
+  // Last session seen for each employee IN THIS BATCH. Checked before the DB,
+  // because a shift opened earlier in this same batch has not been written yet.
+  const lastSession = new Map();
+
+  for (const { employee, timestamp, raw } of resolvedPunches) {
+    const prev = lastSession.get(employee.id);
+    const punchDay =
+      prev && timestamp.getTime() - prev.lastTs <= SESSION_GAP_MS
+        ? prev.punchDay
+        : await resolveShiftDate(employee.id, timestamp);
+
+    const key = `${employee.id}|${punchDay}`;
     if (!grouped.has(key)) {
-      grouped.set(key, { employee, punchDay: dayKey(timestamp), punches: [] });
+      grouped.set(key, { employee, punchDay, punches: [] });
     }
     grouped.get(key).punches.push({
       timestamp,
-      type: parseType(punch?.type),
-      raw: punch,
+      type: parseType(raw?.type),
+      raw,
     });
+    lastSession.set(employee.id, { punchDay, lastTs: timestamp.getTime() });
   }
 
   const summary = {
@@ -255,14 +343,22 @@ export async function syncAttendanceFromPunches({
     }
 
     const { start, end } = dayRange(parseDateInput(punchDay));
-    const lateCutoff = buildLateCutoff(checkIn, shiftStart, lateGraceMinutes);
+    // The employee's OWN shift start, from work_schedules. Judging a 20:00
+    // night-shift worker against a hardcoded 09:00 stamped every one of them
+    // HALF_DAY. `shiftStart` is now only the fallback.
+    const employeeShiftStart = await resolveEmployeeShiftStart(
+      employee.id,
+      shiftStart,
+      shiftStartCache,
+    );
+    const lateCutoff = buildLateCutoff(checkIn, employeeShiftStart, lateGraceMinutes);
     // Route status through the shared helper so synced punches also yield
-    // HALF_DAY (≥30min late), not just PRESENT/LATE. shiftStart (the sync param,
-    // default "09:00") sets the shift-start minutes; the helper's env-tuned
+    // HALF_DAY (≥30min late), not just PRESENT/LATE. The helper's env-tuned
     // grace/half-day thresholds then decide the bucket.
-    const deviceShiftStartMin = resolveShiftStartMin({
-      shiftStartMinutes: parseClockToMinutes(shiftStart),
+    const rosterShiftStartMin = resolveShiftStartMin({
+      shiftStartMinutes: parseClockToMinutes(employeeShiftStart),
     });
+    const deviceShiftStartMin = effectiveShiftStartMin(checkIn, rosterShiftStartMin);
     const calculatedStatus = deriveAttendanceStatus(checkIn, deviceShiftStartMin);
 
     const existing = await prisma.attendance.findFirst({
@@ -281,10 +377,26 @@ export async function syncAttendanceFromPunches({
       : checkIn;
     const mergedCheckOut = (() => {
       if (existing?.check_out && checkOut) return new Date(Math.max(existing.check_out.getTime(), checkOut.getTime()));
-      return existing?.check_out || checkOut || null;
+      if (existing?.check_out || checkOut) return existing?.check_out || checkOut;
+      // A lone OUT punch closing a shift opened by an earlier batch. The device
+      // pushes live, so the check-out routinely arrives on its own; with no IN
+      // punch beside it normalizeGroupedPunches reports it as the check-IN, and
+      // the shift would never gain a check_out or any hours.
+      const lastPunch = groupPunches.reduce(
+        (acc, p) => (acc && acc.timestamp >= p.timestamp ? acc : p),
+        null,
+      );
+      const allOut = groupPunches.every((p) => p.type === "OUT");
+      if (allOut && existing?.check_in && lastPunch && lastPunch.timestamp > existing.check_in) {
+        return lastPunch.timestamp;
+      }
+      return null;
     })();
     const totalHours = calculateTotalHours(mergedCheckIn, mergedCheckOut);
-    const mergedStatus = deriveAttendanceStatus(mergedCheckIn, deviceShiftStartMin);
+    const mergedStatus = deriveAttendanceStatus(
+      mergedCheckIn,
+      effectiveShiftStartMin(mergedCheckIn, rosterShiftStartMin),
+    );
     // The day's work_mode is taken from the employee's default work_mode
     // (Employee is snake_case), normalized to canonical Remote|Onsite|Hybrid.
     const workMode = normalizeWorkMode(employee.work_mode);
