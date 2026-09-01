@@ -46,48 +46,66 @@ export function parseAttlogRow(line) {
 }
 
 /**
- * Resolve deviceUserId -> Employee.id for a batch.
+ * Resolve deviceUserId -> { employeeId, tenantId } for a batch.
  * Phase C: resolves through Person.biometricId → Employee.personId first,
  * then falls back to direct biometric_id / employee_code lookup.
+ *
+ * One physical device serves the whole fleet: its enrolment ids span every
+ * tenant, so this runs under SYSTEM context (RLS bypass). Scoping the lookup to
+ * a single tenant silently drops every punch belonging to the other tenants —
+ * they store as unresolved and never reach the daily Attendance table.
+ * The caller stamps each punch with the tenant that comes back here.
  */
 async function buildEmployeeMap(deviceUserIds) {
     const ids = [...new Set(deviceUserIds)].filter(Boolean);
     if (!ids.length) return new Map();
 
-    // Phase C: resolve through Person table first
-    const persons = await prisma.person.findMany({
-        where: { biometricId: { in: ids } },
-        select: { id: true, biometricId: true },
+    return mcpCtx.run({ system: true }, async () => {
+        const map = new Map();
+
+        // Phase C: resolve through Person table first. Environments provisioned
+        // before the Person migration have no such table — fall through to the
+        // biometric_id path there instead of failing the whole batch.
+        let persons = [];
+        try {
+            persons = await prisma.person.findMany({
+                where: { biometricId: { in: ids } },
+                select: { id: true, biometricId: true },
+            });
+        } catch (err) {
+            if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2021") {
+                logger.warn({ code: err.code }, "device intake: no Person table, using biometric_id lookup");
+            } else {
+                throw err;
+            }
+        }
+
+        // Resolve via Person → Employee.personId
+        for (const p of persons) {
+            if (!p.biometricId) continue;
+            const employee = await prisma.employee.findFirst({
+                where: { personId: p.id },
+                select: { id: true, tenant_id: true },
+            });
+            if (employee) map.set(p.biometricId, { employeeId: employee.id, tenantId: employee.tenant_id });
+        }
+
+        // Fallback: direct biometric_id / employee_code lookup for non-Person employees
+        const unresolved = ids.filter((id) => !map.has(id));
+        if (unresolved.length) {
+            const employees = await prisma.employee.findMany({
+                where: { OR: [{ biometric_id: { in: unresolved } }, { employee_code: { in: unresolved } }] },
+                select: { id: true, biometric_id: true, employee_code: true, tenant_id: true },
+            });
+            for (const e of employees) {
+                const entry = { employeeId: e.id, tenantId: e.tenant_id };
+                if (e.employee_code) map.set(e.employee_code, entry);
+                if (e.biometric_id) map.set(e.biometric_id, entry);
+            }
+        }
+
+        return map;
     });
-
-    const personMap = new Map();
-    for (const p of persons) {
-        if (p.biometricId) personMap.set(p.biometricId, p.id);
-    }
-
-    const map = new Map();
-
-    // Resolve via Person → Employee.personId (per-tenant via RLS)
-    for (const [bioId, personId] of personMap) {
-        const employee = await prisma.employee.findFirst({
-            where: { personId },
-            select: { id: true },
-        });
-        if (employee) map.set(bioId, employee.id);
-    }
-
-    // Fallback: direct biometric_id / employee_code lookup for non-Person employees
-    const unresolved = ids.filter(id => !map.has(id));
-    if (unresolved.length) {
-        const employees = await prisma.employee.findMany({
-            where: { OR: [{ biometric_id: { in: unresolved } }, { employee_code: { in: unresolved } }] },
-            select: { id: true, biometric_id: true, employee_code: true },
-        });
-        for (const e of employees) if (e.employee_code) map.set(e.employee_code, e.id);
-        for (const e of employees) if (e.biometric_id) map.set(e.biometric_id, e.id);
-    }
-
-    return map;
 }
 
 /**
@@ -125,58 +143,76 @@ export async function ingestDevicePunches({ sn, rows, tenantId, rollup = true })
 
     if (!parsed.length) return summary;
 
-    // Single tenant context for the whole batch: raw store + roll-up.
-    return mcpCtx.run({ user: { tenantId } }, async () => {
-        const empMap = await buildEmployeeMap(parsed.map((p) => p.deviceUserId));
+    // Fleet-wide resolution: one device, many tenants. Each punch carries the
+    // tenant of the employee it resolved to; `tenantId` is only the fallback for
+    // enrolment ids that match nobody, so unresolved rows stay attributable.
+    const empMap = await buildEmployeeMap(parsed.map((p) => p.deviceUserId));
 
-        const createData = parsed.map((p) => {
-            const employeeId = empMap.get(p.deviceUserId) ?? null;
-            if (employeeId) summary.resolved += 1;
-            else summary.unresolved += 1;
-            return {
-                sn,
-                deviceUserId: p.deviceUserId,
-                punchedAt: p.punchedAt,
-                status: p.status,
-                verifyMode: p.verifyMode,
-                workCode: p.workCode,
-                employeeId,
-                rawLine: p.rawLine,
-                tenantId,
-            };
-        });
+    const createData = parsed.map((p) => {
+        const hit = empMap.get(p.deviceUserId) ?? null;
+        if (hit) summary.resolved += 1;
+        else summary.unresolved += 1;
+        return {
+            sn,
+            deviceUserId: p.deviceUserId,
+            punchedAt: p.punchedAt,
+            status: p.status,
+            verifyMode: p.verifyMode,
+            workCode: p.workCode,
+            employeeId: hit?.employeeId ?? null,
+            rawLine: p.rawLine,
+            tenantId: hit?.tenantId ?? tenantId,
+        };
+    });
 
-        // Idempotent: the device re-pushes on reconnect; the natural-key unique
-        // index dedupes. skipDuplicates keeps a re-import a no-op.
-        const res = await prisma.attendanceDevicePunch.createMany({
-            data: createData,
-            skipDuplicates: true,
-        });
-        summary.rawStored = res.count;
+    // Rows span tenants, so the write runs under SYSTEM context. Idempotent: the
+    // device re-pushes on reconnect and the natural-key unique index dedupes.
+    // NOTE tenantId is part of that key — re-pushing the same punch under a
+    // different tenant duplicates it rather than deduping.
+    const res = await mcpCtx.run({ system: true }, () =>
+        prisma.attendanceDevicePunch.createMany({ data: createData, skipDuplicates: true }),
+    );
+    summary.rawStored = res.count;
 
-        if (rollup) {
-            // Feed the existing daily roll-up. status 0 -> IN, 1 -> OUT; parseType
-            // in the device service already understands "0"/"1".
-            const punches = parsed.map((p) => ({
-                deviceUserId: p.deviceUserId,
-                timestamp: p.punchedAt.toISOString(),
-                type: String(p.status),
-            }));
-            try {
-                summary.rollup = await syncAttendanceFromPunches({ punches });
-            } catch (err) {
-                // Raw rows are already durable; a roll-up failure must not lose them.
-                logger.error({ err: err?.message, sn }, "device intake: roll-up failed (raw stored)");
-                summary.rollup = { error: err?.message || "rollup failed" };
-            }
+    if (rollup) {
+        // Feed the existing daily roll-up. status 0 -> IN, 1 -> OUT; parseType
+        // in the device service already understands "0"/"1".
+        // syncAttendanceFromPunches re-resolves employees under the ambient
+        // tenant, so it must be called once per tenant present in the batch.
+        const byTenant = new Map();
+        for (const row of createData) {
+            if (!row.employeeId) continue;
+            if (!byTenant.has(row.tenantId)) byTenant.set(row.tenantId, []);
+            byTenant.get(row.tenantId).push({
+                deviceUserId: row.deviceUserId,
+                timestamp: row.punchedAt.toISOString(),
+                type: String(row.status),
+            });
         }
 
-        logger.info(
-            { sn, received: summary.received, rawStored: summary.rawStored, resolved: summary.resolved },
-            "device intake: batch ingested"
-        );
-        return summary;
-    });
+        summary.rollup = {};
+        for (const [tid, punches] of byTenant) {
+            try {
+                summary.rollup[tid] = await mcpCtx.run({ user: { tenantId: tid } }, () =>
+                    syncAttendanceFromPunches({ punches }),
+                );
+            } catch (err) {
+                // Raw rows are already durable; a roll-up failure must not lose
+                // them, and one tenant failing must not skip the others.
+                logger.error(
+                    { err: err?.message, sn, tenantId: tid },
+                    "device intake: roll-up failed (raw stored)",
+                );
+                summary.rollup[tid] = { error: err?.message || "rollup failed" };
+            }
+        }
+    }
+
+    logger.info(
+        { sn, received: summary.received, rawStored: summary.rawStored, resolved: summary.resolved },
+        "device intake: batch ingested"
+    );
+    return summary;
 }
 
 /**
