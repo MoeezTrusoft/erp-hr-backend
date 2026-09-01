@@ -11,6 +11,9 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { getPayrollRules } from "./payrollRuleConfig.service.js";
+import { getAttendancePolicy } from "./attendancePolicyConfig.service.js";
+import { listDeductionRules } from "./attendanceDeductionRule.service.js";
+import { listApprovalLevels } from "./attendanceApprovalLevel.service.js";
 import logger from "../lib/logger.js";
 
 function notFound(message) {
@@ -56,25 +59,47 @@ export async function getConfigStatus({ tenantId }) {
   const meta = await prisma.payrollConfigMeta.findUnique({ where: { tenantId } });
 
   // Derive hasUnpublished: no published snapshot yet, OR any config row is DRAFT.
-  const [publishedSnapshots, draftComponent, draftCalendar, draftRules] =
-    await Promise.all([
-      prisma.payrollConfigSnapshot.count({ where: scopedWhere(tenantId, {}) }),
-      prisma.salaryComponent.count({
-        where: scopedWhere(tenantId, { status: "DRAFT" }),
-      }),
-      prisma.payrollCalendar.count({
-        where: scopedWhere(tenantId, { status: "DRAFT" }),
-      }),
-      prisma.payrollRuleConfig.count({
-        where: scopedWhere(tenantId, { status: "DRAFT" }),
-      }),
-    ]);
+  // HR-ATT-POLICY-01: the three attendance tables MUST be counted here too —
+  // otherwise editing only attendance config leaves hasUnpublished false and the
+  // screen reports nothing to publish while the changes sit unpublished.
+  const [
+    publishedSnapshots,
+    draftComponent,
+    draftCalendar,
+    draftRules,
+    draftAttendancePolicy,
+    draftDeductionRules,
+    draftApprovalLevels,
+  ] = await Promise.all([
+    prisma.payrollConfigSnapshot.count({ where: scopedWhere(tenantId, {}) }),
+    prisma.salaryComponent.count({
+      where: scopedWhere(tenantId, { status: "DRAFT" }),
+    }),
+    prisma.payrollCalendar.count({
+      where: scopedWhere(tenantId, { status: "DRAFT" }),
+    }),
+    prisma.payrollRuleConfig.count({
+      where: scopedWhere(tenantId, { status: "DRAFT" }),
+    }),
+    prisma.attendancePolicyConfig.count({
+      where: scopedWhere(tenantId, { status: "DRAFT" }),
+    }),
+    prisma.attendanceDeductionRule.count({
+      where: scopedWhere(tenantId, { status: "DRAFT" }),
+    }),
+    prisma.attendanceApprovalLevel.count({
+      where: scopedWhere(tenantId, { status: "DRAFT" }),
+    }),
+  ]);
 
   const hasUnpublished =
     publishedSnapshots === 0 ||
     draftComponent > 0 ||
     draftCalendar > 0 ||
-    draftRules > 0;
+    draftRules > 0 ||
+    draftAttendancePolicy > 0 ||
+    draftDeductionRules > 0 ||
+    draftApprovalLevels > 0;
 
   return {
     status: meta?.status ?? "DRAFT",
@@ -87,8 +112,20 @@ export async function getConfigStatus({ tenantId }) {
 
 // ── FULL CONFIG OBJECT (publish + export) ───────────────────────────────────
 export async function buildConfigObject({ tenantId }) {
-  const [salaryComponents, grades, taxSlabs, calendar, approvalMatrix, payRules] =
-    await Promise.all([
+  const [
+    salaryComponents,
+    grades,
+    taxSlabs,
+    calendar,
+    approvalMatrix,
+    payRules,
+    // HR-ATT-POLICY-01 — attendance config is part of the published set. A
+    // payroll run records the snapshot version it used, so the thresholds and
+    // deduction rules that produced a payslip stay reconstructable.
+    attendancePolicy,
+    attendanceDeductionRules,
+    attendanceApprovalLevels,
+  ] = await Promise.all([
       prisma.salaryComponent.findMany({
         where: scopedWhere(tenantId, {}),
         orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
@@ -110,6 +147,9 @@ export async function buildConfigObject({ tenantId }) {
         orderBy: [{ level: "asc" }, { id: "asc" }],
       }),
       getPayrollRules({ tenantId }),
+      getAttendancePolicy({ tenantId }),
+      listDeductionRules({ tenantId }),
+      listApprovalLevels({ tenantId }),
     ]);
 
   const gradeBands = grades.map((g) => ({
@@ -129,6 +169,9 @@ export async function buildConfigObject({ tenantId }) {
     calendar: calendar ?? null,
     approvalMatrix,
     payRules,
+    attendancePolicy,
+    attendanceDeductionRules,
+    attendanceApprovalLevels,
   };
 }
 
@@ -159,6 +202,19 @@ export async function publishConfig({ tenantId, publishedById }) {
         data: { status: "PUBLISHED" },
       }),
       tx.payrollRuleConfig.updateMany({
+        where: scopedWhere(tenantId, { status: "DRAFT" }),
+        data: { status: "PUBLISHED" },
+      }),
+      // HR-ATT-POLICY-01 — attendance config publishes with the rest of the set.
+      tx.attendancePolicyConfig.updateMany({
+        where: scopedWhere(tenantId, { status: "DRAFT" }),
+        data: { status: "PUBLISHED" },
+      }),
+      tx.attendanceDeductionRule.updateMany({
+        where: scopedWhere(tenantId, { status: "DRAFT" }),
+        data: { status: "PUBLISHED" },
+      }),
+      tx.attendanceApprovalLevel.updateMany({
         where: scopedWhere(tenantId, { status: "DRAFT" }),
         data: { status: "PUBLISHED" },
       }),
@@ -202,8 +258,20 @@ export async function publishConfig({ tenantId, publishedById }) {
 // Transaction-bound twin of buildConfigObject: same assembly, but every read
 // runs on the passed tx client so it shares the publish tenant GUC.
 async function buildConfigObjectTx(tx, tenantId) {
-  const [salaryComponents, grades, taxSlabs, calendar, approvalMatrix, payRules] =
-    await Promise.all([
+  const [
+    salaryComponents,
+    grades,
+    taxSlabs,
+    calendar,
+    approvalMatrix,
+    payRules,
+    // HR-ATT-POLICY-01 — must mirror buildConfigObject(). This tx-scoped twin is
+    // what the published snapshot is actually built from, so anything added
+    // there and not here would be silently absent from every snapshot.
+    attendancePolicy,
+    attendanceDeductionRules,
+    attendanceApprovalLevels,
+  ] = await Promise.all([
       tx.salaryComponent.findMany({
         where: scopedWhere(tenantId, {}),
         orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
@@ -228,6 +296,18 @@ async function buildConfigObjectTx(tx, tenantId) {
         where: scopedWhere(tenantId, {}),
         orderBy: [{ id: "asc" }],
       }),
+      tx.attendancePolicyConfig.findFirst({
+        where: scopedWhere(tenantId, {}),
+        orderBy: [{ id: "asc" }],
+      }),
+      tx.attendanceDeductionRule.findMany({
+        where: scopedWhere(tenantId, {}),
+        orderBy: [{ ruleKey: "asc" }],
+      }),
+      tx.attendanceApprovalLevel.findMany({
+        where: scopedWhere(tenantId, {}),
+        orderBy: [{ level: "asc" }, { id: "asc" }],
+      }),
     ]);
 
   const gradeBands = grades.map((g) => ({
@@ -247,6 +327,9 @@ async function buildConfigObjectTx(tx, tenantId) {
     calendar: calendar ?? null,
     approvalMatrix,
     payRules: payRules ?? null,
+    attendancePolicy: attendancePolicy ?? null,
+    attendanceDeductionRules,
+    attendanceApprovalLevels,
   };
 }
 
