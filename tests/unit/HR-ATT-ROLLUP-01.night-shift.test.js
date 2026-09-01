@@ -16,11 +16,15 @@ const TENANT = '8ff0533b-62f6-4be9-a78e-69adf49e00bc';
 // 22:00 -> 08:00 night shift, i.e. the Homenet roster.
 const NIGHT = { id: 501, employee_code: 'EMP501', employee_name: 'Night Worker', work_mode: 'On-site', tenant_id: TENANT, biometric_id: '1009' };
 // 10:00 -> 18:00 day shift.
+const MIDNIGHT = { id: 503, employee_code: 'EMP503', employee_name: 'Midnight Worker', work_mode: 'On-site', tenant_id: TENANT, biometric_id: '1016' };
 const DAY = { id: 502, employee_code: 'EMP502', employee_name: 'Day Worker', work_mode: 'On-site', tenant_id: TENANT, biometric_id: '1010' };
 
 const SCHEDULES = {
     501: { shift: { from: '22:00', to: '08:00' }, offDays: [6, 7], type: 'weekly' },
     502: { shift: { from: '10:00', to: '18:00' }, offDays: [6, 7], type: 'weekly' },
+    // Midnight-start shift: EMP177 on the real roster. Its workers clock in
+    // BEFORE midnight, i.e. early for a shift that starts at 00:00.
+    503: { shift: { from: '00:00', to: '10:00' }, offDays: [6, 7], type: 'weekly' },
 };
 
 let attendance = [];
@@ -28,10 +32,10 @@ let nextId = 1;
 
 const prismaMock = {
     employee: {
-        findUnique: jest.fn(async ({ where }) => [NIGHT, DAY].find((e) => e.id === where.id) ?? null),
+        findUnique: jest.fn(async ({ where }) => [NIGHT, DAY, MIDNIGHT].find((e) => e.id === where.id) ?? null),
         findFirst: jest.fn(async ({ where }) => {
             const codes = where.OR.flatMap((c) => [c.biometric_id, c.employee_code]).filter(Boolean);
-            return [NIGHT, DAY].find(
+            return [NIGHT, DAY, MIDNIGHT].find(
                 (e) => codes.includes(e.biometric_id) || codes.includes(e.employee_code),
             ) ?? null;
         }),
@@ -147,6 +151,16 @@ describe('HR-ATT-ROLLUP-01 shift-aware daily roll-up', () => {
         // 00:30 is 2.5h into a 22:00 shift. Comparing raw minutes-of-day made it
         // look 21.5h EARLY and scored PRESENT.
         expect(attendance[0].status).toBe('HALF_DAY');
+    });
+
+    it('treats a pre-midnight arrival for a 00:00 shift as early, not a day late', async () => {
+        await syncAttendanceFromPunches({
+            punches: [punch('1016', '2026-08-11T23:05:15', '0')],
+        });
+
+        // 23:05 is 55 min BEFORE a 00:00 shift. Wrapping only one way scored it
+        // 23h late -> HALF_DAY; caught by replaying EMP177 against live prod.
+        expect(attendance[0].status).toBe('PRESENT');
     });
 
     it('marks an on-time day-shift arrival PRESENT', async () => {

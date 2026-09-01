@@ -107,7 +107,14 @@ function effectiveShiftStartMin(checkIn, shiftStartMin) {
   // sides of the comparison share one basis.
   const mod = minutesOfDay(checkIn);
   if (mod == null) return shiftStartMin;
-  return mod - shiftStartMin < -720 ? shiftStartMin - 1440 : shiftStartMin;
+  const delta = mod - shiftStartMin;
+  // Pick whichever occurrence of the shift start is nearest the check-in. Both
+  // directions occur in this roster:
+  //   00:30 in, 22:00 shift  -> yesterday's shift, 2.5h late (not 21.5h early)
+  //   23:05 in, 00:00 shift  -> tomorrow's shift, 55m early (not 23h late)
+  if (delta < -720) return shiftStartMin - 1440;
+  if (delta > 720) return shiftStartMin + 1440;
+  return shiftStartMin;
 }
 
 function parseTimestamp(raw) {
