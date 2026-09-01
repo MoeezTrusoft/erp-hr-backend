@@ -175,13 +175,19 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   // still be at work, and flagging early would raise an exception that resolves
   // itself an hour later.
   if (checkIn && !checkOut) {
+    // Cutoff, strongest signal first. The last arm matters: an employee with no
+    // rostered shift end (16 of this roster are roster-only) previously yielded
+    // a null cutoff, so the day NEVER closed — it sat "in progress" with null
+    // credit indefinitely, neither flagged nor paid. 252 August shifts were
+    // stuck that way. A shift that began more than a day ago is over, whatever
+    // the roster does or does not say.
     const cutoff = nextDay.working && nextDay.nextShiftStart
       ? nextDay.nextShiftStart
       : shift.end
         ? new Date(shift.end.getTime() + p.checkoutLeniencyMin * MIN_MS)
-        : null;
+        : new Date(checkIn.getTime() + 24 * 60 * MIN_MS);
 
-    const closed = cutoff ? evalTime >= cutoff : false;
+    const closed = evalTime >= cutoff;
     if (closed) {
       return {
         status: "MISSING_CHECKOUT",

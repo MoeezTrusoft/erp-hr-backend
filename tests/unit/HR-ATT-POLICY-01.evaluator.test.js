@@ -275,3 +275,30 @@ describe('HR-ATT-POLICY-01 anti-passback', () => {
         expect(r.workedMinutes).toBe(2);
     });
 });
+
+describe('HR-ATT-POLICY-01 unrostered employees', () => {
+    it('still closes the check-out window with no rostered shift end', () => {
+        // 16 employees are roster-only. With no shift end there was no cutoff,
+        // so the day never resolved: held with null credit forever, neither
+        // flagged for regularization nor paid. 252 August shifts sat like that.
+        const r = evaluateShift({
+            punches: [{ timestamp: at('2026-08-14T10:02:00Z'), type: 'IN' }],
+            shift: { start: null, end: null },
+            policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('MISSING_CHECKOUT');
+        expect(r.inProgress).toBeUndefined();
+    });
+
+    it('leaves it in progress within 24h of the scan', () => {
+        const r = evaluateShift({
+            punches: [{ timestamp: at('2026-08-14T10:02:00Z'), type: 'IN' }],
+            shift: { start: null, end: null },
+            policy: POLICY, nextDay: CLOSED,
+            now: at('2026-08-14T20:00:00Z'),
+        });
+
+        expect(r.inProgress).toBe(true);
+    });
+});
