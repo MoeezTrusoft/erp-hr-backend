@@ -44,6 +44,7 @@ import { registerPayrollRuleTools } from "./tools/payrollRuleTools.js";
 import { registerPayrollConfigTools } from "./tools/payrollConfigTools.js";
 import { registerPayrollSetupActionsTools } from "./tools/payrollSetupActionsTools.js";
 import { registerAttendanceSetupTools } from "./tools/attendanceSetupTools.js";
+import { registerAttendanceAnomalyTools } from "./tools/attendanceAnomalyTools.js";
 import { registerPayrollPreviewTools } from "./tools/payrollPreviewTools.js";
 import { registerPayrollDashboardTools } from "./tools/payrollDashboardTools.js";
 import { registerMyPayslipTools } from "./tools/myPayslipTools.js";
@@ -291,6 +292,7 @@ export function registerAllTools(server) {
   registerPayrollConfigTools(server);
   registerPayrollSetupActionsTools(server);
   registerAttendanceSetupTools(server);
+  registerAttendanceAnomalyTools(server);
   registerPayrollPreviewTools(server);
   registerPayrollDashboardTools(server);
   registerMyPayslipTools(server);
