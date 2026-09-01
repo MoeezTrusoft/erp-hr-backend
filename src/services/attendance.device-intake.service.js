@@ -47,8 +47,11 @@ export function parseAttlogRow(line) {
 
 /**
  * Resolve deviceUserId -> { employeeId, tenantId } for a batch.
- * Phase C: resolves through Person.biometricId → Employee.personId first,
- * then falls back to direct biometric_id / employee_code lookup.
+ *
+ * The enrolment id is matched against Employee.biometric_id, then
+ * Employee.employee_code. There is deliberately no Person lookup: no Person
+ * model exists in schema.prisma, so `prisma.person` is undefined and calling it
+ * throws a TypeError on every batch.
  *
  * One physical device serves the whole fleet: its enrolment ids span every
  * tenant, so this runs under SYSTEM context (RLS bypass). Scoping the lookup to
@@ -62,48 +65,15 @@ async function buildEmployeeMap(deviceUserIds) {
 
     return mcpCtx.run({ system: true }, async () => {
         const map = new Map();
-
-        // Phase C: resolve through Person table first. Environments provisioned
-        // before the Person migration have no such table — fall through to the
-        // biometric_id path there instead of failing the whole batch.
-        let persons = [];
-        try {
-            persons = await prisma.person.findMany({
-                where: { biometricId: { in: ids } },
-                select: { id: true, biometricId: true },
-            });
-        } catch (err) {
-            if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2021") {
-                logger.warn({ code: err.code }, "device intake: no Person table, using biometric_id lookup");
-            } else {
-                throw err;
-            }
+        const employees = await prisma.employee.findMany({
+            where: { OR: [{ biometric_id: { in: ids } }, { employee_code: { in: ids } }] },
+            select: { id: true, biometric_id: true, employee_code: true, tenant_id: true },
+        });
+        for (const e of employees) {
+            const entry = { employeeId: e.id, tenantId: e.tenant_id };
+            if (e.employee_code) map.set(e.employee_code, entry);
+            if (e.biometric_id) map.set(e.biometric_id, entry);
         }
-
-        // Resolve via Person → Employee.personId
-        for (const p of persons) {
-            if (!p.biometricId) continue;
-            const employee = await prisma.employee.findFirst({
-                where: { personId: p.id },
-                select: { id: true, tenant_id: true },
-            });
-            if (employee) map.set(p.biometricId, { employeeId: employee.id, tenantId: employee.tenant_id });
-        }
-
-        // Fallback: direct biometric_id / employee_code lookup for non-Person employees
-        const unresolved = ids.filter((id) => !map.has(id));
-        if (unresolved.length) {
-            const employees = await prisma.employee.findMany({
-                where: { OR: [{ biometric_id: { in: unresolved } }, { employee_code: { in: unresolved } }] },
-                select: { id: true, biometric_id: true, employee_code: true, tenant_id: true },
-            });
-            for (const e of employees) {
-                const entry = { employeeId: e.id, tenantId: e.tenant_id };
-                if (e.employee_code) map.set(e.employee_code, entry);
-                if (e.biometric_id) map.set(e.biometric_id, entry);
-            }
-        }
-
         return map;
     });
 }

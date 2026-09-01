@@ -25,8 +25,9 @@ const mcpCtxMock = {
         return fn();
     }),
 };
+// No `person` delegate on purpose: schema.prisma declares no Person model, so
+// the real client has none. Mocking one would hide a TypeError on every batch.
 const prismaMock = {
-    person: { findMany: jest.fn(async () => []) },
     employee: { findMany: jest.fn(), findFirst: jest.fn(async () => null) },
     attendanceDevicePunch: { createMany: jest.fn() },
 };
@@ -60,7 +61,6 @@ beforeEach(() => {
     createManyCalls.length = 0;
     mcpCtxMock.contexts.length = 0;
     jest.clearAllMocks();
-    prismaMock.person.findMany.mockResolvedValue([]);
     prismaMock.employee.findFirst.mockResolvedValue(null);
     prismaMock.attendanceDevicePunch.createMany.mockImplementation(async (args) => {
         createManyCalls.push(args);
@@ -111,24 +111,14 @@ describe('HR-ATT-DEVICE-INTAKE-02 fleet-wide resolution', () => {
         expect(new Set(rollupTenants)).toEqual(new Set([ENV_TENANT, OTHER_TENANT]));
     });
 
-    it('survives an environment with no Person table (P2021)', async () => {
-        const { Prisma } = await import('@prisma/client');
-        const err = new Prisma.PrismaClientKnownRequestError('table does not exist', {
-            code: 'P2021',
-            clientVersion: 'test',
-        });
-        prismaMock.person.findMany.mockRejectedValueOnce(err);
+    it('never touches a prisma.person delegate (no Person model exists)', async () => {
+        // Regression: the previous implementation called prisma.person.findMany.
+        // schema.prisma has no Person model, so that delegate is undefined and
+        // every batch died with "Cannot read properties of undefined".
+        expect(prismaMock.person).toBeUndefined();
 
         const summary = await ingestDevicePunches({ sn: 'TTQ5261300360', rows: ROWS, tenantId: ENV_TENANT });
 
         expect(summary.resolved).toBe(2);
-    });
-
-    it('does not swallow unexpected Person lookup failures', async () => {
-        prismaMock.person.findMany.mockRejectedValueOnce(new Error('connection reset'));
-
-        await expect(
-            ingestDevicePunches({ sn: 'TTQ5261300360', rows: ROWS, tenantId: ENV_TENANT }),
-        ).rejects.toThrow('connection reset');
     });
 });
