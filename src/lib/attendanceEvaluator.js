@@ -97,7 +97,21 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   };
 
   const evalTime = now instanceof Date ? now : new Date();
-  const clean = dedupePunches(punches, p.duplicatePunchWindowMin);
+
+  // The device's IN/OUT code is NOT trustworthy on this hardware. Measured over
+  // August: 1156 sessions open with code 0 (check-in) but 462 open with code 1
+  // (check-out), plus 22 with 4/5 (overtime in/out) — people scan without
+  // selecting a mode, so the code reflects whatever the panel was left on.
+  // Believing it turned 417 ordinary shifts into phantom MISSING_CHECKIN.
+  //
+  // Default is therefore positional: first scan of a shift is the arrival, last
+  // is the departure. Set trustDeviceDirection when the hardware is known to
+  // record direction properly.
+  const raw = policy.trustDeviceDirection
+    ? punches
+    : punches.map((x) => ({ ...x, type: "" }));
+
+  const clean = dedupePunches(raw, p.duplicatePunchWindowMin);
   const anomalies = [];
 
   const scheduledMinutes =

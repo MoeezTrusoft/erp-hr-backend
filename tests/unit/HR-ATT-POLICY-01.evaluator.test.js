@@ -127,15 +127,30 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
         expect(closed.status).toBe('MISSING_CHECKOUT');
     });
 
-    it('flags MISSING_CHECKIN for a departure with no arrival', () => {
+    it('flags MISSING_CHECKIN only when the device direction is trusted', () => {
         const r = evaluateShift({
             punches: [OUT('2026-08-14T18:00:00Z')],
-            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+            shift: DAY_SHIFT,
+            policy: { ...POLICY, trustDeviceDirection: true },
+            nextDay: CLOSED, now: LATER,
         });
 
         expect(r.status).toBe('MISSING_CHECKIN');
         expect(r.dayCredit).toBeNull();
         expect(r.requiresRegularization).toBe(true);
+    });
+
+    it('reads a lone scan as an ARRIVAL by default, not a departure', () => {
+        // Measured on this hardware: 462 of 1640 August sessions open with a
+        // check-out code because people scan without selecting a mode. Believing
+        // the code produced 417 phantom MISSING_CHECKIN. Someone who scanned once
+        // came to work and forgot to leave, far more often than the reverse.
+        const r = evaluateShift({
+            punches: [OUT('2026-08-14T18:00:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('MISSING_CHECKOUT');
     });
 
     it('is ABSENT with no scan at all', () => {
@@ -235,14 +250,28 @@ describe('HR-ATT-POLICY-01 anti-passback', () => {
         expect(r.checkOut.toISOString()).toBe('2026-08-14T18:00:00.000Z');
     });
 
-    it('does not collapse a genuine OUT that follows an IN closely', () => {
-        // Opposite directions are never duplicates, however close together.
+    it('collapses a scan pair two minutes apart rather than booking a 2-minute shift', () => {
+        // With direction untrusted these are indistinguishable from a double
+        // scan, and a two-minute shift is not real work. Deliberate: the day
+        // becomes MISSING_CHECKOUT and goes to regularization rather than
+        // silently recording 2 worked minutes.
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T10:02:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.checkOut).not.toBeNull();
+        expect(r.checkOut).toBeNull();
+        expect(r.status).toBe('MISSING_CHECKOUT');
+    });
+
+    it('keeps a close in/out pair when the device direction IS trusted', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T10:02:00Z')],
+            shift: DAY_SHIFT,
+            policy: { ...POLICY, trustDeviceDirection: true },
+            nextDay: CLOSED, now: LATER,
+        });
+
         expect(r.workedMinutes).toBe(2);
     });
 });
