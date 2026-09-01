@@ -92,24 +92,11 @@ async function resolveEmployeeFromPunch(punch) {
   if (employeeCodeRaw !== undefined && employeeCodeRaw !== null && String(employeeCodeRaw).trim() !== "") {
     const code = String(employeeCodeRaw).trim();
 
-    // Phase C: resolve deviceUserId → Person.biometricId → Employee (per-tenant).
-    // The Person table is the global identity anchor; Employee.personId links
-    // back. This enables multi-tenant biometric punches: the same Person can
-    // have Employee rows in multiple tenants, and RLS scopes the lookup.
-    const person = await prisma.person.findUnique({
-      where: { biometricId: code },
-      select: { id: true },
-    });
-
-    if (person) {
-      const employee = await prisma.employee.findFirst({
-        where: { personId: person.id },
-        select: { id: true, employee_code: true, employee_name: true, work_mode: true, tenant_id: true },
-      });
-      if (employee) return employee;
-    }
-
-    // Fallback: direct biometric_id / employee_code lookup (pre-Person migration)
+    // Resolve deviceUserId directly against Employee. There is no local Person
+    // model: Employee.personId is a cross-database anchor to RBAC's Person
+    // (see schema.prisma), so `prisma.person` is undefined here and querying it
+    // threw "Cannot read properties of undefined (reading 'findUnique')" for
+    // every punch, failing the whole roll-up.
     const employee = await prisma.employee.findFirst({
       where: { OR: [{ biometric_id: code }, { employee_code: code }] },
       select: { id: true, employee_code: true, biometric_id: true, employee_name: true, work_mode: true, tenant_id: true },

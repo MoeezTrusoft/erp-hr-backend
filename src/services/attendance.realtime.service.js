@@ -105,22 +105,9 @@ async function resolveEmployee(deviceUserId) {
   const key = String(deviceUserId).trim();
   if (!key) return null;
 
-  // Phase E3: Person.biometricId is the sole source of truth for biometric
-  // device enrollment. Resolve via Person first, then fall back to the legacy
-  // direct biometric_id column for employees not yet linked to a Person.
-  const person = await prisma.person.findUnique({
-    where: { biometricId: key },
-    select: { id: true },
-  });
-  if (person) {
-    const byPerson = await prisma.employee.findFirst({
-      where: { personId: person.id },
-      select: { id: true, employee_code: true, employee_name: true, tenant_id: true },
-    });
-    if (byPerson) return byPerson;
-  }
-
-  // Fallback: direct biometric_id lookup (pre-E3 compat).
+  // Employee.biometric_id is the enrollment key. There is no local Person model
+  // — Employee.personId is a cross-database anchor to RBAC's Person — so
+  // `prisma.person` is undefined and querying it throws.
   const byBio = await prisma.employee.findFirst({
     where: { biometric_id: key },
     select: { id: true, employee_code: true, employee_name: true, tenant_id: true },
@@ -148,16 +135,10 @@ async function resolveOrCreateEmployee(deviceUserId, userName) {
   const tenantId = process.env.HR_ATTENDANCE_INTAKE_TENANT_ID || null;
   const fallbackName = String(userName || "").trim() || `Device User ${key}`;
 
-  // Phase E3: Upsert Person record for the new biometric enrollment.
-  let personId = null;
-  try {
-    const person = await prisma.person.upsert({
-      where: { biometricId: key },
-      update: {},
-      create: { biometricId: key },
-    });
-    personId = person.id;
-  } catch { /* Person creation is best-effort */ }
+  // personId stays null: Person is owned by RBAC, not HR, so there is nothing
+  // to upsert locally. Linking a device enrollment to an RBAC Person would have
+  // to go through RBAC_SERVICE_URL.
+  const personId = null;
 
   const created = await prisma.employee.create({
     data: {
