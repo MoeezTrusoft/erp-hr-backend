@@ -159,13 +159,21 @@ function weekLabelFor(date, weeks) {
  * @param {{tenantId:string|null, from?:string, to?:string}} args
  * @returns {Promise<{present:number,lateArrivals:number,wfhRemote:number,absentees:number,totalEmployees:number,period:{from:string,to:string}}>}
  */
-export async function getTimesheetKpis({ tenantId, from, to }) {
+export async function getTimesheetKpis({ tenantId, from, to, employeeId }) {
   const period = resolvePeriod(from, to);
 
+  // HR-FE-UNBLOCK-01 — optional single-employee scope, so a person's own
+  // profile can show their own KPIs. Omitted keeps the tenant-wide behaviour
+  // every existing caller relies on.
+  const scopedEmployeeId = employeeId == null ? null : Number(employeeId);
+  const employeeFilter = scopedEmployeeId == null ? {} : { employeeId: scopedEmployeeId };
+
   const [totalEmployees, rows] = await Promise.all([
-    prisma.employee.count({ where: scopedEmployeeWhere(tenantId, {}) }),
+    prisma.employee.count({
+      where: scopedEmployeeWhere(tenantId, scopedEmployeeId == null ? {} : { id: scopedEmployeeId }),
+    }),
     prisma.attendance.findMany({
-      where: scopedWhere(tenantId, { date: { gte: period.from, lte: period.to } }),
+      where: scopedWhere(tenantId, { ...employeeFilter, date: { gte: period.from, lte: period.to } }),
       select: { employeeId: true, status: true, work_mode: true },
     }),
   ]);

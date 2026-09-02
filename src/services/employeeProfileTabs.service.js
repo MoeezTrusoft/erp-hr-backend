@@ -252,6 +252,10 @@ async function overviewTab(id, tenantId, ctx, employee) {
       department: ctx.org?.departments?.[0] ?? employee.businessUnit?.name ?? null,
       manager: employee.manager ? employeeName(employee.manager) : null,
       employmentType: employee.employee_type ?? null,
+      // HR-FE-UNBLOCK-01 — read-only. Null here means the device cannot match
+      // this person's punches, which is the difference between "absent" and
+      // "never enrolled". Written only by the bulk employee import.
+      biometricId: employee.biometric_id ?? null,
       // Job mode (Remote/Onsite/Hybrid) — no dedicated column yet; falls back to employee_type, else null.
       jobMode: employee.work_mode ?? employee.employee_type ?? null,
       payGrade: employee.gradeLevel?.name ?? null,
@@ -840,6 +844,11 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
       preferred_name: true, employee_name: true, job_title: true, photo_url: true,
       cover_photo_url: true,
       status: true, employement_status: true, employee_type: true, work_mode: true,
+      // HR-FE-UNBLOCK-01 — the ZKTeco enrolment key the device intake matches
+      // punches on. It decides whether a person's attendance records at all,
+      // and until now no employee read path selected it, so it was invisible
+      // everywhere in the product.
+      biometric_id: true,
       date_of_birth: true, gender: true, marital_status: true, nationality: true,
       nationality_id_type: true, nationality_id_no: true,
       email: true, work_email: true, personal_contact: true, work_phone: true,

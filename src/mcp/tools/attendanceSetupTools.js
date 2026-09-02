@@ -117,6 +117,11 @@ export function registerAttendanceSetupTools(server) {
         .describe("Window the occurrence count resets over; PAY_PERIOD follows PayrollCalendar"),
       maxDeductionDaysPerPeriod: z.coerce.number().min(0).max(31).nullable().optional()
         .describe("Cap on days deducted per employee per period; null for no cap"),
+      // HR-FE-UNBLOCK-01 — the service has always validated and pooled by this,
+      // and list returns it, but omitting it here made it readable and
+      // unwritable: the UI could display a pooling group it could never set.
+      counterGroup: z.string().nullable().optional()
+        .describe("Pools several rules into ONE shared counter, e.g. MISSING_PUNCH so 3 missed punches of either kind cost one day. 2-40 chars of A-Z, 0-9, underscore; null to unpool. Rules sharing a group must agree on triggerCount, deductionDays and periodScope"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

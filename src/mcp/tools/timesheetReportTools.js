@@ -30,11 +30,15 @@ export function registerTimesheetReportTools(server) {
     {
       from: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive start of the period. Defaults to the first day of the current calendar month."),
       to: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive end of the period. Defaults to the last day of the current calendar month."),
+      // HR-FE-UNBLOCK-01 — without this the cards are tenant-wide only, so an
+      // employee profile cannot show that employee's own attendance KPIs.
+      employeeId: z.coerce.number().int().positive().optional()
+        .describe("Scope every card to one employee. Omit for the whole tenant."),
     },
-    withToolError(async ({ from, to }) => {
+    withToolError(async ({ from, to, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getTimesheetKpis({ tenantId: user.tenantId, from, to });
+      const data = await getTimesheetKpis({ tenantId: user.tenantId, from, to, employeeId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_timesheet_kpis")
   );
