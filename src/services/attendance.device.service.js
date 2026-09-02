@@ -389,6 +389,20 @@ export async function syncAttendanceFromPunches({
       orderBy: { id: "desc" },
     });
 
+    // A day HR corrected by hand is authoritative and must NOT be rewritten by
+    // the next device sync — otherwise the correction silently disappears and
+    // the feature is worthless (HR-ATT-CORRECTION-01).
+    if (existing?.manually_corrected) {
+      summary.skipped += 1;
+      summary.details.push({
+        employeeId: employee.id,
+        date: punchDay,
+        action: "skipped_manually_corrected",
+        attendanceId: existing.id,
+      });
+      continue;
+    }
+
     const mergedCheckIn = existing?.check_in
       ? new Date(Math.min(existing.check_in.getTime(), checkIn.getTime()))
       : checkIn;

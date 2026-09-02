@@ -570,6 +570,14 @@ model Attendance {
   day_credit               Float?
   requires_regularization  Boolean @default(false)
 
+  // HR-ATT-CORRECTION-01 — a day fixed by hand. The device roll-up SKIPS these:
+  // without that, HR corrects a day and the next sync silently overwrites it,
+  // which is the one failure that would make manual correction worthless.
+  manually_corrected Boolean   @default(false)
+  corrected_by_id    Int?
+  corrected_at       DateTime?
+  correction_reason  String?
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 

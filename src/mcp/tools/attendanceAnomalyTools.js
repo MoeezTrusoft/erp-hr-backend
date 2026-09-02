@@ -20,6 +20,7 @@ import {
   createAnomalyRequest,
 } from "../../services/attendanceAnomalyRequest.service.js";
 import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.service.js";
+import { correctAttendanceDay, listCorrections } from "../../services/attendanceCorrection.service.js";
 import {
   resolveApprovalChain,
   decideAnomaly,
@@ -148,6 +149,53 @@ export function registerAttendanceAnomalyTools(server) {
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       return ok(await setDayWorkMode({ tenantId: user.tenantId, employeeId, date, workMode, note }));
     }, "hr_attendance_day_work_mode_set")
+  );
+
+  // ── HR / ADMIN MANUAL CORRECTION ───────────────────────────────────────────
+  // PUT on hr:attendance, which RBAC grants to HR and admin roles only. The
+  // acting employee comes from the verified claim, never from arguments, so a
+  // correction can always be attributed to a real person.
+  server.tool(
+    "hr_attendance_correct_day",
+    "HR/admin: correct one employee's attendance for one day. Survives the next device sync and is recorded in the audit log",
+    {
+      employeeId: z.coerce.number().int().min(1).describe("Employee.id"),
+      date: z.string().describe("The work date being corrected (YYYY-MM-DD)"),
+      checkIn: z.string().nullable().optional()
+        .describe("HH:MM, or null to clear. Anchored to the work date"),
+      checkOut: z.string().nullable().optional()
+        .describe("HH:MM, or null. Rolls to the next day automatically when earlier than check-in, so night shifts need no special handling"),
+      status: z.enum(["PRESENT", "ABSENT", "LATE", "HALF_DAY", "MISSING_CHECKIN", "MISSING_CHECKOUT"]).optional()
+        .describe("Overrides the derived status. PRESENT/LATE credit a full day, HALF_DAY a half, ABSENT none"),
+      workMode: z.enum(["Remote", "Hybrid", "Onsite"]).optional()
+        .describe("Optionally set the day's work mode at the same time"),
+      reason: z.string().min(1)
+        .describe("Why the day was changed. Required — corrections feed payroll and must be explainable"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await correctAttendanceDay({
+        ...args,
+        tenantId: user.tenantId,
+        actorEmployeeId: actingEmployeeId(user),
+      }));
+    }, "hr_attendance_correct_day")
+  );
+
+  server.tool(
+    "hr_attendance_corrections_list",
+    "Every manually corrected attendance day in a window, with who changed it and why",
+    {
+      from: z.string().optional().describe("YYYY-MM-DD"),
+      to: z.string().optional().describe("YYYY-MM-DD"),
+      employeeId: z.coerce.number().int().min(1).optional(),
+    },
+    withToolError(async ({ from, to, employeeId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(await listCorrections({ tenantId: user.tenantId, from, to, employeeId }));
+    }, "hr_attendance_corrections_list")
   );
 
   server.tool(

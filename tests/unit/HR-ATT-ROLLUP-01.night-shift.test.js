@@ -93,6 +93,47 @@ beforeEach(() => {
     jest.clearAllMocks();
 });
 
+// Local helper: this suite otherwise builds dates inline.
+const dayAt = (iso) => { const x = new Date(iso); x.setHours(0, 0, 0, 0); return x; };
+
+describe('HR-ATT-CORRECTION-01 manual corrections survive a device sync', () => {
+    it('does NOT overwrite a day HR corrected by hand', async () => {
+        // The whole point of the correction feature. If the sync rewrites the
+        // day, HR fixes it, the next push undoes it, and nobody notices until
+        // payroll is wrong.
+        attendance.push({
+            id: 99, employeeId: 501, date: dayAt('2026-08-14'),
+            check_in: new Date('2026-08-14T22:00:00Z'), check_out: new Date('2026-08-15T08:00:00Z'),
+            total_hours: 10, status: 'PRESENT', manually_corrected: true,
+        });
+
+        const res = await syncAttendanceFromPunches({
+            punches: [punch('1009', '2026-08-14T23:30:00', '0')],
+        });
+
+        expect(res.skipped).toBe(1);
+        expect(res.details[0].action).toBe('skipped_manually_corrected');
+        // Untouched: same times, same hours.
+        expect(attendance[0].check_in.toISOString()).toBe('2026-08-14T22:00:00.000Z');
+        expect(attendance[0].total_hours).toBe(10);
+    });
+
+    it('still updates an ordinary day', async () => {
+        attendance.push({
+            id: 98, employeeId: 501, date: dayAt('2026-08-14'),
+            check_in: new Date('2026-08-14T22:00:00Z'), check_out: null,
+            total_hours: null, status: 'PRESENT', manually_corrected: false,
+        });
+
+        const res = await syncAttendanceFromPunches({
+            punches: [punch('1009', '2026-08-15T08:00:00', '1')],
+        });
+
+        expect(res.skipped).toBe(0);
+        expect(res.updated).toBe(1);
+    });
+});
+
 describe('HR-ATT-ROLLUP-01 shift-aware daily roll-up', () => {
     it('keeps a midnight-crossing night shift as ONE row on the start date', async () => {
         await syncAttendanceFromPunches({
