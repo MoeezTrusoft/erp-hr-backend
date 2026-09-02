@@ -14,9 +14,8 @@ import {
   getOvertimeShiftOverview,
   getShiftScheduleWeek,
   listOvertimeHistory,
-  createOvertimeRequest,
-  decideOvertimeRequest,
 } from "../../services/overtimeShift.service.js";
+import { createOvertimeRequest, decideOvertimeRequest } from "../../services/overtimeApproval.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -94,7 +93,15 @@ export function registerOvertimeShiftTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      const data = await createOvertimeRequest(args, user.tenantId);
+      // HR-OT-APPROVAL-01: routes through the payroll approval matrix rather
+      // than landing on a single approver.
+      const data = await createOvertimeRequest({
+        ...args,
+        tenantId: user.tenantId,
+        employeeId: Number(args.employeeId),
+        reason: args.reason || "Overtime request",
+        source: "MANUAL",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_request_create")
   );
@@ -114,10 +121,14 @@ export function registerOvertimeShiftTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const approverEmployeeId = await requireEmployeeActor(user);
-      const data = await decideOvertimeRequest(
-        { ...args, approverEmployeeId },
-        user.tenantId
-      );
+      // HR-OT-APPROVAL-01: advances one level of the payroll chain; only the
+      // FINAL approval writes hours to payroll.
+      const data = await decideOvertimeRequest({
+        tenantId: user.tenantId,
+        requestId: Number(args.id),
+        approverId: approverEmployeeId,
+        decision: args.decision === "approve" ? "APPROVED" : "REJECTED",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_request_decide")
   );

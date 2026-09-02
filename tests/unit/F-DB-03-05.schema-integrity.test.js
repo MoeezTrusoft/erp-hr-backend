@@ -76,7 +76,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // AttendanceAnomalyApproval). They follow the same nullable-tenant
     // convention as the rest of Payroll Setup, so they join the staged-backfill
     // cohort rather than being exempted.
-    expect(nullableModels).toHaveLength(120);
+    // 120 + OvertimeRequestApproval (HR-OT-APPROVAL-01), which follows the same
+    // nullable-tenant convention as every other tenant-owned model here.
+    expect(nullableModels).toHaveLength(121);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

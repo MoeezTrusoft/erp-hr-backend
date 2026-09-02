@@ -23,8 +23,7 @@ import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.servi
 import { correctAttendanceDay, listCorrections } from "../../services/attendanceCorrection.service.js";
 import { markAbsences } from "../../services/absenceMarking.service.js";
 import {
-  createOvertimeRequest, decideOvertimeRequest, listOvertimeForApprover,
-  resolveOvertimeChain, detectOvertimeFromPunches,
+  listOvertimeForApprover, resolveOvertimeChain, detectOvertimeFromPunches,
 } from "../../services/overtimeApproval.service.js";
 import {
   resolveApprovalChain,
@@ -220,26 +219,9 @@ export function registerAttendanceAnomalyTools(server) {
   );
 
   // ── OVERTIME ───────────────────────────────────────────────────────────────
-  server.tool(
-    "hr_overtime_request_create",
-    "Raise an overtime request for one day. Routes through the payroll approval matrix",
-    {
-      date: z.string().describe("YYYY-MM-DD"),
-      hours: z.coerce.number().min(0.25).max(16).describe("Overtime hours claimed"),
-      reason: z.string().min(1).describe("Why the overtime was worked"),
-      fromTime: z.string().optional().describe("HH:MM"),
-      toTime: z.string().optional().describe("HH:MM"),
-      project: z.string().optional(),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      return ok(await createOvertimeRequest({
-        ...args, tenantId: user.tenantId, employeeId: actingEmployeeId(user), source: "MANUAL",
-      }));
-    }, "hr_overtime_request_create")
-  );
-
+  // Creating and deciding overtime stay on their existing tool names in
+  // overtimeShiftTools.js — those now route through the payroll chain rather
+  // than a single approver. Only the genuinely new surface lives here.
   server.tool(
     "hr_overtime_pending_list",
     "Overtime requests waiting on the caller as approver",
