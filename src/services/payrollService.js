@@ -15,6 +15,13 @@ import { countViolationDays, computeAttendanceDeductions } from "../lib/attendan
 // which would file salary withheld for lateness as tax withheld.
 const ATTENDANCE_DEDUCTION_CODE = 'ATTENDANCE_DEDUCTION';
 
+// HR-PAYROLL-EOBI-01 — defaults used only when a tenant has ENABLED EOBI and
+// has not overridden them. PKR 17,000 in minor units (paisa) is the ceiling the
+// original comment named; 1% is the employee share. Both are configuration
+// because neither has been confirmed against a filed return yet.
+const EOBI_DEFAULT_CEILING_MINOR = 1700000;
+const EOBI_DEFAULT_EMPLOYEE_RATE_PCT = 1;
+
 // HR-02 / HR-07 (T-P4.1) — DETERMINISTIC, VERSIONED, APPROVAL-GATED payroll.
 //
 // The legacy engine was non-conformant on three axes:
@@ -217,19 +224,35 @@ export const computeRuleVersion = (sortedRows, asOf) => {
  *   UK — National Insurance (NI) Employee
  *   IN — EPF (Employee Provident Fund 12%) + ESI (1.75%)
  */
-const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD') => {
+const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', ruleConfig = {}) => {
     const lines = [];
     const cc = (countryCode || '').toUpperCase();
     if (grossMinor <= 0n) return lines;
 
     if (cc === 'PK') {
-        // Pakistan: EOBI employee contribution = 1% of gross (capped at PKR 17,000 ceiling)
-        const eobiEmployee = grossMinor / 100n; // 1%
-        lines.push({
-            deductionTypeId: null,
-            amount: money.minorToDecimal(eobiEmployee, currency),
-            description: 'EOBI (Employee)',
-        });
+        // HR-PAYROLL-EOBI-01. This used to be `grossMinor / 100n` under a comment
+        // claiming a PKR 17,000 ceiling that was never implemented — so a
+        // PKR 200,000 salary was charged PKR 2,000 a month instead of PKR 170.
+        // EOBI is assessed on a statutory wage base, so the contribution stops
+        // rising once earnings pass the ceiling.
+        //
+        // OFF unless a tenant enables it. The exact base and rate still need
+        // confirming with whoever files the returns, and a plausible-looking
+        // default that silently deducts is worse than no line at all.
+        if (ruleConfig.eobiEnabled) {
+            const ceilingMinor = BigInt(ruleConfig.eobiWageCeilingMinor ?? EOBI_DEFAULT_CEILING_MINOR);
+            const ratePct = ruleConfig.eobiEmployeeRatePct ?? EOBI_DEFAULT_EMPLOYEE_RATE_PCT;
+            const assessable = grossMinor > ceilingMinor ? ceilingMinor : grossMinor;
+            // Scale by 100 before the BigInt so a fractional rate survives.
+            const eobiEmployee = (assessable * BigInt(Math.round(ratePct * 100))) / 10000n;
+            if (eobiEmployee > 0n) {
+                lines.push({
+                    deductionTypeId: null,
+                    amount: money.minorToDecimal(eobiEmployee, currency),
+                    description: 'EOBI (Employee)',
+                });
+            }
+        }
         // Social Security (PESSI/SESSI): employee share is 0% (employer-only),
         // but some companies deduct a nominal amount — include as 0 for transparency.
     } else if (cc === 'US') {
@@ -309,7 +332,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD') =
  * @returns {{ employeeId, ruleVersion, ratesEffectiveAt, grossAmount,
  *             totalDeductions, netAmount, earnings:[], deductions:[] }}
  */
-export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf, bridges = {} }) => {
+export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf, bridges = {}, ruleConfig = {} }) => {
     const at = asOf || payrollRun?.periodEnd;
     const earnings = [];
     const deductions = [];
@@ -484,7 +507,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // 7b) STATUTORY DEDUCTIONS: Country-specific mandatory contributions.
     //     Applied AFTER voluntary deductions but BEFORE income tax so the
     //     statutory amounts reduce the taxable base where applicable.
-    const statutoryLines = computeStatutoryDeductions(grossMinor, payrollRun.countryCode, currency);
+    const statutoryLines = computeStatutoryDeductions(grossMinor, payrollRun.countryCode, currency, ruleConfig);
     for (const line of statutoryLines) {
         deductions.push(line);
     }
@@ -725,6 +748,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             ? await getOrCreateDeductionType(ATTENDANCE_DEDUCTION_CODE, 'Attendance Deduction', tenantId)
             : null;
 
+        // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
+        // run. Absent row means the tenant never configured payroll rules, which
+        // is the same as everything off.
+        const ruleConfig = (await prisma.payrollRuleConfig.findUnique({ where: { tenantId } })) ?? {};
+
         // HR-02 — read the VERSIONED tax snapshot ONCE for the run's country,
         // effective at the run's period end. selectEffectiveTaxRates ignores
         // future-dated and foreign-country rows; computeRuleVersion records the
@@ -832,6 +860,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 taxRateRows: allCountryRates,
                 asOf: ratesEffectiveAt,
                 bridges,
+                ruleConfig,
             });
 
             // Map the engine's null-typed tax line to the resolved deduction type.

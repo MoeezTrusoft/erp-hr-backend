@@ -21,6 +21,9 @@ const BOOL_KEYS = [
   "complianceHold",
   "garnishmentRecovery",
   "offCycleRelease",
+  // HR-PAYROLL-EOBI-01. Off for every tenant until someone deliberately turns
+  // it on; see the rate/ceiling validation below.
+  "eobiEnabled",
 ];
 
 // A DRAFT default row (id:null) when the tenant has no PayrollRuleConfig yet.
@@ -34,6 +37,12 @@ function defaultRules() {
     garnishmentRecovery: true,
     garnishmentCapPct: 33,
     offCycleRelease: true,
+    // HR-PAYROLL-EOBI-01 — disabled by default. The rate and ceiling are the
+    // figures the original hardcoded comment named, not ones confirmed against
+    // a filed return, so they only take effect once a tenant opts in.
+    eobiEnabled: false,
+    eobiEmployeeRatePct: 1,
+    eobiWageCeilingMinor: 1700000,
     status: "DRAFT",
     version: 1,
   };
@@ -56,6 +65,24 @@ export async function updatePayrollRules({ tenantId, ...toggles }) {
       throw badRequest("garnishmentCapPct must be a number between 0 and 100");
     }
     data.garnishmentCapPct = pct;
+  }
+
+  // HR-PAYROLL-EOBI-01 — both guard a statutory deduction, so a typo here comes
+  // out of somebody's pay. A 0 ceiling would silently charge nothing, which is
+  // indistinguishable from the rule being off, so it is rejected as a mistake.
+  if (toggles.eobiEmployeeRatePct !== undefined) {
+    const pct = Number(toggles.eobiEmployeeRatePct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      throw badRequest("eobiEmployeeRatePct must be a number between 0 and 100");
+    }
+    data.eobiEmployeeRatePct = pct;
+  }
+  if (toggles.eobiWageCeilingMinor !== undefined) {
+    const ceiling = Number(toggles.eobiWageCeilingMinor);
+    if (!Number.isInteger(ceiling) || ceiling <= 0) {
+      throw badRequest("eobiWageCeilingMinor must be a whole number of minor units greater than 0");
+    }
+    data.eobiWageCeilingMinor = ceiling;
   }
 
   const row = await tenantTransaction(prisma, async (tx) => {
