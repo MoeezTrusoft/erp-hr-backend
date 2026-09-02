@@ -24,6 +24,7 @@
     "backfill:c4": "node scripts/backfill-c4-encryption.js",
     "backfill:tenants": "node scripts/backfill-tenant-ids.js",
     "db:indexes:deploy": "node scripts/apply-hr-indexes.js",
+    "smoke:deploy": "node scripts/deploy-smoke.mjs",
     "gate:p1": "bash scripts/gate-p1.sh"
   },
   "keywords": [],
