@@ -345,6 +345,7 @@ model Employee {
   // HR-ATT-POLICY-01
   attendanceAnomalyApprovals AttendanceAnomalyApproval[] @relation("AttendanceAnomalyApprover")
   attendanceApprovalRoles    AttendanceApprovalLevel[]   @relation("AttendanceApprover")
+  overtimeApprovals          OvertimeRequestApproval[]   @relation("OvertimeApprover")
   claimApprovals        ClaimApproval[]         @relation("ClaimApprover")
   TrainingEnrollment    TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
@@ -1269,6 +1270,12 @@ model OvertimeRequest {
   approverId Int?
   status     String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
   decidedAt  DateTime?
+
+  // HR-OT-APPROVAL-01 — overtime routes through the SAME ordered chain as
+  // payroll (PayrollApprovalMatrix), so a single approverId is not enough.
+  currentApprovalLevel Int    @default(1)
+  source               String @default("MANUAL") // MANUAL | DEVICE_PUNCH
+  approvals            OvertimeRequestApproval[]
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -1280,6 +1287,31 @@ model OvertimeRequest {
   @@index([tenantId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_status_date_id_idx")
   @@index([tenantId, employeeId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_employee_status_date_id_idx")
   @@map("overtime_requests")
+}
+
+// HR-OT-APPROVAL-01 — one decision per level of the payroll approval chain,
+// mirroring AttendanceAnomalyApproval. Overtime costs money, so who approved
+// which level has to be reconstructable.
+model OvertimeRequestApproval {
+  id                Int              @id @default(autoincrement())
+  overtimeRequestId Int
+  level             Int
+  approverId        Int
+  approverRole      String
+  decision          ApprovalDecision
+  comments          String?
+  decidedAt         DateTime         @default(now())
+  createdAt         DateTime         @default(now())
+
+  overtimeRequest OvertimeRequest @relation(fields: [overtimeRequestId], references: [id], onDelete: Cascade)
+  approver        Employee        @relation("OvertimeApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid
+
+  @@unique([overtimeRequestId, level])
+  @@index([approverId])
+  @@index([tenantId])
+  @@map("overtime_request_approvals")
 }
 
 model WorkSchedule {

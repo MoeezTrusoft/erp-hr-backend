@@ -23,6 +23,10 @@ import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.servi
 import { correctAttendanceDay, listCorrections } from "../../services/attendanceCorrection.service.js";
 import { markAbsences } from "../../services/absenceMarking.service.js";
 import {
+  createOvertimeRequest, decideOvertimeRequest, listOvertimeForApprover,
+  resolveOvertimeChain, detectOvertimeFromPunches,
+} from "../../services/overtimeApproval.service.js";
+import {
   resolveApprovalChain,
   decideAnomaly,
   listPendingForApprover,
@@ -213,6 +217,81 @@ export function registerAttendanceAnomalyTools(server) {
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       return ok(await markAbsences({ tenantId: user.tenantId, from, to, dryRun: dryRun !== false }));
     }, "hr_attendance_mark_absences")
+  );
+
+  // ── OVERTIME ───────────────────────────────────────────────────────────────
+  server.tool(
+    "hr_overtime_request_create",
+    "Raise an overtime request for one day. Routes through the payroll approval matrix",
+    {
+      date: z.string().describe("YYYY-MM-DD"),
+      hours: z.coerce.number().min(0.25).max(16).describe("Overtime hours claimed"),
+      reason: z.string().min(1).describe("Why the overtime was worked"),
+      fromTime: z.string().optional().describe("HH:MM"),
+      toTime: z.string().optional().describe("HH:MM"),
+      project: z.string().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      return ok(await createOvertimeRequest({
+        ...args, tenantId: user.tenantId, employeeId: actingEmployeeId(user), source: "MANUAL",
+      }));
+    }, "hr_overtime_request_create")
+  );
+
+  server.tool(
+    "hr_overtime_pending_list",
+    "Overtime requests waiting on the caller as approver",
+    z.object({}),
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(await listOvertimeForApprover({ tenantId: user.tenantId, approverId: actingEmployeeId(user) }));
+    }, "hr_overtime_pending_list")
+  );
+
+  server.tool(
+    "hr_overtime_chain_preview",
+    "Show who would approve this employee's overtime, level by level",
+    z.object({}),
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(await resolveOvertimeChain({ tenantId: user.tenantId, employeeId: actingEmployeeId(user) }));
+    }, "hr_overtime_chain_preview")
+  );
+
+  server.tool(
+    "hr_overtime_decide",
+    "Approve or reject overtime at the caller's level. Only the FINAL approval writes hours to payroll",
+    {
+      requestId: z.coerce.number().int().min(1).describe("OvertimeRequest.id"),
+      decision: z.enum(["APPROVED", "REJECTED"]),
+      comments: z.string().optional(),
+    },
+    withToolError(async ({ requestId, decision, comments }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await decideOvertimeRequest({
+        tenantId: user.tenantId, requestId, approverId: actingEmployeeId(user), decision, comments,
+      }));
+    }, "hr_overtime_decide")
+  );
+
+  server.tool(
+    "hr_overtime_detect_from_punches",
+    "Turn overtime punched on the device (ZKTeco codes 4/5) into requests. Defaults to a dry run",
+    {
+      from: z.string().describe("YYYY-MM-DD"),
+      to: z.string().describe("YYYY-MM-DD"),
+      dryRun: z.boolean().optional().describe("Defaults to TRUE — these become payable claims"),
+    },
+    withToolError(async ({ from, to, dryRun }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      return ok(await detectOvertimeFromPunches({ tenantId: user.tenantId, from, to, dryRun: dryRun !== false }));
+    }, "hr_overtime_detect_from_punches")
   );
 
   server.tool(
