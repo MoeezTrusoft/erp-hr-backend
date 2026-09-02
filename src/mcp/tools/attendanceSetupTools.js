@@ -61,6 +61,8 @@ export function registerAttendanceSetupTools(server) {
         .describe("Minutes after shift start still counted PRESENT (AttendancePolicyConfig.graceMinutes)"),
       halfDayAfterMinutes: z.coerce.number().int().min(0).optional()
         .describe("Lateness in minutes at which the day becomes HALF_DAY (AttendancePolicyConfig.halfDayAfterMinutes)"),
+      halfDayAfterPercentOfShift: z.coerce.number().min(0).max(100).nullable().optional()
+        .describe("When set, the half-day threshold is this PERCENT of the employee's own rostered shift instead of the fixed minutes. Half a shift is 90 min on a 3h roster and 360 on a 12h one, so a fixed number cannot serve both. Null = use halfDayAfterMinutes"),
       earlyLeaveGraceMin: z.coerce.number().int().min(0).optional()
         .describe("Minutes before shift end a check-out is still not an early departure"),
       checkoutLeniencyMin: z.coerce.number().int().min(0).optional()

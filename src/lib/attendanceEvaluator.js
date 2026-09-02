@@ -89,6 +89,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   const p = {
     graceMinutes: policy.graceMinutes ?? 0,
     halfDayAfterMinutes: policy.halfDayAfterMinutes ?? 30,
+    halfDayAfterPercentOfShift: policy.halfDayAfterPercentOfShift ?? null,
     earlyLeaveGraceMin: policy.earlyLeaveGraceMin ?? 0,
     checkoutLeniencyMin: policy.checkoutLeniencyMin ?? 240,
     fullDayMinPercent: policy.fullDayMinPercent ?? 90,
@@ -224,8 +225,17 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   let arrivalStatus = "PRESENT";
   let arrivalCredit = DAY_CREDIT.FULL;
 
+  // Half-day threshold: a percentage of the employee's OWN shift when the tenant
+  // is configured that way ("half the shift" for four of five tenants), else the
+  // fixed minutes. Falls back to the fixed value when there is no rostered shift
+  // to take a percentage of — 16 employees are roster-only.
+  const halfDayAfter =
+    p.halfDayAfterPercentOfShift != null && scheduledMinutes
+      ? (scheduledMinutes * p.halfDayAfterPercentOfShift) / 100
+      : p.halfDayAfterMinutes;
+
   if (late != null && late > p.graceMinutes) {
-    if (late >= p.halfDayAfterMinutes) {
+    if (late >= halfDayAfter) {
       arrivalStatus = "HALF_DAY";
       arrivalCredit = DAY_CREDIT.HALF;
     } else {

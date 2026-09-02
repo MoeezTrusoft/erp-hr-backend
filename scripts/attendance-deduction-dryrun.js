@@ -147,12 +147,20 @@ async function main() {
   }
   console.log(`  ${"TOTAL".padEnd(20)} ${"".padStart(12)} ${"".padStart(10)} ${grandDays.toFixed(1).padStart(8)}`);
 
-  console.log(`\n--- per tenant ---`);
+  console.log(`\n--- per tenant, per rule (occurrences / employees / days) ---`);
   for (const t of grand.tenants) {
     console.log(
-      `  ${t.tenantId.slice(0, 8)}  employees ${String(t.employees).padStart(3)}  days ${t.totalDays.toFixed(1).padStart(7)}` +
+      `  ${t.tenantId.slice(0, 8)}  employees ${String(t.employees).padStart(3)}  total days ${t.totalDays.toFixed(1).padStart(7)}` +
       `  enabled: ${t.enabled.length ? t.enabled.join(",") : "none"}`,
     );
+    for (const key of RULE_KEYS) {
+      const r = t.byRule.get(key);
+      if (!r.occurrences) continue;
+      console.log(
+        `      ${key.padEnd(20)} occ ${String(r.occurrences).padStart(4)}` +
+        `  emp ${String(r.employees).padStart(3)}  days ${r.days.toFixed(1).padStart(6)}`,
+      );
+    }
   }
 
   const worst = [...grand.employees.values()].sort((a, b) => b.days - a.days).slice(0, TOP);

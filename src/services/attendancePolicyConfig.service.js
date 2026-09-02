@@ -30,6 +30,10 @@ const MINUTE_KEYS = [
 // a fixed "<4h = absent" rule would mark whole teams absent every day.
 const PERCENT_KEYS = ["fullDayMinPercent", "halfDayMinPercent"];
 
+// Nullable percent: when set, the half-day threshold is this share of the
+// employee's own shift instead of halfDayAfterMinutes. Null = fixed minutes.
+const NULLABLE_PERCENT_KEYS = ["halfDayAfterPercentOfShift"];
+
 const BOOL_KEYS = ["overtimeNeedsApproval"];
 
 // Service-level fallback for a tenant with no row yet. id:null marks it as
@@ -45,6 +49,7 @@ export function defaultAttendancePolicy() {
     overtimeNeedsApproval: true,
     fullDayMinPercent: 90,
     halfDayMinPercent: 50,
+    halfDayAfterPercentOfShift: null,
     duplicatePunchWindowMin: 5,
     shiftGapHours: 11,
     defaultShiftStart: "09:00",
@@ -73,6 +78,16 @@ export async function updateAttendancePolicy({ tenantId, ...input }) {
     const n = Number(input[key]);
     if (!Number.isFinite(n) || n < 0 || n > 100) {
       throw badRequest(`${key} must be a number between 0 and 100`);
+    }
+    data[key] = n;
+  }
+
+  for (const key of NULLABLE_PERCENT_KEYS) {
+    if (input[key] === undefined) continue;
+    if (input[key] === null) { data[key] = null; continue; }
+    const n = Number(input[key]);
+    if (!Number.isFinite(n) || n <= 0 || n > 100) {
+      throw badRequest(`${key} must be null or a number between 0 and 100`);
     }
     data[key] = n;
   }

@@ -703,7 +703,14 @@ model AttendancePolicyConfig {
   id Int @id @default(autoincrement())
 
   graceMinutes         Int @default(0) // PRESENT while check-in <= shiftStart + this
-  halfDayAfterMinutes  Int @default(30) // HALF_DAY once lateness >= this
+  halfDayAfterMinutes  Int @default(30) // HALF_DAY once lateness >= this (fixed minutes)
+
+  // When set, the half-day threshold is this PERCENT of the employee's own
+  // rostered shift instead of the fixed minutes above. Required because policy
+  // here is "half the shift" for four of the five tenants, and half a shift is
+  // 90 minutes for EMG's 3-hour roster but 360 for Homenet's 12-hour one — a
+  // single integer cannot express it. Null keeps the fixed-minutes behaviour.
+  halfDayAfterPercentOfShift Float?
   earlyLeaveGraceMin   Int @default(0) // EARLY_CHECKOUT once check-out < shiftEnd - this
   checkoutLeniencyMin  Int @default(240) // how long past shift end a check-out still counts
   overtimeAfterMinutes Int @default(45) // OT only past this much beyond shift end

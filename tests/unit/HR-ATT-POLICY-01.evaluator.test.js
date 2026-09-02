@@ -302,3 +302,53 @@ describe('HR-ATT-POLICY-01 unrostered employees', () => {
         expect(r.inProgress).toBe(true);
     });
 });
+
+describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
+    const PCT = { ...POLICY, graceMinutes: 15, halfDayAfterPercentOfShift: 50 };
+
+    it('uses half of an 8h shift (240 min), not the fixed 30', () => {
+        // 2h late on an 8h shift: well past the fixed 30-minute threshold but
+        // nowhere near half the shift, so it stays LATE.
+        const r = evaluateShift({
+            // Stays a full 8h so the DURATION rule cannot downgrade the day and
+            // the arrival threshold is what is actually under test.
+            punches: [IN('2026-08-14T12:00:00Z'), OUT('2026-08-14T20:00:00Z')],
+            shift: DAY_SHIFT, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(120);
+        expect(r.status).toBe('LATE');
+    });
+
+    it('becomes HALF_DAY once past half the shift', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T14:30:00Z'), OUT('2026-08-14T22:30:00Z')],
+            shift: DAY_SHIFT, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(270);        // > 240
+        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+    });
+
+    it('scales to a 3-hour shift, where half is only 90 minutes', () => {
+        // EMG 15:30-18:30. A fixed 240-minute threshold could never be reached
+        // on a shift this short; a percentage adapts.
+        const shortShift = { start: at('2026-08-14T15:30:00Z'), end: at('2026-08-14T18:30:00Z') };
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T17:05:00Z'), OUT('2026-08-14T20:05:00Z')],
+            shift: shortShift, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(95);         // > 90
+        expect(r.status).toBe('HALF_DAY');
+    });
+
+    it('falls back to fixed minutes when there is no rostered shift', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T18:00:00Z')],
+            shift: { start: null, end: null }, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('PRESENT');           // no shift start -> no lateness
+    });
+});
