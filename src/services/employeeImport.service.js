@@ -658,26 +658,13 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
           );
         }
 
-        // Phase E3: Upsert Person record for biometric enrollment and link to Employee.
-        const biometricId = res.directColumns?.biometric_id;
-        if (empId != null && biometricId) {
-          try {
-            const person = await prisma.person.upsert({
-              where: { biometricId: String(biometricId).trim() },
-              update: {},
-              create: {
-                biometricId: String(biometricId).trim(),
-                email: res.createArgs?.systemEmail || res.createArgs?.workEmail || res.createArgs?.personalEmail || null,
-                first_name: res.createArgs?.firstName || null,
-                last_name: res.createArgs?.lastName || null,
-              },
-            });
-            await prisma.employee.update({
-              where: { id: Number(empId) },
-              data: { personId: person.id },
-            });
-          } catch { /* Person creation is best-effort */ }
-        }
+        // Person is owned by RBAC, not HR: Employee.personId is a cross-database
+        // anchor (schema.prisma), so there is no local `person` model and
+        // `prisma.person` is undefined. The upsert that used to sit here threw on
+        // every single import and was swallowed by a bare catch, so personId was
+        // never actually set and nobody noticed. Removed rather than left to fail
+        // quietly. biometric_id is already applied above via directColumns;
+        // linking to an RBAC Person would have to go through RBAC_SERVICE_URL.
 
         // Emergency contact + salary segregation — new records, create-only to
         // avoid duplicates when an existing employee_code is re-imported.

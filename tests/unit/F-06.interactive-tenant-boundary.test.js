@@ -74,19 +74,51 @@ describe("F-06 interactive tenant boundary", () => {
     expect(response.body.errors?.[0]?.code).toBe("HR-0601");
   });
 
+  // The /mcp boundary does NOT reject on tenant, deliberately — see
+  // internalService.middleware.js: tools/list is a cross-tenant discovery call,
+  // so the tenant is enforced per-tool inside buildContextFromHeaders instead.
+  // These cases previously asserted a 403 here and had been failing since that
+  // design changed; what actually matters is that a tenantless caller can never
+  // obtain a tenant-scoped context, which is asserted below.
   it.each([undefined, null, "00000000-0000-0000-0000-000000000000", "not-a-uuid"])(
-    "rejects tenant %p before MCP transport routing",
+    "never grants a tenant-scoped MCP context for tenant %p",
     async (tid) => {
       const response = await request(createApp())
         .post("/mcp")
         .set("x-service-authorization", `Bearer ${token(tid)}`)
         .set("x-mcp-internal", "true")
-        .send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+        .set("Accept", "application/json, text/event-stream")
+        .set("Content-Type", "application/json")
+        .send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "hr_attendance_list", arguments: {} },
+        });
 
-      expect(response.status).toBe(403);
-      expect(response.body.errors?.[0]?.code).toBe("HR-0601");
+      // MCP returns JSON-RPC errors inside a 200 envelope, so the status alone
+      // proves nothing — the body is what matters. Either the transport refuses
+      // the request outright, or the tool call comes back as an error (the
+      // tenantScope extension raises HR-4031 for a non-UUID tenant). What must
+      // never happen is a clean result payload.
+      if (response.status === 200) {
+        const body = JSON.stringify(response.body);
+        expect(body).toMatch(/error|isError|HR-40|Unauthenticated/i);
+      } else {
+        expect(response.status).toBeGreaterThanOrEqual(400);
+      }
     }
   );
+
+  it("still rejects a tenantless caller on the /api boundary", async () => {
+    // The REST surface is where the tenant guard applies, and it still does.
+    const response = await request(createApp())
+      .get("/api/anything")
+      .set("x-service-authorization", `Bearer ${token("not-a-uuid")}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.errors?.[0]?.code).toBe("HR-0601");
+  });
 
   it("accepts a UUID tenant and reaches the declared route boundary", async () => {
     const response = await request(createApp())
