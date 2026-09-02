@@ -18,7 +18,12 @@ import prisma from "../src/lib/prisma.js";
 import { mcpCtx } from "../src/mcp/context.js";
 import { getAttendancePolicy } from "../src/services/attendancePolicyConfig.service.js";
 
-const BASE = process.env.SMOKE_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+// 3003 must match src/server.js's fallback. There are three different port
+// numbers in this repo — server.js falls back to 3003, the Dockerfile EXPOSEs
+// 3001, and prod sets PORT=3001 explicitly — so the fallback is only reachable
+// when PORT is unset, which is exactly when a wrong guess is hardest to debug.
+// REQ-HR-DEPLOY-HARDENING-1c.port-default.test.js pins these two together.
+const BASE = process.env.SMOKE_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3003}`;
 const KEY = process.env.HR_ATTENDANCE_INTAKE_KEY;
 const TENANT = process.env.HR_ATTENDANCE_INTAKE_TENANT_ID;
 
