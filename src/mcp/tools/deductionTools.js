@@ -45,7 +45,9 @@ export function registerDeductionTools(server) {
         logger.error({ err, tenantId: user.tenantId }, "salaryComponent count failed");
       }
       try {
-        activeLoans = await prisma.loan.count({ where: { ...tFilter, status: "ACTIVE" } });
+        // HR-PAYROLL-ADVANCE-01 — this tile says "Active Loans"; a salary advance
+        // is a different instrument and is counted on the loan KPI separately.
+        activeLoans = await prisma.loan.count({ where: { ...tFilter, kind: "LOAN", status: "ACTIVE" } });
       } catch (err) {
         logger.error({ err, tenantId: user.tenantId }, "loan count failed");
       }

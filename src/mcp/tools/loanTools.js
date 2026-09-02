@@ -17,7 +17,7 @@ export function registerLoanTools(server) {
   // ── KPI ───────────────────────────────────────────────────────────────────
   server.tool(
     "hr_loan_kpis",
-    "Get loan management KPIs (active loans, total disbursed, outstanding, paid off)",
+    "Get loan management KPIs (active loans, total disbursed, outstanding, paid off, plus salary advances counted separately)",
     z.object({}),
     withToolError(async () => {
       const { user, permissions } = getCtx();
@@ -30,10 +30,11 @@ export function registerLoanTools(server) {
   // ── LIST ──────────────────────────────────────────────────────────────────
   server.tool(
     "hr_loan_list",
-    "List loans with optional employee/status filter and pagination",
+    "List loans and salary advances with optional employee/status/kind filter and pagination",
     {
       employeeId: z.union([z.string(), z.number()]).optional().describe("Filter by employee ID"),
       status: z.enum(["ACTIVE", "PAID_OFF", "WRITTEN_OFF", "DEFAULTED"]).optional().describe("Filter by loan status"),
+      kind: z.enum(["LOAN", "ADVANCE"]).optional().describe("Filter by kind: LOAN or ADVANCE (salary advance). Omit for both"),
       page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
       pageSize: z.coerce.number().int().positive().optional().describe("Page size (default 20)"),
     },
@@ -43,6 +44,7 @@ export function registerLoanTools(server) {
       const data = await loanService.listLoans({
         employeeId: args.employeeId,
         status: args.status,
+        kind: args.kind,
         page: args.page || 1,
         limit: args.pageSize || 20,
         tenantId: user.tenantId,
@@ -72,8 +74,9 @@ export function registerLoanTools(server) {
     {
       employeeId: z.string().min(1).describe("Employee ID to create loan for"),
       principalMinor: z.number().int().positive().describe("Loan amount in minor units (cents). E.g., 500000 = $5,000.00"),
-      interestRatePct: z.number().nonnegative().optional().describe("Annual interest rate % (default 0 = interest-free)"),
-      tenureMonths: z.number().int().positive().describe("Number of monthly installments"),
+      interestRatePct: z.number().nonnegative().optional().describe("Annual interest rate % (default 0 = interest-free). Must be 0 for an ADVANCE"),
+      tenureMonths: z.number().int().positive().describe("Number of monthly installments. A salary advance uses 1"),
+      kind: z.enum(["LOAN", "ADVANCE"]).optional().describe("LOAN (default) or ADVANCE for a salary advance — recovered next payroll, interest-free"),
       disbursementDate: z.string().optional().describe("Disbursement date (ISO 8601). Defaults to today"),
       reason: z.string().optional().describe("Reason for the loan"),
     },

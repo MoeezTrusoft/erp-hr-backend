@@ -2047,6 +2047,10 @@ model Loan {
   interestRatePct         Float?     @default(0) // Annual interest rate %
   tenureMonths            Int // Number of monthly installments
   disbursementDate        DateTime
+  // HR-PAYROLL-ADVANCE-01 — a salary advance IS a loan (tenureMonths 1,
+  // interestRatePct 0); the discriminator lets the two report separately while
+  // sharing the payroll bridge, garnishment cap and repayment ledger.
+  kind                    LoanKind   @default(LOAN)
   status                  LoanStatus @default(ACTIVE)
   outstandingMinor        Int // Remaining balance in minor units
   monthlyInstallmentMinor Int // Fixed monthly deduction in minor units
@@ -2061,6 +2065,7 @@ model Loan {
 
   @@index([tenantId, employeeId, status])
   @@index([tenantId, status])
+  @@index([tenantId, kind, status])
   @@map("loans")
 }
 
@@ -2078,6 +2083,11 @@ model LoanRepayment {
 
   @@index([tenantId, loanId, deductedAt])
   @@map("loan_repayments")
+}
+
+enum LoanKind {
+  LOAN
+  ADVANCE
 }
 
 enum LoanStatus {

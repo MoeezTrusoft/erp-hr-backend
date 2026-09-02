@@ -2,14 +2,22 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+/** HR-PAYROLL-ADVANCE-01 — mirrors the Prisma `LoanKind` enum. */
+export const LOAN_KINDS = ["LOAN", "ADVANCE"];
+
 /**
  * Create a new loan for an employee.
  * Automatically calculates monthly installment from principal, interest, tenure.
  */
-export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId }) => {
+export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId, kind = "LOAN" }) => {
     if (!employeeId) throw Object.assign(new Error("employeeId is required"), { status: 400 });
     if (!principalMinor || principalMinor <= 0) throw Object.assign(new Error("principalMinor must be positive"), { status: 400 });
     if (!tenureMonths || tenureMonths <= 0) throw Object.assign(new Error("tenureMonths must be positive"), { status: 400 });
+    // HR-PAYROLL-ADVANCE-01 — the discriminator is a money-path input; a typo'd
+    // value must not reach the column, and an "interest-bearing advance" is a
+    // loan mislabelled.
+    if (!LOAN_KINDS.includes(kind)) throw Object.assign(new Error(`kind must be one of ${LOAN_KINDS.join(", ")}`), { status: 400 });
+    if (kind === "ADVANCE" && Number(interestRatePct) > 0) throw Object.assign(new Error("A salary advance cannot carry interest"), { status: 400 });
 
     // Calculate monthly installment (simple amortization)
     const totalInterest = Math.round(principalMinor * (interestRatePct / 100) * (tenureMonths / 12));
@@ -27,6 +35,7 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
             monthlyInstallmentMinor,
             reason: reason || null,
             createdById: createdById ? Number(createdById) : null,
+            kind,
             status: "ACTIVE",
         }),
     });
@@ -37,10 +46,16 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
 /**
  * List loans with optional filters.
  */
-export const listLoans = async ({ employeeId, status, page = 1, limit = 20, tenantId } = {}) => {
+export const listLoans = async ({ employeeId, status, kind, page = 1, limit = 20, tenantId } = {}) => {
     const where = { ...scopedWhere(tenantId, {}) };
     if (employeeId) where.employeeId = Number(employeeId);
     if (status) where.status = status;
+    // HR-PAYROLL-ADVANCE-01 — omitted means "both", so existing callers keep the
+    // full list they have always had.
+    if (kind) {
+        if (!LOAN_KINDS.includes(kind)) throw Object.assign(new Error(`kind must be one of ${LOAN_KINDS.join(", ")}`), { status: 400 });
+        where.kind = kind;
+    }
 
     const [items, total] = await Promise.all([
         prisma.loan.findMany({
@@ -155,13 +170,18 @@ export const writeOffLoan = async (id, tenantId) => {
 
 /**
  * Get loan KPI summary for dashboard.
+ * HR-PAYROLL-ADVANCE-01 — every loan-side figure is narrowed to kind LOAN so an
+ * advance is never counted as a loan; advances get their own counters instead of
+ * disappearing from the tile.
  */
 export const getLoanKpis = async (tenantId) => {
-    const [activeCount, totalDisbursed, totalOutstanding, paidOffCount] = await Promise.all([
-        prisma.loan.count({ where: scopedWhere(tenantId, { status: "ACTIVE" }) }),
-        prisma.loan.aggregate({ where: scopedWhere(tenantId, {}), _sum: { principalMinor: true } }),
-        prisma.loan.aggregate({ where: scopedWhere(tenantId, { status: "ACTIVE" }), _sum: { outstandingMinor: true } }),
-        prisma.loan.count({ where: scopedWhere(tenantId, { status: "PAID_OFF" }) }),
+    const [activeCount, totalDisbursed, totalOutstanding, paidOffCount, activeAdvances, advancesOutstanding] = await Promise.all([
+        prisma.loan.count({ where: scopedWhere(tenantId, { kind: "LOAN", status: "ACTIVE" }) }),
+        prisma.loan.aggregate({ where: scopedWhere(tenantId, { kind: "LOAN" }), _sum: { principalMinor: true } }),
+        prisma.loan.aggregate({ where: scopedWhere(tenantId, { kind: "LOAN", status: "ACTIVE" }), _sum: { outstandingMinor: true } }),
+        prisma.loan.count({ where: scopedWhere(tenantId, { kind: "LOAN", status: "PAID_OFF" }) }),
+        prisma.loan.count({ where: scopedWhere(tenantId, { kind: "ADVANCE", status: "ACTIVE" }) }),
+        prisma.loan.aggregate({ where: scopedWhere(tenantId, { kind: "ADVANCE", status: "ACTIVE" }), _sum: { outstandingMinor: true } }),
     ]);
 
     return {
@@ -169,5 +189,7 @@ export const getLoanKpis = async (tenantId) => {
         totalDisbursed: (totalDisbursed._sum.principalMinor || 0) / 100,
         totalOutstanding: (totalOutstanding._sum.outstandingMinor || 0) / 100,
         paidOffLoans: paidOffCount,
+        activeAdvances,
+        advancesOutstanding: (advancesOutstanding._sum.outstandingMinor || 0) / 100,
     };
 };
