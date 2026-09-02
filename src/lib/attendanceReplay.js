@@ -91,10 +91,20 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
 
   for (const [employeeId, rows] of byEmployee) {
     const [schedule, working] = await Promise.all([
+      // Effective-dated: pick the schedule in force ON the window, not simply
+      // the newest row. Without the date filter a mid-month shift change would
+      // be applied retroactively to days it never covered.
       prisma.workSchedule.findFirst({
-        where: { employeeId },
+        where: {
+          employeeId,
+          effective_start_date: { lte: new Date(`${to}T23:59:59`) },
+          OR: [
+            { effective_end_date: null },
+            { effective_end_date: { gte: new Date(`${from}T00:00:00`) } },
+          ],
+        },
         orderBy: { effective_start_date: "desc" },
-        select: { schedule_pattern: true },
+        select: { schedule_pattern: true, effective_start_date: true },
       }),
       resolveWorkingDays({
         employeeId,

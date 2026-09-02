@@ -44,8 +44,14 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
   const last = startOfDay(to);
 
   const [schedule, holidays, leaves] = await Promise.all([
+    // Effective-dated: off-days can change mid-month for one employee, and the
+    // old pattern must keep applying to the days it covered.
     prisma.workSchedule.findFirst({
-      where: { employeeId },
+      where: {
+        employeeId,
+        effective_start_date: { lte: last },
+        OR: [{ effective_end_date: null }, { effective_end_date: { gte: first } }],
+      },
       orderBy: { effective_start_date: "desc" },
       select: { schedule_pattern: true },
     }),

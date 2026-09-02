@@ -42,8 +42,14 @@ function atClock(day, hhmm) {
 }
 
 async function loadShift(employeeId, day) {
+  // Effective-dated: the form must describe the shift in force on the DAY being
+  // regularised, not whatever the employee's schedule is today.
   const ws = await prisma.workSchedule.findFirst({
-    where: { employeeId },
+    where: {
+      employeeId,
+      effective_start_date: { lte: day },
+      OR: [{ effective_end_date: null }, { effective_end_date: { gte: day } }],
+    },
     orderBy: { effective_start_date: "desc" },
     select: { schedule_pattern: true },
   });

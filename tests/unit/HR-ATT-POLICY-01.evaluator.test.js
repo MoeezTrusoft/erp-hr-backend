@@ -131,7 +131,7 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
         const r = evaluateShift({
             punches: [OUT('2026-08-14T18:00:00Z')],
             shift: DAY_SHIFT,
-            policy: { ...POLICY, trustDeviceDirection: true },
+            policy: POLICY,
             nextDay: CLOSED, now: LATER,
         });
 
@@ -140,14 +140,16 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
         expect(r.requiresRegularization).toBe(true);
     });
 
-    it('reads a lone scan as an ARRIVAL by default, not a departure', () => {
+    it('reads a lone scan positionally when direction is NOT trusted', () => {
         // Measured on this hardware: 462 of 1640 August sessions open with a
         // check-out code because people scan without selecting a mode. Believing
         // the code produced 417 phantom MISSING_CHECKIN. Someone who scanned once
         // came to work and forgot to leave, far more often than the reverse.
         const r = evaluateShift({
             punches: [OUT('2026-08-14T18:00:00Z')],
-            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+            shift: DAY_SHIFT,
+            policy: { ...POLICY, trustDeviceDirection: false },
+            nextDay: CLOSED, now: LATER,
         });
 
         expect(r.status).toBe('MISSING_CHECKOUT');
@@ -250,13 +252,11 @@ describe('HR-ATT-POLICY-01 anti-passback', () => {
         expect(r.checkOut.toISOString()).toBe('2026-08-14T18:00:00.000Z');
     });
 
-    it('collapses a scan pair two minutes apart rather than booking a 2-minute shift', () => {
-        // With direction untrusted these are indistinguishable from a double
-        // scan, and a two-minute shift is not real work. Deliberate: the day
-        // becomes MISSING_CHECKOUT and goes to regularization rather than
-        // silently recording 2 worked minutes.
+    it('collapses two arrivals two minutes apart', () => {
+        // Same direction, seconds apart: a re-swipe because the reader did not
+        // confirm, not a two-minute shift.
         const r = evaluateShift({
-            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T10:02:00Z')],
+            punches: [IN('2026-08-14T10:00:00Z'), IN('2026-08-14T10:02:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
@@ -264,11 +264,11 @@ describe('HR-ATT-POLICY-01 anti-passback', () => {
         expect(r.status).toBe('MISSING_CHECKOUT');
     });
 
-    it('keeps a close in/out pair when the device direction IS trusted', () => {
+    it('keeps a close in/out pair, since opposite directions are never duplicates', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T10:02:00Z')],
             shift: DAY_SHIFT,
-            policy: { ...POLICY, trustDeviceDirection: true },
+            policy: POLICY,
             nextDay: CLOSED, now: LATER,
         });
 

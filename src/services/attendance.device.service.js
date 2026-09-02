@@ -76,12 +76,21 @@ async function resolveShiftDate(employeeId, timestamp) {
  * from the roster). Falls back to the caller's value when the employee has no
  * schedule or a roster-driven one with no fixed clock range.
  */
-async function resolveEmployeeShiftStart(employeeId, fallback, cache) {
-  if (cache.has(employeeId)) return cache.get(employeeId);
+async function resolveEmployeeShiftStart(employeeId, fallback, cache, onDate) {
+  // Cache per employee AND day: the schedule is effective-dated now, so one
+  // employee can legitimately have different shifts on different days of a batch.
+  const day = onDate instanceof Date ? onDate : new Date();
+  const cacheKey = `${employeeId}|${dayKey(day)}`;
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
   let value = fallback;
   try {
+    // Effective-dated so a mid-month shift change does not rewrite earlier days.
     const ws = await prisma.workSchedule.findFirst({
-      where: { employeeId },
+      where: {
+        employeeId,
+        effective_start_date: { lte: day },
+        OR: [{ effective_end_date: null }, { effective_end_date: { gte: day } }],
+      },
       orderBy: { effective_start_date: "desc" },
       select: { schedule_pattern: true },
     });
@@ -91,7 +100,7 @@ async function resolveEmployeeShiftStart(employeeId, fallback, cache) {
     // A missing/unreadable schedule must not fail the roll-up; the fallback
     // shift start still yields a usable status.
   }
-  cache.set(employeeId, value);
+  cache.set(cacheKey, value);
   return value;
 }
 
@@ -357,6 +366,7 @@ export async function syncAttendanceFromPunches({
       employee.id,
       shiftStart,
       shiftStartCache,
+      start,
     );
     const lateCutoff = buildLateCutoff(checkIn, employeeShiftStart, lateGraceMinutes);
     // Route status through the shared helper so synced punches also yield
