@@ -21,6 +21,7 @@ import {
 } from "../../services/attendanceAnomalyRequest.service.js";
 import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.service.js";
 import { correctAttendanceDay, listCorrections } from "../../services/attendanceCorrection.service.js";
+import { markAbsences } from "../../services/absenceMarking.service.js";
 import {
   resolveApprovalChain,
   decideAnomaly,
@@ -196,6 +197,22 @@ export function registerAttendanceAnomalyTools(server) {
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
       return ok(await listCorrections({ tenantId: user.tenantId, from, to, employeeId }));
     }, "hr_attendance_corrections_list")
+  );
+
+  server.tool(
+    "hr_attendance_mark_absences",
+    "Mark scheduled working days with no attendance as ABSENT. Defaults to a dry run — pass dryRun:false to write",
+    {
+      from: z.string().describe("YYYY-MM-DD"),
+      to: z.string().describe("YYYY-MM-DD"),
+      dryRun: z.boolean().optional()
+        .describe("Defaults to TRUE. This creates unpaid days, so writing must be asked for explicitly"),
+    },
+    withToolError(async ({ from, to, dryRun }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await markAbsences({ tenantId: user.tenantId, from, to, dryRun: dryRun !== false }));
+    }, "hr_attendance_mark_absences")
   );
 
   server.tool(
