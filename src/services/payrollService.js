@@ -8,6 +8,12 @@ import { withTenant } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { payrollRunFinalizedEvent } from "./hrEvents.js";
 import { assertIfMatch } from "../lib/optimisticConcurrency.js";
+import { countViolationDays, computeAttendanceDeductions } from "../lib/attendanceDeduction.js";
+
+// HR-ATT-PAYROLL-BRIDGE-01 — attendance deductions get their OWN deduction type.
+// Without a code the persistence step below falls back to the income-tax type,
+// which would file salary withheld for lateness as tax withheld.
+const ATTENDANCE_DEDUCTION_CODE = 'ATTENDANCE_DEDUCTION';
 
 // HR-02 / HR-07 (T-P4.1) — DETERMINISTIC, VERSIONED, APPROVAL-GATED payroll.
 //
@@ -296,6 +302,9 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD') =
  * @param {Array} bridges.lwpDays - Unpaid leave days for the period
  * @param {Array} bridges.benefitLines - Active employee benefit contributions
  * @param {Array} bridges.loanLines - Active loan deductions
+ * @param {Array} bridges.attendanceDeductionLines - Priced attendance violations
+ *        from src/lib/attendanceDeduction.js: { ruleKey, counterGroup,
+ *        occurrences, days } (HR-ATT-PAYROLL-BRIDGE-01)
  *
  * @returns {{ employeeId, ruleVersion, ratesEffectiveAt, grossAmount,
  *             totalDeductions, netAmount, earnings:[], deductions:[] }}
@@ -424,16 +433,50 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         }
     }
 
-    // 7) BRIDGE: LWP (Leave Without Pay) → Deduction
-    if (bridges.lwpDays > 0 && employmentTerm) {
+    // 7) BRIDGE: unpaid DAYS → Deduction.
+    //
+    // HR-ATT-PAYROLL-BRIDGE-01: LWP and attendance deductions are the same
+    // concept — "this many days of salary are not owed" — so they share ONE
+    // daily rate. Two formulas for one concept is how a payslip ends up with two
+    // different answers for the same day.
+    //
+    // Days may be fractional (a half-day attendance deduction, a half-day LWP),
+    // so the multiplier is scaled by 100 before the BigInt. `BigInt(0.5)` threw
+    // a RangeError and took the whole payslip build down with it.
+    if (employmentTerm && (bridges.lwpDays > 0 || bridges.attendanceDeductionLines?.length > 0)) {
         const baseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
         const workingDays = payrollRun.countryCode === 'PK' ? 26 : 22; // Pakistan: 26, others: 22
-        const lwpMinor = (baseMinor * BigInt(bridges.lwpDays)) / BigInt(workingDays);
-        if (lwpMinor > 0n) {
+        const daysToMinor = (days) =>
+            (baseMinor * BigInt(Math.round(days * 100))) / (100n * BigInt(workingDays));
+
+        if (bridges.lwpDays > 0) {
+            const lwpMinor = daysToMinor(bridges.lwpDays);
+            if (lwpMinor > 0n) {
+                deductions.push({
+                    deductionTypeId: null,
+                    amount: money.minorToDecimal(lwpMinor, currency),
+                    description: `LWP Recovery (${bridges.lwpDays} days)`,
+                });
+            }
+        }
+
+        // 7a) BRIDGE: counted attendance violations → Deduction. The engine that
+        //     produced these lines (src/lib/attendanceDeduction.js) has already
+        //     applied triggerCount, counterGroup pooling and the per-period cap;
+        //     all that is left here is days → money.
+        for (const line of bridges.attendanceDeductionLines || []) {
+            const days = Number(line?.days) || 0;
+            if (days <= 0) continue;
+            const amountMinor = daysToMinor(days);
+            if (amountMinor <= 0n) continue;
+            const label = line.counterGroup || line.ruleKey;
             deductions.push({
                 deductionTypeId: null,
-                amount: money.minorToDecimal(lwpMinor, currency),
-                description: `LWP Recovery (${bridges.lwpDays} days)`,
+                code: ATTENDANCE_DEDUCTION_CODE,
+                amount: money.minorToDecimal(amountMinor, currency),
+                description:
+                    `Attendance: ${label} (${line.occurrences} occurrence${line.occurrences === 1 ? '' : 's'}` +
+                    ` = ${days} day${days === 1 ? '' : 's'})`,
             });
         }
     }
@@ -639,16 +682,48 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                         deductionType: true
                     }
                 },
+                // HR-ATT-PAYROLL-BRIDGE-01 — the daily attendance verdicts and the
+                // anomaly decisions that excuse or condemn them. Both are read here,
+                // on the query that was already being issued, rather than as a
+                // per-employee round trip inside the map below.
                 attendance: {
                     where: {
                         date: {
                             gte: payrollRun.periodStart,
                             lte: payrollRun.periodEnd
                         }
-                    }
+                    },
+                    select: { date: true, status: true, manually_corrected: true }
+                },
+                attendanceAnomalies: {
+                    where: {
+                        date: {
+                            gte: payrollRun.periodStart,
+                            lte: payrollRun.periodEnd
+                        }
+                    },
+                    select: { date: true, status: true }
                 }
             }
         });
+
+        // HR-ATT-PAYROLL-BRIDGE-01 — the deduction rules are per TENANT, not per
+        // employee, so they are read once for the whole run. Ordered by ruleKey so
+        // the deduction lines they generate land in a stable order (the golden-file
+        // determinism contract).
+        //
+        // ponytail: the counting window is the RUN's period. A rule configured
+        // periodScope 'MONTH' therefore counts over the run period, which is the
+        // same thing for the monthly runs this fleet actually executes. Widening it
+        // needs a second attendance read — add that when a non-monthly calendar
+        // appears.
+        const attendanceDeductionRules = await prisma.attendanceDeductionRule.findMany({
+            where: withTenant(tenantId, { enabled: true }),
+            orderBy: { ruleKey: 'asc' }
+        });
+        const attendanceDeductionTypeId = attendanceDeductionRules.length
+            ? await getOrCreateDeductionType(ATTENDANCE_DEDUCTION_CODE, 'Attendance Deduction', tenantId)
+            : null;
 
         // HR-02 — read the VERSIONED tax snapshot ONCE for the run's country,
         // effective at the run's period end. selectEffectiveTaxRates ignores
@@ -734,6 +809,18 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     name: `Loan Repayment (ID:${loan.id})`,
                     amountMinor: loan.monthlyInstallmentMinor,
                 })),
+                // HR-ATT-PAYROLL-BRIDGE-01 — counted violations priced into DAYS by
+                // the pure engine. Empty when no rule is enabled, which is the
+                // shipped state for every tenant until a dry run has been read.
+                attendanceDeductionLines: attendanceDeductionRules.length
+                    ? computeAttendanceDeductions({
+                        violations: countViolationDays({
+                            attendance: employee.attendance,
+                            anomalies: employee.attendanceAnomalies,
+                        }),
+                        rules: attendanceDeductionRules,
+                    })
+                    : [],
             };
 
             // Build the canonical payslip with the REAL, deterministic engine.
@@ -759,7 +846,9 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             }));
             const deductions = built.deductions.map((d) => ({
                 tenantId: tenantId ?? null,
-                deductionTypeId: d.deductionTypeId ?? incomeTaxDeductionTypeId,
+                deductionTypeId: d.deductionTypeId
+                    ?? (d.code === ATTENDANCE_DEDUCTION_CODE ? attendanceDeductionTypeId : null)
+                    ?? incomeTaxDeductionTypeId,
                 amount: d.amount,
                 description: d.description
             }));

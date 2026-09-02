@@ -19,6 +19,12 @@ import { replayTenant, tenantsWithPunches, dayKey } from "../src/lib/attendanceR
 import { getAttendancePolicy } from "../src/services/attendancePolicyConfig.service.js";
 import { listDeductionRules } from "../src/services/attendanceDeductionRule.service.js";
 import { listDisapprovedLeaveDays } from "../src/services/disapprovedLeave.service.js";
+// HR-ATT-PAYROLL-BRIDGE-01 — the scoring maths (N occurrences → X days, pooled by
+// counterGroup, capped) moved into the pure engine payroll now runs. This script
+// keeps its own COUNTING, because it counts from the punch replay rather than the
+// stored Attendance rows, but it must not keep its own PRICING: a forecast that
+// disagrees with the payslip is worse than no forecast.
+import { computeAttendanceDeductions } from "../src/lib/attendanceDeduction.js";
 
 function arg(name, fallback = null) {
   const i = process.argv.indexOf(`--${name}`);
@@ -30,17 +36,6 @@ const TO = arg("to", "2026-08-31");
 const TOP = Number(arg("top", "10"));
 
 const RULE_KEYS = ["DISAPPROVED_LEAVE", "LATE", "MISSING_CHECKIN", "MISSING_CHECKOUT", "EARLY_CHECKOUT"];
-
-/** N occurrences cost X days, capped. floor() so a partial group costs nothing. */
-function applyRule(rule, occurrences) {
-  if (!occurrences) return 0;
-  const groups = Math.floor(occurrences / Math.max(rule.triggerCount, 1));
-  let days = groups * rule.deductionDays;
-  if (rule.maxDeductionDaysPerPeriod != null) {
-    days = Math.min(days, rule.maxDeductionDaysPerPeriod);
-  }
-  return days;
-}
 
 async function main() {
   const tenantIds = await tenantsWithPunches(mcpCtx);
@@ -94,34 +89,24 @@ async function main() {
       const tenantSummary = { tenantId, byRule: new Map(), totalDays: 0, employees: perEmployee.size };
       for (const k of RULE_KEYS) tenantSummary.byRule.set(k, { occurrences: 0, employees: 0, days: 0 });
 
-      // Rules sharing a counterGroup are scored as ONE counter: their days are
-      // pooled before N is applied, so two missed check-ins and one missed
-      // check-out is three occurrences of MISSING_PUNCH, not two separate
-      // sub-threshold counts that cost nothing.
-      const groupOf = (key) => ruleByKey.get(key)?.counterGroup || key;
+      // Every rule is scored as if enabled — see the header. The engine honours
+      // `enabled`, so the forecast has to override it explicitly rather than by
+      // owning a second copy of the scoring.
+      const forecastRules = RULE_KEYS
+        .map((k) => ruleByKey.get(k))
+        .filter(Boolean)
+        .map((r) => ({ ...r, enabled: true }));
 
       for (const [employeeId, counts] of perEmployee) {
-        let employeeDays = 0;
-        const detail = [];
-        const pooled = new Map();
-        for (const key of RULE_KEYS) {
-          const days = counts.get(key);
-          if (!days) continue;
-          const g = groupOf(key);
-          if (!pooled.has(g)) pooled.set(g, { days: new Set(), keys: [] });
-          for (const dk of days) pooled.get(g).days.add(dk);
-          pooled.get(g).keys.push(key);
+        const violations = [];
+        for (const [key, days] of counts) {
+          for (const dk of days) violations.push({ ruleKey: key, day: dk });
         }
 
-        for (const key of RULE_KEYS) {
-          const g = groupOf(key);
-          const bucket = pooled.get(g);
-          // Score each group once, under its first contributing rule.
-          if (!bucket || bucket.keys[0] !== key) continue;
-          const occ = bucket.days.size;
-          if (!occ) continue;
-          const rule = ruleByKey.get(key);
-          const days = applyRule(rule, occ);
+        let employeeDays = 0;
+        const detail = [];
+        for (const line of computeAttendanceDeductions({ violations, rules: forecastRules })) {
+          const { ruleKey: key, occurrences: occ, days } = line;
 
           const t = tenantSummary.byRule.get(key);
           t.occurrences += occ;
@@ -134,7 +119,7 @@ async function main() {
           gt.days += days;
 
           employeeDays += days;
-          if (days > 0) detail.push(`${g}x${occ}=${days}d`);
+          detail.push(`${line.counterGroup || key}x${occ}=${days}d`);
         }
         tenantSummary.totalDays += employeeDays;
         if (employeeDays > 0) {
