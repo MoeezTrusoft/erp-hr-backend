@@ -16,6 +16,7 @@ import prisma from "../lib/prisma.js";
 import { Prisma } from "@prisma/client";
 import { mcpCtx } from "../mcp/context.js";
 import { syncAttendanceFromPunches } from "./attendance.device.service.js";
+import { applyEvaluatedShiftsForDays } from "./attendanceWriter.service.js";
 import logger from "../lib/logger.js";
 
 /**
@@ -171,7 +172,21 @@ export async function ingestDevicePunches({ sn, rows, tenantId, rollup = true })
         for (const [tid, punches] of byTenant) {
             try {
                 summary.rollup[tid] = await mcpCtx.run({ user: { tenantId: tid } }, async () => {
-                    return await syncAttendanceFromPunches({ punches });
+                    // HR-ATT-CUTOVER-01: the EVALUATOR is the write path now.
+                    // Previously the roll-up used calendar-day logic while the
+                    // evaluator only produced reports, so what the reports
+                    // showed and what the product stored were two different
+                    // things. Both go through one code path now.
+                    //
+                    // ATTENDANCE_USE_EVALUATOR=false falls back to the old
+                    // roll-up — a switch back that needs no redeploy.
+                    if (process.env.ATTENDANCE_USE_EVALUATOR === "false") {
+                        return await syncAttendanceFromPunches({ punches });
+                    }
+                    return await applyEvaluatedShiftsForDays({
+                        tenantId: tid,
+                        days: punches.map((p) => new Date(p.timestamp)),
+                    });
                 });
             } catch (err) {
                 // Raw rows are already durable; a roll-up failure must not lose

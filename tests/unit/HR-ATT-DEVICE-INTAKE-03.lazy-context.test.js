@@ -83,6 +83,11 @@ jest.unstable_mockModule('../../src/mcp/context.js', () => ({ mcpCtx: als }));
 jest.unstable_mockModule('../../src/services/attendance.device.service.js', () => ({
     syncAttendanceFromPunches: syncMock,
 }));
+// HR-ATT-CUTOVER-01: roll-up now runs through the evaluator-backed writer; the
+// context property under test is the same.
+jest.unstable_mockModule('../../src/services/attendanceWriter.service.js', () => ({
+    applyEvaluatedShiftsForDays: syncMock,
+}));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));

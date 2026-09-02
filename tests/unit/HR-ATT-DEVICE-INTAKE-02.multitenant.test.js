@@ -38,6 +38,12 @@ jest.unstable_mockModule('../../src/mcp/context.js', () => ({ mcpCtx: mcpCtxMock
 jest.unstable_mockModule('../../src/services/attendance.device.service.js', () => ({
     syncAttendanceFromPunches: syncMock,
 }));
+// HR-ATT-CUTOVER-01: the evaluator is the write path now, so the roll-up goes
+// through the writer. The property under test is unchanged — one roll-up per
+// tenant present in the batch.
+jest.unstable_mockModule('../../src/services/attendanceWriter.service.js', () => ({
+    applyEvaluatedShiftsForDays: syncMock,
+}));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
