@@ -770,6 +770,13 @@ model AttendanceDeductionRule {
   // Counting window. PAY_PERIOD follows PayrollCalendar.
   periodScope String @default("PAY_PERIOD") // 'PAY_PERIOD' | 'MONTH'
 
+  // Rules sharing a counterGroup POOL their occurrences into one counter, so
+  // "3 missed punches of either kind = 1 day" is configuration rather than code.
+  // Null means the rule counts alone. Splitting them again later is a settings
+  // change, not a migration. Rules in one group must agree on N/X/scope/cap —
+  // enforced on write, so the UI can present a group as a single row.
+  counterGroup String?
+
   maxDeductionDaysPerPeriod Float? // cap per employee per period
 
   status    ConfigStatus @default(DRAFT)

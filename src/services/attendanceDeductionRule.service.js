@@ -41,6 +41,7 @@ function defaultRule(ruleKey) {
     deductionDays: 0.5,
     periodScope: "PAY_PERIOD",
     maxDeductionDaysPerPeriod: null,
+    counterGroup: null,
     status: "DRAFT",
     version: 1,
   };
@@ -98,6 +99,41 @@ export async function upsertDeductionRule({ tenantId, ruleKey, ...input }) {
         throw badRequest("maxDeductionDaysPerPeriod must be null or a number between 0 and 31");
       }
       data.maxDeductionDaysPerPeriod = n;
+    }
+  }
+
+  if (input.counterGroup !== undefined) {
+    if (input.counterGroup === null || input.counterGroup === "") {
+      data.counterGroup = null;
+    } else {
+      const group = String(input.counterGroup).trim();
+      if (!/^[A-Z0-9_]{2,40}$/.test(group)) {
+        throw badRequest("counterGroup must be 2-40 chars of A-Z, 0-9 or underscore");
+      }
+      data.counterGroup = group;
+    }
+  }
+
+  // Rules pooled into one counter must agree on how that counter is scored,
+  // otherwise "3 of either kind" has two different answers depending on which
+  // rule you read. Enforced here so the UI can present a group as one row.
+  const effectiveGroup = data.counterGroup !== undefined ? data.counterGroup : undefined;
+  if (effectiveGroup) {
+    const peers = await prisma.attendanceDeductionRule.findMany({
+      where: { tenantId, counterGroup: effectiveGroup, ruleKey: { not: ruleKey } },
+    });
+    for (const peer of peers) {
+      const mismatch = [
+        ["triggerCount", data.triggerCount ?? peer.triggerCount],
+        ["deductionDays", data.deductionDays ?? peer.deductionDays],
+        ["periodScope", data.periodScope ?? peer.periodScope],
+      ].find(([field, value]) => peer[field] !== value);
+      if (mismatch) {
+        throw badRequest(
+          `Rules in counterGroup "${effectiveGroup}" must share the same ${mismatch[0]}; ` +
+          `${peer.ruleKey} has ${peer[mismatch[0]]}`,
+        );
+      }
     }
   }
 

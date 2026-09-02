@@ -118,6 +118,47 @@ describe('HR-ATT-POLICY-01 deduction rules', () => {
         ).rejects.toThrow('between 0 and 31');
     });
 
+    it('pools rules that share a counterGroup', async () => {
+        // "3 missed punches of either kind = 1 day" is configuration, not code.
+        const row = await deductions.upsertDeductionRule({
+            tenantId: TENANT, ruleKey: 'MISSING_CHECKOUT', counterGroup: 'MISSING_PUNCH',
+        });
+
+        expect(row.counterGroup).toBe('MISSING_PUNCH');
+    });
+
+    it('refuses to pool rules that would score differently', async () => {
+        // Otherwise "3 of either kind" has two answers depending which rule you
+        // read. The UI can then present a group as a single row.
+        prismaMock.attendanceDeductionRule.findMany.mockResolvedValueOnce([
+            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSING_PUNCH',
+              triggerCount: 5, deductionDays: 1, periodScope: 'MONTH' },
+        ]);
+
+        await expect(
+            deductions.upsertDeductionRule({
+                tenantId: TENANT, ruleKey: 'MISSING_CHECKOUT',
+                counterGroup: 'MISSING_PUNCH', triggerCount: 3,
+            }),
+        ).rejects.toThrow('must share the same triggerCount');
+    });
+
+    it('rejects a malformed group name', async () => {
+        await expect(
+            deductions.upsertDeductionRule({
+                tenantId: TENANT, ruleKey: 'LATE', counterGroup: 'bad name!',
+            }),
+        ).rejects.toThrow('counterGroup must be');
+    });
+
+    it('lets a group be cleared so the rules count alone again', async () => {
+        const row = await deductions.upsertDeductionRule({
+            tenantId: TENANT, ruleKey: 'MISSING_CHECKOUT', counterGroup: null,
+        });
+
+        expect(row.counterGroup).toBeNull();
+    });
+
     it('rejects triggerCount below 1', async () => {
         await expect(
             deductions.upsertDeductionRule({ tenantId: TENANT, ruleKey: 'LATE', triggerCount: 0 }),

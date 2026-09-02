@@ -94,11 +94,31 @@ async function main() {
       const tenantSummary = { tenantId, byRule: new Map(), totalDays: 0, employees: perEmployee.size };
       for (const k of RULE_KEYS) tenantSummary.byRule.set(k, { occurrences: 0, employees: 0, days: 0 });
 
+      // Rules sharing a counterGroup are scored as ONE counter: their days are
+      // pooled before N is applied, so two missed check-ins and one missed
+      // check-out is three occurrences of MISSING_PUNCH, not two separate
+      // sub-threshold counts that cost nothing.
+      const groupOf = (key) => ruleByKey.get(key)?.counterGroup || key;
+
       for (const [employeeId, counts] of perEmployee) {
         let employeeDays = 0;
         const detail = [];
+        const pooled = new Map();
         for (const key of RULE_KEYS) {
-          const occ = counts.get(key)?.size ?? 0;
+          const days = counts.get(key);
+          if (!days) continue;
+          const g = groupOf(key);
+          if (!pooled.has(g)) pooled.set(g, { days: new Set(), keys: [] });
+          for (const dk of days) pooled.get(g).days.add(dk);
+          pooled.get(g).keys.push(key);
+        }
+
+        for (const key of RULE_KEYS) {
+          const g = groupOf(key);
+          const bucket = pooled.get(g);
+          // Score each group once, under its first contributing rule.
+          if (!bucket || bucket.keys[0] !== key) continue;
+          const occ = bucket.days.size;
           if (!occ) continue;
           const rule = ruleByKey.get(key);
           const days = applyRule(rule, occ);
@@ -108,13 +128,13 @@ async function main() {
           t.employees += 1;
           t.days += days;
 
-          const g = grand.byRule.get(key);
-          g.occurrences += occ;
-          g.employees.add(`${tenantId}:${employeeId}`);
-          g.days += days;
+          const gt = grand.byRule.get(key);
+          gt.occurrences += occ;
+          gt.employees.add(`${tenantId}:${employeeId}`);
+          gt.days += days;
 
           employeeDays += days;
-          if (days > 0) detail.push(`${key}x${occ}=${days}d`);
+          if (days > 0) detail.push(`${g}x${occ}=${days}d`);
         }
         tenantSummary.totalDays += employeeDays;
         if (employeeDays > 0) {
