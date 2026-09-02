@@ -38,28 +38,90 @@ export function shiftFor(pattern, day) {
 }
 
 /**
- * Group punches into shifts on the configured gap — the same 11-hour rule the
- * SQL rebuild used, so every figure produced here is comparable with it.
+ * Group punches into shifts by ANCHORING THEM TO THE ROSTER.
+ *
+ * The previous rule — start a new shift whenever two punches are more than N
+ * hours apart — cannot work here. Shifts run 12 to 16 hours (Abdul Rasool
+ * 06:49-19:04, Rustam 17:37-09:27), so any gap small enough to separate two
+ * shifts is also small enough to cut one shift in half. At 11h it split 12h+
+ * shifts and manufactured one orphan arrival plus one orphan departure each
+ * time; at 13h it merged sparse employees into 756-hour "shifts". Measured
+ * against HR's reconciled record: gap-based grouping reported ~50% of shifts
+ * incomplete where HR has 98% complete.
+ *
+ * So each punch is assigned to the rostered shift window it belongs to, which
+ * is what HR does by hand. Employees with no roster fall back to calendar day.
+ *
+ * Direction: the device code is trusted as a HINT but the position decides.
+ * People genuinely press the wrong key — Abdul Rasool's 06:42 arrival on 2 Aug
+ * is stamped Check-Out. The first punch of a shift is the arrival and the last
+ * is the departure; where that contradicts the device, the punch is corrected
+ * and a warning is recorded for HR to confirm or overturn.
  */
-export function sessionise(punches, gapHours) {
-  const gapMs = gapHours * 60 * MIN_MS;
+export function sessioniseByRoster(punches, pattern, { windowHours = 5 } = {}) {
   const sorted = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
-  const sessions = [];
-  let current = null;
+  if (!sorted.length) return [];
+
+  const hasRoster = Boolean(pattern?.shift?.from && pattern?.shift?.to);
+  const groups = new Map();
+
   for (const p of sorted) {
-    if (!current || p.punchedAt - current.last > gapMs) {
-      current = { punches: [], last: p.punchedAt };
-      sessions.push(current);
+    let key = dayKey(p.punchedAt);
+
+    if (hasRoster) {
+      // The shift may have started yesterday, today or tomorrow relative to the
+      // punch — a 22:00 start read at 01:00 belongs to yesterday's shift.
+      let best = null;
+      for (const offset of [-1, 0, 1]) {
+        const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
+        const { start, end } = shiftFor(pattern, startOfDay(anchor));
+        if (!start || !end) continue;
+        const from = start.getTime() - windowHours * 60 * MIN_MS;
+        const to = end.getTime() + windowHours * 60 * MIN_MS;
+        const t = p.punchedAt.getTime();
+        if (t < from || t > to) continue;
+        const distance = Math.abs(t - start.getTime());
+        if (!best || distance < best.distance) {
+          best = { distance, key: dayKey(startOfDay(anchor)) };
+        }
+      }
+      if (best) key = best.key;
     }
-    current.punches.push({
-      timestamp: p.punchedAt,
-      // Direction is deliberately carried through as recorded; the evaluator
-      // decides whether to believe it (it does not, by default).
-      type: p.status === 0 ? "IN" : p.status === 1 ? "OUT" : "",
-    });
-    current.last = p.punchedAt;
+
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
   }
-  return sessions;
+
+  const out = [];
+  for (const [key, raw] of [...groups.entries()].sort()) {
+    const list = raw.sort((a, b) => a.punchedAt - b.punchedAt);
+    const corrections = [];
+
+    // Position decides direction; the device code only raises a warning when it
+    // disagrees, so HR can see what was changed and why.
+    const deviceDir = (st) => (st === 0 || st === 4 ? "IN" : st === 1 || st === 5 ? "OUT" : null);
+
+    const shaped = list.map((p, i) => {
+      const positional = i === 0 ? "IN" : i === list.length - 1 ? "OUT" : "";
+      const device = deviceDir(p.status);
+      if (positional && device && device !== positional) {
+        corrections.push({
+          at: p.punchedAt,
+          recordedAs: device,
+          resolvedTo: positional,
+          reason:
+            positional === "IN"
+              ? "first scan of the shift, recorded as a check-out"
+              : "last scan of the shift, recorded as a check-in",
+        });
+      }
+      return { timestamp: p.punchedAt, type: positional || device || "" };
+    });
+
+    out.push({ day: startOfDay(new Date(`${key}T00:00:00`)), punches: shaped, corrections });
+  }
+
+  return out;
 }
 
 /**
@@ -69,8 +131,6 @@ export function sessionise(punches, gapHours) {
  * ordinary model queries so RLS scopes them.
  */
 export async function replayTenant({ tenantId, from, to, policy, now = new Date() }) {
-  const gapHours = policy.shiftGapHours ?? 11;
-
   const punches = await prisma.attendanceDevicePunch.findMany({
     where: {
       tenantId,
@@ -113,8 +173,8 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       }),
     ]);
 
-    for (const session of sessionise(rows, gapHours)) {
-      const day = startOfDay(session.punches[0].timestamp);
+    for (const session of sessioniseByRoster(rows, schedule?.schedule_pattern)) {
+      const day = session.day;
       const tomorrow = new Date(day.getTime() + DAY_MS);
       const tomorrowInfo = working.get(dayKey(tomorrow));
       const nextShift = shiftFor(schedule?.schedule_pattern, tomorrow);
@@ -130,7 +190,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
         now,
       });
 
-      results.push({ employeeId, day, verdict });
+      results.push({ employeeId, day, verdict, corrections: session.corrections });
     }
   }
 
