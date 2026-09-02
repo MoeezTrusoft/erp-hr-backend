@@ -19,6 +19,7 @@ import {
   getAnomalyFormDefaults,
   createAnomalyRequest,
 } from "../../services/attendanceAnomalyRequest.service.js";
+import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.service.js";
 import {
   resolveApprovalChain,
   decideAnomaly,
@@ -116,6 +117,37 @@ export function registerAttendanceAnomalyTools(server) {
         }),
       );
     }, "hr_attendance_anomaly_pending_list")
+  );
+
+  server.tool(
+    "hr_attendance_day_work_mode_get",
+    "The work mode in force for an employee on one day, and whether it is a day override or their default",
+    {
+      employeeId: z.coerce.number().int().min(1).describe("Employee.id"),
+      date: z.string().describe("YYYY-MM-DD"),
+    },
+    withToolError(async ({ employeeId, date }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(await getDayWorkMode({ employeeId, date }));
+    }, "hr_attendance_day_work_mode_get")
+  );
+
+  server.tool(
+    "hr_attendance_day_work_mode_set",
+    "Set the work mode for one employee on one day — sudden WFH. Pass null to clear the override",
+    {
+      employeeId: z.coerce.number().int().min(1).describe("Employee.id"),
+      date: z.string().describe("YYYY-MM-DD"),
+      workMode: z.enum(["Remote", "Hybrid", "Onsite"]).nullable()
+        .describe("null clears the override so the day falls back to the employee's default"),
+      note: z.string().optional().describe("Optional remark stored on the attendance row"),
+    },
+    withToolError(async ({ employeeId, date, workMode, note }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await setDayWorkMode({ tenantId: user.tenantId, employeeId, date, workMode, note }));
+    }, "hr_attendance_day_work_mode_set")
   );
 
   server.tool(

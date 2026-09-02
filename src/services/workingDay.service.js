@@ -55,10 +55,31 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
       orderBy: { effective_start_date: "desc" },
       select: { schedule_pattern: true },
     }),
-    prisma.holiday.findMany({
-      where: { date: { gte: first, lte: last } },
-      select: { date: true, name: true, fullDay: true },
-    }),
+    // Holidays the employee is actually entitled to. If they are assigned to
+    // one or more calendars (employee_holiday_calendars, effective-dated), only
+    // those apply — two groups in one tenant can legitimately observe different
+    // days. With no assignment we fall back to every holiday in the tenant,
+    // which is the current single-calendar reality and keeps behaviour stable.
+    prisma.employeeHolidayCalendar
+      .findMany({
+        where: {
+          employeeId,
+          effectiveFrom: { lte: last },
+          OR: [{ effectiveTo: null }, { effectiveTo: { gte: first } }],
+        },
+        select: { holidayCalendarId: true },
+      })
+      .then((assigned) =>
+        prisma.holiday.findMany({
+          where: {
+            date: { gte: first, lte: last },
+            ...(assigned.length
+              ? { holidayCalendarId: { in: assigned.map((a) => a.holidayCalendarId) } }
+              : {}),
+          },
+          select: { date: true, name: true, fullDay: true },
+        }),
+      ),
     prisma.leave.findMany({
       where: {
         employeeId,

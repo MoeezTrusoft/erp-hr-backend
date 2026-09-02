@@ -12,10 +12,18 @@ const EMP = 100;
 let schedule;
 let holidays;
 let leaves;
+let assignedCalendars;
 
 const prismaMock = {
     workSchedule: { findFirst: jest.fn(async () => schedule) },
-    holiday: { findMany: jest.fn(async () => holidays) },
+    employeeHolidayCalendar: { findMany: jest.fn(async () => assignedCalendars) },
+    // Honours a holidayCalendarId filter so calendar scoping can be asserted.
+    holiday: {
+        findMany: jest.fn(async ({ where }) => {
+            const ids = where.holidayCalendarId?.in;
+            return ids ? holidays.filter((h) => ids.includes(h.holidayCalendarId)) : holidays;
+        }),
+    },
     leave: { findMany: jest.fn(async () => leaves) },
 };
 
@@ -31,6 +39,7 @@ beforeEach(() => {
     schedule = { schedule_pattern: { offDays: [6, 7], shift: { from: '10:00', to: '18:00' } } };
     holidays = [];
     leaves = [];
+    assignedCalendars = [];
 });
 
 describe('HR-ATT-POLICY-01 working days', () => {
@@ -99,6 +108,31 @@ describe('HR-ATT-POLICY-01 working days', () => {
 
         expect(map.get('2026-08-15').working).toBe(true);
         expect(map.get('2026-08-16').working).toBe(true);
+    });
+
+    it('applies only the calendars the employee is assigned to', async () => {
+        // Two groups in one tenant can observe different days. Calendar 1 is the
+        // employee's; calendar 2 belongs to someone else and must not apply.
+        assignedCalendars = [{ holidayCalendarId: 1 }];
+        holidays = [
+            { date: d('2026-08-14'), name: 'Ours', fullDay: true, holidayCalendarId: 1 },
+            { date: d('2026-08-13'), name: 'Theirs', fullDay: true, holidayCalendarId: 2 },
+        ];
+
+        const map = await svc.resolveWorkingDays({ employeeId: EMP, from: '2026-08-13', to: '2026-08-14' });
+
+        expect(map.get('2026-08-13').working).toBe(true);          // not our calendar
+        expect(map.get('2026-08-14')).toMatchObject({ working: false, reason: 'HOLIDAY' });
+    });
+
+    it('falls back to every tenant holiday when the employee has no calendar', async () => {
+        // Current reality: one calendar per tenant, nobody explicitly assigned.
+        assignedCalendars = [];
+        holidays = [{ date: d('2026-08-14'), name: 'Independence Day', fullDay: true, holidayCalendarId: 9 }];
+
+        const map = await svc.resolveWorkingDays({ employeeId: EMP, from: '2026-08-14', to: '2026-08-14' });
+
+        expect(map.get('2026-08-14').working).toBe(false);
     });
 
     it('answers a single day through isWorkingDay', async () => {

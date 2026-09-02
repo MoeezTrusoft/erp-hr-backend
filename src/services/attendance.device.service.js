@@ -414,9 +414,15 @@ export async function syncAttendanceFromPunches({
       mergedCheckIn,
       effectiveShiftStartMin(mergedCheckIn, rosterShiftStartMin),
     );
-    // The day's work_mode is taken from the employee's default work_mode
-    // (Employee is snake_case), normalized to canonical Remote|Onsite|Hybrid.
-    const workMode = normalizeWorkMode(employee.work_mode);
+    // The day's work_mode: a per-day override on shift_assignments wins over the
+    // employee's default, so a sudden WFH day is recorded as Remote instead of
+    // whatever the person usually does (HR-ATT-POLICY-01).
+    const dayOverride = await prisma.shiftAssignment.findFirst({
+      where: { employeeId: employee.id, date: start },
+      orderBy: { id: "desc" },
+      select: { workMode: true },
+    });
+    const workMode = normalizeWorkMode(dayOverride?.workMode) ?? normalizeWorkMode(employee.work_mode);
 
     if (dryRun) {
       summary.details.push({

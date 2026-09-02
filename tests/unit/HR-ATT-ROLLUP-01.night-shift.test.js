@@ -40,6 +40,9 @@ const prismaMock = {
             ) ?? null;
         }),
     },
+    // Per-day work-mode override lookup (HR-ATT-POLICY-01). No override here, so
+    // the day falls back to the employee's default.
+    shiftAssignment: { findFirst: jest.fn(async () => null) },
     workSchedule: {
         findFirst: jest.fn(async ({ where }) =>
             SCHEDULES[where.employeeId]
