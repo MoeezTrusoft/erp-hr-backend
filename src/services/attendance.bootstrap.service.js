@@ -56,10 +56,22 @@ export async function bootstrapAttendanceData() {
     return;
   }
 
-  const [employeeCount, attendanceCount] = await Promise.all([
-    prisma.employee.count().catch(() => 0),
-    prisma.attendance.count().catch(() => 0),
-  ]);
+  // REQ-HR-DEPLOY-HARDENING-2026-09-02 §1b — fail CLOSED. These counts decide
+  // whether to run a full XLSX import, so a failed read must never be treated
+  // as "the database is empty". `.catch(() => 0)` here meant an HR-4030, a pool
+  // timeout, or a blip during a rollout would import a month of attendance on
+  // top of a database that already had it.
+  let employeeCount;
+  let attendanceCount;
+  try {
+    [employeeCount, attendanceCount] = await Promise.all([
+      prisma.employee.count(),
+      prisma.attendance.count(),
+    ]);
+  } catch (err) {
+    log("Bootstrap skipped: existing row counts could not be read", err?.message || err);
+    return;
+  }
 
   if (attendanceCount > 0) {
     log("Attendance data already present, bootstrap skipped", { employeeCount, attendanceCount });
