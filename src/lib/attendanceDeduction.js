@@ -71,11 +71,24 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
     if (ruleKey) add(ruleKey, dayKey(row.date));
   }
 
-  // A REJECTED anomaly is a refused explanation, from either source (a rejected
-  // LeaveRequest or a rejected regularization) — see disapprovedLeave.service.js.
-  // Both land on the same employee-day, and the Set makes that one occurrence.
+  // A refused explanation only becomes DISAPPROVED_LEAVE when what was being
+  // explained is an ABSENCE — the person did not work and the excuse was
+  // refused, so the day is unpaid.
+  //
+  // Refusing any OTHER kind of appeal does NOT cost a day. The underlying
+  // violation already has its own rule: a refused LATE_CHECKIN appeal leaves the
+  // day LATE and the LATE rule counts it; a refused MISSING_CHECKOUT appeal
+  // leaves the day MISSING_CHECKOUT for the MISSING_PUNCH rule.
+  //
+  // This previously charged EVERY rejected anomaly as a full day of leave. One
+  // employee worked a full day, arrived at 20:45, appealed the lateness, lost —
+  // and was charged 16,129 (a whole day of a 500k salary) on top of the lateness
+  // that was already being counted. Eight of the thirteen rejected appeals in
+  // August were LATE_CHECKIN, so most of this rule's charge was that mistake.
   for (const a of anomalies) {
-    if (a?.status === "REJECTED") add("DISAPPROVED_LEAVE", dayKey(a.date));
+    if (a?.status === "REJECTED" && a?.type === "ABSENT") {
+      add("DISAPPROVED_LEAVE", dayKey(a.date));
+    }
   }
 
   return [...seen]

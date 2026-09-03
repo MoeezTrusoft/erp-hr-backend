@@ -74,14 +74,42 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 countViolationDays', () => {
         expect(keysOf(v)).toEqual(['LATE@2026-08-04']);
     });
 
-    it('counts a REJECTED anomaly day as DISAPPROVED_LEAVE, once per day', () => {
+    it('counts a REJECTED ABSENCE as DISAPPROVED_LEAVE, once per day', () => {
         const v = countViolationDays({
             anomalies: [
-                { date: day('2026-08-10'), status: 'REJECTED', sourceKind: 'LEAVE_REQUEST' },
-                { date: day('2026-08-10'), status: 'REJECTED', sourceKind: 'REGULARIZATION' },
+                { date: day('2026-08-10'), status: 'REJECTED', type: 'ABSENT' },
+                { date: day('2026-08-10'), status: 'REJECTED', type: 'ABSENT' },
             ],
         });
         expect(keysOf(v)).toEqual(['DISAPPROVED_LEAVE@2026-08-10']);
+    });
+
+    it('does NOT charge a day of leave when a LATE appeal is refused', () => {
+        // The defect this replaces: any REJECTED anomaly became DISAPPROVED_LEAVE.
+        // A man who worked a full day, arrived at 20:45, appealed the lateness and
+        // lost, was charged a WHOLE DAY of pay — 16,129 on a 500k salary — on top
+        // of the lateness the LATE rule was already counting from his attendance
+        // status. Refusing the excuse means the lateness stands; it does not
+        // convert a worked day into unpaid leave.
+        const v = countViolationDays({
+            attendance: [att('2026-08-05', 'LATE')],
+            anomalies: [{ date: day('2026-08-05'), status: 'REJECTED', type: 'LATE_CHECKIN' }],
+        });
+
+        expect(keysOf(v)).toEqual(['LATE@2026-08-05']);
+    });
+
+    it('does not charge leave for a refused missing-punch or early-checkout appeal either', () => {
+        // Same reasoning: the underlying violation already has its own rule.
+        const v = countViolationDays({
+            anomalies: [
+                { date: day('2026-08-06'), status: 'REJECTED', type: 'MISSING_CHECKOUT' },
+                { date: day('2026-08-07'), status: 'REJECTED', type: 'EARLY_CHECKOUT' },
+                { date: day('2026-08-08'), status: 'REJECTED', type: 'OTHER' },
+            ],
+        });
+
+        expect(keysOf(v)).toEqual([]);
     });
 
     it('is deterministic in output order', () => {
