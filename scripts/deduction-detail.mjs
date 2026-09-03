@@ -53,7 +53,7 @@ for (const [tenantName, tenantId] of Object.entries(TENANTS)) {
       });
       const anomalies = await prisma.attendanceAnomaly.findMany({
         where: { employeeId: emp.id, date: { gte: periodStart, lte: periodEnd } },
-        select: { date: true, status: true },
+        select: { date: true, status: true, type: true },
       });
 
       const violations = countViolationDays({ attendance, anomalies });

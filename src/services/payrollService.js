@@ -797,7 +797,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             lte: payrollRun.periodEnd
                         }
                     },
-                    select: { date: true, status: true }
+                    select: { date: true, status: true, type: true }
                 }
             }
         });

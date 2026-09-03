@@ -68,7 +68,7 @@ async function main() {
         });
         const anomalies = await prisma.attendanceAnomaly.findMany({
           where: { employeeId: emp.id, date: { gte: periodStart, lte: periodEnd } },
-          select: { date: true, status: true },
+          select: { date: true, status: true, type: true },
         });
 
         const attendanceDeductionLines = rules.length
