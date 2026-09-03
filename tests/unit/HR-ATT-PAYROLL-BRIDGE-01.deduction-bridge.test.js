@@ -200,7 +200,11 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
             bridges,
         });
 
-    it('converts deduction DAYS to money with the LWP daily rate (PK = 26 working days)', () => {
+    // HR-PAYROLL-DEDUCTION-BASIS-01 changed the daily rate: salary over the
+    // CALENDAR days of the period, not base over a fixed 26 working days. These
+    // expectations were updated deliberately with that spec change, not
+    // loosened to make a failure go away.
+    it('converts deduction DAYS to money with the LWP daily rate (calendar days)', () => {
         const slip = build({
             attendanceDeductionLines: [
                 { ruleKey: 'LATE', counterGroup: null, occurrences: 3, days: 1 },
@@ -208,8 +212,8 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
         });
         const line = slip.deductions.find((d) => d.description.startsWith('Attendance:'));
         expect(line).toBeDefined();
-        // 260000.00 PKR = 26_000_000 minor; 26 working days ⇒ 1_000_000 minor/day.
-        expect(line.amount).toBe('10000.0000');
+        // 260,000 over a 31-day August ⇒ 8387.09/day. Previously 260,000/26.
+        expect(line.amount).toBe('8387.0900');
         expect(line.description).toBe('Attendance: LATE (3 occurrences = 1 day)');
     });
 
@@ -220,7 +224,8 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
             ],
         });
         const line = slip.deductions.find((d) => d.description.startsWith('Attendance:'));
-        expect(line.amount).toBe('5000.0000');
+        // half of 8387.09
+        expect(line.amount).toBe('4193.5400');
         expect(line.description).toBe('Attendance: MISSED_PUNCH (3 occurrences = 0.5 days)');
     });
 
@@ -234,7 +239,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
 
     it('does not crash on a fractional LWP day (BigInt(1.5) used to throw)', () => {
         const line = build({ lwpDays: 0.5 }).deductions.find((d) => d.description.startsWith('LWP'));
-        expect(line.amount).toBe('5000.0000');
+        expect(line.amount).toBe('4193.5400');
     });
 
     it('adds nothing when there are no deduction lines', () => {

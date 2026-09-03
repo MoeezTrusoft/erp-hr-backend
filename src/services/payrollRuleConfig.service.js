@@ -26,6 +26,9 @@ const BOOL_KEYS = [
   "eobiEnabled",
 ];
 
+// HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
+const DEDUCTION_BASES = ["BASIC", "GROSS"];
+
 // A DRAFT default row (id:null) when the tenant has no PayrollRuleConfig yet.
 function defaultRules() {
   return {
@@ -37,6 +40,9 @@ function defaultRules() {
     garnishmentRecovery: true,
     garnishmentCapPct: 33,
     offCycleRelease: true,
+    // HR-PAYROLL-DEDUCTION-BASIS-01 — a deducted day is charged against the
+    // contracted package (base + allowances) over the month's calendar days.
+    deductionBasis: "GROSS",
     // HR-PAYROLL-EOBI-01 — disabled by default. The rate and ceiling are the
     // figures the original hardcoded comment named, not ones confirmed against
     // a filed return, so they only take effect once a tenant opts in.
@@ -65,6 +71,17 @@ export async function updatePayrollRules({ tenantId, ...toggles }) {
       throw badRequest("garnishmentCapPct must be a number between 0 and 100");
     }
     data.garnishmentCapPct = pct;
+  }
+
+  // HR-PAYROLL-DEDUCTION-BASIS-01 — rejected rather than coerced. An
+  // unrecognised value falls back to GROSS at compute time, which would hide a
+  // typo behind plausible-looking numbers.
+  if (toggles.deductionBasis !== undefined) {
+    const basis = String(toggles.deductionBasis).trim().toUpperCase();
+    if (!DEDUCTION_BASES.includes(basis)) {
+      throw badRequest(`deductionBasis must be one of: ${DEDUCTION_BASES.join(", ")}`);
+    }
+    data.deductionBasis = basis;
   }
 
   // HR-PAYROLL-EOBI-01 — both guard a statutory deduction, so a typo here comes

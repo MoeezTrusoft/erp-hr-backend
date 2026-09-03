@@ -367,6 +367,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     const deductions = [];
     const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
     let grossMinor = 0n;
+    // HR-PAYROLL-DEDUCTION-BASIS-01 — base + fixed allowances, i.e. the monthly
+    // package the employee is contracted for. See step 7 for why this is not
+    // grossMinor.
+    let contractualMinor = 0n;
 
     // PRORATION: compute factor from employee hire/term dates vs payroll period.
     const prorationFactor = computeProrationFactor(
@@ -391,6 +395,12 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 : `Base salary for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`,
         });
         grossMinor = money.add(grossMinor, baseMinor);
+        // HR-PAYROLL-DEDUCTION-BASIS-01 — the CONTRACTUAL monthly package, which
+        // is what a deducted day is charged against. Tracked separately from
+        // grossMinor because gross also accumulates overtime and employer
+        // benefits, and working overtime must not make a different day of
+        // absence cost more.
+        contractualMinor = money.add(contractualMinor, baseMinor);
     }
 
     // 2) BRIDGE: Overtime → Earning (approved OT hours × hourly rate × OT multiplier)
@@ -439,6 +449,9 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 description: assignment.earningType.name,
             });
             grossMinor = money.add(grossMinor, amountMinor);
+            // Allowances are part of the contracted package (house, transport,
+            // medical, utilities), so they count toward a deducted day.
+            contractualMinor = money.add(contractualMinor, amountMinor);
         } else if (assignment.deductionType) {
             const amountMinor = assignment.amount != null
                 ? money.decimalToMinor(assignment.amount, currency)
@@ -499,9 +512,29 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // a RangeError and took the whole payslip build down with it.
     if (employmentTerm && (bridges.lwpDays > 0 || bridges.attendanceDeductionLines?.length > 0)) {
         const baseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
-        const workingDays = payrollRun.countryCode === 'PK' ? 26 : 22; // Pakistan: 26, others: 22
+
+        // HR-PAYROLL-DEDUCTION-BASIS-01. Operator spec: a deducted day is the
+        // FULL monthly salary divided by the CALENDAR days of the month, not
+        // base salary over a fixed 26 working days.
+        //
+        // The divisor is the period's own length, so August (31) and February
+        // (28) differ — a monthly salary buys a month, however long it is.
+        const periodDays = Math.max(
+            1,
+            Math.round(
+                (new Date(payrollRun.periodEnd) - new Date(payrollRun.periodStart)) / 86_400_000,
+            ) + 1,
+        );
+
+        // GROSS (the default) charges against base + fixed allowances. Salaries
+        // here are structured basic 45% + allowances 55%, so BASIC would
+        // under-deduct by more than half. An unrecognised value falls back to
+        // GROSS deliberately: under-deducting silently is the worse failure.
+        const basisMinor =
+            ruleConfig.deductionBasis === 'BASIC' ? baseMinor : contractualMinor || baseMinor;
+
         const daysToMinor = (days) =>
-            (baseMinor * BigInt(Math.round(days * 100))) / (100n * BigInt(workingDays));
+            (basisMinor * BigInt(Math.round(days * 100))) / (100n * BigInt(periodDays));
 
         if (bridges.lwpDays > 0) {
             const lwpMinor = daysToMinor(bridges.lwpDays);

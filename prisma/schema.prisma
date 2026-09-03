@@ -2252,6 +2252,11 @@ model PayrollRuleConfig {
   // for every tenant: the ceiling and rate below are the figures the original
   // (unimplemented) comment named, not ones confirmed against a filed return.
   // Enabling is a deliberate per-tenant act, not a default.
+  // HR-PAYROLL-DEDUCTION-BASIS-01 — what one deducted day is charged against.
+  // GROSS = base + fixed allowances (the contracted monthly package); BASIC =
+  // base salary alone. Salaries here are basic 45% + allowances 55%, so BASIC
+  // under-deducts by more than half — hence the GROSS default.
+  deductionBasis          String       @default("GROSS")
   eobiEnabled             Boolean      @default(false)
   eobiEmployeeRatePct     Float        @default(1) // % of the assessable wage
   eobiWageCeilingMinor    Int          @default(1700000) // PKR 17,000 in paisa; contribution stops rising above this
