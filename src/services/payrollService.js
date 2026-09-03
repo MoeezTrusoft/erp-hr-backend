@@ -519,11 +519,17 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         //
         // The divisor is the period's own length, so August (31) and February
         // (28) differ — a monthly salary buys a month, however long it is.
+        // Count CALENDAR DAYS, not elapsed milliseconds. Callers pass periodEnd
+        // as 23:59:59.999, and differencing timestamps gives 30.9999 for August
+        // — which rounds to 31, then +1 = 32. Every deduction came out ~3%
+        // light. Truncate both ends to their UTC date first.
+        const dayOf = (d) => {
+            const x = new Date(d);
+            return Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
+        };
         const periodDays = Math.max(
             1,
-            Math.round(
-                (new Date(payrollRun.periodEnd) - new Date(payrollRun.periodStart)) / 86_400_000,
-            ) + 1,
+            Math.round((dayOf(payrollRun.periodEnd) - dayOf(payrollRun.periodStart)) / 86_400_000) + 1,
         );
 
         // GROSS (the default) charges against base + fixed allowances. Salaries

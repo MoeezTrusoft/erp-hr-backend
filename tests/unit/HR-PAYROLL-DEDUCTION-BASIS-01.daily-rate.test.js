@@ -101,6 +101,17 @@ describe('HR-PAYROLL-DEDUCTION-BASIS-01 one day costs salary / calendar days', (
         expect(lwpAmount(withOt)).toBeCloseTo(3225.81, 1);
     });
 
+    it('counts calendar days, not milliseconds — an end-of-day periodEnd is still 31', () => {
+        // Real callers pass periodEnd as 23:59:59.999. Differencing timestamps
+        // gives 30.9999 days, which rounds to 31 and then +1 = 32 — so August
+        // was being divided by 32 and every deduction came out ~3% light.
+        const endOfDay = {
+            ...AUGUST,
+            periodEnd: new Date('2026-08-31T23:59:59.999Z'),
+        };
+        expect(lwpAmount(build({ payrollRun: endOfDay }))).toBeCloseTo(3225.81, 1);
+    });
+
     it('half a day costs half', () => {
         expect(lwpAmount(build({ lwpDays: 0.5 }))).toBeCloseTo(1612.9, 1);
     });
