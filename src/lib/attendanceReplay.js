@@ -22,8 +22,12 @@ export const startOfDay = (v) => { const d = new Date(v); d.setHours(0, 0, 0, 0)
 export const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
 
 /** "HH:MM" anchored to a day; a night shift rolls its end into the next one. */
-export function shiftFor(pattern, day) {
-  const raw = pattern?.shift;
+/**
+ * Every shift window a roster can put on this day. One entry for a fixed
+ * roster; for a rotating one (HR-ATT-ROTATING-01) every alternative, because
+ * "10am/pm – 10am/pm" has no single start time.
+ */
+export function shiftCandidates(pattern, day) {
   const mk = (hhmm) => {
     const m = typeof hhmm === "string" ? hhmm.trim().match(/^(\d{1,2}):(\d{2})/) : null;
     if (!m) return null;
@@ -31,10 +35,40 @@ export function shiftFor(pattern, day) {
     d.setHours(Number(m[1]), Number(m[2]), 0, 0);
     return d;
   };
-  const start = mk(raw?.from);
-  let end = mk(raw?.to);
-  if (start && end && end <= start) end = new Date(end.getTime() + DAY_MS);
-  return { start, end };
+  const build = (raw) => {
+    const start = mk(raw?.from);
+    let end = mk(raw?.to);
+    if (start && end && end <= start) end = new Date(end.getTime() + DAY_MS);
+    return { start, end };
+  };
+
+  const rotating = Array.isArray(pattern?.rotatingShifts) ? pattern.rotatingShifts : null;
+  if (rotating?.length) return rotating.map(build).filter((s) => s.start);
+  const single = build(pattern?.shift);
+  return single.start ? [single] : [];
+}
+
+/**
+ * The shift window for a day. `anchor` is the arrival that day, and for a
+ * rotating roster it decides WHICH window applies: a 22:03 punch is an on-time
+ * night start, not a twelve-hour-late day start. Without an anchor the first
+ * window is used — that path only feeds tomorrow's check-out cutoff, where no
+ * arrival exists yet.
+ */
+export function shiftFor(pattern, day, anchor) {
+  const options = shiftCandidates(pattern, day);
+  if (!options.length) return { start: null, end: null };
+  if (options.length === 1 || !anchor) return options[0];
+
+  const t = new Date(anchor).getTime();
+  let best = null;
+  for (const opt of options) {
+    // Compare across midnight: a 23:50 punch is 10 minutes from a 00:00 start.
+    let d = Math.abs(t - opt.start.getTime());
+    d = Math.min(d, Math.abs(d - DAY_MS));
+    if (!best || d < best.d) best = { d, opt };
+  }
+  return best.opt;
 }
 
 /**
@@ -62,7 +96,9 @@ export function sessioniseByRoster(punches, pattern, { windowHours = 5 } = {}) {
   const sorted = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
   if (!sorted.length) return [];
 
-  const hasRoster = Boolean(pattern?.shift?.from && pattern?.shift?.to);
+  const hasRoster =
+    Boolean(pattern?.shift?.from && pattern?.shift?.to) ||
+    Boolean(Array.isArray(pattern?.rotatingShifts) && pattern.rotatingShifts.length);
   const groups = new Map();
 
   for (const p of sorted) {
@@ -74,15 +110,26 @@ export function sessioniseByRoster(punches, pattern, { windowHours = 5 } = {}) {
       let best = null;
       for (const offset of [-1, 0, 1]) {
         const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
-        const { start, end } = shiftFor(pattern, startOfDay(anchor));
-        if (!start || !end) continue;
-        const from = start.getTime() - windowHours * 60 * MIN_MS;
-        const to = end.getTime() + windowHours * 60 * MIN_MS;
-        const t = p.punchedAt.getTime();
-        if (t < from || t > to) continue;
-        const distance = Math.abs(t - start.getTime());
-        if (!best || distance < best.distance) {
-          best = { distance, key: dayKey(startOfDay(anchor)) };
+        // A rotating roster offers more than one window per day; the punch has
+        // to be tried against each, or a night arrival gets pulled onto the
+        // wrong day by the day-shift window.
+        for (const { start, end } of shiftCandidates(pattern, startOfDay(anchor))) {
+          if (!start || !end) continue;
+          const from = start.getTime() - windowHours * 60 * MIN_MS;
+          const to = end.getTime() + windowHours * 60 * MIN_MS;
+          const t = p.punchedAt.getTime();
+          if (t < from || t > to) continue;
+          // Measure to the edge this punch is meant to be near. A 10:00
+          // departure sits exactly on a night shift's END and exactly on the
+          // next day shift's START — scoring only against `start` hands it to
+          // the wrong day and splits the night shift in two. The device's
+          // direction is only a hint for the verdict, but it is good enough to
+          // choose a window.
+          const isOut = p.status === 1 || p.status === 5;
+          const distance = Math.abs(t - (isOut ? end.getTime() : start.getTime()));
+          if (!best || distance < best.distance) {
+            best = { distance, key: dayKey(startOfDay(anchor)) };
+          }
         }
       }
       if (best) key = best.key;
@@ -181,7 +228,8 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
 
       const verdict = evaluateShift({
         punches: session.punches,
-        shift: shiftFor(schedule?.schedule_pattern, day),
+        // The arrival anchors WHICH rotating window applies (HR-ATT-ROTATING-01).
+        shift: shiftFor(schedule?.schedule_pattern, day, session.punches[0]?.punchedAt),
         policy,
         nextDay: {
           working: Boolean(tomorrowInfo?.working),
