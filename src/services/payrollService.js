@@ -10,10 +10,33 @@ import { payrollRunFinalizedEvent } from "./hrEvents.js";
 import { assertIfMatch } from "../lib/optimisticConcurrency.js";
 import { countViolationDays, computeAttendanceDeductions } from "../lib/attendanceDeduction.js";
 
-// HR-ATT-PAYROLL-BRIDGE-01 — attendance deductions get their OWN deduction type.
-// Without a code the persistence step below falls back to the income-tax type,
-// which would file salary withheld for lateness as tax withheld.
-const ATTENDANCE_DEDUCTION_CODE = 'ATTENDANCE_DEDUCTION';
+// HR-ATT-PAYROLL-BRIDGE-01 / HR-PAYROLL-DEDUCTION-TYPE-01 — EVERY deduction the
+// engine emits without a tenant-configured type carries a stable CODE, and the
+// persistence step resolves that code to a PayrollDeductionType of its own.
+//
+// There used to be a `?? incomeTaxDeductionTypeId` catch-all at the write, so a
+// benefit contribution, a loan instalment, unpaid-leave recovery and every
+// statutory contribution (EOBI, both halves of FICA, NI, EPF, ESI) were all
+// FILED AS INCOME TAX WITHHELD. The payslip text was right; every aggregate by
+// deduction type — and the year-end tax forms in taxFormService.js, which bucket
+// withholding by TYPE — were wrong. EOBI and FICA are separate statutory
+// obligations and deliberately do not share a type.
+//
+// The map is the whole registry: a line whose code is not in here cannot be
+// persisted, and that is on purpose (see resolveDeductionTypeId below).
+const DEDUCTION_TYPE_NAMES = {
+    ATTENDANCE_DEDUCTION: 'Attendance Deduction',
+    BENEFIT_CONTRIBUTION: 'Benefit Contribution',
+    LOAN_REPAYMENT: 'Loan Repayment',
+    LWP_RECOVERY: 'Unpaid Leave (LWP) Recovery',
+    EOBI_EMPLOYEE: 'EOBI (Employee)',
+    FICA_SOCIAL_SECURITY: 'Social Security (FICA)',
+    FICA_MEDICARE: 'Medicare (FICA)',
+    NATIONAL_INSURANCE: 'National Insurance (NI)',
+    EPF: 'EPF (Employee Provident Fund)',
+    ESI: 'ESI (Employee State Insurance)',
+    INCOME_TAX: 'Income Tax',
+};
 
 // HR-PAYROLL-EOBI-01 — defaults used only when a tenant has ENABLED EOBI and
 // has not overridden them. PKR 17,000 in minor units (paisa) is the ceiling the
@@ -248,6 +271,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
             if (eobiEmployee > 0n) {
                 lines.push({
                     deductionTypeId: null,
+                    code: 'EOBI_EMPLOYEE',
                     amount: money.minorToDecimal(eobiEmployee, currency),
                     description: 'EOBI (Employee)',
                 });
@@ -263,6 +287,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
         const ss = (taxable * 620n) / 10000n; // 6.2%
         lines.push({
             deductionTypeId: null,
+            code: 'FICA_SOCIAL_SECURITY',
             amount: money.minorToDecimal(ss, currency),
             description: 'Social Security (FICA)',
         });
@@ -270,6 +295,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
         const medicare = (grossMinor * 145n) / 10000n; // 1.45%
         lines.push({
             deductionTypeId: null,
+            code: 'FICA_MEDICARE',
             amount: money.minorToDecimal(medicare, currency),
             description: 'Medicare (FICA)',
         });
@@ -285,6 +311,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
         if (ni > 0n) {
             lines.push({
                 deductionTypeId: null,
+                code: 'NATIONAL_INSURANCE',
                 amount: money.minorToDecimal(ni, currency),
                 description: 'National Insurance (NI)',
             });
@@ -294,6 +321,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
         const epf = (grossMinor * 12n) / 100n;
         lines.push({
             deductionTypeId: null,
+            code: 'EPF',
             amount: money.minorToDecimal(epf, currency),
             description: 'EPF (Employee Provident Fund)',
         });
@@ -303,6 +331,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
             const esi = (grossMinor * 175n) / 10000n; // 1.75%
             lines.push({
                 deductionTypeId: null,
+                code: 'ESI',
                 amount: money.minorToDecimal(esi, currency),
                 description: 'ESI (Employee State Insurance)',
             });
@@ -428,6 +457,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             if (b.employeeContributionMinor > 0) {
                 deductions.push({
                     deductionTypeId: null,
+                    code: 'BENEFIT_CONTRIBUTION',
                     amount: money.minorToDecimal(BigInt(b.employeeContributionMinor), currency),
                     description: `Benefit: ${b.planName || 'Plan'}`,
                 });
@@ -447,6 +477,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             if (cappedMinor > 0n) {
                 deductions.push({
                     deductionTypeId: null,
+                    code: 'LOAN_REPAYMENT',
                     amount: money.minorToDecimal(cappedMinor, currency),
                     description: loan.name || 'Loan Repayment',
                     loanId: loan.loanId,
@@ -477,6 +508,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             if (lwpMinor > 0n) {
                 deductions.push({
                     deductionTypeId: null,
+                    code: 'LWP_RECOVERY',
                     amount: money.minorToDecimal(lwpMinor, currency),
                     description: `LWP Recovery (${bridges.lwpDays} days)`,
                 });
@@ -495,7 +527,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             const label = line.counterGroup || line.ruleKey;
             deductions.push({
                 deductionTypeId: null,
-                code: ATTENDANCE_DEDUCTION_CODE,
+                code: 'ATTENDANCE_DEDUCTION',
                 amount: money.minorToDecimal(amountMinor, currency),
                 description:
                     `Attendance: ${label} (${line.occurrences} occurrence${line.occurrences === 1 ? '' : 's'}` +
@@ -521,6 +553,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
             deductionTypeId: null,
+            code: 'INCOME_TAX',
             amount: money.minorToDecimal(taxMinor, currency),
             description: 'Income Tax',
         });
@@ -744,9 +777,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             where: withTenant(tenantId, { enabled: true }),
             orderBy: { ruleKey: 'asc' }
         });
-        const attendanceDeductionTypeId = attendanceDeductionRules.length
-            ? await getOrCreateDeductionType(ATTENDANCE_DEDUCTION_CODE, 'Attendance Deduction', tenantId)
-            : null;
 
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
@@ -768,14 +798,37 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         const ruleVersion = computeRuleVersion(effectiveRates, ratesEffectiveAt);
 
         // Resolve the persisted type ids the pure engine leaves null (base
-        // salary earning, income tax deduction) once per run.
+        // salary earning) once per run.
         const baseSalaryEarningTypeId = await getBaseSalaryEarningTypeId(tenantId);
-        const incomeTaxDeductionTypeId = await getOrCreateDeductionType('INCOME_TAX', 'Income Tax', tenantId);
+
+        // HR-PAYROLL-DEDUCTION-TYPE-01 — code → PayrollDeductionType, resolved
+        // ONCE per run and LAZILY: a tenant that never emits an EOBI line never
+        // gets an EOBI type row. Cache the PROMISE, not the id, so the parallel
+        // per-employee map below cannot race two creates for the same code.
+        const deductionTypeIds = new Map();
+        const resolveDeductionTypeId = (code) => {
+            const name = DEDUCTION_TYPE_NAMES[code];
+            // No silent fallback. A line reaching persistence with no resolvable
+            // type is a bug in whichever bridge emitted it — recording it as
+            // income tax is how this finding happened in the first place.
+            if (!name) throw new Error(`HR-PAYROLL-DEDUCTION-TYPE-01: deduction line has no resolvable deduction type (code=${code ?? 'none'})`);
+            if (!deductionTypeIds.has(code)) {
+                deductionTypeIds.set(code, getOrCreateDeductionType(code, name, tenantId));
+            }
+            return deductionTypeIds.get(code);
+        };
 
         const payslipPromises = employees.map(async (employee) => {
             const employmentTerm = employee.employmentTerms[0]
                 ? { ...employee.employmentTerms[0], baseSalaryEarningTypeId }
                 : null;
+            // HR-PAYROLL-DEDUCTION-TYPE-01 (found while testing the loan bridge):
+            // the loan-repayment recording below referenced an UNDECLARED
+            // `currency`, so processing ANY employee with an active loan threw
+            // `ReferenceError: currency is not defined` and failed the whole run.
+            // Same resolution order buildPayslipFromInputs uses, so the amount is
+            // converted back with the scale it was emitted in.
+            const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
 
             // ── BRIDGE DATA: Fetch overtime, leave, benefits, loans for this employee ──
             const [overtimeRequests, unpaidLeaves, employeeBenefits, activeLoans] = await Promise.all([
@@ -863,7 +916,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 ruleConfig,
             });
 
-            // Map the engine's null-typed tax line to the resolved deduction type.
+            // Map each engine line the tenant did not type itself (everything but
+            // an assignment-driven deduction) to the type its CODE resolves to.
             // FORCE-RLS: payroll_earnings / payroll_deductions are tenant-scoped;
             // each nested-created line must carry tenantId (== app.tenant_id) or
             // the WITH CHECK policy rejects the insert.
@@ -873,14 +927,14 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 amount: e.amount,
                 description: e.description
             }));
-            const deductions = built.deductions.map((d) => ({
+            // Promise.all preserves array order — the deduction ORDER is part of
+            // the determinism contract and must survive the async resolve.
+            const deductions = await Promise.all(built.deductions.map(async (d) => ({
                 tenantId: tenantId ?? null,
-                deductionTypeId: d.deductionTypeId
-                    ?? (d.code === ATTENDANCE_DEDUCTION_CODE ? attendanceDeductionTypeId : null)
-                    ?? incomeTaxDeductionTypeId,
+                deductionTypeId: d.deductionTypeId ?? await resolveDeductionTypeId(d.code),
                 amount: d.amount,
                 description: d.description
-            }));
+            })));
 
             // IDEMPOTENCY: a payslip already exists for [payrollRunId, employeeId]
             // (unique constraint) on a re-process. Replace its lines + figures in

@@ -26,16 +26,19 @@
     },
     {
       "deductionTypeId": null,
+      "code": "FICA_SOCIAL_SECURITY",
       "amount": "446.2400",
       "description": "Social Security (FICA)"
     },
     {
       "deductionTypeId": null,
+      "code": "FICA_MEDICARE",
       "amount": "104.3600",
       "description": "Medicare (FICA)"
     },
     {
       "deductionTypeId": null,
+      "code": "INCOME_TAX",
       "amount": "939.5100",
       "description": "Income Tax"
     }
