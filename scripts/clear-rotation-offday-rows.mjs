@@ -25,8 +25,12 @@ import { resolveWorkingDays } from "../src/services/workingDay.service.js";
 const WRITE = process.argv.includes("--write");
 const EMG = "61b7eb53-ab6e-413f-9d9a-1ecf4e071e73";
 const CODES = ["EMP161", "EMP162", "EMP164", "EMP165", "EMP167", "EMP172"];
-const FROM = "2026-08-01";
-const TO = "2026-08-31";
+// Date range is a parameter: the same artifacts appear in every month the
+// rotation runs, so September needs the same pass August got.
+//   node scripts/clear-rotation-offday-rows.mjs 2026-09-01 2026-09-30 --write
+const dateArgs = process.argv.slice(2).filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
+const FROM = dateArgs[0] ?? "2026-08-01";
+const TO = dateArgs[1] ?? "2026-08-31";
 const key = (d) => new Date(d).toISOString().slice(0, 10);
 
 await mcpCtx.run({ user: { tenantId: EMG } }, async () => {
