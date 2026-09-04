@@ -15,6 +15,7 @@
 import prisma from "../lib/prisma.js";
 import { Prisma } from "@prisma/client";
 import { mcpCtx } from "../mcp/context.js";
+import { buildEnrolmentResolver } from "./deviceEnrolment.service.js";
 import { syncAttendanceFromPunches } from "./attendance.device.service.js";
 import { applyEvaluatedShiftsForDays } from "./attendanceWriter.service.js";
 import logger from "../lib/logger.js";
@@ -118,9 +119,16 @@ export async function ingestDevicePunches({ sn, rows, tenantId, rollup = true })
     // tenant of the employee it resolved to; `tenantId` is only the fallback for
     // enrolment ids that match nobody, so unresolved rows stay attributable.
     const empMap = await buildEmployeeMap(parsed.map((p) => p.deviceUserId));
+    // HR-ATT-DEVICE-ENROLMENT-01 — a dated enrolment OUTRANKS biometric_id.
+    // biometric_id holds ONE id and reflects only who carries it now, so alone
+    // it loses a re-enrolled employee's punches and, once an id is reused, hands
+    // the previous holder's punches to the wrong person. Resolved per punch, not
+    // per batch: the device re-pushes days of backlog after a reconnect, and a
+    // re-enrolment inside that window splits one id across two people.
+    const enrolmentAt = await buildEnrolmentResolver(parsed.map((p) => p.deviceUserId), sn);
 
     const createData = parsed.map((p) => {
-        const hit = empMap.get(p.deviceUserId) ?? null;
+        const hit = enrolmentAt(p.deviceUserId, p.punchedAt) ?? empMap.get(p.deviceUserId) ?? null;
         if (hit) summary.resolved += 1;
         else summary.unresolved += 1;
         return {

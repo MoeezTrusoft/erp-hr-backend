@@ -79,7 +79,8 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // 120 + OvertimeRequestApproval (HR-OT-APPROVAL-01), which follows the same
     // nullable-tenant convention as every other tenant-owned model here.
     // 121 + EmploymentPeriod (HR-PAYROLL-EMPLOYMENT-PERIOD-01), likewise.
-    expect(nullableModels).toHaveLength(122);
+    // 122 + EmployeeDeviceEnrolment (HR-ATT-DEVICE-ENROLMENT-01), likewise.
+    expect(nullableModels).toHaveLength(123);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

@@ -88,6 +88,13 @@ jest.unstable_mockModule('../../src/services/attendance.device.service.js', () =
 jest.unstable_mockModule('../../src/services/attendanceWriter.service.js', () => ({
     applyEvaluatedShiftsForDays: syncMock,
 }));
+// HR-ATT-DEVICE-ENROLMENT-01 — the intake now consults dated enrolments before
+// falling back to biometric_id. Neither of these scenarios has one, so the
+// resolver returns undefined and the biometric_id path under test is unchanged.
+jest.unstable_mockModule('../../src/services/deviceEnrolment.service.js', () => ({
+    buildEnrolmentResolver: jest.fn(async () => () => undefined),
+    resolveEnrolmentAt: jest.fn(async () => new Map()),
+}));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));

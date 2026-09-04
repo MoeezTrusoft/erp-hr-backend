@@ -62,6 +62,10 @@ const RLS_MODELS = new Set([
     // is scoped like EmploymentTerms beside it. The matching policy ships in the
     // same migration; listing a model here without one sets a GUC nothing reads.
     'EmploymentPeriod',
+    // HR-ATT-DEVICE-ENROLMENT-01 — tenant-owned. Resolution reads it under
+    // SYSTEM context (one device serves the fleet), which sets the bypass GUC;
+    // every other caller is tenant-scoped. Policy ships in the same migration.
+    'EmployeeDeviceEnrolment',
     'EmergencyContacts',
     // Payroll + Timesheet transactional tables (audit: ORM-only, no cross-tenant
     // SYSTEM sweep — the only SYSTEM contexts, reminder-queue + outbox-dispatcher,

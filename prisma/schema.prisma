@@ -369,6 +369,7 @@ model Employee {
   payrollPayslips    PayrollPayslip[]
   employmentTerms    EmploymentTerms[]
   employmentPeriods  EmploymentPeriod[]
+  deviceEnrolments   EmployeeDeviceEnrolment[]
   payrollAssignments PayrollAssignment[]
   bankDetails        BankDetail[]
   PayrollAuditLog    PayrollAuditLog[]
@@ -1986,6 +1987,40 @@ model PayrollDeductionType {
   @@unique([tenantId, code])
   @@index([tenantId])
   @@map("payroll_deduction_types")
+}
+
+/// HR-ATT-DEVICE-ENROLMENT-01 — which device id belonged to whom, and when.
+///
+/// `Employee.biometric_id` is a single string, so a person can hold only one
+/// enrolment. Re-enrolment is routine — a finger stops reading, a card is
+/// reissued, a device is replaced — and every time it happens the punches under
+/// the new id resolve to nobody and never reach Attendance.
+///
+/// A multi-value id list on Employee would NOT be safe. Device ids get REUSED:
+/// once `2` is issued to somebody else, a list would claim every historical
+/// punch under `2` for the original holder, moving attendance silently between
+/// people. So an enrolment is true for a PERIOD, and a punch resolves against
+/// the id that was current when it happened.
+///
+/// `Employee.biometric_id` stays as a convenience "current id" for the profile
+/// screen and the bulk import; removing it is a separate change.
+model EmployeeDeviceEnrolment {
+  id            Int       @id @default(autoincrement())
+  tenantId      String?   @db.Uuid
+  employeeId    Int
+  deviceUserId  String    @db.VarChar(64) // what the device sends
+  sn            String?   @db.VarChar(64) // device serial; null = any device
+  effectiveFrom DateTime
+  effectiveTo   DateTime? // null = current
+  note          String?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([tenantId, deviceUserId, effectiveFrom])
+  @@index([tenantId, employeeId, effectiveFrom])
+  @@map("employee_device_enrolments")
 }
 
 /// HR-PAYROLL-EMPLOYMENT-PERIOD-01 — when someone was actually employed.
