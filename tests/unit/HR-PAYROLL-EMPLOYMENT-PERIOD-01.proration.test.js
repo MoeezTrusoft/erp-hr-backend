@@ -120,6 +120,18 @@ describe('HR-PAYROLL-EMPLOYMENT-PERIOD-01 proration from employment periods', ()
         expect(pct(f)).toBe(Number(((24 / 30) * 100).toFixed(2)));
     });
 
+    it('pays zero for a spell that ended before the run began', () => {
+        // The August dry-run caught this: affan/afzal/shizza left on 2026-07-31
+        // and were each paid a FULL August. Their period was fetched with
+        // `endDate >= periodStart`, which filters a fully-past spell OUT, and an
+        // empty list means "no history on file" — which pays in full. The fetch
+        // must keep past spells so this function can score them as zero.
+        const f = computeProrationFactor(...AUG, [
+            { startDate: '2024-01-01', endDate: '2026-07-31' },
+        ]);
+        expect(f).toBe(0n);
+    });
+
     it('still honours a legacy hire_date passed as a bare date', () => {
         // The old two-date call shape stays supported so callers that have not
         // been migrated keep their mid-month joiner proration.

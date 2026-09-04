@@ -428,7 +428,12 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
     if (employmentTerm) {
         let baseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
-        const isProrated = prorationFactor > 0n && prorationFactor < 1_000_000n;
+        // HR-PAYROLL-EMPLOYMENT-PERIOD-02 — `> 0n` used to be part of this
+        // guard, so a factor of exactly ZERO skipped proration and paid the
+        // base salary IN FULL. Zero is the case that matters most: somebody who
+        // was not employed for any part of this run. Employment terms outlive
+        // employment, so "has terms" must never imply "gets paid".
+        const isProrated = prorationFactor < 1_000_000n;
         if (isProrated) {
             baseMinor = applyProration(baseMinor, prorationFactor);
         }
@@ -825,10 +830,13 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 // Every spell touching the run. computeProrationFactor clips and
                 // merges them, so a re-hire is simply two rows.
                 employmentPeriods: {
-                    where: {
-                        startDate: { lte: payrollRun.periodEnd },
-                        OR: [{ endDate: null }, { endDate: { gte: payrollRun.periodStart } }],
-                    },
+                    // Every spell that STARTED by the end of this run, including
+                    // ones that already closed. Filtering to overlapping spells
+                    // only leaves a leaver with an EMPTY list, and an empty list
+                    // means "no history on file", which pays a full month — the
+                    // exact bug employment periods exist to prevent. Let
+                    // computeProrationFactor score a past spell as zero.
+                    where: { startDate: { lte: payrollRun.periodEnd } },
                     select: { startDate: true, endDate: true },
                     orderBy: { startDate: 'asc' },
                 },

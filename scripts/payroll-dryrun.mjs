@@ -27,7 +27,7 @@ const n = (v) => Number(v || 0);
 const fmt = (v) => n(v).toLocaleString("en-PK", { maximumFractionDigits: 0 }).padStart(11);
 const name = (e) => e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(" ") || e.employee_code;
 
-const grand = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, net: 0, penalised: 0 };
+const grand = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
 
 async function main() {
   console.log(`AUGUST 2026 PAYROLL — DRY RUN (nothing written)\n`);
@@ -42,15 +42,47 @@ async function main() {
       const taxRateRows = await prisma.taxRate.findMany({ where: { tenantId, countryCode: "PK" } });
 
       const terms = await prisma.employmentTerms.findMany({ where: { tenantId } });
-      const tot = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, net: 0, penalised: 0 };
+      const tot = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
 
       const lines = [];
       for (const term of terms) {
         const emp = await prisma.employee.findUnique({
           where: { id: term.employeeId },
-          select: { id: true, employee_code: true, employee_name: true, first_name: true, last_name: true },
+          select: {
+            id: true, employee_code: true, employee_name: true,
+            first_name: true, last_name: true, hire_date: true, status: true,
+            // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — the spells overlapping this run.
+            // Without them a leaver is paid a full month and a re-hire is paid
+            // for the weeks before they came back.
+            employmentPeriods: {
+              // Past spells included on purpose — see the note in
+              // payrollService: filtering to overlapping spells only leaves a
+              // leaver with an empty list, which reads as "no history" and pays
+              // a full month.
+              where: { startDate: { lte: periodEnd } },
+              select: { startDate: true, endDate: true },
+              orderBy: { startDate: "asc" },
+            },
+          },
         });
         if (!emp) continue;
+
+        // HR-PAYROLL-LOAN-LOAD-01 — an active loan takes its monthly installment,
+        // never more than what is still outstanding.
+        const loans = await prisma.loan.findMany({
+          where: { employeeId: emp.id, status: "ACTIVE", outstandingMinor: { gt: 0 } },
+          select: {
+            id: true, kind: true, outstandingMinor: true,
+            monthlyInstallmentMinor: true, disbursementDate: true,
+          },
+        });
+        const loanLines = loans
+          .filter((l) => l.disbursementDate <= periodEnd)
+          .map((l) => ({
+            loanId: l.id,
+            amountMinor: Math.min(l.monthlyInstallmentMinor, l.outstandingMinor),
+            name: l.kind === "ADVANCE" ? "Salary Advance Recovery" : "Loan Repayment",
+          }));
 
         const assignments = await prisma.payrollAssignment.findMany({
           where: {
@@ -85,7 +117,7 @@ async function main() {
           payrollRun: { periodStart, periodEnd, countryCode: "PK", currencyCode: "PKR" },
           taxRateRows,
           asOf: periodEnd,
-          bridges: { attendanceDeductionLines },
+          bridges: { attendanceDeductionLines, loanLines },
           ruleConfig,
         });
 
@@ -94,6 +126,8 @@ async function main() {
         const att = find((d) => String(d.description).startsWith("Attendance:"));
         const lwp = find((d) => String(d.description).startsWith("LWP"));
         const days = attendanceDeductionLines.reduce((s, l) => s + l.days, 0);
+        const loanAmt = find((d) => d.code === "LOAN_REPAYMENT");
+        const pf = slip.prorationFactor ?? 1;
 
         tot.people++;
         tot.gross += n(slip.grossAmount);
@@ -101,23 +135,26 @@ async function main() {
         tot.attendance += att;
         tot.lwp += lwp;
         tot.net += n(slip.netAmount);
+        tot.loan += loanAmt;
         if (att > 0) tot.penalised++;
+        if (pf < 1) tot.prorated++;
 
         lines.push(
           `  ${emp.employee_code.padEnd(7)} ${name(emp).slice(0, 24).padEnd(24)}` +
-            `${fmt(slip.grossAmount)}${fmt(tax)}${fmt(att)}${days ? ` (${days}d)` : "     "}${fmt(slip.netAmount)}`,
+            `${fmt(slip.grossAmount)}${fmt(tax)}${fmt(att)}${days ? ` (${days}d)` : "     "}` +
+            `${fmt(loanAmt)}${pf < 1 ? ` ${(pf * 100).toFixed(0)}%` : "    "}${fmt(slip.netAmount)}`,
         );
       }
 
       console.log(`=== ${tenantName} ${"=".repeat(58 - tenantName.length)}`);
       console.log(
-        `  ${"code".padEnd(7)} ${"employee".padEnd(24)}${"gross".padStart(11)}${"tax".padStart(11)}${"attend".padStart(11)}     ${"net".padStart(11)}`,
+        `  ${"code".padEnd(7)} ${"employee".padEnd(24)}${"gross".padStart(11)}${"tax".padStart(11)}${"attend".padStart(11)}     ${"loan".padStart(11)}     ${"net".padStart(11)}`,
       );
       if (VERBOSE) lines.forEach((l) => console.log(l));
       console.log(
-        `  ${String(tot.people).padStart(3)} people${" ".repeat(22)}${fmt(tot.gross)}${fmt(tot.tax)}${fmt(tot.attendance)}     ${fmt(tot.net)}`,
+        `  ${String(tot.people).padStart(3)} people${" ".repeat(22)}${fmt(tot.gross)}${fmt(tot.tax)}${fmt(tot.attendance)}     ${fmt(tot.loan)}     ${fmt(tot.net)}`,
       );
-      console.log(`  ${tot.penalised} with an attendance deduction\n`);
+      console.log(`  ${tot.penalised} with an attendance deduction, ${tot.prorated} prorated (part-month)\n`);
 
       for (const k of Object.keys(grand)) grand[k] += tot[k];
     });
@@ -127,6 +164,7 @@ async function main() {
   console.log(`GRAND TOTAL — ${grand.people} employees`);
   console.log(`  gross                 ${fmt(grand.gross)}`);
   console.log(`  income tax            ${fmt(grand.tax)}`);
+  console.log(`  loans + advances      ${fmt(grand.loan)}`);
   console.log(`  attendance deductions ${fmt(grand.attendance)}   (${grand.penalised} employees affected)`);
   console.log(`  unpaid leave          ${fmt(grand.lwp)}`);
   console.log(`  NET PAYABLE           ${fmt(grand.net)}`);
