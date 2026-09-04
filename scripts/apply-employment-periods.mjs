@@ -148,13 +148,16 @@ for (const item of PLAN) {
       }
     }
 
-    if (item.deactivate && emp.status === "active") {
+    // Case-insensitive: production spells this "Active" with a capital A on 73
+    // of 75 rows, so an exact match silently deactivated nobody.
+    const isActive = String(emp.status ?? "").toLowerCase() === "active";
+    if (item.deactivate && isActive) {
       await prisma.employee.updateMany({
         where: { id: emp.id },
         data: { status: "inactive", employement_status: "Inactive" },
       });
     }
-    if (item.reopenOn && emp.status !== "active") {
+    if (item.reopenOn && !isActive) {
       await prisma.employee.updateMany({
         where: { id: emp.id },
         data: { status: "active", employement_status: "Active" },

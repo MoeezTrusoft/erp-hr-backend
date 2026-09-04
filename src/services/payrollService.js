@@ -803,7 +803,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             where: {
                 tenant_id: tenantId ?? null,
                 OR: [
-                    { status: 'active' },
+                    // Case-insensitive on purpose. 73 of 75 production rows spell
+                    // this "Active" and Postgres equality is case-sensitive, so
+                    // the plain literal matched exactly ONE employee — payroll
+                    // selected almost nobody and reported no error.
+                    { status: { equals: 'active', mode: 'insensitive' } },
                     {
                         employmentPeriods: {
                             some: {
