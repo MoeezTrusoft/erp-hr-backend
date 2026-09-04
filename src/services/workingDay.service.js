@@ -97,6 +97,16 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
       : [],
   );
 
+  // HR-ATT-ROTATING-02 — a rotating roster rests on the ROTATION, not on a
+  // weekday, so `offDays` is legitimately empty and every day below reads as
+  // working. That is right for the shift lookup and wrong for absence marking,
+  // which would invent an unpaid day out of every rest day. Flag it here rather
+  // than re-deriving the pattern in each caller.
+  const rotating = Boolean(
+    Array.isArray(schedule?.schedule_pattern?.rotatingShifts) &&
+      schedule.schedule_pattern.rotatingShifts.length,
+  );
+
   const holidayByDay = new Map();
   for (const h of holidays) {
     // A half-day holiday is still a working day; only a full day removes it.
@@ -127,7 +137,7 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
       continue;
     }
 
-    out.set(key, { date: day, working: true, reason: null, detail: null });
+    out.set(key, { date: day, working: true, reason: null, detail: null, rotating });
   }
 
   return out;

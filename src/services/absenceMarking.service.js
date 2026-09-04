@@ -49,6 +49,7 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
     employeesConsidered: employees.length,
     skippedNotEnrolled: await prisma.employee.count({ where: { biometric_id: null } }),
     marked: 0, alreadyPresent: 0, notWorking: 0, manuallyCorrected: 0,
+    skippedRotating: 0,
     details: [],
   };
 
@@ -67,7 +68,16 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       const key = dayKey(day);
 
       // Guard 2: only days the employee was scheduled to work.
-      if (!working.get(key)?.working) { summary.notWorking += 1; continue; }
+      const info = working.get(key);
+      if (!info?.working) { summary.notWorking += 1; continue; }
+
+      // Guard 4 (HR-ATT-ROTATING-02): a rotating roster rests on the rotation,
+      // not on a weekday, so its `offDays` is empty and guard 2 waves every
+      // calendar day through. The rotation has no anchor date on file, so a day
+      // with no punch cannot be told apart from a rest day — and of the two
+      // readings only "absent" takes money off somebody. Their genuine
+      // absences still arrive through the leave and anomaly paths.
+      if (info.rotating) { summary.skippedRotating += 1; continue; }
 
       // Guard 3: never overwrite an existing or hand-corrected day.
       const row = byDay.get(key);
