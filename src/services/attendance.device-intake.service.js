@@ -256,6 +256,11 @@ export async function resolveOrphanPunches({ dryRun = true, deviceUserId } = {})
     if (!orphans.length) return summary;
 
     const empMap = await buildEmployeeMap(orphans.map((p) => p.deviceUserId));
+    // HR-ATT-DEVICE-ENROLMENT-01 — the same point-in-time rule as live intake.
+    // These rows are precisely the ones biometric_id could not resolve, so the
+    // dated enrolment is what rescues them: a July punch under a retired id
+    // still belongs to whoever held it in July.
+    const enrolmentAt = await buildEnrolmentResolver(orphans.map((p) => p.deviceUserId));
 
     // Affected days per tenant, so the evaluator re-runs exactly where a punch
     // moved. A Set keyed by ISO day keeps a busy employee from re-evaluating the
@@ -264,7 +269,7 @@ export async function resolveOrphanPunches({ dryRun = true, deviceUserId } = {})
     const unresolved = new Set();
 
     for (const p of orphans) {
-        const hit = empMap.get(p.deviceUserId);
+        const hit = enrolmentAt(p.deviceUserId, p.punchedAt) ?? empMap.get(p.deviceUserId);
         if (!hit) {
             unresolved.add(p.deviceUserId);
             continue;

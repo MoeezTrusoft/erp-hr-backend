@@ -60,6 +60,13 @@ jest.unstable_mockModule('../../src/services/attendanceWriter.service.js', () =>
 jest.unstable_mockModule('../../src/services/attendance.device.service.js', () => ({
     syncAttendanceFromPunches: jest.fn(async () => ({})),
 }));
+// HR-ATT-DEVICE-ENROLMENT-01 — re-resolve now consults dated enrolments first.
+// This scenario has none, so the resolver returns undefined and the
+// biometric_id fallback under test behaves exactly as before.
+jest.unstable_mockModule('../../src/services/deviceEnrolment.service.js', () => ({
+    buildEnrolmentResolver: jest.fn(async () => () => undefined),
+    resolveEnrolmentAt: jest.fn(async () => new Map()),
+}));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
