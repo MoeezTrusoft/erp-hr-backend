@@ -101,38 +101,61 @@ export function sessioniseByRoster(punches, pattern, { windowHours = 5 } = {}) {
     Boolean(Array.isArray(pattern?.rotatingShifts) && pattern.rotatingShifts.length);
   const groups = new Map();
 
+  // HR-ATT-SESSION-01 — a shift that is OPEN claims the punch that closes it.
+  //
+  // Scoring each punch independently against the nearest edge cannot work here.
+  // A 10:00 scan is exactly on a night shift's END and exactly on the next day
+  // shift's START, so distance alone ties every time, and whichever way the tie
+  // is broken it is wrong half the time: trusting the device's status byte
+  // stranded Ghulam Rasool's mis-stamped 11:27 close as a phantom next-day
+  // arrival, and always preferring the earlier window swallowed genuine 10:04
+  // day-shift arrivals into the previous night.
+  //
+  // The domain breaks the tie: you cannot arrive while you are still on shift.
+  // So punches are walked in order, and while a shift is open the next punch
+  // closes it. Only a punch that no open shift can account for opens a new one.
+  let open = null; // { key, start, end } of the shift currently in progress
+  const tol = windowHours * 60 * MIN_MS;
+
   for (const p of sorted) {
     let key = dayKey(p.punchedAt);
+    const t = p.punchedAt.getTime();
 
     if (hasRoster) {
-      // The shift may have started yesterday, today or tomorrow relative to the
-      // punch — a 22:00 start read at 01:00 belongs to yesterday's shift.
-      let best = null;
-      for (const offset of [-1, 0, 1]) {
-        const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
-        // A rotating roster offers more than one window per day; the punch has
-        // to be tried against each, or a night arrival gets pulled onto the
-        // wrong day by the day-shift window.
-        for (const { start, end } of shiftCandidates(pattern, startOfDay(anchor))) {
-          if (!start || !end) continue;
-          const from = start.getTime() - windowHours * 60 * MIN_MS;
-          const to = end.getTime() + windowHours * 60 * MIN_MS;
-          const t = p.punchedAt.getTime();
-          if (t < from || t > to) continue;
-          // Measure to the edge this punch is meant to be near. A 10:00
-          // departure sits exactly on a night shift's END and exactly on the
-          // next day shift's START — scoring only against `start` hands it to
-          // the wrong day and splits the night shift in two. The device's
-          // direction is only a hint for the verdict, but it is good enough to
-          // choose a window.
-          const isOut = p.status === 1 || p.status === 5;
-          const distance = Math.abs(t - (isOut ? end.getTime() : start.getTime()));
-          if (!best || distance < best.distance) {
-            best = { distance, key: dayKey(startOfDay(anchor)) };
+      // 1. Does this punch belong to the shift already in progress?
+      if (open && t >= open.start - tol && t <= open.end + tol) {
+        key = open.key;
+        // Past the rostered end, the shift is finished; a later punch is a new
+        // arrival rather than a third scan of the same shift.
+        if (t >= open.end) open = null;
+      } else {
+        // 2. Otherwise it opens a shift. Choose the window whose START it is
+        //    nearest — an arrival is defined by its start, not by either edge.
+        let best = null;
+        for (const offset of [-1, 0, 1]) {
+          const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
+          // A rotating roster offers more than one window per day; the punch has
+          // to be tried against each, or a night arrival gets pulled onto the
+          // wrong day by the day-shift window.
+          for (const { start, end } of shiftCandidates(pattern, startOfDay(anchor))) {
+            if (!start || !end) continue;
+            if (t < start.getTime() - tol || t > end.getTime() + tol) continue;
+            const distance = Math.abs(t - start.getTime());
+            if (!best || distance < best.distance) {
+              best = {
+                distance,
+                key: dayKey(startOfDay(anchor)),
+                start: start.getTime(),
+                end: end.getTime(),
+              };
+            }
           }
         }
+        if (best) {
+          key = best.key;
+          open = { key: best.key, start: best.start, end: best.end };
+        }
       }
-      if (best) key = best.key;
     }
 
     if (!groups.has(key)) groups.set(key, []);
