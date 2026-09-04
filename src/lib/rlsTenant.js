@@ -58,6 +58,10 @@ const RLS_MODELS = new Set([
     'PerformanceReview',
     'BankDetail',
     'EmploymentTerms',
+    // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — tenant-owned and read by payroll, so it
+    // is scoped like EmploymentTerms beside it. The matching policy ships in the
+    // same migration; listing a model here without one sets a GUC nothing reads.
+    'EmploymentPeriod',
     'EmergencyContacts',
     // Payroll + Timesheet transactional tables (audit: ORM-only, no cross-tenant
     // SYSTEM sweep — the only SYSTEM contexts, reminder-queue + outbox-dispatcher,

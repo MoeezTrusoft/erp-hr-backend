@@ -40,3 +40,18 @@ WHERE COALESCE(e."hire_date", e."joining_date") IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM "employment_periods" p WHERE p."employeeId" = e."id"
   );
+
+-- ── FORCE ROW LEVEL SECURITY ────────────────────────────────────────────────
+-- Required in the same migration as the model's entry in RLS_MODELS. The prisma
+-- extension only SETS the GUC; the filtering is these policies. A table in
+-- RLS_MODELS with no policy is not scoped and raises no error — it silently
+-- returns every tenant's rows.
+GRANT SELECT, INSERT, UPDATE, DELETE ON "employment_periods" TO hr_app;
+ALTER TABLE "employment_periods" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "employment_periods" FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON "employment_periods";
+CREATE POLICY tenant_isolation ON "employment_periods"
+  USING ("tenantId" = public.hr_current_tenant() OR current_setting('app.tenant_bypass', true) = 'on')
+  WITH CHECK ("tenantId" = public.hr_current_tenant() OR current_setting('app.tenant_bypass', true) = 'on');
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hr_app;
