@@ -490,8 +490,18 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     //    the legacy semantics) — both in minor units, rounded half-up once.
     for (const assignment of assignments) {
         if (assignment.earningType) {
+            // HR-PAYROLL-EMPLOYMENT-PERIOD-02 — a FIXED allowance is prorated
+            // with the base. Without this a leaver kept every allowance in full:
+            // the August dry-run showed affan at 0% and still drawing 13,750,
+            // exactly the 55% allowance share of a 25,000 package. The comment
+            // below already treats allowances as part of the contracted package
+            // when charging a deducted day; paying the month must agree.
+            //
+            // A RATE-based assignment is not touched — it multiplies gross-so-far,
+            // which already carries the prorated base, so applying the factor
+            // again would shrink it twice.
             const amountMinor = assignment.amount != null
-                ? money.decimalToMinor(assignment.amount, currency)
+                ? applyProration(money.decimalToMinor(assignment.amount, currency), prorationFactor)
                 : money.mulRate(grossMinor, assignment.rate || '0');
             earnings.push({
                 earningTypeId: assignment.earningType.id,
