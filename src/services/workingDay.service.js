@@ -102,10 +102,28 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
   // working. That is right for the shift lookup and wrong for absence marking,
   // which would invent an unpaid day out of every rest day. Flag it here rather
   // than re-deriving the pattern in each caller.
-  const rotating = Boolean(
+  const isRotating = Boolean(
     Array.isArray(schedule?.schedule_pattern?.rotatingShifts) &&
       schedule.schedule_pattern.rotatingShifts.length,
   );
+
+  // HR-ATT-ROTATING-03 — when the rotation's PHASE is known the rest day is an
+  // ordinary off-day and nothing needs suppressing. `offDays` cannot hold it:
+  // that is a weekday list and a 3-day cycle walks through the week, so the
+  // phase is stored as {days, offIndex, anchor} and evaluated per day.
+  const cycle = schedule?.schedule_pattern?.cycle;
+  const cycleDays = Number(cycle?.days) > 0 ? Number(cycle.days) : null;
+  const cycleAnchor = cycleDays ? startOfDay(new Date(cycle.anchor)) : null;
+  const cycleOff = cycleDays ? Number(cycle.offIndex) : null;
+  const hasPhase = Boolean(cycleDays && cycleAnchor && !Number.isNaN(cycleOff));
+  // Only an UNKNOWN phase needs the ROTATING-02 fallback.
+  const rotating = isRotating && !hasPhase;
+
+  /** Index of `day` within the rotation, always non-negative. */
+  const cycleIndex = (day) => {
+    const diff = Math.round((startOfDay(day) - cycleAnchor) / DAY_MS);
+    return ((diff % cycleDays) + cycleDays) % cycleDays;
+  };
 
   const holidayByDay = new Map();
   for (const h of holidays) {
@@ -134,6 +152,11 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
 
     if (offDays.has(isoDow(day))) {
       out.set(key, { date: day, working: false, reason: "OFF_DAY", detail: null });
+      continue;
+    }
+
+    if (hasPhase && cycleIndex(day) === cycleOff) {
+      out.set(key, { date: day, working: false, reason: "ROTATION_OFF", detail: null });
       continue;
     }
 

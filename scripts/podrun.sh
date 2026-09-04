@@ -40,8 +40,13 @@ echo "# pod: $POD" >&2
 
 BASE="$(basename "$SCRIPT")"
 # ../src/x -> /app/src/x ; ../prisma/x -> /app/prisma/x
+# Upload and run are two separate execs on purpose. Doing both in one
+# `kubectl exec -i` truncates stdout at exactly 65536 bytes — the script's
+# output and the script upload share one pipe. The upload needs -i; the run
+# must not have it.
 sed -e 's#from "\.\./#from "/app/#g' -e "s#from '\.\./#from '/app/#g" "$SCRIPT" |
   sshpass -p "$ERP_PROD_PW" ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR \
-    -p "$PORT" "$HOST" \
-    "kubectl exec -i -n $NS $POD -- \
-       sh -c 'cat > /tmp/$BASE && cd /app && node /tmp/$BASE $ARGS; rc=\$?; rm -f /tmp/$BASE; exit \$rc'"
+    -p "$PORT" "$HOST" "kubectl exec -i -n $NS $POD -- sh -c 'cat > /tmp/$BASE'"
+
+ssh_prod "kubectl exec -n $NS $POD -- \
+  sh -c 'cd /app && node /tmp/$BASE $ARGS; rc=\$?; rm -f /tmp/$BASE; exit \$rc'"
