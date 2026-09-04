@@ -208,6 +208,101 @@ export async function ingestDevicePunches({ sn, rows, tenantId, rollup = true })
 }
 
 /**
+ * Re-link punches that stored unresolved and can be resolved now.
+ * HR-ATT-ORPHAN-RESOLVE-01.
+ *
+ * Resolution happens once, at write time. A punch whose enrolment id matched
+ * nobody stores with `employeeId: null` and — see the createData map above —
+ * the DEVICE's fallback tenant. When HR enrols the person a day later nothing
+ * revisits those rows, so they stay orphaned and never reach Attendance.
+ *
+ * Both columns have to be corrected. The fallback tenant is Trusoft's for every
+ * orphan, but the employees span the fleet: writing `employeeId` alone leaves an
+ * EMG employee's punch stamped Trusoft, invisible to his own tenant under RLS,
+ * and the roll-up that follows reads zero rows while reporting success.
+ *
+ * Re-linking a punch does not create attendance by itself, so the affected days
+ * are re-evaluated per tenant afterwards.
+ *
+ * @param {object} [args]
+ * @param {boolean} [args.dryRun=true]  report only; write nothing
+ * @param {string}  [args.deviceUserId] restrict to one enrolment id
+ */
+export async function resolveOrphanPunches({ dryRun = true, deviceUserId } = {}) {
+    const orphans = await mcpCtx.run({ system: true }, async () => {
+        return await prisma.attendanceDevicePunch.findMany({
+            where: { employeeId: null, ...(deviceUserId ? { deviceUserId } : {}) },
+            select: { id: true, deviceUserId: true, punchedAt: true, tenantId: true },
+            orderBy: { punchedAt: "asc" },
+        });
+    });
+
+    const summary = {
+        scanned: orphans.length,
+        resolved: 0,
+        movedTenant: 0,
+        stillUnresolved: [],
+        rollup: {},
+        dryRun,
+    };
+    if (!orphans.length) return summary;
+
+    const empMap = await buildEmployeeMap(orphans.map((p) => p.deviceUserId));
+
+    // Affected days per tenant, so the evaluator re-runs exactly where a punch
+    // moved. A Set keyed by ISO day keeps a busy employee from re-evaluating the
+    // same day once per punch.
+    const daysByTenant = new Map();
+    const unresolved = new Set();
+
+    for (const p of orphans) {
+        const hit = empMap.get(p.deviceUserId);
+        if (!hit) {
+            unresolved.add(p.deviceUserId);
+            continue;
+        }
+        summary.resolved += 1;
+        if (hit.tenantId !== p.tenantId) summary.movedTenant += 1;
+
+        if (!daysByTenant.has(hit.tenantId)) daysByTenant.set(hit.tenantId, new Set());
+        daysByTenant.get(hit.tenantId).add(p.punchedAt.toISOString().slice(0, 10));
+
+        if (dryRun) continue;
+        await mcpCtx.run({ system: true }, async () => {
+            return await prisma.attendanceDevicePunch.update({
+                where: { id: p.id },
+                data: { employeeId: hit.employeeId, tenantId: hit.tenantId },
+            });
+        });
+    }
+
+    summary.stillUnresolved = [...unresolved];
+    if (dryRun) return summary;
+
+    for (const [tid, days] of daysByTenant) {
+        try {
+            summary.rollup[tid] = await mcpCtx.run({ user: { tenantId: tid } }, async () => {
+                return await applyEvaluatedShiftsForDays({
+                    tenantId: tid,
+                    days: [...days].map((d) => new Date(`${d}T00:00:00.000Z`)),
+                });
+            });
+        } catch (err) {
+            // One tenant failing must not skip the others; the punches are
+            // already re-linked and durable either way.
+            logger.error(
+                { err: err?.message, tenantId: tid },
+                "orphan re-resolve: roll-up failed (punches re-linked)",
+            );
+            summary.rollup[tid] = { error: err?.message || "rollup failed" };
+        }
+    }
+
+    logger.info(summary, "orphan re-resolve: complete");
+    return summary;
+}
+
+/**
  * Fetch raw device punches, filterable by employee or device id and a date
  * window. Runs under the caller's tenant so RLS scopes it. Paginated.
  */
