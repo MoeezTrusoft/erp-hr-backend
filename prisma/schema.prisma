@@ -368,6 +368,7 @@ model Employee {
   // Payroll relations
   payrollPayslips    PayrollPayslip[]
   employmentTerms    EmploymentTerms[]
+  employmentPeriods  EmploymentPeriod[]
   payrollAssignments PayrollAssignment[]
   bankDetails        BankDetail[]
   PayrollAuditLog    PayrollAuditLog[]
@@ -1985,6 +1986,40 @@ model PayrollDeductionType {
   @@unique([tenantId, code])
   @@index([tenantId])
   @@map("payroll_deduction_types")
+}
+
+/// HR-PAYROLL-EMPLOYMENT-PERIOD-01 — when someone was actually employed.
+///
+/// Employee carries `hire_date` and no leaving date of any kind, so a leaver
+/// could not be prorated (payroll read `employee.term_date`, a column that does
+/// not exist) and a re-hire could not be represented at all: one hire_date
+/// cannot hold "joined, left, came back".
+///
+/// One row per spell. `endDate` null means currently employed. Payroll prorates
+/// on the share of the run these rows cover, so a mid-month leaver is paid to
+/// their last day and a re-hire is simply two rows.
+///
+/// This is NOT EmploymentTerms. That model is effective-dated too, but its
+/// boundaries are COMPENSATION versions — a raise opens a new row mid-month, and
+/// prorating from it would half-pay everyone who ever got a raise.
+///
+/// `hire_date` stays the tenure anchor for accrual, gratuity and probation; it
+/// simply stops being a payroll input.
+model EmploymentPeriod {
+  id         Int       @id @default(autoincrement())
+  tenantId   String?   @db.Uuid
+  employeeId Int
+  startDate  DateTime
+  endDate    DateTime? // null = still employed
+  reason     String? // resignation, contract end, re-hire, ...
+  note       String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([tenantId, employeeId, startDate])
+  @@map("employment_periods")
 }
 
 model EmploymentTerms {

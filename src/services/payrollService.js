@@ -133,19 +133,59 @@ const PERIOD_FACTORS = {
  * @param {Date|string|null} hireDate
  * @param {Date|string|null} termDate - termination date, null if still active
  */
-export const computeProrationFactor = (periodStart, periodEnd, hireDate, termDate) => {
-    const pStart = new Date(periodStart).getTime();
-    const pEnd = new Date(periodEnd).getTime();
-    if (pEnd < pStart) return 1n; // malformed period, default full
+export const computeProrationFactor = (periodStart, periodEnd, hireDateOrPeriods, termDate) => {
+    const DAY = 86_400_000;
+    // Compare whole days in UTC. Period ends are stored at 23:59:59.999, and
+    // differencing raw timestamps makes a 31-day month measure 30.9999 days.
+    const dayOf = (v) => {
+        const d = new Date(v);
+        return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    };
+    const pStart = dayOf(periodStart);
+    const pEnd = dayOf(periodEnd);
+    // Malformed period: pay in full. The previous `1n` was not 100% on the 1e6
+    // scale, it was one ten-thousandth of one percent of the salary.
+    if (pEnd < pStart) return 1_000_000n;
 
-    const totalDays = Math.max(1, Math.round((pEnd - pStart) / 86400000) + 1);
-    const effectiveStart = hireDate ? Math.max(pStart, new Date(hireDate).getTime()) : pStart;
-    const effectiveEnd = termDate ? Math.min(pEnd, new Date(termDate).getTime()) : pEnd;
+    const totalDays = Math.max(1, Math.round((pEnd - pStart) / DAY) + 1);
 
-    if (effectiveEnd < effectiveStart) return 0n; // not active in this period
+    // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — the third argument is either a list of
+    // employment periods or, for callers not yet migrated, a bare hire date.
+    // The two-date form is kept because it still prorates mid-month joiners
+    // correctly; only the leaver half of it was ever broken, and that half read
+    // `employee.term_date`, a column that does not exist.
+    const periods = Array.isArray(hireDateOrPeriods)
+        ? hireDateOrPeriods
+        : [{ startDate: hireDateOrPeriods ?? null, endDate: termDate ?? null }];
 
-    const activeDays = Math.round((effectiveEnd - effectiveStart) / 86400000) + 1;
-    return BigInt(Math.round((activeDays / totalDays) * 1_000_000)); // scale to 1e6 for precision
+    // No employment history on file: pay normally. Backfill must not be able to
+    // silently zero somebody's salary by not having run yet.
+    if (!periods.length) return 1_000_000n;
+
+    // Clip each period to the run, then MERGE before counting. Two overlapping
+    // rows are bad data, not two salaries — summing them blind would pay 200%.
+    const spans = [];
+    for (const p of periods) {
+        if (!p) continue;
+        const s = p.startDate ? Math.max(pStart, dayOf(p.startDate)) : pStart;
+        const e = p.endDate ? Math.min(pEnd, dayOf(p.endDate)) : pEnd;
+        if (e >= s) spans.push([s, e]);
+    }
+    if (!spans.length) return 0n; // employed at no point during this run
+
+    spans.sort((a, b) => a[0] - b[0]);
+    const merged = [spans[0]];
+    for (const [s, e] of spans.slice(1)) {
+        const last = merged[merged.length - 1];
+        // Adjacent days (gap of exactly one day) are contiguous employment, not
+        // two spells, so they merge too.
+        if (s <= last[1] + DAY) last[1] = Math.max(last[1], e);
+        else merged.push([s, e]);
+    }
+
+    const activeDays = merged.reduce((n, [s, e]) => n + Math.round((e - s) / DAY) + 1, 0);
+    if (activeDays >= totalDays) return 1_000_000n;
+    return BigInt(Math.round((activeDays / totalDays) * 1_000_000)); // scale 1e6
 };
 
 /**
@@ -372,12 +412,17 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // grossMinor.
     let contractualMinor = 0n;
 
-    // PRORATION: compute factor from employee hire/term dates vs payroll period.
+    // PRORATION: the share of the run the employee was actually employed for.
+    // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — previously this passed
+    // `employee.term_date || employee.terminationDate`, and Employee has
+    // neither column, so the leaver branch never ran. Employment periods carry
+    // the leaving date, and a re-hire is two of them.
     const prorationFactor = computeProrationFactor(
         payrollRun.periodStart,
         payrollRun.periodEnd,
-        employee?.hire_date || employee?.hireDate,
-        employee?.term_date || employee?.terminationDate,
+        employee?.employmentPeriods?.length
+            ? employee.employmentPeriods
+            : (employee?.hire_date || employee?.hireDate),
     );
 
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
@@ -750,8 +795,39 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
     try {
         // Get all active employees for this tenant
         const employees = await prisma.employee.findMany({
-            where: { status: 'active', tenant_id: tenantId ?? null },
+            // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — `status: 'active'` alone is a
+            // cliff for leavers: deactivating someone who left mid-month drops
+            // them from the run entirely and they lose the days they DID work.
+            // Anyone with an employment period touching this run is included and
+            // then prorated to the days it covers.
+            where: {
+                tenant_id: tenantId ?? null,
+                OR: [
+                    { status: 'active' },
+                    {
+                        employmentPeriods: {
+                            some: {
+                                startDate: { lte: payrollRun.periodEnd },
+                                OR: [
+                                    { endDate: null },
+                                    { endDate: { gte: payrollRun.periodStart } },
+                                ],
+                            },
+                        },
+                    },
+                ],
+            },
             include: {
+                // Every spell touching the run. computeProrationFactor clips and
+                // merges them, so a re-hire is simply two rows.
+                employmentPeriods: {
+                    where: {
+                        startDate: { lte: payrollRun.periodEnd },
+                        OR: [{ endDate: null }, { endDate: { gte: payrollRun.periodStart } }],
+                    },
+                    select: { startDate: true, endDate: true },
+                    orderBy: { startDate: 'asc' },
+                },
                 employmentTerms: {
                     where: withTenant(tenantId, {
                         effectiveFrom: { lte: payrollRun.periodEnd },
