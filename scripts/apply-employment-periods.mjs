@@ -55,7 +55,10 @@ const PLAN = [
 
 const norm = (s) =>
   String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
-const day = (iso) => new Date(`${iso}T00:00:00.000Z`);
+const day = (d) => new Date(`${d}T00:00:00.000Z`);
+/** ISO day key, or "null" for an open-ended period. */
+const dayKey = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+const iso = (d) => dayKey(d) ?? "null";
 
 let failures = 0;
 
@@ -114,38 +117,83 @@ for (const item of PLAN) {
 
     if (!WRITE) return;
 
-    if (open.length) {
-      // Close every open spell, not just the newest: two open rows would
-      // otherwise keep paying after the closing one ends.
-      await prisma.employmentPeriod.updateMany({
-        where: { employeeId: emp.id, endDate: null },
-        data: { endDate: day(item.closeOn), reason: item.closeReason },
-      });
-    } else if (anchor) {
-      // No backfilled row (the migration skips employees with no hire_date):
-      // create the historical spell so the closure means something.
-      await prisma.employmentPeriod.create({
-        data: {
-          tenantId, employeeId: emp.id,
-          startDate: anchor, endDate: day(item.closeOn), reason: item.closeReason,
-        },
-      });
-    } else {
-      console.log(`      ! ${emp.employee_code} has no hire_date; cannot open a historical period`);
+    // ── Self-heal, so a second run repairs a first one rather than compounding
+    // it. The original version closed ANY open period at closeOn, which on the
+    // second run closed the RE-OPEN period it had just created and produced
+    // `2026-09-07 -> 2026-08-19` — an end before its start, silently paying
+    // Meesam 0% for September. It also re-created the historical spell every
+    // time, leaving duplicates.
+
+    // 1. A period that ends before it starts is never valid. If it is the
+    //    re-open spell, put it back; otherwise it is junk and goes.
+    for (const p of existing) {
+      if (!p.endDate || p.endDate >= p.startDate) continue;
+      const isReopen =
+        item.reopenOn && p.startDate.toISOString().slice(0, 10) === item.reopenOn;
+      if (isReopen) {
+        await prisma.employmentPeriod.update({
+          where: { id: p.id },
+          data: { endDate: null, reason: item.reopenReason },
+        });
+        console.log(`      repaired inverted re-open period #${p.id}`);
+      } else {
+        await prisma.employmentPeriod.delete({ where: { id: p.id } });
+        console.log(`      removed inverted period #${p.id}`);
+      }
     }
 
-    if (item.reopenOn) {
-      const already = existing.some(
-        (p) => p.startDate && p.startDate.toISOString().slice(0, 10) === item.reopenOn,
-      );
-      if (!already) {
+    // 2. Drop exact duplicates, keeping the lowest id.
+    const seen = new Map();
+    for (const p of existing) {
+      const key = `${iso(p.startDate)}|${iso(p.endDate)}`;
+      if (seen.has(key)) {
+        await prisma.employmentPeriod.delete({ where: { id: p.id } });
+        console.log(`      removed duplicate period #${p.id} (${key})`);
+      } else seen.set(key, p.id);
+    }
+
+    // Re-read: the repairs above changed what is on file.
+    const now = await prisma.employmentPeriod.findMany({
+      where: { employeeId: emp.id },
+      orderBy: { startDate: "asc" },
+      select: { id: true, startDate: true, endDate: true },
+    });
+
+    // 3. Close only spells that were already running BEFORE the closing date.
+    //    A re-open spell starts after it and must be left alone — that omission
+    //    is what broke the first re-run.
+    const toClose = now.filter((p) => p.endDate === null && dayKey(p.startDate) <= item.closeOn);
+    const hasHistorical = now.some((p) => dayKey(p.startDate) <= item.closeOn);
+
+    if (toClose.length) {
+      await prisma.employmentPeriod.updateMany({
+        where: { id: { in: toClose.map((p) => p.id) } },
+        data: { endDate: day(item.closeOn), reason: item.closeReason },
+      });
+    } else if (!hasHistorical) {
+      // Nothing on file covering the closing date. With an anchor we can build
+      // the historical spell; without one there is nothing honest to write, and
+      // proration treats "no period" as a full month anyway.
+      if (anchor) {
         await prisma.employmentPeriod.create({
           data: {
             tenantId, employeeId: emp.id,
-            startDate: day(item.reopenOn), endDate: null, reason: item.reopenReason,
+            startDate: anchor, endDate: day(item.closeOn), reason: item.closeReason,
           },
         });
+      } else {
+        console.log(`      ! ${emp.employee_code} has no hire_date; cannot open a historical period`);
       }
+    } // else: already closed by an earlier run — nothing to do.
+
+    // Re-open, against the CURRENT rows rather than the pre-repair snapshot.
+    if (item.reopenOn && !now.some((p) => dayKey(p.startDate) === item.reopenOn)) {
+      await prisma.employmentPeriod.create({
+        data: {
+          tenantId, employeeId: emp.id,
+          startDate: day(item.reopenOn), endDate: null, reason: item.reopenReason,
+        },
+      });
     }
 
     // Case-insensitive: production spells this "Active" with a capital A on 73

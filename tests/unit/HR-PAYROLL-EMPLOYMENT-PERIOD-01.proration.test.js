@@ -101,6 +101,25 @@ describe('HR-PAYROLL-EMPLOYMENT-PERIOD-01 proration from employment periods', ()
         expect(f).toBe(1_000_000n);
     });
 
+    it('ignores a period that ends before it starts', () => {
+        // Produced for real: a re-run of the apply script closed the RE-OPEN
+        // period at the termination date, leaving 2026-09-07 -> 2026-08-19 on
+        // M. Meesam. Such a row must contribute nothing rather than a negative
+        // day count — his September silently paid 0% instead of 80%.
+        const f = computeProrationFactor('2026-09-01', '2026-09-30', [
+            { startDate: '2026-09-07', endDate: '2026-08-19' },
+        ]);
+        expect(f).toBe(0n);
+    });
+
+    it('pays the valid spell even when an inverted one sits beside it', () => {
+        const f = computeProrationFactor('2026-09-01', '2026-09-30', [
+            { startDate: '2026-09-07', endDate: null },
+            { startDate: '2026-09-07', endDate: '2026-08-19' }, // junk
+        ]);
+        expect(pct(f)).toBe(Number(((24 / 30) * 100).toFixed(2)));
+    });
+
     it('still honours a legacy hire_date passed as a bare date', () => {
         // The old two-date call shape stays supported so callers that have not
         // been migrated keep their mid-month joiner proration.
