@@ -222,11 +222,31 @@ export function sessioniseByRoster(punches, pattern, { windowHours = 5, dedupeSe
  * ordinary model queries so RLS scopes them.
  */
 export async function replayTenant({ tenantId, from, to, policy, now = new Date() }) {
+  // HR-ATT-WINDOW-01 — reach a day either side so a shift that straddles the
+  // boundary keeps both ends.
+  //
+  // A night shift beginning 31 July 22:00 and ending 1 August 10:00 has its
+  // arrival outside an August window. Querying [from, to] exactly drops it, and
+  // the lone morning OUT then opens a session of its own that evaluates to
+  // MISSING_CHECKOUT — a shift nobody failed to close, manufactured by the
+  // range. On production August data that was 8 of the 37 rows on 08-01, where
+  // every other day of the month sits at 0-5%.
+  //
+  // MISSING_* writes day_credit NULL and requires_regularization, so payroll
+  // HOLDS the day: left alone, a month boundary parks a day's pay for everyone
+  // on nights.
+  //
+  // The extra day exists only to COMPLETE shifts belonging to the window;
+  // sessions are filtered back to [from, to] below so no row is written outside
+  // the range the caller asked for.
+  const windowStart = new Date(new Date(`${from}T00:00:00`).getTime() - DAY_MS);
+  const windowEnd = new Date(new Date(`${to}T23:59:59`).getTime() + DAY_MS);
+
   const punches = await prisma.attendanceDevicePunch.findMany({
     where: {
       tenantId,
       employeeId: { not: null },
-      punchedAt: { gte: new Date(`${from}T00:00:00`), lte: new Date(`${to}T23:59:59`) },
+      punchedAt: { gte: windowStart, lte: windowEnd },
     },
     select: { employeeId: true, punchedAt: true, status: true },
     orderBy: [{ employeeId: "asc" }, { punchedAt: "asc" }],
@@ -266,6 +286,9 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
 
     for (const session of sessioniseByRoster(rows, schedule?.schedule_pattern)) {
       const day = session.day;
+      // The padding day is for context only — never for output.
+      const key = dayKey(day);
+      if (key < from || key > to) continue;
       const tomorrow = new Date(day.getTime() + DAY_MS);
       const tomorrowInfo = working.get(dayKey(tomorrow));
       const nextShift = shiftFor(schedule?.schedule_pattern, tomorrow);
