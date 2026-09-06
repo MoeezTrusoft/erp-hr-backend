@@ -24,7 +24,10 @@ import { resolveWorkingDays } from "../src/services/workingDay.service.js";
 
 const WRITE = process.argv.includes("--write");
 const EMG = "61b7eb53-ab6e-413f-9d9a-1ecf4e071e73";
-const CODES = ["EMP161", "EMP162", "EMP164", "EMP165", "EMP167", "EMP172"];
+// EMP168 (Zubair) joined this list once his phase was recovered from Team C of
+// the workbook — see apply-rotation-phase.mjs. Without a cycle his rest days
+// read as working days, so nothing here could see his artifacts.
+const CODES = ["EMP161", "EMP162", "EMP164", "EMP165", "EMP167", "EMP168", "EMP172"];
 // Date range is a parameter: the same artifacts appear in every month the
 // rotation runs, so September needs the same pass August got.
 //   node scripts/clear-rotation-offday-rows.mjs 2026-09-01 2026-09-30 --write
