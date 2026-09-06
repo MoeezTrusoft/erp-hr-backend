@@ -1,6 +1,6 @@
 // scripts/apply-rotation-phase.mjs — HR-ATT-ROTATING-03
 //
-// Writes the rotation PHASE for the six EMG rotating staff, then re-evaluates
+// Writes the rotation PHASE for the seven EMG rotating staff, then re-evaluates
 // August so their rest days stop reading as absences and missing check-outs.
 //
 // The phase comes from HR's final August workbook. Their "weekly off" colour,
@@ -8,18 +8,26 @@
 // ONE residue mod 3 and no other, which is the "2 days on, 1 off" the operator
 // described:
 //
-//   G Rasool, Khurram   off 01 04 07 10 13 16 19 22 25 28 31   phase 0
-//   Wajahat             off 02 05 08 11 14 17 20 23 26 29      phase 1
-//   Asad, Imran H,      off 03 06 09 12 15 18 21 24 27 30      phase 2
+//   G Rasool, Khurram   off 01 04 07 10 13 16 19 22 25 28 31   phase 0   Team A
+//   Wajahat, Zubair     off 02 05 08 11 14 17 20 23 26 29      phase 1   Team C
+//   Asad, Imran H,      off 03 06 09 12 15 18 21 24 27 30      phase 2   Team B
 //   M. Imran
+//
+// The phase is a TEAM property, not a personal one — the sheet groups the seven
+// under "Team A/B/C" headers and every member of a team rests on the same days.
 //
 // This reads HR's sheet for a ROSTER FACT — which days the person was scheduled
 // — not for a verdict. Their late/absent judgements stay ours to derive; an
 // earlier pass that trusted those had to be reverted.
 //
-// M. Zubair (EMP168) appears on no grid in the workbook, so his phase is
-// unknown and he is deliberately left without a cycle: HR-ATT-ROTATING-02's
-// suppression keeps him from being marked absent on a rest day.
+// M. Zubair (EMP168) was first read as appearing on no grid. He does: the
+// FibreEMG sheet carries him in the last column pair of Team C, under a merged
+// header that the first pass did not follow down. His blank days are 02 05 08
+// 11 14 17 20 23 26 29 — identical to Wajahat's, his team-mate, so phase 1.
+//
+// Leaving him without a cycle was not harmless. HR-ATT-ROTATING-02 suppresses
+// NEW absences on a rotating roster, but it cannot retract the 5 absent and 6
+// missing-checkout rows already written against him before that guard existed.
 //
 // Dry run unless --write.
 import prisma from "../src/lib/prisma.js";
@@ -33,6 +41,7 @@ const PHASE = {
   EMP162: 0, // Ghulam Rasool
   EMP165: 0, // Khurram
   EMP172: 1, // S. Wajahat Ali
+  EMP168: 1, // M. Zubair — same team as Wajahat
   EMP161: 2, // Asad Hussain
   EMP164: 2, // Imran Hussain
   EMP167: 2, // M. Imran Khan

@@ -92,8 +92,29 @@ export function shiftFor(pattern, day, anchor) {
  * is the departure; where that contradicts the device, the punch is corrected
  * and a warning is recorded for HR to confirm or overturn.
  */
-export function sessioniseByRoster(punches, pattern, { windowHours = 5 } = {}) {
-  const sorted = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
+export function sessioniseByRoster(punches, pattern, { windowHours = 5, dedupeSeconds = 120 } = {}) {
+  const ordered = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
+
+  // HR-ATT-DUPLICATE-01 — one press, however many records it left.
+  //
+  // The MB460 repeats a scan: Khurram's every punch appears three times, some
+  // four. Left alone the repeats are not merely noise, they invent shifts. The
+  // first of three identical 10:11 OUTs closes the open night shift and clears
+  // `open`; the second then finds nothing open, so the stateful rule below
+  // reads it as an ARRIVAL and starts a session on what is a rotation rest day.
+  // That session holds one punch, so it lands as MISSING_CHECKOUT or ABSENT,
+  // and it comes back every time the evaluator runs.
+  //
+  // The window is 2 minutes: enough for a double-tap and for the 22:02/22:03
+  // straddle of a slow finger, far short of two genuine events, which on a
+  // 12-hour roster are hours apart.
+  const sorted = [];
+  const dedupeMs = dedupeSeconds * 1000;
+  for (const p of ordered) {
+    const prev = sorted[sorted.length - 1];
+    if (prev && p.punchedAt - prev.punchedAt <= dedupeMs) continue;
+    sorted.push(p);
+  }
   if (!sorted.length) return [];
 
   const hasRoster =
