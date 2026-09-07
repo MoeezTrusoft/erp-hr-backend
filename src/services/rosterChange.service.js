@@ -20,6 +20,7 @@
 // updated and what it held is preserved under `supersedes`.
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
+import { assertSchedulePattern } from "../lib/schedulePattern.js";
 import logger from "../lib/logger.js";
 
 const DAY_MS = 86_400_000;
@@ -45,6 +46,12 @@ const startOfDay = (v) => {
 export async function changeRoster({
   employeeId, tenantId, effectiveFrom, pattern, reason, changedBy = null, dryRun = false,
 }) {
+  // HR-ROSTER-03 — refuse a pattern nothing can read. Every consumer degrades
+  // silently on a bad one (offDays [8] means never off; a malformed shift
+  // leaves the day with no window), so the write boundary is the last place a
+  // wrong roster is still cheap.
+  assertSchedulePattern(pattern);
+
   const from = startOfDay(effectiveFrom);
 
   const existing = await prisma.workSchedule.findMany({
