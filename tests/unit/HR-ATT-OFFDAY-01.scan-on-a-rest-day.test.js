@@ -33,6 +33,8 @@ const prismaMock = {
     attendanceDevicePunch: {
         findMany: jest.fn(async () => punches),
     },
+    // HR-PAY-ELIG-01 asks for the payroll-excluded list; nobody is excluded here.
+    employee: { findMany: jest.fn(async () => []) },
     workSchedule: {
         findFirst: jest.fn(async () => ({
             schedule_pattern: {

@@ -252,8 +252,27 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
     orderBy: [{ employeeId: "asc" }, { punchedAt: "asc" }],
   });
 
+  // HR-PAY-ELIG-01 — people who are not on payroll are not evaluated.
+  //
+  // Everyone scans on the same device, so without this the evaluator derives
+  // attendance, absences and deduction forecasts for contractors, FOC staff and
+  // anyone else HR excludes. That output is meaningless and has been mistaken
+  // for signal — those rows were the largest block left in August's
+  // reconciliation gap, against people HR's workbook has no column for.
+  //
+  // Asked as an EXCLUSION list rather than an inclusion one: only an explicit
+  // `false` drops somebody. A missing flag, or a row predating the column,
+  // stays included — nobody stops being paid because a backfill missed them.
+  const excluded = new Set(
+    (await prisma.employee.findMany({
+      where: { tenant_id: tenantId, payroll_included: false },
+      select: { id: true },
+    })).map((e) => e.id),
+  );
+
   const byEmployee = new Map();
   for (const p of punches) {
+    if (excluded.has(p.employeeId)) continue;
     if (!byEmployee.has(p.employeeId)) byEmployee.set(p.employeeId, []);
     byEmployee.get(p.employeeId).push(p);
   }

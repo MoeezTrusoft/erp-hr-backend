@@ -292,6 +292,14 @@ model Employee {
   work_email           String?
   work_phone           String?
   employement_status   String? // Active/ Inactive
+  // HR-PAY-ELIG-01 — is this person on payroll at all?
+  // Contractors, FOC staff and anyone HR excludes still scan on the shared
+  // device, and the evaluator was deriving attendance, absences and deduction
+  // forecasts against them regardless. False stops all of that; their punches
+  // are still stored, so re-including somebody recovers their history.
+  // Defaults TRUE: attendance is the norm and exclusion must be stated, so
+  // nobody drops out by accident or by a backfill that missed them.
+  payroll_included     Boolean   @default(true)
   photo_url            String?
   cover_photo_url      String?
   cover_photo_media_id Int?
