@@ -33,7 +33,7 @@ const ROTATOR = 165; // Khurram
 const day = (iso) => new Date(`${iso}T00:00:00.000Z`);
 const key = (d) => new Date(d).toISOString().slice(0, 10);
 
-let shifts, storedRows, workingByDay, deleted;
+let shifts, storedRows, workingByDay, deleted, updated;
 
 const prismaMock = {
     attendance: {
@@ -43,7 +43,7 @@ const prismaMock = {
             ) ?? null,
         ),
         findMany: jest.fn(async () => storedRows),
-        update: jest.fn(async () => ({})),
+        update: jest.fn(async ({ where, data }) => { updated.push({ id: where.id, ...data }); return {}; }),
         create: jest.fn(async () => ({})),
         delete: jest.fn(async ({ where }) => { deleted.push(where.id); return {}; }),
         deleteMany: jest.fn(async ({ where }) => {
@@ -53,7 +53,12 @@ const prismaMock = {
         }),
     },
     shiftAssignment: { findFirst: jest.fn(async () => null) },
-    employee: { findUnique: jest.fn(async () => ({ work_mode: null, tenant_id: TENANT })) },
+    employee: {
+        findUnique: jest.fn(async () => ({ work_mode: null, tenant_id: TENANT })),
+        // HR-ATT-STATUS-01 asks for the tracked roster so it can state the
+        // non-working days that have no row at all.
+        findMany: jest.fn(async () => [{ id: ROTATOR }]),
+    },
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
@@ -82,6 +87,7 @@ const workDay = (iso) => [iso, { date: day(iso), working: true, reason: null }];
 beforeEach(() => {
     jest.clearAllMocks();
     deleted = [];
+    updated = [];
     shifts = [];
     storedRows = [];
     workingByDay = new Map();
@@ -97,7 +103,10 @@ describe('HR-ATT-RETRACT-01 stale rows on days that stopped being working days',
 
         const res = await run();
 
-        expect(deleted).toEqual([11]);
+        // HR-ATT-STATUS-01: the row is RESTATED as the off day it was, not
+        // deleted — a blank is indistinguishable from data that never arrived.
+        expect(deleted).toEqual([]);
+        expect(updated.find((u) => u.id === 11)?.status).toBe('WEEKLY_OFF');
         expect(res.retracted).toBe(1);
     });
 
@@ -109,7 +118,7 @@ describe('HR-ATT-RETRACT-01 stale rows on days that stopped being working days',
 
         await run();
 
-        expect(deleted).toEqual([12]);
+        expect(updated.find((u) => u.id === 12)?.status).toBe('WEEKLY_OFF');
     });
 
     it('leaves a real ABSENT on a real working day alone', async () => {
@@ -118,7 +127,7 @@ describe('HR-ATT-RETRACT-01 stale rows on days that stopped being working days',
 
         const res = await run();
 
-        expect(deleted).toEqual([]);
+        expect(updated.find((u) => u.id === 13)).toBeUndefined();
         expect(res.retracted).toBe(0);
     });
 
@@ -128,7 +137,7 @@ describe('HR-ATT-RETRACT-01 stale rows on days that stopped being working days',
 
         const res = await run();
 
-        expect(deleted).toEqual([]);
+        expect(updated.find((u) => u.id === 14)).toBeUndefined();
         expect(res.skippedManuallyCorrected).toBeGreaterThanOrEqual(1);
     });
 
@@ -144,17 +153,19 @@ describe('HR-ATT-RETRACT-01 stale rows on days that stopped being working days',
 
         const res = await run();
 
-        expect(deleted).toEqual([]);
+        // It IS written — by the normal shift path, to what the punches say.
+        // What must not happen is it being restated as an off day.
+        expect(updated.find((u) => u.id === 15)?.status).toBe('PRESENT');
         expect(res.retracted).toBe(0);
     });
 
-    it('reports but does not delete under dryRun', async () => {
+    it('reports but does not write under dryRun', async () => {
         storedRows = [{ id: 16, employeeId: ROTATOR, date: day('2026-08-04'), status: 'ABSENT', manually_corrected: false }];
         workingByDay = new Map([restDay('2026-08-04')]);
 
         const res = await run({ dryRun: true });
 
-        expect(deleted).toEqual([]);
+        expect(updated).toEqual([]);
         expect(res.retracted).toBe(1);
     });
 });

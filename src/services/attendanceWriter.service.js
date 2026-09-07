@@ -31,7 +31,7 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
   const summary = {
     tenantId, from, to, dryRun,
     shifts: shifts.length, created: 0, updated: 0, unchanged: 0, retracted: 0,
-    skippedManuallyCorrected: 0, held: 0, corrections: 0, byStatus: {},
+    nonWorking: 0, skippedManuallyCorrected: 0, held: 0, corrections: 0, byStatus: {},
   };
 
   for (const { employeeId, day, verdict, corrections } of shifts) {
@@ -93,11 +93,13 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
   }
 
   await retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun });
+  await assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun });
 
   logger[dryRun ? "info" : "warn"](
     {
       tenantId, shifts: summary.shifts, created: summary.created,
-      updated: summary.updated, retracted: summary.retracted, dryRun,
+      updated: summary.updated, retracted: summary.retracted,
+      nonWorking: summary.nonWorking, dryRun,
     },
     dryRun ? "attendance write (dry run)" : "attendance written from evaluator",
   );
@@ -142,21 +144,129 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
     candidates.get(r.employeeId).push(r);
   }
 
-  const doomed = [];
+  // HR-ATT-STATUS-01 — restate rather than delete.
+  //
+  // A deleted row leaves the same blank that means "we never got the data".
+  // Writing what the day actually was makes it answerable, and takes the last
+  // cleanup path that was a DELETE out of the system.
+  const statusFor = (reason) => {
+    if (reason === "HOLIDAY") return "HOLIDAY";
+    if (reason === "APPROVED_LEAVE") return "ON_LEAVE";
+    return "WEEKLY_OFF"; // OFF_DAY and ROTATION_OFF are both a rostered rest day
+  };
+
+  const restate = [];
   for (const [employeeId, list] of candidates) {
     const working = await resolveWorkingDays({ employeeId, from, to });
     for (const r of list) {
-      if (working.get(dayKey(r.date))?.working !== false) continue;
+      const info = working.get(dayKey(r.date));
+      if (info?.working !== false) continue;
       if (r.manually_corrected) { summary.skippedManuallyCorrected += 1; continue; }
-      doomed.push(r.id);
+      const status = statusFor(info.reason);
+      if (r.status === status) continue; // already says so
+      restate.push({ id: r.id, status, reason: info.reason, detail: info.detail ?? null });
     }
   }
 
-  summary.retracted = doomed.length;
-  if (dryRun || !doomed.length) return;
+  summary.retracted = restate.length;
+  if (dryRun || !restate.length) return;
 
   await tenantTransaction(prisma, async (tx) => {
-    await tx.attendance.deleteMany({ where: { id: { in: doomed } } });
+    for (const r of restate) {
+      await tx.attendance.update({
+        where: { id: r.id },
+        data: {
+          status: r.status,
+          check_in: null,
+          check_out: null,
+          total_hours: null,
+          day_credit: 0,
+          requires_regularization: false,
+          remarks: `not a working day (${r.reason}${r.detail ? `: ${r.detail}` : ""})`,
+        },
+      });
+    }
+  });
+}
+
+/**
+ * State the non-working days that have no row at all (HR-ATT-STATUS-01).
+ *
+ * Retraction above fixes rows that exist. This covers the other half: a rest day
+ * nobody scanned on has no row, and a blank is indistinguishable from data that
+ * never arrived.
+ *
+ * Covers the tenant's tracked roster, not merely the people who scanned. An
+ * employee's rest day is a fact about the roster, and it is exactly the person
+ * with NO rows whose blank month is ambiguous — scoping this to those who
+ * already have rows would leave the worst case unanswered.
+ *
+ * People excluded from payroll (HR-PAY-ELIG-01) are left out: nothing about
+ * their attendance is being derived.
+ */
+async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun }) {
+  const roster = await prisma.employee.findMany({
+    where: { tenant_id: tenantId, NOT: { payroll_included: false } },
+    select: { id: true },
+  });
+
+  const seen = new Map(); // employeeId -> day keys already accounted for
+  for (const e of roster) seen.set(e.id, new Set());
+  const note = (employeeId, key) => {
+    if (!seen.has(employeeId)) return; // not on this tenant's tracked roster
+    seen.get(employeeId).add(key);
+  };
+  for (const s of shifts) note(s.employeeId, dayKey(s.day));
+
+  const rows = await prisma.attendance.findMany({
+    where: {
+      tenantId,
+      date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T23:59:59.999Z`) },
+    },
+    select: { employeeId: true, date: true },
+  });
+  for (const r of rows) note(r.employeeId, dayKey(r.date));
+
+  const statusFor = (reason) => {
+    if (reason === "HOLIDAY") return "HOLIDAY";
+    if (reason === "APPROVED_LEAVE") return "ON_LEAVE";
+    return "WEEKLY_OFF";
+  };
+
+  const toWrite = [];
+  for (const [employeeId, days] of seen) {
+    const working = await resolveWorkingDays({ employeeId, from, to });
+    for (const [key, info] of working) {
+      if (info?.working !== false) continue;
+      if (days.has(key)) continue; // already has a row, or a shift was evaluated
+      toWrite.push({ employeeId, key, status: statusFor(info.reason), reason: info.reason });
+    }
+  }
+
+  summary.nonWorking = toWrite.length;
+  if (dryRun || !toWrite.length) return;
+
+  await tenantTransaction(prisma, async (tx) => {
+    for (const w of toWrite) {
+      const employee = await prisma.employee.findUnique({
+        where: { id: w.employeeId },
+        select: { tenant_id: true },
+      });
+      await tx.attendance.create({
+        data: {
+          employeeId: w.employeeId,
+          date: new Date(`${w.key}T00:00:00.000Z`),
+          tenantId: employee?.tenant_id ?? tenantId,
+          status: w.status,
+          check_in: null,
+          check_out: null,
+          total_hours: null,
+          day_credit: 0,
+          requires_regularization: false,
+          remarks: `not a working day (${w.reason})`,
+        },
+      });
+    }
   });
 }
 

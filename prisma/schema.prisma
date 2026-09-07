@@ -39,6 +39,15 @@ enum StatusAttendance {
   // column; the lateness itself is still recorded as a LATE_CHECKIN anomaly.
   MISSING_CHECKIN
   MISSING_CHECKOUT
+  // HR-ATT-STATUS-01 — a day off, STATED. Until these existed, "not working"
+  // was represented by the absence of a row, which is indistinguishable from a
+  // day whose data never arrived, and it forced every cleanup to be a DELETE.
+  // None of the three appears in attendanceDeduction's STATUS_TO_RULE
+  // allow-list, so none can be charged: they are a statement of fact, not a
+  // price.
+  WEEKLY_OFF // rostered off-day, including a rotation rest day
+  HOLIDAY // public / calendar holiday the employee is entitled to
+  ON_LEAVE // approved leave
 }
 
 // Attendance anomaly / correction requests — the "Inform Abnormality" action and
