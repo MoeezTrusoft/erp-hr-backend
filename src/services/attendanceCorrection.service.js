@@ -26,6 +26,15 @@ function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
 }
 
+/** The state a day was in before a correction, for the audit trail.
+ *  Times are HH:MM — the minute is what a reviewer compares, and the full
+ *  ISO stamp buries it. */
+function describePrevious(row) {
+  const hhmm = (v) => (v ? new Date(v).toISOString().slice(11, 16) : "-");
+  return `in=${hhmm(row.check_in)} out=${hhmm(row.check_out)} `
+    + `status=${row.status ?? "-"} credit=${row.day_credit ?? "-"}`;
+}
+
 const STATUSES = ["PRESENT", "ABSENT", "LATE", "HALF_DAY", "MISSING_CHECKIN", "MISSING_CHECKOUT"];
 
 function startOfDay(value) {
@@ -130,7 +139,14 @@ export async function correctAttendanceDay({
         ip: "internal",
         os: "internal",
         result: "success",
+        // HR-ATT-CORRECTION-02 — record what the day WAS, not only what it
+        // became. Without the before-state nobody can tell a correction that
+        // moved a day from ABSENT to PRESENT — a day's pay — from one that
+        // tidied a check-out minute, and reconstructing it means diffing
+        // backups. A day that had no row has no "before", and claiming one
+        // would be a fabrication, so only an existing row gets the clause.
         notes: `${day.toISOString().slice(0, 10)}: ` +
+               (existing ? `was ${describePrevious(existing)} -> ` : "") +
                `in=${cin ? cin.toISOString() : "-"} out=${cout ? cout.toISOString() : "-"} ` +
                `status=${finalStatus} credit=${creditFor(finalStatus)} — ${text}`,
       },
