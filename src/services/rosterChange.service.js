@@ -45,6 +45,7 @@ const startOfDay = (v) => {
  */
 export async function changeRoster({
   employeeId, tenantId, effectiveFrom, pattern, reason, changedBy = null, dryRun = false,
+  scheduleName = null, totalHoursPerWeek = null,
 }) {
   // HR-ROSTER-03 — refuse a pattern nothing can read. Every consumer degrades
   // silently on a bad one (offDays [8] means never off; a malformed shift
@@ -59,6 +60,8 @@ export async function changeRoster({
     orderBy: { effective_start_date: "desc" },
     select: {
       id: true, schedule_pattern: true,
+      // Carried onto a new version — both are NOT NULL with no default.
+      schedule_name: true, total_hours_per_week: true,
       effective_start_date: true, effective_end_date: true,
     },
   });
@@ -99,6 +102,28 @@ export async function changeRoster({
     return { action: "corrected", closed: null, created: covering.id };
   }
 
+  // schedule_name and total_hours_per_week are NOT NULL with no default, and a
+  // new version has to carry them. Inheriting from the version being closed is
+  // the only honest source — defaulting the weekly hours would put an invented
+  // number where payroll reads one. With nothing to inherit and nothing given,
+  // refuse.
+  //
+  // This path had never run in production: every roster change so far started
+  // on the same day as its existing row and took the correction branch above,
+  // so the first genuine version (Meesam's re-hire) was the first create, and
+  // Postgres rejected it with "Argument `schedule_name` is missing".
+  const name = scheduleName ?? covering?.schedule_name ?? null;
+  const hours = totalHoursPerWeek ?? covering?.total_hours_per_week ?? null;
+  if (name == null || hours == null) {
+    throw Object.assign(
+      new Error(
+        "roster change needs schedule_name and total_hours_per_week: nothing to inherit "
+        + "from a previous version and none supplied",
+      ),
+      { status: 400 },
+    );
+  }
+
   let created = null;
   if (!dryRun) {
     await tenantTransaction(prisma, async (tx) => {
@@ -112,6 +137,8 @@ export async function changeRoster({
         data: {
           employeeId,
           tenantId,
+          schedule_name: name,
+          total_hours_per_week: hours,
           schedule_pattern: stamped,
           effective_start_date: from,
           effective_end_date: null,

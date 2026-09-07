@@ -37,6 +37,17 @@ const prismaMock = {
             return row;
         }),
         create: jest.fn(async ({ data }) => {
+            // Mirrors the real client: WorkSchedule.schedule_name and
+            // total_hours_per_week are NOT NULL with no default. A mock that
+            // accepts anything let a create ship that Postgres refused —
+            // "Argument `schedule_name` is missing" — on the first roster
+            // change that actually took the versioned path.
+            for (const required of ['schedule_name', 'total_hours_per_week',
+                'employeeId', 'effective_start_date']) {
+                if (data[required] === undefined || data[required] === null) {
+                    throw new Error(`Argument \`${required}\` is missing.`);
+                }
+            }
             nextId += 1;
             const row = { id: nextId, ...data };
             rows.push(row);
@@ -65,6 +76,8 @@ beforeEach(() => {
         id: 100,
         employeeId: EMPLOYEE,
         tenantId: 't1',
+        schedule_name: 'Device roster 2026-08',
+        total_hours_per_week: 45,
         schedule_pattern: OLD,
         effective_start_date: d('2026-08-01'),
         effective_end_date: null,
@@ -131,7 +144,7 @@ describe('HR-ROSTER-02 roster versioning', () => {
 
     it('creates a first version when the employee has no schedule', async () => {
         rows = [];
-        await change('2026-08-01');
+        await change('2026-08-01', { scheduleName: 'Standard', totalHoursPerWeek: 40 });
 
         expect(rows).toHaveLength(1);
         expect(iso(rows[0].effective_start_date)).toBe('2026-08-01');
@@ -142,6 +155,35 @@ describe('HR-ROSTER-02 roster versioning', () => {
         // Backdating before the earliest version has no honest meaning: the
         // days in between were derived under a roster that never existed.
         await expect(change('2026-07-01')).rejects.toThrow(/before/i);
+    });
+
+    it('carries the required columns onto the new version', async () => {
+        // schedule_name and total_hours_per_week are NOT NULL with no default.
+        // Inheriting them from the version being closed is the only honest
+        // source: inventing weekly hours would be inventing a number that
+        // feeds pay.
+        await change('2026-09-01');
+
+        const fresh = rows.find((r) => r.id !== 100);
+        expect(fresh.schedule_name).toBe('Device roster 2026-08');
+        expect(fresh.total_hours_per_week).toBe(45);
+    });
+
+    it('refuses a first version with no hours to inherit', async () => {
+        // Nothing to carry forward and nothing supplied. Defaulting the hours
+        // would put a made-up number where payroll reads one.
+        rows = [];
+
+        await expect(change('2026-08-01')).rejects.toThrow(/total_hours_per_week|schedule_name/i);
+    });
+
+    it('accepts them explicitly when there is no prior version', async () => {
+        rows = [];
+
+        await change('2026-08-01', { scheduleName: 'Standard', totalHoursPerWeek: 40 });
+
+        expect(rows[0].schedule_name).toBe('Standard');
+        expect(rows[0].total_hours_per_week).toBe(40);
     });
 
     it('records who and why on the new version', async () => {
