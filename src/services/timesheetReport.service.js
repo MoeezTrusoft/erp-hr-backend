@@ -4,7 +4,8 @@
 // check-in/out table.
 //
 // AUTHORITY: every read uses the STORED Attendance.status (enum
-// StatusAttendance: PRESENT | ABSENT | LATE | HALF_DAY) and STORED
+// StatusAttendance: PRESENT | ABSENT | LATE | HALF_DAY | MISSING_CHECKIN |
+// MISSING_CHECKOUT | WEEKLY_OFF | HOLIDAY | ON_LEAVE) and STORED
 // Attendance.work_mode ("Remote" | "Onsite" | "Hybrid"). We NEVER re-derive
 // status from check_in/check_out — the stored value is the source of truth
 // (it was computed at punch time with the tenant's shift rules).
@@ -23,6 +24,11 @@ import logger from "../lib/logger.js";
 const PRESENT_STATUSES = ["PRESENT", "LATE", "HALF_DAY"];
 // Statuses that count as a late arrival.
 const LATE_STATUSES = ["LATE", "HALF_DAY"];
+// HR-RECON-02 — days nobody was rostered in. These come OUT of every
+// denominator: they are not days somebody failed to attend, they are days
+// nobody was due. Same set the reconciliation report excludes, so the two
+// cannot drift apart.
+const NON_WORKING_STATUSES = ["WEEKLY_OFF", "HOLIDAY", "ON_LEAVE"];
 // work_mode values that count as remote/WFH.
 const REMOTE_MODES = ["Remote", "Hybrid"];
 
@@ -86,23 +92,11 @@ function resolveMonth(month) {
   return { year, mon, start, end, label };
 }
 
-// Working day = Mon–Sat (UTC getDay 1..6); Sunday (0) is a non-working day.
-function isWorkingDay(d) {
-  const dow = d.getUTCDay();
-  return dow >= 1 && dow <= 6;
-}
-
-// Count Mon–Sat working days in [start,end] inclusive (both day-aligned).
-function countWorkingDays(start, end) {
-  let count = 0;
-  const cur = startOfDay(start);
-  const last = startOfDay(end);
-  while (cur.getTime() <= last.getTime()) {
-    if (isWorkingDay(cur)) count += 1;
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-  return count;
-}
+// HR-RECON-02 — isWorkingDay() and countWorkingDays() lived here and hardcoded
+// Mon-Sat. Both are gone rather than left unused: whether a day is a working
+// one is a property of that employee's ROSTER, never of the weekday, and a
+// helper that says otherwise is an invitation to reintroduce the bug. What a
+// day was is now read from the stored status (HR-ATT-STATUS-01).
 
 // Split a calendar month into successive Week 1..N chunks. Each week runs from
 // its first day up to the following Sunday (inclusive) so a "week" is a
@@ -208,7 +202,8 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId }) {
  * For each Mon–Sun week chunk of the month:
  *   presentDays  = COUNT of Attendance rows in that week with status in
  *                  (PRESENT, LATE, HALF_DAY).
- *   expectedDays = totalEmployees * (Mon–Sat working days in that week).
+ *   expectedDays = COUNT of rows in that week that are NOT WEEKLY_OFF,
+ *                  HOLIDAY or ON_LEAVE — the days somebody was rostered in.
  *   attendancePct = round(presentDays / expectedDays * 100), 0 on divide-by-zero.
  *
  * @param {{tenantId:string|null, month?:string}} args
@@ -218,23 +213,29 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
   const { start, end, label } = resolveMonth(month);
   const weeks = monthWeeks(start, end);
 
-  const [totalEmployees, rows] = await Promise.all([
-    prisma.employee.count({ where: scopedEmployeeWhere(tenantId, {}) }),
-    prisma.attendance.findMany({
-      where: scopedWhere(tenantId, {
-        date: { gte: start, lte: end },
-        status: { in: PRESENT_STATUSES },
-      }),
-      select: { date: true },
-    }),
-  ]);
+  // HR-RECON-02 — every row, so the denominator can be DERIVED.
+  //
+  // This used to fetch only PRESENT_STATUSES and compute
+  // expectedDays = totalEmployees * Mon-Sat days. Both halves were wrong: the
+  // fleet's rosters are Tue+Fri, Mon+Wed, Tue+Thu, Fri+Sat, Sat+Mon,
+  // Tue+Wed+Thu and 3-day rotations, and Sunday is a working day for the whole
+  // night-shift population. A Sunday shift counted in the numerator with no
+  // matching denominator, and everyone's rostered days off counted as days
+  // they were expected in. Both errors flatter the number.
+  const rows = await prisma.attendance.findMany({
+    where: scopedWhere(tenantId, { date: { gte: start, lte: end } }),
+    select: { date: true, status: true },
+  });
 
   const out = weeks.map((w) => {
-    const presentDays = rows.filter(
-      (r) => r.date.getTime() >= w.from.getTime() && r.date.getTime() <= w.to.getTime()
-    ).length;
-    const workingDays = countWorkingDays(w.from, w.to);
-    const expectedDays = totalEmployees * workingDays;
+    const inWeek = rows.filter(
+      (r) => r.date.getTime() >= w.from.getTime() && r.date.getTime() <= w.to.getTime(),
+    );
+    const presentDays = inWeek.filter((r) => PRESENT_STATUSES.includes(r.status)).length;
+    // Expected = the days somebody was actually rostered in, straight from what
+    // the day was recorded as. Same rule the reconciliation report uses, so the
+    // graph and the report cannot disagree.
+    const expectedDays = inWeek.filter((r) => !NON_WORKING_STATUSES.includes(r.status)).length;
     const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : 0;
     return {
       label: w.label,
@@ -253,12 +254,14 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
  * Day-wise absenteeism percentage for the month (default current month),
  * tagged by week label.
  *
- * We emit EVERY Mon–Sat working day of the month (Sundays are SKIPPED — they
- * are non-working days with no expected attendance, so an absenteeism % would
- * be meaningless). Per day:
+ * We emit every day SOMEBODY WAS ROSTERED ON, which is not the same as Mon-Sat:
+ * Sunday is a working day for the night-shift population, and plenty of people
+ * are off midweek. Per day:
+ *   rostered        = DISTINCT employeeIds with a row that is not WEEKLY_OFF,
+ *                     HOLIDAY or ON_LEAVE.
  *   absentEmployees = DISTINCT employeeIds with status ABSENT on that date.
- *   absenteeismPct  = round(absentEmployees / totalEmployees * 100), 0 when
- *                     totalEmployees is 0.
+ *   absenteeismPct  = round(absentEmployees / rostered * 100).
+ * A day nobody was rostered on is omitted, not reported as 0%.
  *
  * @param {{tenantId:string|null, month?:string}} args
  * @returns {Promise<{month:string, days:Array<{date:string,weekLabel:string,absenteeismPct:number}>}>}
@@ -267,34 +270,47 @@ export async function getAbsenteeismTrend({ tenantId, month }) {
   const { start, end, label } = resolveMonth(month);
   const weeks = monthWeeks(start, end);
 
-  const [totalEmployees, rows] = await Promise.all([
-    prisma.employee.count({ where: scopedEmployeeWhere(tenantId, {}) }),
-    prisma.attendance.findMany({
-      where: scopedWhere(tenantId, {
-        date: { gte: start, lte: end },
-        status: "ABSENT",
-      }),
-      select: { employeeId: true, date: true },
-    }),
-  ]);
+  // HR-RECON-02 — absenteeism against who was ROSTERED, not against everyone.
+  //
+  // This emitted only Mon-Sat and divided by the whole headcount. Both are
+  // wrong here: Sunday is a working day for the night-shift population, so
+  // their absences were never plotted; and counting people who were on their
+  // weekly off in the denominator dilutes the rate, because they were never
+  // due in.
+  const rows = await prisma.attendance.findMany({
+    where: scopedWhere(tenantId, { date: { gte: start, lte: end } }),
+    select: { employeeId: true, date: true, status: true },
+  });
 
-  // Bucket distinct absent employees per YYYY-MM-DD.
+  // Per day: who was rostered, and who of them was absent.
+  const rosteredByDay = new Map();
   const absentByDay = new Map();
   for (const r of rows) {
+    if (NON_WORKING_STATUSES.includes(r.status)) continue;
     const key = startOfDay(r.date).toISOString().slice(0, 10);
-    if (!absentByDay.has(key)) absentByDay.set(key, new Set());
-    absentByDay.get(key).add(r.employeeId);
+    if (!rosteredByDay.has(key)) rosteredByDay.set(key, new Set());
+    rosteredByDay.get(key).add(r.employeeId);
+    if (r.status === "ABSENT") {
+      if (!absentByDay.has(key)) absentByDay.set(key, new Set());
+      absentByDay.get(key).add(r.employeeId);
+    }
   }
 
   const days = [];
   const cur = startOfDay(start);
   const last = startOfDay(end);
   while (cur.getTime() <= last.getTime()) {
-    if (isWorkingDay(cur)) {
-      const key = cur.toISOString().slice(0, 10);
-      const absentEmployees = absentByDay.has(key) ? absentByDay.get(key).size : 0;
-      const absenteeismPct = totalEmployees > 0 ? Math.round((absentEmployees / totalEmployees) * 100) : 0;
-      days.push({ date: key, weekLabel: weekLabelFor(cur, weeks), absenteeismPct });
+    const key = cur.toISOString().slice(0, 10);
+    const rostered = rosteredByDay.get(key)?.size ?? 0;
+    // A day nobody was rostered on is not 0% absenteeism — it is not a data
+    // point. Plotting it as zero draws a perfect day nobody worked.
+    if (rostered > 0) {
+      const absentEmployees = absentByDay.get(key)?.size ?? 0;
+      days.push({
+        date: key,
+        weekLabel: weekLabelFor(cur, weeks),
+        absenteeismPct: Math.round((absentEmployees / rostered) * 100),
+      });
     }
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
