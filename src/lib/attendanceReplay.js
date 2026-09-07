@@ -289,6 +289,26 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       // The padding day is for context only — never for output.
       const key = dayKey(day);
       if (key < from || key > to) continue;
+
+      // HR-ATT-OFFDAY-01 — a lone scan on a rostered off day is not a shift.
+      //
+      // Without this, one punch on somebody's weekend opens a session, holds a
+      // single punch and lands as MISSING_CHECKOUT: a chargeable,
+      // payroll-blocking row on a day nobody was rostered. It was deleted by
+      // hand eleven times and rebuilt itself on the next re-derivation, because
+      // the punches were still there and nothing asked whether the day was a
+      // working one.
+      //
+      // Per HR these scans are either the tail of the previous evening's shift
+      // — people do not always leave on time — or habit ("muscle memory") on a
+      // day off. Neither is a shift.
+      //
+      // A complete PAIR is kept: working a rest day is real, and must stay
+      // visible and payable. And an absent verdict from the resolver is not
+      // permission to drop anything — only an explicit `working === false`
+      // suppresses, so an employee with no roster keeps every day they scan on.
+      const dayInfo = working.get(key);
+      if (dayInfo?.working === false && session.punches.length < 2) continue;
       const tomorrow = new Date(day.getTime() + DAY_MS);
       const tomorrowInfo = working.get(dayKey(tomorrow));
       const nextShift = shiftFor(schedule?.schedule_pattern, tomorrow);
