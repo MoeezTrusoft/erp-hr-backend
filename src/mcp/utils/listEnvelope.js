@@ -20,6 +20,7 @@ const ARRAY_KEYS = [
   "items", "data", "reviews", "results", "rows", "records",
   "payslips", "candidates", "requisitions", "applications",
   "employees", "leaveRequests", "leave_requests", "attendance", "records",
+  "payrollRuns",
 ];
 const NEST_KEYS = ["data", "result", "payload"];
 
