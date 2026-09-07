@@ -21,6 +21,14 @@ const DAY_MS = 24 * 60 * MIN_MS;
 export const startOfDay = (v) => { const d = new Date(v); d.setHours(0, 0, 0, 0); return d; };
 export const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
 
+/** ISO weekday: Monday = 1 … Sunday = 7. Same definition workingDay.service
+ *  uses, and local like startOfDay above, so the two agree on which day a
+ *  timestamp falls in. */
+const isoDow = (date) => {
+  const js = new Date(date).getDay();
+  return js === 0 ? 7 : js;
+};
+
 /** "HH:MM" anchored to a day; a night shift rolls its end into the next one. */
 /**
  * Every shift window a roster can put on this day. One entry for a fixed
@@ -44,6 +52,24 @@ export function shiftCandidates(pattern, day) {
 
   const rotating = Array.isArray(pattern?.rotatingShifts) ? pattern.rotatingShifts : null;
   if (rotating?.length) return rotating.map(build).filter((s) => s.start);
+
+  // HR-ROSTER-04 — this weekday may work different hours.
+  //
+  // `shift` holds one {from,to}, so a roster could not say "Saturday is a short
+  // day". Akash works 07:30-15:00 on weekdays and 10:18-13:42 on Saturdays;
+  // judged against the single window every Saturday came out as a 2-3 hour day,
+  // under the half-day threshold, stored ABSENT — five unpaid days for work he
+  // actually did.
+  //
+  // Keyed by ISO weekday (Monday=1 .. Sunday=7) and read as a string, because
+  // schedule_pattern round-trips through JSONB and numeric keys come back as
+  // strings. A malformed entry falls through to `shift` rather than erasing the
+  // roster: losing the window entirely would make every scan unrostered, which
+  // is worse than the wrong hours.
+  const byDay = pattern?.shiftByDay?.[String(isoDow(day))];
+  const perDay = byDay ? build(byDay) : null;
+  if (perDay?.start && perDay?.end) return [perDay];
+
   const single = build(pattern?.shift);
   return single.start ? [single] : [];
 }
