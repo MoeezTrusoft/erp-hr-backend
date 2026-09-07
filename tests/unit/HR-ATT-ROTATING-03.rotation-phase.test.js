@@ -27,7 +27,16 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
 const SCHEDULE = { schedule_pattern: null };
 const prismaMock = {
-    workSchedule: { findFirst: jest.fn(async () => SCHEDULE) },
+    // HR-ROSTER-01 resolves the roster per day, so the service now reads every
+    // schedule covering the window. One open-ended row is this employee's whole
+    // history.
+    workSchedule: {
+        findMany: jest.fn(async () => [{
+            ...SCHEDULE,
+            effective_start_date: new Date('2020-01-01T00:00:00.000Z'),
+            effective_end_date: null,
+        }]),
+    },
     employeeHolidayCalendar: { findMany: jest.fn(async () => []) },
     holiday: { findMany: jest.fn(async () => []) },
     leave: { findMany: jest.fn(async () => []) },

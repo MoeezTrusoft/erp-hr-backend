@@ -43,17 +43,28 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
   const first = startOfDay(from);
   const last = startOfDay(to);
 
-  const [schedule, holidays, leaves] = await Promise.all([
-    // Effective-dated: off-days can change mid-month for one employee, and the
-    // old pattern must keep applying to the days it covered.
-    prisma.workSchedule.findFirst({
+  const [schedules, holidays, leaves] = await Promise.all([
+    // HR-ROSTER-01 — EVERY schedule covering the window, resolved per day.
+    //
+    // This used to be a findFirst: one schedule, the newest overlapping the
+    // range, applied to all of it. The comment claimed effective dating and the
+    // query did not implement it, which is harmless only while each employee
+    // has exactly one row. With two, the newer pattern reaches backwards over
+    // days the older one covered — correcting a weekend today would turn last
+    // month's rest days into working days, and reconciled attendance into
+    // absences. A month that has been closed must stay closed.
+    prisma.workSchedule.findMany({
       where: {
         employeeId,
         effective_start_date: { lte: last },
         OR: [{ effective_end_date: null }, { effective_end_date: { gte: first } }],
       },
       orderBy: { effective_start_date: "desc" },
-      select: { schedule_pattern: true },
+      select: {
+        schedule_pattern: true,
+        effective_start_date: true,
+        effective_end_date: true,
+      },
     }),
     // Holidays the employee is actually entitled to. If they are assigned to
     // one or more calendars (employee_holiday_calendars, effective-dated), only
@@ -91,38 +102,65 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
     }),
   ]);
 
-  const offDays = new Set(
-    Array.isArray(schedule?.schedule_pattern?.offDays)
-      ? schedule.schedule_pattern.offDays.map(Number)
-      : [],
-  );
+  /**
+   * Everything derived from one schedule_pattern. Computed once per schedule
+   * rather than once per day — a month with two schedules derives twice, not
+   * sixty times.
+   */
+  const derive = (pattern) => {
+    const offDays = new Set(
+      Array.isArray(pattern?.offDays) ? pattern.offDays.map(Number) : [],
+    );
 
-  // HR-ATT-ROTATING-02 — a rotating roster rests on the ROTATION, not on a
-  // weekday, so `offDays` is legitimately empty and every day below reads as
-  // working. That is right for the shift lookup and wrong for absence marking,
-  // which would invent an unpaid day out of every rest day. Flag it here rather
-  // than re-deriving the pattern in each caller.
-  const isRotating = Boolean(
-    Array.isArray(schedule?.schedule_pattern?.rotatingShifts) &&
-      schedule.schedule_pattern.rotatingShifts.length,
-  );
+    // HR-ATT-ROTATING-02 — a rotating roster rests on the ROTATION, not on a
+    // weekday, so `offDays` is legitimately empty and every day below reads as
+    // working. That is right for the shift lookup and wrong for absence
+    // marking, which would invent an unpaid day out of every rest day. Flag it
+    // here rather than re-deriving the pattern in each caller.
+    const isRotating = Boolean(
+      Array.isArray(pattern?.rotatingShifts) && pattern.rotatingShifts.length,
+    );
 
-  // HR-ATT-ROTATING-03 — when the rotation's PHASE is known the rest day is an
-  // ordinary off-day and nothing needs suppressing. `offDays` cannot hold it:
-  // that is a weekday list and a 3-day cycle walks through the week, so the
-  // phase is stored as {days, offIndex, anchor} and evaluated per day.
-  const cycle = schedule?.schedule_pattern?.cycle;
-  const cycleDays = Number(cycle?.days) > 0 ? Number(cycle.days) : null;
-  const cycleAnchor = cycleDays ? startOfDay(new Date(cycle.anchor)) : null;
-  const cycleOff = cycleDays ? Number(cycle.offIndex) : null;
-  const hasPhase = Boolean(cycleDays && cycleAnchor && !Number.isNaN(cycleOff));
-  // Only an UNKNOWN phase needs the ROTATING-02 fallback.
-  const rotating = isRotating && !hasPhase;
+    // HR-ATT-ROTATING-03 — when the rotation's PHASE is known the rest day is
+    // an ordinary off-day and nothing needs suppressing. `offDays` cannot hold
+    // it: that is a weekday list and a 3-day cycle walks through the week, so
+    // the phase is stored as {days, offIndex, anchor} and evaluated per day.
+    const cycle = pattern?.cycle;
+    const cycleDays = Number(cycle?.days) > 0 ? Number(cycle.days) : null;
+    const cycleAnchor = cycleDays ? startOfDay(new Date(cycle.anchor)) : null;
+    const cycleOff = cycleDays ? Number(cycle.offIndex) : null;
+    const hasPhase = Boolean(cycleDays && cycleAnchor && !Number.isNaN(cycleOff));
 
-  /** Index of `day` within the rotation, always non-negative. */
-  const cycleIndex = (day) => {
-    const diff = Math.round((startOfDay(day) - cycleAnchor) / DAY_MS);
-    return ((diff % cycleDays) + cycleDays) % cycleDays;
+    return {
+      offDays,
+      hasPhase,
+      cycleOff,
+      // Only an UNKNOWN phase needs the ROTATING-02 fallback.
+      rotating: isRotating && !hasPhase,
+      /** Index of `day` within the rotation, always non-negative. */
+      cycleIndex: (day) => {
+        const diff = Math.round((startOfDay(day) - cycleAnchor) / DAY_MS);
+        return ((diff % cycleDays) + cycleDays) % cycleDays;
+      },
+    };
+  };
+
+  const EMPTY = derive(null);
+  const cache = new Map();
+
+  /**
+   * The schedule in force ON `day`. `schedules` is ordered newest-start first,
+   * so the first whose range contains the day is the one that governs it.
+   */
+  const patternOn = (day) => {
+    const hit = schedules.find(
+      (s) =>
+        startOfDay(s.effective_start_date) <= day
+        && (s.effective_end_date == null || startOfDay(s.effective_end_date) >= day),
+    );
+    if (!hit) return EMPTY;
+    if (!cache.has(hit)) cache.set(hit, derive(hit.schedule_pattern));
+    return cache.get(hit);
   };
 
   const holidayByDay = new Map();
@@ -150,17 +188,21 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
       continue;
     }
 
-    if (offDays.has(isoDow(day))) {
+    const roster = patternOn(day);
+
+    if (roster.offDays.has(isoDow(day))) {
       out.set(key, { date: day, working: false, reason: "OFF_DAY", detail: null });
       continue;
     }
 
-    if (hasPhase && cycleIndex(day) === cycleOff) {
+    if (roster.hasPhase && roster.cycleIndex(day) === roster.cycleOff) {
       out.set(key, { date: day, working: false, reason: "ROTATION_OFF", detail: null });
       continue;
     }
 
-    out.set(key, { date: day, working: true, reason: null, detail: null, rotating });
+    out.set(key, {
+      date: day, working: true, reason: null, detail: null, rotating: roster.rotating,
+    });
   }
 
   return out;

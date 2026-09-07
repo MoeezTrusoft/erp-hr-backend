@@ -15,7 +15,17 @@ let leaves;
 let assignedCalendars;
 
 const prismaMock = {
-    workSchedule: { findFirst: jest.fn(async () => schedule) },
+    // HR-ROSTER-01 resolves the roster per day, so the service reads every
+    // schedule covering the window rather than the newest one.
+    workSchedule: {
+        findMany: jest.fn(async () => (schedule
+            ? [{
+                ...schedule,
+                effective_start_date: new Date('2020-01-01T00:00:00.000Z'),
+                effective_end_date: null,
+            }]
+            : [])),
+    },
     employeeHolidayCalendar: { findMany: jest.fn(async () => assignedCalendars) },
     // Honours a holidayCalendarId filter so calendar scoping can be asserted.
     holiday: {
