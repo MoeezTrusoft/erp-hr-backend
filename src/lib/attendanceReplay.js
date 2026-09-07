@@ -118,7 +118,11 @@ export function shiftFor(pattern, day, anchor) {
  * is the departure; where that contradicts the device, the punch is corrected
  * and a warning is recorded for HR to confirm or overturn.
  */
-export function sessioniseByRoster(punches, pattern, { windowHours = 5, dedupeSeconds = 120 } = {}) {
+export function sessioniseByRoster(
+  punches,
+  pattern,
+  { windowHours = 5, dedupeSeconds = 120, closeHours = 8 } = {},
+) {
   const ordered = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
 
   // HR-ATT-DUPLICATE-01 — one press, however many records it left.
@@ -163,14 +167,44 @@ export function sessioniseByRoster(punches, pattern, { windowHours = 5, dedupeSe
   // closes it. Only a punch that no open shift can account for opens a new one.
   let open = null; // { key, start, end } of the shift currently in progress
   const tol = windowHours * 60 * MIN_MS;
+  const closeTol = closeHours * 60 * MIN_MS;
+
+  /** Distance from `t` to the nearest rostered START, across a day either side. */
+  const toNearestStart = (at) => {
+    let best = Infinity;
+    for (const offset of [-1, 0, 1]) {
+      const anchor = new Date(at.getTime() + offset * DAY_MS);
+      for (const { start } of shiftCandidates(pattern, startOfDay(anchor))) {
+        if (start) best = Math.min(best, Math.abs(at.getTime() - start.getTime()));
+      }
+    }
+    return best;
+  };
 
   for (const p of sorted) {
     let key = dayKey(p.punchedAt);
     const t = p.punchedAt.getTime();
 
     if (hasRoster) {
+      // HR-ATT-TOLERANCE-01 — a late departure still closes its own shift.
+      //
+      // The close window was the same 5 hours as everything else. hamza works
+      // 15:00-00:00 and left at 05:06 — six minutes outside it — so the shift
+      // he was closing stayed open and his scan started a session on a Saturday
+      // he does not work. HR: "we don't sometimes leave on time... these next
+      // day or deep night check-outs are for previous days."
+      //
+      // Widening it alone would be reckless: an 8-hour window on a day shift
+      // reaches into the next morning and would swallow a real arrival. So past
+      // the normal window a punch is only claimed while it stays nearer this
+      // shift's END than to any plausible next START.
+      const late = open
+        && t > open.end + tol
+        && t <= open.end + closeTol
+        && (t - open.end) < toNearestStart(p.punchedAt);
+
       // 1. Does this punch belong to the shift already in progress?
-      if (open && t >= open.start - tol && t <= open.end + tol) {
+      if (open && ((t >= open.start - tol && t <= open.end + tol) || late)) {
         key = open.key;
         // Past the rostered end, the shift is finished; a later punch is a new
         // arrival rather than a third scan of the same shift.
@@ -218,8 +252,38 @@ export function sessioniseByRoster(punches, pattern, { windowHours = 5, dedupeSe
     // disagrees, so HR can see what was changed and why.
     const deviceDir = (st) => (st === 0 || st === 4 ? "IN" : st === 1 || st === 5 ? "OUT" : null);
 
+    // HR-ATT-DIRECTION-01 — with ONE scan, position cannot tell you anything.
+    //
+    // The positional rule makes the only punch the first punch, so every
+    // incomplete shift was stored MISSING_CHECKOUT. Against HR's August
+    // workbook that label was wrong for 23 of the 61 incomplete days: a lone
+    // 22:15 scan on a 10:00-22:00 shift is a DEPARTURE, and what is missing is
+    // the check-IN. HR's own times for those days sit in their check-out
+    // column, matching our scan to the minute.
+    //
+    // The label matters because it sends HR to fill an end — filling an "out"
+    // over a scan that IS the out would overwrite the day's only real
+    // observation. So a lone punch is timed against the rostered window;
+    // without a roster there is nothing to time it against and it stays an
+    // arrival, as before.
+    const loneDirection = () => {
+      if (list.length !== 1) return null;
+      const day = startOfDay(new Date(`${key}T00:00:00`));
+      const t = list[0].punchedAt.getTime();
+      let nearest = null;
+      for (const { start, end } of shiftCandidates(pattern, day)) {
+        if (!start || !end) continue;
+        const toStart = Math.abs(t - start.getTime());
+        const toEnd = Math.abs(t - end.getTime());
+        const d = Math.min(toStart, toEnd);
+        if (!nearest || d < nearest.d) nearest = { d, dir: toEnd < toStart ? "OUT" : "IN" };
+      }
+      return nearest?.dir ?? null;
+    };
+    const lone = loneDirection();
+
     const shaped = list.map((p, i) => {
-      const positional = i === 0 ? "IN" : i === list.length - 1 ? "OUT" : "";
+      const positional = lone ?? (i === 0 ? "IN" : i === list.length - 1 ? "OUT" : "");
       const device = deviceDir(p.status);
       if (positional && device && device !== positional) {
         corrections.push({
