@@ -13,6 +13,7 @@ import {
   getAbsenteeismTrend,
   listCheckInOuts,
 } from "../../services/timesheetReport.service.js";
+import { buildMonthlyReconciliation } from "../../services/attendanceReconciliation.service.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -91,5 +92,20 @@ export function registerTimesheetReportTools(server) {
       const data = await listCheckInOuts({ tenantId: user.tenantId, ...args });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_checkinout_list")
+  );
+
+  server.tool(
+    "hr_attendance_reconciliation",
+    "Month-end attendance reconciliation: per-employee status tallies (present/late/halfDay/absent/missingCheckin/missingCheckout/weeklyOff/holiday/onLeave/corrected/needsReview), expectedDays, attendedDays, attendancePct, and fleet totals. The source of truth is the STORED Attendance.status — this report does not re-derive.",
+    {
+      from: z.string().describe("ISO date string (YYYY-MM-DD); inclusive start of the period."),
+      to: z.string().describe("ISO date string (YYYY-MM-DD); inclusive end of the period."),
+    },
+    withToolError(async ({ from, to }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await buildMonthlyReconciliation({ tenantId: user.tenantId, from, to });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_reconciliation")
   );
 }
