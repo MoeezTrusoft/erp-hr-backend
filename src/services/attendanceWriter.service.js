@@ -24,6 +24,17 @@ import { getAttendancePolicy } from "./attendancePolicyConfig.service.js";
 import { normalizeWorkMode } from "../lib/attendanceStatus.js";
 import logger from "../lib/logger.js";
 
+// An interactive transaction has a 5 second budget. A month of off-days is
+// hundreds of rows per tenant, so the bulk writes below are chunked rather than
+// opening one transaction and hoping.
+const WRITE_CHUNK = 200;
+
+const chunk = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
 export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, now = new Date() }) {
   const policy = await getAttendancePolicy({ tenantId });
   const shifts = await replayTenant({ tenantId, from, to, policy, now });
@@ -171,22 +182,35 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
   summary.retracted = restate.length;
   if (dryRun || !restate.length) return;
 
-  await tenantTransaction(prisma, async (tx) => {
-    for (const r of restate) {
-      await tx.attendance.update({
-        where: { id: r.id },
-        data: {
-          status: r.status,
-          check_in: null,
-          check_out: null,
-          total_hours: null,
-          day_credit: 0,
-          requires_regularization: false,
-          remarks: `not a working day (${r.reason}${r.detail ? `: ${r.detail}` : ""})`,
-        },
+  // Rows that say the same thing are written together. An interactive
+  // transaction has a 5s budget and a month can restate hundreds of days, so
+  // one statement per row exhausts it and rolls the whole pass back.
+  const groups = new Map();
+  for (const r of restate) {
+    const remarks = `not a working day (${r.reason}${r.detail ? `: ${r.detail}` : ""})`;
+    const bucket = `${r.status}|${remarks}`;
+    if (!groups.has(bucket)) groups.set(bucket, { status: r.status, remarks, ids: [] });
+    groups.get(bucket).ids.push(r.id);
+  }
+
+  for (const g of groups.values()) {
+    for (const ids of chunk(g.ids, WRITE_CHUNK)) {
+      await tenantTransaction(prisma, async (tx) => {
+        await tx.attendance.updateMany({
+          where: { id: { in: ids } },
+          data: {
+            status: g.status,
+            check_in: null,
+            check_out: null,
+            total_hours: null,
+            day_credit: 0,
+            requires_regularization: false,
+            remarks: g.remarks,
+          },
+        });
       });
     }
-  });
+  }
 }
 
 /**
@@ -246,17 +270,24 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
   summary.nonWorking = toWrite.length;
   if (dryRun || !toWrite.length) return;
 
-  await tenantTransaction(prisma, async (tx) => {
-    for (const w of toWrite) {
-      const employee = await prisma.employee.findUnique({
-        where: { id: w.employeeId },
-        select: { tenant_id: true },
-      });
-      await tx.attendance.create({
-        data: {
+  // Every employee's tenant resolved ONCE, before any transaction opens. The
+  // first version looked this up per row inside the transaction; a month is
+  // ~300 rows per tenant, and the per-row round trips alone exhausted the 5s
+  // interactive-transaction budget and rolled the whole pass back (P2028).
+  const tenantOf = new Map(
+    (await prisma.employee.findMany({
+      where: { id: { in: [...new Set(toWrite.map((w) => w.employeeId))] } },
+      select: { id: true, tenant_id: true },
+    })).map((e) => [e.id, e.tenant_id]),
+  );
+
+  for (const batch of chunk(toWrite, WRITE_CHUNK)) {
+    await tenantTransaction(prisma, async (tx) => {
+      await tx.attendance.createMany({
+        data: batch.map((w) => ({
           employeeId: w.employeeId,
           date: new Date(`${w.key}T00:00:00.000Z`),
-          tenantId: employee?.tenant_id ?? tenantId,
+          tenantId: tenantOf.get(w.employeeId) ?? tenantId,
           status: w.status,
           check_in: null,
           check_out: null,
@@ -264,10 +295,13 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
           day_credit: 0,
           requires_regularization: false,
           remarks: `not a working day (${w.reason})`,
-        },
+        })),
+        // Attendance is unique on (tenantId, employeeId, date). A concurrent
+        // ingest could have created the day between the read above and here.
+        skipDuplicates: true,
       });
-    }
-  });
+    });
+  }
 }
 
 /**

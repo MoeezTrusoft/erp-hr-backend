@@ -38,6 +38,11 @@ const prismaMock = {
         findMany: jest.fn(async () => storedRows),
         update: jest.fn(async ({ where, data }) => { written.push({ id: where.id, ...data }); return {}; }),
         create: jest.fn(async ({ data }) => { written.push(data); return {}; }),
+        createMany: jest.fn(async ({ data }) => { written.push(...data); return { count: data.length }; }),
+        updateMany: jest.fn(async ({ where, data }) => {
+            for (const id of where.id?.in ?? []) written.push({ id, ...data });
+            return { count: (where.id?.in ?? []).length };
+        }),
         delete: jest.fn(async ({ where }) => { deleted.push(where.id); return {}; }),
         deleteMany: jest.fn(async ({ where }) => {
             deleted.push(...(where.id?.in ?? [])); return { count: 0 };
@@ -170,6 +175,28 @@ describe('HR-ATT-STATUS-01 non-working days are written', () => {
         await run();
 
         expect(statusesWritten()).not.toContain('WEEKLY_OFF');
+    });
+
+    it('bulk-writes without a query per row inside the transaction', async () => {
+        // The first version issued one create AND one employee lookup per row,
+        // all inside a single interactive transaction. A month is ~300 off-days
+        // per tenant, so it blew the 5s budget at 5006ms and Postgres rolled
+        // the whole pass back — nothing was written and the run exited 1.
+        const days = [];
+        for (let d = 1; d <= 31; d += 1) {
+            days.push(off(`2026-08-${String(d).padStart(2, '0')}`));
+        }
+        workingByDay = new Map(days);
+
+        await applyEvaluatedShifts({
+            tenantId: TENANT, from: '2026-08-01', to: '2026-08-31', dryRun: false,
+        });
+
+        expect(written).toHaveLength(31);
+        expect(prismaMock.attendance.create).not.toHaveBeenCalled();
+        expect(prismaMock.attendance.createMany).toHaveBeenCalled();
+        // Employee tenants are resolved in ONE query, before the write.
+        expect(prismaMock.employee.findUnique).not.toHaveBeenCalled();
     });
 
     it('writes nothing under dryRun', async () => {

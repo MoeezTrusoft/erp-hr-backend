@@ -45,6 +45,11 @@ const prismaMock = {
         findMany: jest.fn(async () => storedRows),
         update: jest.fn(async ({ where, data }) => { updated.push({ id: where.id, ...data }); return {}; }),
         create: jest.fn(async () => ({})),
+        createMany: jest.fn(async ({ data }) => ({ count: data.length })),
+        updateMany: jest.fn(async ({ where, data }) => {
+            for (const id of where.id?.in ?? []) updated.push({ id, ...data });
+            return { count: (where.id?.in ?? []).length };
+        }),
         delete: jest.fn(async ({ where }) => { deleted.push(where.id); return {}; }),
         deleteMany: jest.fn(async ({ where }) => {
             const ids = where.id?.in ?? [];
