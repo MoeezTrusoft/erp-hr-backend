@@ -35,7 +35,7 @@ const STATUS_DISPLAY = {
   APPROVED: "approved",
   HOLD: "hold",
   DISTRIBUTED: "disbursed",
-  FINALIZED: "approved",
+  FINALIZED: "finalized",
 };
 // FE display → enum (for the employees-list status filter).
 const DISPLAY_TO_STATUS = {
@@ -520,12 +520,19 @@ export async function listPayrollEmployees({
     const earnings = p.earnings || [];
     const basic = computeBasic(earnings, termsMap.get(p.employeeId));
     const earningsTotal = earnings.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const basic = computeBasic(earnings, termsMap.get(p.employeeId));
     const allowances = earningsTotal - basic;
-    const deductions = Number(p.totalDeductions) || 0;
+    // Build allowance breakdown for tooltip
+    const allowanceBreakdown = earnings
+      .filter((e) => e.earningType?.code !== 'BASIC')
+      .map((e) => `${e.earningType?.code || 'Other'}: PKR ${Number(e.amount || 0).toLocaleString()}`)
+      .join(' | ');
     // Extract tax from deductions array — match "income tax", "tax", etc.
     const tax = (p.deductions || [])
       .filter((d) => /tax/i.test(d.deductionType?.name || ''))
       .reduce((s, d) => s + (Number(d.amount) || 0), 0);
+    // Deductions = total minus tax (tax has its own column)
+    const deductions = (Number(p.totalDeductions) || 0) - tax;
     const net = Number(p.netAmount) || 0;
     return {
       payslipId: p.id,
@@ -539,6 +546,7 @@ export async function listPayrollEmployees({
       payGrade: emp?.gradeLevel?.name ?? null,
       basic,
       allowances,
+      allowanceBreakdown,
       tax,
       deductions,
       net,
