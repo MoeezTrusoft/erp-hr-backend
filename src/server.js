@@ -38,7 +38,7 @@ dotenv.config({
 });
 
 const app = createApp();
-const httpServer = createServer(app);
+const httpServer = createServer({ maxHeaderSize: 65536 }, app);
 
 // BullMQ reminder/retention/document-expiry jobs (replaces node-cron; BE-§9.4).
 // Best-effort: a Redis/boot failure logs and returns a disabled handle — it

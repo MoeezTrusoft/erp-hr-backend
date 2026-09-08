@@ -417,13 +417,16 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // `employee.term_date || employee.terminationDate`, and Employee has
     // neither column, so the leaver branch never ran. Employment periods carry
     // the leaving date, and a re-hire is two of them.
-    const prorationFactor = computeProrationFactor(
-        payrollRun.periodStart,
-        payrollRun.periodEnd,
-        employee?.employmentPeriods?.length
-            ? employee.employmentPeriods
-            : (employee?.hire_date || employee?.hireDate),
-    );
+    // midMonthJoinerProration toggle: when OFF, skip proration entirely (factor = 1.0).
+    const prorationFactor = ruleConfig.midMonthJoinerProration === false
+        ? 1_000_000n
+        : computeProrationFactor(
+            payrollRun.periodStart,
+            payrollRun.periodEnd,
+            employee?.employmentPeriods?.length
+                ? employee.employmentPeriods
+                : (employee?.hire_date || employee?.hireDate),
+        );
 
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
     if (employmentTerm) {
@@ -538,9 +541,14 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         }
     }
 
-    // 6) BRIDGE: Loan repayments → Deduction (with garnishment cap at 40% of gross)
+    // 6) BRIDGE: Loan repayments → Deduction (with garnishment cap)
     if (bridges.loanLines?.length > 0) {
-        const grossLimit = grossMinor * 40n / 100n; // 40% garnishment cap
+        const capPct = ruleConfig.garnishmentCapPct != null
+            ? BigInt(Math.round(ruleConfig.garnishmentCapPct))
+            : 40n;
+        const grossLimit = ruleConfig.garnishmentRecovery === false
+            ? grossMinor // no cap — allow full deduction
+            : grossMinor * capPct / 100n;
         let loanTotalMinor = 0n;
         for (const loan of bridges.loanLines) {
             const loanMinor = BigInt(loan.amountMinor || 0);
@@ -602,7 +610,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         const daysToMinor = (days) =>
             (basisMinor * BigInt(Math.round(days * 100))) / (100n * BigInt(periodDays));
 
-        if (bridges.lwpDays > 0) {
+        if (ruleConfig.lwpRecovery !== false && bridges.lwpDays > 0) {
             const lwpMinor = daysToMinor(bridges.lwpDays);
             if (lwpMinor > 0n) {
                 deductions.push({
