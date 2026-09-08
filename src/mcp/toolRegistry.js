@@ -68,6 +68,7 @@ import { registerLifecycleComplianceTools } from "./tools/lifecycleComplianceToo
 import { registerDevelopmentPlanTools } from "./tools/developmentPlanTools.js";
 import { registerLoanTools } from "./tools/loanTools.js";
 import { registerDeductionTools } from "./tools/deductionTools.js";
+import { registerCrossTenantTools } from "./tools/crossTenantTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 import { normalizeError } from "../middlewares/error.middleware.js";
@@ -316,4 +317,5 @@ export function registerAllTools(server) {
   registerDevelopmentPlanTools(server);
   registerLoanTools(server);
   registerDeductionTools(server);
+  registerCrossTenantTools(server);
 }
