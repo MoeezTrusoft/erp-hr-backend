@@ -47,8 +47,8 @@ export const getLogById = async (id, employeeId, ip, tenantId) => {
       module: "Log",
       result: "Fail",
       notes: `Log ID ${id} not found`,
-      ip
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+      ip,
+      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
     });
     throw new Error("Log not found");
   }
