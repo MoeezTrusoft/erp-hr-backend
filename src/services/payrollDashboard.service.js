@@ -520,7 +520,6 @@ export async function listPayrollEmployees({
     const earnings = p.earnings || [];
     const basic = computeBasic(earnings, termsMap.get(p.employeeId));
     const earningsTotal = earnings.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    const basic = computeBasic(earnings, termsMap.get(p.employeeId));
     const allowances = earningsTotal - basic;
     // Build allowance breakdown for tooltip
     const allowanceBreakdown = earnings
