@@ -17,7 +17,8 @@ export const logAction = async ({
     module,
     result,
     notes = "",
-    ip = "unknown"
+    ip = "unknown",
+    tenantId = null,
 }) => {
     try {
         const os_name = os.platform();
@@ -56,6 +57,7 @@ export const logAction = async ({
                 ip,
                 os: os_name,
                 notes,
+                tenantId: tenantId ?? null,
             },
         });
     } catch (err) {

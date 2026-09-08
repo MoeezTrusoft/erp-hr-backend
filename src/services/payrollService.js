@@ -779,7 +779,8 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
     type: "Create",
     module: "Payroll Run",
     result: "SUCCESS",
-    notes: `Payroll run "${create.id}" created successfully`
+    notes: `Payroll run "${create.id}" created successfully`,
+    tenantId: tenantId ?? null,
   });
 
   return create;
@@ -1362,7 +1363,8 @@ export const approvePayrollRun = async (id, approverId, tenantId) => {
     type: 'Update',
     module: 'Payroll Run',
     result: 'SUCCESS',
-    notes: `Payroll run "${id}" approved`
+    notes: `Payroll run "${id}" approved`,
+    tenantId: tenantId ?? null,
   });
 
   return getPayrollRunById(id, tenantId);
@@ -1446,7 +1448,8 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
     type: "Update",
     module: "Payroll Run",
     result: "SUCCESS",
-    notes: `Payroll run "${id}" finalized successfully`
+    notes: `Payroll run "${id}" finalized successfully`,
+    tenantId: tenantId ?? null,
   });
 
   return getPayrollRunById(id, tenantId);
@@ -1484,7 +1487,8 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId) => {
     type: "Delete",
     module: "Payroll Run",
     result: "SUCCESS",
-    notes: `Payroll run "${id}" cancelled and deleted`
+    notes: `Payroll run "${id}" cancelled and deleted`,
+    tenantId: tenantId ?? null,
   });
 };
 
@@ -1505,7 +1509,8 @@ export const createEarningType = async (data, createdBy, tenantId) => {
     type: "Create",
     module: "Earning Type",
     result: "SUCCESS",
-    notes: `Earning Type "${create.name}" created`
+    notes: `Earning Type "${create.name}" created`,
+    tenantId: tenantId ?? null,
   });
 
   return create;
@@ -1528,7 +1533,8 @@ export const updateEarningType = async (id, data, updatedBy, tenantId) => {
     type: "Update",
     module: "Earning Type",
     result: "SUCCESS",
-    notes: `Earning Type "${update.name}" updated`
+    notes: `Earning Type "${update.name}" updated`,
+    tenantId: tenantId ?? null,
   });
 
   return update;
@@ -1549,7 +1555,8 @@ export const createDeductionType = async (data, createdBy, tenantId) => {
     type: "Create",
     module: "Deduction Type",
     result: "SUCCESS",
-    notes: `Deduction Type "${create.name}" created`
+    notes: `Deduction Type "${create.name}" created`,
+    tenantId: tenantId ?? null,
   });
 
   return create;
@@ -1570,7 +1577,8 @@ export const updateDeductionType = async (id, data, updatedBy, tenantId) => {
     type: "Update",
     module: "Deduction Type",
     result: "SUCCESS",
-    notes: `Deduction Type "${update.name}" updated`
+    notes: `Deduction Type "${update.name}" updated`,
+    tenantId: tenantId ?? null,
   });
 
   return update;
@@ -1635,7 +1643,8 @@ export const createEmploymentTerms = async (data, createdBy, tenantId) => {
     type: "Create",
     module: "Employment Terms",
     result: "SUCCESS",
-    notes: `Employment terms created for employee ID: ${create.employeeId || "N/A"}`
+    notes: `Employment terms created for employee ID: ${create.employeeId || "N/A"}`,
+    tenantId: tenantId ?? null,
   });
 
   return create;
@@ -1661,7 +1670,8 @@ export const createPayrollAssignment = async (data, createdBy, tenantId) => {
     type: "Create",
     module: "Payroll Assignment",
     result: "SUCCESS",
-    notes: `Payroll assignment created for employee ID: ${create.employeeId} (EarningType: ${create.earningTypeId || "N/A"}, DeductionType: ${create.deductionTypeId || "N/A"})`
+    notes: `Payroll assignment created for employee ID: ${create.employeeId} (EarningType: ${create.earningTypeId || "N/A"}, DeductionType: ${create.deductionTypeId || "N/A"})`,
+    tenantId: tenantId ?? null,
   });
 
   return create;
@@ -1770,7 +1780,8 @@ export const distributePayslip = async (id, createdBy, tenantId) => {
     type: "Distribute",
     module: "Payslip",
     result: "SUCCESS",
-    notes: `Payslip (ID: ${id}) distributed to employee ID: ${payslip.employeeId}`
+    notes: `Payslip (ID: ${id}) distributed to employee ID: ${payslip.employeeId}`,
+    tenantId: tenantId ?? null,
   });
 
   return updatedPayslip;
@@ -1837,7 +1848,8 @@ export const createTaxRate = async (data, createdBy, tenantId) => {
     type: "Create",
     module: "Tax Rate",
     result: "SUCCESS",
-    notes: `Tax rate for country "${create.countryCode}" and bracket "${create.bracketMin} - ${create.bracketMax}" created successfully`
+    notes: `Tax rate for country "${create.countryCode}" and bracket "${create.bracketMin} - ${create.bracketMax}" created successfully`,
+    tenantId: tenantId ?? null,
   });
 
   return create;
