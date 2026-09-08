@@ -43,7 +43,8 @@ export const createCourse = async (courseData, createdBy) => {
             module: "Training Course",
             result: "SUCCESS",
             notes: `Training Course "${course.id}" Created successfully`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
         return course;
     } catch (error) {
@@ -174,7 +175,8 @@ export const updateCourse = async (courseId, updateData, updatedBy, tenantId) =>
             module: "Training Course",
             result: "SUCCESS",
             notes: `Training Course "${courseId}" Updated successfully`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
         return course;
     } catch (error) {
@@ -211,7 +213,8 @@ export const deleteCourse = async (courseId, deletedBy, tenantId) => {
             module: "Training Course",
             result: "SUCCESS",
             notes: `Training Course "${courseId}" Delete successfully`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
         return deleted
     } catch (error) {
@@ -241,7 +244,8 @@ export const createCategory = async (categoryData, createdBy) => {
             module: "Training Category",
             result: "SUCCESS",
             notes: `Training Category "${category.id}" Created successfully`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
         return category;
     } catch (error) {
         throw new Error(`Failed to create category: ${error.message}`);

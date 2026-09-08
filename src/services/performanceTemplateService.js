@@ -31,6 +31,7 @@ export const createPerformanceTemplate = async (data, createdBy) => {
     module: "Performance Template",
     result: "SUCCESS",
     notes: `Performance Template "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create
@@ -76,6 +77,7 @@ export const updatePerformanceTemplate = async (id, data, updatedBy, tenantId) =
     module: "Performance Template",
     result: "SUCCESS",
     notes: `Performance Template "${id}" Updated Successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update
@@ -98,6 +100,7 @@ export const deletePerformanceTemplate = async (id, deletedBy, tenantId) => {
     module: "Performance Template",
     result: "SUCCESS",
     notes: `Performance Template "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted

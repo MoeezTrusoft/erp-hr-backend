@@ -46,6 +46,7 @@ export const createPerformanceReview = async (data,createdBy,tenantId) => {
     module: "performance",
     result: "SUCCESS",
     notes: `Performance "${employeeId}" created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -176,6 +177,7 @@ export const updateReview = async (id, data,updatedBy,tenantId) => {
     module: "Review in Performnace",
     result: "SUCCESS",
     notes: `Performance "${id}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return updated;
 };
@@ -215,6 +217,7 @@ export const addFeedback = async (data,createdBy,tenantId) => {
     module: "Performance",
     result: "SUCCESS",
     notes: `Feed Back "${reviewId}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -251,6 +254,7 @@ export const updateFeedback = async (id, data, updatedBy, tenantId) => {
     module: "Performance Feed Back",
     result: "SUCCESS",
     notes: `Feed back "${id}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return updated;
 };
@@ -268,6 +272,7 @@ export const deleteFeedback = async (id,deletedBy,tenantId) => {
     module: "Performance Feed Back",
     result: "SUCCESS",
     notes: `Feed Back "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted;
 };

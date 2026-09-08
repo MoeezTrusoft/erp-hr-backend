@@ -179,6 +179,7 @@ export const createTimesheet = async (data) => {
     module: "Attanace - Time Sheet",
     result: "SUCCESS",
     notes: `Time Sheet "${timesheet.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return getTimesheetById(timesheet.id, parseInt(employeeId), tenantId);
@@ -234,6 +235,7 @@ export const submitTimesheet = async (id, employeeId, tenantId) => {
     module: "Attanace - Time Sheet",
     result: "SUCCESS",
     notes: `Time Sheet "${id}" Submitted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return update;
 };
@@ -295,6 +297,7 @@ export const approveTimesheet = async (id, approverId, comments = '', tenantId) 
     module: "Attanace - Time Sheet",
     result: "SUCCESS",
     notes: `Time Sheet "${id}" Approved successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return update;
 };
@@ -359,6 +362,7 @@ export const rejectTimesheet = async (id, approverId, comments = '', tenantId) =
     module: "Attanace - Time Sheet",
     result: "SUCCESS",
     notes: `Time Sheet "${id}" Rejected successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return reject;
 };

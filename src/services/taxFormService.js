@@ -327,6 +327,7 @@ export const generateYearEndTaxForms = async (
         module: 'Payroll Tax Forms',
         result: 'SUCCESS',
         notes: `Year-end tax forms for ${year}: ${w2.length} W-2(s), ${form1099.length} 1099-NEC(s) from ${runs.length} finalized run(s)`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
     }).catch((e) => logger.warn({ err: e?.message, taxYear: year }, 'tax form audit log failed'));
 
     return { taxYear: year, currency, w2, form1099, summary };

@@ -58,6 +58,7 @@ export const enrollUser = async (enrollmentData, createdBy) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollment.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
         return enrollment;
@@ -99,6 +100,7 @@ export const bulkEnrollUsers = async (courseId, employeeIds, createdBy, tenantId
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollments.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -246,6 +248,7 @@ export const updateEnrollmentStatus = async (enrollmentId, status, updatedBy, te
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollmentId}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -296,6 +299,7 @@ export const updateProgress = async (enrollmentId, progress, updatedBy, tenantId
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollmentId}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
         return enrollment;
@@ -366,6 +370,7 @@ export const cancelEnrollment = async (enrollmentId, cancelledBy) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollmentId}" Cancelled successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
         return enrollment;

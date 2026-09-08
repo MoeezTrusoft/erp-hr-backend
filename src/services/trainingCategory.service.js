@@ -15,6 +15,7 @@ export const createCategory = async (data, tenantId) => {
     module: "Training Category",
     result: "SUCCESS",
     notes: `Training Category "${create.id}" created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -50,6 +51,7 @@ export const updateCategory = async (id, data, tenantId) => {
     module: "Training Category",
     result: "SUCCESS",
     notes: `Training Category "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -65,6 +67,7 @@ export const deleteCategory = async (id, tenantId) => {
     module: "Training Category",
     result: "SUCCESS",
     notes: `Training Category "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted;
 };

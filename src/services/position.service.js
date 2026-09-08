@@ -44,6 +44,7 @@ export const createPosition = async (data,createdBy) => {
     module: "Position",
     result: "SUCCESS",
     notes: `Position "${title}" created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return create;
 };
@@ -108,6 +109,7 @@ export const updatePosition = async (id, data, updatedBy, tenantId) => {
     module: "Position",
     result: "SUCCESS",
     notes: `Position "${id}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return updated;
@@ -128,6 +130,7 @@ export const deletePosition = async (id,deletedBy, tenantId) => {
     module: "Position",
     result: "SUCCESS",
     notes: `Position "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted;

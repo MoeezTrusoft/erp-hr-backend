@@ -135,7 +135,8 @@ export const createAttendanceService = async (data) => {
       module: "Attandance",
       result: "SUCCESS",
       notes: `Attandance check In "${empId}" successfully`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
   return attendanceIn;
 };
 export const checkOutService = async (employeeId, tenantId) => {
@@ -184,6 +185,7 @@ export const checkOutServiceWithTimestamp = async (employeeId, timestamp, tenant
     module: "Attandance",
     result: "SUCCESS",
     notes: `CHeck Out "${1}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return checkOut;
 };

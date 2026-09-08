@@ -18,6 +18,7 @@ export const enrollEmployee = async (data) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment"${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -54,6 +55,7 @@ export const updateEnrollment = async (id, data, tenantId) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment"${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -71,6 +73,7 @@ export const deleteEnrollment = async (id, tenantId) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment"${id}" Deleted Successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted;

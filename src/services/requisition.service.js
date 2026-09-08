@@ -40,6 +40,7 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
     module: "Create Requisition",
     result: "SUCCESS",
     notes: `Create Requisition"${createRequi.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   // Department is owned by RBAC (Company → Department); JobRequisition.departmentId
@@ -93,6 +94,7 @@ export const deleteRequisitions = async (id, deletedBy, tenantId) => {
     module: "Requisition",
     result: "SUCCESS",
     notes: `Requisition Position  "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted;
 };
@@ -134,6 +136,7 @@ export const approveRequisition = async (id, status, comments, approvedBy, tenan
     module: "Requisition Approve",
     result: "SUCCESS",
     notes: `Requisition approve "${id}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return update;
 };
@@ -171,6 +174,7 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
     module: "Requisition Post",
     result: "SUCCESS",
     notes: `Post Requisition "${id}" Posted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return jobPosted;
 };
@@ -229,7 +233,8 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
       module: "Update Requisition",
       result: "SUCCESS",
       notes: `Requisition "${id}" updated successfully`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
   }
 
   return updatedRequi;

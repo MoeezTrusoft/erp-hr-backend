@@ -23,6 +23,7 @@ export const getAllLogs = async (employeeId, ip, tenantId) => {
     result: "Success",
     notes: "Fetched all logs",
     ip,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return logs;
@@ -47,6 +48,7 @@ export const getLogById = async (id, employeeId, ip, tenantId) => {
       result: "Fail",
       notes: `Log ID ${id} not found`,
       ip
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
     });
     throw new Error("Log not found");
   }
@@ -58,6 +60,7 @@ export const getLogById = async (id, employeeId, ip, tenantId) => {
     result: "Success",
     notes: `Fetched log ID ${id}`,
     ip,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return log;

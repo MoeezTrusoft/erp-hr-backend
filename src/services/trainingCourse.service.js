@@ -17,6 +17,7 @@ export const createCourse = async (data, tenantId) => {
     module: "Training Course",
     result: "SUCCESS",
     notes: `Training Course\"${create.id}\" created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -67,6 +68,7 @@ export const updateCourse = async (id, data, tenantId) => {
     module: "Training Course",
     result: "SUCCESS",
     notes: `Training Course\"${id}\" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -84,6 +86,7 @@ export const deleteCourse = async (id, tenantId) => {
     module: "Training Course",
     result: "SUCCESS",
     notes: `Training Course\"${id}\" deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted;
 };

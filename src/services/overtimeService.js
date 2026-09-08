@@ -25,6 +25,7 @@ export const createOvertimeRule = async (data, createdBy, tenantId) => {
     module: "Attanace - Over Time",
     result: "SUCCESS",
     notes: `Over Time "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return create;
 };
@@ -48,6 +49,7 @@ export const updateOvertimeRule = async (id, data,updatedBy,tenantId) => {
     module: "Attanace - Over Time",
     result: "SUCCESS",
     notes: `Over Time "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return update;
@@ -81,6 +83,7 @@ export const deleteOvertimeRule = async (id,deletedBy,tenantId) => {
     module: "Attanace - Over Time",
     result: "SUCCESS",
     notes: `Over Time "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return deleted;

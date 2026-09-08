@@ -85,6 +85,7 @@ export const createWorkSchedule = async (data) => {
     module: "Attanace - Work Schedule",
     result: "SUCCESS",
     notes: `Work Schedule "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return create;
@@ -135,6 +136,7 @@ export const updateWorkSchedule = async (id, data,updatedBy,tenantId) => {
     module: "Attanace - Work Scheduler ",
     result: "SUCCESS",
     notes: `Work Schedule "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return update;
@@ -158,6 +160,7 @@ export const deleteWorkSchedule = async (id,deletedBy,tenantId) => {
     module: "Attanace - Work Scheduler ",
     result: "SUCCESS",
     notes: `Work Schedule "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return deleted;

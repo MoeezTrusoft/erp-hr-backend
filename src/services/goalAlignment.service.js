@@ -52,6 +52,7 @@ export const createGoalAlignmentService = async (data, createdBy) => {
     module: "Goal Allignment",
     result: "SUCCESS",
     notes: `Goal Allignment "${create.id}" Create successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create
@@ -86,6 +87,7 @@ export const deleteGoalAlignmentService = async (id, deletedBy, tenantId) => {
     module: "Goal Allignment",
     result: "SUCCESS",
     notes: `Goal Allignment "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted

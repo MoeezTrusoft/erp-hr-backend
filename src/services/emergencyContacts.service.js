@@ -27,7 +27,8 @@ export const createEmergencyContact = async (data, createdBy) => {
         module: "Position",
         result: "SUCCESS",
         notes: `Emergency Contact "${create.id}" with  employee of "${ Number(data.employee_Id)}"created successfully`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
     return create;
 };
@@ -63,7 +64,8 @@ export const updateEmergencyContact = async (id, data, updatedBy, tenantId) => {
         module: "Position",
         result: "SUCCESS",
         notes: `Position "${id}" created successfully`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
     return update;
 };
 
@@ -81,6 +83,7 @@ export const deleteEmergencyContact = async (id, deletedBy, tenantId) => {
         module: "Position",
         result: "SUCCESS",
         notes: `Position "${id}" created successfully`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
     return deleted;
 };

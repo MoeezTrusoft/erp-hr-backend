@@ -38,6 +38,7 @@ export const createGoalService = async (data, createdBy, tenantId) => {
     module: "Goal",
     result: "SUCCESS",
     notes: `Goal "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return create
 };
@@ -105,6 +106,7 @@ export const updateGoalService = async (id, data,updatedBy,tenantId) => {
     module: "Goal",
     result: "SUCCESS",
     notes: `Goal "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update
@@ -139,6 +141,7 @@ if (!existing) throw new Error("Goal Not found");
     module: "Goal",
     result: "SUCCESS",
     notes: `Goal "${id}" Approved successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return approve
@@ -179,6 +182,7 @@ export const addGoalProgressService = async (data,createdBy,tenantId) => {
     module: "Goal",
     result: "SUCCESS",
     notes: `Goal Progress"${id}" Added successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return newProgress;

@@ -1194,6 +1194,7 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${employee.id} created from HR contract`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   // Opt-in AI resume parsing: only when BOTH resumeMediaId + parseResume are set.
@@ -1306,6 +1307,7 @@ export const updateEmployee = async (id, payload, actorId, ctx = {}) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${employeeId} updated from HR contract`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return employeeContractProfile(employee);

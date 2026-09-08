@@ -39,7 +39,8 @@ export const createCandidate = async ({
             module: "Candidate",
             result: "FAILED",
             notes: `Candidate creation failed. Email "${email}" already exists.`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
         // ❗ Throw friendly error
         const error = new Error(`Candidate with email "${email}" already exists.`);
@@ -85,7 +86,8 @@ export const createCandidate = async ({
             module: "Candidate",
             result: "SUCCESS",
             notes: `Candidate "${candidate.id}" created successfully.`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
         return tx.candidate.findUnique({
             where: { id: candidate.id },
@@ -158,7 +160,8 @@ export const updateCandidate = async ({
             module: "Candidate",
             result: "SUCCESS",
             notes: `Candidate "${id}" updated successfully.`,
-        });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
         return tx.candidate.findFirst({
             where: { id, tenantId: tenantId ?? null },

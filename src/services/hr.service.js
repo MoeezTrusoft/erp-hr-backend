@@ -104,6 +104,7 @@ async function emitEmployeeLifecycle(tx, employee, phase, ctx = {}, extra = {}) 
 //     module: "Employee",
 //     result: "SUCCESS",
 //     notes: `Employee ${employee.id} created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
 //   });
 
 //   return employee;
@@ -301,6 +302,7 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl, c
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${employee.id} created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return employee;
@@ -489,6 +491,7 @@ export const updateEmployeeService = async (id, data, updatedBy, ctx = {}) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${id} updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return updated;
@@ -521,6 +524,7 @@ export const deleteEmployeeService = async (id, deletedBy, ctx = {}) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${id} deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return { message: "Employee deleted successfully" };

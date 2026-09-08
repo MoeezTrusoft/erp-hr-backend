@@ -175,6 +175,7 @@ export const generateBankDisbursementFile = async (
         module: 'Payroll Run',
         result: 'SUCCESS',
         notes: `Bank disbursement file (${fmt}) generated for payroll run ${runId}: ${rows.length} disbursement(s)`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
     }).catch((e) => logger.warn({ err: e?.message, runId }, 'bank disbursement audit log failed'));
 
     return {

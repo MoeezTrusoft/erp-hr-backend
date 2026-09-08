@@ -36,7 +36,8 @@ export const createApplication = async ({
         module: "Application",
         result: "SUCCESS",
             notes: `Application "${create.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
 
     return create;
@@ -64,7 +65,8 @@ export const updateApplicationStage = async ({ id, tenantId, stage, updatedById 
         module: "Application",
         result: "SUCCESS",
         notes: `Application "${id}" stage updated to "${normalizedStage}".`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
     return { success: true, id, stage: normalizedStage, count: update.count };
 };
 
@@ -87,7 +89,8 @@ export const updateApplicationStatus = async ({ id, tenantId, status, updatedByI
         module: "Application",
         result: "SUCCESS",
         notes: `Application "${id}" status updated to "${status}".`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
     return { success: true, id, status, count: updateStatus.count };
 };
 

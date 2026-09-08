@@ -284,6 +284,7 @@ export const createLeavePolicy = async (data,createdById) => {
     module: "Leave Policy",
     result: "SUCCESS",
     notes: `Leave Policy "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -345,6 +346,7 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
     module: "Leave Policy",
     result: "SUCCESS",
     notes: `Leave Policy "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return update
 };
@@ -377,6 +379,7 @@ export const deleteLeavePolicy = async (id, deletedBy) => {
     module: "Leave Policy",
     result: "SUCCESS",
     notes: `Leave Policy "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted
@@ -656,6 +659,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     module: "Leave Request",
     result: "SUCCESS",
     notes: `Leave Request "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -701,6 +705,7 @@ export const cancelLeaveRequest = async (id, employeeId, reason) => {
     module: "Leave Request",
     result: "SUCCESS",
     notes: `Leave Request "${id}" Cancelled successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return update;
 };
@@ -951,7 +956,8 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
       module: 'Leave Request',
       result: 'SUCCESS',
       notes: `Leave request ID ${leaveRequestId} approved successfully by employee ID ${createdById}.`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
   return update;
 };
@@ -1028,6 +1034,7 @@ export const rejectLeaveRequest = async (leaveRequestId, data) => {
     module: "Leave Request",
     result: "SUCCESS",
     notes: `Leave Request "${leaveRequestId}" Rejected successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return update;
 };
@@ -1152,6 +1159,7 @@ export const updateLeaveBalance = async (employeeId, data) => {
     module: "Leave Balance",
     result: "SUCCESS",
     notes: `Leave Balance "${employeeId}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return result;
@@ -1430,6 +1438,7 @@ export const createHoliday = async (data) => {
     module: "Leave (Holiday)",
     result: "SUCCESS",
     notes: `Leave Holiday "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;

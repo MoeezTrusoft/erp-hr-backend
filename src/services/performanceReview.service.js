@@ -35,6 +35,7 @@ export const initiateReviewsService = async (cycleId, employeeIds, reviewedBy, t
     module: "Performance Review",
     result: "SUCCESS",
     notes: `Performance Review "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -86,6 +87,7 @@ export const submitReviewService = async (id, body, submittedBy, tenantId) => {
     module: "Performance Review",
     result: "SUCCESS",
     notes: `Performance Review "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return submitted
@@ -114,6 +116,7 @@ export const sendReviewReminderService = async (reviewId, sentToId, sentBy, tena
     module: "Performance Review",
     result: "SUCCESS",
     notes: `Performance Review Reminder Sent successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return createReminder;

@@ -82,6 +82,7 @@ export const createTimeEntry = async (data) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Time Entry "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return create;
 };
@@ -139,6 +140,7 @@ export const updateTimeEntry = async (id, data, actorEmployeeId, tenantId, isAdm
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Time Entry "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return update;
 };
@@ -168,6 +170,7 @@ export const deleteTimeEntry = async (id, actorEmployeeId, tenantId, isAdmin = f
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Time Entry "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return deleted
@@ -216,6 +219,7 @@ export const clockIn = async ({ employeeId, location, note, sourceId, tenantId }
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Clock In "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return create;
 };
@@ -260,6 +264,7 @@ export const clockOut = async ({ employeeId, location, note, sourceId, tenantId 
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Clock Out "${activeEntry.id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return clockOut;
@@ -295,6 +300,7 @@ export const startBreak = async ({ employeeId, note, sourceId, tenantId }) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Break Started "${breakStart.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return breakStart;
 };
@@ -338,6 +344,7 @@ export const endBreak = async ({ employeeId, note, sourceId, tenantId }) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `End Break "${activeBreak.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return endBreak;
 };

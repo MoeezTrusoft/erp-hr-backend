@@ -130,6 +130,7 @@ export const createRegion = async (data, createdBy) => {
     module: "Holiday Region",
     result: "SUCCESS",
     notes: `Holiday Region  "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -191,6 +192,7 @@ await logAction({
     module: "Holiday Region",
     result: "SUCCESS",
     notes: `Holiday Region "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -225,6 +227,7 @@ export const deleteRegion = async (id, deletedBy) => {
     module: "Holiday Region",
     result: "SUCCESS",
     notes: `Holiday Assign "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted;
 };
@@ -367,6 +370,7 @@ await logAction({
     module: "Holiday Calender",
     result: "SUCCESS",
     notes: `Holiday Calender "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -409,6 +413,7 @@ await logAction({
     module: "Holiday Calender",
     result: "SUCCESS",
     notes: `Holiday Calender "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -443,6 +448,7 @@ await logAction({
     module: "Holiday Calender",
     result: "SUCCESS",
     notes: `Holiday Calender "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted
 };
@@ -633,6 +639,7 @@ await logAction({
     module: "Holiday ",
     result: "SUCCESS",
     notes: `Holiday "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 return create;
 };
@@ -707,6 +714,7 @@ export const updateHoliday = async (calendarId, date, data,updatedById) => {
     module: "Holiday",
     result: "SUCCESS",
     notes: `Holiday  "${calendarId}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return update;
 };
@@ -748,6 +756,7 @@ await logAction({
     module: "Holiday",
     result: "SUCCESS",
     notes: `Holiday  "${calendarId}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted;
@@ -940,6 +949,7 @@ export const assignEmployeeToCalendar = async (employeeId, calendarId, effective
     module: "Holiday",
     result: "SUCCESS",
     notes: `Holiday Assign "${employeeId}""${calendarId}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 

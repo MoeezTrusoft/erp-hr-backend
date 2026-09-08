@@ -45,6 +45,7 @@ export const createPerformanceCycle = async (data, createdBy) => {
     module: "Performance Cycle",
     result: "SUCCESS",
     notes: `Performance Cycle "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -88,6 +89,7 @@ export const updatePerformanceCycle = async (id, data,updatedBy, tenantId) => {
     module: "Performance Cycle",
     result: "SUCCESS",
     notes: `Performance Cycle "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -107,6 +109,7 @@ export const deletePerformanceCycle = async (id, deletedBy, tenantId) => {
     module: "Performance Cycle",
     result: "SUCCESS",
     notes: `Performance Cycle "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted;

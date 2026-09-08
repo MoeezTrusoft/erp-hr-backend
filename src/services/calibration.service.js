@@ -19,6 +19,7 @@ export const createCalibrationSessionService = async (data, createdBy, tenantId)
     module: "Calibiration",
     result: "SUCCESS",
     notes: `Calibiration "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create
@@ -59,6 +60,7 @@ export const adjustRatingService = async (data, calibrated_by_employee_id, tenan
     module: "Calibration",
     result: "SUCCESS",
     notes: `Calibiration adjusment  "${reviewId}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -104,6 +106,7 @@ export const finalizeCalibrationService = async (id, finalizedBy, tenantId) => {
     module: "Calibration",
     result: "SUCCESS",
     notes: `Finalized Calibration "${id}" updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update
