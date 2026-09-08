@@ -439,7 +439,7 @@ export async function listPayrollEmployees({
   const sizeN = Math.max(1, Number(pageSize) || 25);
   const dir = String(sortDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
 
-  // Load ALL of the run's payslips with earnings (the row set is one-per-employee).
+  // Load ALL of the run's payslips with earnings and deductions (the row set is one-per-employee).
   const payslips = await prisma.payrollPayslip.findMany({
     where: scopedWhere(tenantId, {
       payrollRunId: run.id,
@@ -453,6 +453,12 @@ export async function listPayrollEmployees({
       status: true,
       earnings: {
         select: { amount: true, earningType: { select: { code: true } } },
+      },
+      deductions: {
+        select: {
+          amount: true,
+          deductionType: { select: { name: true } },
+        },
       },
     },
   });
@@ -515,6 +521,11 @@ export async function listPayrollEmployees({
     const basic = computeBasic(earnings, termsMap.get(p.employeeId));
     const earningsTotal = earnings.reduce((s, e) => s + (Number(e.amount) || 0), 0);
     const allowances = earningsTotal - basic;
+    const deductions = Number(p.totalDeductions) || 0;
+    // Extract tax from deductions array — match "income tax", "tax", etc.
+    const tax = (p.deductions || [])
+      .filter((d) => /tax/i.test(d.deductionType?.name || ''))
+      .reduce((s, d) => s + (Number(d.amount) || 0), 0);
     const net = Number(p.netAmount) || 0;
     return {
       payslipId: p.id,
@@ -528,7 +539,8 @@ export async function listPayrollEmployees({
       payGrade: emp?.gradeLevel?.name ?? null,
       basic,
       allowances,
-      deductions: Number(p.totalDeductions) || 0,
+      tax,
+      deductions,
       net,
       variancePct: pctChange(net, prevNet.get(p.employeeId)),
       status: STATUS_DISPLAY[p.status] || String(p.status).toLowerCase(),
