@@ -7,6 +7,7 @@ import {
   getAuditLogs,
   createPayrollRun,
   processPayrollRun,
+  approvePayrollRun,
   finalizePayrollRun,
   cancelPayrollRun,
   distributePayslip,
@@ -25,6 +26,7 @@ export const mcpListPayrollAuditLogs = (user) => runController(getAuditLogs, { u
 
 export const mcpCreatePayrollRun = (user, data) => runController(createPayrollRun, { user, body: data });
 export const mcpProcessPayrollRun = (user, id) => runController(processPayrollRun, { user, params: { id: String(id) } });
+export const mcpApprovePayrollRun = (user, id) => runController(approvePayrollRun, { user, params: { id: String(id) } });
 export const mcpFinalizePayrollRun = (user, id) => runController(finalizePayrollRun, { user, params: { id: String(id) } });
 export const mcpCancelPayrollRun = (user, id) => runController(cancelPayrollRun, { user, params: { id: String(id) } });
 export const mcpDistributePayslip = (user, id) => runController(distributePayslip, { user, params: { id: String(id) } });

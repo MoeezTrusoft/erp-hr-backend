@@ -7,6 +7,7 @@ import {
   mcpCreatePayrollAssignment,
   mcpCreatePayrollRun,
   mcpDistributePayslip,
+  mcpApprovePayrollRun,
   mcpFinalizePayrollRun,
   mcpListDeductionTypes,
   mcpListEarningTypes,
@@ -164,6 +165,19 @@ export function registerPayrollTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
       const data = await mcpProcessPayrollRun(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  // HR-02 / T-P4.1 — approval gate: a distinct approver must approve before finalize.
+  server.tool(
+    "hr_payroll_run_approve",
+    "Approve a processed payroll run (approver must differ from processor)",
+    { id: z.string().min(1).describe("Payroll run ID") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
+      const data = await mcpApprovePayrollRun(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
