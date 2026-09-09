@@ -21,6 +21,7 @@ import prisma from "../lib/prisma.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { exportRows } from "../lib/export.util.js";
+import { listDepartments } from "./rbac.client.js";
 
 const POSITION_META_PREFIX = "__TRUSOFT_POSITION_META__:";
 
@@ -43,17 +44,17 @@ const parsePositionDescription = (description) => {
   }
 };
 
-// Resolve departmentId (a BusinessUnit id, carried in the position meta blob) →
-// business-unit name, batched for a page of positions so we never issue N
-// queries. Returns a Map<id, name>. Tenant-scoped fail-closed.
-const resolveDepartmentNames = async (departmentIds, tenantId) => {
+// Resolve departmentId (an RBAC Department id, carried in the position meta
+// blob) → department name, batched for a page of positions so we never issue N
+// queries. Returns a Map<id, name>. Department is owned by RBAC (Company →
+// Department); the id stored in the position meta blob is an RBAC Department.id,
+// NOT an HR BusinessUnit.id. Fail-soft: missing/unresolvable IDs produce null.
+const resolveDepartmentNames = async (departmentIds) => {
   const ids = [...new Set(departmentIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))];
   if (!ids.length) return new Map();
-  const units = await prisma.businessUnit.findMany({
-    where: scopedWhere(tenantId, { id: { in: ids } }),
-    select: { id: true, name: true },
-  });
-  return new Map(units.map((unit) => [unit.id, unit.name]));
+  const departments = await listDepartments();
+  const idSet = new Set(ids);
+  return new Map(departments.filter((d) => idSet.has(d.id)).map((d) => [d.id, d.name]));
 };
 
 const employeeName = (employee) =>
@@ -187,8 +188,7 @@ export const listManagedPositions = async (query, tenantId) => {
   // (meta-blob-derived today). Pagination is applied after band filtering so the
   // total reflects the filtered set.
   const deptNames = await resolveDepartmentNames(
-    rows.map((position) => parsePositionDescription(position.description).meta.departmentId),
-    tenantId
+    rows.map((position) => parsePositionDescription(position.description).meta.departmentId)
   );
   const built = await Promise.all(
     rows.map(async (position) => {
@@ -240,7 +240,7 @@ export const getManagedPosition = async (id, tenantId) => {
   const filledRatio = await buildFilledRatio(position.id, tenantId);
   const { employees, ...positionCore } = position;
   const deptId = parsePositionDescription(positionCore.description).meta.departmentId;
-  const deptNames = await resolveDepartmentNames([deptId], tenantId);
+  const deptNames = await resolveDepartmentNames([deptId]);
 
   return {
     ...managementRow(
@@ -283,8 +283,7 @@ export const exportManagedPositions = async (query, tenantId, format = "csv") =>
   });
 
   const deptNames = await resolveDepartmentNames(
-    rows.map((position) => parsePositionDescription(position.description).meta.departmentId),
-    tenantId
+    rows.map((position) => parsePositionDescription(position.description).meta.departmentId)
   );
   const built = await Promise.all(
     rows.map(async (position) => {
