@@ -74,6 +74,33 @@ export function registerPayrollSetupActionsTools(server) {
         .boolean()
         .optional()
         .describe("Allow single-employee off-cycle disbursement (PayrollRuleConfig.offCycleRelease)"),
+      // HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
+      deductionBasis: z
+        .enum(["BASIC", "GROSS"])
+        .optional()
+        .describe("Basis for deducted-day pricing (LWP + ABSENCE_RECOVERY): BASIC or GROSS (PayrollRuleConfig.deductionBasis)"),
+      // HR-PAYROLL-EOBI-01 — statutory switches (off until deliberately enabled).
+      eobiEnabled: z
+        .boolean()
+        .optional()
+        .describe("Enable EOBI employee contribution (PayrollRuleConfig.eobiEnabled)"),
+      eobiEmployeeRatePct: z
+        .number()
+        .min(0)
+        .max(100)
+        .optional()
+        .describe("EOBI employee rate percent 0-100 (PayrollRuleConfig.eobiEmployeeRatePct)"),
+      eobiWageCeilingMinor: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("EOBI wage ceiling in minor units (PayrollRuleConfig.eobiWageCeilingMinor)"),
+      // N-01 / T-0.3 — absence pricing (Decision 3 signed fleet-wide 2026-09-09).
+      absenceRecoveryEnabled: z
+        .boolean()
+        .optional()
+        .describe("Price unexcused absence/half-day day-credit loss as one ABSENCE_RECOVERY line (PayrollRuleConfig.absenceRecoveryEnabled)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
