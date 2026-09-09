@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
 import * as payroll from '../../src/services/payrollService.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 // REQ-007 — tenant ids are RBAC Company.uuid STRINGS (no longer integers). The
 // columns are now String @db.Uuid, so the seeds MUST be valid uuids or the
@@ -22,7 +23,7 @@ const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
 let dbAvailable = false;
 const created = { employees: [], runs: [], payslips: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     try {
         await prisma.$queryRaw`SELECT 1`;
         dbAvailable = true;
@@ -62,34 +63,36 @@ beforeAll(async () => {
     created.slipB = slipB.id;
     created.empA = empA.id;
     created.empB = empB.id;
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (!dbAvailable) return;
     if (created.payslips.length) await prisma.payrollPayslip.deleteMany({ where: { id: { in: created.payslips } } });
     if (created.runs.length) await prisma.payrollRun.deleteMany({ where: { id: { in: created.runs } } });
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } });
     await prisma.$disconnect();
-});
+}));
 
 const guard = () => { if (!dbAvailable) { console.warn('[payroll-tenancy.db] DB unreachable — skipping seeded probe'); } };
 
 describe('HR-04 seeded two-tenant DB probe — tenant B cannot read tenant A', () => {
-    it('tenant A reads its own payslip; tenant B gets not-found for the SAME id', async () => {
+    it('tenant A reads its own payslip; tenant B gets not-found for the SAME id', async () => mcpCtx.run({ system: true }, async () => {
         guard();
         if (!dbAvailable) return;
 
         const own = await payroll.getPayslipById(created.slipA, TENANT_A);
         expect(own).not.toBeNull();
-        expect(own.grossAmount).toBe(5000);
+        // Decimal columns may deserialize as Decimal objects or exact strings
+        // depending on the driver adapter; assert the exact value, not the type.
+        expect(String(own.grossAmount)).toBe('5000');
 
         // The crux: tenant B scopes by its own tenantId → tenant A's payslip id
         // resolves to nothing. No 7777-vs-5000 leak; not-found, not the row.
         const crossRead = await payroll.getPayslipById(created.slipA, TENANT_B);
         expect(crossRead).toBeNull();
-    });
+    }));
 
-    it('tenant A reads its own payroll run; tenant B gets not-found for the SAME id', async () => {
+    it('tenant A reads its own payroll run; tenant B gets not-found for the SAME id', async () => mcpCtx.run({ system: true }, async () => {
         guard();
         if (!dbAvailable) return;
 
@@ -98,9 +101,9 @@ describe('HR-04 seeded two-tenant DB probe — tenant B cannot read tenant A', (
 
         const crossRead = await payroll.getPayrollRunById(created.runA, TENANT_B);
         expect(crossRead).toBeNull();
-    });
+    }));
 
-    it('getPayslips list for tenant B never contains tenant A payslips (and vice versa)', async () => {
+    it('getPayslips list for tenant B never contains tenant A payslips (and vice versa)', async () => mcpCtx.run({ system: true }, async () => {
         guard();
         if (!dbAvailable) return;
 
@@ -114,9 +117,9 @@ describe('HR-04 seeded two-tenant DB probe — tenant B cannot read tenant A', (
         expect(idsA).not.toContain(created.slipB);
         expect(idsB).toContain(created.slipB);
         expect(idsB).not.toContain(created.slipA);
-    });
+    }));
 
-    it('getEmployeePayrollData for tenant B cannot see tenant A employee payslips', async () => {
+    it('getEmployeePayrollData for tenant B cannot see tenant A employee payslips', async () => mcpCtx.run({ system: true }, async () => {
         guard();
         if (!dbAvailable) return;
 
@@ -127,9 +130,9 @@ describe('HR-04 seeded two-tenant DB probe — tenant B cannot read tenant A', (
         // Same employee, correct tenant → the seeded payslip is visible.
         const asA = await payroll.getEmployeePayrollData(created.empA, TENANT_A);
         expect(asA.recentPayslips.length).toBeGreaterThanOrEqual(1);
-    });
+    }));
 
-    it('distributePayslip on a cross-tenant payslip is not-found and does NOT mutate', async () => {
+    it('distributePayslip on a cross-tenant payslip is not-found and does NOT mutate', async () => mcpCtx.run({ system: true }, async () => {
         guard();
         if (!dbAvailable) return;
 
@@ -139,5 +142,5 @@ describe('HR-04 seeded two-tenant DB probe — tenant B cannot read tenant A', (
         const untouched = await prisma.payrollPayslip.findUnique({ where: { id: created.slipA } });
         expect(untouched.status).toBe('FINALIZED');
         expect(untouched.distributedAt).toBeNull();
-    });
+    }));
 });

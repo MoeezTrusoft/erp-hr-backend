@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
 import { withTenant } from '../../src/lib/tenancy.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 // NOTE: the leave service's read helpers carry a stale `include` (employee
 // `position` vs the schema's `Position` relation) that PRE-DATES C.2 and only
@@ -35,7 +36,7 @@ const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
 let dbAvailable = false;
 const created = { employees: [], policies: [], requests: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     try {
         await prisma.$queryRaw`SELECT 1`;
         dbAvailable = true;
@@ -69,20 +70,20 @@ beforeAll(async () => {
     created.reqA = reqA.id;
     created.reqB = reqB.id;
     created.empA = empA.id;
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (!dbAvailable) return;
     if (created.requests.length) await prisma.leaveRequest.deleteMany({ where: { id: { in: created.requests } } });
     if (created.policies.length) await prisma.leavePolicy.deleteMany({ where: { id: { in: created.policies } } });
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } });
     await prisma.$disconnect();
-});
+}));
 
 const guard = () => { if (!dbAvailable) return false; return true; };
 
 describe('C.2 seeded two-tenant DB probe — leave: tenant B cannot read tenant A', () => {
-    it('tenant A reads its OWN leave request; tenant B gets not-found for the SAME id', async () => {
+    it('tenant A reads its OWN leave request; tenant B gets not-found for the SAME id', async () => mcpCtx.run({ system: true }, async () => {
         if (!guard()) return;
 
         const own = await findLeaveScoped(created.reqA, TENANT_A);
@@ -94,9 +95,9 @@ describe('C.2 seeded two-tenant DB probe — leave: tenant B cannot read tenant 
         // resolves to nothing. No A-secret leak; not-found, not the row.
         const crossRead = await findLeaveScoped(created.reqA, TENANT_B);
         expect(crossRead).toBeNull();
-    });
+    }));
 
-    it('a tenant-scoped list for tenant B never contains tenant A requests (and vice versa)', async () => {
+    it('a tenant-scoped list for tenant B never contains tenant A requests (and vice versa)', async () => mcpCtx.run({ system: true }, async () => {
         if (!guard()) return;
 
         const listA = await listLeaveScoped(TENANT_A);
@@ -109,9 +110,9 @@ describe('C.2 seeded two-tenant DB probe — leave: tenant B cannot read tenant 
         expect(idsA).not.toContain(created.reqB);
         expect(idsB).toContain(created.reqB);
         expect(idsB).not.toContain(created.reqA);
-    });
+    }));
 
-    it('a request stamped with tenant A is invisible to tenant B', async () => {
+    it('a request stamped with tenant A is invisible to tenant B', async () => mcpCtx.run({ system: true }, async () => {
         if (!guard()) return;
 
         const row = await prisma.leaveRequest.create({
@@ -126,5 +127,5 @@ describe('C.2 seeded two-tenant DB probe — leave: tenant B cannot read tenant 
         const asB = await findLeaveScoped(row.id, TENANT_B);
         expect(asA).not.toBeNull();
         expect(asB).toBeNull();
-    });
+    }));
 });

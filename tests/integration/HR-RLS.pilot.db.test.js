@@ -21,6 +21,7 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import prisma from '../../src/lib/prisma.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 const TENANT_A = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
 const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
@@ -43,7 +44,7 @@ let ready = false;
 let appClient = null;
 const created = { employees: [], attendance: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     const url = hrAppUrl();
     if (!url) return;
     try {
@@ -68,14 +69,14 @@ beforeAll(async () => {
     created.attendance.push(attA.id, attB.id);
     created.attA = attA.id;
     created.attB = attB.id;
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (created.attendance.length) await prisma.attendance.deleteMany({ where: { id: { in: created.attendance } } });
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } });
     if (appClient) await appClient.$disconnect();
     await prisma.$disconnect();
-});
+}));
 
 // Run a SET app.tenant_id + a SELECT in ONE transaction so they share a
 // connection (session GUC must persist across the two statements).
@@ -124,7 +125,7 @@ describe('C.2 RLS pilot — the DB denies cross-tenant on a leaked (non-privileg
         expect(visible).not.toContain(created.attB);
     });
 
-    it('a cross-tenant WRITE is rejected by the RLS WITH CHECK policy', async () => {
+    it('a cross-tenant WRITE is rejected by the RLS WITH CHECK policy', async () => mcpCtx.run({ system: true }, async () => {
         if (!ready) return;
         // As tenant A, try to flip tenant B's attendance row → the row is not
         // even visible (USING), so the UPDATE affects 0 rows; and an INSERT with
@@ -140,5 +141,5 @@ describe('C.2 RLS pilot — the DB denies cross-tenant on a leaked (non-privileg
         // tenant B's row is untouched (still PRESENT) — confirmed via the superuser.
         const untouched = await prisma.attendance.findUnique({ where: { id: created.attB } });
         expect(untouched.status).toBe('PRESENT');
-    });
+    }));
 });

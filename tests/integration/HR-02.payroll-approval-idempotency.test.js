@@ -17,6 +17,8 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
 import * as payroll from '../../src/services/payrollService.js';
+import { mcpCtx } from '../../src/mcp/context.js';
+import { decimalToMinor } from '../../src/lib/money.js';
 
 // REQ-007 — tenant is an RBAC Company.uuid STRING (was an int). Isolated test tenant.
 const TENANT = '93010000-0000-4000-8000-000000000001';
@@ -26,7 +28,7 @@ const APPROVER = 930102;
 let dbAvailable = false;
 const created = { employees: [], runs: [], taxRates: [], terms: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     try {
         await prisma.$queryRaw`SELECT 1`;
         dbAvailable = true;
@@ -92,9 +94,9 @@ beforeAll(async () => {
         data: { tenantId: TENANT, countryCode: 'US', bracketMin: 3000, bracketMax: null, rate: 0.2, effectiveFrom: new Date('2097-01-01'), effectiveTo: null },
     });
     created.taxRates.push(t1.id, t2.id);
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (!dbAvailable) return;
     for (const id of created.runs) {
         await prisma.payrollAuditLog.deleteMany({ where: { payrollRunId: id } });
@@ -108,7 +110,7 @@ afterAll(async () => {
     await prisma.payrollEarningType.deleteMany({ where: { tenantId: TENANT } });
     await prisma.payrollDeductionType.deleteMany({ where: { tenantId: TENANT } });
     await prisma.$disconnect();
-});
+}));
 
 const guard = () => !dbAvailable;
 
@@ -117,7 +119,7 @@ const guard = () => !dbAvailable;
 // single tenant a period must still be unique, so each test mints a DISTINCT
 // month from a monotonically increasing counter to avoid intra-tenant collisions.
 let periodSeq = 0;
-const freshRun = async () => {
+const freshRun = async () => mcpCtx.run({ system: true }, async () => {
     const month = periodSeq;
     periodSeq += 1;
     const start = new Date(Date.UTC(2097, month, 1));
@@ -134,10 +136,10 @@ const freshRun = async () => {
     );
     created.runs.push(run.id);
     return run;
-};
+});
 
 describe('HR-02 approval gate + idempotency (real engine, live DB)', () => {
-    it('processing records the processor, rule version, and table-driven tax (not 15/5)', async () => {
+    it('processing records the processor, rule version, and table-driven tax (not 15/5)', async () => mcpCtx.run({ system: true }, async () => {
         if (guard()) return;
         const run = await freshRun();
 
@@ -150,15 +152,17 @@ describe('HR-02 approval gate + idempotency (real engine, live DB)', () => {
         const slip = processed.payslips[0];
         // gross 5000 → progressive tax = 10% of 3000 + 20% of 2000 = 300 + 400 = 700
         // legacy flat (15+5)%*5000 = 1000 → assert it is the table figure, not 1000.
-        const tax = slip.deductions
+        // Decimal(18,4) columns deserialize as exact decimal strings — compare in
+        // exact minor units via the money lib (never float arithmetic).
+        const taxMinor = slip.deductions
             .filter((d) => /tax/i.test(d.description))
-            .reduce((acc, d) => acc + d.amount, 0);
-        expect(tax).toBe(700);
-        expect(tax).not.toBe(1000);
+            .reduce((acc, d) => acc + decimalToMinor(d.amount, 'USD'), 0n);
+        expect(taxMinor).toBe(70000n);
+        expect(taxMinor).not.toBe(100000n);
         expect(slip.ruleVersion).toBe(processed.ruleVersion);
-    });
+    }));
 
-    it('re-processing the SAME run is idempotent — no duplicate payslips, no doubled totals', async () => {
+    it('re-processing the SAME run is idempotent — no duplicate payslips, no doubled totals', async () => mcpCtx.run({ system: true }, async () => {
         if (guard()) return;
         const run = await freshRun();
 
@@ -168,27 +172,28 @@ describe('HR-02 approval gate + idempotency (real engine, live DB)', () => {
 
         const again = await payroll.processPayrollRun(run.id, PROCESSOR, TENANT);
         expect(again.payslips.length).toBe(firstCount);
-        expect(again.totalNet).toBe(firstNet);
+        // totalNet is a Prisma Decimal instance — compare exact string form.
+        expect(String(again.totalNet)).toBe(String(firstNet));
 
         const slips = await prisma.payrollPayslip.count({ where: { payrollRunId: run.id } });
         expect(slips).toBe(firstCount);
-    });
+    }));
 
-    it('FINALIZE is BLOCKED without an approval', async () => {
+    it('FINALIZE is BLOCKED without an approval', async () => mcpCtx.run({ system: true }, async () => {
         if (guard()) return;
         const run = await freshRun();
         await payroll.processPayrollRun(run.id, PROCESSOR, TENANT);
         await expect(payroll.finalizePayrollRun(run.id, PROCESSOR, TENANT)).rejects.toThrow(/approv/i);
-    });
+    }));
 
-    it('FINALIZE is BLOCKED on self-approval (processor == approver)', async () => {
+    it('FINALIZE is BLOCKED on self-approval (processor == approver)', async () => mcpCtx.run({ system: true }, async () => {
         if (guard()) return;
         const run = await freshRun();
         await payroll.processPayrollRun(run.id, PROCESSOR, TENANT);
         await expect(payroll.approvePayrollRun(run.id, PROCESSOR, TENANT)).rejects.toThrow(/self|distinct|same/i);
-    });
+    }));
 
-    it('FINALIZE SUCCEEDS with a DISTINCT approver', async () => {
+    it('FINALIZE SUCCEEDS with a DISTINCT approver', async () => mcpCtx.run({ system: true }, async () => {
         if (guard()) return;
         const run = await freshRun();
         await payroll.processPayrollRun(run.id, PROCESSOR, TENANT);
@@ -201,5 +206,5 @@ describe('HR-02 approval gate + idempotency (real engine, live DB)', () => {
         expect(finalized.status).toBe('FINALIZED');
         const slipStatuses = finalized.payslips.map((p) => p.status);
         expect(slipStatuses.every((s) => s === 'FINALIZED')).toBe(true);
-    });
+    }));
 });

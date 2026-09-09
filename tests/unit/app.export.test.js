@@ -27,7 +27,7 @@
 // listener, register signal handlers, and kick off the attendance
 // scheduler under Jest. That's exactly the side-effect surface this
 // refactor is designed to isolate.
-import { jest, describe, test, expect, beforeEach, afterAll } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterAll, beforeAll } from '@jest/globals';
 import request from 'supertest';
 
 // Prisma is imported transitively through the route tree. Stub the
@@ -44,9 +44,21 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 
+// The FIRST createApp() call pays the full route-tree compile. In an
+// isolated run that is ~10 ms; under a full-suite run with every worker
+// compiling concurrently it can exceed jest's 5 s default and the first
+// /api test eats the cost. Warm the compile once up front and keep a
+// realistic ceiling so genuine regressions still fail fast.
+jest.setTimeout(20_000);
+
 const ORIGINAL_SECRET = process.env.INTERNAL_SERVICE_SECRET;
 
 describe('src/app.js — testable app foundation', () => {
+    beforeAll(() => {
+        // Cold-boot the route graph outside any single test's budget.
+        createApp();
+    });
+
     beforeEach(() => {
         // Each test sets its own value (or deletes the var) so we
         // never leak between cases. Post-sunset the gate keys on

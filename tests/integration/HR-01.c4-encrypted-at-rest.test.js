@@ -16,6 +16,7 @@
 // payroll-tenancy.db.test.js convention.
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 import {
     encryptString,
     decryptString,
@@ -34,7 +35,7 @@ const created = { employees: [], terms: [], banks: [] };
 let savedEncryptionKey;
 let savedBlindIndexKey;
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     savedEncryptionKey = process.env.HR_C4_ENCRYPTION_KEY;
     savedBlindIndexKey = process.env.HR_C4_BLIND_INDEX_KEY;
     if (!process.env.HR_C4_ENCRYPTION_KEY) {
@@ -49,9 +50,9 @@ beforeAll(async () => {
     } catch {
         dbAvailable = false;
     }
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (savedEncryptionKey !== undefined) process.env.HR_C4_ENCRYPTION_KEY = savedEncryptionKey;
     else delete process.env.HR_C4_ENCRYPTION_KEY;
     if (savedBlindIndexKey !== undefined) process.env.HR_C4_BLIND_INDEX_KEY = savedBlindIndexKey;
@@ -61,7 +62,7 @@ afterAll(async () => {
     if (created.terms.length) await prisma.employmentTerms.deleteMany({ where: { id: { in: created.terms } } });
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } });
     await prisma.$disconnect();
-});
+}));
 
 const skipIfNoDb = () => {
     if (!dbAvailable) return true;
@@ -137,7 +138,7 @@ describe('HR-01 redaction — C4 never appears in audit diffs / logs', () => {
 });
 
 describe('HR-01 employment terms salary — ciphertext at rest, number on read', () => {
-    it('raw DB column is ciphertext; Prisma read returns the plaintext NUMBER', async () => {
+    it('raw DB column is ciphertext; Prisma read returns the plaintext NUMBER', async () => mcpCtx.run({ system: true }, async () => {
         if (skipIfNoDb()) return;
 
         const emp = await prisma.employee.create({
@@ -175,11 +176,11 @@ describe('HR-01 employment terms salary — ciphertext at rest, number on read',
         expect(isCiphertext(raw.baseSalary)).toBe(true);
         expect(raw.bonusTarget).not.toContain('12345');
         expect(isCiphertext(raw.bonusTarget)).toBe(true);
-    });
+    }));
 });
 
 describe('HR-01 bank detail — encrypted account, blind index lookup + uniqueness', () => {
-    it('raw account is ciphertext; lookup by blind index works; uniqueness still enforced', async () => {
+    it('raw account is ciphertext; lookup by blind index works; uniqueness still enforced', async () => mcpCtx.run({ system: true }, async () => {
         if (skipIfNoDb()) return;
 
         const emp = await prisma.employee.create({
@@ -225,11 +226,11 @@ describe('HR-01 bank detail — encrypted account, blind index lookup + uniquene
                 data: { tenantId: TENANT, employeeId: emp.id, bankName: 'Dup', accountNumber: ACC },
             }),
         ).rejects.toThrow();
-    });
+    }));
 });
 
 describe('HR-01 employee national id — ciphertext at rest, plaintext on read', () => {
-    it('raw nationality_id_no is ciphertext; Prisma read returns plaintext', async () => {
+    it('raw nationality_id_no is ciphertext; Prisma read returns plaintext', async () => mcpCtx.run({ system: true }, async () => {
         if (skipIfNoDb()) return;
 
         const NID = '42101-7654321-0';
@@ -246,5 +247,5 @@ describe('HR-01 employee national id — ciphertext at rest, plaintext on read',
         const rows = await prisma.$queryRaw`SELECT "nationality_id_no" FROM "Employee" WHERE id = ${emp.id}`;
         expect(rows[0].nationality_id_no).not.toContain(NID);
         expect(isCiphertext(rows[0].nationality_id_no)).toBe(true);
-    });
+    }));
 });
