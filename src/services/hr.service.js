@@ -498,6 +498,16 @@ export const updateEmployeeService = async (id, data, updatedBy, ctx = {}) => {
 };
 
 // ✅ Delete Employee (terminate)
+//
+// T-1.4 / A-01 — employees with PAYROLL HISTORY are refused, not deleted.
+// The old body removed the Employee row plus their attendance and leave rows,
+// orphaning every payslip, EmploymentPeriod, Loan, PayrollAuditLog and audit
+// Log row that referenced them — one delete silently destroyed the audit
+// trail and the reproducibility of every run that paid them (report 19,
+// advisory A-01). Termination is a lifecycle state: deactivate the employee
+// and close their EmploymentPeriod; the payroll_included flag already keeps
+// them out of future runs and leaver proration pays the days they worked.
+// Only a true mis-entry (never paid, never on a roster spell) may be removed.
 export const deleteEmployeeService = async (id, deletedBy, ctx = {}) => {
   const exists = await prisma.employee.findUnique({
     where: { id: Number(id) },
@@ -505,10 +515,25 @@ export const deleteEmployeeService = async (id, deletedBy, ctx = {}) => {
 
   if (!exists) throw new Error("Employee not found");
 
-  // A.4: emit hr.employee.lifecycle.v1 (phase=terminated) BEFORE the row is
-  // deleted (the mapper needs the still-present employee), all in ONE tx so the
-  // event and the deletion are atomic.
   await tenantTransaction(prisma, async (tx) => {
+    // A-01 GUARD — history check FIRST, inside the tx, so a racing payslip
+    // cannot slip between the check and the delete.
+    const [payslipCount, periodCount] = await Promise.all([
+      tx.payrollPayslip ? tx.payrollPayslip.count({ where: { employeeId: Number(id) } }) : Promise.resolve(0),
+      tx.employmentPeriod ? tx.employmentPeriod.count({ where: { employeeId: Number(id) } }) : Promise.resolve(0),
+    ]);
+    if (payslipCount > 0 || periodCount > 0) {
+      throw Object.assign(
+        new Error(
+          `A-01: employee ${id} has payroll history (${payslipCount} payslip(s), ${periodCount} employment period(s)) and cannot be hard-deleted. Deactivate them instead — termination must preserve the audit trail and payroll reproducibility.`,
+        ),
+        { status: 409 },
+      );
+    }
+
+    // A.4: emit hr.employee.lifecycle.v1 (phase=terminated) BEFORE the row is
+    // deleted (the mapper needs the still-present employee), all in ONE tx so
+    // the event and the deletion are atomic. Mis-entry path only.
     await emitEmployeeLifecycle(tx, exists, "terminated", ctx, {
       terminationCause: ctx.terminationCause,
     });
