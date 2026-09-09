@@ -708,8 +708,28 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
         prisma.payrollRun.count({ where })
     ]);
 
+    // Resolve processedBy and approvedBy employee IDs to names
+    const empIds = [...new Set([
+        ...payrollRuns.map(r => r.processedBy).filter(Boolean),
+        ...payrollRuns.map(r => r.approvedBy).filter(Boolean),
+    ])];
+    let empMap = {};
+    if (empIds.length > 0) {
+        const emps = await prisma.employee.findMany({
+            where: { id: { in: empIds }, tenant_id: tenantId },
+            select: { id: true, employee_name: true },
+        });
+        empMap = Object.fromEntries(emps.map(e => [e.id, e.employee_name]));
+    }
+
+    const enrichedRuns = payrollRuns.map(r => ({
+        ...r,
+        processedByName: r.processedBy ? empMap[r.processedBy] || `#${r.processedBy}` : null,
+        approvedByName: r.approvedBy ? empMap[r.approvedBy] || `#${r.approvedBy}` : null,
+    }));
+
     return {
-        payrollRuns,
+        payrollRuns: enrichedRuns,
         pagination: {
             page: parseInt(page),
             limit: parseInt(limit),
