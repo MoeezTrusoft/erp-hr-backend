@@ -2,12 +2,13 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
 import { serializePayrollMoney } from '../../src/lib/money.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 const TENANT = 'f1200000-0000-4000-8000-000000000012';
 let dbAvailable = false;
 const ids = {};
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     const columns = await prisma.$queryRaw`
@@ -40,9 +41,9 @@ beforeAll(async () => {
   });
   ids.earningType = earningType.id;
   ids.deductionType = deductionType.id;
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
   if (dbAvailable) {
     if (ids.run) await prisma.payrollRun.deleteMany({ where: { id: ids.run } });
     if (ids.assignment) await prisma.payrollAssignment.deleteMany({ where: { id: ids.assignment } });
@@ -52,10 +53,10 @@ afterAll(async () => {
     if (ids.employee) await prisma.employee.deleteMany({ where: { id: ids.employee } });
   }
   await prisma.$disconnect();
-});
+}));
 
 describe('F-12 Decimal(18,4) live DB round trip', () => {
-  it('round-trips 0.1, large, negative, KWD, and equal totals exactly', async () => {
+  it('round-trips 0.1, large, negative, KWD, and equal totals exactly', async () => mcpCtx.run({ system: true }, async () => {
     if (!dbAvailable) return;
 
     const run = await prisma.payrollRun.create({
@@ -118,5 +119,5 @@ describe('F-12 Decimal(18,4) live DB round trip', () => {
     expect(wire.taxRate.baseTax).toBe('1.2340');
     expect(BigInt(wire.run.totalGross.replace('.', '')) - BigInt(wire.run.totalDeductions.replace('.', '')))
       .toBe(BigInt(wire.run.totalNet.replace('.', '')));
-  });
+  }));
 });

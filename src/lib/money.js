@@ -2,6 +2,7 @@
 // Money is BigInt minor units in the engine, an exact decimal string at Prisma,
 // and a decimal/minor-unit string on JSON boundaries. Number is never used for
 // monetary conversion or arithmetic.
+import { Prisma } from '@prisma/client';
 
 export const CURRENCY_EXPONENT = Object.freeze({
   USD: 2,
@@ -149,10 +150,17 @@ export const compareDecimal = (left, right) => {
   return av < bv ? -1 : av > bv ? 1 : 0;
 };
 
+// Prisma's client runtime minifies its bundled decimal.js class (constructor
+// name shows up as 'Decimal2' in recent runtimes), so name-matching silently
+// stopped working and raw Decimal objects leaked through the serializer.
+// Match canonically via instanceof, keep the structural names as fallback for
+// fake/mock Decimals in tests.
 const isPrismaDecimal = (value) =>
   value !== null && typeof value === 'object' &&
-  (value.constructor?.name === 'Decimal' || value.constructor?.name === 'DecimalLight') &&
-  typeof value.toFixed === 'function';
+  ((Prisma.Decimal && value instanceof Prisma.Decimal) ||
+    ((value.constructor?.name === 'Decimal' || value.constructor?.name === 'DecimalLight' ||
+      value.constructor?.name === 'Decimal2') &&
+     typeof value.toFixed === 'function'));
 
 export const serializePayrollMoney = (value) => {
   if (isPrismaDecimal(value)) return value.toFixed(DECIMAL_SCALE);
