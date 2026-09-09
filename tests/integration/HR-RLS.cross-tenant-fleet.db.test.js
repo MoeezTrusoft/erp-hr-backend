@@ -156,9 +156,11 @@ describe('C.2 RLS cross-tenant negative — structural sweep over all 17 tables'
                         (SELECT count(*)::int FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant_isolation') AS pol
                    FROM pg_class c WHERE c.relname = $1`, table);
             const row = cat[0];
-            expect(row, `catalog row for ${table}`).toBeTruthy();
-            expect(row.forced, `${table} FORCE RLS`).toBe(true);
-            expect(Number(row.pol), `${table} tenant_isolation policy`).toBe(1);
+            // jest expect() takes no message argument (vitest syntax); the
+            // table name is in `table` and appears in the loop failure output.
+            expect(row).toBeTruthy();
+            expect(row.forced).toBe(true);
+            expect(Number(row.pol)).toBe(1);
 
             // Leaked connection with NO tenant GUC must see zero rows.
             const leaked = await appClient.$transaction(async (tx) => {
@@ -166,7 +168,7 @@ describe('C.2 RLS cross-tenant negative — structural sweep over all 17 tables'
                 const r = await tx.$queryRawUnsafe(`SELECT count(*)::int AS c FROM "${table}"`);
                 return Number(r[0].c);
             });
-            expect(leaked, `${table} leaked no-GUC count`).toBe(0);
+            expect(leaked).toBe(0);
         }
     });
 });

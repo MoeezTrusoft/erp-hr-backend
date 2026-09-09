@@ -5,6 +5,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 jest.unstable_mockModule('../../../src/mcp/controllers/payrollMcpController.js', () => ({
+  mcpApprovePayrollRun: jest.fn(async () => ({ success: true })),
   mcpCancelPayrollRun: jest.fn(async () => ({ success: true })),
   mcpCreateDeductionType: jest.fn(async () => ({ success: true })),
   mcpCreateEarningType: jest.fn(async () => ({ success: true })),
@@ -52,6 +53,7 @@ const TOOLS = [
   { name: 'hr_payslips_list', ctrl: () => payrollCtl.mcpListPayslips, gate: 'hr:payroll', action: 'VIEW', args: { page: 1, pageSize: 10 } },
   { name: 'hr_payroll_run_create', ctrl: () => payrollCtl.mcpCreatePayrollRun, gate: 'hr:payroll', action: 'CREATE', args: { month: 1, year: 2026 } },
   { name: 'hr_payroll_run_process', ctrl: () => payrollCtl.mcpProcessPayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: 1 } },
+  { name: 'hr_payroll_run_approve', ctrl: () => payrollCtl.mcpApprovePayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: 1 } },
   { name: 'hr_payroll_run_finalize', ctrl: () => payrollCtl.mcpFinalizePayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: 1 } },
   { name: 'hr_payroll_run_delete', ctrl: () => payrollCtl.mcpCancelPayrollRun, gate: 'hr:payroll', action: 'DELETE', args: { id: 1 } },
   { name: 'hr_payslip_distribute', ctrl: () => payrollCtl.mcpDistributePayslip, gate: 'hr:payroll', action: 'CREATE', args: { id: '1' } },
