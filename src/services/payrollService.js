@@ -29,6 +29,11 @@ const DEDUCTION_TYPE_NAMES = {
     BENEFIT_CONTRIBUTION: 'Benefit Contribution',
     LOAN_REPAYMENT: 'Loan Repayment',
     LWP_RECOVERY: 'Unpaid Leave (LWP) Recovery',
+    // N-01 — unexcused absence + half-day day-credit loss, priced on the SAME
+    // daily rate as LWP (one concept, one formula). Gated on
+    // PayrollRuleConfig.absenceRecoveryEnabled (ships false — plan 20 T-0.3),
+    // because enabling it changes real money behavior.
+    ABSENCE_RECOVERY: 'Absence Recovery',
     EOBI_EMPLOYEE: 'EOBI (Employee)',
     FICA_SOCIAL_SECURITY: 'Social Security (FICA)',
     FICA_MEDICARE: 'Medicare (FICA)',
@@ -578,7 +583,12 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // Days may be fractional (a half-day attendance deduction, a half-day LWP),
     // so the multiplier is scaled by 100 before the BigInt. `BigInt(0.5)` threw
     // a RangeError and took the whole payslip build down with it.
-    if (employmentTerm && (bridges.lwpDays > 0 || bridges.attendanceDeductionLines?.length > 0)) {
+    if (
+        employmentTerm &&
+        (bridges.lwpDays > 0 ||
+            bridges.attendanceDeductionLines?.length > 0 ||
+            ruleConfig.absenceRecoveryEnabled === true)
+    ) {
         const baseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
 
         // HR-PAYROLL-DEDUCTION-BASIS-01. Operator spec: a deducted day is the
@@ -641,6 +651,62 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                     ` = ${days} day${days === 1 ? '' : 's'})`,
             });
         }
+
+        // 7c) BRIDGE: unexcused absence + half-day day-credit loss → Deduction
+        //     (N-01). ABSENT (credit 0) and HALF_DAY (credit 0.5) mean part of
+        //     the contracted month was not worked and nothing priced it —
+        //     production August data paid full salaries over recorded absences
+        //     (report 19, CHECK16/17/19). The deduction engine deliberately
+        //     excludes these statuses from the RULES because they are priced
+        //     HERE, by credit, on the SAME daily rate as LWP above.
+        //
+        //     Gated on ruleConfig.absenceRecoveryEnabled (ships false): until HR
+        //     signs off the HALF_DAY × LATE stacking policy (plan 20, T-2.1),
+        //     the output must stay byte-identical to pre-N-01.
+        //
+        //     Held days are NOT here: MISSING_* rows carry day_credit NULL and
+        //     requires_regularization — payroll HOLDS them rather than paying or
+        //     docking (HR-ATT-CUTOVER-01). Excused days (an APPROVED anomaly on
+        //     the date) are skipped — HR agreed the day was not the employee's
+        //     fault. Manually-corrected rows keep their stored credit — HR's
+        //     ruling outranks the device (HR-ATT-CORRECTION-01).
+        if (ruleConfig.absenceRecoveryEnabled === true) {
+            const dayKey = (d) => dayOf(d);
+            const excusedDays = new Set(
+                (bridges.anomalyRows || [])
+                    .filter((a) => a?.status === 'APPROVED')
+                    .map((a) => (a.date ? dayKey(a.date) : null))
+                    .filter(Boolean),
+            );
+
+            let unpaidHundredths = 0n; // Σ(1 − day_credit) in hundredths of a day
+            for (const row of bridges.attendanceRows || []) {
+                if (!row || row.day_credit == null) continue; // NULL credit = held
+                if (excusedDays.has(dayKey(row.date))) continue; // approved anomaly
+                const credit = Number(row.day_credit);
+                if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
+                const lost = 100n - BigInt(Math.round(credit * 100));
+                if (lost > 0n) unpaidHundredths += lost;
+            }
+
+            if (unpaidHundredths > 0n) {
+                // Same daily-rate path as LWP: basis ÷ calendar days of the
+                // period, × the unpaid fraction. unpaidHundredths already IS
+                // (days × 100), matching the 100n scale daysToMinor uses.
+                const amountMinor = (basisMinor * unpaidHundredths) / (100n * BigInt(periodDays));
+                if (amountMinor > 0n) {
+                    const daysLabel = (Number(unpaidHundredths) / 100)
+                        .toFixed(2)
+                        .replace(/\.?0+$/, '');
+                    deductions.push({
+                        deductionTypeId: null,
+                        code: 'ABSENCE_RECOVERY',
+                        amount: money.minorToDecimal(amountMinor, currency),
+                        description: `Absence recovery (${daysLabel} day${unpaidHundredths === 100n ? '' : 's'} unexcused)`,
+                    });
+                }
+            }
+        }
     }
 
     // 7b) STATUTORY DEDUCTIONS: Country-specific mandatory contributions.
@@ -683,6 +749,38 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
 };
 
 const isoDate = (d) => new Date(d).toISOString().split('T')[0];
+
+// T-1.2 / N-02 — repayment PLANNING for the loan bridge, extracted so both
+// write branches (fresh create + re-process) share one decision. Production
+// evidence (report 19, CHECK21/22): the re-process branch re-created the
+// LoanRepayment and re-decremented outstandingMinor whenever a payslip was
+// rebuilt — loans 6 and 8 now carry repayments exceeding principal.
+//
+// Contract:
+//   existing != null            → SKIP. The repayment for [loan, run] already
+//                                 exists; the recorded amount is the source of
+//                                 truth even if the recomputed figure differs
+//                                 (rules changed between re-processes).
+//   otherwise                   → the installment, capped at the remaining
+//                                 garnishment allowance; if nothing remains
+//                                 under the cap, SKIP rather than plan 0.
+//
+// The write sites pair `skip === false` with EXACTLY ONE create + ONE
+// decrement; the [loanId, payrollRunId] index (migration
+// 20260909120000_absence_flag_loan_idx) backs the lookup and becomes a partial
+// UNIQUE index once prod's legacy NULL-run rows are reconciled (T-1.3).
+export const planLoanRepayment = ({ existing, installmentMinor, grossLimitMinor, usedMinor }) => {
+    if (existing) return { skip: true };
+    const installment = BigInt(installmentMinor || 0);
+    if (installment <= 0n) return { skip: true };
+    const limit = BigInt(grossLimitMinor ?? 0);
+    const used = BigInt(usedMinor ?? 0);
+    const remaining = limit - used;
+    if (remaining <= 0n) return { skip: true };
+    const amountMinor = installment > remaining ? remaining : installment;
+    if (amountMinor <= 0n) return { skip: true };
+    return { skip: false, amountMinor };
+};
 
 // Payroll Run Operations
 export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
@@ -915,7 +1013,9 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             lte: payrollRun.periodEnd
                         }
                     },
-                    select: { date: true, status: true, manually_corrected: true }
+                    // N-01 — day_credit added: the absence bridge prices
+                    // Σ(1 − credit). NULL credit (MISSING_*) stays held.
+                    select: { date: true, status: true, day_credit: true, manually_corrected: true }
                 },
                 attendanceAnomalies: {
                     where: {
@@ -1068,6 +1168,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                         rules: attendanceDeductionRules,
                     })
                     : [],
+                // N-01 — the daily verdicts + anomaly decisions feed the absence
+                // bridge. Anomaly rows carry {date, status}; APPROVED ones excuse
+                // their day. Both ride the bridges object the engine already takes.
+                attendanceRows: employee.attendance || [],
+                anomalyRows: employee.attendanceAnomalies || [],
             };
 
             // Build the canonical payslip with the REAL, deterministic engine.
@@ -1126,24 +1231,36 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     },
                     include: { earnings: true, deductions: true }
                 });
-                // Record loan repayments for this payslip
+                // Record loan repayments for this payslip (T-1.2 — idempotent:
+                // a repayment already recorded for [loan, run] is never
+                // re-created or re-decremented on re-process).
                 for (const loan of bridges.loanLines || []) {
                     const loanDeduction = built.deductions.find(d => d.loanId === loan.loanId);
                     if (loanDeduction) {
                         const deductMinor = money.decimalToMinor(loanDeduction.amount, currency);
-                        if (deductMinor > 0n) {
+                        const existingRepayment = await prisma.loanRepayment.findFirst({
+                            where: { loanId: loan.loanId, payrollRunId: id },
+                            select: { id: true, amountMinor: true },
+                        });
+                        const plan = planLoanRepayment({
+                            existing: existingRepayment,
+                            installmentMinor: deductMinor,
+                            grossLimitMinor: deductMinor > 0n ? deductMinor : 1n,
+                            usedMinor: 0n,
+                        });
+                        if (!plan.skip && plan.amountMinor > 0n) {
                             await prisma.loanRepayment.create({
                                 data: {
                                     tenantId: tenantId ?? null,
                                     loanId: loan.loanId,
-                                    amountMinor: Number(deductMinor),
+                                    amountMinor: Number(plan.amountMinor),
                                     payrollRunId: id,
                                     payslipId: updated.id,
                                 },
                             });
                             await prisma.loan.update({
                                 where: { id: loan.loanId },
-                                data: { outstandingMinor: { decrement: Number(deductMinor) } },
+                                data: { outstandingMinor: { decrement: Number(plan.amountMinor) } },
                             });
                         }
                     }
@@ -1182,24 +1299,35 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     deductions: true
                 }
             });
-            // Record loan repayments for this payslip
+            // Record loan repayments for this payslip (T-1.2 — idempotent by
+            // [loan, run]; see the re-process branch above for the contract).
             for (const loan of bridges.loanLines || []) {
                 const loanDeduction = built.deductions.find(d => d.loanId === loan.loanId);
                 if (loanDeduction) {
                     const deductMinor = money.decimalToMinor(loanDeduction.amount, currency);
-                    if (deductMinor > 0n) {
+                    const existingRepayment = await prisma.loanRepayment.findFirst({
+                        where: { loanId: loan.loanId, payrollRunId: id },
+                        select: { id: true, amountMinor: true },
+                    });
+                    const plan = planLoanRepayment({
+                        existing: existingRepayment,
+                        installmentMinor: deductMinor,
+                        grossLimitMinor: deductMinor > 0n ? deductMinor : 1n,
+                        usedMinor: 0n,
+                    });
+                    if (!plan.skip && plan.amountMinor > 0n) {
                         await prisma.loanRepayment.create({
                             data: {
                                 tenantId: tenantId ?? null,
                                 loanId: loan.loanId,
-                                amountMinor: Number(deductMinor),
+                                amountMinor: Number(plan.amountMinor),
                                 payrollRunId: id,
                                 payslipId: created.id,
                             },
                         });
                         await prisma.loan.update({
                             where: { id: loan.loanId },
-                            data: { outstandingMinor: { decrement: Number(deductMinor) } },
+                            data: { outstandingMinor: { decrement: Number(plan.amountMinor) } },
                         });
                     }
                 }
