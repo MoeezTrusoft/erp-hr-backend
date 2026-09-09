@@ -104,7 +104,7 @@ async function emitEmployeeLifecycle(tx, employee, phase, ctx = {}, extra = {}) 
 //     module: "Employee",
 //     result: "SUCCESS",
 //     notes: `Employee ${employee.id} created successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+//     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
 //   });
 
 //   return employee;
