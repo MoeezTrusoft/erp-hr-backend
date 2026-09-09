@@ -369,17 +369,17 @@ model Employee {
   attendanceAnomalyApprovals AttendanceAnomalyApproval[] @relation("AttendanceAnomalyApprover")
   attendanceApprovalRoles    AttendanceApprovalLevel[]   @relation("AttendanceApprover")
   overtimeApprovals          OvertimeRequestApproval[]   @relation("OvertimeApprover")
-  claimApprovals        ClaimApproval[]         @relation("ClaimApprover")
-  TrainingEnrollment    TrainingEnrollment[]
+  claimApprovals             ClaimApproval[]             @relation("ClaimApprover")
+  TrainingEnrollment         TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
-  actionBy              Log[]                   @relation("ActionBy")
-  logs                  Log[]
-  goalCreatedBy         Goal[]                  @relation("GoalCreatedBy")
-  approvedBy            Goal[]                  @relation("GoalApprover")
-  goalProgress          GoalProgress[]          @relation("GoalProgressCreatedBy")
-  feedBackBy            ReviewFeedback[]        @relation("FeedbackBy")
-  ReviewReminder        ReviewReminder[]
-  calibratedBy          RatingAdjustment[]      @relation("CalibratedBy")
+  actionBy                   Log[]                       @relation("ActionBy")
+  logs                       Log[]
+  goalCreatedBy              Goal[]                      @relation("GoalCreatedBy")
+  approvedBy                 Goal[]                      @relation("GoalApprover")
+  goalProgress               GoalProgress[]              @relation("GoalProgressCreatedBy")
+  feedBackBy                 ReviewFeedback[]            @relation("FeedbackBy")
+  ReviewReminder             ReviewReminder[]
+  calibratedBy               RatingAdjustment[]          @relation("CalibratedBy")
 
   businessUnit BusinessUnit? @relation(fields: [businessUnitId], references: [id])
   gradeLevel   GradeLevel?   @relation(fields: [gradeLevelId], references: [id])
@@ -593,8 +593,8 @@ model Attendance {
   // 0.0 unpaid. NULL means "not yet determined" (a MISSING_* day awaiting
   // regularization). Payroll must read this rather than re-deriving policy from
   // `status`, and must treat NULL as a hold, never as zero.
-  day_credit               Float?
-  requires_regularization  Boolean @default(false)
+  day_credit              Float?
+  requires_regularization Boolean @default(false)
 
   // HR-ATT-CORRECTION-01 — a day fixed by hand. The device roll-up SKIPS these:
   // without that, HR corrects a day and the next sync silently overwrites it,
@@ -672,7 +672,7 @@ model AttendanceAnomaly {
   // by the system; the employee only explains themselves. Position/department
   // are SNAPSHOTS taken at raise time: a transfer months later must not rewrite
   // the record a decision was made on.
-  applicationDate    DateTime @default(now()) // defaults to the raise date
+  applicationDate    DateTime  @default(now()) // defaults to the raise date
   positionSnapshot   String?
   departmentSnapshot String?
   expectedTime       DateTime? // e.g. rostered shift start for a LATE_CHECKIN
@@ -686,17 +686,17 @@ model AttendanceAnomaly {
 
   currentApprovalLevel Int @default(1)
 
-  employee  Employee                   @relation(fields: [employeeId], references: [id])
+  employee  Employee                    @relation(fields: [employeeId], references: [id])
   approvals AttendanceAnomalyApproval[]
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
+  @@unique([tenantId, sourceKind, sourceRef], map: "attendance_anomalies_source_key")
   // F-DB-07: the default HR review queue filters tenant + status and sorts by
   // createdAt, with id as the stable pagination tie-break.
   @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)], map: "attendance_anomalies_tenant_status_created_id_idx")
   @@index([employeeId])
   @@index([status])
-  @@unique([tenantId, sourceKind, sourceRef], map: "attendance_anomalies_source_key")
   @@map("attendance_anomalies")
 }
 
@@ -736,8 +736,8 @@ model AttendanceAnomalyApproval {
 model AttendancePolicyConfig {
   id Int @id @default(autoincrement())
 
-  graceMinutes         Int @default(0) // PRESENT while check-in <= shiftStart + this
-  halfDayAfterMinutes  Int @default(30) // HALF_DAY once lateness >= this (fixed minutes)
+  graceMinutes        Int @default(0) // PRESENT while check-in <= shiftStart + this
+  halfDayAfterMinutes Int @default(30) // HALF_DAY once lateness >= this (fixed minutes)
 
   // When set, the half-day threshold is this PERCENT of the employee's own
   // rostered shift instead of the fixed minutes above. Required because policy
@@ -745,10 +745,10 @@ model AttendancePolicyConfig {
   // 90 minutes for EMG's 3-hour roster but 360 for Homenet's 12-hour one — a
   // single integer cannot express it. Null keeps the fixed-minutes behaviour.
   halfDayAfterPercentOfShift Float?
-  earlyLeaveGraceMin   Int @default(0) // EARLY_CHECKOUT once check-out < shiftEnd - this
-  checkoutLeniencyMin  Int @default(240) // how long past shift end a check-out still counts
-  overtimeAfterMinutes Int @default(45) // OT only past this much beyond shift end
-  overtimeNeedsApproval Boolean @default(true)
+  earlyLeaveGraceMin         Int     @default(0) // EARLY_CHECKOUT once check-out < shiftEnd - this
+  checkoutLeniencyMin        Int     @default(240) // how long past shift end a check-out still counts
+  overtimeAfterMinutes       Int     @default(45) // OT only past this much beyond shift end
+  overtimeNeedsApproval      Boolean @default(true)
 
   // Duration bands as a PERCENTAGE of the rostered shift, never absolute hours:
   // this fleet runs shifts from 3h (EMG 15:30-18:30) to 12h (Homenet 22:00-10:00),
@@ -822,12 +822,12 @@ model AttendanceDeductionRule {
 // not exist, hop to the next" rule. `useEmployeeManager` resolves the approver
 // dynamically from the requester's manager instead of a fixed person.
 model AttendanceApprovalLevel {
-  id                  Int       @id @default(autoincrement())
-  level               Int // 1 = first approver
-  role                String // 'MANAGER' | 'HR' | 'MANAGEMENT' | free text
-  approverId          Int? // fixed approver; null when resolved dynamically
-  useEmployeeManager  Boolean   @default(false)
-  skipIfUnresolved    Boolean   @default(true)
+  id                     Int     @id @default(autoincrement())
+  level                  Int // 1 = first approver
+  role                   String // 'MANAGER' | 'HR' | 'MANAGEMENT' | free text
+  approverId             Int? // fixed approver; null when resolved dynamically
+  useEmployeeManager     Boolean @default(false)
+  skipIfUnresolved       Boolean @default(true)
   autoEscalateAfterHours Int?
 
   rowStatus RowStatus    @default(ACTIVE)
@@ -1298,11 +1298,11 @@ model OvertimeRequest {
 
   // HR-OT-APPROVAL-01 — overtime routes through the SAME ordered chain as
   // payroll (PayrollApprovalMatrix), so a single approverId is not enough.
-  currentApprovalLevel Int    @default(1)
-  source               String @default("MANUAL") // MANUAL | DEVICE_PUNCH
+  currentApprovalLevel Int                       @default(1)
+  source               String                    @default("MANUAL") // MANUAL | DEVICE_PUNCH
   approvals            OvertimeRequestApproval[]
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
 
   tenantId String? @db.Uuid
 
@@ -2175,6 +2175,10 @@ model LoanRepayment {
   loan Loan @relation(fields: [loanId], references: [id])
 
   @@index([tenantId, loanId, deductedAt])
+  // N-02 / T-1.2 — one repayment per (loan, run). Partial (NULL-run legacy rows
+  // like the "Pre-system installment" history are allowed); the application
+  // layer also checks before decrementing, this is the belt to the braces.
+  @@index([loanId, payrollRunId])
   @@map("loan_repayments")
 }
 
@@ -2353,6 +2357,11 @@ model PayrollRuleConfig {
   eobiEnabled             Boolean      @default(false)
   eobiEmployeeRatePct     Float        @default(1) // % of the assessable wage
   eobiWageCeilingMinor    Int          @default(1700000) // PKR 17,000 in paisa; contribution stops rising above this
+  // N-01 / T-0.3 — absence & half-day day-credit loss priced into pay. Ships
+  // DISABLED for every tenant: enabling changes real money behavior and is a
+  // deliberate per-tenant act gated on the HR stacking-policy sign-off (plan 20,
+  // T-2.1). When false the engine's output is byte-identical to pre-N-01.
+  absenceRecoveryEnabled  Boolean      @default(false)
   status                  ConfigStatus @default(DRAFT)
   version                 Int          @default(1)
   createdAt               DateTime     @default(now())

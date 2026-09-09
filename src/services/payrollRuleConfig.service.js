@@ -24,6 +24,10 @@ const BOOL_KEYS = [
   // HR-PAYROLL-EOBI-01. Off for every tenant until someone deliberately turns
   // it on; see the rate/ceiling validation below.
   "eobiEnabled",
+  // N-01 / T-0.3 — absence & half-day day-credit loss priced into pay.
+  // Ships false for every tenant: enabling changes real money behavior and is
+  // gated on the HR stacking-policy sign-off (plan 20, T-2.1).
+  "absenceRecoveryEnabled",
 ];
 
 // HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
@@ -49,6 +53,8 @@ function defaultRules() {
     eobiEnabled: false,
     eobiEmployeeRatePct: 1,
     eobiWageCeilingMinor: 1700000,
+    // N-01 / T-0.3 — absence pricing ships off (see BOOL_KEYS above).
+    absenceRecoveryEnabled: false,
     status: "DRAFT",
     version: 1,
   };
