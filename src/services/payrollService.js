@@ -930,11 +930,6 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
   return create;
 };
 
-            ],
-        },
-    ],
-});
-
 // N-14 — which loans feed a run's deduction bridge. `outstanding > 0` alone
 // drops a loan that THIS VERY RUN already repaid (Hakim Ali's 10K advance:
 // recovered by August run 9, outstanding hit 0, and the re-process would
