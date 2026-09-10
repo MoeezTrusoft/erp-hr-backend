@@ -80,16 +80,18 @@ const augSlips = load('emg-august-payslips.csv');
 
 const PERIOD_DAYS = 30; // September: 30 calendar days
 
-// Basis from the August BASE_SALARY earning line.
+// Basis from August GROSS (base + fixed allowances) — matches the PUBLISHED
+// deductionBasis=GROSS (doc 22 execution 2026-09-10: PayrollRuleConfig row v1).
+// The engine charges the contracted package (contractualMinor), and August
+// earning lines are exactly BASE_SALARY + 4 fixed allowances, so the sum of all
+// earning lines per employee IS the contractual gross.
 const basisByEmp = new Map();
-for (const e of augEarnings) {
-  if (e.code !== 'BASE_SALARY') continue;
-  if (!basisByEmp.has(e.employeeId)) basisByEmp.set(e.employeeId, decToMinor(e.amount));
-}
-// August gross (all earning lines) for context.
 const grossByEmp = new Map();
 for (const e of augEarnings) {
-  grossByEmp.set(e.employeeId, (grossByEmp.get(e.employeeId) || 0n) + decToMinor(e.amount));
+  const minor = decToMinor(e.amount);
+  if (!basisByEmp.has(e.employeeId)) basisByEmp.set(e.employeeId, 0n);
+  basisByEmp.set(e.employeeId, basisByEmp.get(e.employeeId) + minor);
+  grossByEmp.set(e.employeeId, (grossByEmp.get(e.employeeId) || 0n) + minor);
 }
 
 // ---------- engine replay ----------
@@ -152,7 +154,7 @@ const fmt = (minor) => {
 const lines = [];
 lines.push('# EMG September Rehearsal — dry run (no writes, no DB)');
 lines.push('');
-lines.push(`Source: ${BASE} (read-only prod exports) · period days: ${PERIOD_DAYS} · basis: August BASE_SALARY line`);
+lines.push(`Source: ${BASE} (read-only prod exports) · period days: ${PERIOD_DAYS} · basis: August GROSS (base + fixed allowances) — published deductionBasis=GROSS`);
 lines.push('');
 lines.push('| Emp | Basis (PKR) | Days rec | LATE/MISS rule days | Rule deduction | Absence days (credit loss) | ABSENCE_RECOVERY (flag ON) |');
 lines.push('|---|---|---|---|---|---|---|');
