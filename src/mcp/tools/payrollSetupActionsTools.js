@@ -19,6 +19,7 @@ import {
   publishConfig,
   exportConfig,
 } from "../../services/payrollConfigActions.service.js";
+import { seedConfigFromTenant } from "../../services/payrollConfigSeed.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -170,5 +171,36 @@ export function registerPayrollSetupActionsTools(server) {
       const data = await exportConfig({ tenantId: user.tenantId, version });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_payroll_config_export")
+  );
+
+  // ── SEED FROM TENANT (T-2.8 / Decision 5) ─────────────────────────────────
+  // Onboarding-only template: copies a source tenant's rule config (as DRAFT),
+  // deduction rules, and type catalogs into an EMPTY target. Publish stays the
+  // gate. Never touches calendars or snapshots; refuses targets with payroll
+  // history. Deliberately cross-tenant (admin-gated) — see the service header.
+  server.tool(
+    "hr_payroll_config_seed_from_tenant",
+    "Seed an empty tenant's payroll config from another tenant (rule config as DRAFT + deduction rules + earning/deduction type catalogs). Onboarding-only: refuses a target with payslips/runs; never copies calendars or snapshots.",
+    {
+      sourceTenantId: z
+        .string()
+        .uuid()
+        .describe("Source tenant (RBAC Company.uuid) whose ruleset is copied"),
+      targetTenantId: z
+        .string()
+        .uuid()
+        .describe("Target tenant (RBAC Company.uuid) — must have no payroll history"),
+    },
+    withToolError(async ({ sourceTenantId, targetTenantId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:payroll", user.isAdmin);
+      const data = await seedConfigFromTenant({
+        actorTenantId: user.tenantId,
+        actorIsAdmin: user.isAdmin === true,
+        sourceTenantId,
+        targetTenantId,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_payroll_config_seed_from_tenant")
   );
 }
