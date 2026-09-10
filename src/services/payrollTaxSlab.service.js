@@ -52,6 +52,36 @@ function toRow(r) {
     };
 }
 
+// [CHECK23] ACTIVE-slab overlap guard (T-2.5 / plan 25 B1).
+//
+// Within a tenant+country, a NEW/EDITED ACTIVE slab must not overlap any
+// already-ACTIVE slab's bracket range. Shared endpoints coexist (600000-1200000
+// beside 1200000-1800000 is the normal FBR ladder); open-ended tops count to
+// +inf. INACTIVE rows are ignored — retirement via deactivate is the sanctioned
+// dedup path. Used by BOTH createTaxSlab and updateTaxSlab.
+async function assertNoActiveOverlap(tenantId, countryCode, min, max, excludeId = null) {
+    const actives = await prisma.taxRate.findMany({
+        where: scopedWhere(tenantId, {
+            countryCode: String(countryCode).toUpperCase().slice(0, 2),
+            status: "ACTIVE",
+        }),
+    });
+    const overlap = actives.some((r) => {
+        if (excludeId != null && r.id === excludeId) return false;
+        const rMin = r.bracketMin;
+        const rMax = r.bracketMax; // null = open-ended top
+        if (compareDecimal(rMax ?? Infinity, min) <= 0) return false; // below, or touching at our start
+        if (max != null && compareDecimal(max, rMin) <= 0) return false; // above, or touching at our end
+        return true;
+    });
+    if (overlap) {
+        throw Object.assign(
+            new Error("bracket overlaps an existing ACTIVE slab for this country — deactivate the duplicate or merge the ranges"),
+            { status: 409 },
+        );
+    }
+}
+
 export async function createTaxSlab({
     tenantId,
     countryCode = "PK",
@@ -81,6 +111,12 @@ export async function createTaxSlab({
     const from = effectiveFrom ? new Date(effectiveFrom) : new Date();
     if (Number.isNaN(from.getTime())) {
         throw Object.assign(new Error("effectiveFrom must be a valid date"), { status: 400 });
+    }
+
+    // [CHECK23] guard ACTIVE writes; INACTIVE creation is the sanctioned
+    // way to pre-stage a slab, so only ACTIVE writes check overlap.
+    if (status !== "INACTIVE") {
+        await assertNoActiveOverlap(tenantId, countryCode, min, max);
     }
 
     const created = await prisma.taxRate.create({
@@ -137,6 +173,18 @@ export async function updateTaxSlab({ tenantId, id, ...fields }) {
         }
     }
     if (fields.status !== undefined) data.status = fields.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+
+    // [CHECK23] overlap guard for ACTIVE writes. Skip when the write itself
+    // deactivates (retirement is always allowed). The edit is evaluated against
+    // its own post-write bracket, excluding itself.
+    const willBeActive = (fields.status !== undefined ? fields.status !== "INACTIVE" : true);
+    if (willBeActive && (data.bracketMin !== undefined || data.bracketMax !== undefined || fields.status !== undefined)) {
+        const current = await prisma.taxRate.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+        if (!current) throw Object.assign(new Error("Tax slab not found"), { status: 404 });
+        const min = data.bracketMin !== undefined ? data.bracketMin : current.bracketMin;
+        const max = data.bracketMax !== undefined ? data.bracketMax : current.bracketMax;
+        await assertNoActiveOverlap(tenantId, data.countryCode ?? current.countryCode, min, max, Number(id));
+    }
 
     // updateMany so the tenant scope is enforced in the WHERE (fail-closed) —
     // a cross-tenant id resolves to 0 rows rather than mutating another tenant.
