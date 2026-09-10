@@ -930,6 +930,27 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
   return create;
 };
 
+            ],
+        },
+    ],
+});
+
+// N-14 — which loans feed a run's deduction bridge. `outstanding > 0` alone
+// drops a loan that THIS VERY RUN already repaid (Hakim Ali's 10K advance:
+// recovered by August run 9, outstanding hit 0, and the re-process would
+// silently drop the deduction line and raise his net). A loan with an existing
+// repayment for THIS run stays selected — planLoanRepayment then re-prices the
+// line without re-booking the ledger. Loans repaid by a DIFFERENT run (or
+// manually) do not resurface.
+export const loanBridgeWhere = (employeeId, payrollRunId) => ({
+    employeeId,
+    status: 'ACTIVE',
+    OR: [
+        { outstandingMinor: { gt: 0 } },
+        { repayments: { some: { payrollRunId } } },
+    ],
+});
+
 // Statuses a run may be (re-)processed FROM. PENDING is the first run; COMPLETED
 // and FAILED allow an idempotent re-process (no doubled payslips). PROCESSING is
 // allowed so a crashed run can be retried. APPROVED/FINALIZED/CANCELLED are
@@ -1165,13 +1186,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     }),
                     include: { benefitPlan: { select: { name: true, employerContributionMinor: true, employeeContributionMinor: true } } },
                 }),
-                // Active loans with outstanding balance
+                // Active loans with outstanding balance — or ones this run
+                // already repaid (N-14): re-processing must keep their
+                // deduction line, never silently re-pay the installment.
                 prisma.loan.findMany({
-                    where: withTenant(tenantId, {
-                        employeeId: employee.id,
-                        status: "ACTIVE",
-                        outstandingMinor: { gt: 0 },
-                    }),
+                    where: withTenant(tenantId, loanBridgeWhere(employee.id, payrollRun.id)),
                     select: { id: true, monthlyInstallmentMinor: true, outstandingMinor: true },
                 }),
             ]);
