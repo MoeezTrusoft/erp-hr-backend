@@ -54,6 +54,18 @@ export const COLUMNS = [
 const norm = (v) => (v === null || v === undefined ? "" : String(v).trim());
 const key = (v) => norm(v).toLowerCase().replace(/[\s_-]+/g, " ");
 
+// N-11 — day credit for a stored status, the same mapping the correction path
+// uses (creditFor). The upsert previously never wrote day_credit, so every
+// imported row landed "held" (NULL) and the payroll absence bridge priced
+// nothing for imported months — wrong by omission, forever. Rest-day statuses
+// carry 0; the payroll bridge skips them by status (N-09).
+export function creditForStatus(status) {
+  if (status === "PRESENT" || status === "LATE") return 1;
+  if (status === "HALF_DAY") return 0.5;
+  if (status === "ABSENT" || status === "WEEKLY_OFF" || status === "HOLIDAY" || status === "ON_LEAVE") return 0;
+  return null; // MISSING_* and anything unresolved stays held
+}
+
 /** Accept the handful of date shapes six years of spreadsheets actually contain. */
 export function parseDate(raw) {
   if (raw instanceof Date && !isNaN(raw)) {
@@ -468,10 +480,13 @@ export async function runAttendanceImport({
               employeeId: r.employeeId, date: r.date,
               check_in: r.checkIn, check_out: r.checkOut, total_hours: r.totalHours,
               status: r.status, work_mode: r.workMode, remarks: r.remarks,
+              // N-11 — imported rows carry their day credit from day one.
+              day_credit: creditForStatus(r.status),
             }),
             update: {
               check_in: r.checkIn, check_out: r.checkOut, total_hours: r.totalHours,
               status: r.status, work_mode: r.workMode, remarks: r.remarks,
+              day_credit: creditForStatus(r.status),
             },
           }),
         ),
