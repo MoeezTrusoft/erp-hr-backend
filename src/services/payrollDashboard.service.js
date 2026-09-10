@@ -606,6 +606,34 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
     .filter((x) => Number.isInteger(x));
   if (!ids.length) return { updated: 0 };
 
+  // [A-08] Separation of duties — bulk APPROVE must not let the run's own
+  // processor rubber-stamp their processing one payslip at a time. The run-level
+  // gate already enforces approver≠processedBy (HR-PAY-06); this closes the bulk
+  // side-door. hold/disburse don't establish approval, so they stay ungated. A
+  // legacy run with processedBy=null can never establish a violation.
+  if (action === "approve" && actorId != null) {
+    const targets = await prisma.payrollPayslip.findMany({
+      where: scopedWhere(tenantId, { id: { in: ids } }),
+      select: { id: true, payrollRunId: true },
+    });
+    const runIds = [...new Set(targets.map((p) => p.payrollRunId))];
+    const runs = await prisma.payrollRun.findMany({
+      where: scopedWhere(tenantId, { id: { in: runIds } }),
+      select: { id: true, processedBy: true },
+    });
+    const offenders = runs
+      .filter((r) => r.processedBy != null && Number(r.processedBy) === Number(actorId))
+    if (offenders.length > 0) {
+      const names = offenders.map((r) => `run ${r.id}`).join(", ");
+      throw Object.assign(
+        new Error(
+          `Separation of duties: you processed ${names} — a different person must approve its payslips`,
+        ),
+        { status: 403 },
+      );
+    }
+  }
+
   const now = new Date();
   let data;
   if (action === "approve") {
