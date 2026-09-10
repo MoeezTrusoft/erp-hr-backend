@@ -412,6 +412,13 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     const deductions = [];
     const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
     let grossMinor = 0n;
+    // N-13 — the TAXABLE base for income tax. Earning-type taxability
+    // (PayrollEarningType.isTaxable) was ignored: the engine taxed the whole
+    // package, so "500K salary, only 200K taxable" was un-expressable. Lines
+    // whose resolved type is explicitly non-taxable are excluded; everything
+    // else (base salary, overtime, employer benefits, unflagged allowances)
+    // stays taxable — the earning-type default.
+    let taxableMinor = 0n;
     // HR-PAYROLL-DEDUCTION-BASIS-01 — base + fixed allowances, i.e. the monthly
     // package the employee is contracted for. See step 7 for why this is not
     // grossMinor.
@@ -459,6 +466,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         // benefits, and working overtime must not make a different day of
         // absence cost more.
         contractualMinor = money.add(contractualMinor, baseMinor);
+        taxableMinor = money.add(taxableMinor, baseMinor);
     }
 
     // 2) BRIDGE: Overtime → Earning (approved OT hours × hourly rate × OT multiplier)
@@ -474,6 +482,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                     description: `Overtime (${ot.hours}h × ${ot.rate || 1.5}x) — ${ot.date || ''}`,
                 });
                 grossMinor = money.add(grossMinor, otAmountMinor);
+                taxableMinor = money.add(taxableMinor, otAmountMinor);
             }
         }
     }
@@ -489,6 +498,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                     description: `Employer: ${b.planName || 'Benefit'}`,
                 });
                 grossMinor = money.add(grossMinor, amt);
+                taxableMinor = money.add(taxableMinor, amt);
             }
         }
     }
@@ -517,6 +527,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 description: assignment.earningType.name,
             });
             grossMinor = money.add(grossMinor, amountMinor);
+            // N-13 — an explicitly non-taxable earning type leaves the tax base.
+            if (assignment.earningType.isTaxable !== false) {
+                taxableMinor = money.add(taxableMinor, amountMinor);
+            }
             // Allowances are part of the contracted package (house, transport,
             // medical, utilities), so they count toward a deducted day.
             contractualMinor = money.add(contractualMinor, amountMinor);
@@ -733,7 +747,8 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     //    payslip deterministic and matches the table-driven figure.
     const sorted = selectEffectiveTaxRates(taxRateRows, { countryCode: payrollRun.countryCode, asOf: at });
     const ruleVersion = computeRuleVersion(sorted, at);
-    const taxMinor = computeProgressiveTaxMinor(grossMinor, sorted, currency);
+    // N-13 — tax the TAXABLE base, not the full package.
+    const taxMinor = computeProgressiveTaxMinor(taxableMinor, sorted, currency);
     if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
             deductionTypeId: null,
