@@ -673,6 +673,14 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         //     fault. Manually-corrected rows keep their stored credit — HR's
         //     ruling outranks the device (HR-ATT-CORRECTION-01).
         if (ruleConfig.absenceRecoveryEnabled === true) {
+            // N-09 — rest days are not credit loss. WEEKLY_OFF/HOLIDAY rows are
+            // stored with day_credit 0 (the writer's rest-day convention) and
+            // ON_LEAVE is priced by the leave bridge, so summing (1 − credit)
+            // over EVERY row docked people for Sundays: HomeVision's August
+            // carried ~140 phantom rest-days ≈ PKR 246k. Operator law
+            // (2026-09-11): one deducted day = salary ÷ calendar days, "if any
+            // violation" — a weekly off is not a violation.
+            const NON_WORKING_DAY_STATUSES = new Set(['WEEKLY_OFF', 'HOLIDAY', 'ON_LEAVE']);
             const dayKey = (d) => dayOf(d);
             const excusedDays = new Set(
                 (bridges.anomalyRows || [])
@@ -684,6 +692,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             let unpaidHundredths = 0n; // Σ(1 − day_credit) in hundredths of a day
             for (const row of bridges.attendanceRows || []) {
                 if (!row || row.day_credit == null) continue; // NULL credit = held
+                if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
                 if (excusedDays.has(dayKey(row.date))) continue; // approved anomaly
                 const credit = Number(row.day_credit);
                 if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
