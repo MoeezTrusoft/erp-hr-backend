@@ -921,6 +921,34 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
 // terminal-ish and must NOT be silently re-computed.
 const PROCESSABLE_STATUSES = new Set(['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED']);
 
+// N-10 — the payroll-eligible employee filter for a run. payroll_included is
+// the documented payroll switch (hr.service.js:508; the attendance writer and
+// reconciliation both honor it) — an administrative/operator employee must
+// never land in a payslip just because their status is Active. The
+// active/period-overlap OR is unchanged: case-insensitive on purpose (73 of 75
+// production rows spell it "Active") and leavers keep the days they worked.
+export const payrollEligibleFilter = (payrollRun) => ({
+    AND: [
+        { payroll_included: { not: false } },
+        {
+            OR: [
+                { status: { equals: 'active', mode: 'insensitive' } },
+                {
+                    employmentPeriods: {
+                        some: {
+                            startDate: { lte: payrollRun.periodEnd },
+                            OR: [
+                                { endDate: null },
+                                { endDate: { gte: payrollRun.periodStart } },
+                            ],
+                        },
+                    },
+                },
+            ],
+        },
+    ],
+});
+
 export const processPayrollRun = async (id, updatedBy, tenantId) => {
     const payrollRun = await prisma.payrollRun.findFirst({
         where: withTenant(tenantId, { id }),
@@ -953,26 +981,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             // them from the run entirely and they lose the days they DID work.
             // Anyone with an employment period touching this run is included and
             // then prorated to the days it covers.
+            // N-10 — payroll_included is the documented payroll filter
+            // (hr.service.js:508); the selection must honor it like the
+            // attendance writer and reconciliation do.
             where: {
                 tenant_id: tenantId ?? null,
-                OR: [
-                    // Case-insensitive on purpose. 73 of 75 production rows spell
-                    // this "Active" and Postgres equality is case-sensitive, so
-                    // the plain literal matched exactly ONE employee — payroll
-                    // selected almost nobody and reported no error.
-                    { status: { equals: 'active', mode: 'insensitive' } },
-                    {
-                        employmentPeriods: {
-                            some: {
-                                startDate: { lte: payrollRun.periodEnd },
-                                OR: [
-                                    { endDate: null },
-                                    { endDate: { gte: payrollRun.periodStart } },
-                                ],
-                            },
-                        },
-                    },
-                ],
+                ...payrollEligibleFilter(payrollRun),
             },
             include: {
                 // Every spell touching the run. computeProrationFactor clips and
