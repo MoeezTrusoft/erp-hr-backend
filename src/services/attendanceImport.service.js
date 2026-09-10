@@ -165,10 +165,14 @@ export function validateRow(raw, lookup, seen) {
   let status = pickEnum(raw.status, STATUS, null);
   if (norm(raw.status) && !status) issues.push(`status "${norm(raw.status)}" is not one of ${STATUS.join(", ")}`);
   if (!status) {
-    // A leave day is NOT an absence in spirit, but StatusAttendance has no LEAVE
-    // member — day_type carries that meaning, which is exactly why the column
-    // exists. Without it an absence is indistinguishable from a Sunday.
-    if (dayType === "LEAVE" || dayType === "WEEKLY_OFF" || dayType === "HOLIDAY") status = "ABSENT";
+    // N-12 — the stored status must CARRY the day type. Forcing 'ABSENT' here
+    // (and dropping day_type in the upsert) made an imported Sunday
+    // indistinguishable from a real absence — the exact confusion the column
+    // exists to prevent. Rest/leave days are restated exactly like the device
+    // writer does: WEEKLY_OFF / HOLIDAY / ON_LEAVE.
+    if (dayType === "WEEKLY_OFF") status = "WEEKLY_OFF";
+    else if (dayType === "HOLIDAY") status = "HOLIDAY";
+    else if (dayType === "LEAVE") status = "ON_LEAVE";
     else status = checkIn ? "PRESENT" : "ABSENT";
     fixes.push(`status derived as ${status}`);
   }
