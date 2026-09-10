@@ -548,9 +548,11 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
 
     // 6) BRIDGE: Loan repayments → Deduction (with garnishment cap)
     if (bridges.loanLines?.length > 0) {
+        // [A-02] one default, one source: the config service publishes 33, so
+        // the engine fallback is 33 too — never the unsigned 40. (T-2.4/A1.)
         const capPct = ruleConfig.garnishmentCapPct != null
             ? BigInt(Math.round(ruleConfig.garnishmentCapPct))
-            : 40n;
+            : 33n;
         const grossLimit = ruleConfig.garnishmentRecovery === false
             ? grossMinor // no cap — allow full deduction
             : grossMinor * capPct / 100n;
