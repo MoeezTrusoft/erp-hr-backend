@@ -264,8 +264,11 @@ export function collapseLeaves(rows) {
 }
 
 async function loadEmployeeLookup(tenantId) {
+  // Employee carries the legacy snake_case tenant column (REQ-007) unlike the
+  // C.2 camelCase tables — scopedWhere() stamps `tenantId`, which the Employee
+  // model does not have, so the lookup would throw Prisma P1552 every time.
   const employees = await prisma.employee.findMany({
-    where: scopedWhere(tenantId, {}),
+    where: { tenant_id: tenantId },
     select: { id: true, employee_code: true },
   });
   const byCode = new Map();

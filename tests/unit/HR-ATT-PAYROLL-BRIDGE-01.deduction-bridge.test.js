@@ -101,6 +101,11 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 countViolationDays', () => {
 
     it('does not charge leave for a refused missing-punch or early-checkout appeal either', () => {
         // Same reasoning: the underlying violation already has its own rule.
+        // D1 refinement (operator law 2026-09-11): EARLY_CHECKOUT exists ONLY as
+        // an anomaly — the refused appeal is the surviving evidence of the
+        // violation, so it counts under the EARLY_CHECKOUT rule (a 3:1 pooled
+        // occurrence, NOT a day of leave). MISSING_CHECKOUT needs no mapping: the
+        // day's own MISSING_CHECKOUT status feeds its rule. OTHER maps nowhere.
         const v = countViolationDays({
             anomalies: [
                 { date: day('2026-08-06'), status: 'REJECTED', type: 'MISSING_CHECKOUT' },
@@ -109,7 +114,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 countViolationDays', () => {
             ],
         });
 
-        expect(keysOf(v)).toEqual([]);
+        expect(keysOf(v)).toEqual(['EARLY_CHECKOUT@2026-08-07']);
     });
 
     it('is deterministic in output order', () => {
@@ -132,17 +137,21 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 computeAttendanceDeductions', () => {
             rules: [rule('LATE', { triggerCount: 3, deductionDays: 1 })],
         });
         expect(lines).toEqual([
-            { ruleKey: 'LATE', counterGroup: null, occurrences: 7, days: 2 },
+            { ruleKey: 'LATE', counterGroup: null, occurrences: 7, rawDays: 2.33, days: 2 },
         ]);
     });
 
     it('costs nothing below the threshold', () => {
-        expect(
-            computeAttendanceDeductions({
-                violations: lateDays(2),
-                rules: [rule('LATE', { triggerCount: 3, deductionDays: 1 })],
-            }),
-        ).toEqual([]);
+        // D1: the line still SURFACES with its raw fractional value (rawDays)
+        // so a pooled engine can add it to the grand total, but its own `days`
+        // is 0 — legacy pricing (and the payslip) charge nothing.
+        const lines = computeAttendanceDeductions({
+            violations: lateDays(2),
+            rules: [rule('LATE', { triggerCount: 3, deductionDays: 1 })],
+        });
+        expect(lines).toHaveLength(1);
+        expect(lines[0].days).toBe(0);
+        expect(lines[0].rawDays).toBeCloseTo(0.67, 2);
     });
 
     it('ignores a rule that is not enabled', () => {
@@ -169,7 +178,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 computeAttendanceDeductions', () => {
             ],
         });
         expect(lines).toEqual([
-            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSED_PUNCH', occurrences: 3, days: 1 },
+            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSED_PUNCH', occurrences: 3, rawDays: 1, days: 1 },
         ]);
     });
 
@@ -186,7 +195,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 computeAttendanceDeductions', () => {
             ],
         });
         expect(lines).toEqual([
-            { ruleKey: 'LATE', counterGroup: 'TIMEKEEPING', occurrences: 2, days: 2 },
+            { ruleKey: 'LATE', counterGroup: 'TIMEKEEPING', occurrences: 2, rawDays: 2, days: 2 },
         ]);
     });
 

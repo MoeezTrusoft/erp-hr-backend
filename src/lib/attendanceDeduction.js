@@ -36,6 +36,18 @@ const STATUS_TO_RULE = {
   MISSING_CHECKOUT: "MISSING_CHECKOUT",
 };
 
+// Anomaly types that map onto a deduction rule. EARLY_CHECKOUT exists ONLY as
+// an anomaly type (AnomalyType enum) — there is no attendance status for it (a
+// full-credit day with an early departure is PRESENT), so the EARLY_CHECKOUT
+// anomaly record is the ONLY evidence an early departure happened. HR's
+// register charges it unless the appeal was APPROVED, so PENDING and REJECTED
+// both count. LATE/MISSING anomalies are NOT added here: the day's own status
+// (LATE / MISSING_*) already feeds those rules, and an APPROVED appeal excuses
+// the whole day via the excused set below.
+const ANOMALY_TO_RULE = {
+  EARLY_CHECKOUT: "EARLY_CHECKOUT",
+};
+
 /**
  * Countable violations for ONE employee over ONE period.
  *
@@ -88,7 +100,13 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
   for (const a of anomalies) {
     if (a?.status === "REJECTED" && a?.type === "ABSENT") {
       add("DISAPPROVED_LEAVE", dayKey(a.date));
+      continue;
     }
+    // EARLY_CHECKOUT (see ANOMALY_TO_RULE): the anomaly is the only record of
+    // the violation, so it counts unless HR approved the appeal. The add()
+    // dedupes with any same-day status-derived violation.
+    const ruleKey = a?.status !== "APPROVED" ? ANOMALY_TO_RULE[a?.type] : null;
+    if (ruleKey) add(ruleKey, dayKey(a.date));
   }
 
   return [...seen]
@@ -145,11 +163,24 @@ export function computeAttendanceDeductions({ violations = [], rules = [] } = {}
     if (rule.maxDeductionDaysPerPeriod != null) {
       deductionDays = Math.min(deductionDays, rule.maxDeductionDaysPerPeriod);
     }
-    if (deductionDays <= 0) continue;
+    const trigger = Math.max(rule.triggerCount || 1, 1);
+    // D1 (operator law 2026-09-11): HR pools violation occurrences across
+    // categories and floors the GRAND TOTAL once — "2 days late = 0, 5 days
+    // late = 1". The engine's per-group floor can't express "1.33 → pooled".
+    // `rawDays` is the UNFLOORED fractional day value (occurrences ÷ trigger ×
+    // deductionDays) for engines in POOLED_FLOOR mode; legacy consumers use
+    // `days` (per-group floored) and ignore it.
+    // A group whose OWN floor is 0 still surfaces (rawDays > 0) so pooled
+    // engines can add it to the grand total — Zubair's "2 lates + 1 early = 1
+    // day" dies if the 2 lates are dropped here. Legacy consumers filter on
+    // days <= 0, so a days:0 line changes nothing for them.
+    const rawDays = Math.round(((occurrences / trigger) * (rule.deductionDays || 0)) * 100) / 100;
+    if (deductionDays <= 0 && rawDays <= 0) continue;
     lines.push({
       ruleKey: rule.ruleKey,
       counterGroup: rule.counterGroup ?? null,
       occurrences,
+      rawDays,
       // Float arithmetic on 0.5-day steps: round to 2dp so 3 × 0.1 cannot leak
       // 0.30000000000000004 into a money line.
       days: Math.round(deductionDays * 100) / 100,

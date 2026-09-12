@@ -220,14 +220,18 @@ export const calculatePeriodSalaryMinor = (employmentTerm, payrollRun) => {
 
 /**
  * Select the TaxRate rows in effect for a given country at `asOf`, sorted by
- * bracketMin ascending. "Effective" = effectiveFrom <= asOf AND (effectiveTo is
- * null OR effectiveTo >= asOf). This is the versioned snapshot — a future rate
- * row or a foreign-country row is never selected. Pure: does not touch the DB.
+ * bracketMin ascending. "Effective" = status ACTIVE, effectiveFrom <= asOf AND
+ * (effectiveTo is null OR effectiveTo >= asOf). This is the versioned snapshot —
+ * a future rate row, a foreign-country row, or a DEACTIVATED slab is never
+ * selected (four tenants carried INACTIVE legacy slabs alongside ACTIVE
+ * monthly-normalized ones; ignoring status double-counted brackets and drove
+ * computed tax to ≈0). Pure: does not touch the DB.
  */
 export const selectEffectiveTaxRates = (rateRows, { countryCode, asOf }) => {
     const at = asOf instanceof Date ? asOf : new Date(asOf);
     return (rateRows || [])
         .filter((r) => r.countryCode === countryCode)
+        .filter((r) => r.status == null || r.status === 'ACTIVE')
         .filter((r) => {
             const from = r.effectiveFrom instanceof Date ? r.effectiveFrom : new Date(r.effectiveFrom);
             const to = r.effectiveTo == null ? null : (r.effectiveTo instanceof Date ? r.effectiveTo : new Date(r.effectiveTo));
@@ -419,6 +423,15 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // else (base salary, overtime, employer benefits, unflagged allowances)
     // stays taxable — the earning-type default.
     let taxableMinor = 0n;
+    // N-21 — TAX-BASE UPLIFT: the prorated share of fixed earnings is added
+    // back for the withholding base. Section 149 withholds on the CONTRACTED
+    // monthly salary; absence days reduce net pay through the deduction lines
+    // (already taken out) — they don't shrink the tax base. HR's August 2026
+    // register proves the convention: Abdullah's gross is prorated to 84,194
+    // (2 days off) yet his tax is 400 = 1% of (90,000 − 50,000), and Meesam
+    // (19/31 earned 36,774) still pays 100 = 1% of (60,000 − 50,000). For a
+    // full-month employee the uplift is zero and the base is unchanged.
+    let taxPackageUplift = 0n;
     // HR-PAYROLL-DEDUCTION-BASIS-01 — base + fixed allowances, i.e. the monthly
     // package the employee is contracted for. See step 7 for why this is not
     // grossMinor.
@@ -442,7 +455,8 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
 
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
     if (employmentTerm) {
-        let baseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
+        const fullBaseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
+        let baseMinor = fullBaseMinor;
         // HR-PAYROLL-EMPLOYMENT-PERIOD-02 — `> 0n` used to be part of this
         // guard, so a factor of exactly ZERO skipped proration and paid the
         // base salary IN FULL. Zero is the case that matters most: somebody who
@@ -465,8 +479,18 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         // grossMinor because gross also accumulates overtime and employer
         // benefits, and working overtime must not make a different day of
         // absence cost more.
-        contractualMinor = money.add(contractualMinor, baseMinor);
+        //
+        // N-19 — the basis must be the UNPRORATED package. Step 7 divides this
+        // by periodDays a second time, so feeding it the prorated salary docks
+        // a partial-month employee twice (Meesam: 19/31 proration THEN 2
+        // absence days priced on the prorated package ÷ 31 — HR charges one
+        // stream at the full daily rate: 60,000/31 × 2). For a full-month
+        // employee proration is 1.0 and both agree.
+        contractualMinor = money.add(contractualMinor, fullBaseMinor);
         taxableMinor = money.add(taxableMinor, baseMinor);
+        if (isProrated && fullBaseMinor > baseMinor) {
+            taxPackageUplift = money.add(taxPackageUplift, money.sub(fullBaseMinor, baseMinor));
+        }
     }
 
     // 2) BRIDGE: Overtime → Earning (approved OT hours × hourly rate × OT multiplier)
@@ -527,13 +551,23 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 description: assignment.earningType.name,
             });
             grossMinor = money.add(grossMinor, amountMinor);
+            // Allowances are part of the contracted package (house, transport,
+            // medical, utilities), so they count toward a deducted day.
+            // N-19 — the UNPRORATED amount: see the base-salary note above.
+            const fullAllowanceMinor = assignment.amount != null
+                ? money.decimalToMinor(assignment.amount, currency)
+                : null;
             // N-13 — an explicitly non-taxable earning type leaves the tax base.
             if (assignment.earningType.isTaxable !== false) {
                 taxableMinor = money.add(taxableMinor, amountMinor);
+                // N-21 — a prorated fixed allowance adds back its full share so
+                // the withholding base is the contracted package (see
+                // taxPackageUplift above).
+                if (fullAllowanceMinor != null && amountMinor < fullAllowanceMinor) {
+                    taxPackageUplift = money.add(taxPackageUplift, money.sub(fullAllowanceMinor, amountMinor));
+                }
             }
-            // Allowances are part of the contracted package (house, transport,
-            // medical, utilities), so they count toward a deducted day.
-            contractualMinor = money.add(contractualMinor, amountMinor);
+            contractualMinor = money.add(contractualMinor, fullAllowanceMinor ?? amountMinor);
         } else if (assignment.deductionType) {
             const amountMinor = assignment.amount != null
                 ? money.decimalToMinor(assignment.amount, currency)
@@ -652,7 +686,30 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         //     produced these lines (src/lib/attendanceDeduction.js) has already
         //     applied triggerCount, counterGroup pooling and the per-period cap;
         //     all that is left here is days → money.
+        //     N-17 — D1 POOLED_FLOOR mode: HR pools LATE/EARLY/MISSING_* into ONE
+        //     3:1 counter and floors the GRAND total once ("2 days late = 0, 5
+        //     days late = 1"). Lines from poolable rules are summed raw here and
+        //     priced once in the pooled emit below; every other line prices as
+        //     before. Legacy tenants keep the per-rule floors (byte-stable).
+        const POOLED_FLOOR = ruleConfig.deductionBasis === 'POOLED_FLOOR';
+        // N-20 — Trusoft refinement (operator law 2026-09-11): "more than 30
+        // minutes late is called half day". Half-days and disapproved-leave
+        // days charge DIRECTLY (0.5 / 1.0 of the day) and ONLY late occurrences
+        // pool 3:1 ("3 days late = 1 day"). The grand-floor mode cannot express
+        // a 0.5-day verdict (0.5 + 0.33 floors to 0), so POOLED_FLOOR_DIRECT:
+        //   - LATE lines pool and floor to WHOLE days (2 lates → 0, 6 → 2),
+        //   - EARLY_CHECKOUT / MISSING_* lines are skipped here — those days
+        //     price through absence credit-loss instead (credit 0 = full day),
+        //   - absence recovery (Σ(1 − day_credit)) charges unrounded.
+        const POOLED_FLOOR_DIRECT = ruleConfig.deductionBasis === 'POOLED_FLOOR_DIRECT';
+        const POOLABLE_RULE_KEYS = new Set(['LATE', 'EARLY_CHECKOUT', 'MISSING_CHECKIN', 'MISSING_CHECKOUT', 'MISSING_PUNCH']);
+        let pooledRawHundredths = 0n;
         for (const line of bridges.attendanceDeductionLines || []) {
+            if ((POOLED_FLOOR || POOLED_FLOOR_DIRECT) && POOLABLE_RULE_KEYS.has(line?.ruleKey)) {
+                if (POOLED_FLOOR_DIRECT && line?.ruleKey !== 'LATE') continue; // N-20: day-loss prices via credit
+                pooledRawHundredths += BigInt(Math.round((Number(line?.rawDays) || 0) * 100));
+                continue; // priced once, after the pool is complete
+            }
             const days = Number(line?.days) || 0;
             if (days <= 0) continue;
             const amountMinor = daysToMinor(days);
@@ -686,7 +743,84 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         //     the date) are skipped — HR agreed the day was not the employee's
         //     fault. Manually-corrected rows keep their stored credit — HR's
         //     ruling outranks the device (HR-ATT-CORRECTION-01).
-        if (ruleConfig.absenceRecoveryEnabled === true) {
+        // N-17 — D1 pooled-floor emit (operator law 2026-09-11). When
+        // ruleConfig.deductionBasis is 'POOLED_FLOOR', every pricing signal in
+        // section 7 pools into ONE counter and the grand total is floored ONCE:
+        //   - violation occurrences contribute their raw fractional days
+        //     (occurrences ÷ trigger × deductionDays, the counting engine's
+        //     rawDays — pooling by counterGroup alone still floors per group);
+        //   - absence recovery contributes Σ(1 − day_credit);
+        //   - grand = pool + absence, floored to whole days (BigInt ÷ 100),
+        //     priced at the same daily rate. HR's August register: "2 lates +
+        //     1 early = 1 day", "half-day + 1 late = 0 days",
+        //     "2 absences + 1 late = 2".
+        if (POOLED_FLOOR || POOLED_FLOOR_DIRECT) {
+            let unpaidHundredths = 0n; // Σ(1 − day_credit) in hundredths of a day
+            const chargedDays = new Set(); // N-20: days already priced via credit
+            const dayKey = (d) => dayOf(d);
+            const excusedDays = new Set(
+                (bridges.anomalyRows || [])
+                    .filter((a) => a?.status === 'APPROVED')
+                    .map((a) => (a.date ? dayKey(a.date) : null))
+                    .filter(Boolean),
+            );
+            if (ruleConfig.absenceRecoveryEnabled === true) {
+                // N-09 — rest days are not credit loss. WEEKLY_OFF/HOLIDAY rows
+                // are stored with day_credit 0 (the writer's rest-day
+                // convention) and ON_LEAVE is priced by the leave bridge, so
+                // summing (1 − credit) over EVERY row docked people for
+                // Sundays: HomeVision's August carried ~140 phantom rest-days
+                // ≈ PKR 246k. A weekly off is not a violation.
+                const NON_WORKING_DAY_STATUSES = new Set(['WEEKLY_OFF', 'HOLIDAY', 'ON_LEAVE']);
+
+                for (const row of bridges.attendanceRows || []) {
+                    if (!row || row.day_credit == null) continue; // NULL credit = held (HR-ATT-CUTOVER-01)
+                    if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
+                    if (excusedDays.has(dayKey(row.date))) continue; // approved anomaly
+                    const credit = Number(row.day_credit);
+                    if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
+                    const lost = 100n - BigInt(Math.round(credit * 100));
+                    if (lost > 0n) { unpaidHundredths += lost; chargedDays.add(dayKey(row.date)); }
+                }
+            }
+
+            // N-20 (POOLED_FLOOR_DIRECT): a DISAPPROVED leave whose day carries
+            // no credit-loss row (e.g. an ON_LEAVE day) still costs the day.
+            let dlHundredths = 0n;
+            if (POOLED_FLOOR_DIRECT) {
+                for (const a of bridges.anomalyRows || []) {
+                    if (a?.status !== 'REJECTED' || a?.type !== 'ABSENT') continue;
+                    const key = a.date ? dayKey(a.date) : null;
+                    if (!key || excusedDays.has(key) || chargedDays.has(key)) continue;
+                    dlHundredths += 100n;
+                }
+            }
+
+            // N-20: in DIRECT mode the late pool floors to WHOLE days (3:1),
+            // while credit-loss and disapproved-leave days stay unrounded.
+            const grandHundredths = POOLED_FLOOR_DIRECT
+                ? (pooledRawHundredths / 100n) * 100n + unpaidHundredths + dlHundredths
+                : pooledRawHundredths + unpaidHundredths;
+            const flooredDays = POOLED_FLOOR_DIRECT ? grandHundredths : grandHundredths / 100n; // N-20: DIRECT charges unrounded hundredths
+            if (flooredDays > 0n) {
+                // Same daily-rate path as every other day-based deduction:
+                // basis ÷ calendar days of the period × days.
+                const amountMinor = (basisMinor * (flooredDays * (POOLED_FLOOR_DIRECT ? 1n : 100n))) / (100n * BigInt(periodDays));
+                if (amountMinor > 0n) {
+                    const daysLabel = POOLED_FLOOR_DIRECT
+                        ? String(Number(grandHundredths) / 100)
+                        : `${flooredDays} day${flooredDays === 1n ? '' : 's'} pooled & floored`;
+                    deductions.push({
+                        deductionTypeId: null,
+                        code: pooledRawHundredths > 0n ? 'ATTENDANCE_DEDUCTION' : 'ABSENCE_RECOVERY',
+                        amount: money.minorToDecimal(amountMinor, currency),
+                        description:
+                            (pooledRawHundredths > 0n ? 'Attendance deductions' : 'Absence recovery') +
+                            ` (${daysLabel})`,
+                    });
+                }
+            }
+        } else if (ruleConfig.absenceRecoveryEnabled === true) {
             // N-09 — rest days are not credit loss. WEEKLY_OFF/HOLIDAY rows are
             // stored with day_credit 0 (the writer's rest-day convention) and
             // ON_LEAVE is priced by the leave bridge, so summing (1 − credit)
@@ -748,7 +882,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     const sorted = selectEffectiveTaxRates(taxRateRows, { countryCode: payrollRun.countryCode, asOf: at });
     const ruleVersion = computeRuleVersion(sorted, at);
     // N-13 — tax the TAXABLE base, not the full package.
-    const taxMinor = computeProgressiveTaxMinor(taxableMinor, sorted, currency);
+    // N-21 — restore the contracted-package share of prorated fixed earnings
+    // so withholding follows Section 149 (see taxPackageUplift above).
+    const taxBaseMinor = money.add(taxableMinor, taxPackageUplift);
+    const taxMinor = computeProgressiveTaxMinor(taxBaseMinor, sorted, currency);
     if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
             deductionTypeId: null,
@@ -980,6 +1117,46 @@ export const payrollEligibleFilter = (payrollRun) => ({
     ],
 });
 
+// N-15 — SALARY DEDUP GUARD (operator law 2026-09-11): the contractual Basic
+// (45% of package) lives in employment_terms.baseSalary, and four tenants ALSO
+// carried it as a BASIC earning assignment — the engine paid both and salaries
+// came out at 145% of package. When the employee has employment terms, the base
+// comes from the terms, so an earning assignment that duplicates it is dropped
+// before the engine sees it. HomeVision (terms-only, the correct pattern) is
+// untouched; a tenant with NO terms row keeps its assignments — the guard keys
+// on the terms, not on the code. Deduction assignments are never touched.
+export const BASE_DUPLICATE_CODES = new Set(['BASIC', 'BASE_SALARY']);
+export const dedupeBaseSalaryAssignments = (employee) => {
+    if (!employee?.employmentTerms?.length || !employee?.payrollAssignments?.length) return 0;
+    const before = employee.payrollAssignments.length;
+    employee.payrollAssignments = employee.payrollAssignments.filter(
+        (a) => !(a.earningType && BASE_DUPLICATE_CODES.has(a.earningType.code)),
+    );
+    return before - employee.payrollAssignments.length;
+};
+
+// N-16 — EMPLOYMENT-SCOPED ATTENDANCE (Obaid/Meesam, 2026-09-11): the absence
+// bridge prices every attendance row in the period, but days outside an
+// employment spell are not "unexcused work" — a terminated employee (Obaid,
+// out 2026-09-08) must not be docked for Sep 9+ no-punch days, and a re-hire
+// (Meesam, back 2026-09-04) must not be docked for the gap between spells.
+// Rows are kept only inside SOME spell (an open spell runs to `periodEnd`);
+// earnings remain governed by computeProrationFactor. Employees with no period
+// history (the steady-state majority) are untouched — scoping them to an empty
+// spell list would zero their attendance.
+export const scopeAttendanceToEmployment = (employee, periodEnd) => {
+    const spells = (employee?.employmentPeriods || []).map((p) => ({
+        start: p.startDate,
+        end: p.endDate ?? null,
+    }));
+    if (!spells.length || !employee?.attendance?.length) return 0;
+    const before = employee.attendance.length;
+    employee.attendance = employee.attendance.filter((row) =>
+        spells.some((s) => row.date >= s.start && row.date <= (s.end ?? periodEnd)),
+    );
+    return before - employee.attendance.length;
+};
+
 export const processPayrollRun = async (id, updatedBy, tenantId) => {
     const payrollRun = await prisma.payrollRun.findFirst({
         where: withTenant(tenantId, { id }),
@@ -1084,6 +1261,13 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 }
             }
         });
+
+        // N-15 / N-16 — salary dedup + employment-scoped attendance, applied to
+        // every selected employee before the payslip build (helpers above).
+        for (const employee of employees) {
+            dedupeBaseSalaryAssignments(employee);
+            scopeAttendanceToEmployment(employee, payrollRun.periodEnd);
+        }
 
         // HR-ATT-PAYROLL-BRIDGE-01 — the deduction rules are per TENANT, not per
         // employee, so they are read once for the whole run. Ordered by ruleKey so
