@@ -59,7 +59,10 @@ const columnSearchShape = {
 
 const listToolShape = {
   page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+  // 300: directory selectors (schedules, assignments) fetch the whole tenant
+  // fleet in one call — the old 100 cap hard-rejected pageSize>100 and blanked
+  // those selectors (MCP -32602 instead of a truncated list).
+  pageSize: z.coerce.number().int().min(1).max(300).default(10),
   q: z.string().optional(),
   status: z.string().optional(),
   positionId: z.union([z.string(), z.number()]).optional(),
