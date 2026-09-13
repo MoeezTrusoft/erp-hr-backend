@@ -54,7 +54,10 @@ const TOOLS = [
   { name: 'hr_leave_policy_delete', ctrl: () => leaveCtl.mcpDeleteLeavePolicy, gate: 'hr:leave', action: 'DELETE', args: { id: 1 } },
   { name: 'hr_leave_balance_update', ctrl: () => leaveCtl.mcpUpdateLeaveBalance, gate: 'hr:leave', action: 'EDIT', args: { employeeId: 7 } },
   { name: 'hr_leave_accruals_run', ctrl: () => leaveCtl.mcpRunLeaveAccruals, gate: 'hr:leave', action: 'CREATE', args: {} },
-  { name: 'hr_holiday_create', ctrl: () => leaveCtl.mcpCreateHoliday, gate: 'hr:leave', action: 'CREATE', args: { name: 'Eid', date: '2026-01-01' } },
+  // hr_holiday_create was REMOVED from leaveTools — it was a second
+  // registration of the name holidayCalendarTools.js owns, and the duplicate
+  // made the MCP SDK throw at registration (killing ALL HR tool calls).
+  // Canonical tool is covered by regionHoliday.tools.scenarios.test.js.
 ];
 
 describe('LEAVE-SCENARIOS — registration', () => {

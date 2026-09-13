@@ -2,7 +2,6 @@ import { z } from "zod";
 import {
   mcpApproveLeaveRequest,
   mcpCancelLeaveRequest,
-  mcpCreateHoliday,
   mcpCreateLeavePolicy,
   mcpCreateLeaveRequest,
   mcpDeleteLeavePolicy,
@@ -322,23 +321,10 @@ export function registerLeaveTools(server) {
     })
   );
 
-  server.tool(
-    "hr_holiday_create",
-    "Create a public holiday",
-    {
-      name: z.string().min(1).describe("Holiday name; e.g. 'Independence Day'"),
-      date: z.string().describe("ISO 8601 date YYYY-MM-DD; must not be in the past; unique per (holidayCalendarId, date)"),
-      holidayCalendarId: z
-        .union([z.string(), z.number()])
-        .describe("Holiday calendar id (HolidayCalendar.id) this holiday belongs to; required FK"),
-      description: z.string().optional().describe("Optional holiday description"),
-      fullDay: z.boolean().optional().describe("Whether the holiday is a full day; defaults to true"),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
-      const data = await mcpCreateHoliday(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
+  // hr_holiday_create previously lived here too — a second registration of the
+  // SAME tool name that holidayCalendarTools.js owns. The MCP SDK throws on a
+  // duplicate name at registration time, which killed EVERY HR MCP call
+  // ("Tool hr_holiday_create is already registered" → HR-5000 on all tool
+  // traffic). The canonical tool lives in holidayCalendarTools.js, gated
+  // hr:holiday (the RBAC resource seeded for the Holiday Management screen).
 }
