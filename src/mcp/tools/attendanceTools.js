@@ -179,7 +179,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await mcpAttendanceDailySummary(user, args);
+      const data = await mcpAttendanceDailySummary(user, { ...args, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

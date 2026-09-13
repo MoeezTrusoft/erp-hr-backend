@@ -32,10 +32,14 @@ function getCtx() {
 }
 
 // Resolve the self-scoped employeeId: explicit arg wins, else ctx.user.employeeId.
-// 400 when neither is present.
-function resolveEmployeeId(user, explicit) {
+// 400 when neither is present — EXCEPT on payslipId-keyed flows, where the
+// payslip row itself identifies the subject (HR-PAYSLIP-ADMIN-VIEW-01): an
+// HR/admin session has no employee binding but must still open
+// /hr/payroll/payslip/:id.
+function resolveEmployeeId(user, explicit, { allowUnbound = false } = {}) {
   const raw = explicit ?? user?.employeeId;
   if (raw == null || raw === "") {
+    if (allowUnbound) return null; // service resolves the employee from the slip
     throw Object.assign(new Error("employeeId is required (no employee bound to the session)"), {
       status: 400,
       code: "HR-4000",
@@ -61,7 +65,7 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ payslipId, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId);
+      const empId = resolveEmployeeId(user, employeeId, { allowUnbound: payslipId != null });
       const data = await getMyPayslip({ tenantId: user.tenantId, employeeId: empId, payslipId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslip")
@@ -83,7 +87,7 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ payslipId, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId);
+      const empId = resolveEmployeeId(user, employeeId, { allowUnbound: payslipId != null });
       const data = await getPayslipDistribution({ tenantId: user.tenantId, employeeId: empId, payslipId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslip_distribution")
@@ -145,7 +149,7 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ payslipId, question, employeeId }) => {
       const { user, permissions, correlationId } = getCtx();
       assertPermission(permissions, "POST", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId);
+      const empId = resolveEmployeeId(user, employeeId, { allowUnbound: true });
       const ctx = { actorId: user.userId ?? user.employeeId, correlationId };
       const data = await questionPayslip({
         tenantId: user.tenantId,

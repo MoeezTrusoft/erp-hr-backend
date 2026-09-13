@@ -32,6 +32,62 @@ const NON_WORKING_STATUSES = ["WEEKLY_OFF", "HOLIDAY", "ON_LEAVE"];
 // work_mode values that count as remote/WFH.
 const REMOTE_MODES = ["Remote", "Hybrid"];
 
+// HR-ATT-ELIG-01 (2026-09-14) — who may appear in a timesheet report at all.
+//
+// The KPIs, both graphs and the table previously counted EVERY employee row
+// (and, via the unfiltered ABSENT store, rows for people who had already
+// left). Reported symptoms this fixes: "terminated employees (Shiza, Afzal,
+// Affan) participate as absentees" and Meesam counted during his Aug 20 –
+// Sep 3 termination gap. Rules:
+//   * Employee.payroll_included = false → HR excluded them from attendance
+//     and payroll altogether (HR-PAY-ELIG-01). Never count them.
+//   * Employee.status = 'Inactive' → separated. Their historic rows stay in
+//     the DB (payroll history), but they must not surface as today's
+//     absentees. Obaid (terminated 2026-09-08) was charged again on the 9th.
+//   * Employment periods: an employee whose termination date has passed (last
+//     period endDate before the report window) is out; Meesam's Aug gap is
+//     covered by the ABSENT-row cleanup, since the rows already exist.
+// The single source of this predicate is eligibilityGuard() below so the
+// KPI count, both graphs and the table cannot drift apart.
+async function eligibilityEmployeeIds(tenantId, windowStart) {
+  const employees = await prisma.employee.findMany({
+    where: scopedEmployeeWhere(tenantId, {
+      payroll_included: true,
+      OR: [{ status: { not: "Inactive" } }, { status: null }],
+    }),
+    select: { id: true },
+  });
+  const ids = employees.map((e) => e.id);
+  // Period filter: drop employees whose LAST period ended before the window
+  // starts (terminated before it began). People re-hired inside the window
+  // (Meesam: re-hired Sep 4) stay — their in-window rows are legitimate.
+  let periodExcluded = new Set();
+  if (ids.length) {
+    const rows = await prisma.employmentPeriod.findMany({
+      where: { employeeId: { in: ids } },
+      select: { employeeId: true, endDate: true },
+    });
+    const lastEndByEmployee = new Map();
+    for (const p of rows) {
+      if (p.endDate == null) continue; // open period → currently employed
+      const prev = lastEndByEmployee.get(p.employeeId);
+      if (!prev || p.endDate.getTime() > prev.getTime()) {
+        lastEndByEmployee.set(p.employeeId, p.endDate);
+      }
+    }
+    const win = windowStart.getTime();
+    periodExcluded = new Set(
+      [...lastEndByEmployee]
+        .filter(([, end]) => end.getTime() < win)
+        .map(([id]) => id),
+    );
+  }
+  const eligible = ids.filter((id) => !periodExcluded.has(id));
+  // Empty list must match NOTHING, not everything: Prisma treats `in: []` as
+  // a guaranteed-empty set, which is exactly what we want — keep [-1] out.
+  return { eligible, excludedCount: periodExcluded.size };
+}
+
 // ── Date helpers ────────────────────────────────────────────────────────────
 
 // Start of a UTC day.
@@ -160,14 +216,25 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId }) {
   // profile can show their own KPIs. Omitted keeps the tenant-wide behaviour
   // every existing caller relies on.
   const scopedEmployeeId = employeeId == null ? null : Number(employeeId);
-  const employeeFilter = scopedEmployeeId == null ? {} : { employeeId: scopedEmployeeId };
+
+  // HR-ATT-ELIG-01 — total headcount and every set below count ELIGIBLE
+  // employees only (tenant-scoped, payroll-included, not separated, not
+  // terminated before the window). Without this, separated people surfaced as
+  // today's absentees forever.
+  const { eligible } = await eligibilityEmployeeIds(tenantId, period.from);
+  const eligibleFilter = scopedEmployeeId == null
+    ? { employeeId: { in: eligible } }
+    : { employeeId: scopedEmployeeId };
 
   const [totalEmployees, rows] = await Promise.all([
     prisma.employee.count({
-      where: scopedEmployeeWhere(tenantId, scopedEmployeeId == null ? {} : { id: scopedEmployeeId }),
+      where: scopedEmployeeWhere(
+        tenantId,
+        scopedEmployeeId == null ? { id: { in: eligible } } : { id: scopedEmployeeId },
+      ),
     }),
     prisma.attendance.findMany({
-      where: scopedWhere(tenantId, { ...employeeFilter, date: { gte: period.from, lte: period.to } }),
+      where: scopedWhere(tenantId, { ...eligibleFilter, date: { gte: period.from, lte: period.to } }),
       select: { employeeId: true, status: true, work_mode: true },
     }),
   ]);
@@ -223,7 +290,11 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
   // matching denominator, and everyone's rostered days off counted as days
   // they were expected in. Both errors flatter the number.
   const rows = await prisma.attendance.findMany({
-    where: scopedWhere(tenantId, { date: { gte: start, lte: end } }),
+    where: scopedWhere(tenantId, {
+      // HR-ATT-ELIG-01 — eligible employees only (see getTimesheetKpis).
+      employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
+      date: { gte: start, lte: end },
+    }),
     select: { date: true, status: true },
   });
 
@@ -278,7 +349,11 @@ export async function getAbsenteeismTrend({ tenantId, month }) {
   // weekly off in the denominator dilutes the rate, because they were never
   // due in.
   const rows = await prisma.attendance.findMany({
-    where: scopedWhere(tenantId, { date: { gte: start, lte: end } }),
+    where: scopedWhere(tenantId, {
+      // HR-ATT-ELIG-01 — eligible employees only (see getTimesheetKpis).
+      employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
+      date: { gte: start, lte: end },
+    }),
     select: { employeeId: true, date: true, status: true },
   });
 
@@ -413,6 +488,12 @@ export async function listCheckInOuts({
   if (employeeId != null && String(employeeId).trim() !== "") {
     const asNum = Number(employeeId);
     where.employeeId = Number.isFinite(asNum) && String(asNum) === String(employeeId).trim() ? asNum : employeeId;
+  } else {
+    // HR-ATT-ELIG-01 — an explicit employeeId lookup (a profile drill-down)
+    // must always work even for a separated employee's history; the tenant-wide
+    // table shows eligible employees only, so separated people stop surfacing
+    // as absentees.
+    where.employeeId = { in: (await eligibilityEmployeeIds(tenantId, period.from)).eligible };
   }
 
   const records = await prisma.attendance.findMany({

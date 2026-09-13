@@ -506,6 +506,7 @@ export async function syncAttendanceFromPunches({
 }
 
 export async function getDailyAttendanceSummary({
+  tenantId,
   date = new Date(),
   shiftStart = "09:00",
   lateGraceMinutes = 15,
@@ -514,10 +515,25 @@ export async function getDailyAttendanceSummary({
   const { start, end } = dayRange(target);
   const lateCutoff = buildLateCutoff(start, shiftStart, lateGraceMinutes);
 
-  const [totalEmployees, records] = await Promise.all([
-    prisma.employee.count(),
+  // HR-ATT-DAILYSUM-TENANT-01 (2026-09-14) — this summary counted the WHOLE
+  // DATABASE: prisma.employee.count() with no tenant filter and no status
+  // filter, so every tenant's "absent" figure included the other four
+  // tenants' entire rosters and every separated employee. (A related tenant
+  // leak: it also counted people who left months ago.) Scope the headcount to
+  // the caller's tenant and to attendance/payroll-eligible employees; absent =
+  // eligible headcount minus whoever showed.
+  const [eligibleRows, records] = await Promise.all([
+    prisma.employee.findMany({
+      where: {
+        tenant_id: tenantId ?? undefined,
+        payroll_included: true,
+        OR: [{ status: { not: "Inactive" } }, { status: null }],
+      },
+      select: { id: true },
+    }),
     prisma.attendance.findMany({
       where: {
+        ...(tenantId ? { tenantId } : {}),
         date: {
           gte: start,
           lte: end,
@@ -531,10 +547,13 @@ export async function getDailyAttendanceSummary({
     }),
   ]);
 
+  const eligibleIds = new Set(eligibleRows.map((e) => e.id));
+  const totalEmployees = eligibleIds.size;
   const presentSet = new Set();
   const lateSet = new Set();
 
   for (const rec of records) {
+    if (!eligibleIds.has(rec.employeeId)) continue; // separated/excluded
     if (rec?.check_in && rec.check_in > lateCutoff) {
       lateSet.add(rec.employeeId);
       continue;

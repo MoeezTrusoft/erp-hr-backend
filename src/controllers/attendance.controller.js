@@ -77,6 +77,7 @@ export const syncDeviceAttendance = async (req, res) => {
 export const getDailyAttendanceStatusSummary = async (req, res) => {
   try {
     const result = await getDailyAttendanceSummary({
+      tenantId: req.user?.tenantId, // HR-ATT-DAILYSUM-TENANT-01 — verified tenant, never a header
       date: req.query?.date,
       shiftStart: req.query?.shiftStart,
       lateGraceMinutes: req.query?.lateGraceMinutes,

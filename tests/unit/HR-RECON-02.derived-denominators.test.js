@@ -26,6 +26,10 @@ let rows;
 
 const prismaMock = {
     employee: { count: jest.fn(async () => 2) },
+    // HR-ATT-ELIG-01 — graphs now query eligible employees only; fixtures have
+    // no Employee rows, so `in: []` flows through and the attendance rows below
+    // still exercise the denominator logic unchanged.
+    employeeFindMany: null,
     attendance: {
         findMany: jest.fn(async ({ where }) => {
             // Mirrors the real client: honour a status filter if one is given,
@@ -35,6 +39,8 @@ const prismaMock = {
         }),
     },
 };
+prismaMock.employee.findMany = jest.fn(async () => []);
+prismaMock.employmentPeriod = { findMany: jest.fn(async () => []) };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/lib/tenancy.js', () => ({

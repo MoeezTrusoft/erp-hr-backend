@@ -18,10 +18,16 @@ const TENANT = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
 
 const attendanceFindMany = jest.fn().mockResolvedValue([]);
 const employeeCount = jest.fn().mockResolvedValue(0);
+// HR-ATT-ELIG-01 — eligibility lookups (employee roster + employment periods).
+// Fixtures have no employees → `in: []` keeps the where-shape assertions below
+// focused on the date window, which is what this spec is about.
+const employeeFindMany = jest.fn().mockResolvedValue([]);
+const employmentPeriodFindMany = jest.fn().mockResolvedValue([]);
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
     default: {
         attendance: { findMany: attendanceFindMany },
-        employee: { count: employeeCount },
+        employee: { count: employeeCount, findMany: employeeFindMany },
+        employmentPeriod: { findMany: employmentPeriodFindMany },
     },
 }));
 

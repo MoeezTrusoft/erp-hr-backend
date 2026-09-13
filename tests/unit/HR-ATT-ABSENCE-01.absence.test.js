@@ -16,6 +16,11 @@ const prismaMock = {
         findMany: jest.fn(async () => employees),
         count: jest.fn(async () => unenrolledCount),
     },
+    employmentPeriod: {
+        // HR-ATT-ABSENCE-ELIG-01 — no period rows in these fixtures → the
+        // grandfathering branch ("no periods on file") applies.
+        findMany: jest.fn(async () => []),
+    },
     attendance: {
         findMany: jest.fn(async () => attendanceRows),
         create: jest.fn(async ({ data }) => { created.push(data); return { id: created.length, ...data }; }),

@@ -58,8 +58,17 @@ const PAYSLIP_INCLUDE = {
 // Resolve the target payslip: explicit payslipId (self-scoped) else the LATEST
 // slip by payrollRun.periodEnd for the employee. Returns null if none.
 async function resolvePayslip({ tenantId, employeeId, payslipId }) {
-  const where = scopedWhere(tenantId, { employeeId: Number(employeeId) });
-  if (payslipId != null) where.id = Number(payslipId);
+  // HR-PAYSLIP-ADMIN-VIEW-01 (2026-09-14) — an explicit payslipId identifies
+  // the row (and therefore its employee) on its own; employeeId is only needed
+  // to find "my latest". The FE route /hr/payroll/payslip/:id is opened by
+  // HR/admin sessions that have NO employee binding, and the old code 400'd
+  // ("employeeId is required (no employee bound to the session)") before ever
+  // looking at the row. Tenant isolation is unchanged: tenantId still comes
+  // from the verified session via scopedWhere, so a cross-tenant id 404s.
+  const scope = scopedWhere(tenantId, {});
+  const where = payslipId != null
+    ? { ...scope, id: Number(payslipId) }
+    : { ...scope, employeeId: Number(employeeId) };
   return prisma.payrollPayslip.findFirst({
     where,
     include: PAYSLIP_INCLUDE,
@@ -146,16 +155,19 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId }) {
   const slip = await resolvePayslip({ tenantId, employeeId, payslipId });
   if (!slip) throw notFound("No payslip found for this employee");
 
+  // The row's own employee drives every enrichment (correct for the admin
+  // view path where the session has no employee binding).
+  const empId = slip.employeeId;
   const periodStart = slip.payrollRun?.periodStart ?? null;
   const periodEnd = slip.payrollRun?.periodEnd ?? null;
 
   const [ytd, leaveTaken, overtimeHours] = await Promise.all([
-    computeYtd({ tenantId, employeeId, periodEnd: periodEnd ?? slip.created_at }),
+    computeYtd({ tenantId, employeeId: empId, periodEnd: periodEnd ?? slip.created_at }),
     periodStart && periodEnd
-      ? computeLeaveTaken({ tenantId, employeeId, periodStart, periodEnd })
+      ? computeLeaveTaken({ tenantId, employeeId: empId, periodStart, periodEnd })
       : Promise.resolve(0),
     periodStart && periodEnd
-      ? computeOvertimeHours({ tenantId, employeeId, periodStart, periodEnd })
+      ? computeOvertimeHours({ tenantId, employeeId: empId, periodStart, periodEnd })
       : Promise.resolve(0),
   ]);
 
@@ -298,20 +310,23 @@ export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize 
  * hr.payslip.question_raised.v1 outbox event — all inside one RLS-bound tx.
  */
 export async function questionPayslip({ tenantId, employeeId, payslipId, question, ctx = {} }) {
-  const empId = Number(employeeId);
   const slipId = Number(payslipId);
 
   return tenantTransaction(prisma, async (tx) => {
+    // HR-PAYSLIP-ADMIN-VIEW-01 — resolve the subject employee from the slip
+    // when the session has no binding (HR/admin asking about someone's slip).
+    const slipWhere = scopedWhere(tenantId, { id: slipId });
+    if (employeeId != null && employeeId !== "") slipWhere.employeeId = Number(employeeId);
     const slip = await tx.payrollPayslip.findFirst({
-      where: scopedWhere(tenantId, { id: slipId, employeeId: empId }),
-      select: { id: true },
+      where: slipWhere,
+      select: { id: true, employeeId: true },
     });
     if (!slip) throw notFound("No payslip found for this employee");
 
     const row = await tx.payslipQuestion.create({
       data: {
         payslipId: slipId,
-        employeeId: empId,
+        employeeId: slip.employeeId,
         question,
         status: "OPEN",
         tenantId: tenantId ?? null,
