@@ -347,6 +347,38 @@ export function registerAttendanceTools(server) {
 
   // ── WORK SCHEDULES ────────────────────────────────────────────────────────
 
+  // T-FIX: schedule_pattern used to be declared as a { MON: '09:00-17:00' }
+  // string-map — a shape NO consumer reads. The day-derivation engine
+  // (workingDay.service), shift lookup (attendance.device.service) and session
+  // grouping (attendanceReplay) all read the canonical shape below; through the
+  // old schema HR could not even express a weekend (offDays) or a rotating
+  // roster. Mirrors lib/schedulePattern.js, which the service now enforces too.
+  const SHIFT_WINDOW = z
+    .object({
+      from: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "shift window times must be HH:MM (24h)"),
+      to: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "shift window times must be HH:MM (24h)"),
+    })
+    .describe("Shift window with 24h HH:MM times, e.g. { from: '15:00', to: '00:00' }");
+  const SCHEDULE_PATTERN = z
+    .object({
+      type: z.string().optional().describe("Free-form type label, e.g. 'weekly' or 'rotating'"),
+      shift: SHIFT_WINDOW.optional().describe("Fixed daily shift window"),
+      shiftByDay: z.record(z.string(), SHIFT_WINDOW).optional().describe("Per-weekday overrides keyed by ISO weekday '1'..'7' (Mon=1)"),
+      offDays: z.array(z.number().int().min(1).max(7)).max(6).optional().describe("Rest days as ISO weekdays (Mon=1 .. Sun=7), e.g. [6,7] for Sat-Sun"),
+      rotatingShifts: z.array(SHIFT_WINDOW).min(1).optional().describe("Rotation windows; required for rotating rosters instead of shift"),
+      cycle: z.object({
+        days: z.number().int().positive(),
+        anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "cycle.anchor must be YYYY-MM-DD"),
+        offIndex: z.number().int().min(0),
+      }).optional().describe("Rotation phase { days, anchor, offIndex }: offIndex is the 0-based rest-day position within the cycle"),
+      crossesMidnight: z.boolean().optional().describe("True when the shift ends the next calendar day"),
+      shiftHours: z.number().positive().optional().describe("Contracted shift length in hours"),
+      source: z.string().optional().describe("Provenance label, e.g. 'Employees Workbook 2026-08'"),
+    })
+    .refine((p) => p.shift !== undefined || (Array.isArray(p.rotatingShifts) && p.rotatingShifts.length > 0), {
+      message: "schedule_pattern needs a shift or rotatingShifts — otherwise no day has a shift window",
+    });
+
   server.resource(
     "hr_work_schedules_list",
     "hr://work-schedules",
@@ -367,7 +399,7 @@ export function registerAttendanceTools(server) {
       effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
       total_hours_per_week: z.number().positive().describe("Contracted hours per week"),
       effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted"),
-      schedule_pattern: z.record(z.string(), z.string()).optional().describe("JSON map of day -> shift window, e.g. { MON: '09:00-17:00' }"),
+      schedule_pattern: SCHEDULE_PATTERN.describe("Roster: shift {from,to} HH:MM + offDays [1..7] (Mon=1); use rotatingShifts+cycle for rotating rosters"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
     withToolError(async (args) => {
@@ -387,7 +419,7 @@ export function registerAttendanceTools(server) {
       effective_start_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD"),
       effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; null-out by omitting"),
       total_hours_per_week: z.number().positive().optional().describe("Contracted hours per week"),
-      schedule_pattern: z.record(z.string(), z.string()).optional().describe("JSON map of day -> shift window"),
+      schedule_pattern: SCHEDULE_PATTERN.optional().describe("Roster (same shape as create): shift {from,to} HH:MM + offDays [1..7] (Mon=1); rotatingShifts+cycle for rotations"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
     withToolError(async ({ id, ...rest }) => {
