@@ -78,6 +78,56 @@ export function registerAttendanceOpsTools(server) {
     }, "hr_anomaly_inform")
   );
 
+  // ── ANOMALY: create (POST → hr:attendance CREATE) ─────────────────────────
+  // T-FIX: the frontend hr-manifest has listed hr_anomaly_create as a write
+  // tool since M2 and hr-mock.js serves it (aliased to inform), but NO real
+  // tool was registered — a manifest write was a guaranteed tool-not-found at
+  // the gateway. Registered with the same semantics as hr_anomaly_inform (the
+  // mock's contract): generic raise, PENDING, employeeId defaults to caller.
+  // The derived/times-aware self-service flow remains hr_attendance_anomaly_create.
+  server.tool(
+    "hr_anomaly_create",
+    "Raise an attendance anomaly / time-correction request (status PENDING). employeeId defaults to the calling employee. The self-service regularization flow with derived category/times is hr_attendance_anomaly_create.",
+    {
+      employeeId: z.coerce
+        .number()
+        .int()
+        .optional()
+        .describe("Employee the anomaly is for (references Employee); defaults to the caller's employeeId when omitted (400 if neither)"),
+      type: ANOMALY_TYPE.describe(
+        "enum AnomalyType (required): one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
+      ),
+      reason: z.string().optional().describe("Free-text reason for the anomaly"),
+      detail: z.string().optional().describe("Free-text detail; required-ish when type=OTHER (the 'specify' text)"),
+      date: z.string().optional().describe("Affected work date, ISO 8601 (parsed; invalid → null)"),
+      fromTime: z.string().optional().describe("Time-range start, ISO 8601 datetime (parsed; invalid → null)"),
+      toTime: z.string().optional().describe("Time-range end, ISO 8601 datetime (parsed; invalid → null)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      const employeeId =
+        args.employeeId != null ? args.employeeId : user.employeeId;
+      if (employeeId == null || employeeId === "") {
+        throw Object.assign(
+          new Error("employeeId is required (none supplied and no employeeId in session)"),
+          { status: 400 }
+        );
+      }
+      const data = await informAbnormality({
+        tenantId: user.tenantId,
+        employeeId,
+        type: args.type,
+        reason: args.reason,
+        detail: args.detail,
+        date: args.date,
+        fromTime: args.fromTime,
+        toTime: args.toTime,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_anomaly_create")
+  );
+
   // ── ANOMALY: list (GET → hr:attendance VIEW) ───────────────────────────────
   server.tool(
     "hr_anomaly_list",
