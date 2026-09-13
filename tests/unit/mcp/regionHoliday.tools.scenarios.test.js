@@ -15,6 +15,14 @@ jest.unstable_mockModule('../../../src/services/holiday.service.js', () => ({
   createHolidayCalendar: jest.fn(async () => ({ success: true })),
   updateHolidayCalendar: jest.fn(async () => ({ success: true })),
   deleteHolidayCalendar: jest.fn(async () => ({ success: true })),
+  getHolidaysByCalendar: jest.fn(async () => ({ success: true })),
+  createHoliday: jest.fn(async () => ({ success: true })),
+  updateHoliday: jest.fn(async () => ({ success: true })),
+  deleteHoliday: jest.fn(async () => ({ success: true })),
+  getUpcomingHolidays: jest.fn(async () => ({ success: true })),
+  getEmployeeHolidays: jest.fn(async () => ({ success: true })),
+  assignEmployeeToCalendar: jest.fn(async () => ({ success: true })),
+  getEmployeeCalendarAssignments: jest.fn(async () => ({ success: true })),
 }));
 
 const { registerRegionTools } = await import('../../../src/mcp/tools/regionTools.js');
@@ -50,6 +58,14 @@ const TOOLS = [
   { name: 'hr_holiday_calendar_create', gate: 'hr:holiday', action: 'CREATE', args: { name: 'US Holidays 2026', year: 2026 } },
   { name: 'hr_holiday_calendar_update', gate: 'hr:holiday', action: 'EDIT', args: { id: '1' } },
   { name: 'hr_holiday_calendar_delete', gate: 'hr:holiday', action: 'DELETE', args: { id: '1' } },
+  { name: 'hr_holiday_list', gate: 'hr:holiday', action: 'VIEW', args: { calendarId: '19' } },
+  { name: 'hr_holiday_create', gate: 'hr:holiday', action: 'CREATE', args: { holidayCalendarId: '19', name: 'Iqbal Day', date: '2030-11-09' } },
+  { name: 'hr_holiday_update', gate: 'hr:holiday', action: 'EDIT', args: { calendarId: '19', date: '2030-11-09', name: 'Iqbal Day (observed)' } },
+  { name: 'hr_holiday_delete', gate: 'hr:holiday', action: 'DELETE', args: { calendarId: '19', date: '2030-11-09' } },
+  { name: 'hr_holiday_upcoming', gate: 'hr:holiday', action: 'VIEW', args: {} },
+  { name: 'hr_holiday_employee', gate: 'hr:holiday', action: 'VIEW', args: { employeeId: '7' } },
+  { name: 'hr_holiday_employee_assign', gate: 'hr:holiday', action: 'CREATE', args: { employeeId: '7', calendarId: '19' } },
+  { name: 'hr_holiday_employee_assignments', gate: 'hr:holiday', action: 'VIEW', args: { employeeId: '7' } },
 ];
 
 describe('REGION-HOLIDAY-SCENARIOS — registration', () => {
