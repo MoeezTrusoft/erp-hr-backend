@@ -401,6 +401,14 @@ const STATUS_DISPLAY = {
   LATE: "late",
   HALF_DAY: "half-day",
   ABSENT: "absent",
+  // HR-FE-TIMESHEET-TABLE-01 — map the non-attendance statuses too so the FE
+  // receives one consistent token spelling (it filters weekly-off/holiday rows
+  // and previously received the raw enum verbatim).
+  WEEKLY_OFF: "weekly-off",
+  HOLIDAY: "holiday",
+  ON_LEAVE: "on-leave",
+  MISSING_CHECKIN: "missing-checkin",
+  MISSING_CHECKOUT: "missing-checkout",
 };
 
 // Map a caller-supplied status filter (display OR enum, case-insensitive) →
