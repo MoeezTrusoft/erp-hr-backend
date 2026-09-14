@@ -43,9 +43,24 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     tenantId, from, to, dryRun,
     shifts: shifts.length, created: 0, updated: 0, unchanged: 0, retracted: 0,
     nonWorking: 0, skippedManuallyCorrected: 0, held: 0, corrections: 0, byStatus: {},
+    vanishedEmployee: 0,
   };
 
+  // HR-ATT-DEVICE-ENROLMENT-01 guard — a punch can carry an employeeId whose
+  // Employee row no longer exists (stale id surviving a re-import until the
+  // reresolve script runs). Evaluating it is harmless; INSERTING its Attendance
+  // row violates the FK and aborts the whole tenant's rollup. Skip with a
+  // counter instead of crashing — the underlying punch keeps its id for a
+  // later re-link.
+  const aliveIds = new Set(
+    (await prisma.employee.findMany({
+      where: { id: { in: [...new Set(shifts.map((s) => s.employeeId))] } },
+      select: { id: true },
+    })).map((e) => e.id),
+  );
+
   for (const { employeeId, day, verdict, corrections } of shifts) {
+    if (!aliveIds.has(employeeId)) { summary.vanishedEmployee += 1; continue; }
     summary.byStatus[verdict.status] = (summary.byStatus[verdict.status] ?? 0) + 1;
     if (verdict.dayCredit == null) summary.held += 1;
     summary.corrections += (corrections || []).length;

@@ -3,8 +3,15 @@
 // Re-links orphaned punches using the dated enrolments, without waiting for the
 // image that carries the same logic inside resolveOrphanPunches.
 //
-// These rows are precisely the ones biometric_id could never resolve: a punch
-// under a RETIRED id matches nobody by definition, which is why it is an orphan.
+// TWO orphan classes:
+//   1. employeeId NULL — the device fallback had no mapping at ingest time;
+//   2. STALE-ID — employeeId non-null but the Employee row no longer exists
+//      (employee re-import renumbered ids 210-224 → 480-499; the device kept
+//      stamping the dead id). Class 2 passes a plain employeeId:null filter,
+//      so the punch is invisible to attendance until re-linked — and its day
+//      silently rolls up with the punches that ARE linked, producing the
+//      "58 punches → 3 attendance rows" black hole.
+//
 // The enrolment says who held that id at that moment — Faizan's July punches
 // under `1`, Afsha's September punches under `306`, Samina's under `3123`.
 //
@@ -23,13 +30,39 @@ import { applyEvaluatedShiftsForDays } from "../src/services/attendanceWriter.se
 
 const WRITE = process.argv.includes("--write");
 
-const orphans = await mcpCtx.run({ system: true }, async () =>
-  prisma.attendanceDevicePunch.findMany({
+const orphans = await mcpCtx.run({ system: true }, async () => {
+  // Class 1: never mapped.
+  const nulls = await prisma.attendanceDevicePunch.findMany({
     where: { employeeId: null },
     select: { id: true, deviceUserId: true, punchedAt: true, tenantId: true },
     orderBy: { punchedAt: "asc" },
-  }),
-);
+  });
+  // Class 2: mapped to an id that no longer exists (stale after re-import).
+  // MUST be model queries — $queryRaw skips the RLS extension, sets no tenant
+  // GUC, and silently returns nothing under forced row security.
+  const linked = await prisma.attendanceDevicePunch.findMany({
+    where: { employeeId: { not: null } },
+    distinct: ["employeeId"],
+    select: { employeeId: true },
+  });
+  const candidates = linked.map((p) => p.employeeId);
+  const alive = new Set(
+    (await prisma.employee.findMany({
+      where: { id: { in: candidates } },
+      select: { id: true },
+    })).map((e) => e.id),
+  );
+  const deadIds = candidates.filter((id) => !alive.has(id));
+  const stale = deadIds.length
+    ? await prisma.attendanceDevicePunch.findMany({
+        where: { employeeId: { in: deadIds } },
+        select: { id: true, deviceUserId: true, punchedAt: true, tenantId: true },
+        orderBy: { punchedAt: "asc" },
+      })
+    : [];
+  console.log(`orphan classes: never-mapped=${nulls.length}  stale-id=${stale.length} (dead ids: ${deadIds.join(", ") || "none"})`);
+  return [...nulls, ...stale];
+});
 console.log(`orphan punches: ${orphans.length}`);
 
 const resolveAt = await buildEnrolmentResolver(orphans.map((p) => p.deviceUserId));
