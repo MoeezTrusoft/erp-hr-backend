@@ -182,7 +182,12 @@ export function registerAttendanceAnomalyTools(server) {
       return ok(await correctAttendanceDay({
         ...args,
         tenantId: user.tenantId,
-        actorEmployeeId: actingEmployeeId(user),
+        actorEmployeeId: (() => {
+          try { return actingEmployeeId(user); } catch { return null; }
+        })(),
+        // RBAC identity fallback for logins with no Employee row — the audit
+        // trail attributes the change by email instead of an employee FK.
+        actorNote: user.email ? `by ${user.email}` : null,
       }));
     }, "hr_attendance_correct_day")
   );

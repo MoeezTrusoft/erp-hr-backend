@@ -69,12 +69,18 @@ function creditFor(status) {
 }
 
 export async function correctAttendanceDay({
-  tenantId, employeeId, date, checkIn, checkOut, status, workMode, reason, actorEmployeeId,
+  tenantId, employeeId, date, checkIn, checkOut, status, workMode, reason, actorEmployeeId, actorNote,
 }) {
   const text = typeof reason === "string" ? reason.trim() : "";
   if (!text) throw badRequest("reason is required — corrections feed payroll and must be explainable");
+  // HR-ATT-CORRECTION-03 — HR/admin logins with no Employee row (bound to RBAC
+  // only) can still correct days: the RBAC gate already authorized the action,
+  // so the audit trail attributes it by RBAC identity instead of an employee
+  // FK. Both columns are nullable in the Log model by design. A caller with
+  // NEITHER an employee id nor an identity note is a bug, not a flow.
   if (!Number.isInteger(actorEmployeeId) || actorEmployeeId < 1) {
-    throw badRequest("actorEmployeeId is required");
+    if (!actorNote) throw badRequest("actorEmployeeId is required");
+    actorEmployeeId = null;
   }
   if (status != null && !STATUSES.includes(status)) {
     throw badRequest(`status must be one of: ${STATUSES.join(", ")}`);
@@ -145,7 +151,7 @@ export async function correctAttendanceDay({
         // tidied a check-out minute, and reconstructing it means diffing
         // backups. A day that had no row has no "before", and claiming one
         // would be a fabrication, so only an existing row gets the clause.
-        notes: `${day.toISOString().slice(0, 10)}: ` +
+        notes: `${actorNote ? `${actorNote} — ` : ""}${day.toISOString().slice(0, 10)}: ` +
                (existing ? `was ${describePrevious(existing)} -> ` : "") +
                `in=${cin ? cin.toISOString() : "-"} out=${cout ? cout.toISOString() : "-"} ` +
                `status=${finalStatus} credit=${creditFor(finalStatus)} — ${text}`,
