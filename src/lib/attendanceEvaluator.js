@@ -61,7 +61,12 @@ function dedupePunches(punches, windowMin) {
  */
 function latenessMinutes(checkIn, shiftStart) {
   if (!checkIn || !shiftStart) return null;
-  let diff = minutesBetween(shiftStart, checkIn);
+  // ATT-GRACE-MIN-01 (2026-09-14) — HR counts grace in elapsed whole minutes:
+  // an 8:05 PM arrival against an 8:00 PM shift is 5 minutes late (ON TIME
+  // under a 5-minute grace), not 5.78 rounded up to 6 (operator report:
+  // Huzaifa/Asad 20:05:47 with a 5-min grace were flagged LATE by second
+  // rounding). Truncate to elapsed minutes; never round up into a penalty.
+  let diff = Math.floor((checkIn.getTime() - shiftStart.getTime()) / MIN_MS);
   if (diff > 720) diff -= 1440;
   if (diff < -720) diff += 1440;
   return diff;
@@ -284,7 +289,10 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
 
   // ── Early departure ───────────────────────────────────────────────────────
   if (shift.end && checkOut) {
-    const early = minutesBetween(checkOut, shift.end);
+    // ATT-GRACE-MIN-01 — same elapsed-minutes rule as lateness: floor, never
+    // round, so a 04:59:5x checkout against a 05:00 shift end is 0 minutes
+    // early, not 1.
+    const early = Math.floor((shift.end.getTime() - checkOut.getTime()) / MIN_MS);
     if (early > p.earlyLeaveGraceMin) {
       anomalies.push({
         type: "EARLY_CHECKOUT",

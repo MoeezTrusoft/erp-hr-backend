@@ -52,6 +52,30 @@ describe('HR-ATT-POLICY-01 arrival', () => {
         expect(r.anomalies.map((a) => a.type)).toContain('LATE_CHECKIN');
     });
 
+    // ATT-GRACE-MIN-01 (2026-09-14) — HR counts grace in elapsed whole minutes.
+    // An 8:05:47 arrival against an 8:00 PM shift is 5 minutes late (ON TIME
+    // under a 5-minute grace), not 5.78 seconds-rounded to 6. Real case:
+    // Huzaifa/Asad 20:05:47/20:05:50 with a 5-min grace were flagged LATE.
+    it('counts elapsed whole minutes: an arrival inside grace+59s is PRESENT, not LATE', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:05:47Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(5);          // 5 elapsed minutes, not 6
+        expect(r.status).toBe('PRESENT');           // 5 <= 5 grace
+    });
+
+    it('still flags LATE once elapsed minutes EXCEED grace', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:06:01Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(6);
+        expect(r.status).toBe('LATE');
+    });
+
     it('is HALF_DAY once lateness reaches the half-day threshold', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:35:00Z'), OUT('2026-08-14T18:30:00Z')],
