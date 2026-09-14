@@ -119,6 +119,17 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   const scheduledMinutes =
     shift.start && shift.end ? Math.max(minutesBetween(shift.start, shift.end), 0) : null;
 
+  // Half-day threshold: a percentage of the employee's OWN shift when the tenant
+  // is configured that way ("half the shift" for four of five tenants), else the
+  // fixed minutes. Falls back to the fixed value when there is no rostered shift
+  // to take a percentage of — 16 employees are roster-only.
+  // Hoisted here (was mid-function) because the IN-PROGRESS branch needs the
+  // same threshold — see ATT-LIVE-LATE-01 below.
+  const halfDayAfter =
+    p.halfDayAfterPercentOfShift != null && scheduledMinutes
+      ? (scheduledMinutes * p.halfDayAfterPercentOfShift) / 100
+      : p.halfDayAfterMinutes;
+
   // ── No scan at all ────────────────────────────────────────────────────────
   if (!clean.length) {
     return {
@@ -205,15 +216,39 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
       };
     }
     // Window still open: the shift is in progress, not an exception yet.
+    // ATT-LIVE-LATE-01 (2026-09-14) — arrival facts are FINAL at check-in even
+    // while the day is open. This branch used to hardcode PRESENT, so a 23-min-
+    // late arrival showed "On Time" on the live table until the window closed
+    // (operator report: Faiq, 15:23 vs a 15:00 shift). Status now reflects the
+    // arrival (LATE, or HALF_DAY once the half-day threshold is crossed);
+    // dayCredit stays null and inProgress stays true — credit is only granted
+    // when the window closes and the row finalizes.
+    const lateNow = latenessMinutes(checkIn, shift.start);
+    const openStatus =
+      lateNow != null && lateNow > p.graceMinutes
+        ? lateNow >= halfDayAfter
+          ? "HALF_DAY"
+          : "LATE"
+        : "PRESENT";
     return {
-      status: "PRESENT",
+      status: openStatus,
       dayCredit: null,
       requiresRegularization: false,
-      anomalies: [],
+      anomalies:
+        lateNow != null && lateNow > p.graceMinutes
+          ? [{
+              type: "LATE_CHECKIN",
+              fromTime: shift.start ?? null,
+              toTime: checkIn,
+              expectedTime: shift.start ?? null,
+              actualTime: checkIn,
+              minutesLate: lateNow,
+            }]
+          : [],
       workedMinutes: 0,
       scheduledMinutes,
       workedPercent: null,
-      latenessMinutes: latenessMinutes(checkIn, shift.start),
+      latenessMinutes: lateNow,
       checkIn,
       checkOut: null,
       inProgress: true,
@@ -225,14 +260,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   let arrivalStatus = "PRESENT";
   let arrivalCredit = DAY_CREDIT.FULL;
 
-  // Half-day threshold: a percentage of the employee's OWN shift when the tenant
-  // is configured that way ("half the shift" for four of five tenants), else the
-  // fixed minutes. Falls back to the fixed value when there is no rostered shift
-  // to take a percentage of — 16 employees are roster-only.
-  const halfDayAfter =
-    p.halfDayAfterPercentOfShift != null && scheduledMinutes
-      ? (scheduledMinutes * p.halfDayAfterPercentOfShift) / 100
-      : p.halfDayAfterMinutes;
+  // Half-day threshold is hoisted above (shared with the in-progress branch).
 
   if (late != null && late > p.graceMinutes) {
     if (late >= halfDayAfter) {

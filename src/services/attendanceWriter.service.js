@@ -328,9 +328,20 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
 export async function applyEvaluatedShiftsForDays({ tenantId, days, now = new Date() }) {
   const unique = [...new Set(days.map((d) => dayKey(d)))].sort();
   if (!unique.length) return { shifts: 0, created: 0, updated: 0 };
-  // One window covering the batch; a shift starting the previous evening is
-  // picked up because replayTenant reads a day either side.
+
+  // ATT-LIVE-NIGHTFINAL-01 (2026-09-14) — a punch on day N must also re-evaluate
+  // day N−1. A checkout recorded after midnight (night shifts end 00:00–07:00)
+  // used to update only TODAY'S row, so YESTERDAY stayed frozen as its
+  // in-progress open state forever: Sep 9–13 accumulated MISSING_CHECKOUT rows
+  // that the backfilled Sep 1–8 (written whole-month after the fact) never had.
+  // replayTenant reads a day either side anyway — this window just has to
+  // INCLUDE the previous day so the checkout lands in a re-evaluated day.
+  const withPrev = [...unique];
+  const first = new Date(`${unique[0]}T00:00:00`);
+  withPrev.unshift(new Date(first.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
+  const uniqAll = [...new Set(withPrev)].sort();
+
   return applyEvaluatedShifts({
-    tenantId, from: unique[0], to: unique[unique.length - 1], dryRun: false, now,
+    tenantId, from: uniqAll[0], to: uniqAll[uniqAll.length - 1], dryRun: false, now,
   });
 }
