@@ -89,7 +89,7 @@ export function registerTimesheetReportTools(server) {
       from: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive start of the date range on Attendance.date. Defaults to the first day of the current calendar month — the SAME default as hr_timesheet_kpis, so both tools on this screen always describe the same window."),
       to: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive end of the date range on Attendance.date. Defaults to the last day of the current calendar month. The applied window is echoed back as `period`."),
       employeeId: z.string().optional().describe("Exact employee id to filter by."),
-      sortBy: z.enum(["date", "employee", "status", "checkIn"]).optional().describe("Sort column — one of date | employee | status | checkIn (default date)."),
+      sortBy: z.enum(["date", "employee", "status", "checkIn", "checkOut"]).optional().describe("Sort column — one of date | employee | status | checkIn | checkOut (default date)."),
       sortDir: z.enum(["asc", "desc"]).optional().describe("Sort direction — asc | desc (default desc)."),
       page: z.coerce.number().int().positive().optional().describe("1-based page number (default 1)."),
       pageSize: z.coerce.number().int().positive().optional().describe("Rows per page (default 20, max 100)."),

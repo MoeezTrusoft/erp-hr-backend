@@ -386,7 +386,7 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
       employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
       date: { gte: start, lte: end },
     }),
-    select: { date: true, status: true },
+    select: { date: true, status: true, employee: { select: EMPLOYEE_SELECT } },
   });
 
   const out = weeks.map((w) => {
@@ -399,11 +399,29 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
     // graph and the report cannot disagree.
     const expectedDays = inWeek.filter((r) => !NON_WORKING_STATUSES.includes(r.status)).length;
     const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : 0;
+    // UI-FIX-3 (2026-09-14) — hover tooltip lists the week's absentees by name.
+    // DISTINCT per employee: one person absent 3 days appears once, with the
+    // days they missed.
+    const byEmployee = new Map();
+    for (const r of inWeek) {
+      if (r.status !== "ABSENT" || !r.employee) continue;
+      const entry = byEmployee.get(r.employee.id) ?? {
+        id: r.employee.id,
+        name: fullName(r.employee),
+        days: [],
+      };
+      entry.days.push(r.date.toISOString().slice(0, 10));
+      byEmployee.set(r.employee.id, entry);
+    }
+    const absentees = Array.from(byEmployee.values()).sort((a, b) =>
+      (a.name ?? "").localeCompare(b.name ?? ""),
+    );
     return {
       label: w.label,
       from: w.from.toISOString(),
       to: w.to.toISOString(),
       attendancePct,
+      absentees,
     };
   });
 
@@ -648,8 +666,9 @@ export async function listCheckInOuts({
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
       workMode: a.work_mode ?? null,
-      // internal sort key (not serialized to the FE)
+      // internal sort keys (not serialized to the FE)
       _checkIn: a.check_in ? a.check_in.getTime() : null,
+      _checkOut: a.check_out ? a.check_out.getTime() : null,
     };
   });
 
@@ -676,13 +695,20 @@ export async function listCheckInOuts({
         bv = b.status;
         break;
       case "checkIn":
-        // nulls sort last regardless of direction.
-        if (a._checkIn == null && b._checkIn == null) return 0;
-        if (a._checkIn == null) return 1;
-        if (b._checkIn == null) return -1;
-        av = a._checkIn;
-        bv = b._checkIn;
+      case "checkOut": {
+        // nulls sort last regardless of direction. _checkOut added with
+        // UI-FIX-2 (2026-09-14): the header was sortable in the FE but the
+        // whitelist here lacked it, so zod rejected the call — sort appeared
+        // broken for that column.
+        const aKey = sortBy === "checkIn" ? a._checkIn : a._checkOut;
+        const bKey = sortBy === "checkIn" ? b._checkIn : b._checkOut;
+        if (aKey == null && bKey == null) return 0;
+        if (aKey == null) return 1;
+        if (bKey == null) return -1;
+        av = aKey;
+        bv = bKey;
         break;
+      }
       case "date":
       default:
         av = a.date instanceof Date ? a.date.getTime() : new Date(a.date).getTime();
@@ -699,7 +725,7 @@ export async function listCheckInOuts({
   const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
   const safeSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 100) : 20;
   const start = (safePage - 1) * safeSize;
-  const items = rows.slice(start, start + safeSize).map(({ _checkIn, ...rest }) => rest);
+  const items = rows.slice(start, start + safeSize).map(({ _checkIn, _checkOut, ...rest }) => rest);
 
   logger.debug(
     { tenantId, total, page: safePage, pageSize: safeSize, sortBy, sortDir, from: period.from, to: period.to },

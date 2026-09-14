@@ -149,13 +149,25 @@ export const rlsTenantExtension = (client) =>
                     if (!RLS_MODELS.has(model)) return query(args);
                     const store = mcpCtx.getStore();
 
+                    // HR-P2028-GUC-TXN (2026-09-14) — the GUC wrapper is itself a
+                    // batch $transaction, which inherits Prisma's 5s default
+                    // timeout. Parallel RLS reads (a dashboard Promise.all fires
+                    // 4 at once) exhaust the pool's maxWait and the wrapper dies
+                    // with P2028 "transaction expired" — the payroll dashboard
+                    // served zeroed KPIs because of it. Give the wrapper a
+                    // deliberate budget instead of the misleading default.
+                    const TXN_OPTS = { timeout: 20000, maxWait: 10000 };
+
                     // SYSTEM context: set the bypass GUC so cross-tenant jobs can
                     // read/write pilot tables under FORCE RLS.
                     if (store?.system) {
-                        const [, result] = await client.$transaction([
-                            client.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`,
-                            query(args),
-                        ]);
+                        const [, result] = await client.$transaction(
+                            [
+                                client.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`,
+                                query(args),
+                            ],
+                            TXN_OPTS,
+                        );
                         return result;
                     }
 
@@ -163,12 +175,15 @@ export const rlsTenantExtension = (client) =>
                     if (!tenantId || !UUID_RE.test(String(tenantId))) {
                         return query(args);
                     }
-                    const [, result] = await client.$transaction([
-                        client.$executeRaw`SELECT set_config('app.tenant_id', ${String(
-                            tenantId,
-                        )}, true)`,
-                        query(args),
-                    ]);
+                    const [, result] = await client.$transaction(
+                        [
+                            client.$executeRaw`SELECT set_config('app.tenant_id', ${String(
+                                tenantId,
+                            )}, true)`,
+                            query(args),
+                        ],
+                        TXN_OPTS,
+                    );
                     return result;
                 },
             },
