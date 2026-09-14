@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   getTimesheetKpis,
   getAttendanceSummaryWeekly,
+  getAttendanceMonthGrid,
   getAbsenteeismTrend,
   listCheckInOuts,
 } from "../../services/timesheetReport.service.js";
@@ -77,7 +78,14 @@ export function registerTimesheetReportTools(server) {
     "Paginated / filtered / sorted check-in-out table. Each row: attendanceId, date, employee{id,name,avatar}, status (display: on-time|late|half-day|absent), checkIn, checkOut, workMode.",
     {
       q: z.string().optional().describe("Employee-name contains, case-insensitive."),
-      status: z.enum(["on-time", "late", "half-day", "absent"]).optional().describe("Display status filter — one of on-time | late | half-day | absent (mapped to the stored enum)."),
+      status: z
+        .enum(["on-time", "late", "half-day", "absent", "missing-checkin", "missing-checkout", "on-leave", "weekly-off", "holiday"])
+        .optional()
+        .describe("Display status filter — on-time | late | half-day | absent | missing-checkin | missing-checkout | on-leave | weekly-off | holiday (mapped to the stored enum)."),
+      exclude: z
+        .string()
+        .optional()
+        .describe("Comma list of display tokens to EXCLUDE; shorthand 'nonworking' = weekly-off,holiday,on-leave. Server-side so page totals match the visible rows."),
       from: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive start of the date range on Attendance.date. Defaults to the first day of the current calendar month — the SAME default as hr_timesheet_kpis, so both tools on this screen always describe the same window."),
       to: z.string().optional().describe("ISO date string (YYYY-MM-DD); inclusive end of the date range on Attendance.date. Defaults to the last day of the current calendar month. The applied window is echoed back as `period`."),
       employeeId: z.string().optional().describe("Exact employee id to filter by."),
@@ -92,6 +100,21 @@ export function registerTimesheetReportTools(server) {
       const data = await listCheckInOuts({ tenantId: user.tenantId, ...args });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_checkinout_list")
+  );
+
+  server.tool(
+    "hr_attendance_month_grid",
+    "UI-FIX-2026-09-14 — coherent per-day month grid for the 'My attendance' heatmap: every calendar day of the month with present/absent/weekend/holiday/onLeave counts (stored statuses), plus noData for days with no row at all. Scopes to eligible employees tenant-wide, or a single employeeId for self-service.",
+    {
+      month: z.string().optional().describe("YYYY-MM (default current month)."),
+      employeeId: z.string().optional().describe("Scope to one employee (self-service); omit for tenant-wide eligible staff."),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await getAttendanceMonthGrid({ tenantId: user.tenantId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_month_grid")
   );
 
   server.tool(

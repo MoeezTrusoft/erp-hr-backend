@@ -159,29 +159,44 @@ function resolveMonth(month) {
 // Mon–Sun calendar week clipped to the month bounds. The first chunk starts on
 // day 1 of the month regardless of weekday.
 function monthWeeks(monthStart, monthEnd) {
-  const weeks = [];
+  // UI-FIX-2026-09-14 — COHERENT WEEKS. The old chunking clipped Mon–Sun weeks
+  // to the month edge, so a month opening mid-week produced a 1–2 day "Week 1"
+  // stub: August 2026 (starts Saturday) rendered SIX weeks with Week 1 = 0%
+  // and Week 6 = a lone Aug 31. Rule now: an edge chunk shorter than 4 days
+  // MERGES into its neighbour (leading stub extends week 1, trailing stub
+  // extends the last week), so every month yields 4–5 honest weeks.
+  const raw = [];
   let cursor = startOfDay(monthStart);
   const last = startOfDay(monthEnd);
-  let idx = 1;
   while (cursor.getTime() <= last.getTime()) {
     // End of this week = the coming Sunday (getUTCDay 0), clipped to month end.
     const weekEnd = new Date(cursor);
-    // days until Sunday: (7 - dow) % 7, where Sunday(0) -> 0.
     const dow = weekEnd.getUTCDay();
     const daysToSunday = (7 - dow) % 7;
     weekEnd.setUTCDate(weekEnd.getUTCDate() + daysToSunday);
     const clippedEnd = weekEnd.getTime() > last.getTime() ? new Date(last) : weekEnd;
-    weeks.push({
-      label: `Week ${idx}`,
-      from: startOfDay(cursor),
-      to: endOfDay(clippedEnd),
-    });
-    // Next week starts the day after this week's (clipped) end.
+    raw.push({ from: startOfDay(cursor), to: endOfDay(clippedEnd) });
     cursor = startOfDay(clippedEnd);
     cursor.setUTCDate(cursor.getUTCDate() + 1);
-    idx += 1;
   }
-  return weeks;
+  const weeks = [];
+  for (let i = 0; i < raw.length; i++) {
+    const spanDays = Math.round((raw[i].to.getTime() - raw[i].from.getTime()) / (24 * 3600 * 1000)) + 1;
+    const isFirst = weeks.length === 0;
+    const isLast = i === raw.length - 1;
+    if (spanDays < 4 && isFirst && raw.length > 1) {
+      // Leading stub: fold into the NEXT chunk by extending this one's end.
+      raw[i + 1].from = raw[i].from;
+      continue; // drop this chunk; next iteration carries the merged span
+    }
+    if (spanDays < 4 && isLast && weeks.length > 0) {
+      // Trailing stub: extend the previous week's end over it.
+      weeks[weeks.length - 1].to = raw[i].to;
+      continue;
+    }
+    weeks.push({ from: raw[i].from, to: raw[i].to });
+  }
+  return weeks.map((w, i) => ({ label: `Week ${i + 1}`, from: w.from, to: w.to }));
 }
 
 // Map a date to its Week N label within the month's week chunks.
@@ -276,6 +291,82 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId }) {
  * @param {{tenantId:string|null, month?:string}} args
  * @returns {Promise<{month:string, weeks:Array<{label:string,from:string,to:string,attendancePct:number}>}>}
  */
+/**
+ * UI-FIX-2026-09-14 (operator item 5) — coherent per-day month grid for the
+ * "My attendance" heatmap. The FE derived it from the first 100 rows of the
+ * table fetch, so late pages silently dropped days and the grid disagreed
+ * with the charts. Here every calendar day of the month comes from the same
+ * STORED statuses the KPIs/charts use, so all widgets on the screen agree.
+ *
+ * Per day:
+ *   present = rows with a working status (PRESENT | LATE | HALF_DAY)
+ *   absent  = ABSENT rows
+ *   weekend / holiday / onLeave = the respective non-working counts
+ *   noData = true only when NO row exists at all for that day (future days,
+ *            or a pre-import gap) — the heatmap can render it distinctly.
+ *
+ * @param {{tenantId:string|null, month?:string, employeeId?:string|number}} args
+ * @returns {Promise<{month:string, days:Array<{date:string,day:number,present:number,absent:number,weekend:number,holiday:number,onLeave:number,total:number,noData:boolean}>}>}
+ */
+export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
+  const { start, end, label } = resolveMonth(month);
+  const where = { date: { gte: start, lte: end } };
+  const asNum = employeeId != null ? Number(employeeId) : null;
+  if (asNum != null && Number.isFinite(asNum)) where.employeeId = asNum;
+  else if (employeeId) where.employeeId = employeeId;
+  else
+    where.employeeId = {
+      in: (await eligibilityEmployeeIds(tenantId, start)).eligible,
+    };
+
+  const rows = await prisma.attendance.findMany({
+    where: scopedWhere(tenantId, where),
+    select: { date: true, status: true },
+  });
+
+  const byDay = new Map();
+  for (const r of rows) {
+    const key = startOfDay(r.date).toISOString().slice(0, 10);
+    const bucket = byDay.get(key) ?? {
+      present: 0,
+      absent: 0,
+      weekend: 0,
+      holiday: 0,
+      onLeave: 0,
+      total: 0,
+    };
+    bucket.total += 1;
+    if (PRESENT_STATUSES.includes(r.status)) bucket.present += 1;
+    else if (r.status === "ABSENT") bucket.absent += 1;
+    else if (r.status === "WEEKLY_OFF") bucket.weekend += 1;
+    else if (r.status === "HOLIDAY") bucket.holiday += 1;
+    else if (r.status === "ON_LEAVE") bucket.onLeave += 1;
+    byDay.set(key, bucket);
+  }
+
+  const days = [];
+  const cur = startOfDay(start);
+  const last = startOfDay(end);
+  while (cur.getTime() <= last.getTime()) {
+    const key = cur.toISOString().slice(0, 10);
+    const b = byDay.get(key);
+    days.push({
+      date: key,
+      day: cur.getUTCDate(),
+      present: b?.present ?? 0,
+      absent: b?.absent ?? 0,
+      weekend: b?.weekend ?? 0,
+      holiday: b?.holiday ?? 0,
+      onLeave: b?.onLeave ?? 0,
+      total: b?.total ?? 0,
+      noData: !b,
+    });
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+
+  return { month: label, days };
+}
+
 export async function getAttendanceSummaryWeekly({ tenantId, month }) {
   const { start, end, label } = resolveMonth(month);
   const weeks = monthWeeks(start, end);
@@ -413,6 +504,9 @@ const STATUS_DISPLAY = {
 
 // Map a caller-supplied status filter (display OR enum, case-insensitive) →
 // the enum stored on Attendance. Returns null when unrecognized.
+// UI-FIX-2026-09-14 — the FULL token set: the server-side table (operator ask:
+// "column search, sort and pagination must be server side controlled") can now
+// filter any status the UI can name, not just the four attendance verdicts.
 function toEnumStatus(raw) {
   if (!raw) return null;
   const s = String(raw).trim().toLowerCase();
@@ -426,6 +520,16 @@ function toEnumStatus(raw) {
       return "HALF_DAY";
     case "absent":
       return "ABSENT";
+    case "missing-checkin":
+      return "MISSING_CHECKIN";
+    case "missing-checkout":
+      return "MISSING_CHECKOUT";
+    case "on-leave":
+      return "ON_LEAVE";
+    case "weekly-off":
+      return "WEEKLY_OFF";
+    case "holiday":
+      return "HOLIDAY";
     default:
       return null;
   }
@@ -453,7 +557,13 @@ function fullName(emp) {
  * @param {object} args
  * @param {string|null} args.tenantId
  * @param {string} [args.q]          employee-name contains, case-insensitive (JS filter)
- * @param {string} [args.status]     display or enum: on-time/present | late | half-day | absent
+ * @param {string} [args.status]     display or enum: on-time/present | late | half-day | absent |
+ *                                   missing-checkin | missing-checkout | on-leave | weekly-off | holiday
+ * @param {string} [args.exclude]    comma list of display tokens to exclude; the shorthand
+ *                                   "nonworking" excludes weekly-off | holiday | on-leave. UI-FIX-2026-09-14:
+ *                                   the FE hides non-working rows CLIENT-side today, which desyncs the page
+ *                                   count from what is visible — exclusion is the server's job so total/page
+ *                                   always describe exactly what the user sees.
  * @param {string} [args.from]       date-range start (Attendance.date)
  * @param {string} [args.to]         date-range end (Attendance.date)
  * @param {string} [args.employeeId] exact employeeId
@@ -467,6 +577,7 @@ export async function listCheckInOuts({
   tenantId,
   q,
   status,
+  exclude,
   from,
   to,
   employeeId,
@@ -479,6 +590,21 @@ export async function listCheckInOuts({
 
   const enumStatus = toEnumStatus(status);
   if (enumStatus) where.status = enumStatus;
+
+  // UI-FIX-2026-09-14 — server-side exclusion (see JSDoc). Applied as a Prisma
+  // `notIn` so pagination totals describe the visible set, not a superset.
+  if (exclude != null && String(exclude).trim() !== "") {
+    const tokens = String(exclude)
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const expanded = tokens.flatMap((t) =>
+      t.toLowerCase() === "nonworking"
+        ? ["WEEKLY_OFF", "HOLIDAY", "ON_LEAVE"]
+        : [toEnumStatus(t)].filter(Boolean),
+    );
+    if (expanded.length) where.status = { ...(where.status ? { not: where.status } : {}), notIn: expanded };
+  }
 
   // [HR-TIMESHEET-WINDOW-01] This used to apply a date filter ONLY when from/to
   // parsed, so a missing or blank window (a cleared date picker sends `from: ""`,

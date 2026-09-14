@@ -177,6 +177,10 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId }) {
 
   return {
     payslipId: slip.id,
+    // HR-PAYSLIP-ADMIN-VIEW-01 — the subject employee on the payload, so an
+    // admin session (no employee binding) can chain employee-keyed follow-up
+    // calls (trend, payslip list) off this id instead of failing.
+    employeeId: slip.employeeId,
     period: { from: periodStart, to: periodEnd },
     status: slip.status,
     netPay: Number(slip.netAmount) || 0,
