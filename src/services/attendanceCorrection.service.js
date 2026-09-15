@@ -35,8 +35,6 @@ function describePrevious(row) {
     + `status=${row.status ?? "-"} credit=${row.day_credit ?? "-"}`;
 }
 
-const STATUSES = ["PRESENT", "ABSENT", "LATE", "HALF_DAY", "MISSING_CHECKIN", "MISSING_CHECKOUT"];
-
 function startOfDay(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) throw badRequest(`Invalid date: ${value}`);
@@ -68,6 +66,20 @@ function creditFor(status) {
   return null; // MISSING_* stays unresolved
 }
 
+// HR-ATT-CORRECTION-POLICY-01 (operator items 7+8, 2026-09-15):
+//
+//   #7 — manual intervention may ONLY fix a missing check-in or check-out.
+//   A day the machine already scored (PRESENT/LATE/ABSENT/...) is not
+//   correctable by hand; the anomaly-form / leave workflow is the remedy
+//   channel for those. This keeps the device verdict authoritative and the
+//   correction surface narrow and auditable.
+//
+//   #8 — creating attendance from NOTHING (manual entry, no device row) is
+//   allowed only for WFH shifts (Remote/Hybrid) and lands as PENDING
+//   management approval: requires_regularization stays true and day_credit
+//   stays null, so payroll holds the day until it is approved.
+const CORRECTABLE_STATUSES = ["MISSING_CHECKIN", "MISSING_CHECKOUT"];
+
 export async function correctAttendanceDay({
   tenantId, employeeId, date, checkIn, checkOut, status, workMode, reason, actorEmployeeId, actorNote,
 }) {
@@ -82,9 +94,11 @@ export async function correctAttendanceDay({
     if (!actorNote) throw badRequest("actorEmployeeId is required");
     actorEmployeeId = null;
   }
-  if (status != null && !STATUSES.includes(status)) {
-    throw badRequest(`status must be one of: ${STATUSES.join(", ")}`);
-  }
+  // `status` is DERIVED from the supplied times (#7) and is no longer
+  // accepted as an input: a correction supplies the missing punch, it does not
+  // re-grade the day. Callers that still send it (older clients) are honored
+  // by derivation, not by assertion.
+  void status;
 
   const day = startOfDay(date);
   const cin = atClock(day, checkIn);
@@ -100,8 +114,41 @@ export async function correctAttendanceDay({
   });
   if (!employee) throw badRequest(`Employee ${employeeId} not found in this tenant`);
 
+  const preExisting = await prisma.attendance.findFirst({
+    where: { employeeId, date: day },
+    orderBy: { id: "desc" },
+    select: { id: true, status: true, requires_regularization: true },
+  });
+
+  let manualEntryPendingApproval = false;
+  if (preExisting) {
+    // #7 — the day must be a missing-punch day. HR's own flag (already
+    // pending) is also correctable, e.g. finishing a WFH entry's approval.
+    const pendingDay =
+      CORRECTABLE_STATUSES.includes(preExisting.status) || preExisting.requires_regularization;
+    if (!pendingDay) {
+      throw badRequest(
+        `Only days with a missing check-in or check-out can be corrected manually `
+        + `(this day is ${preExisting.status}). Use the anomaly/leave workflow for other days.`,
+      );
+    }
+  } else {
+    // #8 — a day with NO device row is a manual ENTRY, and that is WFH-only,
+    // pending management approval.
+    const mode = workMode !== undefined ? normalizeWorkMode(workMode) : normalizeWorkMode(employee.work_mode);
+    if (mode !== "Remote" && mode !== "Hybrid") {
+      throw badRequest(
+        "Manual attendance entry is allowed only for WFH (Remote/Hybrid) shifts. "
+        + "On-site days must come from the device or a missing-punch correction.",
+      );
+    }
+    manualEntryPendingApproval = true;
+  }
+
   const hours = cin && cout ? Number(((cout - cin) / 3600000).toFixed(2)) : null;
-  const finalStatus = status ?? (cin && cout ? "PRESENT" : cin ? "MISSING_CHECKOUT" : "ABSENT");
+  // Status is DERIVED from the supplied times, never asserted: a correction
+  // supplies the missing punch, it does not re-grade the day (#7).
+  const finalStatus = cin && cout ? "PRESENT" : cin ? "MISSING_CHECKOUT" : cout ? "MISSING_CHECKIN" : "ABSENT";
   const mode = workMode !== undefined ? normalizeWorkMode(workMode) : undefined;
 
   const result = await tenantTransaction(prisma, async (tx) => {
@@ -115,13 +162,18 @@ export async function correctAttendanceDay({
       check_out: cout,
       total_hours: hours,
       status: finalStatus,
-      day_credit: creditFor(finalStatus),
-      // HR has ruled on the day, so it is no longer waiting on regularization.
-      requires_regularization: false,
+      // A missing-punch correction is HR's final word on the day (#7) — it no
+      // longer waits on regularization, and the day credits immediately. A
+      // brand-new manual ENTRY (#8) holds its credit at null until management
+      // approves — payroll must not pay an unapproved entry.
+      day_credit: manualEntryPendingApproval ? null : creditFor(finalStatus),
+      // A missing-punch correction is HR's final word — the hold clears. A
+      // brand-new manual ENTRY stays held until management approves it.
+      requires_regularization: manualEntryPendingApproval,
       manually_corrected: true,
       corrected_by_id: actorEmployeeId,
       corrected_at: new Date(),
-      correction_reason: text,
+      correction_reason: manualEntryPendingApproval ? `${text} — pending management approval` : text,
       ...(mode !== undefined ? { work_mode: mode } : {}),
     };
 

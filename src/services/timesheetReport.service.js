@@ -24,6 +24,11 @@ import logger from "../lib/logger.js";
 const PRESENT_STATUSES = ["PRESENT", "LATE", "HALF_DAY"];
 // Statuses that count as a late arrival.
 const LATE_STATUSES = ["LATE", "HALF_DAY"];
+
+// UI-FIX-2026-09-15 (#9) — stored statuses that mean a person was rostered in
+// but NOT satisfactorily present. The weekly tooltip lists these by name, so
+// "98% with no absentees" becomes impossible: the gap IS listed.
+const ATTENDANCE_PROBLEM_STATUSES = new Set(["ABSENT", "MISSING_CHECKIN", "MISSING_CHECKOUT"]);
 // HR-RECON-02 — days nobody was rostered in. These come OUT of every
 // denominator: they are not days somebody failed to attend, they are days
 // nobody was due. Same set the reconciliation report excludes, so the two
@@ -224,7 +229,7 @@ function weekLabelFor(date, weeks) {
  * @param {{tenantId:string|null, from?:string, to?:string}} args
  * @returns {Promise<{present:number,lateArrivals:number,wfhRemote:number,absentees:number,totalEmployees:number,period:{from:string,to:string}}>}
  */
-export async function getTimesheetKpis({ tenantId, from, to, employeeId }) {
+export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDeltas = true }) {
   const period = resolvePeriod(from, to);
 
   // HR-FE-UNBLOCK-01 — optional single-employee scope, so a person's own
@@ -266,12 +271,67 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId }) {
     if (r.work_mode && REMOTE_MODES.includes(r.work_mode)) wfhEmp.add(r.employeeId);
   }
 
+  // availableShifts (operator item 11, 2026-09-15) — the true denominator:
+  // every rostered shift the tenant OWED in the window, counting each stored
+  // row once. Rows the roster never owed (rest days, holidays, leaves) are
+  // excluded, and employment spans are enforced by the writer (separated
+  // employees stop gaining rows). Feeds the FE "X / Y shifts" denominators.
+  const availableShifts = rows.reduce((n, r) => {
+    if (NON_WORKING_STATUSES.includes(r.status)) return n;
+    return n + 1;
+  }, 0);
+
+  // Operator item 5 (2026-09-15) — machine-detected exceptions MINUS the ones
+  // with their own tiles (absent + late arrivals are LATE_CHECKIN/ABSENT
+  // anomalies). Backed by attendance_anomalies, which the evaluator now
+  // persists (HR-ATT-ANOM-PERSIST-01) — before that this count was
+  // structurally zero.
+  // Guarded: some callers (unit tests) inject a Prisma stub without the
+  // anomaly delegate; production always has it.
+  const anomalies = prisma.attendanceAnomaly?.count
+    ? await prisma.attendanceAnomaly.count({
+        where: scopedWhere(tenantId, {
+          ...eligibleFilter,
+          date: { gte: period.from, lte: period.to },
+          type: { notIn: ["ABSENT", "LATE_CHECKIN"] },
+        }),
+      })
+    : 0;
+
+  // Operator item 10 (2026-09-15) — each tile carries a vs-last-month delta
+  // (percentage, signed). No baseline (previous value 0) → null, the FE shows
+  // "–". The window is mirrored: same span immediately before this one. The
+  // baseline call passes _withDeltas:false — otherwise this would recurse
+  // forever.
+  let deltas = null;
+  if (_withDeltas) {
+    const spanMs = period.to.getTime() - period.from.getTime();
+    const prev = await getTimesheetKpis({
+      tenantId,
+      from: new Date(period.from.getTime() - spanMs - 1).toISOString(),
+      to: new Date(period.from.getTime() - 1).toISOString(),
+      employeeId,
+      _withDeltas: false,
+    });
+    const pct = (cur, before) =>
+      before > 0 ? Math.round(((cur - before) / before) * 100) : null;
+    deltas = {
+      absentees: pct(absentEmp.size, prev.absentees),
+      lateArrivals: pct(lateArrivals, prev.lateArrivals),
+      wfhRemote: pct(wfhEmp.size, prev.wfhRemote),
+      anomalies: pct(anomalies, prev.anomalies ?? 0),
+    };
+  }
+
   return {
     present: presentEmp.size,
     lateArrivals,
     wfhRemote: wfhEmp.size,
     absentees: absentEmp.size,
     totalEmployees,
+    availableShifts,
+    anomalies,
+    deltas,
     period: { from: period.from.toISOString(), to: period.to.toISOString() },
   };
 }
@@ -399,12 +459,16 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
     // graph and the report cannot disagree.
     const expectedDays = inWeek.filter((r) => !NON_WORKING_STATUSES.includes(r.status)).length;
     const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : 0;
-    // UI-FIX-3 (2026-09-14) — hover tooltip lists the week's absentees by name.
-    // DISTINCT per employee: one person absent 3 days appears once, with the
-    // days they missed.
+    // UI-FIX-3 (2026-09-14) — hover tooltip lists the week's problem days by
+    // name. UI-FIX-2026-09-15 (#9) — an "absentee" for the tooltip is anything
+    // that is NOT a working attendance verdict (ABSENT, MISSING_CHECKIN,
+    // MISSING_CHECKOUT). Listing only strict ABSENT made the tooltip say "No
+    // absentees this week" while the chart showed 98% — the gap WAS the
+    // missing rows, now surfaced by name. DISTINCT per employee: one person
+    // missing 3 days appears once, with the days missed.
     const byEmployee = new Map();
     for (const r of inWeek) {
-      if (r.status !== "ABSENT" || !r.employee) continue;
+      if (!ATTENDANCE_PROBLEM_STATUSES.has(r.status) || !r.employee) continue;
       const entry = byEmployee.get(r.employee.id) ?? {
         id: r.employee.id,
         name: fullName(r.employee),

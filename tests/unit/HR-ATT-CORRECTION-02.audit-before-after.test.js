@@ -60,21 +60,24 @@ beforeEach(() => {
         id: 55,
         employeeId: EMPLOYEE,
         date: new Date('2026-08-14T00:00:00.000Z'),
-        status: 'ABSENT',
+        status: 'MISSING_CHECKOUT',
+        requires_regularization: true,
         check_in: null,
         check_out: null,
         total_hours: null,
-        day_credit: 0,
+        day_credit: null,
     };
 });
 
+// HR-ATT-CORRECTION-POLICY-01 (#7) — the audited surface is now the
+// missing-punch correction, so the fixture day must be a correctable one.
 const correct = (over = {}) => correctAttendanceDay({
     tenantId: TENANT,
     employeeId: EMPLOYEE,
     date: '2026-08-14',
     checkIn: '09:00',
     checkOut: '18:00',
-    status: 'PRESENT',
+    workMode: 'Remote',
     reason: 'HR sheet: worked the holiday',
     actorEmployeeId: ACTOR,
     ...over,
@@ -85,14 +88,14 @@ describe('HR-ATT-CORRECTION-02 corrections record before and after', () => {
         await correct();
 
         const note = logs[0].notes;
-        expect(note).toContain('ABSENT');   // the previous status
-        expect(note).toContain('PRESENT');  // the new one
+        expect(note).toContain('MISSING_CHECKOUT'); // the previous status
+        expect(note).toContain('PRESENT');          // the derived new one
     });
 
     it('shows the previous times too, so a minute-level fix is visible', async () => {
         existingRow = {
             ...existingRow,
-            status: 'LATE',
+            status: 'MISSING_CHECKOUT',
             check_in: new Date('2026-08-14T09:41:00.000Z'),
         };
 

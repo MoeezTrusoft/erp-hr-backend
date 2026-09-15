@@ -69,6 +69,7 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
       where: { employeeId, date: day },
       orderBy: { id: "desc" },
     });
+    // eslint-disable-next-line no-await-in-loop -- sequential by design: each day's write depends on the previous verdict
 
     // HR's ruling outranks the device, always.
     if (existing?.manually_corrected) { summary.skippedManuallyCorrected += 1; continue; }
@@ -104,18 +105,72 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
       && Number(existing.total_hours ?? 0) === Number(data.total_hours ?? 0);
     if (same) { summary.unchanged += 1; continue; }
 
+    let rowId = existing?.id ?? null;
     if (!dryRun) {
       await tenantTransaction(prisma, async (tx) => {
         if (existing) {
-          await tx.attendance.update({ where: { id: existing.id }, data });
+          const row = await tx.attendance.update({ where: { id: existing.id }, data });
+          rowId = row.id;
         } else {
-          await tx.attendance.create({
+          const row = await tx.attendance.create({
             data: { employeeId, date: day, tenantId: employee?.tenant_id ?? tenantId, ...data },
           });
+          rowId = row.id;
         }
       });
     }
     summary[existing ? "updated" : "created"] += 1;
+
+    // HR-ATT-ANOM-PERSIST-01 (2026-09-15) — persist the evaluator's anomalies.
+    //
+    // evaluateShift has always RETURNED anomalies (late check-in, early
+    // departure, absent, missing punches) but the writer dropped them on the
+    // floor: attendance_anomalies held only the paper forms HR raised by hand,
+    // so the system-visible anomaly count was structurally zero and the
+    // approval chain never saw a single machine-detected exception. Each
+    // verdict's anomalies are upserted as PENDING rows owned by the day's
+    // attendance row via (sourceKind, sourceRef) — replay-safe, so the daily
+    // re-evaluation cannot duplicate them.
+    if (!dryRun && rowId && Array.isArray(verdict.anomalies) && verdict.anomalies.length) {
+      await tenantTransaction(prisma, async (tx) => {
+        for (const a of verdict.anomalies) {
+          if (!a?.type) continue;
+          const sourceRef = `${rowId}:${a.type}`;
+          const exists = await tx.attendanceAnomaly.findFirst({
+            where: { tenantId: employee?.tenant_id ?? tenantId, sourceKind: "evaluator", sourceRef },
+            select: { id: true },
+          });
+          if (exists) continue;
+          try {
+            await tx.attendanceAnomaly.create({
+              data: {
+                employeeId,
+                type: a.type,
+                date: day,
+                fromTime: a.fromTime ?? null,
+                toTime: a.toTime ?? null,
+                expectedTime: a.expectedTime ?? null,
+                actualTime: a.actualTime ?? null,
+                detail: a.minutesLate != null ? `auto-detected: ${a.minutesLate} min late`
+                  : a.type === "EARLY_CHECKOUT" ? "auto-detected: early departure"
+                  : "auto-detected by attendance evaluation",
+                status: "PENDING",
+                sourceKind: "evaluator",
+                sourceRef,
+                applicationDate: day,
+                tenantId: employee?.tenant_id ?? tenantId,
+              },
+            });
+          } catch (e) {
+            // A concurrent replay of the same day already inserted it — the
+            // (tenantId, sourceKind, sourceRef) unique index is the backstop.
+            if (e?.code !== "P2002") throw e;
+          }
+        }
+      });
+      summary.anomaliesPersisted = (summary.anomaliesPersisted ?? 0)
+        + (verdict.anomalies?.length ?? 0);
+    }
   }
 
   await retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun });
@@ -317,6 +372,26 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
       });
     });
   }
+}
+
+/**
+ * HR-ATT-STALE-REFRESH-01 (2026-09-15) — recompute a tenant's recent window so
+ * rows written under an OLDER schedule/policy agree with the CURRENT one.
+ *
+ * Live intake only re-evaluates the days a punch touches, so a row written
+ * before a roster correction stays frozen (operator report: Afsha/Pervaiz
+ * 10:11 & 10:13 vs a 10:00 shift showing "On Time" — written pre-correction,
+ * never revisited because later punches landed on other days). This sweep re
+ * runs the evaluator over the window; the writer's `same` check makes it a
+ * no-op for rows that already agree, and manually-corrected days are skipped
+ * by design — HR's word outranks the machine.
+ */
+export async function refreshStaleAttendance({ tenantId, days = 35, now = new Date() }) {
+  const to = now.toISOString().slice(0, 10);
+  const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const summary = await applyEvaluatedShifts({ tenantId, from, to, dryRun: false, now });
+  logger.warn({ tenantId, from, to, ...summary }, "stale-attendance refresh sweep");
+  return { from, to, ...summary };
 }
 
 /**
