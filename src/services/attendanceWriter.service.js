@@ -35,6 +35,67 @@ const chunk = (arr, size) => {
   return out;
 };
 
+/**
+ * HR-ATT-ANOM-PERSIST-01 (2026-09-15) — persist the evaluator's anomalies.
+ *
+ * evaluateShift has always RETURNED anomalies (late check-in, early
+ * departure, absent, missing punches) but the writer dropped them on the
+ * floor: attendance_anomalies held only the paper forms HR raised by hand,
+ * so the system-visible anomaly count was structurally zero and the
+ * approval chain never saw a single machine-detected exception. Each
+ * verdict's anomalies are upserted as PENDING rows owned by the day's
+ * attendance row via (sourceKind, sourceRef) — replay-safe, so the daily
+ * re-evaluation cannot duplicate them.
+ *
+ * HR-ATT-ANOM-PERSIST-01b (2026-09-15) — also called for UNCHANGED rows.
+ * September rows written by live intake before the persistence feature
+ * existed will agree forever (`same`), so gating on create/update left the
+ * whole month anomaly-less: the KPI tile showed 0 and the approval chain
+ * never saw them. The (sourceKind, sourceRef) upsert makes the extra call a
+ * no-op for days already covered.
+ */
+async function persistEvaluatorAnomalies({ tenantId, employeeId, day, anomalies, rowId, summary, dryRun }) {
+  if (dryRun || !rowId || !Array.isArray(anomalies) || !anomalies.length) return;
+  await tenantTransaction(prisma, async (tx) => {
+    for (const a of anomalies) {
+      if (!a?.type) continue;
+      const sourceRef = `${rowId}:${a.type}`;
+      const exists = await tx.attendanceAnomaly.findFirst({
+        where: { tenantId, sourceKind: "evaluator", sourceRef },
+        select: { id: true },
+      });
+      if (exists) continue;
+      try {
+        await tx.attendanceAnomaly.create({
+          data: {
+            employeeId,
+            type: a.type,
+            date: day,
+            fromTime: a.fromTime ?? null,
+            toTime: a.toTime ?? null,
+            expectedTime: a.expectedTime ?? null,
+            actualTime: a.actualTime ?? null,
+            detail: a.minutesLate != null ? `auto-detected: ${a.minutesLate} min late`
+              : a.type === "EARLY_CHECKOUT" ? "auto-detected: early departure"
+              : "auto-detected by attendance evaluation",
+            status: "PENDING",
+            sourceKind: "evaluator",
+            sourceRef,
+            applicationDate: day,
+            tenantId,
+          },
+        });
+      } catch (e) {
+        // A concurrent replay of the same day already inserted it — the
+        // (tenantId, sourceKind, sourceRef) unique index is the backstop.
+        if (e?.code !== "P2002") throw e;
+      }
+    }
+  });
+  summary.anomaliesPersisted = (summary.anomaliesPersisted ?? 0)
+    + (anomalies?.length ?? 0);
+}
+
 export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, now = new Date() }) {
   const policy = await getAttendancePolicy({ tenantId });
   const shifts = await replayTenant({ tenantId, from, to, policy, now });
@@ -103,7 +164,17 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
       && existing.status === data.status
       && existing.day_credit === data.day_credit
       && Number(existing.total_hours ?? 0) === Number(data.total_hours ?? 0);
-    if (same) { summary.unchanged += 1; continue; }
+    if (same) {
+      summary.unchanged += 1;
+      // HR-ATT-ANOM-PERSIST-01b — unchanged rows still need their anomalies
+      // (see the helper's doc: pre-feature September rows agree forever).
+      await persistEvaluatorAnomalies({
+        tenantId: employee?.tenant_id ?? tenantId,
+        employeeId, day, anomalies: verdict.anomalies,
+        rowId: existing?.id ?? null, summary, dryRun,
+      });
+      continue;
+    }
 
     let rowId = existing?.id ?? null;
     if (!dryRun) {
@@ -121,56 +192,10 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     }
     summary[existing ? "updated" : "created"] += 1;
 
-    // HR-ATT-ANOM-PERSIST-01 (2026-09-15) — persist the evaluator's anomalies.
-    //
-    // evaluateShift has always RETURNED anomalies (late check-in, early
-    // departure, absent, missing punches) but the writer dropped them on the
-    // floor: attendance_anomalies held only the paper forms HR raised by hand,
-    // so the system-visible anomaly count was structurally zero and the
-    // approval chain never saw a single machine-detected exception. Each
-    // verdict's anomalies are upserted as PENDING rows owned by the day's
-    // attendance row via (sourceKind, sourceRef) — replay-safe, so the daily
-    // re-evaluation cannot duplicate them.
-    if (!dryRun && rowId && Array.isArray(verdict.anomalies) && verdict.anomalies.length) {
-      await tenantTransaction(prisma, async (tx) => {
-        for (const a of verdict.anomalies) {
-          if (!a?.type) continue;
-          const sourceRef = `${rowId}:${a.type}`;
-          const exists = await tx.attendanceAnomaly.findFirst({
-            where: { tenantId: employee?.tenant_id ?? tenantId, sourceKind: "evaluator", sourceRef },
-            select: { id: true },
-          });
-          if (exists) continue;
-          try {
-            await tx.attendanceAnomaly.create({
-              data: {
-                employeeId,
-                type: a.type,
-                date: day,
-                fromTime: a.fromTime ?? null,
-                toTime: a.toTime ?? null,
-                expectedTime: a.expectedTime ?? null,
-                actualTime: a.actualTime ?? null,
-                detail: a.minutesLate != null ? `auto-detected: ${a.minutesLate} min late`
-                  : a.type === "EARLY_CHECKOUT" ? "auto-detected: early departure"
-                  : "auto-detected by attendance evaluation",
-                status: "PENDING",
-                sourceKind: "evaluator",
-                sourceRef,
-                applicationDate: day,
-                tenantId: employee?.tenant_id ?? tenantId,
-              },
-            });
-          } catch (e) {
-            // A concurrent replay of the same day already inserted it — the
-            // (tenantId, sourceKind, sourceRef) unique index is the backstop.
-            if (e?.code !== "P2002") throw e;
-          }
-        }
-      });
-      summary.anomaliesPersisted = (summary.anomaliesPersisted ?? 0)
-        + (verdict.anomalies?.length ?? 0);
-    }
+    await persistEvaluatorAnomalies({
+      tenantId: employee?.tenant_id ?? tenantId,
+      employeeId, day, anomalies: verdict.anomalies, rowId, summary, dryRun,
+    });
   }
 
   await retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun });
