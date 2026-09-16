@@ -15,6 +15,7 @@
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { routeAnomaly } from "./attendanceAnomalyRouting.service.js";
+import { resolveWorkingDays } from "./workingDay.service.js";
 import logger from "../lib/logger.js";
 
 function badRequest(message) {
@@ -207,6 +208,49 @@ export async function getAnomalyFormDefaults({ tenantId, employeeId, date }) {
 }
 
 /**
+ * HR-ANOM-DEADLINE-01 — last day the employee may submit a request about this
+ * anomaly: TWO WORKING DAYS, per the employee's own roster (weekends/holidays
+ * skipped via resolveWorkingDays).
+ *
+ * LATE / MISSING_CHECKIN / MISSING_CHECKOUT count the anomaly day itself as
+ * working day 1 (operator ruling 2026-09-16: "the deadline should include the
+ * current working anomaly day as well"); every other type starts the count the
+ * day AFTER. A working day is one whose working verdict is not explicitly
+ * false — a missing roster verdict never shortens the window.
+ */
+export async function computeAnomalyDeadline({ employeeId, anomalyDate, type }) {
+  const day = startOfDay(anomalyDate);
+  // Scan generously: a long holiday stretch must never truncate the window.
+  const horizonEnd = new Date(day.getTime() + 30 * 86_400_000);
+  const working = await resolveWorkingDays({
+    employeeId,
+    from: day.toISOString().slice(0, 10),
+    to: horizonEnd.toISOString().slice(0, 10),
+  });
+
+  // Same key format resolveWorkingDays uses (UTC YYYY-MM-DD) — string compare
+  // sorts correctly. (A numeric local-midnight key here would never match the
+  // map's string keys and every request would silently fall back.)
+  const dayKey = (d) => new Date(d).toISOString().slice(0, 10);
+  // Ascending working days from the anomaly day; explicit false = off day.
+  const workingDays = [...working.entries()]
+    .filter(([, info]) => info?.working !== false)
+    .map(([k]) => k)
+    .sort();
+  const SELF_INCLUSIVE = new Set(["LATE_CHECKIN", "MISSING_CHECKIN", "MISSING_CHECKOUT"]);
+  const fromSelfInclusive = SELF_INCLUSIVE.has(type);
+
+  const candidates = workingDays.filter((k) => (fromSelfInclusive ? k >= dayKey(day) : k > dayKey(day)));
+  if (candidates.length < 2) {
+    // Pathological roster (no working days resolvable) — fall back to the
+    // calendar rule rather than leaving the request permanently open.
+    const fallback = new Date(day.getTime() + (fromSelfInclusive ? 1 : 2) * 86_400_000);
+    return { deadline: fallback, workingDaysUsed: null };
+  }
+  return { deadline: new Date(`${candidates[1]}T23:59:59`), workingDaysUsed: [candidates[0], candidates[1]] };
+}
+
+/**
  * Submit the request. `reason` is the only accepted input beyond who and when —
  * category and times are re-derived server-side so a client cannot downgrade its
  * own anomaly to a cheaper one.
@@ -217,6 +261,14 @@ export async function createAnomalyRequest({ tenantId, employeeId, date, reason 
 
   const day = startOfDay(date);
   const defaults = await getAnomalyFormDefaults({ tenantId, employeeId, date: day });
+
+  // HR-ANOM-DEADLINE-01 — the 2-working-day window, enforced BEFORE any write.
+  const { deadline } = await computeAnomalyDeadline({ employeeId, anomalyDate: day, type: defaults.category });
+  if (new Date() > deadline) {
+    throw badRequest(
+      `The request window closed on ${deadline.toISOString().slice(0, 10)} — anomaly requests must be submitted within 2 working days`,
+    );
+  }
 
   const sourceRef = `regularization:${employeeId}:${day.toISOString().slice(0, 10)}`;
 
@@ -251,6 +303,7 @@ export async function createAnomalyRequest({ tenantId, employeeId, date, reason 
         sourceRef,
         status: "PENDING",
         currentApprovalLevel: 1,
+        requestDeadline: deadline,
       },
     });
   });

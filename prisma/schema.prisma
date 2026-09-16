@@ -685,6 +685,12 @@ model AttendanceAnomaly {
   applicationDate    DateTime  @default(now()) // defaults to the raise date
   positionSnapshot   String?
   departmentSnapshot String?
+
+  // HR-ANOM-DEADLINE-01 — last date the employee could submit this request.
+  // LATE / MISSING_CHECKIN / MISSING_CHECKOUT: 2nd working day COUNTING the
+  // anomaly day (day 1); every other type: 2 working days AFTER. Null on
+  // evaluator-sourced rows means "not employee-subject" (informational).
+  requestDeadline DateTime?
   expectedTime       DateTime? // e.g. rostered shift start for a LATE_CHECKIN
   actualTime         DateTime? // e.g. the punch that was actually recorded
 

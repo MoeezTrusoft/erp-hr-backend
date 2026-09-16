@@ -58,39 +58,98 @@ async function eligibilityEmployeeIds(tenantId, windowStart) {
   const employees = await prisma.employee.findMany({
     where: scopedEmployeeWhere(tenantId, {
       payroll_included: true,
-      OR: [{ status: { not: "Inactive" } }, { status: null }],
     }),
-    select: { id: true },
+    select: { id: true, status: true },
   });
   const ids = employees.map((e) => e.id);
-  // Period filter: drop employees whose LAST period ended before the window
-  // starts (terminated before it began). People re-hired inside the window
-  // (Meesam: re-hired Sep 4) stay — their in-window rows are legitimate.
+
+  // TIMESHEET-ELIG-02 (2026-09-16) — employment SPANS, not "separated = gone".
+  //
+  // The old rule dropped an employee whose LAST period ended before the window,
+  // and separately dropped everyone with status Inactive. Both halves erased
+  // LEGITIMATE in-window history:
+  //   * Obaid, terminated 2026-09-08: his Sep 1–8 rows must still show in the
+  //     September table ("Obaid's timesheet is not available for September").
+  //   * Meesam, suspended Aug 20 and re-hired Sep 4: his OLD period ends Aug 20,
+  //     so "last period before the window" dropped him from September entirely
+  //     even though his re-hire period covers it from Sep 4.
+  //
+  // New rules:
+  //   * An employee stays in the id set when ANY employment period intersects
+  //     the window (open endDate, or endDate >= windowStart), or when they have
+  //     no period rows at all (legacy employees predate the model).
+  //   * `status: Inactive` no longer removes the id — the SPAN decides. Only an
+  //     Inactive employee whose every period ended BEFORE the window drops, so
+  //     a data gap can never resurface a leaver forever.
+  //
+  // Consumers additionally filter ROWS per-day with employmentEndByEmployee:
+  // a row dated after the person's last period end is not theirs to show, and
+  // a not-yet-re-hired person's pre-hire days stay excluded by their periods'
+  // absence (no row should exist there anyway).
+  let employmentEndByEmployee = new Map();
   let periodExcluded = new Set();
   if (ids.length) {
     const rows = await prisma.employmentPeriod.findMany({
       where: { employeeId: { in: ids } },
-      select: { employeeId: true, endDate: true },
+      select: { employeeId: true, startDate: true, endDate: true },
     });
-    const lastEndByEmployee = new Map();
+    const hasOpenOrFuture = new Set();
+    const lastEnd = new Map();
     for (const p of rows) {
-      if (p.endDate == null) continue; // open period → currently employed
-      const prev = lastEndByEmployee.get(p.employeeId);
-      if (!prev || p.endDate.getTime() > prev.getTime()) {
-        lastEndByEmployee.set(p.employeeId, p.endDate);
+      if (p.endDate == null || p.endDate.getTime() >= windowStart.getTime()) {
+        hasOpenOrFuture.add(p.employeeId);
+      }
+      if (p.endDate != null) {
+        const prev = lastEnd.get(p.employeeId);
+        if (!prev || p.endDate.getTime() > prev.getTime()) lastEnd.set(p.employeeId, p.endDate);
       }
     }
     const win = windowStart.getTime();
-    periodExcluded = new Set(
-      [...lastEndByEmployee]
-        .filter(([, end]) => end.getTime() < win)
-        .map(([id]) => id),
-    );
+    for (const e of employees) {
+      const personRows = rows.filter((p) => p.employeeId === e.id);
+      if (!personRows.length) {
+        // No period rows at all. Legacy behaviour: Active stays, Inactive drops.
+        if (e.status === "Inactive") periodExcluded.add(e.id);
+        continue;
+      }
+      if (hasOpenOrFuture.has(e.id)) {
+        // A period covers (or outlives) the window start → eligible. Their
+        // per-day span cap is their last endDate, if any (rehire case: the
+        // old spell's end caps nothing because the open period is later —
+        // lastEnd still holds the OLD spell, so only cap when the person has
+        // NO open period).
+        if (e.status === "Inactive" || lastEnd.has(e.id)) {
+          const hasOpen = personRows.some((p) => p.endDate == null);
+          if (!hasOpen) employmentEndByEmployee.set(e.id, lastEnd.get(e.id) ?? null);
+        }
+        continue;
+      }
+      // Every period ended before the window start.
+      if (e.status === "Inactive") {
+        periodExcluded.add(e.id);
+      } else {
+        // Not marked Inactive but all periods closed pre-window: keep visible
+        // up to the last end (span-capped) rather than vanish mid-history.
+        employmentEndByEmployee.set(e.id, lastEnd.get(e.id) ?? null);
+      }
+    }
   }
   const eligible = ids.filter((id) => !periodExcluded.has(id));
   // Empty list must match NOTHING, not everything: Prisma treats `in: []` as
   // a guaranteed-empty set, which is exactly what we want — keep [-1] out.
-  return { eligible, excludedCount: periodExcluded.size };
+  return { eligible, excludedCount: periodExcluded.size, employmentEndByEmployee };
+}
+
+/**
+ * TIMESHEET-ELIG-02 — drop rows dated AFTER the employee's employment ended
+ * (per-day span enforcement). Rows up to and including the end date stay.
+ */
+function filterRowsByEmploymentSpan(rows, employmentEndByEmployee) {
+  if (!employmentEndByEmployee?.size) return rows;
+  return rows.filter((r) => {
+    const end = employmentEndByEmployee.get(r.employeeId);
+    return end == null || r.date.getTime() <= end.getTime();
+  });
 }
 
 // ── Date helpers ────────────────────────────────────────────────────────────
@@ -241,7 +300,7 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
   // employees only (tenant-scoped, payroll-included, not separated, not
   // terminated before the window). Without this, separated people surfaced as
   // today's absentees forever.
-  const { eligible } = await eligibilityEmployeeIds(tenantId, period.from);
+  const { eligible, employmentEndByEmployee } = await eligibilityEmployeeIds(tenantId, period.from);
   const eligibleFilter = scopedEmployeeId == null
     ? { employeeId: { in: eligible } }
     : { employeeId: scopedEmployeeId };
@@ -255,9 +314,13 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
     }),
     prisma.attendance.findMany({
       where: scopedWhere(tenantId, { ...eligibleFilter, date: { gte: period.from, lte: period.to } }),
-      select: { employeeId: true, status: true, work_mode: true },
+      select: { employeeId: true, status: true, work_mode: true, date: true },
     }),
   ]);
+
+  // TIMESHEET-ELIG-02 — rows past the person's employment end never count
+  // (Obaid's post-termination rows, if any survive, stay invisible).
+  rows = filterRowsByEmploymentSpan(rows, employmentEndByEmployee);
 
   const presentEmp = new Set();
   const wfhEmp = new Set();
@@ -371,18 +434,22 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
 export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
   const { start, end, label } = resolveMonth(month);
   const where = { date: { gte: start, lte: end } };
+  let gridSpanEnds = null; // TIMESHEET-ELIG-02 span caps (tenant-wide path only)
   const asNum = employeeId != null ? Number(employeeId) : null;
   if (asNum != null && Number.isFinite(asNum)) where.employeeId = asNum;
   else if (employeeId) where.employeeId = employeeId;
-  else
-    where.employeeId = {
-      in: (await eligibilityEmployeeIds(tenantId, start)).eligible,
-    };
+  else {
+    const { eligible, employmentEndByEmployee } = await eligibilityEmployeeIds(tenantId, start);
+    where.employeeId = { in: eligible };
+    gridSpanEnds = employmentEndByEmployee;
+  }
 
-  const rows = await prisma.attendance.findMany({
+  let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, where),
-    select: { date: true, status: true },
+    select: { date: true, status: true, employee: { select: { id: true, first_name: true, last_name: true, employee_code: true } } },
   });
+  // TIMESHEET-ELIG-02 — span-cap before daily aggregation.
+  rows = filterRowsByEmploymentSpan(rows, gridSpanEnds);
 
   const byDay = new Map();
   for (const r of rows) {
@@ -394,10 +461,22 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
       holiday: 0,
       onLeave: 0,
       total: 0,
+      absentees: [],
     };
     bucket.total += 1;
     if (PRESENT_STATUSES.includes(r.status)) bucket.present += 1;
-    else if (r.status === "ABSENT") bucket.absent += 1;
+    else if (r.status === "ABSENT") {
+      bucket.absent += 1;
+      // TIMESHEET-ABSENTEE-02 — per-day names for the heatmap tooltip
+      // (operator item 3): who was absent ON THIS DAY, ABSENT-only, same rule
+      // as the weekly tooltip and the KPI tile.
+      if (r.employee) {
+        bucket.absentees.push({
+          id: r.employee.id,
+          name: [r.employee.first_name, r.employee.last_name].filter(Boolean).join(" ") || r.employee.employee_code,
+        });
+      }
+    }
     else if (r.status === "WEEKLY_OFF") bucket.weekend += 1;
     else if (r.status === "HOLIDAY") bucket.holiday += 1;
     else if (r.status === "ON_LEAVE") bucket.onLeave += 1;
@@ -419,6 +498,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
       holiday: b?.holiday ?? 0,
       onLeave: b?.onLeave ?? 0,
       total: b?.total ?? 0,
+      absentees: b?.absentees ?? [],
       noData: !b,
     });
     cur.setUTCDate(cur.getUTCDate() + 1);
@@ -440,7 +520,7 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
   // night-shift population. A Sunday shift counted in the numerator with no
   // matching denominator, and everyone's rostered days off counted as days
   // they were expected in. Both errors flatter the number.
-  const rows = await prisma.attendance.findMany({
+  let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, {
       // HR-ATT-ELIG-01 — eligible employees only (see getTimesheetKpis).
       employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
@@ -448,6 +528,11 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
     }),
     select: { date: true, status: true, employee: { select: EMPLOYEE_SELECT } },
   });
+  // TIMESHEET-ELIG-02 — span-cap rows before any week math (see getTimesheetKpis).
+  rows = filterRowsByEmploymentSpan(
+    rows,
+    (await eligibilityEmployeeIds(tenantId, start)).employmentEndByEmployee,
+  );
 
   const out = weeks.map((w) => {
     const inWeek = rows.filter(
@@ -461,14 +546,17 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
     const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : 0;
     // UI-FIX-3 (2026-09-14) — hover tooltip lists the week's problem days by
     // name. UI-FIX-2026-09-15 (#9) — an "absentee" for the tooltip is anything
-    // that is NOT a working attendance verdict (ABSENT, MISSING_CHECKIN,
-    // MISSING_CHECKOUT). Listing only strict ABSENT made the tooltip say "No
-    // absentees this week" while the chart showed 98% — the gap WAS the
-    // missing rows, now surfaced by name. DISTINCT per employee: one person
-    // missing 3 days appears once, with the days missed.
+    // TIMESHEET-ABSENTEE-02 (operator item 2, 2026-09-16) — the tooltip lists
+    // STRICT ABSENT days only, the same rule the Absentees KPI tile uses. The
+    // previous "any problem status" source (MISSING_CHECKIN/MISSING_CHECKOUT
+    // included) listed Samina's checkout anomaly and Abdullah/Faiq/Shahzaib's
+    // regularization-pending days as "absentees" — those are anomalies an
+    // employee is already answering, not days the company owes nobody. The
+    // weekly percentage itself is untouched. DISTINCT per employee: one person
+    // absent 3 days appears once, with the days missed.
     const byEmployee = new Map();
     for (const r of inWeek) {
-      if (!ATTENDANCE_PROBLEM_STATUSES.has(r.status) || !r.employee) continue;
+      if (r.status !== "ABSENT" || !r.employee) continue;
       const entry = byEmployee.get(r.employee.id) ?? {
         id: r.employee.id,
         name: fullName(r.employee),
@@ -521,7 +609,7 @@ export async function getAbsenteeismTrend({ tenantId, month }) {
   // their absences were never plotted; and counting people who were on their
   // weekly off in the denominator dilutes the rate, because they were never
   // due in.
-  const rows = await prisma.attendance.findMany({
+  let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, {
       // HR-ATT-ELIG-01 — eligible employees only (see getTimesheetKpis).
       employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
@@ -529,6 +617,11 @@ export async function getAbsenteeismTrend({ tenantId, month }) {
     }),
     select: { employeeId: true, date: true, status: true },
   });
+  // TIMESHEET-ELIG-02 — span-cap before trend aggregation.
+  rows = filterRowsByEmploymentSpan(
+    rows,
+    (await eligibilityEmployeeIds(tenantId, start)).employmentEndByEmployee,
+  );
 
   // Per day: who was rostered, and who of them was absent.
   const rosteredByDay = new Map();
@@ -669,6 +762,7 @@ export async function listCheckInOuts({
   pageSize = 20,
 }) {
   const where = {};
+  let spanEnds = null; // TIMESHEET-ELIG-02 span caps (tenant-wide path only)
 
   const enumStatus = toEnumStatus(status);
   if (enumStatus) where.status = enumStatus;
@@ -705,17 +799,21 @@ export async function listCheckInOuts({
     const asNum = Number(employeeId);
     where.employeeId = Number.isFinite(asNum) && String(asNum) === String(employeeId).trim() ? asNum : employeeId;
   } else {
-    // HR-ATT-ELIG-01 — an explicit employeeId lookup (a profile drill-down)
-    // must always work even for a separated employee's history; the tenant-wide
-    // table shows eligible employees only, so separated people stop surfacing
-    // as absentees.
-    where.employeeId = { in: (await eligibilityEmployeeIds(tenantId, period.from)).eligible };
+    // HR-ATT-ELIG-01 + TIMESHEET-ELIG-02 — an explicit employeeId lookup (a
+    // profile drill-down) must always work even for a separated employee's
+    // history; the tenant-wide table shows eligible employees only, SPAN-CAPPED
+    // per day: Obaid's Sep 1–8 rows stay, any post-termination row never shows.
+    const { eligible, employmentEndByEmployee } = await eligibilityEmployeeIds(tenantId, period.from);
+    where.employeeId = { in: eligible };
+    spanEnds = employmentEndByEmployee;
   }
 
-  const records = await prisma.attendance.findMany({
+  let records = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, where),
     include: { employee: { select: EMPLOYEE_SELECT } },
   });
+  // TIMESHEET-ELIG-02 — enforce the employment span per row before pagination.
+  records = filterRowsByEmploymentSpan(records, spanEnds);
 
   // Build display rows.
   let rows = records.map((a) => {
@@ -807,3 +905,8 @@ export async function listCheckInOuts({
     period: { from: period.from.toISOString(), to: period.to.toISOString() },
   };
 }
+
+// Test seam — the eligibility core is internal by design (single source of
+// truth across KPIs, graphs and table), but its span rules are exactly what
+// must be unit-tested (TIMESHEET-ELIG-02).
+export const __test = { eligibilityEmployeeIds, filterRowsByEmploymentSpan };
