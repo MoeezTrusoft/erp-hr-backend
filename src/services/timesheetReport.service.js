@@ -305,18 +305,18 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
     ? { employeeId: { in: eligible } }
     : { employeeId: scopedEmployeeId };
 
-  const [totalEmployees, rows] = await Promise.all([
-    prisma.employee.count({
-      where: scopedEmployeeWhere(
-        tenantId,
-        scopedEmployeeId == null ? { id: { in: eligible } } : { id: scopedEmployeeId },
-      ),
-    }),
-    prisma.attendance.findMany({
-      where: scopedWhere(tenantId, { ...eligibleFilter, date: { gte: period.from, lte: period.to } }),
-      select: { employeeId: true, status: true, work_mode: true, date: true },
-    }),
-  ]);
+  // `rows` must be rebindable: TIMESHEET-ELIG-02 span-caps it in place below.
+  let rows;
+  const totalEmployees = await prisma.employee.count({
+    where: scopedEmployeeWhere(
+      tenantId,
+      scopedEmployeeId == null ? { id: { in: eligible } } : { id: scopedEmployeeId },
+    ),
+  });
+  rows = await prisma.attendance.findMany({
+    where: scopedWhere(tenantId, { ...eligibleFilter, date: { gte: period.from, lte: period.to } }),
+    select: { employeeId: true, status: true, work_mode: true, date: true },
+  });
 
   // TIMESHEET-ELIG-02 — rows past the person's employment end never count
   // (Obaid's post-termination rows, if any survive, stay invisible).
