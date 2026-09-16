@@ -764,11 +764,21 @@ export async function listCheckInOuts({
   const where = {};
   let spanEnds = null; // TIMESHEET-ELIG-02 span caps (tenant-wide path only)
 
+  // COLUMN-FILTERS-02 — an explicit `status` token is a positive match
+  // (status = ENUM). When `exclude` is also present, the two COMBINE by
+  // removing excluded statuses from the match set rather than fighting over
+  // the `status` field. The old merge was inverted: it wrote
+  // { not: MATCH, notIn: EXCLUDED }, which EXCLUDED the status the user
+  // asked for — the Status column filter and column search silently returned
+  // everything BUT the chosen status (e.g. "late" showed On-Time rows).
+  // Prisma needs `NOT: { status: { in: [...] } }` for "match enum, minus
+  // excluded set"; plain `notIn` alongside the positive `equals` is an
+  // unsatisfiable contradiction on a single field.
   const enumStatus = toEnumStatus(status);
   if (enumStatus) where.status = enumStatus;
 
-  // UI-FIX-2026-09-14 — server-side exclusion (see JSDoc). Applied as a Prisma
-  // `notIn` so pagination totals describe the visible set, not a superset.
+  // UI-FIX-2026-09-14 — server-side exclusion (see JSDoc). Applied so
+  // pagination totals describe the visible set, not a superset.
   if (exclude != null && String(exclude).trim() !== "") {
     const tokens = String(exclude)
       .split(",")
@@ -779,7 +789,14 @@ export async function listCheckInOuts({
         ? ["WEEKLY_OFF", "HOLIDAY", "ON_LEAVE"]
         : [toEnumStatus(t)].filter(Boolean),
     );
-    if (expanded.length) where.status = { ...(where.status ? { not: where.status } : {}), notIn: expanded };
+    if (expanded.length) {
+      if (enumStatus) {
+        // Positive match minus exclusions: NOT (status IN excluded).
+        where.NOT = { status: { in: expanded.filter((s) => s !== enumStatus) } };
+      } else {
+        where.status = { notIn: expanded };
+      }
+    }
   }
 
   // [HR-TIMESHEET-WINDOW-01] This used to apply a date filter ONLY when from/to
