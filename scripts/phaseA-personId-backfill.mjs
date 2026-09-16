@@ -30,6 +30,10 @@ const APPLY = process.argv.includes("--apply");
 // only after HR confirms the rows belong to one person.
 const DUAL_TENANT_HUMANS = [
   { first: "Shah Hassan", last: "Jafry", hrIds: [549, 555] }, // JOC 549 + BOC 555
+  // Operator-confirmed 2026-09-16: Akash works PECHS mornings (HomeVision row,
+  // device id 200 @ TTQ5261300360) and Dalmia afternoons (JOC row, 9012 @
+  // A8LN181960262). One human, two tenant rows — same person anchor.
+  { first: "Akash", last: "Nanu", hrIds: [160, 554] }, // HomeVision 160 + JOC 554
 ];
 
 const hrUrl = process.env.HR_DATABASE_URL;
