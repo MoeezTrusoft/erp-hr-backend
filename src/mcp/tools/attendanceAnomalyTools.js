@@ -13,7 +13,7 @@
 // HR-ATT-POLICY-01.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   getAnomalyFormDefaults,
@@ -35,6 +35,28 @@ function getCtx() {
   const ctx = mcpRequestContext.getStore();
   if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
+}
+
+// SELF-RAISE GATE (HR-ANOM-DEADLINE-02) — hr_attendance_anomaly_create is
+// strictly self-scoped: the applicant is the verified session employee (never
+// an argument), category/times are re-derived server-side, and the service
+// enforces the 2-working-day deadline, the duplicate-PENDING guard, and
+// employment-period validation BEFORE any write. The generic POST gate
+// (hr:attendance CREATE) therefore barred exactly the person this form exists
+// for — a regular employee only carries VIEW — while adding no protection the
+// service doesn't already enforce. This tool alone accepts VIEW-or-CREATE;
+// every other attendance write (ops raise with arbitrary employeeId, manual
+// punches, imports, corrections, day-mode overrides) keeps its strict gate.
+function assertSelfRaisePermission(permissions) {
+  const allowed =
+    hasPermission(permissions, "hr:attendance", "VIEW") ||
+    hasPermission(permissions, "hr:attendance", "CREATE");
+  if (!allowed) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:attendance:VIEW (self-service raise)"),
+      { status: 403 },
+    );
+  }
 }
 
 /** The acting employee, from the verified claim only. */
@@ -80,7 +102,7 @@ export function registerAttendanceAnomalyTools(server) {
     },
     withToolError(async ({ date, reason }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      assertSelfRaisePermission(permissions); // HR-ANOM-DEADLINE-02 — self-scoped raise
       return ok(
         await createAnomalyRequest({
           tenantId: user.tenantId,
