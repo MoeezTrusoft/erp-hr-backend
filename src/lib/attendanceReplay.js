@@ -299,7 +299,13 @@ export function sessioniseByRoster(
       return { timestamp: p.punchedAt, type: positional || device || "" };
     });
 
-    out.push({ day: startOfDay(new Date(`${key}T00:00:00`)), punches: shaped, corrections });
+    // HR-ATT-PRIMARY-DEVICE-01 — `punchSn` is the raw device serial per
+    // session punch, position-aligned with `punches` (the evaluator's shaped
+    // view drops everything but timestamp/type). The writer folds this into
+    // Attendance.primary_sn / Attendance.secondary_punches: primary punches
+    // are the normal case, punches on any other device are recorded
+    // explicitly rather than silently merged.
+    out.push({ day: startOfDay(new Date(`${key}T00:00:00`)), punches: shaped, corrections, punchSn: list.map((p) => p.sn ?? null) });
   }
 
   return out;
@@ -338,7 +344,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       employeeId: { not: null },
       punchedAt: { gte: windowStart, lte: windowEnd },
     },
-    select: { employeeId: true, punchedAt: true, status: true },
+    select: { employeeId: true, punchedAt: true, status: true, sn: true },
     orderBy: [{ employeeId: "asc" }, { punchedAt: "asc" }],
   });
 

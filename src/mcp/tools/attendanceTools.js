@@ -25,6 +25,11 @@ import {
 } from "../controllers/attendanceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { listDevicePunches } from "../../services/attendance.device-intake.service.js";
+import {
+  listEnrolments,
+  setPrimaryEnrolment,
+  clearPrimaryEnrolment,
+} from "../../services/deviceEnrolment.service.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
@@ -271,6 +276,54 @@ export function registerAttendanceTools(server) {
       const data = await listDevicePunches({ tenantId: user.tenantId, ...args });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_device_punches_list")
+  );
+
+  // ── DEVICE ENROLMENTS (HR-ATT-PRIMARY-DEVICE-01) ─────────────────────────
+
+  // List device enrolments, optionally filtered, with the primary flag.
+  server.tool(
+    "hr_attendance_enrolment_list",
+    "List device enrolments (device id, serial, primary flag, period), filterable by employee",
+    {
+      employeeId: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await listEnrolments({ tenantId: user.tenantId, employeeId: args.employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_enrolment_list")
+  );
+
+  // Flag one enrolment as the employee's PRIMARY biometric device. Punches on
+  // the primary are the normal case; punches on any other device are recorded
+  // explicitly on the day row (Attendance.primary_sn / secondary_punches).
+  server.tool(
+    "hr_attendance_enrolment_set_primary",
+    "Mark a device enrolment as the employee's PRIMARY biometric device (clears the flag on their other enrolments)",
+    {
+      enrolmentId: z.coerce.number().int().positive().describe("Enrolment id (employee_device_enrolments.id)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await setPrimaryEnrolment({ enrolmentId: args.enrolmentId, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_enrolment_set_primary")
+  );
+
+  server.tool(
+    "hr_attendance_enrolment_clear_primary",
+    "Clear the PRIMARY device flag on all of an employee's enrolments",
+    {
+      employeeId: z.coerce.number().int().positive(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await clearPrimaryEnrolment({ employeeId: args.employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_enrolment_clear_primary")
   );
 
   // ── TIME ENTRIES ─────────────────────────────────────────────────────────

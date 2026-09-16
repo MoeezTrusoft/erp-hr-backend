@@ -21,6 +21,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { replayTenant, dayKey } from "../lib/attendanceReplay.js";
 import { resolveWorkingDays } from "./workingDay.service.js";
 import { getAttendancePolicy } from "./attendancePolicyConfig.service.js";
+import { resolvePrimarySnAt } from "./deviceEnrolment.service.js";
 import { normalizeWorkMode } from "../lib/attendanceStatus.js";
 import logger from "../lib/logger.js";
 
@@ -120,7 +121,23 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     })).map((e) => e.id),
   );
 
-  for (const { employeeId, day, verdict, corrections } of shifts) {
+  // HR-ATT-PRIMARY-DEVICE-01 — the primary device serial per employee, resolved
+  // once per run at the window's midday (a mid-month re-enrolment yields the
+  // late-window primary for a whole-month sweep; the live per-day path
+  // re-evaluates each touched day individually, so the drift window is small
+  // and the next sweep corrects it). Employees with no SN-scoped primary stay
+  // absent from the map — their day rows keep primary_sn NULL (unmarked).
+  const dayBounds = { from: new Date(`${from}T00:00:00`), to: new Date(`${to}T23:59:59.999Z`) };
+  const primarySnByEmployee = new Map();
+  {
+    const mid = new Date((dayBounds.from.getTime() + dayBounds.to.getTime()) / 2);
+    for (const eid of aliveIds) {
+      const sn = await resolvePrimarySnAt(eid, mid);
+      if (sn) primarySnByEmployee.set(eid, sn);
+    }
+  }
+
+  for (const { employeeId, day, verdict, corrections, punchSn } of shifts) {
     if (!aliveIds.has(employeeId)) { summary.vanishedEmployee += 1; continue; }
     summary.byStatus[verdict.status] = (summary.byStatus[verdict.status] ?? 0) + 1;
     if (verdict.dayCredit == null) summary.held += 1;
@@ -160,10 +177,25 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
         : "device",
     };
 
+    // HR-ATT-PRIMARY-DEVICE-01 — device provenance of the day. Punches on the
+    // employee's primary device are the normal case; punches on any OTHER
+    // device are counted explicitly on the row (the raw punch store keeps the
+    // per-punch trace). No primary ⇒ the row stays unmarked (NULL/0), which is
+    // not the same as "all primary".
+    Object.assign(data, computePrimaryProvenance({
+      primarySn: primarySnByEmployee.get(employeeId) ?? null,
+      punchSn,
+    }));
+
     const same = existing
       && existing.status === data.status
       && existing.day_credit === data.day_credit
-      && Number(existing.total_hours ?? 0) === Number(data.total_hours ?? 0);
+      && Number(existing.total_hours ?? 0) === Number(data.total_hours ?? 0)
+      // Provenance participates in agreement only when a primary exists —
+      // otherwise unmarked rows (NULL/0) would be rewritten forever.
+      && (data.primary_sn == null
+        || (existing.primary_sn === data.primary_sn
+          && Number(existing.secondary_punches ?? 0) === Number(data.secondary_punches ?? 0)));
     if (same) {
       summary.unchanged += 1;
       // HR-ATT-ANOM-PERSIST-01b — unchanged rows still need their anomalies
@@ -210,6 +242,25 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     dryRun ? "attendance write (dry run)" : "attendance written from evaluator",
   );
   return summary;
+}
+
+/**
+ * HR-ATT-PRIMARY-DEVICE-01 — the day's device-provenance fields.
+ *
+ * Punches on the employee's primary device are the normal case and need no
+ * mark of their own; punches that arrived on any OTHER device are counted
+ * explicitly on the row (per-punch trace stays in the raw punch store, keyed
+ * by sn + deviceUserId). With no SN-scoped primary the row stays unmarked —
+ * NULL/0 means "no primary assigned", never "all punches were primary".
+ *
+ * Pure so the rule is testable without a database.
+ */
+export function computePrimaryProvenance({ primarySn, punchSn }) {
+  if (!primarySn) return {};
+  return {
+    primary_sn: primarySn,
+    secondary_punches: (punchSn || []).filter((sn) => sn && sn !== primarySn).length,
+  };
 }
 
 /**

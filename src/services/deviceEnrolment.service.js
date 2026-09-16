@@ -92,6 +92,112 @@ export async function resolveEnrolmentAt(deviceUserIds, at, sn) {
  *
  * @returns {Promise<(deviceUserId: string, at: Date) => object|undefined>}
  */
+/**
+ * HR-ATT-PRIMARY-DEVICE-01 — the employee's PRIMARY device serial at a moment.
+ *
+ * Returns null when no SN-scoped primary enrolment is in force (including
+ * "primary on a null-`sn` catch-all", which is not a specific device and can
+ * never be primary). The lookup is period-scoped exactly like enrolment
+ * resolution: the primary that matters is the one in force WHEN THE DAY
+ * HAPPENED, not whichever row is flagged today.
+ *
+ * `at` should be a stable instant of the day being marked (the writer passes
+ * midday) — a boundary midnight belongs to whichever period covers it, and
+ * midday never straddles a re-enrolment close (the close is day-before).
+ */
+export async function resolvePrimarySnAt(employeeId, at) {
+    const when = at instanceof Date ? at : new Date(at);
+    const rows = await mcpCtx.run({ system: true }, async () => {
+        return await prisma.employeeDeviceEnrolment.findMany({
+            where: { employeeId, isPrimary: true },
+            select: {
+                id: true, sn: true, effectiveFrom: true, effectiveTo: true,
+            },
+            orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
+        });
+    });
+    // Newest in-force SN-scoped period wins (overlapping primaries are bad
+    // data; deterministic rather than whichever row the DB returned first).
+    let best = null;
+    for (const r of rows) {
+        if (!r.sn) continue; // null-`sn` catch-alls are never a specific device
+        if (r.effectiveFrom > when) continue;
+        if (r.effectiveTo != null && r.effectiveTo < when) continue;
+        if (!best || r.effectiveFrom >= best.effectiveFrom) best = r;
+    }
+    return best?.sn ?? null;
+}
+
+/**
+ * HR-ATT-PRIMARY-DEVICE-01 — flag one enrolment as the employee's PRIMARY
+ * device (and clear the flag on the employee's other rows).
+ *
+ * The flag is per-employee, not per-tenant: Shah Hassan's JOC and BOC rows are
+ * one human at one machine, so his primary is the DEVICE, shared across the
+ * tenant split. Enrolments remain period-scoped — this sets the flag on the
+ * CURRENT period; history keeps whatever was true then.
+ */
+/**
+ * HR-ATT-PRIMARY-DEVICE-01 — list enrolments (optionally scoped to one tenant
+ * and/or employee) for the admin tooling.
+ */
+export async function listEnrolments({ tenantId, employeeId } = {}) {
+    return mcpCtx.run({ system: true }, async () => {
+        return await prisma.employeeDeviceEnrolment.findMany({
+            where: {
+                ...(tenantId ? { tenantId } : {}),
+                ...(employeeId != null ? { employeeId: Number(employeeId) } : {}),
+            },
+            select: {
+                id: true, tenantId: true, employeeId: true, deviceUserId: true,
+                sn: true, isPrimary: true, effectiveFrom: true, effectiveTo: true, note: true,
+            },
+            orderBy: [{ employeeId: "asc" }, { effectiveFrom: "desc" }],
+        });
+    });
+}
+
+export async function setPrimaryEnrolment({ enrolmentId, tenantId }) {
+    return mcpCtx.run({ system: true }, async () => {
+        const target = await prisma.employeeDeviceEnrolment.findUnique({
+            where: { id: enrolmentId },
+        });
+        if (!target) throw Object.assign(new Error("enrolment not found"), { status: 404 });
+        // Tenant guard: an HR admin acts inside their own tenant only.
+        if (tenantId && target.tenantId && target.tenantId !== tenantId) {
+            throw Object.assign(new Error("enrolment belongs to another tenant"), { status: 403 });
+        }
+        if (!target.sn) {
+            throw Object.assign(
+                new Error("a null-sn enrolment matches every device and cannot be primary"),
+                { status: 400 },
+            );
+        }
+        await prisma.employeeDeviceEnrolment.updateMany({
+            where: { employeeId: target.employeeId, id: { not: enrolmentId } },
+            data: { isPrimary: false },
+        });
+        return await prisma.employeeDeviceEnrolment.update({
+            where: { id: enrolmentId },
+            data: { isPrimary: true },
+        });
+    });
+}
+
+/**
+ * HR-ATT-PRIMARY-DEVICE-01 — clear the primary flag on ALL of an employee's
+ * enrolments (unmarked state: day rows stop recording provenance).
+ */
+export async function clearPrimaryEnrolment({ employeeId }) {
+    return mcpCtx.run({ system: true }, async () => {
+        const res = await prisma.employeeDeviceEnrolment.updateMany({
+            where: { employeeId },
+            data: { isPrimary: false },
+        });
+        return { employeeId, cleared: res.count };
+    });
+}
+
 export async function buildEnrolmentResolver(deviceUserIds, sn) {
     const ids = [...new Set(deviceUserIds)].filter(Boolean).map(String);
     if (!ids.length) return () => undefined;
