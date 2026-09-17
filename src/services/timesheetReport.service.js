@@ -555,7 +555,11 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
     const expectedDays = inWeek.filter(
       (r) => !NON_WORKING_STATUSES.includes(r.status) && !UNRESOLVED_MISSING_STATUSES.includes(r.status),
     ).length;
-    const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : 0;
+    // TS-WEEKLY-02 — a week with NO expected days is NO DATA, not 0%: a
+    // future week of the current month read as a 0% bar and implied catastrophic
+    // absence. null renders as no bar (FE adapter passes it through); 0% stays
+    // reserved for a real week where nobody made it in.
+    const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : null;
     // UI-FIX-3 (2026-09-14) — hover tooltip lists the week's problem days by
     // name. UI-FIX-2026-09-15 (#9) — an "absentee" for the tooltip is anything
     // TIMESHEET-ABSENTEE-02 (operator item 2, 2026-09-16) — the tooltip lists
@@ -844,9 +848,89 @@ export async function listCheckInOuts({
   // TIMESHEET-ELIG-02 — enforce the employment span per row before pagination.
   records = filterRowsByEmploymentSpan(records, spanEnds);
 
+  // TS-REQUEST-01 (operator item 9, 2026-09-17) — the Request column shows the
+  // anomaly-request LIFECYCLE per row: Un-submitted (an anomaly-status day with
+  // no form), Pending / Approved / Disapproved (form raised, decided or not).
+  // Actual punch times stay untouched — this column is ABOUT the request, it
+  // never re-grades the day. One batched fetch per window keeps the table at
+  // the same query count; rows carry the full form snapshot so the
+  // "View anomaly request" modal renders without a second round-trip.
+  const ANOMALY_DAY_STATUSES = new Set([
+    "LATE", "EARLY_CHECKOUT", "MISSING_CHECKIN", "MISSING_CHECKOUT", "HALF_DAY", "ABSENT",
+  ]);
+  const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
+  const rowEmployees = [...new Set(records.map((a) => a.employeeId).filter(Number.isFinite))];
+  let anomaliesForWindow = [];
+  if (rowEmployees.length) {
+    anomaliesForWindow = await prisma.attendanceAnomaly.findMany({
+      where: scopedWhere(tenantId, {
+        employeeId: { in: rowEmployees },
+        date: { gte: period.from, lte: period.to },
+      }),
+      select: {
+        id: true, employeeId: true, date: true, type: true, status: true,
+        reason: true, detail: true, fromTime: true, toTime: true,
+        createdAt: true, decidedAt: true, reviewNote: true, requestDeadline: true,
+        expectedTime: true, actualTime: true, positionSnapshot: true,
+        departmentSnapshot: true, applicationDate: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+  const anomalyByKey = new Map();
+  for (const an of anomaliesForWindow) {
+    if (an.date == null) continue; // window-wide forms don't attach to a day
+    const key = `${an.employeeId}:${dayKey(an.date)}`;
+    // orderBy desc ⇒ the first seen per key is the newest request.
+    if (!anomalyByKey.has(key)) anomalyByKey.set(key, an);
+  }
+  const approvalRows = anomalyByKey.size
+    ? await prisma.attendanceAnomalyApproval.findMany({
+        where: { anomalyId: { in: [...anomalyByKey.values()].map((a) => a.id) } },
+        select: { anomalyId: true, level: true, approverRole: true, decision: true, comments: true, decidedAt: true },
+        orderBy: [{ anomalyId: "asc" }, { level: "asc" }],
+      })
+    : [];
+  const decisionsByAnomaly = new Map();
+  for (const d of approvalRows) {
+    if (!decisionsByAnomaly.has(d.anomalyId)) decisionsByAnomaly.set(d.anomalyId, []);
+    decisionsByAnomaly.get(d.anomalyId).push({
+      level: d.level, approverRole: d.approverRole, decision: d.decision,
+      comments: d.comments, decidedAt: d.decidedAt,
+    });
+  }
+
   // Build display rows.
   let rows = records.map((a) => {
     const emp = a.employee;
+    // TS-REQUEST-01 — the row's anomaly-request lifecycle (null = nothing to
+    // show: a normal present day has no Request story).
+    let request = null;
+    const key = Number.isFinite(a.employeeId) ? `${a.employeeId}:${dayKey(a.date)}` : null;
+    const an = key ? anomalyByKey.get(key) : null;
+    if (an) {
+      request = {
+        anomalyId: an.id,
+        status: an.status, // PENDING | APPROVED | REJECTED
+        type: an.type,
+        submittedAt: an.createdAt,
+        decidedAt: an.decidedAt,
+        reason: an.reason,
+        detail: an.detail,
+        fromTime: an.fromTime,
+        toTime: an.toTime,
+        expectedTime: an.expectedTime,
+        actualTime: an.actualTime,
+        requestDeadline: an.requestDeadline,
+        applicationDate: an.applicationDate,
+        position: an.positionSnapshot,
+        department: an.departmentSnapshot,
+        reviewNote: an.reviewNote,
+        decisions: decisionsByAnomaly.get(an.id) ?? [],
+      };
+    } else if (ANOMALY_DAY_STATUSES.has(a.status)) {
+      request = { status: "UNSUBMITTED" };
+    }
     return {
       attendanceId: a.id,
       date: a.date,
@@ -857,6 +941,7 @@ export async function listCheckInOuts({
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
       workMode: a.work_mode ?? null,
+      request,
       // internal sort keys (not serialized to the FE)
       _checkIn: a.check_in ? a.check_in.getTime() : null,
       _checkOut: a.check_out ? a.check_out.getTime() : null,
