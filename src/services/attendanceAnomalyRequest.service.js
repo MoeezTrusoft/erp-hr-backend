@@ -247,7 +247,12 @@ export async function computeAnomalyDeadline({ employeeId, anomalyDate, type }) 
     const fallback = new Date(day.getTime() + (fromSelfInclusive ? 1 : 2) * 86_400_000);
     return { deadline: fallback, workingDaysUsed: null };
   }
-  return { deadline: new Date(`${candidates[1]}T23:59:59`), workingDaysUsed: [candidates[0], candidates[1]] };
+  // HR-ANOM-DEADLINE-PKT — the window closes at KARACHI midnight, not the
+  // server's UTC midnight. Operator ruling 2026-09-17: employees live in PKT,
+  // and a bare `T23:59:59` (parsed as UTC) closed the window at 04:59:59 AM
+  // PKT the next morning. The explicit +05:00 offset pins the close to
+  // 23:59:59 PKT = 18:59:59Z regardless of the host timezone.
+  return { deadline: new Date(`${candidates[1]}T23:59:59+05:00`), workingDaysUsed: [candidates[0], candidates[1]] };
 }
 
 /**

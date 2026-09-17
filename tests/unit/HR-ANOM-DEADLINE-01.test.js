@@ -106,6 +106,28 @@ describe('HR-ANOM-DEADLINE-01 computeAnomalyDeadline', () => {
     // Sat not working → day 1 is Mon 14, day 2 is Tue 15.
     expect(deadline.toISOString().slice(0, 10)).toBe('2026-09-15');
   });
+
+  it('HR-ANOM-DEADLINE-PKT: window closes at KARACHI midnight, not UTC midnight', async () => {
+    // LATE on Mon Sep 7 → deadline Tue Sep 8 23:59:59 PKT = 18:59:59Z.
+    // The old UTC build produced 2026-09-08T23:59:59.000Z, which lapsed at
+    // 04:59:59 AM PKT on Sep 9 — five hours into an employee's morning.
+    const { deadline } = await svc.computeAnomalyDeadline({
+      employeeId: 1, anomalyDate: new Date('2026-09-07T12:00:00Z'), type: 'LATE_CHECKIN',
+    });
+    expect(deadline.toISOString()).toBe('2026-09-08T18:59:59.000Z');
+  });
+
+  it('HR-ANOM-DEADLINE-PKT: at 23:00 PKT on deadline day the window is still open', async () => {
+    // Deadline Tue Sep 8 23:59:59 PKT = 18:59:59Z. Real clock (frozen just
+    // before) is 2026-09-08T17:00:00Z = 22:00 PKT — an employee filing late
+    // on deadline evening must get through. The UTC build would have the
+    // same verdict here, but 04:00 PKT Sep 9 (23:00Z Sep 8) must now REJECT.
+    const { deadline } = await svc.computeAnomalyDeadline({
+      employeeId: 1, anomalyDate: new Date('2026-09-07T12:00:00Z'), type: 'LATE_CHECKIN',
+    });
+    expect(new Date('2026-09-08T17:00:00Z').getTime()).toBeLessThan(deadline.getTime());
+    expect(new Date('2026-09-08T23:00:00Z').getTime()).toBeGreaterThan(deadline.getTime());
+  });
 });
 
 describe('HR-ANOM-DEADLINE-01 enforcement on submit', () => {
