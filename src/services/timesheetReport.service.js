@@ -34,6 +34,15 @@ const ATTENDANCE_PROBLEM_STATUSES = new Set(["ABSENT", "MISSING_CHECKIN", "MISSI
 // nobody was due. Same set the reconciliation report excludes, so the two
 // cannot drift apart.
 const NON_WORKING_STATUSES = ["WEEKLY_OFF", "HOLIDAY", "ON_LEAVE"];
+// TS-WEEKLY-01 (operator item 4, 2026-09-17) — a day with an UNRESOLVED
+// missing punch is neither present nor a verdict: it is a question the
+// employee is still answering. Counting it expected-but-not-present is what
+// held the weekly bars at 98/96% while the tooltip (ABSENT-only, same rule as
+// the Absentees KPI) showed zero absentees. Unresolved MISSING_* drops out of
+// BOTH numerator and denominator; a RESOLVED one (punch filled) is a normal
+// working day again. Same asymmetry the KPI tile already uses, so the bar and
+// the tile can never disagree.
+const UNRESOLVED_MISSING_STATUSES = ["MISSING_CHECKIN", "MISSING_CHECKOUT"];
 // work_mode values that count as remote/WFH.
 const REMOTE_MODES = ["Remote", "Hybrid"];
 
@@ -541,8 +550,11 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
     const presentDays = inWeek.filter((r) => PRESENT_STATUSES.includes(r.status)).length;
     // Expected = the days somebody was actually rostered in, straight from what
     // the day was recorded as. Same rule the reconciliation report uses, so the
-    // graph and the report cannot disagree.
-    const expectedDays = inWeek.filter((r) => !NON_WORKING_STATUSES.includes(r.status)).length;
+    // graph and the report cannot disagree. TS-WEEKLY-01: unresolved missing-
+    // punch days are excluded from the denominator (see the constant above).
+    const expectedDays = inWeek.filter(
+      (r) => !NON_WORKING_STATUSES.includes(r.status) && !UNRESOLVED_MISSING_STATUSES.includes(r.status),
+    ).length;
     const attendancePct = expectedDays > 0 ? Math.round((presentDays / expectedDays) * 100) : 0;
     // UI-FIX-3 (2026-09-14) — hover tooltip lists the week's problem days by
     // name. UI-FIX-2026-09-15 (#9) — an "absentee" for the tooltip is anything
