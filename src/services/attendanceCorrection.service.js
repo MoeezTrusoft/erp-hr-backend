@@ -42,12 +42,25 @@ function startOfDay(value) {
   return d;
 }
 
-/** "HH:MM" on the given day. A check-out earlier than the check-in rolls to the
- *  next day, so a night shift can be corrected without gymnastics. */
+/** HH:MM of a stored punch, for integrity-conflict messages. */
+function describeHhmm(value) {
+  const d = new Date(value);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** "HH:MM" (seconds tolerated and truncated) on the given day. A check-out
+ *  earlier than the check-in rolls to the next day, so a night shift can be
+ *  corrected without gymnastics.
+ *
+ *  TS-MANUAL-04 (operator item 2.4, 2026-09-17) — the API previously rejected
+ *  "15:00:23" with `Time must be HH:MM`, though browsers' time inputs and
+ *  several client flows emit HH:MM:SS. Minute granularity remains the storage
+ *  contract (status derivation and late-grace math are minute-based), so
+ *  seconds are ACCEPTED and truncated. */
 function atClock(day, hhmm, { after = null } = {}) {
   if (hhmm == null || hhmm === "") return null;
-  const m = String(hhmm).trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) throw badRequest(`Time must be HH:MM, got "${hhmm}"`);
+  const m = String(hhmm).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) throw badRequest(`Time must be HH:MM (HH:MM:SS tolerated), got "${hhmm}"`);
   const h = Number(m[1]);
   const mi = Number(m[2]);
   if (h > 23 || mi > 59) throw badRequest(`Time out of range: "${hhmm}"`);
@@ -101,6 +114,18 @@ export async function correctAttendanceDay({
   void status;
 
   const day = startOfDay(date);
+
+  // TS-MANUAL-01 (operator items 2.1 + 8, 2026-09-17) — attendance cannot be
+  // created or corrected for a FUTURE date. Day arithmetic uses the PKT
+  // calendar (+05:00, the workforce's clock — same convention as the anomaly
+  // request deadline): now + 5h then UTC start-of-day, so a 2 AM PKT entry
+  // for "today" is not rejected and a 10 PM entry for "tomorrow" is.
+  const pktToday = new Date(Date.now() + 5 * 3600 * 1000);
+  pktToday.setUTCHours(0, 0, 0, 0);
+  if (day.getTime() > pktToday.getTime()) {
+    throw badRequest("Attendance cannot be entered or corrected for a future date");
+  }
+
   const cin = atClock(day, checkIn);
   const cout = atClock(day, checkOut, { after: cin });
 
@@ -117,8 +142,36 @@ export async function correctAttendanceDay({
   const preExisting = await prisma.attendance.findFirst({
     where: { employeeId, date: day },
     orderBy: { id: "desc" },
-    select: { id: true, status: true, requires_regularization: true },
+    // TS-MANUAL-05 — the punch columns are part of the guard: without them the
+    // immutability check cannot see recorded times (the unit-mock returned the
+    // whole row and masked the gap). Read them explicitly.
+    select: {
+      id: true,
+      status: true,
+      requires_regularization: true,
+      check_in: true,
+      check_out: true,
+    },
   });
+
+  // TS-MANUAL-05 — COALESCE semantics: the effective punch set is the union of
+  // the recorded punches and the supplied ones. An omitted field falls back to
+  // the recorded value (and must not be nulled out at write time), so a
+  // checkout-only correction keeps the morning's device check-in intact.
+  const effCin = cin ?? (preExisting?.check_in ? new Date(preExisting.check_in) : null);
+  let effCout = cout ?? (preExisting?.check_out ? new Date(preExisting.check_out) : null);
+  if (effCin && effCout && effCout <= effCin) {
+    // Overnight shift (e.g. 22:00 → 07:00): a checkout-only correction arrives
+    // without the check-in context that atClock's rollover needs, so try the
+    // next-day interpretation before refusing.
+    const rolled = new Date(effCout);
+    rolled.setDate(rolled.getDate() + 1);
+    if (rolled > effCin) {
+      effCout = rolled;
+    } else {
+      throw badRequest("check-out must be after check-in");
+    }
+  }
 
   let manualEntryPendingApproval = false;
   if (preExisting) {
@@ -130,6 +183,28 @@ export async function correctAttendanceDay({
       throw badRequest(
         `Only days with a missing check-in or check-out can be corrected manually `
         + `(this day is ${preExisting.status}). Use the anomaly/leave workflow for other days.`,
+      );
+    }
+
+    // TS-MANUAL-05 (operator item 9, 2026-09-17) — PUNCH-TIME INTEGRITY:
+    // recorded biometric/machine punch timestamps are IMMUTABLE. A correction
+    // may only LOG a missing check-in or check-out; it must never alter a
+    // punch the device already recorded. A payload supplying a time where the
+    // day already carries one is rejected outright (same-time payloads are
+    // treated as idempotent no-ops for that field, not alterations).
+    const conflicts = [];
+    if (cin && preExisting.check_in) {
+      const same = new Date(preExisting.check_in).getTime() === cin.getTime();
+      if (!same) conflicts.push(`check-in ${describeHhmm(preExisting.check_in)} already recorded`);
+    }
+    if (cout && preExisting.check_out) {
+      const same = new Date(preExisting.check_out).getTime() === cout.getTime();
+      if (!same) conflicts.push(`check-out ${describeHhmm(preExisting.check_out)} already recorded`);
+    }
+    if (conflicts.length > 0) {
+      throw badRequest(
+        `Recorded punch times are immutable and cannot be altered — `
+        + `${conflicts.join(" and ")}. Corrections may only supply a MISSING punch.`,
       );
     }
   } else {
@@ -145,10 +220,18 @@ export async function correctAttendanceDay({
     manualEntryPendingApproval = true;
   }
 
-  const hours = cin && cout ? Number(((cout - cin) / 3600000).toFixed(2)) : null;
-  // Status is DERIVED from the supplied times, never asserted: a correction
+  // Hours/status derive from the MERGED punch set (supplied ∪ recorded) —
+  // a checkout-only correction grades against the device check-in too (#7).
+  const hours = effCin && effCout ? Number(((effCout - effCin) / 3600000).toFixed(2)) : null;
+  // Status is DERIVED from the merged times, never asserted: a correction
   // supplies the missing punch, it does not re-grade the day (#7).
-  const finalStatus = cin && cout ? "PRESENT" : cin ? "MISSING_CHECKOUT" : cout ? "MISSING_CHECKIN" : "ABSENT";
+  const finalStatus = effCin && effCout
+    ? "PRESENT"
+    : effCin
+      ? "MISSING_CHECKOUT"
+      : effCout
+        ? "MISSING_CHECKIN"
+        : "ABSENT";
   const mode = workMode !== undefined ? normalizeWorkMode(workMode) : undefined;
 
   const result = await tenantTransaction(prisma, async (tx) => {
@@ -158,8 +241,10 @@ export async function correctAttendanceDay({
     });
 
     const data = {
-      check_in: cin,
-      check_out: cout,
+      // Never write a null over a recorded punch: omitted fields stay absent
+      // from the update so COALESCE-with-DB semantics hold (TS-MANUAL-05).
+      ...(cin ? { check_in: cin } : {}),
+      ...(cout ? { check_out: cout } : {}),
       total_hours: hours,
       status: finalStatus,
       // A missing-punch correction is HR's final word on the day (#7) — it no

@@ -92,14 +92,18 @@ describe('HR-ATT-CORRECTION-02 corrections record before and after', () => {
         expect(note).toContain('PRESENT');          // the derived new one
     });
 
-    it('shows the previous times too, so a minute-level fix is visible', async () => {
+    it('shows the previous times too, so the untouched punch is visible', async () => {
         existingRow = {
             ...existingRow,
             status: 'MISSING_CHECKOUT',
             check_in: new Date('2026-08-14T09:41:00.000Z'),
         };
 
-        await correct();
+        // TS-MANUAL-05 (2026-09-17): the recorded 09:41 punch is IMMUTABLE —
+        // altering it to 09:00 is now a policy violation, so the visible-punch
+        // scenario is a checkout-only correction where 09:41 stands untouched
+        // and must still appear in the audit note.
+        await correct({ checkIn: null, checkOut: '18:00' });
 
         expect(logs[0].notes).toContain('09:41');
     });
