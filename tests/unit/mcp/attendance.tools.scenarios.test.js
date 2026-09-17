@@ -56,7 +56,9 @@ const TOOLS = [
   { name: 'hr_attendance_device_connectivity', ctrl: () => attendanceCtl.mcpDeviceConnectivity, gate: 'hr:attendance', action: 'CREATE', args: {}, skipTenantCheck: true },
   { name: 'hr_attendance_device_sync', ctrl: () => attendanceCtl.mcpDeviceSyncAttendance, gate: 'hr:attendance', action: 'CREATE', args: {} },
   { name: 'hr_attendance_daily_summary', ctrl: () => attendanceCtl.mcpAttendanceDailySummary, gate: 'hr:attendance', action: 'VIEW', args: { employeeId: 7 } },
-  { name: 'hr_timesheet_submit', ctrl: () => attendanceCtl.mcpCreateTimesheet, gate: 'hr:attendance', action: 'CREATE', args: { employeeId: 7 } },
+  // TS-SUBMIT-01 — the employee self-service draft-create registration moved
+  // OFF attendanceTools (duplicate name; hr_timesheet_create lives in
+  // timesheetTools.js), so its scenario row goes too.
   { name: 'hr_timesheet_approve', ctrl: () => attendanceCtl.mcpApproveTimesheet, gate: 'hr:attendance', action: 'CREATE', args: { timesheetId: '1' } },
   { name: 'hr_attendance_list', ctrl: () => attendanceCtl.mcpListAttendanceRecords, gate: 'hr:attendance', action: 'VIEW', args: { page: 1, pageSize: 10 } },
   { name: 'hr_attendance_get', ctrl: () => attendanceCtl.mcpGetAttendanceByEmployee, gate: 'hr:attendance', action: 'VIEW', args: { employeeId: 7 } },

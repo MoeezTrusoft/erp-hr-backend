@@ -125,6 +125,30 @@ export async function submitTimesheet({
   const existing = await isTimesheetSubmitted(tenantId, month);
   if (existing.submitted) {
     // Idempotent: a re-submit after edits must not stack duplicate vault rows.
+    // But the submission AUDIT row must exist for this run either way — the
+    // payroll blocker (HR-TP-03) reads it, and runs created out-of-band
+    // (e.g. before this gatekeeper existed) only become processable once HR
+    // submits their month through here. Write it when missing.
+    const audit = await prisma.payrollAuditLog.findFirst({
+      where: scopedWhere(tenantId, {
+        action: "TIMESHEET_SUBMITTED",
+        payrollRunId: existing.run.id,
+      }),
+      select: { id: true },
+    });
+    if (!audit) {
+      await prisma.payrollAuditLog.create({
+        data: {
+          tenantId: tenantId ?? null,
+          action: "TIMESHEET_SUBMITTED",
+          payrollRunId: existing.run.id,
+          details:
+            `Timesheet for ${month} submitted by ${
+              who.actorEmployeeId != null ? `employee ${who.actorEmployeeId}` : who.actorNote
+            }; linked to existing vault run #${existing.run.id} (PENDING)`,
+        },
+      });
+    }
     return {
       run: existing.run,
       created: false,

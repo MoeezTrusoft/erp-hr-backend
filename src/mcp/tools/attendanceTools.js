@@ -189,21 +189,11 @@ export function registerAttendanceTools(server) {
     })
   );
 
-  server.tool(
-    "hr_timesheet_submit",
-    "Create a timesheet (status DRAFT) for the calling employee over a pay period. Hours are derived server-side from the period's unassigned time entries (create those first via hr_time_entry_create).",
-    {
-      period_start: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the pay period"),
-      period_end: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive end of the pay period"),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      if (!user.employeeId) throw Object.assign(new Error("No employeeId in session"), { status: 400 });
-      const data = await mcpCreateTimesheet(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
+  // TS-SUBMIT-01 — the old "hr_timesheet_submit" (employee self-service DRAFT
+  // create) is GONE: the name now belongs to the HR Submit-Timesheet
+  // GATEKEEPER (timesheetReportTools.js). Draft creation stays on
+  // hr_timesheet_create (timesheetTools.js) — this duplicate registered a
+  // second create path that no FE called with this arg shape.
 
   server.tool(
     "hr_timesheet_approve",

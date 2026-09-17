@@ -1785,6 +1785,30 @@ export const approvePayrollRun = async (id, approverId, tenantId) => {
     throw new Error('HR-2011 self-approval forbidden: the approver must be distinct from the processor (same employee)');
   }
 
+  // TS-APPROVAL-MATRIX-01 (operator item 3.3, 2026-09-17) — the batch routes
+  // down the approval MATRIX: the approving employee must be the resolved
+  // approver of SOME ACTIVE level (lowest level first is the natural chain,
+  // but the operator's gate is "a designated approver", so any level match
+  // passes here; level-ordered multi-signature remains a future extension
+  // once HR populates multiple levels). No matrix rows configured → approval
+  // stays possible (legacy tenants must not be bricked), which the audit row
+  // records explicitly.
+  const matrix = await prisma.payrollApprovalMatrix.findMany({
+    where: withTenant(tenantId, { status: 'ACTIVE' }),
+    select: { level: true, approverId: true, role: true },
+    orderBy: { level: 'asc' },
+  });
+  if (matrix.length > 0) {
+    const designated = matrix.filter((lvl) => lvl.approverId != null);
+    const isDesignated = designated.some((lvl) => lvl.approverId === approver);
+    if (!isDesignated) {
+      throw new Error(
+        'HR-2013 approver is not a designated approver in the approval matrix '
+        + `(${designated.length} of ${matrix.length} levels have a resolved approver)`,
+      );
+    }
+  }
+
   await prisma.payrollRun.updateMany({
     where: withTenant(tenantId, { id }),
     data: { status: 'APPROVED', approvedBy: approver, approvedAt: new Date() }
@@ -1797,7 +1821,7 @@ export const approvePayrollRun = async (id, approverId, tenantId) => {
       // The approver id is recorded in approvedBy on the run; we keep it out of
       // the audit row's employeeId FK column (which references Employee) so the
       // audit write never couples to whether the actor is a payroll Employee.
-      details: `Payroll run approved by employee ${approver} (processor was ${payrollRun.processedBy ?? 'unknown'})`,
+      details: `Payroll run approved by employee ${approver} (processor was ${payrollRun.processedBy ?? 'unknown'})${matrix.length > 0 ? '; approval-matrix enforced' : '; no approval matrix configured'}`,
       payrollRunId: id
     }
   });
