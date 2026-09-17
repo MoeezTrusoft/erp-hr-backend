@@ -14,7 +14,12 @@ import {
   getAbsenteeismTrend,
   listCheckInOuts,
 } from "../../services/timesheetReport.service.js";
+import {
+  isTimesheetSubmitted,
+  submitTimesheet,
+} from "../../services/timesheetSubmission.service.js";
 import { buildMonthlyReconciliation } from "../../services/attendanceReconciliation.service.js";
+import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -130,5 +135,52 @@ export function registerTimesheetReportTools(server) {
       const data = await buildMonthlyReconciliation({ tenantId: user.tenantId, from, to });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_reconciliation")
+  );
+
+  // ── TS-SUBMIT-01 (operator item 3, 2026-09-17) — the Submit-Timesheet ─────
+  // gatekeeper pair. Status is a read (any attendance viewer — the Submit
+  // button greys itself from it); submit is a WRITE gated on PUT hr:attendance
+  // (HR/admin), enforcing: attendance cycle locked (HR force override allowed,
+  // audited) + ZERO unresolved anomaly requests (no override), then activating
+  // the month's PENDING Payroll Vault run.
+  server.tool(
+    "hr_timesheet_submission_status",
+    "Submission state of a month's timesheet: submitted or not, the vault run it activated, the unresolved anomaly count, and whether the attendance cutoff has passed.",
+    {
+      month: z.string().regex(/^\d{4}-\d{2}$/).describe("Month as YYYY-MM."),
+    },
+    withToolError(async ({ month }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const state = await isTimesheetSubmitted(user.tenantId, month);
+      return { content: [{ type: "text", text: JSON.stringify(state) }] };
+    }, "hr_timesheet_submission_status")
+  );
+
+  server.tool(
+    "hr_timesheet_submit",
+    "Submit the month's timesheet — the payroll gatekeeper. Gates: attendance cycle locked (force override = audited HR discretion) and zero unresolved anomaly requests. Effect: the month's payroll run request is activated in the Payroll Vault as PENDING.",
+    {
+      month: z.string().regex(/^\d{4}-\d{2}$/).describe("Month as YYYY-MM."),
+      force: z
+        .boolean()
+        .optional()
+        .describe("HR early-submission override for the attendance-lock gate only. Recorded in the audit trail. Never bypasses the unresolved-anomalies gate."),
+    },
+    withToolError(async ({ month, force = false }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      // HR/admin logins with no Employee row still submit (audit attributes by
+      // email note); an employee-linked login attributes by Employee id.
+      const actorEmployeeId = await resolveActingEmployeeId({ user, tenantId: user.tenantId });
+      const data = await submitTimesheet({
+        tenantId: user.tenantId,
+        month,
+        force: Boolean(force),
+        actorEmployeeId,
+        actorNote: user.email ?? `rbac-user-${user.id ?? "unknown"}`,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_timesheet_submit")
   );
 }

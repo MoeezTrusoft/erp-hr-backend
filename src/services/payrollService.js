@@ -1211,6 +1211,26 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         throw new Error(`Payroll run cannot be processed from ${payrollRun.status} status`);
     }
 
+    // TS-SUBMIT-01 (operator item 3, 2026-09-17) — submitting the timesheet is
+    // a MANDATORY BLOCKER: payroll cannot be initiated for the month until HR
+    // has submitted the timesheet (the gatekeeper enforces lock + zero
+    // unresolved anomalies, then activates the vault run). Every run created
+    // BY the gatekeeper carries the submission audit row, so a run whose month
+    // has no submission was created out-of-band — refuse it.
+    {
+        const month = `${payrollRun.periodStart.getUTCFullYear()}-${String(payrollRun.periodStart.getUTCMonth() + 1).padStart(2, '0')}`;
+        const submission = await prisma.payrollAuditLog.findFirst({
+            where: withTenant(tenantId, {
+                action: 'TIMESHEET_SUBMITTED',
+                details: { contains: month },
+            }),
+            select: { id: true },
+        });
+        if (!submission) {
+            throw new Error(`HR-TP-03 timesheet for ${month} has not been submitted — submit the timesheet before running payroll (operator workflow 2026-09-17)`);
+        }
+    }
+
     // Update status to PROCESSING (scoped: updateMany so the tenant predicate
     // applies — a cross-tenant id would touch zero rows). Stamp processedBy so
     // the approver can be enforced as a DISTINCT employee at finalize time.

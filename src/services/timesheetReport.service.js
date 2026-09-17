@@ -185,7 +185,9 @@ function parseDate(raw) {
 }
 
 // Resolve a [from,to] window. Defaults to the current calendar month.
-function resolvePeriod(from, to) {
+// Exported for timesheetSubmission.service (TS-SUBMIT-01) so the submission
+// window and every report window are computed by the same rule.
+export function resolvePeriod(from, to) {
   const now = new Date();
   const parsedFrom = parseDate(from);
   const parsedTo = parseDate(to);
