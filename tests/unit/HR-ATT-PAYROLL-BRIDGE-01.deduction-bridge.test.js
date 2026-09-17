@@ -249,8 +249,9 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
         });
         const line = slip.deductions.find((d) => d.description.startsWith('Attendance:'));
         expect(line).toBeDefined();
-        // 260,000 over a 31-day August ⇒ 8387.09/day. Previously 260,000/26.
-        expect(line.amount).toBe('8387.0900');
+        // 260,000 over a 31-day August ⇒ 8387.09/day → WHOLE RUPEES (N-22,
+        // ruling 2026-09-17). Previously 260,000/26.
+        expect(line.amount).toBe('8387.0000');
         expect(line.description).toBe('Attendance: LATE (3 occurrences = 1 day)');
     });
 
@@ -261,8 +262,8 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
             ],
         });
         const line = slip.deductions.find((d) => d.description.startsWith('Attendance:'));
-        // half of 8387.09
-        expect(line.amount).toBe('4193.5400');
+        // half of 8387.09 → 4193.54 → 4194 whole rupees (N-22)
+        expect(line.amount).toBe('4194.0000');
         expect(line.description).toBe('Attendance: MISSED_PUNCH (3 occurrences = 0.5 days)');
     });
 
@@ -276,7 +277,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
 
     it('does not crash on a fractional LWP day (BigInt(1.5) used to throw)', () => {
         const line = build({ lwpDays: 0.5 }).deductions.find((d) => d.description.startsWith('LWP'));
-        expect(line.amount).toBe('4193.5400');
+        expect(line.amount).toBe('4194.0000');
     });
 
     it('adds nothing when there are no deduction lines', () => {

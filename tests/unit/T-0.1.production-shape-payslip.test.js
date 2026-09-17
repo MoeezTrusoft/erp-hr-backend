@@ -23,6 +23,7 @@
 import { describe, it, expect } from '@jest/globals';
 import {
     buildPayslipFromInputs,
+    roundToWholeMajorHalfUp,
 } from '../../src/services/payrollService.js';
 import { fromMajor } from '../../src/lib/money.js';
 
@@ -82,8 +83,9 @@ const anomalies = [
 //   total = 3.5 unpaid days out of 30 calendar days, charged on 25,000 GROSS.
 const EXPECTED_ABSENCE_DAYS = 3.5;
 // Integer-exact: 25000 (GROSS major) → 2500000 minor × 350 hundredths ÷ (100 × 30
-// calendar days) = 291666 minor = 2916.66 (truncated at the paisa, never drifted).
-const EXPECTED_ABSENCE_AMOUNT = 2916.66;
+// calendar days) = 291666 minor = 2916.66 — then rounded to WHOLE RUPEES at
+// persistence (N-22, operator ruling 2026-09-17): 2917.
+const EXPECTED_ABSENCE_AMOUNT = 2917;
 
 const bridges = {
     overtimeLines: [],
@@ -122,7 +124,7 @@ describe('T-0.1 production-shaped payslip (absence pricing N-01)', () => {
         const slip = build({ absenceRecoveryEnabled: true, deductionBasis: 'GROSS' });
         const lines = slip.deductions.filter((d) => d.code === 'ABSENCE_RECOVERY');
         expect(lines).toHaveLength(1);
-        expect(Number(lines[0].amount)).toBeCloseTo(EXPECTED_ABSENCE_AMOUNT, 2);
+        expect(Number(lines[0].amount)).toBe(EXPECTED_ABSENCE_AMOUNT);
         expect(lines[0].description).toContain('3.5');
     });
 
@@ -162,8 +164,8 @@ describe('T-0.1 production-shaped payslip (absence pricing N-01)', () => {
     it('FLAG ON: deductionBasis BASIC charges against base salary only', () => {
         const slip = build({ absenceRecoveryEnabled: true, deductionBasis: 'BASIC' });
         const line = slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY');
-        const expected = (11250 * EXPECTED_ABSENCE_DAYS) / 30;
-        expect(Number(line.amount)).toBeCloseTo(expected, 2);
+        const expected = roundToWholeMajorHalfUp(BigInt(Math.round((11250 * EXPECTED_ABSENCE_DAYS * 100) / 30)));
+        expect(Number(line.amount)).toBe(Number(expected) / 100);
     });
 
     it('FLAG ON: net reconciles and the absence line lands in totalDeductions', () => {

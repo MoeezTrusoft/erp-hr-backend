@@ -100,8 +100,10 @@ describe('HR-PAYROLL-EMPLOYMENT-PERIOD-02 zero proration', () => {
             [allowance('House Rent', 6000)],
         );
 
-        // (30000 base + 6000 allowance) × 19/31
-        expect(gross(slip)).toBeCloseTo(36000 * (19 / 31), 0);
+        // (30000 base + 6000 allowance) × 19/31 → WHOLE RUPEES at persistence
+        // (N-22, ruling 2026-09-17): base 18387.10 → 18387, allowance
+        // 3677.42 → 3677; gross reports the sum of the ROUNDED lines = 22064.
+        expect(gross(slip)).toBe(22064);
     });
 
     it('does not double-prorate a rate-based allowance', () => {

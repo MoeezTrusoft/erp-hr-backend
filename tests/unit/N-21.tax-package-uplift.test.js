@@ -43,7 +43,8 @@ describe('N-21 — tax base uses the contracted package for prorated employees',
         });
         // Base prorated: 60,000 × 19/31 = 36,774.19 — under the exempt floor,
         // yet tax is on the 60,000 package: 1% × (60,000 − 50,000) = 100.
-        expect(Number(slip.earnings[0].amount)).toBeCloseTo(36774.18, 1);
+        // 36774.18 proration → WHOLE RUPEES at persistence (N-22, ruling 2026-09-17)
+        expect(Number(slip.earnings[0].amount)).toBe(36774);
         expect(Number(taxLine(slip).amount)).toBe(100);
     });
 

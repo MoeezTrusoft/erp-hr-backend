@@ -29,6 +29,7 @@ import {
     computeProgressiveTaxMinor,
     computeRuleVersion,
     buildPayslipFromInputs,
+    roundToWholeMajorHalfUp,
 } from '../../src/services/payrollService.js';
 import { allocateEvenly, fromMajor, mulRate, sum } from '../../src/lib/money.js';
 
@@ -147,9 +148,16 @@ describe('HR-02 deterministic versioned payroll engine — golden file', () => {
         expect(taxLine).toBeGreaterThan(0n);
         expect(taxLine).not.toBe(legacyFlat);
 
-        // And exactly the progressive figure computed by the engine helper.
+        // And exactly the progressive figure computed by the engine helper,
+        // rounded to WHOLE major units at persistence (N-22). The engine's
+        // order: tax the PAISA-EXACT base first (the pre-rounding gross:
+        // base 6543.21 + housing 10% of that), THEN round the resulting line
+        // once. Reconstructing from the rounded gross would be one rupee off
+        // (7197.00 vs 7197.53 taxable base).
         const sorted = selectEffectiveTaxRates(taxRateRows, { countryCode: 'US', asOf: ASOF });
-        const expectedTaxMinor = computeProgressiveTaxMinor(grossMinor, sorted);
+        const baseMinor = fromMajor(employmentTerm.baseSalary);
+        const exactGrossMinor = baseMinor + mulRate(baseMinor, '0.1');
+        const expectedTaxMinor = roundToWholeMajorHalfUp(computeProgressiveTaxMinor(exactGrossMinor, sorted));
         expect(taxLine).toBe(expectedTaxMinor);
     });
 

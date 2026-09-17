@@ -410,8 +410,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
  * @returns {{ employeeId, ruleVersion, ratesEffectiveAt, grossAmount,
  *             totalDeductions, netAmount, earnings:[], deductions:[] }}
  */
-export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf, bridges = {}, ruleConfig = {} }) => {
-    const at = asOf || payrollRun?.periodEnd;
+export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf, bridges = {}, ruleConfig = {} }) => {    const at = asOf || payrollRun?.periodEnd;
     const earnings = [];
     const deductions = [];
     const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
@@ -898,13 +897,42 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     const totalDeductionsMinor = money.sum(deductions.map((d) => money.decimalToMinor(d.amount, currency)));
     const netMinor = money.sub(grossMinor, totalDeductionsMinor);
 
+    // N-22 — WHOLE-RUPEE PERSISTENCE (operator ruling 2026-09-17): every line
+    // amount is rounded HALF-UP to a WHOLE major unit (PKR rupee) at the engine
+    // boundary, and the headers are RECOMPUTED as the exact sum of the rounded
+    // lines. A payslip therefore always foots in whole rupees:
+    //   Σ(earnings) == grossAmount, Σ(deductions) == totalDeductions,
+    //   grossAmount − totalDeductions == netAmount.
+    // The per-day pricing and proration arithmetic above still runs paisa-exact
+    // (that precision is what prices a deducted day correctly); rounding happens
+    // ONCE, here, at persistence — never inside the accumulation, so repeated
+    // re-processes are stable (round-once, not round-per-step). Figures that
+    // were already whole rupees (Qasim's 13,000 tax, flat salary lines) are
+    // bit-identical before and after.
+    const roundToWholeMajor = roundToWholeMajorHalfUp;
+    for (const line of earnings) {
+        line.amount = money.minorToDecimal(
+            roundToWholeMajor(money.decimalToMinor(line.amount, currency)),
+            currency,
+        );
+    }
+    for (const line of deductions) {
+        line.amount = money.minorToDecimal(
+            roundToWholeMajor(money.decimalToMinor(line.amount, currency)),
+            currency,
+        );
+    }
+    const grossMinorRounded = money.sum(earnings.map((e) => money.decimalToMinor(e.amount, currency)));
+    const totalDeductionsMinorRounded = money.sum(deductions.map((d) => money.decimalToMinor(d.amount, currency)));
+    const netMinorRounded = money.sub(grossMinorRounded, totalDeductionsMinorRounded);
+
     return {
         employeeId: employee?.id ?? null,
         ruleVersion,
         ratesEffectiveAt: new Date(at).toISOString(),
-        grossAmount: money.minorToDecimal(grossMinor, currency),
-        totalDeductions: money.minorToDecimal(totalDeductionsMinor, currency),
-        netAmount: money.minorToDecimal(netMinor, currency),
+        grossAmount: money.minorToDecimal(grossMinorRounded, currency),
+        totalDeductions: money.minorToDecimal(totalDeductionsMinorRounded, currency),
+        netAmount: money.minorToDecimal(netMinorRounded, currency),
         prorationFactor: prorationFactor >= 1_000_000n ? 1.0 : Number(prorationFactor) / 1_000_000,
         earnings,
         deductions,
@@ -912,6 +940,16 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
 };
 
 const isoDate = (d) => new Date(d).toISOString().split('T')[0];
+
+// N-22 — WHOLE-RUPEE rounding: half-up to a whole MAJOR unit in minor-space
+// (PKR rupee = 100 minor). Pure so tests can reproduce the persistence order:
+// compute paisa-exact FIRST (tax the exact base), then round the line ONCE.
+export const roundToWholeMajorHalfUp = (raw) => {
+    const value = BigInt(raw);
+    const sign = value < 0n ? -1n : 1n;
+    const abs = value < 0n ? -value : value;
+    return sign * ((abs + 50n) / 100n) * 100n;
+};
 
 // T-1.2 / N-02 — repayment PLANNING for the loan bridge, extracted so both
 // write branches (fresh create + re-process) share one decision. Production

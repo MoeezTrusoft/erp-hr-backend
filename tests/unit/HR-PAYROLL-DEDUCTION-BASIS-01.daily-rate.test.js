@@ -61,18 +61,18 @@ const lwpAmount = (slip) =>
 
 describe('HR-PAYROLL-DEDUCTION-BASIS-01 one day costs salary / calendar days', () => {
     it('defaults to GROSS: a day in August is total salary / 31', () => {
-        // 100,000 / 31 = 3225.8064...
-        expect(lwpAmount(build())).toBeCloseTo(3225.81, 1);
+        // 100,000 / 31 = 3225.8064... → WHOLE RUPEES (N-22, ruling 2026-09-17)
+        expect(lwpAmount(build())).toBe(3226);
     });
 
     it('uses the calendar length of the period, so February differs from August', () => {
         // 100,000 / 28 = 3571.43 — a monthly salary buys a month, however long.
-        expect(lwpAmount(build({ payrollRun: FEBRUARY }))).toBeCloseTo(3571.43, 1);
+        expect(lwpAmount(build({ payrollRun: FEBRUARY }))).toBe(3571);
     });
 
     it('BASIC charges against base salary alone', () => {
-        // 45,000 / 31 = 1451.61
-        expect(lwpAmount(build({ ruleConfig: { deductionBasis: 'BASIC' } }))).toBeCloseTo(1451.61, 1);
+        // 45,000 / 31 = 1451.61 → 1452 whole rupees (N-22)
+        expect(lwpAmount(build({ ruleConfig: { deductionBasis: 'BASIC' } }))).toBe(1452);
     });
 
     it('GROSS is more than twice BASIC under a 45% basic structure', () => {
@@ -83,7 +83,7 @@ describe('HR-PAYROLL-DEDUCTION-BASIS-01 one day costs salary / calendar days', (
     });
 
     it('an unknown basis falls back to GROSS rather than silently under-deducting', () => {
-        expect(lwpAmount(build({ ruleConfig: { deductionBasis: 'NONSENSE' } }))).toBeCloseTo(3225.81, 1);
+        expect(lwpAmount(build({ ruleConfig: { deductionBasis: 'NONSENSE' } }))).toBe(3226);
     });
 
     it('overtime does NOT inflate the daily rate', () => {
@@ -98,7 +98,7 @@ describe('HR-PAYROLL-DEDUCTION-BASIS-01 one day costs salary / calendar days', (
             bridges: { lwpDays: 1, overtimeLines: [{ hours: 10, rate: 1.5, date: '2026-08-10' }] },
         });
 
-        expect(lwpAmount(withOt)).toBeCloseTo(3225.81, 1);
+        expect(lwpAmount(withOt)).toBe(3226);
     });
 
     it('counts calendar days, not milliseconds — an end-of-day periodEnd is still 31', () => {
@@ -109,10 +109,11 @@ describe('HR-PAYROLL-DEDUCTION-BASIS-01 one day costs salary / calendar days', (
             ...AUGUST,
             periodEnd: new Date('2026-08-31T23:59:59.999Z'),
         };
-        expect(lwpAmount(build({ payrollRun: endOfDay }))).toBeCloseTo(3225.81, 1);
+        expect(lwpAmount(build({ payrollRun: endOfDay }))).toBe(3226);
     });
 
     it('half a day costs half', () => {
-        expect(lwpAmount(build({ lwpDays: 0.5 }))).toBeCloseTo(1612.9, 1);
+        // 3225.8064 / 2 = 1612.9 → 1613 whole rupees (N-22)
+        expect(lwpAmount(build({ lwpDays: 0.5 }))).toBe(1613);
     });
 });
