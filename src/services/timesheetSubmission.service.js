@@ -27,15 +27,18 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { AppError } from "../utils/AppError.js";
 import { logAction } from "../utils/logs.js";
-import { resolvePeriod as resolveReportPeriod } from "./timesheetReport.service.js";
 
 const PENDING_ANOMALY_STATUSES = ["PENDING"];
 
 /** The month window a submission covers (payroll period = calendar month). */
 function submissionWindow(month) {
-  // resolvePeriod(from, to) returns { from, to, label }; the month window is
-  // the report service's default-window rule (1st..last calendar day).
-  const { from, to } = resolveReportPeriod(`${month}-01`, null);
+  // Deliberately NOT resolvePeriod: its null-`to` default is the CURRENT
+  // calendar month's end, which bled e.g. August's window into Sep 30 and
+  // matched the WRONG month's run. A submission window is exactly
+  // month-start..month-end of the requested month, on the UTC calendar.
+  const [y, m] = String(month).split("-").map(Number);
+  const from = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0, 0));
+  const to = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
   return { from, to };
 }
 
