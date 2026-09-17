@@ -105,4 +105,15 @@ describe('TS-WEEKLY-01 — weekly % agrees with the ABSENT-only tooltip', () => 
     expect(weeks[0].attendancePct).toBe(100);
     expect(weeks[0].absentees).toHaveLength(0);
   });
+
+  it('emits null (no data) for a week with no expected days — future weeks are not 0%', async () => {
+    // TS-WEEKLY-02: a future week of the current month must not read as a 0%
+    // bar; it is no data, rendered as no bar.
+    monthlyRows = [
+      { date: DAY('2026-09-01'), status: 'PRESENT', employee: emp(1) },
+    ];
+    const { weeks } = await getAttendanceSummaryWeekly({ tenantId: TENANT, month: '2026-09' });
+    const futureWeek = weeks[weeks.length - 1]; // Week 5 of Sept 2026 is future
+    expect(futureWeek.attendancePct).toBeNull();
+  });
 });
