@@ -48,7 +48,7 @@ export async function isTimesheetSubmitted(tenantId, month) {
       periodEnd: { gte: from, lte: to },
       status: { notIn: ["CANCELLED", "FAILED"] },
     }),
-    select: { id: true, status: true, createdAt: true },
+    select: { id: true, status: true, periodStart: true, periodEnd: true },
   });
   return run ? { submitted: true, run } : { submitted: false, run: null };
 }
