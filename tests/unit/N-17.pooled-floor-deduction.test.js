@@ -72,6 +72,16 @@ describe('N-17 POOLED_FLOOR deduction mode (D1)', () => {
         expect(days(slip)).toBeCloseTo(DAY_MINOR / 100, 0);
     });
 
+    it('direct mode still charges three missing punches through the shared 3:1 rule', () => {
+        const attendance = [
+            { date: new Date('2026-08-03T00:00:00.000Z'), status: 'MISSING_CHECKIN', day_credit: null },
+            { date: new Date('2026-08-10T00:00:00.000Z'), status: 'MISSING_CHECKOUT', day_credit: null },
+            { date: new Date('2026-08-17T00:00:00.000Z'), status: 'MISSING_CHECKIN', day_credit: null },
+        ];
+        const slip = build({ attendance, ruleConfig: { deductionBasis: 'POOLED_FLOOR_DIRECT', absenceRecoveryEnabled: false } });
+        expect(days(slip)).toBeCloseTo(DAY_MINOR / 100, 0);
+    });
+
     it('2 lates alone = 0 days (operator: "2 days late = 0")', () => {
         const attendance = [late('03'), late('10')];
         const slip = build({ attendance, ruleConfig: { deductionBasis: 'POOLED_FLOOR' } });

@@ -704,8 +704,8 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         const POOLABLE_RULE_KEYS = new Set(['LATE', 'EARLY_CHECKOUT', 'MISSING_CHECKIN', 'MISSING_CHECKOUT', 'MISSING_PUNCH']);
         let pooledRawHundredths = 0n;
         for (const line of bridges.attendanceDeductionLines || []) {
-            if ((POOLED_FLOOR || POOLED_FLOOR_DIRECT) && POOLABLE_RULE_KEYS.has(line?.ruleKey)) {
-                if (POOLED_FLOOR_DIRECT && line?.ruleKey !== 'LATE') continue; // N-20: day-loss prices via credit
+            const poolThisLine = POOLED_FLOOR || (POOLED_FLOOR_DIRECT && line?.ruleKey === 'LATE');
+            if (poolThisLine && POOLABLE_RULE_KEYS.has(line?.ruleKey)) {
                 pooledRawHundredths += BigInt(Math.round((Number(line?.rawDays) || 0) * 100));
                 continue; // priced once, after the pool is complete
             }

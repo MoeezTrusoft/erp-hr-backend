@@ -2381,11 +2381,9 @@ model PayrollRuleConfig {
   eobiEnabled             Boolean      @default(false)
   eobiEmployeeRatePct     Float        @default(1) // % of the assessable wage
   eobiWageCeilingMinor    Int          @default(1700000) // PKR 17,000 in paisa; contribution stops rising above this
-  // N-01 / T-0.3 — absence & half-day day-credit loss priced into pay. Ships
-  // DISABLED for every tenant: enabling changes real money behavior and is a
-  // deliberate per-tenant act gated on the HR stacking-policy sign-off (plan 20,
-  // T-2.1). When false the engine's output is byte-identical to pre-N-01.
-  absenceRecoveryEnabled  Boolean      @default(false)
+  // Attendance policy: unexcused ABSENT/HALF_DAY day-credit loss is deducted;
+  // approved anomaly requests are excluded by the payroll bridge.
+  absenceRecoveryEnabled  Boolean      @default(true)
   status                  ConfigStatus @default(DRAFT)
   version                 Int          @default(1)
   createdAt               DateTime     @default(now())

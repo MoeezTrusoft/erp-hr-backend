@@ -250,6 +250,26 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
         expect(r.status).toBe('PRESENT');
     });
 
+    it('classifies checkout before half the shift as ABSENT', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T13:59:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('ABSENT');
+        expect(r.dayCredit).toBe(DAY_CREDIT.NONE);
+    });
+
+    it('classifies checkout after half the shift but before the end as HALF_DAY', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T14:01:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('HALF_DAY');
+        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+    });
+
     it('raises EARLY_CHECKOUT past the grace', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T17:00:00Z')],

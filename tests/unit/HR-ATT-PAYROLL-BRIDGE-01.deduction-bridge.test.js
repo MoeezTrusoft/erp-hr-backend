@@ -182,6 +182,23 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 computeAttendanceDeductions', () => {
         ]);
     });
 
+    it('three missing check-in/out events cost one day through the shared punch rule', () => {
+        const lines = computeAttendanceDeductions({
+            violations: [
+                { ruleKey: 'MISSING_CHECKIN', day: '2026-08-01' },
+                { ruleKey: 'MISSING_CHECKOUT', day: '2026-08-02' },
+                { ruleKey: 'MISSING_CHECKIN', day: '2026-08-03' },
+            ],
+            rules: [
+                rule('MISSING_CHECKIN', { counterGroup: 'MISSING_PUNCH', triggerCount: 3, deductionDays: 1 }),
+                rule('MISSING_CHECKOUT', { counterGroup: 'MISSING_PUNCH', triggerCount: 3, deductionDays: 1 }),
+            ],
+        });
+        expect(lines).toEqual([
+            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSING_PUNCH', occurrences: 3, rawDays: 1, days: 1 },
+        ]);
+    });
+
     it('a pooled group bills one calendar day once', () => {
         const lines = computeAttendanceDeductions({
             violations: [

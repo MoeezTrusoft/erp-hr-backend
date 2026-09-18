@@ -53,8 +53,9 @@ function defaultRules() {
     eobiEnabled: false,
     eobiEmployeeRatePct: 1,
     eobiWageCeilingMinor: 1700000,
-    // N-01 / T-0.3 — absence pricing ships off (see BOOL_KEYS above).
-    absenceRecoveryEnabled: false,
+    // Attendance policy: unexcused ABSENT/HALF_DAY day-credit loss is deducted;
+    // approved anomaly requests are excluded by the payroll bridge.
+    absenceRecoveryEnabled: true,
     status: "DRAFT",
     version: 1,
   };

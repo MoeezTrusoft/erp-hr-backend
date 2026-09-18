@@ -1,10 +1,8 @@
 // T-0.3 — PayrollRuleConfig.absenceRecoveryEnabled (N-01 enabler, plan 20).
 //
-// The flag ships FALSE for every tenant and must be reachable through the
-// config service exactly like the other toggles. Enabling absence pricing is a
-// deliberate per-tenant act gated on the HR stacking-policy sign-off (plan 20,
-// T-2.1), so the default is load-bearing: if the default ever flips, payslips
-// change shape without anyone deciding to.
+// The flag is enabled by default because the authoritative attendance policy
+// prices unexcused ABSENT/HALF_DAY day-credit loss. Approved anomaly requests
+// remain exempt in the payroll bridge.
 import { jest } from '@jest/globals';
 
 const prismaMock = {
@@ -26,10 +24,10 @@ const { getPayrollRules, updatePayrollRules } = await import('../../src/services
 describe('T-0.3 PayrollRuleConfig.absenceRecoveryEnabled', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  test('default config reports absenceRecoveryEnabled: false (shipped-off contract)', async () => {
+  test('default config reports absenceRecoveryEnabled: true', async () => {
     prismaMock.payrollRuleConfig.findUnique.mockResolvedValue(null);
     const rules = await getPayrollRules({ tenantId: 't-uuid' });
-    expect(rules.absenceRecoveryEnabled).toBe(false);
+    expect(rules.absenceRecoveryEnabled).toBe(true);
   });
 
   test('persisted row carries the flag through untouched', async () => {
