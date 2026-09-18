@@ -33,8 +33,13 @@ export const getWorkSchedules = async ({ employeeId, tenantId }) => {
 export const createWorkSchedule = async (data) => {
     const { employeeId, effective_start_date, effective_end_date, overtimeRuleId, tenantId } = data;
 
-    // Check for overlapping schedules
-    // Check for overlapping schedules
+    // HR-ROSTER-01 auto-close — the previous OPEN schedule is closed the day
+    // before the new one starts instead of hard-blocking with a 400. Effective
+    // dating means closing the old row IS the historical record: the UI tells
+    // HR this will happen (A2), the new pattern takes over from its start date,
+    // and no window is left where the employee has NO roster in force (which
+    // day-derivation would read as working-every-day). Overlaps with an already
+    // CLOSED schedule (bad dates) still fail closed below.
     const overlappingSchedule = await prisma.workSchedule.findFirst({
         where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
@@ -52,7 +57,31 @@ export const createWorkSchedule = async (data) => {
     });
 
     if (overlappingSchedule) {
-        throw new AppError('Work schedule overlaps with existing schedule', 400);
+        const newStart = new Date(effective_start_date);
+        const prevOpen = overlappingSchedule.effective_end_date == null
+            && overlappingSchedule.effective_start_date.getTime() <= newStart.getTime();
+        if (prevOpen && !effective_end_date) {
+            // Auto-close path: the previous roster runs up to the day BEFORE the
+            // new one. Day-before is computed on UTC midnights — schedules are
+            // day-granular (HR-ROSTER-01), never sub-day.
+            const dayBefore = new Date(newStart.getTime() - 24 * 60 * 60 * 1000);
+            await prisma.workSchedule.update({
+                where: { id: overlappingSchedule.id },
+                data: { effective_end_date: dayBefore },
+            });
+            await logAction({
+                employeeId: Number(employeeId),
+                type: "Update",
+                module: "Attanace - Work Schedule",
+                result: "SUCCESS",
+                notes: `Auto-closed schedule "${overlappingSchedule.id}" on ${dayBefore.toISOString().slice(0, 10)} (superseded by a new roster from ${newStart.toISOString().slice(0, 10)})`,
+                tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+            });
+        } else {
+            // A dated overlap that auto-close cannot express (e.g. a bounded
+            // schedule overlapping a NEW bounded one) stays a hard error.
+            throw new AppError('Work schedule overlaps with existing schedule', 400);
+        }
     }
 
     // Validate overtime rule if provided — tenant-scoped, so a rule from another
@@ -203,4 +232,80 @@ export const deleteWorkSchedule = async (id,deletedBy,tenantId) => {
   });
 
     return deleted;
+};
+
+// ROSTER-COVERAGE-01 — active employees with NO schedule in force as at a date.
+//
+// An employee with no schedule reads as working EVERY day (the safe direction
+// for cutoff leniency, the dangerous direction for absence marking), so the
+// gaps this reports are exactly the silent-absence risk. "Active" mirrors the
+// employment-period truth (open period = active; closed period = terminated —
+// never rely on employement_status alone; the sync script closes that loop).
+// AS-AT semantics: a schedule effective from tomorrow does NOT cover today.
+export const getRosterCoverage = async ({ tenantId, date }) => {
+    const asOf = date ? new Date(`${date}T00:00:00.000Z`) : new Date();
+    if (Number.isNaN(asOf.getTime())) {
+        throw new AppError('Invalid date — use YYYY-MM-DD', 400);
+    }
+
+    // Employee rows are tenant-scoped by tenant_id; periods carry tenantId too.
+    const employees = await prisma.employee.findMany({
+        where: { tenant_id: tenantId },
+        select: {
+            id: true,
+            employee_code: true,
+            employee_name: true,
+            first_name: true,
+            last_name: true,
+            employement_status: true,
+            hire_date: true,
+        },
+        orderBy: { id: 'asc' },
+    });
+
+    const periods = await prisma.employmentPeriod.findMany({
+        where: { tenantId, employeeId: { in: employees.map((e) => e.id) } },
+        orderBy: [{ employeeId: 'asc' }, { startDate: 'asc' }],
+        select: { employeeId: true, startDate: true, endDate: true },
+    });
+    const latestPeriod = new Map();
+    for (const p of periods) latestPeriod.set(p.employeeId, p);
+
+    // Schedules overlapping the AS-OF day (start ≤ day AND (open OR end ≥ day)).
+    const inForce = await prisma.workSchedule.findMany({
+        where: scopedWhere(tenantId, {
+            effective_start_date: { lte: asOf },
+            OR: [{ effective_end_date: null }, { effective_end_date: { gte: asOf } }],
+        }),
+        select: { employeeId: true, schedule_name: true, effective_start_date: true },
+    });
+    const covered = new Set(inForce.map((s) => s.employeeId));
+
+    const active = [];
+    const missing = [];
+    for (const e of employees) {
+        const period = latestPeriod.get(e.id);
+        const isActive = period
+            ? period.endDate == null || period.endDate.getTime() > asOf.getTime()
+            : String(e.employement_status || 'Active').toLowerCase() === 'active';
+        if (!isActive) continue;
+        const name = e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(' ') || `#${e.id}`;
+        active.push({ id: e.id, name, code: e.employee_code });
+        if (!covered.has(e.id)) {
+            missing.push({
+                id: e.id,
+                name,
+                code: e.employee_code,
+                hireDate: e.hire_date ? e.hire_date.toISOString().slice(0, 10) : null,
+            });
+        }
+    }
+
+    return {
+        date: asOf.toISOString().slice(0, 10),
+        activeEmployees: active.length,
+        withScheduleInForce: active.length - missing.length,
+        missingCount: missing.length,
+        missing,
+    };
 };
