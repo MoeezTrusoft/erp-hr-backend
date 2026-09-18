@@ -72,6 +72,38 @@ async function pendingAnomalyCount(tenantId, { from, to }) {
  * @param {{tenantId:string, month:string, actorEmployeeId?:number|null, actorNote?:string, force?:boolean}} args
  * @returns {Promise<{run:object, created:boolean, pendingAnomalies:number, forced: boolean}>}
  */
+/**
+ * Reverse an unprocessed submission so HR can correct the month and submit it
+ * again. Only a PENDING vault run can be unsubmitted; processed/approved/
+ * finalized payroll is immutable. The cancelled run and audit row remain as
+ * evidence, while isTimesheetSubmitted() becomes false for the month.
+ */
+export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = null, actorNote = null }) {
+  if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
+    throw new AppError("month must be YYYY-MM", 400);
+  }
+  const { from, to } = submissionWindow(month);
+  const run = await prisma.payrollRun.findFirst({
+    where: scopedWhere(tenantId, { periodStart: { gte: from, lte: to }, periodEnd: { gte: from, lte: to }, status: { notIn: ["CANCELLED", "FAILED"] } }),
+    orderBy: { id: "desc" },
+    select: { id: true, status: true, periodStart: true, periodEnd: true },
+  });
+  if (!run) return { unsubmitted: false, reason: "No submitted timesheet exists for this month" };
+  if (run.status !== "PENDING") {
+    throw new AppError(`HR-TP-04 run #${run.id} is ${run.status}; only an unprocessed PENDING run may be unsubmitted`, 409);
+  }
+  await prisma.payrollRun.update({ where: { id: run.id }, data: { status: "CANCELLED" } });
+  await prisma.payrollAuditLog.create({
+    data: {
+      tenantId: tenantId ?? null,
+      action: "TIMESHEET_UNSUBMITTED",
+      payrollRunId: run.id,
+      details: `Timesheet for ${month} unsubmitted by ${actorEmployeeId != null ? `employee ${actorEmployeeId}` : actorNote ?? "unknown actor"}; pending vault run #${run.id} cancelled`,
+    },
+  });
+  return { unsubmitted: true, cancelledRunId: run.id, month };
+}
+
 export async function submitTimesheet({
   tenantId,
   month,

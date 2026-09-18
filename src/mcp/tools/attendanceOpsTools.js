@@ -141,6 +141,8 @@ export function registerAttendanceOpsTools(server) {
       type: ANOMALY_TYPE.optional().describe(
         "enum AnomalyType filter: one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
       ),
+      sourceKind: z.enum(["REGULARIZATION", "evaluator", "IMPORT", "DISAPPROVED_LEAVE"]).optional()
+        .describe("Filter by origin; REGULARIZATION means an employee-submitted form."),
       q: z.string().optional().describe("Search employee name or reason (case-insensitive contains)"),
       sortBy: z
         .enum(["createdAt", "date", "status"])

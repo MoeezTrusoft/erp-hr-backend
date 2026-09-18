@@ -135,6 +135,7 @@ export async function listAnomalies({
   status,
   employeeId,
   type,
+  sourceKind,
   q,
   sortBy,
   sortDir,
@@ -151,6 +152,12 @@ export async function listAnomalies({
   const empId = toIntOrNull(employeeId);
   if (empId != null) and.push({ employeeId: empId });
   if (type && ANOMALY_TYPES.has(type)) and.push({ type });
+  // The approval inbox is for employee regularization forms only. Evaluator,
+  // imported-history, and disapproved-leave anomalies remain payroll/table
+  // evidence and must not appear as employee submissions.
+  if (sourceKind && ["REGULARIZATION", "evaluator", "IMPORT", "DISAPPROVED_LEAVE"].includes(sourceKind)) {
+    and.push({ sourceKind });
+  }
   if (q && String(q).trim()) {
     const needle = String(q).trim();
     and.push({

@@ -17,6 +17,7 @@ import {
 import {
   isTimesheetSubmitted,
   submitTimesheet,
+  unsubmitTimesheet,
 } from "../../services/timesheetSubmission.service.js";
 import { buildMonthlyReconciliation } from "../../services/attendanceReconciliation.service.js";
 import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
@@ -155,6 +156,24 @@ export function registerTimesheetReportTools(server) {
       const state = await isTimesheetSubmitted(user.tenantId, month);
       return { content: [{ type: "text", text: JSON.stringify(state) }] };
     }, "hr_timesheet_submission_status")
+  );
+
+  server.tool(
+    "hr_timesheet_unsubmit",
+    "Unsubmit a timesheet whose vault run is still PENDING; processed or approved payroll cannot be reversed.",
+    { month: z.string().regex(/^\d{4}-\d{2}$/).describe("Month as YYYY-MM.") },
+    withToolError(async ({ month }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const actorEmployeeId = await resolveActingEmployeeId({ user, tenantId: user.tenantId });
+      const data = await unsubmitTimesheet({
+        tenantId: user.tenantId,
+        month,
+        actorEmployeeId,
+        actorNote: user.email ?? `rbac-user-${user.id ?? "unknown"}`,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_timesheet_unsubmit")
   );
 
   server.tool(
