@@ -27,7 +27,7 @@ const n = (v) => Number(v || 0);
 const fmt = (v) => n(v).toLocaleString("en-PK", { maximumFractionDigits: 0 }).padStart(11);
 const name = (e) => e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(" ") || e.employee_code;
 
-const grand = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
+const grand = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, other: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
 
 async function main() {
   console.log(`AUGUST 2026 PAYROLL — DRY RUN (nothing written)\n`);
@@ -42,7 +42,7 @@ async function main() {
       const taxRateRows = await prisma.taxRate.findMany({ where: { tenantId, countryCode: "PK" } });
 
       const terms = await prisma.employmentTerms.findMany({ where: { tenantId } });
-      const tot = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
+      const tot = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, other: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
 
       const lines = [];
       for (const term of terms) {
@@ -148,6 +148,8 @@ async function main() {
         const lwp = find((d) => d.code === "LWP_RECOVERY" || String(d.description).startsWith("LWP"));
         const days = attendanceDeductionLines.reduce((s, l) => s + l.days, 0);
         const loanAmt = find((d) => d.code === "LOAN_REPAYMENT");
+        const totalDeductionAmt = find(() => true);
+        const other = totalDeductionAmt - tax - att - lwp - loanAmt;
         const pf = slip.prorationFactor ?? 1;
 
         tot.people++;
@@ -155,6 +157,7 @@ async function main() {
         tot.tax += tax;
         tot.attendance += att;
         tot.lwp += lwp;
+        tot.other += other;
         tot.net += n(slip.netAmount);
         tot.loan += loanAmt;
         if (att > 0) tot.penalised++;
@@ -175,7 +178,8 @@ async function main() {
       console.log(
         `  ${String(tot.people).padStart(3)} people${" ".repeat(22)}${fmt(tot.gross)}${fmt(tot.tax)}${fmt(tot.attendance)}     ${fmt(tot.loan)}     ${fmt(tot.net)}`,
       );
-      console.log(`  ${tot.penalised} with an attendance deduction, ${tot.prorated} prorated (part-month)\n`);
+      console.log(`  ${tot.penalised} with an attendance deduction, ${tot.prorated} prorated (part-month)`);
+      console.log(`  other deductions          ${fmt(tot.other)}\n`);
 
       for (const k of Object.keys(grand)) grand[k] += tot[k];
     });
@@ -187,8 +191,10 @@ async function main() {
   console.log(`  income tax            ${fmt(grand.tax)}`);
   console.log(`  loans + advances      ${fmt(grand.loan)}`);
   console.log(`  attendance deductions ${fmt(grand.attendance)}   (${grand.penalised} employees affected)`);
-  console.log(`  unpaid leave          ${fmt(grand.lwp)}`);
+  console.log(`  unpaid leave           ${fmt(grand.lwp)}`);
+  console.log(`  other deductions      ${fmt(grand.other)}`);
   console.log(`  NET PAYABLE           ${fmt(grand.net)}`);
+  console.log(`  reconciliation        ${fmt(grand.gross - grand.tax - grand.loan - grand.attendance - grand.lwp - grand.other - grand.net)} (must be 0)`);
   console.log(`\nNothing was written.`);
 }
 
