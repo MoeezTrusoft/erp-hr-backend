@@ -5,6 +5,7 @@ import { withTenant, tenantData } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { leaveApprovedEvent, leaveRejectedEvent } from "./hrEvents.js";
 import { assertIfMatch, normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { resolveWorkingDays } from "./workingDay.service.js";
 
 // C.2 / T-P2.2 / T-P2.6 — leave is a representative newly-scoped HR family. The
 // verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the controller
@@ -844,6 +845,19 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
     throw new Error('Leave request not found');
   }
 
+  // C5 — a pending request may legitimately carry NO leave type (the employee
+  // is not asked to pick a policy; HR assigns the type at approval). But the
+  // balance decrement, the approval workflow lookup and the attendance/Leave
+  // mirror all key off the policy, so approving WITHOUT one would either crash
+  // with an opaque Prisma P2025 (no LeaveBalance row keyed employeeId+null) or
+  // silently skip the workflow. Fail with a clear, actionable 400 instead.
+  if (leaveRequest.leavePolicyId == null) {
+    throw Object.assign(
+      new Error('Leave type must be assigned before approval. Assign a leave type to this request, then approve.'),
+      { status: 400 }
+    );
+  }
+
   // X-07 — If-Match / 412 optimistic concurrency (opt-in via data.ifMatch).
   assertIfMatch(data?.ifMatch, leaveRequest);
 
@@ -889,23 +903,49 @@ export const approveLeaveRequest = async (leaveRequestId, data,) => {
     // Final approval - update status and deduct leave balance
     newStatus = 'APPROVED';
 
-    await prisma.leaveBalance.update({
+    // C5 — never P2025 on a missing balance row: an employee whose LeaveBalance
+    // was never seeded must not make the whole approval explode AFTER the
+    // approval row was written. Missing row → create it at 0 (the decrement
+    // floors there); present row → decrement as before.
+    const existingBalance = await prisma.leaveBalance.findUnique({
       where: {
         employeeId_leavePolicyId: {
           employeeId: leaveRequest.employeeId,
           leavePolicyId: leaveRequest.leavePolicyId
         }
-      },
-      data: {
-        balance: {
-          decrement: leaveRequest.totalDays
-        },
-        lastUpdated: new Date()
       }
     });
+    if (existingBalance) {
+      await prisma.leaveBalance.update({
+        where: {
+          employeeId_leavePolicyId: {
+            employeeId: leaveRequest.employeeId,
+            leavePolicyId: leaveRequest.leavePolicyId
+          }
+        },
+        data: {
+          balance: {
+            decrement: leaveRequest.totalDays
+          },
+          lastUpdated: new Date()
+        }
+      });
+    } else {
+      await prisma.leaveBalance.create({
+        data: tenantData(leaveRequest.tenantId, {
+          employeeId: leaveRequest.employeeId,
+          leavePolicyId: leaveRequest.leavePolicyId,
+          balance: -leaveRequest.totalDays,
+          carryOverBalance: 0,
+          lastUpdated: new Date()
+        })
+      });
+    }
 
-    // Create attendance records for the leave period
+    // Create attendance records for the leave period + the legacy Leave mirror
+    // (C4) that day-derivation reads.
     await createLeaveAttendanceRecords(leaveRequest);
+    await upsertLegacyLeaveMirror(leaveRequest);
   }
 
   // M1-HR: the status flip and — on FINAL approval — the
@@ -1445,37 +1485,124 @@ export const createHoliday = async (data) => {
 };
 
 // Additional Helper Functions
+// C3 — leave write-back, rebuilt (HR policy 2026-09-18).
+//
+// The old implementation had three defects, each with real payroll blast
+// radius:
+//   1. It stamped status ABSENT on every leave day — approved leave looked
+//      exactly like an unexcused absence, feeding the absence/credit-loss
+//      deduction bridge and the Absentees KPI.
+//   2. It hardcoded weekends as Sat/Sun instead of the employee's ROSTER, so
+//      Mon-Fri workers with a Sunday-off got phantom rows and rotating-roster
+//      employees got charged rest days.
+//   3. It upsert-overwrote existing attendance rows, erasing real biometric
+//      punches (and manual corrections) for any day the device already had.
+//
+// The replacement derives each leave day through resolveWorkingDays (the SAME
+// derivation attendance and payroll read: approved leave > holiday > rostered
+// off-day), writes ON_LEAVE only on rostered working days, and SKIPS any day
+// that already has an attendance row — punch integrity beats the leave mark
+// (HR-ATT-CORRECTION-01 precedence). Employees with no schedule in force keep
+// the old conservative reading: every non-holiday weekday is a working day.
 const createLeaveAttendanceRecords = async (leaveRequest) => {
   const { employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
   const start = new Date(startDate);
   const end = new Date(endDate);
-  const current = new Date(start);
 
-  while (current <= end) {
-    const dayOfWeek = current.getDay();
-    // Only create records for weekdays
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      await prisma.attendance.upsert({
-        where: {
-          employeeId_date: {
-            employeeId,
-            date: new Date(current)
-          }
-        },
-        update: {
-          status: 'ABSENT',
-          remarks: `On ${(await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave'}`
-        },
-        create: {
-          employeeId,
-          date: new Date(current),
-          status: 'ABSENT',
-          remarks: `On ${(await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave'}`
+  const policyName =
+    (await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave';
+
+  // Derive the leave window day-by-day on the employee's actual roster.
+  let workingDays;
+  try {
+    const derived = await resolveWorkingDays({ employeeId, from: start, to: end });
+    workingDays = [...derived.values()].filter((d) => d.working);
+  } catch {
+    // Derivation needs the employee to exist; a defunct employee must not
+    // block the approval itself.
+    workingDays = [];
+  }
+
+  for (const day of workingDays) {
+    const dayDate = new Date(day.date);
+    const existing = await prisma.attendance.findUnique({
+      where: { employeeId_date: { employeeId, date: dayDate } },
+      select: { id: true, check_in: true, check_out: true, status: true },
+    });
+
+    // Never overwrite a real punch or an HR correction: if the device already
+    // recorded the day, the employee showed up — leave does not erase that.
+    if (existing && (existing.check_in || existing.check_out)) continue;
+
+    if (existing) {
+      await prisma.attendance.update({
+        where: { id: existing.id },
+        data: {
+          status: 'ON_LEAVE',
+          day_credit: 1,
+          requires_regularization: false,
+          remarks: `On ${policyName}`
         }
       });
+    } else {
+      await prisma.attendance.create({
+        data: tenantData(leaveRequest.tenantId, {
+          employeeId,
+          date: dayDate,
+          status: 'ON_LEAVE',
+          day_credit: 1,
+          remarks: `On ${policyName}`
+        })
+      });
     }
-    current.setDate(current.getDate() + 1);
   }
+};
+
+// C4 — the legacy `Leave` MIRROR. Day-derivation (workingDay.service) reads
+// prisma.leave for the approved-leave precedence, but the request flow only
+// writes LeaveRequest — nothing ever wrote legacy Leave, so approved leave
+// never became ON_LEAVE and attendance/payroll kept treating those days as
+// expected-working. One mirror row per approved request closes that join.
+// Idempotent: re-approval paths reuse the row instead of duplicating.
+const upsertLegacyLeaveMirror = async (leaveRequest) => {
+  const { employeeId, startDate, endDate, leavePolicyId, tenantId } = leaveRequest;
+  const typeCode =
+    (await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.leaveTypeCode || 'LEAVE';
+
+  const existing = await prisma.leave.findFirst({
+    where: {
+      employeeId,
+      start_date: new Date(startDate),
+      end_date: new Date(endDate),
+      ...(tenantId ? { tenantId } : {})
+    }
+  });
+
+  if (existing) {
+    await prisma.leave.update({
+      where: { id: existing.id },
+      data: {
+        type: typeCode,
+        status: 'APPROVED',
+        total_days: Math.max(1, Math.round(Number(leaveRequest.totalDays) || 1)),
+        approved_at: new Date()
+      }
+    });
+    return existing.id;
+  }
+
+  const created = await prisma.leave.create({
+    data: tenantData(tenantId, {
+      employeeId,
+      type: typeCode,
+      start_date: new Date(startDate),
+      end_date: new Date(endDate),
+      total_days: Math.max(1, Math.round(Number(leaveRequest.totalDays) || 1)),
+      status: 'APPROVED',
+      approved_at: new Date()
+    })
+  });
+  return created.id;
 };
 
 // Carry Over Processing
