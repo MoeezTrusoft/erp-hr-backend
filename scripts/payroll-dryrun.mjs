@@ -139,7 +139,12 @@ async function main() {
 
         const find = (pred) => slip.deductions.filter(pred).reduce((s, d) => s + n(d.amount), 0);
         const tax = find((d) => d.description === "Income Tax");
-        const att = find((d) => d.code === "ATTENDANCE_DEDUCTION" || String(d.description).startsWith("Attendance"));
+        const att = find((d) =>
+          d.code === "ATTENDANCE_DEDUCTION" ||
+          d.code === "ABSENCE_RECOVERY" ||
+          String(d.description).startsWith("Attendance") ||
+          String(d.description).startsWith("Absence recovery"),
+        );
         const lwp = find((d) => d.code === "LWP_RECOVERY" || String(d.description).startsWith("LWP"));
         const days = attendanceDeductionLines.reduce((s, l) => s + l.days, 0);
         const loanAmt = find((d) => d.code === "LOAN_REPAYMENT");
