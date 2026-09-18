@@ -94,9 +94,20 @@ async function main() {
           include: { earningType: true, deductionType: true },
         });
 
+        // HR-ATT-PAYROLL-BRIDGE-01 — pass the complete stored attendance
+        // evidence into the REAL payslip engine. The earlier dry-run selected
+        // only date/status/manual flags, so pooled/credit-based attendance
+        // deductions silently saw no attendanceRows/day_credit and reported
+        // zero money despite listing violation days.
         const attendance = await prisma.attendance.findMany({
           where: { employeeId: emp.id, date: { gte: periodStart, lte: periodEnd } },
-          select: { date: true, status: true, manually_corrected: true },
+          select: {
+            date: true,
+            status: true,
+            manually_corrected: true,
+            day_credit: true,
+            requires_regularization: true,
+          },
         });
         const anomalies = await prisma.attendanceAnomaly.findMany({
           where: { employeeId: emp.id, date: { gte: periodStart, lte: periodEnd } },
@@ -117,14 +128,19 @@ async function main() {
           payrollRun: { periodStart, periodEnd, countryCode: "PK", currencyCode: "PKR" },
           taxRateRows,
           asOf: periodEnd,
-          bridges: { attendanceDeductionLines, loanLines },
+          bridges: {
+            attendanceDeductionLines,
+            attendanceRows: attendance,
+            anomalyRows: anomalies,
+            loanLines,
+          },
           ruleConfig,
         });
 
         const find = (pred) => slip.deductions.filter(pred).reduce((s, d) => s + n(d.amount), 0);
         const tax = find((d) => d.description === "Income Tax");
-        const att = find((d) => String(d.description).startsWith("Attendance:"));
-        const lwp = find((d) => String(d.description).startsWith("LWP"));
+        const att = find((d) => d.code === "ATTENDANCE_DEDUCTION" || String(d.description).startsWith("Attendance"));
+        const lwp = find((d) => d.code === "LWP_RECOVERY" || String(d.description).startsWith("LWP"));
         const days = attendanceDeductionLines.reduce((s, l) => s + l.days, 0);
         const loanAmt = find((d) => d.code === "LOAN_REPAYMENT");
         const pf = slip.prorationFactor ?? 1;
