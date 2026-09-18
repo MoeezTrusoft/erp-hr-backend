@@ -52,6 +52,18 @@ await mcpCtx.run({ system: true }, async () => {
 
     const policyIdByCode = new Map();
 
+    // LeavePolicy.createdBy is a NOT-NULL Employee FK. Stamp the tenant's first
+    // ACTIVE employee as the seed author (Afsha/HR can re-own via the UI later).
+    const seedActor = await prisma.employee.findFirst({
+      where: { tenant_id: tenantId, employement_status: 'Active' },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    if (!seedActor) {
+      console.log('   no active employees — skipped');
+      continue;
+    }
+
     for (const [code, name, rate, period] of POLICIES) {
       const existing = await prisma.leavePolicy.findFirst({
         where: { tenantId, name },
@@ -88,6 +100,7 @@ await mcpCtx.run({ system: true }, async () => {
             maxCarryForward: 0,
             minServiceMonths: 0,
             active: true,
+            createdById: seedActor.id,
           }),
         });
         policyIdByCode.set(code, created.id);
