@@ -32,16 +32,22 @@ export const DEDUCTION_RULE_KEYS = [
 const PERIOD_SCOPES = ["PAY_PERIOD", "MONTH"];
 
 function defaultRule(ruleKey) {
+  // Keep new tenants aligned with the authoritative policy migration. Early
+  // checkout is priced from day_credit (ABSENT/HALF_DAY), so its occurrence
+  // rule is deliberately disabled to prevent double charging.
+  const authoritative = {
+    DISAPPROVED_LEAVE: { enabled: true, triggerCount: 1, deductionDays: 1, counterGroup: null },
+    LATE: { enabled: true, triggerCount: 3, deductionDays: 1, counterGroup: null },
+    MISSING_CHECKIN: { enabled: true, triggerCount: 3, deductionDays: 1, counterGroup: "MISSING_PUNCH" },
+    MISSING_CHECKOUT: { enabled: true, triggerCount: 3, deductionDays: 1, counterGroup: "MISSING_PUNCH" },
+    EARLY_CHECKOUT: { enabled: false, triggerCount: 1, deductionDays: 1, counterGroup: null },
+  }[ruleKey];
   return {
     id: null,
     ruleKey,
-    enabled: false,
-    // triggerCount 1 = per occurrence, which is how DISAPPROVED_LEAVE is used.
-    triggerCount: 1,
-    deductionDays: 0.5,
+    ...authoritative,
     periodScope: "PAY_PERIOD",
     maxDeductionDaysPerPeriod: null,
-    counterGroup: null,
     status: "DRAFT",
     version: 1,
   };

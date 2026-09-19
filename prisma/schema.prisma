@@ -160,6 +160,7 @@ enum PayrollRunStatus {
   PROCESSING
   COMPLETED
   APPROVED // HR-02 / T-P4.1 — human-approved (distinct approver) and ready to FINALIZE
+  REJECTED // HR-PAY-REJECT-01 — processed batch rejected with an auditable reason
   FINALIZED // HR-02 / T-P4.1 — finalized after approval; payslips locked for distribution
   CANCELLED
   FAILED

@@ -77,6 +77,22 @@ export const approvePayrollRun = async (req, res) => {
     }
 };
 
+export const rejectPayrollRun = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const rejectedBy = req.user?.employeeId;
+        const result = await payrollService.rejectPayrollRun(
+            parseInt(id),
+            rejectedBy,
+            req.body?.reason,
+            tenantOf(req),
+        );
+        res.json({ success: true, data: wire(result) });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
 export const finalizePayrollRun = async (req, res) => {
     try {
         const { id } = req.params;

@@ -101,9 +101,9 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
 
   for (const emp of employees) {
     const [working, existing] = await Promise.all([
-      resolveWorkingDays({ employeeId: emp.id, from: first, to: last }),
+      resolveWorkingDays({ tenantId, employeeId: emp.id, from: first, to: last }),
       prisma.attendance.findMany({
-        where: { employeeId: emp.id, date: { gte: first, lte: last } },
+        where: { tenantId, employeeId: emp.id, date: { gte: first, lte: last } },
         select: { id: true, date: true, manually_corrected: true },
       }),
     ]);

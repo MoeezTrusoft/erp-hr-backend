@@ -83,11 +83,16 @@ describe('HR-ATT-POLICY-01 attendance policy config', () => {
 });
 
 describe('HR-ATT-POLICY-01 deduction rules', () => {
-    it('lists all five keys with missing ones defaulted and DISABLED', async () => {
+    it('lists all five keys with authoritative defaults', async () => {
         const rows = await deductions.listDeductionRules({ tenantId: TENANT });
+        const byKey = new Map(rows.map((r) => [r.ruleKey, r]));
 
         expect(rows.map((r) => r.ruleKey)).toEqual(deductions.DEDUCTION_RULE_KEYS);
-        expect(rows.every((r) => r.enabled === false)).toBe(true);
+        expect(byKey.get('LATE')).toMatchObject({ enabled: true, triggerCount: 3, deductionDays: 1 });
+        expect(byKey.get('MISSING_CHECKIN')).toMatchObject({ enabled: true, triggerCount: 3, deductionDays: 1, counterGroup: 'MISSING_PUNCH' });
+        expect(byKey.get('MISSING_CHECKOUT')).toMatchObject({ enabled: true, triggerCount: 3, deductionDays: 1, counterGroup: 'MISSING_PUNCH' });
+        expect(byKey.get('DISAPPROVED_LEAVE')).toMatchObject({ enabled: true, triggerCount: 1, deductionDays: 1 });
+        expect(byKey.get('EARLY_CHECKOUT')).toMatchObject({ enabled: false });
     });
 
     it('keeps MISSING_CHECKIN and MISSING_CHECKOUT as separate keys', async () => {

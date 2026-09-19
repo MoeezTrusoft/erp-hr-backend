@@ -116,6 +116,19 @@ describe('N-17 POOLED_FLOOR deduction mode (D1)', () => {
         expect(days(slip)).toBeCloseTo(DAY_MINOR / 100, 0);
     });
 
+    it('early checkout HALF_DAY is charged once as half-day credit loss', () => {
+        const attendance = [half('05')];
+        const anomalies = [{ date: new Date('2026-08-05T00:00:00.000Z'), status: 'PENDING', type: 'EARLY_CHECKOUT' }];
+        const slip = build({ attendance, anomalies, ruleConfig: { deductionBasis: 'GROSS', absenceRecoveryEnabled: true } });
+        const absence = slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY');
+        const earlyRule = slip.deductions.find((d) => d.description.includes('EARLY_CHECKOUT'));
+
+        // Half-day early departure is 0.5 day, not 0.5 plus an additional
+        // EARLY_CHECKOUT occurrence.
+        expect(Number(absence.amount)).toBeCloseTo(DAY_MINOR / 100 / 2, 0);
+        expect(earlyRule).toBeUndefined();
+    });
+
     it('an APPROVED anomaly excuses its day from the pool', () => {
         const attendance = [late('03'), late('10')];
         const anomalies = [{ date: new Date('2026-08-17T00:00:00.000Z'), status: 'APPROVED', type: 'EARLY_CHECKOUT' }];

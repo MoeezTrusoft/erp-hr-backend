@@ -26,7 +26,10 @@ let approvalsWritten;
 
 const prismaMock = {
     attendanceApprovalLevel: { findMany: jest.fn(async () => CHAIN) },
-    employee: { findUnique: jest.fn(async ({ where }) => employees.get(where.id) ?? null) },
+    employee: { findUnique: jest.fn(async ({ where }) => {
+        const row = employees.get(where.id);
+        return row ? { tenant_id: TENANT, ...row } : null;
+    }) },
     attendanceAnomaly: {
         findUnique: jest.fn(async ({ where }) => anomalies.get(where.id) ?? null),
         findMany: jest.fn(async () => [...anomalies.values()].filter((a) => a.status === 'PENDING')),
@@ -64,6 +67,16 @@ beforeEach(() => {
         [1, { id: 1, employeeId: REQUESTER, status: 'PENDING', currentApprovalLevel: 1, tenantId: TENANT, createdAt: new Date('2026-08-01') }],
     ]);
     prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue(CHAIN);
+});
+
+describe('HR-ATT-POLICY-01 tenant boundary', () => {
+    it('does not route an anomaly owned by another tenant', async () => {
+        anomalies.set(9, { id: 9, employeeId: REQUESTER, tenantId: 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a', status: 'PENDING', currentApprovalLevel: 1 });
+        await expect(
+            routing.routeAnomaly({ tenantId: TENANT, anomalyId: 9 }),
+        ).rejects.toThrow('not found in this tenant');
+        expect(prismaMock.attendanceAnomaly.update).not.toHaveBeenCalled();
+    });
 });
 
 describe('HR-ATT-POLICY-01 chain resolution', () => {

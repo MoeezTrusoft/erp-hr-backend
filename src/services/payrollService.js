@@ -1125,7 +1125,7 @@ export const loanBridgeWhere = (employeeId, payrollRunId) => ({
 // and FAILED allow an idempotent re-process (no doubled payslips). PROCESSING is
 // allowed so a crashed run can be retried. APPROVED/FINALIZED/CANCELLED are
 // terminal-ish and must NOT be silently re-computed.
-const PROCESSABLE_STATUSES = new Set(['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED']);
+const PROCESSABLE_STATUSES = new Set(['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'REJECTED']);
 
 // N-10 — the payroll-eligible employee filter for a run. payroll_included is
 // the documented payroll switch (hr.service.js:508; the attendance writer and
@@ -1760,6 +1760,44 @@ const getOrCreateDeductionType = async (code, name, tenantId) => {
     return deductionType.id;
 };
 
+// HR-PAY-REJECT-01 — Rejecting a processed batch is a distinct, auditable
+// state transition. It must not delete the run or silently turn it into a
+// cancellation: HR needs the rejected batch and reason for correction/review.
+export const rejectPayrollRun = async (id, rejectedBy, reason, tenantId) => {
+  const payrollRun = await prisma.payrollRun.findFirst({ where: withTenant(tenantId, { id }) });
+  if (!payrollRun) throw new Error('Payroll run not found');
+  if (!['COMPLETED', 'APPROVED'].includes(payrollRun.status)) {
+    throw new Error(`Only COMPLETED or APPROVED payroll runs can be rejected (current: ${payrollRun.status})`);
+  }
+
+  const actor = toInt(rejectedBy);
+  if (actor === null) throw new Error('HR-2014 rejecting employee id is required');
+  const note = String(reason ?? '').trim();
+  if (!note) throw new Error('HR-2015 rejection reason is required');
+
+  await prisma.payrollRun.updateMany({
+    where: withTenant(tenantId, { id }),
+    data: { status: 'REJECTED', approvedBy: null, approvedAt: null },
+  });
+  await prisma.payrollAuditLog.create({
+    data: {
+      tenantId: tenantId ?? null,
+      action: 'PAYROLL_REJECTED',
+      details: `Payroll run rejected by employee ${actor}: ${note}`,
+      payrollRunId: id,
+    },
+  });
+  await logAction({
+    employeeId: actor,
+    type: 'Update',
+    module: 'Payroll Run',
+    result: 'SUCCESS',
+    notes: `Payroll run "${id}" rejected`,
+    tenantId: tenantId ?? null,
+  });
+  return getPayrollRunById(id, tenantId);
+};
+
 // HR-02 / T-P4.1 — APPROVAL GATE with separation of duties.
 //
 // A COMPLETED run must be APPROVED by a human who is DISTINCT from the employee
@@ -2369,6 +2407,7 @@ export default {
     createPayrollRun,
     processPayrollRun,
     approvePayrollRun,
+    rejectPayrollRun,
     finalizePayrollRun,
     cancelPayrollRun,
     getEarningTypes,

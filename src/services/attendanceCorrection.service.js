@@ -137,7 +137,11 @@ export async function correctAttendanceDay({
     where: { id: employeeId },
     select: { id: true, tenant_id: true, work_mode: true },
   });
-  if (!employee) throw badRequest(`Employee ${employeeId} not found in this tenant`);
+  // Numeric employee ids are only tenant-local identifiers. Do not allow a
+  // caller from tenant B to correct tenant A's employee by guessing the id.
+  if (!employee || employee.tenant_id !== tenantId) {
+    throw badRequest(`Employee ${employeeId} not found in this tenant`);
+  }
 
   const preExisting = await prisma.attendance.findFirst({
     where: { employeeId, date: day },

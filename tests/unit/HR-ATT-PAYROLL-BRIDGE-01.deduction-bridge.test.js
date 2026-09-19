@@ -99,6 +99,25 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 countViolationDays', () => {
         expect(keysOf(v)).toEqual(['LATE@2026-08-05']);
     });
 
+    it('prices early checkout through day credit when the day is ABSENT or HALF_DAY', () => {
+        const v = countViolationDays({
+            attendance: [
+                att('2026-08-06', 'ABSENT', { day_credit: 0 }),
+                att('2026-08-07', 'HALF_DAY', { day_credit: 0.5 }),
+                att('2026-08-08', 'PRESENT', { day_credit: 1 }),
+            ],
+            anomalies: [
+                { date: day('2026-08-06'), status: 'PENDING', type: 'EARLY_CHECKOUT' },
+                { date: day('2026-08-07'), status: 'REJECTED', type: 'EARLY_CHECKOUT' },
+                { date: day('2026-08-08'), status: 'REJECTED', type: 'EARLY_CHECKOUT' },
+            ],
+        });
+
+        // The first two are already priced as 1 and 0.5 day credit loss. Only
+        // the full-credit day remains an EARLY_CHECKOUT rule occurrence.
+        expect(keysOf(v)).toEqual(['EARLY_CHECKOUT@2026-08-08']);
+    });
+
     it('does not charge leave for a refused missing-punch or early-checkout appeal either', () => {
         // Same reasoning: the underlying violation already has its own rule.
         // D1 refinement (operator law 2026-09-11): EARLY_CHECKOUT exists ONLY as

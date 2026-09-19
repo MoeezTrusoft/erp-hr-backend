@@ -8,6 +8,7 @@ import {
   mcpCreatePayrollRun,
   mcpDistributePayslip,
   mcpApprovePayrollRun,
+  mcpRejectPayrollRun,
   mcpFinalizePayrollRun,
   mcpListDeductionTypes,
   mcpListEarningTypes,
@@ -119,7 +120,7 @@ export function registerPayrollTools(server) {
     "hr_payroll_run_list",
     "List payroll runs with optional status filter and pagination",
     {
-      status: z.enum(["PENDING", "PROCESSING", "COMPLETED", "APPROVED", "FINALIZED", "CANCELLED", "FAILED"]).optional().describe("Filter by payroll run status"),
+      status: z.enum(["PENDING", "PROCESSING", "COMPLETED", "APPROVED", "FINALIZED", "REJECTED", "CANCELLED", "FAILED"]).optional().describe("Filter by payroll run status"),
       page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
       pageSize: z.coerce.number().int().positive().optional().describe("Page size (default 20, max 100)"),
     },
@@ -178,6 +179,21 @@ export function registerPayrollTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
       const data = await mcpApprovePayrollRun(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_payroll_run_reject",
+    "Reject a completed or approved payroll run with an auditable reason",
+    {
+      id: z.string().min(1).describe("Payroll run ID"),
+      reason: z.string().trim().min(1).max(2000).describe("Required rejection reason"),
+    },
+    withToolError(async ({ id, reason }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
+      const data = await mcpRejectPayrollRun(user, id, reason);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

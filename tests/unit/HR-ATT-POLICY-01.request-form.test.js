@@ -8,7 +8,7 @@
 //   * one open request per employee-day, or the same day gets two outcomes and
 //     downstream, two deductions.
 // Runs under TZ=UTC, pinned by the jest scripts.
-import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 
 const TENANT = '40314ef4-0a81-4390-b631-b3ad3f21f523';
 const EMP = 100;
@@ -24,6 +24,7 @@ const routeAnomalyMock = jest.fn(async () => ({ routed: true, level: 1, approver
 const prismaMock = {
     employee: {
         findUnique: jest.fn(async () => ({
+            tenant_id: TENANT,
             id: EMP,
             employee_code: 'EMP100',
             employee_name: null,
@@ -34,7 +35,13 @@ const prismaMock = {
             Position: { title: 'Senior Support Engineer' },
         })),
     },
-    workSchedule: { findFirst: jest.fn(async () => schedule) },
+    workSchedule: {
+        findFirst: jest.fn(async () => schedule),
+        findMany: jest.fn(async () => schedule ? [{ ...schedule, effective_start_date: new Date('2026-08-01'), effective_end_date: null }] : []),
+    },
+    employeeHolidayCalendar: { findMany: jest.fn(async () => []) },
+    holiday: { findMany: jest.fn(async () => []) },
+    leave: { findMany: jest.fn(async () => []) },
     attendance: { findFirst: jest.fn(async () => attendanceRow) },
     attendanceAnomaly: {
         findFirst: jest.fn(async () => anomalyRows[0] ?? null),
@@ -56,11 +63,17 @@ jest.unstable_mockModule('../../src/lib/logger.js', () => ({
 const form = await import('../../src/services/attendanceAnomalyRequest.service.js');
 
 beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-14T12:00:00Z'));
     jest.clearAllMocks();
     created = null;
     anomalyRows = [];
     attendanceRow = null;
     schedule = { schedule_pattern: { shift: { from: '10:00', to: '18:00' } } };
+});
+
+afterEach(() => {
+    jest.useRealTimers();
 });
 
 describe('HR-ATT-POLICY-01 form defaults', () => {

@@ -394,6 +394,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       }),
       resolveWorkingDays({
         employeeId,
+        tenantId,
         from,
         to: new Date(new Date(to).getTime() + DAY_MS),
       }),

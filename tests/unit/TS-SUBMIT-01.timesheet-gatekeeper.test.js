@@ -32,6 +32,11 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
         state.createdRuns.push(row);
         return row;
       }),
+      update: jest.fn(async ({ where, data }) => {
+        const row = state.runs.find((candidate) => candidate.id === where.id);
+        if (row) Object.assign(row, data);
+        return row;
+      }),
     },
     payrollAuditLog: {
       create: jest.fn(async ({ data }) => { state.auditRows.push(data); return { id: 1, ...data }; }),
@@ -50,7 +55,7 @@ jest.unstable_mockModule('../../src/utils/logs.js', () => ({
   logAction: jest.fn(async ({ notes }) => { state.logs.push(notes); }),
 }));
 
-const { submitTimesheet, isTimesheetSubmitted } = await import('../../src/services/timesheetSubmission.service.js');
+const { submitTimesheet, isTimesheetSubmitted, unsubmitTimesheet } = await import('../../src/services/timesheetSubmission.service.js');
 
 beforeEach(() => {
   state.calendar = { attendanceCutoff: null };
@@ -121,6 +126,7 @@ describe('TS-SUBMIT-01 — effect: vault run activation + idempotency', () => {
 
   it('isTimesheetSubmitted reports the vault run once submission exists', async () => {
     state.runs = [{ id: 777, status: 'PENDING', createdAt: new Date() }];
+    state.auditRows = [{ id: 10, action: 'TIMESHEET_SUBMITTED', payrollRunId: 777 }];
     const state1 = await isTimesheetSubmitted(TENANT, MONTH);
     expect(state1.submitted).toBe(true);
     expect(state1.run.id).toBe(777);
@@ -128,6 +134,32 @@ describe('TS-SUBMIT-01 — effect: vault run activation + idempotency', () => {
     state.runs = [];
     const state2 = await isTimesheetSubmitted(TENANT, MONTH);
     expect(state2.submitted).toBe(false);
+  });
+
+  it('does not treat an out-of-band Pending run as submitted without an audit marker', async () => {
+    state.runs = [{ id: 778, status: 'PENDING', createdAt: new Date() }];
+    state.auditRows = [];
+    const result = await isTimesheetSubmitted(TENANT, MONTH);
+    expect(result.submitted).toBe(false);
+    expect(result.run).toBe(null);
+  });
+});
+
+describe('TS-SUBMIT-01 — unsubmit state transition', () => {
+  it('cancels only a pending submitted run and preserves an audit trail', async () => {
+    state.runs = [{ id: 779, status: 'PENDING', createdAt: new Date() }];
+    state.auditRows = [{ id: 11, action: 'TIMESHEET_SUBMITTED', payrollRunId: 779 }];
+    const result = await unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 });
+    expect(result.unsubmitted).toBe(true);
+    expect(state.runs[0].status).toBe('CANCELLED');
+    expect(state.auditRows.at(-1).action).toBe('TIMESHEET_UNSUBMITTED');
+  });
+
+  it('refuses to unsubmit a processed run', async () => {
+    state.runs = [{ id: 780, status: 'COMPLETED', createdAt: new Date() }];
+    await expect(
+      unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 }),
+    ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('HR-TP-04') });
   });
 });
 

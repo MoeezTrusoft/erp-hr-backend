@@ -69,10 +69,21 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
   }
 
   const seen = new Set();
+  const creditLossDays = new Set();
   const add = (ruleKey, day) => {
     if (!day || excused.has(day)) return;
     seen.add(`${ruleKey}|${day}`);
   };
+
+  // ABSENT/HALF_DAY are priced from Attendance.day_credit by the payslip
+  // bridge. Keep their day keys here so an EARLY_CHECKOUT anomaly on the same
+  // row is not also emitted as a rule violation and charged twice. If the
+  // employee worked a full-credit day, EARLY_CHECKOUT remains rule-priced.
+  for (const row of attendance) {
+    const day = dayKey(row?.date);
+    if (!day || row?.manually_corrected || excused.has(day)) continue;
+    if (row?.status === "ABSENT" || row?.status === "HALF_DAY") creditLossDays.add(day);
+  }
 
   for (const row of attendance) {
     // HR's ruling outranks the device — the same precedence the roll-up uses
@@ -106,7 +117,9 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
     // the violation, so it counts unless HR approved the appeal. The add()
     // dedupes with any same-day status-derived violation.
     const ruleKey = a?.status !== "APPROVED" ? ANOMALY_TO_RULE[a?.type] : null;
-    if (ruleKey) add(ruleKey, dayKey(a.date));
+    const day = dayKey(a.date);
+    if (ruleKey === "EARLY_CHECKOUT" && creditLossDays.has(day)) continue;
+    if (ruleKey) add(ruleKey, day);
   }
 
   return [...seen]

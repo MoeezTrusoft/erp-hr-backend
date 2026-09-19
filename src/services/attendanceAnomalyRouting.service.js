@@ -46,11 +46,13 @@ export async function resolveApprovalChain({ tenantId, employeeId }) {
     }),
     prisma.employee.findUnique({
       where: { id: employeeId },
-      select: { id: true, managerId: true },
+      select: { id: true, tenant_id: true, managerId: true },
     }),
   ]);
 
-  if (!employee) throw notFound(`Employee ${employeeId} not found`);
+  if (!employee || employee.tenant_id !== tenantId) {
+    throw notFound(`Employee ${employeeId} not found in this tenant`);
+  }
 
   return levels.map((lvl) => {
     let approverId = null;
@@ -103,8 +105,13 @@ function firstActionableLevel(chain) {
  * only safe outcome is to leave it for a human and say so loudly.
  */
 export async function routeAnomaly({ tenantId, anomalyId }) {
-  const anomaly = await prisma.attendanceAnomaly.findUnique({ where: { id: anomalyId } });
-  if (!anomaly) throw notFound(`Anomaly ${anomalyId} not found`);
+  const anomaly = await prisma.attendanceAnomaly.findUnique({
+    where: { id: anomalyId },
+    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true, createdAt: true },
+  });
+  if (!anomaly || anomaly.tenantId !== tenantId) {
+    throw notFound(`Anomaly ${anomalyId} not found in this tenant`);
+  }
 
   const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
   const target = firstActionableLevel(chain);
@@ -140,8 +147,13 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
     throw badRequest("decision must be APPROVED or REJECTED");
   }
 
-  const anomaly = await prisma.attendanceAnomaly.findUnique({ where: { id: anomalyId } });
-  if (!anomaly) throw notFound(`Anomaly ${anomalyId} not found`);
+  const anomaly = await prisma.attendanceAnomaly.findUnique({
+    where: { id: anomalyId },
+    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true },
+  });
+  if (!anomaly || anomaly.tenantId !== tenantId) {
+    throw notFound(`Anomaly ${anomalyId} not found in this tenant`);
+  }
   if (anomaly.status !== "PENDING") {
     throw badRequest(`Anomaly ${anomalyId} is already ${anomaly.status}`);
   }

@@ -42,18 +42,39 @@ function submissionWindow(month) {
   return { from, to };
 }
 
-/** Has this month's timesheet been submitted? (submission ⇒ a PayrollRun exists) */
-export async function isTimesheetSubmitted(tenantId, month) {
+/** Find the active Payroll Vault run covering exactly this calendar month. */
+async function findSubmissionRun(tenantId, month) {
   const { from, to } = submissionWindow(month);
-  const run = await prisma.payrollRun.findFirst({
+  return prisma.payrollRun.findFirst({
     where: scopedWhere(tenantId, {
       periodStart: { gte: from, lte: to },
       periodEnd: { gte: from, lte: to },
       status: { notIn: ["CANCELLED", "FAILED"] },
     }),
+    orderBy: { id: "desc" },
     select: { id: true, status: true, periodStart: true, periodEnd: true },
   });
-  return run ? { submitted: true, run } : { submitted: false, run: null };
+}
+
+/**
+ * Has this month's timesheet been submitted?
+ *
+ * A PayrollRun alone is not proof of submission because runs can be created
+ * by migration, API clients, or older UI flows. The authoritative marker is
+ * the immutable TIMESHEET_SUBMITTED audit event linked to that run.
+ */
+export async function isTimesheetSubmitted(tenantId, month) {
+  const run = await findSubmissionRun(tenantId, month);
+  if (!run) return { submitted: false, run: null };
+
+  const audit = await prisma.payrollAuditLog.findFirst({
+    where: scopedWhere(tenantId, {
+      action: "TIMESHEET_SUBMITTED",
+      payrollRunId: run.id,
+    }),
+    select: { id: true },
+  });
+  return audit ? { submitted: true, run } : { submitted: false, run: null };
 }
 
 /** Count unresolved anomaly requests inside the month window. */
@@ -157,8 +178,14 @@ export async function submitTimesheet({
   // exactly what the operator's gatekeeper exists to prevent.
 
   // ── Effect: activate the Payroll Vault run request (PENDING) ──────────────
-  const existing = await isTimesheetSubmitted(tenantId, month);
-  if (existing.submitted) {
+  const existingRun = await findSubmissionRun(tenantId, month);
+  if (existingRun) {
+    if (existingRun.status !== "PENDING") {
+      throw new AppError(
+        `HR-TP-04 run #${existingRun.id} is ${existingRun.status}; only a PENDING run may receive a timesheet submission`,
+        409,
+      );
+    }
     // Idempotent: a re-submit after edits must not stack duplicate vault rows.
     // But the submission AUDIT row must exist for this run either way — the
     // payroll blocker (HR-TP-03) reads it, and runs created out-of-band
@@ -167,7 +194,7 @@ export async function submitTimesheet({
     const audit = await prisma.payrollAuditLog.findFirst({
       where: scopedWhere(tenantId, {
         action: "TIMESHEET_SUBMITTED",
-        payrollRunId: existing.run.id,
+        payrollRunId: existingRun.id,
       }),
       select: { id: true },
     });
@@ -176,16 +203,16 @@ export async function submitTimesheet({
         data: {
           tenantId: tenantId ?? null,
           action: "TIMESHEET_SUBMITTED",
-          payrollRunId: existing.run.id,
+          payrollRunId: existingRun.id,
           details:
             `Timesheet for ${month} submitted by ${
               who.actorEmployeeId != null ? `employee ${who.actorEmployeeId}` : who.actorNote
-            }; linked to existing vault run #${existing.run.id} (PENDING)`,
+            }; linked to existing vault run #${existingRun.id} (PENDING)`,
         },
       });
     }
     return {
-      run: existing.run,
+      run: existingRun,
       created: false,
       pendingAnomalies,
       forced: false,

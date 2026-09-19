@@ -314,7 +314,7 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
 
   const restate = [];
   for (const [employeeId, list] of candidates) {
-    const working = await resolveWorkingDays({ employeeId, from, to });
+    const working = await resolveWorkingDays({ employeeId, tenantId, from, to });
     for (const r of list) {
       const info = working.get(dayKey(r.date));
       if (info?.working !== false) continue;
@@ -405,7 +405,7 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
 
   const toWrite = [];
   for (const [employeeId, days] of seen) {
-    const working = await resolveWorkingDays({ employeeId, from, to });
+    const working = await resolveWorkingDays({ employeeId, tenantId, from, to });
     for (const [key, info] of working) {
       if (info?.working !== false) continue;
       if (days.has(key)) continue; // already has a row, or a shift was evaluated

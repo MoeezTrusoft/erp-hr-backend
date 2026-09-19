@@ -42,12 +42,13 @@ function atClock(day, hhmm) {
   return d;
 }
 
-async function loadShift(employeeId, day) {
+async function loadShift(employeeId, day, tenantId) {
   // Effective-dated: the form must describe the shift in force on the DAY being
   // regularised, not whatever the employee's schedule is today.
   const ws = await prisma.workSchedule.findFirst({
     where: {
       employeeId,
+      tenantId,
       effective_start_date: { lte: day },
       OR: [{ effective_end_date: null }, { effective_end_date: { gte: day } }],
     },
@@ -139,10 +140,11 @@ function deriveCategory({ attendance, shift }) {
   }
 }
 
-async function loadRequester(employeeId) {
+async function loadRequester(employeeId, tenantId) {
   const employee = await prisma.employee.findUnique({
     where: { id: employeeId },
     select: {
+      tenant_id: true,
       id: true,
       employee_code: true,
       employee_name: true,
@@ -154,7 +156,9 @@ async function loadRequester(employeeId) {
       Position: { select: { title: true } },
     },
   });
-  if (!employee) throw notFound(`Employee ${employeeId} not found`);
+  if (!employee || employee.tenant_id !== tenantId) {
+    throw notFound(`Employee ${employeeId} not found in this tenant`);
+  }
 
   return {
     id: employee.id,
@@ -179,10 +183,10 @@ async function loadRequester(employeeId) {
 export async function getAnomalyFormDefaults({ tenantId, employeeId, date }) {
   const day = startOfDay(date);
   const [requester, shift, attendance] = await Promise.all([
-    loadRequester(employeeId),
-    loadShift(employeeId, day),
+    loadRequester(employeeId, tenantId),
+    loadShift(employeeId, day, tenantId),
     prisma.attendance.findFirst({
-      where: { employeeId, date: day },
+      where: { tenantId, employeeId, date: day },
       orderBy: { id: "desc" },
     }),
   ]);
@@ -218,11 +222,12 @@ export async function getAnomalyFormDefaults({ tenantId, employeeId, date }) {
  * day AFTER. A working day is one whose working verdict is not explicitly
  * false — a missing roster verdict never shortens the window.
  */
-export async function computeAnomalyDeadline({ employeeId, anomalyDate, type }) {
+export async function computeAnomalyDeadline({ tenantId, employeeId, anomalyDate, type }) {
   const day = startOfDay(anomalyDate);
   // Scan generously: a long holiday stretch must never truncate the window.
   const horizonEnd = new Date(day.getTime() + 30 * 86_400_000);
   const working = await resolveWorkingDays({
+    tenantId,
     employeeId,
     from: day.toISOString().slice(0, 10),
     to: horizonEnd.toISOString().slice(0, 10),
@@ -268,7 +273,7 @@ export async function createAnomalyRequest({ tenantId, employeeId, date, reason 
   const defaults = await getAnomalyFormDefaults({ tenantId, employeeId, date: day });
 
   // HR-ANOM-DEADLINE-01 — the 2-working-day window, enforced BEFORE any write.
-  const { deadline } = await computeAnomalyDeadline({ employeeId, anomalyDate: day, type: defaults.category });
+  const { deadline } = await computeAnomalyDeadline({ tenantId, employeeId, anomalyDate: day, type: defaults.category });
   if (new Date() > deadline) {
     throw badRequest(
       `The request window closed on ${deadline.toISOString().slice(0, 10)} — anomaly requests must be submitted within 2 working days`,

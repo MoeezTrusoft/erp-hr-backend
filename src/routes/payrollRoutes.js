@@ -18,6 +18,7 @@ router.post('/runs', admin, payrollController.createPayrollRun);
 router.put('/runs/:id/process', admin, payrollController.processPayrollRun);
 // HR-02 / T-P4.1 — approval gate: a distinct approver must approve before finalize.
 router.put('/runs/:id/approve', admin, payrollController.approvePayrollRun);
+router.put('/runs/:id/reject', admin, payrollController.rejectPayrollRun);
 router.put('/runs/:id/finalize', admin, payrollController.finalizePayrollRun);
 // HR-BANKFILE-03 / HR-PAY-04 — bank/ACH disbursement export (FINALIZED runs
 // only). Deny-by-default gated like the rest of the C4 payroll surface; the

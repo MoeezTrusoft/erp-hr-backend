@@ -9,6 +9,13 @@ jest.unstable_mockModule('../../../src/services/overtimeService.js', () => ({
 }));
 jest.unstable_mockModule('../../../src/services/workScheduleService.js', () => ({
   getWorkSchedules: jest.fn(async () => ({ success: true })),
+  getRosterCoverage: jest.fn(async () => ({
+    date: '2026-09-20',
+    activeEmployees: 1,
+    withScheduleInForce: 1,
+    missingCount: 0,
+    missing: [],
+  })),
 }));
 
 const { registerOvertimeWorkScheduleTools } = await import('../../../src/mcp/tools/overtimeWorkScheduleTools.js');
@@ -34,6 +41,7 @@ const parse = (res) => JSON.parse(res.content[0].text);
 const TOOLS = [
   { name: 'hr_overtime_rule_list', gate: 'hr:attendance', action: 'VIEW', args: {} },
   { name: 'hr_work_schedule_list', gate: 'hr:attendance', action: 'VIEW', args: {} },
+  { name: 'hr_work_schedule_coverage', gate: 'hr:attendance', action: 'VIEW', args: { date: '2026-09-20' } },
 ];
 
 describe('OVERTIME-WORK-SCHEDULE-SCENARIOS — registration', () => {

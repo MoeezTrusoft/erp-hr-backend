@@ -229,6 +229,30 @@ describe('HR-04 cross-tenant isolation — tenant B cannot read tenant A', () =>
     });
 });
 
+describe('HR-PAY-REJECT-01 payroll rejection transition', () => {
+    it('requires a reason and moves a completed run to REJECTED with tenant scope', async () => {
+        prismaMock.payrollRun.findFirst.mockResolvedValue({ id: 10, tenantId: TENANT_A, status: 'COMPLETED', processedBy: 99 });
+
+        const result = await payroll.rejectPayrollRun(10, 100, 'Attendance data requires correction', TENANT_A);
+
+        expect(result).toMatchObject({ id: 10, tenantId: TENANT_A });
+        expect(prismaMock.payrollRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ id: 10, tenantId: TENANT_A }),
+            data: expect.objectContaining({ status: 'REJECTED' }),
+        }));
+        expect(prismaMock.payrollAuditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ action: 'PAYROLL_REJECTED', payrollRunId: 10 }),
+        }));
+    });
+
+    it('rejects without a reason and does not mutate the run', async () => {
+        prismaMock.payrollRun.findFirst.mockResolvedValue({ id: 10, tenantId: TENANT_A, status: 'COMPLETED' });
+
+        await expect(payroll.rejectPayrollRun(10, 100, '  ', TENANT_A)).rejects.toThrow(/reason is required/i);
+        expect(prismaMock.payrollRun.updateMany).not.toHaveBeenCalled();
+    });
+});
+
 describe('REQ-007 — tenant is an opaque uuid STRING (no int coercion)', () => {
     it('scopes a uuid-tenant query by the uuid string VERBATIM (not Number()/parseInt())', async () => {
         prismaMock.payrollRun.findFirst.mockResolvedValue(null);

@@ -39,7 +39,7 @@ function isoDow(date) {
  * range without a query per day — the evaluator asks about "tomorrow" for every
  * shift it scores, which would otherwise be one round trip each.
  */
-export async function resolveWorkingDays({ employeeId, from, to }) {
+export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
   const first = startOfDay(from);
   const last = startOfDay(to);
 
@@ -56,6 +56,7 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
     prisma.workSchedule.findMany({
       where: {
         employeeId,
+        ...(tenantId !== undefined ? { tenantId } : {}),
         effective_start_date: { lte: last },
         OR: [{ effective_end_date: null }, { effective_end_date: { gte: first } }],
       },
@@ -75,6 +76,7 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
       .findMany({
         where: {
           employeeId,
+          ...(tenantId !== undefined ? { tenantId } : {}),
           effectiveFrom: { lte: last },
           OR: [{ effectiveTo: null }, { effectiveTo: { gte: first } }],
         },
@@ -84,6 +86,7 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
         prisma.holiday.findMany({
           where: {
             date: { gte: first, lte: last },
+            ...(tenantId !== undefined ? { tenantId } : {}),
             ...(assigned.length
               ? { holidayCalendarId: { in: assigned.map((a) => a.holidayCalendarId) } }
               : {}),
@@ -94,6 +97,7 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
     prisma.leave.findMany({
       where: {
         employeeId,
+        ...(tenantId !== undefined ? { tenantId } : {}),
         status: "APPROVED",
         start_date: { lte: last },
         end_date: { gte: first },
@@ -216,8 +220,8 @@ export async function resolveWorkingDays({ employeeId, from, to }) {
  * until the next shift) rather than granting a long leniency window to the 16
  * roster-only employees whose shifts nobody has defined.
  */
-export async function isWorkingDay({ employeeId, date }) {
+export async function isWorkingDay({ employeeId, date, tenantId }) {
   const day = startOfDay(date);
-  const map = await resolveWorkingDays({ employeeId, from: day, to: day });
+  const map = await resolveWorkingDays({ employeeId, from: day, to: day, tenantId });
   return map.get(day.toISOString().slice(0, 10));
 }

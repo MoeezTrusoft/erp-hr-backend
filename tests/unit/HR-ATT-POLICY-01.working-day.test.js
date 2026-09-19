@@ -53,6 +53,16 @@ beforeEach(() => {
 });
 
 describe('HR-ATT-POLICY-01 working days', () => {
+    it('threads tenant scope into every working-day source query', async () => {
+        const tenantId = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
+        await svc.resolveWorkingDays({ tenantId, employeeId: EMP, from: '2026-08-14', to: '2026-08-17' });
+
+        expect(prismaMock.workSchedule.findMany.mock.calls[0][0].where.tenantId).toBe(tenantId);
+        expect(prismaMock.employeeHolidayCalendar.findMany.mock.calls[0][0].where.tenantId).toBe(tenantId);
+        expect(prismaMock.holiday.findMany.mock.calls[0][0].where.tenantId).toBe(tenantId);
+        expect(prismaMock.leave.findMany.mock.calls[0][0].where.tenantId).toBe(tenantId);
+    });
+
     it('marks rostered off-days non-working', async () => {
         // 2026-08-14 is a Friday; 15th Sat, 16th Sun, 17th Mon.
         const map = await svc.resolveWorkingDays({ employeeId: EMP, from: '2026-08-14', to: '2026-08-17' });

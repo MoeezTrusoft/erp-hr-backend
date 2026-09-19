@@ -1505,7 +1505,7 @@ export const createHoliday = async (data) => {
 // (HR-ATT-CORRECTION-01 precedence). Employees with no schedule in force keep
 // the old conservative reading: every non-holiday weekday is a working day.
 const createLeaveAttendanceRecords = async (leaveRequest) => {
-  const { employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
+  const { tenantId, employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
   const start = new Date(startDate);
   const end = new Date(endDate);
 
@@ -1515,7 +1515,7 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
   // Derive the leave window day-by-day on the employee's actual roster.
   let workingDays;
   try {
-    const derived = await resolveWorkingDays({ employeeId, from: start, to: end });
+    const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end });
     workingDays = [...derived.values()].filter((d) => d.working);
   } catch {
     // Derivation needs the employee to exist; a defunct employee must not

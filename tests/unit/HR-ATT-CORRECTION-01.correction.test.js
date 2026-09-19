@@ -26,9 +26,10 @@ const HR_ACTOR = 900;
 let attendanceRows;
 let logs;
 let employeeWorkMode;
+let employeeTenant;
 
 const prismaMock = {
-    employee: { findUnique: jest.fn(async () => ({ id: EMP, tenant_id: TENANT, work_mode: employeeWorkMode })) },
+    employee: { findUnique: jest.fn(async () => ({ id: EMP, tenant_id: employeeTenant, work_mode: employeeWorkMode })) },
     attendance: {
         findFirst: jest.fn(async ({ where }) =>
             attendanceRows.find((r) => r.employeeId === where.employeeId
@@ -61,6 +62,17 @@ beforeEach(() => {
     attendanceRows = [];
     logs = [];
     employeeWorkMode = 'Remote'; // WFH by default: manual entries are the allowed path
+    employeeTenant = TENANT;
+});
+
+describe('HR-ATT-CORRECTION-01 tenant boundary', () => {
+    it('rejects an employee id owned by another tenant', async () => {
+        employeeTenant = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
+        await expect(
+            svc.correctAttendanceDay({ ...base, date: '2026-08-14', checkIn: '10:00', checkOut: '18:00' }),
+        ).rejects.toThrow('not found in this tenant');
+        expect(prismaMock.attendance.create).not.toHaveBeenCalled();
+    });
 });
 
 describe('HR-ATT-CORRECTION-01 correcting a MISSING_* day (#7)', () => {
