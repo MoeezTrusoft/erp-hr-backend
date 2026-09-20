@@ -147,6 +147,9 @@ const RLS_MODELS = new Set([
     // wraps, so writes appear to work, while ordinary reads run with no GUC, the
     // policy hides every row, and the feature silently reads back empty.
     'ApplicationStageHistory',
+    // Phase 2.1 — requisition transition history (20260920210000). Same
+    // convention: tenantId column, its own policy in the same migration.
+    'RequisitionTransition',
     'OfferApproval',
     'OfferHandoff',
     'OfferHandoffAttempt',

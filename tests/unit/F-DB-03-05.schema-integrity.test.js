@@ -80,7 +80,11 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // nullable-tenant convention as every other tenant-owned model here.
     // 121 + EmploymentPeriod (HR-PAYROLL-EMPLOYMENT-PERIOD-01), likewise.
     // 122 + EmployeeDeviceEnrolment (HR-ATT-DEVICE-ENROLMENT-01), likewise.
-    expect(nullableModels).toHaveLength(123);
+    // 123 + RequisitionTransition (Phase 2.1), the requisition's immutable
+    // transition history. Nullable-tenant like RequisitionApproval beside it: a
+    // legacy tenantless requisition must still be able to record a transition
+    // rather than fail its write on a NOT NULL column.
+    expect(nullableModels).toHaveLength(124);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

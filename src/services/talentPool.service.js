@@ -1,5 +1,7 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import logger from "../lib/logger.js";
+import { computeRetentionUntil } from "./candidatePrivacy.service.js";
 
 // C.2-completion — verified tenant (T-P2.1) threaded via `tenantId`; folded into
 // talent-pool reads + stamped on creates, fail-closed so tenant B never reads or
@@ -16,7 +18,7 @@ export const listPools = async ({ page = 1, limit = 20, tenantId } = {}) => {
 };
 
 export const addToPool = async ({ candidateId, poolName, notes, addedById, tenantId }) => {
-    return prisma.talentPool.create({
+    const entry = await prisma.talentPool.create({
         data: scopedData(tenantId, {
             candidateId: Number(candidateId),
             poolName,
@@ -24,6 +26,38 @@ export const addToPool = async ({ candidateId, poolName, notes, addedById, tenan
             addedById: addedById ? Number(addedById) : null,
         }),
     });
+
+    // Phase 10 (remainder) — TALENT_POOL retention wiring.
+    //
+    // The privacy model has always supported a per-population policy
+    // (`appliesTo: 'TALENT_POOL'` beside `APPLICANT`), but NOTHING read it: the
+    // retention clock was stamped only on candidate creation, with the APPLICANT
+    // policy. So a candidate kept on file for future roles was still counting down
+    // on the applicant clock — the pool is a DIFFERENT lawful basis, and its clock
+    // starts when the candidate enters it.
+    //
+    // No policy for the population ⇒ no clock (unchanged, and never a guessed
+    // default). Fail-soft: the pool entry already exists, so a policy lookup
+    // failure must not undo it — but it is logged, because a silently missing
+    // retention clock is exactly the kind of thing nobody notices until an audit.
+    try {
+        const retentionUntil = await computeRetentionUntil(
+            { tenantId, appliesTo: "TALENT_POOL" },
+            { db: prisma },
+        );
+        if (!retentionUntil) return entry;
+        await prisma.candidate.updateMany({
+            where: scopedWhere(tenantId, { id: Number(candidateId) }),
+            data: { retentionUntil },
+        });
+        return { ...entry, retentionUntil };
+    } catch (err) {
+        logger.warn(
+            { errMessage: err?.message, candidateId, tenantId },
+            "talent pool: TALENT_POOL retention clock not stamped",
+        );
+        return entry;
+    }
 };
 
 export const removeFromPool = async (id, tenantId) => {

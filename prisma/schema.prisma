@@ -1502,6 +1502,7 @@ model JobRequisition {
   requestedBy  Employee              @relation("RequestedBy", fields: [requestedById], references: [id])
   approvedBy   Employee?             @relation("ApprovedBy", fields: [approvedById], references: [id])
   approvals    RequisitionApproval[]
+  transitions  RequisitionTransition[]
   postings     JobPosting[]
   employee     Employee?             @relation(fields: [employeeId], references: [id])
   applications Application[]
@@ -1536,6 +1537,29 @@ model RequisitionApproval {
   @@index([tenantId])
   @@index([requisitionId])
   @@index([approverId])
+}
+
+// Phase 2.1 — immutable transition history for a requisition. Mirrors
+// ApplicationStageHistory: append-only, tenant-stamped, attributed to the actor
+// who made the move, with the reason the workflow made mandatory. Requisitions
+// previously recorded only RequisitionApproval rows, so a submit, a post or a
+// close left no trace at all and a DRAFT -> PENDING_APPROVAL move was invisible.
+model RequisitionTransition {
+  id            Int      @id @default(autoincrement())
+  requisitionId Int
+  tenantId      String?  @db.Uuid
+  fromStatus    String
+  toStatus      String
+  reason        String?
+  actorId       Int?
+  source        String   @default("requisition")
+  createdAt     DateTime @default(now())
+
+  requisition JobRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([requisitionId, createdAt])
+  @@map("requisition_transitions")
 }
 
 model JobPosting {
@@ -3165,6 +3189,12 @@ model CandidateAnonymizationLog {
   reason          String   @db.Text
   legalBasis      String?
   retainedSummary Json? // aggregate/statistical data deliberately preserved
+  // Phase 10 (remainder) — DAM cleanup on erasure. Redacting resumeMediaId on the
+  // candidate row removes HR's POINTER to the file; the file itself lives in DAM,
+  // so an erasure that stopped there would leave the candidate's resume in place.
+  // This records what was requested, deleted, skipped and FAILED, so a partial
+  // cleanup is auditable and retryable instead of silently invisible.
+  damCleanup      Json?
   performedById   Int?
   performedAt     DateTime @default(now())
   created_at      DateTime @default(now())

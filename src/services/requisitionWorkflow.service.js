@@ -71,3 +71,43 @@ export function assertRequisitionTransition(from, to, { comments } = {}) {
     }
     return target;
 }
+
+/**
+ * Phase 2.1 — append one immutable row to a requisition's transition history.
+ *
+ * Mirrors `recordStageHistory` on the application side: the row is written by the
+ * SAME transaction as the status change (pass the `tx` client, never the global
+ * `prisma`), so a state move can never exist without the record of who made it,
+ * and a rolled-back move leaves no orphan history. RequisitionApproval only ever
+ * covered the approve/reject decision; submit, post, reopen and close were
+ * invisible before this.
+ *
+ * `fromStatus`/`toStatus` are normalized to upper case so a client that sends
+ * "draft" cannot write a history row that disagrees with the row it describes.
+ * A creation is recorded with both sides equal to the born status and
+ * `source: 'requisition'`, matching the application-history convention.
+ */
+export async function recordRequisitionTransition(db, {
+    requisitionId,
+    tenantId = null,
+    fromStatus,
+    toStatus,
+    reason = null,
+    actorId = null,
+    source = "requisition",
+} = {}) {
+    const actor = Number(actorId);
+    return db.requisitionTransition.create({
+        data: {
+            requisitionId: Number(requisitionId),
+            tenantId: tenantId ?? null,
+            fromStatus: normalizeStatus(fromStatus),
+            toStatus: normalizeStatus(toStatus),
+            // Trimmed to null rather than "" so an absent reason is one value in
+            // the table, not two that read differently in a report.
+            reason: String(reason ?? "").trim() || null,
+            actorId: Number.isInteger(actor) && actor > 0 ? actor : null,
+            source,
+        },
+    });
+}

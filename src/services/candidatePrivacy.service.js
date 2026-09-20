@@ -25,6 +25,7 @@
 // the row belongs to the caller's tenant before touching it.
 import prisma from "../lib/prisma.js";
 import { withTenant } from "../lib/tenancy.js";
+import { deleteDamAsset } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
 
 export const DNC_STATUS = Object.freeze({ ACTIVE: "ACTIVE", LIFTED: "LIFTED" });
@@ -511,6 +512,29 @@ export async function anonymizeCandidate(
     );
   }
 
+  // Phase 10 (remainder) — DAM cleanup. The redaction below NULLs resumeMediaId,
+  // which removes HR's pointer to the resume but leaves the FILE where it lives
+  // (DAM). The asset ids are therefore collected FIRST, then deleted.
+  //
+  // FAIL-SOFT BUT AUDITED: a DAM outage must not block an erasure the data
+  // subject is entitled to (HR's copy is the one this service owns, and the DSR
+  // clock is running), but it must never be invisible either — every requested
+  // asset is recorded as deleted, skipped or failed on the log row, so a partial
+  // cleanup is retryable and provable.
+  const mediaIds = [candidate.resumeMediaId].filter((id) => id !== null && id !== undefined);
+  const damCleanup = {
+    requested: mediaIds.map(String),
+    deleted: [],
+    skipped: [],
+    failed: [],
+  };
+  for (const mediaId of mediaIds) {
+    const result = await deleteDamAsset(mediaId);
+    if (result.ok) damCleanup.deleted.push(String(mediaId));
+    else if (result.skipped) damCleanup.skipped.push({ mediaId: String(mediaId), reason: result.reason });
+    else damCleanup.failed.push({ mediaId: String(mediaId), error: result.error ?? "unknown" });
+  }
+
   // Aggregate facts survive erasure: pipeline history stays reportable without PII.
   const applications = await db.application.findMany({
     where: withTenant(tenantId, { candidateId: candidate.id }),
@@ -553,6 +577,7 @@ export async function anonymizeCandidate(
       reason: resolvedReason,
       legalBasis,
       retainedSummary,
+      damCleanup,
       performedById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
       performedAt: at,
     },
@@ -567,7 +592,100 @@ export async function anonymizeCandidate(
     tenantId,
   });
 
-  return { candidateId: candidate.id, alreadyAnonymized: false, redactedFields: REDACTED_FIELD_NAMES, retainedSummary, log };
+  return {
+    candidateId: candidate.id,
+    alreadyAnonymized: false,
+    redactedFields: REDACTED_FIELD_NAMES,
+    retainedSummary,
+    // Reported so the caller sees a partial erasure immediately rather than
+    // discovering it in the log during an audit.
+    damCleanup,
+    log,
+  };
+}
+
+// ── Archive behaviour (Phase 10 remainder) ───────────────────────────────────
+//
+// `Candidate.archivedAt` existed with nothing that ever set it, so "archived" was
+// a state no record could reach. Archiving is NOT erasure and NOT anonymization:
+// the data stays, exactly as it is, and the candidate simply stops appearing as
+// live pipeline work. That is the step between "still being considered" and "their
+// retention window has closed and they may be erased".
+//
+// A candidate is archivable when they have NO application in a live stage — every
+// application has reached hired/rejected/withdrawn — and their most recent
+// activity is older than the cutoff. The activity date is the newest application
+// update, falling back to the candidate row's own updatedAt; a candidate with no
+// applications at all is judged on the row itself.
+//
+// Only `archivedAt` is written. `Candidate.status` ("active"|"archived") is left
+// alone on purpose: other queries already read it, and silently redefining an
+// existing column's meaning would hide records from views that never asked to
+// hide them.
+const LIVE_APPLICATION_STAGES = Object.freeze(["applied", "screening", "interview", "offer"]);
+
+export async function archiveInactiveCandidates(
+  { tenantId, asOf = new Date(), inactiveMonths = 12, dryRun = true, limit = 200 } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const months = Number(inactiveMonths);
+  if (!Number.isInteger(months) || months <= 0) {
+    throw privacyError(
+      "inactiveMonths must be a positive whole number",
+      "HR-RECRUITMENT-ARCHIVE-MONTHS-INVALID",
+      400,
+    );
+  }
+  const cutoff = addMonths(new Date(asOf), -months);
+
+  const candidates = await db.candidate.findMany({
+    // Already-archived and already-anonymized rows are out of scope: the first is
+    // idempotent work, the second is a tombstone.
+    where: withTenant(tenantId, { archivedAt: null, anonymizedAt: null }),
+    select: {
+      id: true,
+      updatedAt: true,
+      applications: { select: { stage: true, updatedAt: true } },
+    },
+    orderBy: { id: "asc" },
+    take: Math.min(Number(limit) || 200, 500),
+  });
+
+  const archivable = candidates
+    .filter((candidate) => {
+      const applications = candidate.applications || [];
+      const live = applications.some((app) =>
+        LIVE_APPLICATION_STAGES.includes(String(app.stage || "").toLowerCase()),
+      );
+      if (live) return false;
+      const lastActivity = applications.reduce(
+        (latest, app) => (app.updatedAt && (!latest || app.updatedAt > latest) ? app.updatedAt : latest),
+        candidate.updatedAt || null,
+      );
+      return lastActivity != null && new Date(lastActivity) <= cutoff;
+    })
+    .map((candidate) => candidate.id);
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      asOf: new Date(asOf),
+      inactiveMonths: months,
+      cutoff,
+      wouldArchive: archivable,
+    };
+  }
+
+  if (archivable.length) {
+    await db.candidate.updateMany({
+      where: withTenant(tenantId, { id: { in: archivable } }),
+      data: { archivedAt: new Date(asOf) },
+    });
+  }
+
+  return { dryRun: false, asOf: new Date(asOf), inactiveMonths: months, cutoff, archived: archivable };
 }
 
 /**

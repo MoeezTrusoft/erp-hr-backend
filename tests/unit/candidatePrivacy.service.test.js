@@ -15,7 +15,7 @@
 import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
 const db = {
-  candidate: { findFirst: jest.fn(), updateMany: jest.fn() },
+  candidate: { findFirst: jest.fn(), findMany: jest.fn(), updateMany: jest.fn() },
   candidateConsent: { create: jest.fn(), findMany: jest.fn() },
   candidateDncEntry: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn(), findMany: jest.fn() },
   candidateLegalHold: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn() },
@@ -28,6 +28,18 @@ const db = {
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: db }));
 const logAction = jest.fn();
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction }));
+// Phase 10 (remainder) — erasure now calls DAM to delete the resume asset. Mocked
+// so these rules stay testable without a DAM upstream; the deletion itself is
+// asserted in the DAM-cleanup block at the end of this file.
+const deleteDamAsset = jest.fn(async () => ({ ok: true, status: 200 }));
+jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({
+  deleteDamAsset,
+  getDamAssetById: jest.fn(async () => null),
+  downloadDamAssetBuffer: jest.fn(async () => null),
+  uploadFileToDAM: jest.fn(async () => null),
+  damRequest: jest.fn(async () => null),
+  normalizeDamAssetResponse: jest.fn((payload) => payload ?? null),
+}));
 
 const privacy = await import("../../src/services/candidatePrivacy.service.js");
 
@@ -50,6 +62,8 @@ beforeEach(() => {
   db.candidateAnonymizationLog.create.mockResolvedValue({ id: 11 });
   db.candidateRetentionPolicy.findFirst.mockResolvedValue(null);
   db.application.findMany.mockResolvedValue([{ stage: "screening", status: "active" }]);
+  db.candidate.findMany.mockResolvedValue([]);
+  deleteDamAsset.mockResolvedValue({ ok: true, status: 200 });
 });
 
 describe("candidate consent", () => {
@@ -361,5 +375,133 @@ describe("tenancy", () => {
 
     await expect(privacy.placeLegalHold({ tenantId: TENANT, candidateId: 999, reason: "x" }, { db }))
       .rejects.toMatchObject({ code: "HR-RECRUITMENT-CANDIDATE-NOT-FOUND", status: 404 });
+  });
+});
+
+describe("Phase 10 (remainder) — DAM cleanup on erasure", () => {
+  it("deletes the resume asset, because redacting the pointer does not delete the file", async () => {
+    db.candidate.findFirst.mockResolvedValue({ ...CANDIDATE, resumeMediaId: 512 });
+
+    const result = await privacy.anonymizeCandidate(
+      { tenantId: TENANT, candidateId: 7, reason: "erasure request", actorId: ACTOR },
+      { db },
+    );
+
+    expect(deleteDamAsset).toHaveBeenCalledWith(512);
+    expect(result.damCleanup).toEqual({ requested: ["512"], deleted: ["512"], skipped: [], failed: [] });
+    // The cleanup outcome travels WITH the anonymization log — a partial erasure
+    // has to be visible on the audit record, not only in a log line.
+    expect(db.candidateAnonymizationLog.create.mock.calls[0][0].data.damCleanup).toEqual(result.damCleanup);
+  });
+
+  it("records a FAILED deletion but still erases HR's copy, so the erasure is not blocked and not hidden", async () => {
+    db.candidate.findFirst.mockResolvedValue({ ...CANDIDATE, resumeMediaId: 512 });
+    deleteDamAsset.mockResolvedValue({ ok: false, status: 503, error: "DAM unavailable" });
+
+    const result = await privacy.anonymizeCandidate(
+      { tenantId: TENANT, candidateId: 7, reason: "erasure request", actorId: ACTOR },
+      { db },
+    );
+
+    expect(result.damCleanup.failed).toEqual([{ mediaId: "512", error: "DAM unavailable" }]);
+    // The PII redaction still happened: the subject is entitled to it, and the
+    // failed asset is recorded so it can be retried.
+    expect(db.candidate.updateMany).toHaveBeenCalled();
+  });
+
+  it("has nothing to clean up when the candidate never had a resume asset", async () => {
+    db.candidate.findFirst.mockResolvedValue({ ...CANDIDATE, resumeMediaId: null });
+
+    const result = await privacy.anonymizeCandidate(
+      { tenantId: TENANT, candidateId: 7, reason: "erasure request", actorId: ACTOR },
+      { db },
+    );
+
+    expect(deleteDamAsset).not.toHaveBeenCalled();
+    expect(result.damCleanup).toEqual({ requested: [], deleted: [], skipped: [], failed: [] });
+  });
+
+  it("does not re-run cleanup on a REPLAY of an already-anonymized candidate", async () => {
+    db.candidate.findFirst.mockResolvedValue({ ...CANDIDATE, resumeMediaId: 512, anonymizedAt: new Date() });
+
+    const result = await privacy.anonymizeCandidate(
+      { tenantId: TENANT, candidateId: 7, reason: "again", actorId: ACTOR },
+      { db },
+    );
+
+    expect(result.alreadyAnonymized).toBe(true);
+    expect(deleteDamAsset).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase 10 (remainder) — archive behaviour", () => {
+  const monthsAgo = (n) => new Date(Date.now() - n * 30 * 24 * 60 * 60 * 1000);
+
+  it("is a DRY RUN by default and reports who WOULD be archived", async () => {
+    db.candidate.findMany.mockResolvedValue([
+      { id: 1, updatedAt: monthsAgo(20), applications: [{ stage: "rejected", updatedAt: monthsAgo(18) }] },
+    ]);
+
+    const result = await privacy.archiveInactiveCandidates({ tenantId: TENANT, inactiveMonths: 12 }, { db });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.wouldArchive).toEqual([1]);
+    expect(db.candidate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("skips a candidate with a LIVE application — they are still being considered", async () => {
+    db.candidate.findMany.mockResolvedValue([
+      { id: 2, updatedAt: monthsAgo(30), applications: [{ stage: "interview", updatedAt: monthsAgo(29) }] },
+    ]);
+
+    const result = await privacy.archiveInactiveCandidates(
+      { tenantId: TENANT, inactiveMonths: 12, dryRun: false },
+      { db },
+    );
+
+    expect(result.archived).toEqual([]);
+    expect(db.candidate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("skips a candidate whose last activity is inside the window", async () => {
+    db.candidate.findMany.mockResolvedValue([
+      { id: 3, updatedAt: monthsAgo(2), applications: [{ stage: "rejected", updatedAt: monthsAgo(2) }] },
+    ]);
+
+    const result = await privacy.archiveInactiveCandidates(
+      { tenantId: TENANT, inactiveMonths: 12, dryRun: false },
+      { db },
+    );
+
+    expect(result.archived).toEqual([]);
+  });
+
+  it("judges a candidate with NO applications on the candidate row itself", async () => {
+    db.candidate.findMany.mockResolvedValue([{ id: 4, updatedAt: monthsAgo(24), applications: [] }]);
+
+    const result = await privacy.archiveInactiveCandidates(
+      { tenantId: TENANT, inactiveMonths: 12, dryRun: false },
+      { db },
+    );
+
+    expect(result.archived).toEqual([4]);
+    // ONLY archivedAt moves: the write must not redefine the existing `status`
+    // column that other views already read.
+    expect(db.candidate.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { archivedAt: expect.any(Date) } }),
+    );
+  });
+
+  it("never considers an already-anonymized tombstone, and demands a real window", async () => {
+    await expect(
+      privacy.archiveInactiveCandidates({ tenantId: TENANT, inactiveMonths: 0 }, { db }),
+    ).rejects.toMatchObject({ code: "HR-RECRUITMENT-ARCHIVE-MONTHS-INVALID" });
+
+    await privacy.archiveInactiveCandidates({ tenantId: TENANT, inactiveMonths: 12 }, { db });
+    expect(db.candidate.findMany.mock.calls[0][0].where).toMatchObject({
+      tenantId: TENANT,
+      archivedAt: null,
+      anonymizedAt: null,
+    });
   });
 });

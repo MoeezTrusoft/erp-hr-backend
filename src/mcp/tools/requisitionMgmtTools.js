@@ -85,7 +85,8 @@ export function registerRequisitionMgmtTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await submitRequisition(id, user.tenantId);
+      // Phase 2.1 — the history row is attributed to the verified caller.
+      const data = await submitRequisition(id, user.tenantId, user.employeeId ?? null);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisition_submit")
   );
@@ -121,7 +122,8 @@ export function registerRequisitionMgmtTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await closeRequisition(id, user.tenantId);
+      // Phase 2.1 — the history row is attributed to the verified caller.
+      const data = await closeRequisition(id, user.tenantId, user.employeeId ?? null);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisition_close")
   );

@@ -1,5 +1,6 @@
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
+import { recordRequisitionTransition } from "./requisitionWorkflow.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1856,7 +1857,7 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
       });
     }
 
-    return tx.jobRequisition.update({
+    const moved = await tx.jobRequisition.update({
       where: { id: Number(id) },
       data: {
         status,
@@ -1869,6 +1870,21 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
         approvals: { include: { approver: true }, orderBy: { id: "desc" } },
       },
     });
+
+    // Phase 2.1 — the legacy /api/hr surface is a requisition transition path
+    // like any other, so it writes the same history row. `source` marks which
+    // surface made the move; the row itself is identical in shape.
+    await recordRequisitionTransition(tx, {
+      requisitionId: Number(id),
+      tenantId,
+      fromStatus: requisition.status,
+      toStatus: status,
+      reason: comments,
+      actorId,
+      source: "requisition.legacy",
+    });
+
+    return moved;
   });
 
   return requisitionRow(updated);

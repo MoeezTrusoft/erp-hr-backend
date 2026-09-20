@@ -93,6 +93,11 @@ const prismaMock = {
       return row;
     }),
   },
+  // Phase 2.1 — the transition history row is written in the SAME transaction as
+  // the status flip, so the fake has to accept it here too.
+  requisitionTransition: {
+    create: jest.fn(async ({ data }) => ({ id: 1, ...data })),
+  },
   // tenantTransaction runs `SELECT set_config(...)` through the client before the
   // callback; the fake records it so the tenant GUC is observable, not ignored.
   $executeRaw: jest.fn(async () => 1),

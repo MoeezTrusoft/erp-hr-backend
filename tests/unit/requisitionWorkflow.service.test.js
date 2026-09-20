@@ -15,6 +15,9 @@ const prisma = {
     create: jest.fn(async () => ({ id: 1 })),
   },
   requisitionApproval: { create: jest.fn(async () => ({ id: 1 })) },
+  // Phase 2.1 — every status move now also writes an immutable transition row in
+  // the same transaction, so the double must model it.
+  requisitionTransition: { create: jest.fn(async () => ({ id: 1 })) },
   jobPosting: { create: jest.fn(async () => ({ id: 1 })) },
   outboxEvent: { create: jest.fn(async () => ({ id: 1 })) },
   // Approval/posting now run in a tenant transaction (decision + approval row +

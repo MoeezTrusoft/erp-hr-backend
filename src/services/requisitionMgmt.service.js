@@ -18,7 +18,8 @@ import prisma from "../lib/prisma.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
-import { assertRequisitionTransition } from "./requisitionWorkflow.service.js";
+import { assertRequisitionTransition, recordRequisitionTransition } from "./requisitionWorkflow.service.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { exportRows } from "../lib/export.util.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
@@ -51,6 +52,10 @@ const requisitionInclude = {
     orderBy: { decidedAt: "desc" },
     include: { approver: { select: EMPLOYEE_NAME_SELECT } },
   },
+  // Phase 2.1 — the append-only transition history, oldest first, so an operator
+  // reads the requisition the way it happened (submitted → decided → posted →
+  // closed) rather than newest-first like the approval log.
+  transitions: { orderBy: { createdAt: "asc" } },
 };
 
 // Resolve departmentId (a BusinessUnit id) → business-unit name, batched for a
@@ -87,6 +92,17 @@ const managementRow = (requisition, departmentName) => ({
     status: approval.status,
     decidedAt: approval.decidedAt,
     comments: approval.comments ?? null,
+  })),
+  // Phase 2.1 — every state change, attributed. `baseline`/'migration' rows mark
+  // where the history starts for records that predate the table; they are not
+  // operator actions and their from/to are equal by construction.
+  transitionHistory: (requisition.transitions || []).map((transition) => ({
+    fromStatus: transition.fromStatus,
+    toStatus: transition.toStatus,
+    reason: transition.reason ?? null,
+    actorId: transition.actorId ?? null,
+    source: transition.source,
+    at: transition.createdAt,
   })),
 });
 
@@ -192,13 +208,29 @@ const requireScoped = async (id, tenantId) => {
 // Submit for approval: status → PENDING_APPROVAL.
 // Phase 3.2 — only a DRAFT (or a REJECTED one revised back to draft) may be
 // submitted; submitting an APPROVED/POSTED/CLOSED requisition is refused.
-export const submitRequisition = async (id, tenantId) => {
+// Phase 2.1 — the flip and its history row commit together, and the actor is the
+// verified caller rather than an anonymous service call.
+export const submitRequisition = async (id, tenantId, actorId = null) => {
   const current = await requireScoped(id, tenantId);
   assertRequisitionTransition(current.status, "PENDING_APPROVAL");
-  await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: { status: "PENDING_APPROVAL" },
-  });
+  await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await tx.jobRequisition.update({
+        where: { id: Number(id) },
+        data: { status: "PENDING_APPROVAL" },
+      });
+      await recordRequisitionTransition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        fromStatus: current.status,
+        toStatus: "PENDING_APPROVAL",
+        actorId,
+        source: "requisition.submit",
+      });
+    },
+    { tenantId },
+  );
   return getManagedRequisition(id, tenantId);
 };
 
@@ -209,32 +241,64 @@ export const rejectRequisition = async (id, tenantId, { comments, approverId } =
   // Phase 3.2 — a decision is only legal on a SUBMITTED requisition, and a
   // rejection must carry a reason (the guard throws on both).
   assertRequisitionTransition(current.status, "REJECTED", { comments });
-  await prisma.$transaction([
-    prisma.jobRequisition.update({
-      where: { id: Number(id) },
-      data: { status: "REJECTED" },
-    }),
-    prisma.requisitionApproval.create({
-      data: scopedWhere(tenantId, {
+  // Phase 2.1 — the decision, the approval row and the history row are one unit.
+  // Previously this was a bare `$transaction([...])` batch, which does NOT set
+  // the tenant GUC on its connection: an interactive tx through tenantTransaction
+  // does, so the force-RLS tables are reachable here the same way they are on
+  // every other requisition write.
+  await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await tx.jobRequisition.update({
+        where: { id: Number(id) },
+        data: { status: "REJECTED" },
+      });
+      await tx.requisitionApproval.create({
+        data: scopedWhere(tenantId, {
+          requisitionId: Number(id),
+          approverId: Number(approverId),
+          status: "REJECTED",
+          comments: comments ?? null,
+          decidedAt: new Date(),
+        }),
+      });
+      await recordRequisitionTransition(tx, {
         requisitionId: Number(id),
-        approverId: Number(approverId),
-        status: "REJECTED",
-        comments: comments ?? null,
-        decidedAt: new Date(),
-      }),
-    }),
-  ]);
+        tenantId,
+        fromStatus: current.status,
+        toStatus: "REJECTED",
+        reason: comments,
+        actorId: approverId,
+        source: "requisition.reject",
+      });
+    },
+    { tenantId },
+  );
   return getManagedRequisition(id, tenantId);
 };
 
 // Close: status → CLOSED (terminal).
-export const closeRequisition = async (id, tenantId) => {
+export const closeRequisition = async (id, tenantId, actorId = null) => {
   const current = await requireScoped(id, tenantId);
   assertRequisitionTransition(current.status, "CLOSED");
-  await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: { status: "CLOSED" },
-  });
+  await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await tx.jobRequisition.update({
+        where: { id: Number(id) },
+        data: { status: "CLOSED" },
+      });
+      await recordRequisitionTransition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        fromStatus: current.status,
+        toStatus: "CLOSED",
+        actorId,
+        source: "requisition.close",
+      });
+    },
+    { tenantId },
+  );
   return getManagedRequisition(id, tenantId);
 };
 

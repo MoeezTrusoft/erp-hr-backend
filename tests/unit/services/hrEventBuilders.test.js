@@ -242,6 +242,77 @@ describe('hrEvents builders', () => {
         expect(env.payload.rating).toBe('EXCEEDS');
     });
 
+    // Phase 11 (remainder) — ROUTING IDS. A notification consumer cannot notify
+    // anyone from an event that carries no recipient: the requisition, application
+    // and interview-outcome builders therefore carry the ids a mapper routes on
+    // (`requestedById`, `interviewerIds`). These assertions pin that contract, and
+    // pin the null-not-invented behaviour when the caller did not load the relation.
+    it('requisition lifecycle events carry the requester as the routing id', () => {
+        const decided = assertValid(
+            requisitionDecisionEvent({ id: 21, status: 'APPROVED', requestedById: 5, tenantId: TENANT }, ctx, { decision: 'APPROVED' }),
+            'hr.recruitment.requisition_decided.v1',
+        );
+        expect(decided.payload.requestedById).toBe('5');
+
+        const posted = assertValid(
+            requisitionPostedEvent({ id: 21, requestedById: 5, tenantId: TENANT }, ctx),
+            'hr.recruitment.requisition_posted.v1',
+        );
+        expect(posted.payload.requestedById).toBe('5');
+
+        const closed = assertValid(
+            requisitionClosedEvent({ id: 21, requestedById: 5, tenantId: TENANT }, ctx),
+            'hr.recruitment.requisition_closed.v1',
+        );
+        expect(closed.payload.requestedById).toBe('5');
+    });
+
+    it('application events route to the requisition owner, and never invent one', () => {
+        const withOwner = assertValid(
+            applicationCreatedEvent(
+                { id: 31, candidateId: 8, jobRequisitionId: 21, stage: 'applied', jobRequisition: { requestedById: 5 }, tenantId: TENANT },
+                ctx,
+            ),
+            'hr.recruitment.application_created.v1',
+        );
+        expect(withOwner.payload.requestedById).toBe('5');
+
+        const stageChanged = assertValid(
+            applicationStageChangedEvent(
+                { id: 31, stage: 'screening', jobRequisition: { requestedById: 5 }, tenantId: TENANT },
+                ctx,
+                { toStage: 'screening' },
+            ),
+            'hr.recruitment.application_stage_changed.v1',
+        );
+        expect(stageChanged.payload.requestedById).toBe('5');
+
+        // No relation loaded: the field is null, NOT a guessed id.
+        const withoutOwner = assertValid(
+            applicationCreatedEvent({ id: 31, stage: 'applied', tenantId: TENANT }, ctx),
+            'hr.recruitment.application_created.v1',
+        );
+        expect(withoutOwner.payload.requestedById).toBeNull();
+    });
+
+    it('interviewOutcomeRecordedEvent carries the panel to notify', () => {
+        const env = assertValid(
+            interviewOutcomeRecordedEvent(
+                { id: 41, applicationId: 31, outcome: 'NEXT_ROUND', tenantId: TENANT },
+                ctx,
+                { overridden: false, interviewerIds: [3, 4] },
+            ),
+            'hr.recruitment.interview_outcome_recorded.v1',
+        );
+        expect(env.payload.interviewerIds).toEqual(['3', '4']);
+
+        const empty = assertValid(
+            interviewOutcomeRecordedEvent({ id: 41, outcome: 'HOLD', tenantId: TENANT }, ctx),
+            'hr.recruitment.interview_outcome_recorded.v1',
+        );
+        expect(empty.payload.interviewerIds).toEqual([]);
+    });
+
     it('returns null when the aggregate has no tenant (fail-closed)', () => {
         expect(leaveApprovedEvent({ id: 1, employeeId: 3, tenantId: null }, ctx)).toBeNull();
         expect(payrollRunFinalizedEvent({ id: 1, tenantId: undefined }, ctx)).toBeNull();

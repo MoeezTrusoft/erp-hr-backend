@@ -12,6 +12,7 @@ import {
   getInterviewManaged,
   scoreInterview,
   setInterviewOutcome,
+  consolidateInterviewFeedback,
 } from "../../services/interviewMgmt.service.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -71,6 +72,25 @@ export function registerInterviewMgmtTools(server) {
       const data = await getInterviewManaged({ id, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interview_manage_get")
+  );
+
+  server.tool(
+    "hr_interview_feedback_consolidate",
+    "Consolidate a panel's interview feedback for the hiring manager: per-reviewer overall/recommendation/notes (and whether the scorecard was amended after submission), per-criterion average/min/max/spread with attributed values, recommendations breakdown, and the panel members who have NOT submitted. Reports disagreement; it never approves or rejects anything.",
+    {
+      id: z.union([z.string(), z.number()]).describe("Interview id"),
+    },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      // Phase 1.4 — MCP parity: same record scope as the REST interview reads.
+      const data = await consolidateInterviewFeedback({
+        id,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_feedback_consolidate")
   );
 
   server.tool(

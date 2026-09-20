@@ -68,6 +68,43 @@ export function normalizeDamAssetResponse(payload) {
   return payload;
 }
 
+/**
+ * Phase 10 (remainder) — DELETE a DAM asset, with an outcome the caller can AUDIT.
+ *
+ * `damRequest` above is deliberately fail-soft (it logs and returns null), which
+ * is right for enrichment reads and wrong here: an erasure cannot treat "we could
+ * not reach DAM" and "the asset is gone" as the same answer. So this returns an
+ * explicit verdict instead of a value.
+ *
+ * A 404 counts as SUCCESS. The goal is "the asset is not there", and an asset
+ * that is already gone satisfies it — treating that as a failure would make an
+ * erasure retry forever against something that no longer exists.
+ *
+ * @param {string|number} mediaId
+ * @returns {Promise<{ok: boolean, skipped?: boolean, reason?: string, status?: number|null, alreadyGone?: boolean, error?: string}>}
+ */
+export async function deleteDamAsset(mediaId) {
+    if (mediaId === null || mediaId === undefined || mediaId === "") {
+        return { ok: false, skipped: true, reason: "no media id on the record" };
+    }
+    try {
+        const res = await damApi.delete(`/assets/${mediaId}`, { headers: withInternalSecret() });
+        return { ok: true, status: res.status };
+    } catch (error) {
+        const status = error.response?.status ?? null;
+        if (status === 404) return { ok: true, status, alreadyGone: true };
+        return {
+            ok: false,
+            status,
+            error:
+                error.response?.data?.message ||
+                error.response?.data?.error ||
+                error.message ||
+                "DAM delete failed",
+        };
+    }
+}
+
 export async function getDamAssetById(mediaId) {
   const direct = await damRequest(`/assets/${mediaId}`, "GET");
   const normalizedDirect = normalizeDamAssetResponse(direct);

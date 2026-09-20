@@ -217,6 +217,10 @@ export function requisitionDecisionEvent(requisition, ctx = {}, extra = {}) {
             // (compliance-relevant), not candidate data.
             reason: extra?.reason ?? null,
             decidedById: extra?.decidedById != null ? String(extra.decidedById) : null,
+            // Phase 11 — the ROUTING id: the requester is the person who must be
+            // told the decision, and without it a notification consumer has a
+            // recipient-less event it can only skip (ids-only, no PII).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
         },
     });
 }
@@ -230,6 +234,8 @@ export function requisitionPostedEvent(requisition, ctx = {}) {
             requisitionId: String(requisition?.id),
             status: 'POSTED',
             externalUrl: requisition?.externalUrl ?? null,
+            // Phase 11 — routing id (see requisitionDecisionEvent).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
         },
     });
 }
@@ -242,6 +248,8 @@ export function requisitionClosedEvent(requisition, ctx = {}, extra = {}) {
             requisitionId: String(requisition?.id),
             status: 'CLOSED',
             reason: extra?.reason ?? null,
+            // Phase 11 — routing id (see requisitionDecisionEvent).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
         },
     });
 }
@@ -258,6 +266,14 @@ export function applicationCreatedEvent(application, ctx = {}) {
             candidateId: application?.candidateId != null ? String(application.candidateId) : null,
             jobRequisitionId: application?.jobRequisitionId != null ? String(application.jobRequisitionId) : null,
             stage: application?.stage ?? null,
+            // Phase 11 — routing id: the hiring manager who owns the requisition
+            // is who wants "a new applicant arrived". It is read off the already-
+            // included relation when the caller loaded it, and stays null (never
+            // invented) when it did not.
+            requestedById:
+                application?.jobRequisition?.requestedById != null
+                    ? String(application.jobRequisition.requestedById)
+                    : null,
         },
     });
 }
@@ -274,6 +290,11 @@ export function applicationStageChangedEvent(application, ctx = {}, extra = {}) 
             toStage: extra?.toStage ?? application?.stage ?? null,
             status: application?.status ?? null,
             reason: extra?.reason ?? null,
+            // Phase 11 — routing id (see applicationCreatedEvent).
+            requestedById:
+                application?.jobRequisition?.requestedById != null
+                    ? String(application.jobRequisition.requestedById)
+                    : null,
         },
     });
 }
@@ -306,6 +327,9 @@ export function interviewOutcomeRecordedEvent(interview, ctx = {}, extra = {}) {
             // fabric should show that a human overrode the gate.
             overridden: Boolean(extra?.overridden),
             reason: extra?.reason ?? null,
+            // Phase 11 — the panel learns its own outcome. Same routing list as
+            // interviewScheduledEvent, so a consumer fans out over one field name.
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
         },
     });
 }

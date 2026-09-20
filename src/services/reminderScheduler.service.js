@@ -9,6 +9,7 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
+import { applyRetention } from "./candidatePrivacy.service.js";
 
 const reminderLog = logger.child({ component: "reminder-jobs" });
 
@@ -86,6 +87,96 @@ export async function runRetentionSweepJob({ retentionDays = 30 } = {}) {
   });
   reminderLog.info({ deleted: res?.count ?? 0, retentionDays }, "retention sweep job: done");
   return { deleted: res?.count ?? 0 };
+}
+
+// ── Phase 10 (remainder) — the SCHEDULED candidate-retention job ─────────────
+//
+// The retention SERVICE existed with no cron/worker invoking it, so a retention
+// policy was a document rather than a control: nothing ever acted on it. This is
+// the job body; BullMQ schedules it (src/jobs/reminder.queue.js).
+//
+// THREE DELIBERATE SAFETY PROPERTIES:
+//
+//   1. MODE, never a boolean. `HR_CANDIDATE_RETENTION_MODE` is one of
+//      `off | dry-run | apply`, defaulting to **dry-run**. A scheduled job that is
+//      merely "enabled" cannot be trusted to be non-destructive, but a job that
+//      defaults to dry-run reports what it WOULD erase until an operator opts in.
+//      An unrecognized value falls back to dry-run, so a typo can never turn on
+//      erasure — the fail-safe direction is the non-destructive one.
+//   2. TENANTS COME FROM THE POLICIES. The sweep runs only for tenants that have
+//      an ACTIVE retention policy, and the window comes from that policy. No
+//      policy ⇒ no clock ⇒ nothing to erase, which is the same rule the service
+//      enforces on the write path. It never invents a tenant or a window.
+//   3. PER-TENANT ISOLATION. One tenant's failure is caught and reported; it
+//      cannot abort the sweep for every other tenant.
+//
+// @param {object} [opts]
+// @param {'off'|'dry-run'|'apply'} [opts.mode]      defaults to the env value, then dry-run
+// @param {Date|string} [opts.asOf]                  evaluation instant (defaults to now)
+// @param {number} [opts.limit=100]                  max candidates erased per tenant per run
+// @returns {Promise<object>} a per-tenant summary
+const RETENTION_MODES = Object.freeze(["off", "dry-run", "apply"]);
+
+export async function runCandidateRetentionJob({
+  mode = process.env.HR_CANDIDATE_RETENTION_MODE || "dry-run",
+  asOf = new Date(),
+  limit = 100,
+} = {}) {
+  const requested = String(mode).toLowerCase();
+  const resolved = RETENTION_MODES.includes(requested) ? requested : "dry-run";
+  if (resolved !== requested) {
+    reminderLog.warn(
+      { requested, using: resolved },
+      "candidate retention job: unrecognized mode — falling back to dry-run (never erases on a typo)",
+    );
+  }
+  if (resolved === "off") {
+    reminderLog.info("candidate retention job: mode=off — nothing to do");
+    return { mode: "off", tenants: 0, wouldAnonymize: 0, anonymized: 0, suspendedByLegalHold: 0, perTenant: [] };
+  }
+
+  const policies = await prisma.candidateRetentionPolicy.findMany({
+    where: { isActive: true },
+    select: { tenantId: true, appliesTo: true, retentionMonths: true },
+  });
+  const tenants = [...new Set(policies.map((p) => p.tenantId).filter(Boolean))];
+  if (tenants.length === 0) {
+    reminderLog.info("candidate retention job: no tenant has an active retention policy — nothing to do");
+    return { mode: resolved, tenants: 0, wouldAnonymize: 0, anonymized: 0, suspendedByLegalHold: 0, perTenant: [] };
+  }
+
+  const at = new Date(asOf);
+  const dryRun = resolved !== "apply";
+  const perTenant = [];
+  let wouldAnonymize = 0;
+  let anonymized = 0;
+  let suspendedByLegalHold = 0;
+
+  for (const tenantId of tenants) {
+    try {
+      const result = await applyRetention({ tenantId, asOf: at, dryRun, limit });
+      const held = result.suspendedByLegalHold?.length ?? 0;
+      suspendedByLegalHold += held;
+      if (dryRun) {
+        wouldAnonymize += result.wouldAnonymize?.length ?? 0;
+        perTenant.push({ tenantId, wouldAnonymize: result.wouldAnonymize?.length ?? 0, suspendedByLegalHold: held });
+      } else {
+        anonymized += result.anonymized?.length ?? 0;
+        perTenant.push({ tenantId, anonymized: result.anonymized?.length ?? 0, suspendedByLegalHold: held });
+      }
+    } catch (err) {
+      // One tenant's failure is reported, never propagated: it must not abort the
+      // sweep for every other tenant, and BullMQ must not retry the whole run.
+      reminderLog.error({ errMessage: err?.message, tenantId }, "candidate retention job: tenant failed");
+      perTenant.push({ tenantId, error: err?.message ?? "unknown" });
+    }
+  }
+
+  reminderLog.info(
+    { mode: resolved, tenants: tenants.length, wouldAnonymize, anonymized, suspendedByLegalHold },
+    "candidate retention job: done",
+  );
+  return { mode: resolved, asOf: at, tenants: tenants.length, wouldAnonymize, anonymized, suspendedByLegalHold, perTenant };
 }
 
 // Back-compat shim: the old export name. Now it just logs that scheduling has

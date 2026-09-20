@@ -1,6 +1,6 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
-import { assertRequisitionTransition } from "./requisitionWorkflow.service.js";
+import { assertRequisitionTransition, recordRequisitionTransition } from "./requisitionWorkflow.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
@@ -29,25 +29,44 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
   const requesterId = requestedBy || employeeId;
   if (!requesterId) throw new Error("Hiring manager is required");
 
-  const createRequi = await prisma.jobRequisition.create({
-    data: scopedData(tenantId, {
-      title,
-      description,
-      departmentId: departmentId ? Number(departmentId) : null,
-      positionId: positionId ? Number(positionId) : null,
-      requestedById: Number(requesterId),
-      employeeId: employeeId ? Number(employeeId) : null,
-      openings: openings ? Number(openings) : 1,
-      priority: priority ?? undefined, // persisted (JobRequisition.priority String?): Low | Medium | High | Urgent
-      status: status || "DRAFT",
-    }),
-    include: {
-      position: true,
-      requestedBy: true,
-      approvedBy: true,
-      employee: true,
+  // Phase 2.1 — the requisition and its opening history row are ONE unit. A
+  // requisition whose own origin is unrecorded is exactly the gap this closes;
+  // the row is written with both sides equal to the born status (DRAFT), matching
+  // the application-history convention for a creation.
+  const createRequi = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      const created = await tx.jobRequisition.create({
+        data: scopedData(tenantId, {
+          title,
+          description,
+          departmentId: departmentId ? Number(departmentId) : null,
+          positionId: positionId ? Number(positionId) : null,
+          requestedById: Number(requesterId),
+          employeeId: employeeId ? Number(employeeId) : null,
+          openings: openings ? Number(openings) : 1,
+          priority: priority ?? undefined, // persisted (JobRequisition.priority String?): Low | Medium | High | Urgent
+          status: status || "DRAFT",
+        }),
+        include: {
+          position: true,
+          requestedBy: true,
+          approvedBy: true,
+          employee: true,
+        },
+      });
+      await recordRequisitionTransition(tx, {
+        requisitionId: created.id,
+        tenantId,
+        fromStatus: created.status,
+        toStatus: created.status,
+        reason: "initial requisition",
+        actorId: requesterId,
+      });
+      return created;
     },
-  });
+    { tenantId },
+  );
   await logAction({
     employeeId: requesterId,
     type: "Create",
@@ -174,6 +193,18 @@ export const approveRequisition = async (id, status, comments, approvedBy, tenan
         }
       }
     });
+
+    // Phase 2.1 — the decision and its history row commit together. The from
+    // side is the status re-read INSIDE this transaction, so a raced decision
+    // cannot produce a history row describing a state that was never current.
+    await recordRequisitionTransition(tx, {
+      requisitionId: Number(id),
+      tenantId,
+      fromStatus: current.status,
+      toStatus: target,
+      reason: comments,
+      actorId: approverId,
+    });
     await logAction({
       employeeId: approvedBy,
       type: "UPDATE",
@@ -230,6 +261,17 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
       data: { status: "POSTED" },
     });
 
+    // Phase 2.1 — a publication is a state transition too, and previously it
+    // left no trace at all (not even a RequisitionApproval row).
+    await recordRequisitionTransition(tx, {
+      requisitionId: Number(id),
+      tenantId,
+      fromStatus: requisition.status,
+      toStatus: "POSTED",
+      actorId: createdBy,
+      source: "requisition.post",
+    });
+
     await logAction({
       employeeId: createdBy,
       type: "UPDATE",
@@ -278,11 +320,32 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   }
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
+  // Phase 2.1 — when this update is also a legal status move, the history row is
+  // written in the SAME transaction, and only when the compare-and-set actually
+  // matched a row (a lost race must not leave a transition nobody performed).
   const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
-  const { count } = await prisma.jobRequisition.updateMany({
-    where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
-    data: { ...updateData, version: { increment: 1 } },
-  });
+  const statusMove = updateData.status ? { from: existing.status, to: updateData.status } : null;
+  const { count } = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      const result = await tx.jobRequisition.updateMany({
+        where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
+        data: { ...updateData, version: { increment: 1 } },
+      });
+      if (result.count > 0 && statusMove) {
+        await recordRequisitionTransition(tx, {
+          requisitionId: Number(id),
+          tenantId,
+          fromStatus: statusMove.from,
+          toStatus: statusMove.to,
+          actorId: updatedBy,
+          source: "requisition.update",
+        });
+      }
+      return result;
+    },
+    { tenantId },
+  );
   if (count === 0 && expectedVersion != null) {
     const fresh = await prisma.jobRequisition.findFirst({
       where: scopedWhere(tenantId, { id: Number(id) }),

@@ -9,6 +9,8 @@ jest.unstable_mockModule('../../../src/services/interviewMgmt.service.js', () =>
   getInterviewManaged: jest.fn(async () => ({ success: true })),
   scoreInterview: jest.fn(async () => ({ success: true })),
   setInterviewOutcome: jest.fn(async () => ({ success: true })),
+  // Phase 3.4 (remainder) — panel-feedback consolidation.
+  consolidateInterviewFeedback: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/services/offerMgmt.service.js', () => ({
   listOffersManage: jest.fn(async () => ({ success: true })),

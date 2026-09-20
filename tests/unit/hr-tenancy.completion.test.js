@@ -34,6 +34,8 @@ const models = [
     'performanceReview', 'reviewFeedback', 'reviewReminder', 'performanceCycle',
     'performanceTemplate', 'performanceReviewItem',
     'jobRequisition', 'requisitionApproval', 'jobPosting',
+    // Phase 2.1 — the requisition's immutable transition history.
+    'requisitionTransition',
     'interview', 'interviewScorecard', 'interviewInterviewer', 'offer', 'application',
     'candidate', 'candidateTag', 'talentPool', 'source',
     'certification', 'trainingCourse', 'trainingCategory', 'trainingSession',
@@ -57,11 +59,18 @@ const prismaMock = Object.fromEntries(models.map((m) => [m, mk()]));
 prismaMock.$transaction = jest.fn(async (arg) =>
     typeof arg === 'function' ? arg(prismaMock) : Promise.all(arg)
 );
+// tenantTransaction() issues `SELECT set_config(...)` through $executeRaw as the
+// first statement inside an interactive transaction (Phase 2.1 put create /
+// transition-history writes on that path), so the double must accept it.
+prismaMock.$executeRaw = jest.fn(async () => 1);
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/utils/logs.js', () => ({ logAction: jest.fn().mockResolvedValue(undefined) }));
 jest.unstable_mockModule('../../src/services/dam.media.service.js', () => ({
     uploadFileToDAM: jest.fn().mockResolvedValue([{ id: 1 }]),
+    // Phase 10 (remainder) — the erasure path imports this too, so the partial
+    // mock must export it even though these tests never erase anything.
+    deleteDamAsset: jest.fn().mockResolvedValue({ ok: true }),
 }));
 
 const perf = await import('../../src/services/performance.service.js');

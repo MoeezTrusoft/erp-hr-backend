@@ -28,6 +28,7 @@ import {
     runReviewReminderJob,
     runDocumentExpiryJob,
     runRetentionSweepJob,
+    runCandidateRetentionJob,
 } from '../services/reminderScheduler.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
@@ -40,6 +41,12 @@ export const REMINDER_DLQ = 'hr-reminders-dead';
 export const JOB_REVIEW_REMINDER = 'review-reminder';
 export const JOB_DOCUMENT_EXPIRY = 'document-expiry';
 export const JOB_RETENTION_SWEEP = 'retention-sweep';
+// Phase 10 (remainder) — candidate-data retention (GDPR erasure), deliberately a
+// DIFFERENT job from JOB_RETENTION_SWEEP above, which prunes the queue's own
+// completed/failed rows. Two different meanings of "retention" in one job name is
+// how an operator ends up believing candidate erasure runs when only housekeeping
+// does.
+export const JOB_CANDIDATE_RETENTION = 'candidate-retention';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -74,6 +81,19 @@ export function repeatableJobs() {
             data: { retentionDays: 30 },
             opts: { jobId: 'repeat:retention-sweep', repeat: { pattern: '30 3 * * *' } }, // 03:30 daily
         },
+        {
+            // 04:00 daily — after the 03:30 housekeeping sweep, so the two never
+            // contend for the same window.
+            //
+            // NO `mode` IN THE JOB DATA ON PURPOSE. It is read from
+            // HR_CANDIDATE_RETENTION_MODE at run time (default `dry-run`), so
+            // flipping a tenant to live erasure is an env change an operator can
+            // see and revert — not an edit to registered job payloads that keeps
+            // running until the queue is rebuilt.
+            name: JOB_CANDIDATE_RETENTION,
+            data: {},
+            opts: { jobId: 'repeat:candidate-retention', repeat: { pattern: '0 4 * * *' } },
+        },
     ];
 }
 
@@ -86,6 +106,7 @@ export function buildReminderProcessor({
     reviewReminder = runReviewReminderJob,
     documentExpiry = runDocumentExpiryJob,
     retentionSweep = runRetentionSweepJob,
+    candidateRetention = runCandidateRetentionJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -104,6 +125,8 @@ export function buildReminderProcessor({
                     return documentExpiry(data);
                 case JOB_RETENTION_SWEEP:
                     return retentionSweep(data);
+                case JOB_CANDIDATE_RETENTION:
+                    return candidateRetention(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

@@ -1,5 +1,11 @@
 // src/mcp/tools/candidatePrivacyTools.js — Phase 2.5/10 candidate privacy tools.
 //
+// 15 tools as of Phase 10 (remainder): the 14 original privacy operations plus
+// hr_candidate_archive. The gateway's edge deny-by-default pre-check keys off
+// TOOL NAME, so every name here must also exist in its
+// LOCAL_TOOL_PERMISSION_MAP — otherwise the tool silently skips the edge gate.
+// Pinned by the inventory tests on both sides.
+//
 // Gated on hr:recruitment with the method-matching action, mirroring the REST
 // surface mounted under /api/recruitment/privacy. The actor is the verified
 // employee from the MCP request context — never a tool argument, so a caller
@@ -213,6 +219,34 @@ export function registerCandidatePrivacyTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_candidate_retention_apply")
+  );
+
+  // 10b ── ARCHIVE (Phase 10 remainder) ──────────────────────────────────────
+  // Archive is the step BETWEEN "no longer being considered" and "erased": the
+  // data stays exactly as it is, and the candidate stops being live pipeline work.
+  // DRY RUN by default, like retention — an operator sees the list before it is
+  // applied.
+  server.tool(
+    "hr_candidate_archive",
+    "Archive candidates with no live application whose last activity is older than inactiveMonths. DRY RUN unless dryRun is explicitly false. Archive does NOT erase or anonymize anything — the data is unchanged and only archivedAt is stamped",
+    {
+      dryRun: z.boolean().optional().describe("Defaults to true; the write requires an explicit false"),
+      inactiveMonths: z.coerce.number().int().positive().optional().describe("Defaults to 12"),
+      asOf: z.string().optional().describe("ISO 8601 instant the cut-off is measured from (defaults to now)"),
+      limit: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async ({ dryRun, inactiveMonths, asOf, limit }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await privacy.archiveInactiveCandidates({
+        tenantId: getTenant(user),
+        asOf: asOf ? new Date(asOf) : new Date(),
+        inactiveMonths: inactiveMonths ?? 12,
+        dryRun: dryRun !== false,
+        limit: limit ?? 200,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_candidate_archive")
   );
 
   // 11 ── ANONYMIZE ───────────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   tenantTransaction: jest.fn((_client, fn) => fn(prisma)),
   rlsTenantExtension: jest.fn((client) => client),
 }));
-jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({ uploadFileToDAM: jest.fn() }));
+jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({ uploadFileToDAM: jest.fn(), deleteDamAsset: jest.fn() }));
 jest.unstable_mockModule("../../src/services/applicationWorkflow.service.js", () => ({
   transitionApplicationStageInTransaction: mockTransition,
   transitionApplicationStage: jest.fn(),
