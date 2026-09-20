@@ -2,7 +2,7 @@ import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import {
   assertRequisitionTransition,
-  assertRequisitionNotFrozen,
+  assertRequisitionAdvanceAllowed,
   recordRequisitionTransition,
 } from "./requisitionWorkflow.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -13,6 +13,8 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
+import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
+import { applyApprovalDecision, chainFor, chainStatusFor } from "./requisitionApprovalChain.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -132,7 +134,17 @@ export const getByIdRequisitions = async (id, tenantId, scope = null) => {
       employee: true,
     },
   });
-  return getByID;
+  if (!getByID) return getByID;
+
+  // Phase 4 — the detail carries the chain it is being approved against and which
+  // step is next, so a caller never has to reconstruct the matrix to answer
+  // "who is this waiting on?". Read-only and best-effort: a matrix lookup that
+  // fails must not take the requisition detail down with it.
+  try {
+    return { ...getByID, approvalProgress: await chainStatusFor(tenantId, getByID) };
+  } catch {
+    return getByID;
+  }
 };
 
 export const deleteRequisitions = async (id, deletedBy, tenantId) => {
@@ -183,15 +195,65 @@ export const approveRequisition = async (id, status, comments, approvedBy, tenan
     if (!current) throw Object.assign(new Error("Requisition not found"), { status: 404 });
     assertRequisitionTransition(current.status, target, { comments });
 
-    await tx.requisitionApproval.create({
-      data: scopedData(tenantId, {
+    // Phase 4 — an APPROVAL is applied against the configured chain, not as a
+    // single flip. `applyApprovalDecision` records this step with its own
+    // stepOrder/role, enforces the distinct-approver rule, and tells us whether
+    // the chain is FINISHED. A partial approval deliberately leaves the
+    // requisition in PENDING_APPROVAL: it is not approved until the last
+    // applicable step is satisfied.
+    const decision =
+      target === "APPROVED"
+        ? await applyApprovalDecision(tx, { tenantId, requisition: current, actorId: approverId, comments })
+        : null;
+
+    if (decision && !decision.chainComplete) {
+      // The status does not move, so there is no transition to record — but the
+      // step decision still belongs in the immutable history. Both sides are the
+      // current status (the same convention a creation uses) and `source` marks
+      // it as a step decision, so it can never be mistaken for "approved".
+      await recordRequisitionTransition(tx, {
         requisitionId: Number(id),
-        approverId,
-        status: target,
-        comments,
-        decidedAt: new Date(),
-      }),
-    });
+        tenantId,
+        fromStatus: current.status,
+        toStatus: current.status,
+        reason: comments,
+        actorId: approverId,
+        source: "requisition.approval_step",
+      });
+      const partial = await tx.jobRequisition.findFirst({
+        where: scopedWhere(tenantId, { id: Number(id) }),
+        include: { approvedBy: { select: { id: true, first_name: true, last_name: true } } },
+      });
+      return {
+        ...partial,
+        status: current.status,
+        approvalDecision: "STEP_RECORDED",
+        approvalProgress: decision.chain,
+      };
+    }
+
+    // A REJECTION ends the chain outright, and so does the LAST approval step. A
+    // rejection still records which step it was decided at, so the audit trail
+    // says where in the chain the requisition stopped.
+    if (target === "REJECTED") {
+      const decisions = await tx.requisitionApproval.findMany({
+        where: scopedWhere(tenantId, { requisitionId: Number(id) }),
+      });
+      const chain = await chainFor(current, { db: tx, tenantId });
+      const step = nextPendingStep(chain, decisions);
+      assertNotRequester(current, approverId);
+      await tx.requisitionApproval.create({
+        data: scopedData(tenantId, {
+          requisitionId: Number(id),
+          approverId,
+          status: "REJECTED",
+          comments,
+          decidedAt: new Date(),
+          stepOrder: step ? step.stepOrder : null,
+          role: step ? step.role : null,
+        }),
+      });
+    }
 
     const update = await tx.jobRequisition.update({
       where: { id: Number(id) },
@@ -252,7 +314,7 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
   assertRequisitionTransition(requisition.status, "POSTED");
   // Phase 4 — a hiring freeze blocks PUBLICATION. An approved requisition may sit
   // in APPROVED for the duration of the freeze and be posted the day it lifts.
-  await assertRequisitionNotFrozen(tenantId, requisition, "POSTED");
+  await assertRequisitionAdvanceAllowed(tenantId, requisition, "POSTED");
 
   // Phase 11 — the posting row, the status flip and the event are one unit: a
   // published posting must never exist without the requisition saying POSTED.
@@ -353,7 +415,7 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
     // Phase 4 — a freeze blocks ADVANCING the requisition. Checked against the
     // merged row so a same-PATCH department change is judged on where the
     // requisition is going, not where it was.
-    await assertRequisitionNotFrozen(tenantId, { ...existing, ...updateData }, updateData.status);
+    await assertRequisitionAdvanceAllowed(tenantId, { ...existing, ...updateData }, updateData.status);
   }
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.

@@ -363,6 +363,8 @@ model Employee {
   // in one column is why the requisition row could not answer either question.
   requisitionsRecruited  JobRequisition[]       @relation("RequisitionRecruiter")
   requisitionsReplacing  JobRequisition[]       @relation("RequisitionReplacementFor")
+  // Phase 4 — an approval-matrix step may be pinned to a named employee.
+  requisitionApprovalRules RequisitionApprovalRule[] @relation("RequisitionApprovalRuleApprover")
   approvals             RequisitionApproval[]
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
@@ -1554,6 +1556,17 @@ model JobRequisition {
   // approval, so a later change in Finance cannot silently rewrite the audit
   // trail — it is NOT a second source of truth (decision record §2.2).
   budgetApprovalSnapshot Json?
+  // The budget figure the approval matrix's amount rules are evaluated against.
+  // A CACHE of the Finance-owned number, like costCenterLabel — Finance remains
+  // the source of truth, and an unknown amount is treated as "at or above every
+  // threshold" so a missing figure escalates rather than slips through.
+  budgetedAmount Decimal? @db.Decimal(18, 4)
+  budgetCurrency String?
+  // Phase 4 — the approval chain frozen at the first decision, so a matrix edit
+  // mid-approval cannot change what the in-flight requisition is being judged
+  // against. Written lazily (first decision) rather than at submit so all three
+  // submit paths need no extra write.
+  approvalChainSnapshot Json?
 
   recruiter           Employee?   @relation("RequisitionRecruiter", fields: [recruiterId], references: [id])
   replacementEmployee Employee?   @relation("RequisitionReplacementFor", fields: [replacementEmployeeId], references: [id])
@@ -1598,6 +1611,51 @@ model RequisitionAttachment {
   @@map("requisition_attachments")
 }
 
+// Phase 4 / decision record §2.5 — the requisition APPROVAL MATRIX.
+//
+// One row per STEP of the chain. Deliberately data, not code: the decision says
+// the chain must not be hard-coded into Recruitment, so "who approves what" is
+// tenant configuration and `DEFAULT_CHAIN` in lib/requisitionApprovalChain.js is
+// merely the value used to SEED it.
+//
+// A step applies when every condition it sets matches the requisition:
+// `minAmount` (against budgetedAmount), `departmentId`, `hiringReason`. A null
+// condition is unconditional. An UNKNOWN amount satisfies any `minAmount` step,
+// because a missing figure must escalate to Finance rather than skip it.
+//
+// `approverId` is optional. With no named approver the step is decided by any
+// caller authorized on the requisition who is not excluded by the
+// distinct-approver rule; naming one PINS the step to that employee.
+model RequisitionApprovalRule {
+  id       Int  @id @default(autoincrement())
+  tenantId String? @db.Uuid
+
+  stepOrder Int // 1, 2, 3 … evaluated in ascending order
+  role      String // HIRING_MANAGER | HR_HEAD | FINANCE | CUSTOM
+  approverId Int?
+
+  // Trigger conditions — all null ⇒ the step always applies.
+  minAmount    Decimal? @db.Decimal(18, 4)
+  departmentId Int?
+  hiringReason String?
+
+  // The distinct-approver rule (§2.5): the requester must not satisfy a step that
+  // requires independent approval, and one employee must not satisfy two steps of
+  // the same chain — otherwise a single person holding two roles collapses the
+  // chain into one signature.
+  requiresDistinctApprover Boolean @default(true)
+  isActive                 Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  approver Employee? @relation("RequisitionApprovalRuleApprover", fields: [approverId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("requisition_approval_rules")
+}
+
 // Phase 4 / decision record §2.7 — a hiring freeze.
 //
 // Company-wide OR department-level (scope + departmentId, with the pairing pinned
@@ -1633,6 +1691,15 @@ model RequisitionApproval {
   status        String    @default("PENDING")
   comments      String?
   decidedAt     DateTime?
+
+  // Phase 4 — WHICH step of the configured chain this decision satisfies, and
+  // under which role. Without these a multi-step chain is unverifiable after the
+  // fact: three APPROVED rows look identical whether they satisfied one step
+  // three times or three distinct steps. Nullable so every decision recorded
+  // before the chain existed stays readable (and reads as a single un-stepped
+  // decision, which is exactly what it was).
+  stepOrder Int?
+  role      String?
 
   // Relations
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])

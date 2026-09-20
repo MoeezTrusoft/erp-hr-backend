@@ -20,7 +20,7 @@ import { scopedWhere } from "../lib/tenancy.js";
 import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import {
   assertRequisitionTransition,
-  assertRequisitionNotFrozen,
+  assertRequisitionAdvanceAllowed,
   recordRequisitionTransition,
 } from "./requisitionWorkflow.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -223,7 +223,7 @@ export const submitRequisition = async (id, tenantId, actorId = null) => {
   assertRequisitionTransition(current.status, "PENDING_APPROVAL", { requisition: current });
   // Phase 4 — and a hiring freeze blocks submission outright. Drafting is not
   // blocked, so this is the first moment the freeze can apply.
-  await assertRequisitionNotFrozen(tenantId, current, "PENDING_APPROVAL");
+  await assertRequisitionAdvanceAllowed(tenantId, current, "PENDING_APPROVAL");
   await tenantTransaction(
     prisma,
     async (tx) => {

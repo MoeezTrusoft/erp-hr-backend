@@ -14,7 +14,8 @@ const prisma = {
     updateMany: jest.fn(async () => ({ count: 1 })),
     create: jest.fn(async () => ({ id: 1 })),
   },
-  requisitionApproval: { create: jest.fn(async () => ({ id: 1 })) },
+  requisitionApproval: { create: jest.fn(async () => ({ id: 1 })), findMany: jest.fn(async () => []) },
+  requisitionApprovalRule: { findMany: jest.fn(async () => []) },
   // Phase 2.1 — every status move now also writes an immutable transition row in
   // the same transaction, so the double must model it.
   requisitionTransition: { create: jest.fn(async () => ({ id: 1 })) },

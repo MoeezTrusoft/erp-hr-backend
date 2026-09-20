@@ -158,6 +158,10 @@ const RLS_MODELS = new Set([
     // PUBLICATION paths, which run under the ordinary request tenant context; a
     // freeze that reads back empty would silently stop gating anything.
     'RecruitmentHiringFreeze',
+    // Phase 4 — the approval matrix (20260920250000). Same trap, worse
+    // consequence: a matrix that reads back empty makes every approval chain
+    // vanish and every requisition approve in ONE step, with no error anywhere.
+    'RequisitionApprovalRule',
     'OfferApproval',
     'OfferHandoff',
     'OfferHandoffAttempt',

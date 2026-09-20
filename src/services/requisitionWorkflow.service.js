@@ -23,6 +23,7 @@ export const REQUISITION_STATUSES = Object.freeze([
 
 import { assertRequisitionSubmittable } from "../lib/requisitionFields.js";
 import { assertNotHiringFrozen } from "./recruitmentFreeze.service.js";
+import { assertChainSubmittable } from "./requisitionApprovalChain.service.js";
 
 // DRAFT ──submit──▶ PENDING_APPROVAL ──decide──▶ APPROVED ──post──▶ POSTED ──▶ CLOSED
 //   │                      │                        │                          ▲
@@ -111,6 +112,25 @@ export const assertRequisitionNotFrozen = async (tenantId, requisition, targetSt
     const target = normalizeStatus(targetStatus);
     if (target === "PENDING_APPROVAL") return assertNotHiringFrozen(tenantId, requisition, "submission");
     if (target === "POSTED") return assertNotHiringFrozen(tenantId, requisition, "publication");
+    return null;
+};
+
+/**
+ * Phase 4 — every guard that must hold before a requisition ADVANCES.
+ *
+ * Read-only. It is one function rather than three because these guards share the
+ * same four call sites, and three separate `await`s at four sites is how one of
+ * them quietly goes missing. Currently:
+ *
+ *   * a hiring freeze blocks submission and publication (§2.7), and
+ *   * a configured approval chain that could never be completed is refused at
+ *     SUBMISSION rather than discovered at approval, when nobody can decide the
+ *     requisition and it is already out of the requester's hands (§2.5).
+ */
+export const assertRequisitionAdvanceAllowed = async (tenantId, requisition, targetStatus) => {
+    const target = normalizeStatus(targetStatus);
+    await assertRequisitionNotFrozen(tenantId, requisition, target);
+    if (target === "PENDING_APPROVAL") return assertChainSubmittable(tenantId, requisition);
     return null;
 };
 

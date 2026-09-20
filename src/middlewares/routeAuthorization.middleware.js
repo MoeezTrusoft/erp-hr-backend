@@ -39,6 +39,9 @@ const RESOURCE_PREFIXES = Object.freeze([
   // "/api/recruitment" (first match wins): below it, a plain recruiter's
   // hr.recruitment:create grant would let them lift the freeze an HR leader set.
   ["/api/recruitment/freeze", "hr.recruitment.freeze"],
+  // Phase 4 / §2.5 — configuring the approval chain is a CONTROL too, so it gets
+  // its own resource. MUST stay above "/api/recruitment" (first match wins).
+  ["/api/recruitment/approval-matrix", "hr.recruitment.approval.matrix"],
   ["/api/recruitment", "hr.recruitment"],
   ["/api/interviews", "hr.recruitment"],
   ["/api/talent-pool", "hr.recruitment"],

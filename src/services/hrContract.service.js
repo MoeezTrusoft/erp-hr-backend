@@ -2,9 +2,11 @@ import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import {
   assertRequisitionTransition,
-  assertRequisitionNotFrozen,
+  assertRequisitionAdvanceAllowed,
   recordRequisitionTransition,
 } from "./requisitionWorkflow.service.js";
+import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
+import { applyApprovalDecision, chainFor } from "./requisitionApprovalChain.service.js";
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
@@ -1874,12 +1876,46 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
   assertRequisitionTransition(requisition.status, status, { comments, requisition });
   // Phase 4 — and a hiring freeze blocks submission here too, or the freeze would
   // be bypassable simply by using the older endpoint.
-  await assertRequisitionNotFrozen(tenantId, requisition, status);
+  await assertRequisitionAdvanceAllowed(tenantId, requisition, status);
+
+  // Phase 4 — the legacy decision goes through the same approval CHAIN as the
+  // newer surface, so a tenant cannot get a different number of required
+  // signatures depending on which URL its client used. A partial approval
+  // returns early WITHOUT moving the status: the requisition is not approved
+  // until the last applicable step is satisfied.
+  let partialDecision = null;
 
   const updated = await tenantTransaction(prisma, async (tx) => {
-    if (["APPROVED", "REJECTED"].includes(status)) {
+    if (status === "APPROVED") {
+      const decision = await applyApprovalDecision(tx, {
+        tenantId,
+        requisition,
+        actorId,
+        comments,
+      });
+      if (!decision.chainComplete) {
+        partialDecision = decision;
+        await recordRequisitionTransition(tx, {
+          requisitionId: Number(id),
+          tenantId,
+          fromStatus: requisition.status,
+          toStatus: requisition.status,
+          reason: comments,
+          actorId,
+          source: "requisition.approval_step",
+        });
+        return tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+      }
+    } else if (status === "REJECTED") {
       // Stamp the verified tenant (RequisitionApproval.tenantId, per
       // requisition.service.js) rather than writing a null-tenant approval row.
+      // A rejection ends the chain, but records the step it was decided at.
+      const decisions = await tx.requisitionApproval.findMany({
+        where: scopedWhere(tenantId, { requisitionId: Number(id) }),
+      });
+      const chain = await chainFor(requisition, { db: tx, tenantId });
+      const step = nextPendingStep(chain, decisions);
+      assertNotRequester(requisition, actorId);
       await tx.requisitionApproval.create({
         data: scopedData(tenantId, {
           requisitionId: Number(id),
@@ -1887,6 +1923,8 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
           status,
           comments,
           decidedAt: new Date(),
+          stepOrder: step ? step.stepOrder : null,
+          role: step ? step.role : null,
         }),
       });
     }
@@ -1921,7 +1959,13 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
     return moved;
   });
 
-  return requisitionRow(updated);
+  const row = requisitionRow(updated);
+  if (!partialDecision) return row;
+  return {
+    ...row,
+    approvalDecision: "STEP_RECORDED",
+    approvalProgress: partialDecision.chain,
+  };
 };
 
 export const submitRequisition = (id, tenantId, actorId, comments) =>

@@ -91,7 +91,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // 125 + RecruitmentHiringFreeze (Phase 4) — a freeze is a tenant control and
     // every recruitment table beside it follows the same nullable-tenant
     // convention. It carries its own RLS policy in the migration that creates it.
-    expect(nullableModels).toHaveLength(126);
+    // 126 + RequisitionApprovalRule (Phase 4) — the approval matrix, same
+    // convention and same own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(127);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

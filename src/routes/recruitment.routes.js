@@ -30,6 +30,13 @@ import {
 } from "../controllers/recruitmentFreeze.controller.js";
 
 import {
+    listApprovalMatrixController,
+    getDefaultApprovalMatrixController,
+    setApprovalMatrixController,
+    seedDefaultApprovalMatrixController,
+} from "../controllers/requisitionApprovalChain.controller.js";
+
+import {
     recordConsentHandler,
     listConsentHandler,
     recordDncHandler,
@@ -75,6 +82,15 @@ router.put("/applications/:id/status", updateStatus);
 router.get("/freeze", listHiringFreezesController);
 router.post("/freeze", setHiringFreezeController);
 router.post("/freeze/:id/lift", liftHiringFreezeController);
+
+// APPROVAL MATRIX (Phase 4 / §2.5). Mounted under its own prefix for the same
+// reason as the freeze: F-02 must resolve the dedicated
+// `hr.recruitment.approval.matrix` resource, because configuring who has to sign
+// off on a requisition is not an ordinary recruitment write.
+router.get("/approval-matrix", listApprovalMatrixController);
+router.get("/approval-matrix/default", getDefaultApprovalMatrixController);
+router.put("/approval-matrix", setApprovalMatrixController);
+router.post("/approval-matrix/seed-default", seedDefaultApprovalMatrixController);
 
 // PRIVACY (Phase 2.5/10). Mounted under /api/recruitment so F-02 resolves the
 // resource to hr.recruitment and the action from the HTTP method — one policy

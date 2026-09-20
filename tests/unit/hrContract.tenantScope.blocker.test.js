@@ -115,7 +115,12 @@ const prismaMock = {
       APPROVALS.push(row);
       return row;
     }),
+    // Phase 4 — the approval chain reads the decisions made so far and the
+    // tenant's matrix. No rules configured here, so this stays a single-step
+    // decision and the tenant-scoping assertions are unchanged.
+    findMany: jest.fn(async () => APPROVALS),
   },
+  requisitionApprovalRule: { findMany: jest.fn(async () => []) },
   // Phase 2.1 — the transition history row is written in the SAME transaction as
   // the status flip, so the fake has to accept it here too.
   requisitionTransition: {
