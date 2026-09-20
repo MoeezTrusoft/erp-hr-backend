@@ -37,6 +37,17 @@ import {
 } from "../controllers/requisitionApprovalChain.controller.js";
 
 import {
+    recordScreeningHandler,
+    listScreeningsHandler,
+    listDispositionReasonsHandler,
+    versionDispositionReasonHandler,
+    deactivateDispositionReasonHandler,
+    addToShortlistHandler,
+    listShortlistHandler,
+    removeFromShortlistHandler,
+} from "../controllers/applicationScreening.controller.js";
+
+import {
     recordConsentHandler,
     listConsentHandler,
     recordDncHandler,
@@ -72,6 +83,20 @@ router.get("/applications", listApplications);
 router.post("/applications", createApplication);
 router.put("/applications/:id/stage", updateStage);
 router.put("/applications/:id/status", updateStatus);
+
+// Phase 6 / §4.1 — screening records (separate from interview feedback, §4.1a)
+router.post("/applications/:id/screenings", recordScreeningHandler);
+router.get("/applications/:id/screenings", listScreeningsHandler);
+
+// Phase 6 / §4.2 — tenant-configurable, versioned disposition reason codes
+router.get("/disposition-reasons", listDispositionReasonsHandler);
+router.put("/disposition-reasons/:code", versionDispositionReasonHandler);
+router.delete("/disposition-reasons/:code", deactivateDispositionReasonHandler);
+
+// Phase 6 / §4.3 — the requisition shortlist (no count limit, §4.3)
+router.post("/applications/:id/shortlist", addToShortlistHandler);
+router.get("/requisitions/:requisitionId/shortlist", listShortlistHandler);
+router.delete("/applications/:id/shortlist", removeFromShortlistHandler);
 
 // HIRING FREEZE (Phase 4 / §2.7). Deliberately mounted at /api/recruitment/freeze
 // so F-02 resolves the DEDICATED `hr.recruitment.freeze` resource, which

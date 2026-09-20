@@ -51,6 +51,29 @@ const assertReason = (targetStage, reason) => {
 
 async function assertPrerequisites(db, application, targetStage) {
     if (targetStage === "interview") {
+        // Phase 6 / §4.1b — a recorded screening ADVANCE is required before the
+        // interview stage. The scheduled-interview check below stays authoritative
+        // for scheduling; this gate is for the STAGE move. Screening is the
+        // recruiter's first-class decision (§4.1), not a side effect of booking a
+        // calendar slot.
+        const advance = await db.applicationScreening.findFirst({
+            where: {
+                applicationId: application.id,
+                tenantId: application.tenantId ?? null,
+                outcome: "ADVANCE",
+            },
+            select: { id: true },
+        });
+        if (!advance) {
+            throw workflowError(
+                "A recorded screening with outcome ADVANCE is required before moving to interview stage",
+                "HR-RECRUITMENT-SCREENING-ADVANCE-REQUIRED",
+            );
+        }
+
+        // A scheduled interview is the authoritative prerequisite. The interview
+        // creation path invokes this service in the same transaction after the
+        // interview row exists.
         // A scheduled interview is the authoritative prerequisite. The interview
         // creation path invokes this service in the same transaction after the
         // interview row exists.

@@ -75,7 +75,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   talentPoolMgmtTools: 4,
   recruitmentAnalyticsTools: 2,
   recruitmentExtraTools: 3,
-  applicationTools: 3,
+  applicationTools: 11,
   resumeTools: 3,
 });
 
@@ -84,6 +84,10 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_application_delete",
   "hr_application_get",
   "hr_application_list",
+  "hr_application_screening_record",
+  "hr_application_screenings_list",
+  "hr_application_shortlist_add",
+  "hr_application_shortlist_remove",
   "hr_application_update_stage",
   "hr_application_update_status",
   "hr_candidate_anonymize",
@@ -107,6 +111,9 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_candidate_retention_preview",
   "hr_candidate_update",
   "hr_candidates_list",
+  "hr_disposition_reasons_list",
+  "hr_disposition_reason_deactivate",
+  "hr_disposition_reason_version",
   "hr_interview_create",
   "hr_interview_feedback_consolidate",
   "hr_interview_manage_get",
@@ -137,6 +144,7 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_requisition_post",
   "hr_requisition_posting_unpublish",
   "hr_requisition_postings_list",
+  "hr_requisition_shortlist_list",
   "hr_requisition_reject",
   "hr_requisition_question_create",
   "hr_requisition_question_deactivate",
@@ -163,7 +171,7 @@ const EXPECTED_TOOLS = Object.freeze([
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
 
 describe("Recruitment MCP tool inventory", () => {
-  it("registers exactly the pinned 78 tools — no more, no less", () => {
+  it("registers exactly the pinned 86 tools — no more, no less", () => {
     expect([...allRecruitmentTools].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
@@ -192,7 +200,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(518);
+    expect(all).toHaveLength(526);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

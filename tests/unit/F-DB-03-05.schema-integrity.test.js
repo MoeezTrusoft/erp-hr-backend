@@ -96,7 +96,10 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // 127 + ApplicationQuestion (Phase 5 §3.5) — the public intake-form
     // questions, nullable-tenant like every recruitment table beside it and
     // carrying its own RLS policy in its creating migration.
-    expect(nullableModels).toHaveLength(128);
+    // 128-130 + ApplicationScreening, DispositionReasonCode, ShortlistEntry
+    // (Phase 6 §4.1–4.3) — same convention, same own-policy-in-own-migration
+    // rule, all three in one migration.
+    expect(nullableModels).toHaveLength(131);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

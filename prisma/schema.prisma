@@ -1527,6 +1527,9 @@ model JobRequisition {
   // ── Phase 5 / §3.5 — the requisition's application-form questions ──
   questions    ApplicationQuestion[]
 
+  // ── Phase 6 / §4.3 — the requisition shortlist ──
+  shortlist    ShortlistEntry[]
+
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
 
@@ -2832,6 +2835,10 @@ model Application {
   stageHistory   ApplicationStageHistory[]
   answers        ApplicationAnswer[]
 
+  // Phase 6 / §4.1 + §4.3
+  screenings     ApplicationScreening[]
+  shortlist      ShortlistEntry[]
+
   @@unique([candidateId, jobRequisitionId])
   @@index([candidateId])
   @@index([jobRequisitionId])
@@ -2912,6 +2919,81 @@ model ApplicationStageHistory {
   @@index([tenantId])
   @@index([applicationId, createdAt])
   @@map("application_stage_history")
+}
+
+// ── Phase 6 / decision record §4.1 — the first-class screening record ────────
+//
+// Deliberately SEPARATE from interview feedback (§4.1a): a recruiter's screen
+// and an interviewer's structured feedback are different facts even when one
+// person holds both roles. One row per screening decision; a re-screen after a
+// hold creates a new row, so the record is a history, not a mutable flag.
+model ApplicationScreening {
+  id            Int      @id @default(autoincrement())
+  applicationId Int
+  tenantId      String?  @db.Uuid
+  // ADVANCE | REJECT | HOLD. HOLD does not move the stage by itself — the
+  // recruiter decides between on_hold (a stage move) and leaving it in place.
+  outcome       String
+  // Required when outcome != ADVANCE; must resolve to an ACTIVE tenant reason
+  // code (§4.2). Null on an ADVANCE — advancing needs no justification.
+  reasonCode    String?
+  notes         String?  @db.Text
+  // Optional criterion results (§4.1 "optional criterion results") — a JSON
+  // array of { criterion, result, note? }. Json rather than a child table: the
+  // criterion vocabulary is tenant-defined and display-shaped, not queried.
+  criteria      Json?
+  reviewedById  Int?
+  reviewedAt    DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, reviewedAt])
+  @@index([tenantId])
+  @@map("application_screenings")
+}
+
+// ── Phase 6 / decision record §4.2 — tenant-configurable, versioned reason ──
+// codes. The DEFAULT taxonomy is seeded per tenant on first use (see
+// lib/dispositionReasons.js); a code's MEANING is stable across versions — a
+// version changes only the label or the notes requirement, so historic
+// dispositions keep resolving to the same code string.
+model DispositionReasonCode {
+  id            Int      @id @default(autoincrement())
+  tenantId      String?  @db.Uuid
+  code          String
+  label         String
+  requiresNotes Boolean  @default(false) // §4.2 — notes required when OTHER
+  version       Int      @default(1)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([tenantId, code, version])
+  @@index([tenantId, isActive])
+  @@map("disposition_reason_codes")
+}
+
+// ── Phase 6 / decision record §4.3 — the requisition shortlist ───────────────
+// Requisition-specific and shared with the requisition's hiring team; no count
+// limit. One row per application (an application belongs to one requisition);
+// removal deletes the row — the disposition/screening record is the audit of
+// WHY, the shortlist only tracks WHO is currently marked.
+model ShortlistEntry {
+  id            Int      @id @default(autoincrement())
+  applicationId Int
+  requisitionId Int
+  tenantId      String?  @db.Uuid
+  note          String?
+  addedById     Int?
+  addedAt       DateTime @default(now())
+
+  application Application      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  requisition JobRequisition   @relation(fields: [requisitionId], references: [id])
+
+  @@unique([applicationId])
+  @@index([requisitionId])
+  @@index([tenantId])
+  @@map("shortlist_entries")
 }
 
 model PerformanceMetric {
