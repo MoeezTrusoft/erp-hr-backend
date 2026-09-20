@@ -2,6 +2,7 @@ import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { assertRequisitionTransition } from "./requisitionWorkflow.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -66,9 +67,13 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
 };
 
 // ✅ Get all requisitions
-export const getAllRequisitions = async (tenantId) => {
+// Phase 1.4 — record scope. `scope` is resolved from the caller's role claim by
+// the controller/MCP layer; when omitted the tenant-wide read is retained so
+// internal callers (jobs, exports) are unaffected.
+export const getAllRequisitions = async (tenantId, scope = null) => {
+  const scopeWhere = scope ? requisitionScopeWhere(scope) : {};
   return prisma.jobRequisition.findMany({
-    where: scopedWhere(tenantId, {}),
+    where: scopedWhere(tenantId, scopeWhere),
     include: {
       position: true,
       requestedBy: true,
@@ -79,11 +84,14 @@ export const getAllRequisitions = async (tenantId) => {
   });
 };
 
-export const getByIdRequisitions = async (id, tenantId) => {
+export const getByIdRequisitions = async (id, tenantId, scope = null) => {
   // findFirst (not findUnique) so the non-unique tenantId predicate scopes the
   // read; a cross-tenant id resolves to not-found, never another tenant's row.
+  // The record scope composes the same way: a requisition outside the caller's
+  // scope is NOT FOUND, not FORBIDDEN — a 403 on a guessed id confirms it exists.
+  const scopeWhere = scope ? requisitionScopeWhere(scope) : {};
   const getByID = await prisma.jobRequisition.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), ...scopeWhere }),
     include: {
       position: true,
       requestedBy: true,

@@ -1,5 +1,6 @@
 import * as svc from "../services/interview.service.js";
 import { respondServerError } from '../utils/httpError.js';
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 export const scheduleInterview = async (req, res) => {
     try {
@@ -15,7 +16,16 @@ export const listInterviews = async (req, res) => {
         const { applicationId, page, limit } = req.query;
         const tenantId = req.user?.tenantId ?? null;
         if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
-        const result = await svc.listInterviews({ applicationId, page: Number(page) || 1, limit: Number(limit) || 20, tenantId });
+        // Phase 1.4 — an interviewer sees only panels they sit on; a manager only
+        // their own requisitions'. Interviewer notes are masked for both outward
+        // scopes inside the service.
+        const result = await svc.listInterviews({
+            applicationId,
+            page: Number(page) || 1,
+            limit: Number(limit) || 20,
+            tenantId,
+            scope: resolveRecruitmentScope(req.user),
+        });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { respondServerError(req, res, e); }
 };

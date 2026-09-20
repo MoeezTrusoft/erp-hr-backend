@@ -1,5 +1,6 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { interviewScopeWhere, maskInterviewsForScope } from "../lib/recruitmentAccess.js";
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
 import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
@@ -66,8 +67,15 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
     });
 };
 
-export const listInterviews = async ({ applicationId, page = 1, limit = 20, tenantId }) => {
-    const where = scopedWhere(tenantId, applicationId ? { applicationId: Number(applicationId) } : {});
+// Phase 1.4 — `scope` narrows the read to the caller's record scope (an
+// interviewer sees only panels they sit on, a manager only their requisitions')
+// and masks interviewer notes for scopes that must not read them.
+export const listInterviews = async ({ applicationId, page = 1, limit = 20, tenantId, scope = null }) => {
+    const scopeWhere = scope ? interviewScopeWhere(scope) : {};
+    const where = scopedWhere(tenantId, {
+        ...(applicationId ? { applicationId: Number(applicationId) } : {}),
+        ...scopeWhere,
+    });
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
         prisma.interview.findMany({
@@ -94,7 +102,7 @@ export const listInterviews = async ({ applicationId, page = 1, limit = 20, tena
         }),
         prisma.interview.count({ where }),
     ]);
-    return { items, total, page, limit };
+    return { items: maskInterviewsForScope(items, scope), total, page, limit };
 };
 
 const interviewInclude = {

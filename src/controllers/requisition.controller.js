@@ -9,6 +9,7 @@ import {
 } from "../services/requisition.service.js";
 import { respondPreconditionAware } from "../utils/httpError.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 // Verified tenant from the service-JWT claim (mapped to req.user.tenantId by the
 // gateway / MCP runner); `?? null` keeps it out of the scopedWhere fail-open
@@ -41,7 +42,9 @@ export const createRequisitionController = async (req, res) => {
 
 export const getRequisitionsController = async (req, res) => {
   try {
-    const result = await getAllRequisitions(tenantOf(req));
+    // Phase 1.4 — the caller's role claim decides WHICH rows they may read; the
+    // tenant decides which tenant. A hiring manager sees only their own.
+    const result = await getAllRequisitions(tenantOf(req), resolveRecruitmentScope(req.user));
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -50,7 +53,7 @@ export const getRequisitionsController = async (req, res) => {
 
 export const getByIdRequisitionsController = async (req, res) => {
   try {
-    const result = await getByIdRequisitions(req.params.id, tenantOf(req));
+    const result = await getByIdRequisitions(req.params.id, tenantOf(req), resolveRecruitmentScope(req.user));
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

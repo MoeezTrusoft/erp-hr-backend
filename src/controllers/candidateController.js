@@ -2,6 +2,7 @@
 import * as candidateService from "../services/candidateService.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 
 export const createCandidate = async (req, res) => {
@@ -149,9 +150,13 @@ export const getCandidate = async (req, res) => {
         if (!tenantId) return respondServerError(req, res, Object.assign(new Error("Tenant context is required"), { status: 400 }));
         const { id } = req.params;
 
+        // Phase 1.4 — record scope: managers reach only candidates on their own
+        // requisitions, interviewers only those they are meeting, and both get the
+        // recruiter's internal notes masked inside the service.
         const candidate = await candidateService.getCandidate({
             id: Number(id),
             tenantId,
+            scope: resolveRecruitmentScope(user),
         });
 
         if (!candidate) {
@@ -220,6 +225,7 @@ export const listCandidates = async (req, res) => {
             page: page ? Number(page) : 1,
             limit: limit ? Number(limit) : 20,
             cursor: cursor || undefined,
+            scope: resolveRecruitmentScope(user),
         });
 
         return res.status(200).json({

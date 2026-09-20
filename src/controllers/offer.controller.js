@@ -2,6 +2,7 @@ import * as svc from "../services/offer.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 import { approveOffer } from "../services/offerApproval.service.js";
 import { getOfferHandoff, runOfferHandoff } from "../services/recruitmentHandoff.service.js";
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 export const createOffer = async (req, res) => {
     try {
@@ -17,7 +18,8 @@ export const getOffer = async (req, res) => {
     try {
         const tenantId = req.user?.tenantId ?? null;
         if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
-        const result = await svc.getOffer(req.params.id, tenantId);
+        // Phase 1.4 — an offer outside the caller's record scope reads as not-found.
+        const result = await svc.getOffer(req.params.id, tenantId, resolveRecruitmentScope(req.user));
         if (!result) return res.status(404).json({ success: false, message: "Not found" });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
@@ -28,7 +30,12 @@ export const listOffers = async (req, res) => {
         const { page, limit } = req.query;
         const tenantId = req.user?.tenantId ?? null;
         if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
-        const result = await svc.listOffers({ page: Number(page) || 1, limit: Number(limit) || 20, tenantId });
+        const result = await svc.listOffers({
+            page: Number(page) || 1,
+            limit: Number(limit) || 20,
+            tenantId,
+            scope: resolveRecruitmentScope(req.user),
+        });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { respondServerError(req, res, e); }
 };

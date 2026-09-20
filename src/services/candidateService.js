@@ -3,6 +3,7 @@ import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { upsertTags } from "./tagService.js";
 import { computeRetentionUntil } from "./candidatePrivacy.service.js";
+import { candidateScopeWhere, maskCandidateForScope, maskCandidatesForScope } from "../lib/recruitmentAccess.js";
 import { logAction } from "../utils/logs.js";
 import {
   decodeCursor,
@@ -188,9 +189,16 @@ export const updateCandidate = async ({
 /**
  * Get candidate by ID (with tags and applications)
  */
-export const getCandidate = async ({ id, tenantId }) => {
-    return prisma.candidate.findFirst({
-        where: { id, tenantId: tenantId ?? null },
+// Phase 1.4 — `scope` narrows the row (a manager reaches only candidates who
+// applied to their requisitions; an interviewer only those they are meeting) and
+// masks the recruiter's internal notes for outward scopes.
+export const getCandidate = async ({ id, tenantId, scope = null }) => {
+    const candidate = await prisma.candidate.findFirst({
+        where: {
+            id,
+            tenantId: tenantId ?? null,
+            ...(scope ? candidateScopeWhere(scope) : {}),
+        },
         include: {
             tags: { include: { tag: true } },
             applications: {
@@ -200,6 +208,7 @@ export const getCandidate = async ({ id, tenantId }) => {
             },
         },
     });
+    return maskCandidateForScope(candidate, scope);
 };
 
 /**
@@ -212,12 +221,14 @@ export const listCandidates = async ({
     page = 1,
     limit = 20,
     cursor, // API-4: opaque keyset cursor (optional; additive, back-compatible)
+    scope = null, // Phase 1.4 — record-level narrowing (optional)
 }) => {
     const skip = (page - 1) * limit;
 
     const baseWhere = {
         tenantId: tenantId ?? null,
         status: "active",
+        ...(scope ? candidateScopeWhere(scope) : {}),
         ...(search
             ? {
                 OR: [
@@ -264,7 +275,7 @@ export const listCandidates = async ({
     // nextCursor is emitted ALONGSIDE the existing page fields; clients that
     // ignore it are unaffected.
     const nextCursor = nextCursorFrom(items, limit);
-    return { items, total, page, limit, nextCursor };
+    return { items: maskCandidatesForScope(items, scope), total, page, limit, nextCursor };
 };
 
 export const updateCandidateResumeMedia = async ({ id, mediaId, tenantId }) => {

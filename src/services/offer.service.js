@@ -9,6 +9,7 @@ import { transitionApplicationStageInTransaction } from "./applicationWorkflow.s
 import { assertOfferApproved } from "./offerApproval.service.js";
 import { getOfferHandoff, runOfferHandoff } from "./recruitmentHandoff.service.js";
 import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
+import { offerScopeWhere } from "../lib/recruitmentAccess.js";
 import { offerAcceptedEvent } from "./hrEvents.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
@@ -62,16 +63,19 @@ export const createOffer = async ({ applicationId, candidateId, jobRequisitionId
     });
 };
 
-export const getOffer = async (id, tenantId) => {
+// Phase 1.4 — `scope` narrows which offers a caller may read: a hiring manager
+// sees the offers for their requisitions, finance the offers it prices, and an
+// interviewer or agency none at all. Out-of-scope ids read as not-found.
+export const getOffer = async (id, tenantId, scope = null) => {
     return prisma.offer.findFirst({
-        where: scopedWhere(tenantId, { id: Number(id) }),
+        where: scopedWhere(tenantId, { id: Number(id), ...(scope ? offerScopeWhere(scope) : {}) }),
         include: { candidate: true, jobRequisition: true },
     });
 };
 
-export const listOffers = async ({ page = 1, limit = 20, tenantId }) => {
+export const listOffers = async ({ page = 1, limit = 20, tenantId, scope = null }) => {
     const skip = (page - 1) * limit;
-    const where = scopedWhere(tenantId, {});
+    const where = scopedWhere(tenantId, scope ? offerScopeWhere(scope) : {});
     const [items, total] = await Promise.all([
         prisma.offer.findMany({
             where,
