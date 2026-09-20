@@ -5,15 +5,12 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { listApplications } from "../../services/applicationService.js";
-import prisma from "../../lib/prisma.js";
-
-const APPLICATION_INCLUDE = {
-  candidate: true,
-  jobRequisition: true,
-  interviews: true,
-  offer: true,
-};
+import {
+  listApplications,
+  getApplication,
+  deleteApplication,
+} from "../../services/applicationService.js";
+import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -33,10 +30,18 @@ export function registerApplicationTools(server) {
       page: z.number().int().positive().optional().describe("Page number"),
       limit: z.number().int().positive().optional().describe("Rows per page"),
     },
-    withToolError(async (args) => {
+    withToolError(async ({ requisitionId, ...args }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await listApplications({ ...args, tenantId: user.tenantId });
+      // The tool declares `requisitionId` but the service filters on
+      // `jobRequisitionId`; passing the argument through under its own name
+      // silently dropped the filter and returned the whole page.
+      const data = await listApplications({
+        ...args,
+        jobRequisitionId: requisitionId,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_application_list")
   );
@@ -48,10 +53,17 @@ export function registerApplicationTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await prisma.application.findUnique({
-        where: { id: Number(id) },
-        include: APPLICATION_INCLUDE,
+      const data = await getApplication({
+        id,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
       });
+      if (!data) {
+        throw Object.assign(new Error("Application not found"), {
+          status: 404,
+          code: "HR-4040",
+        });
+      }
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_application_get")
   );
@@ -63,8 +75,20 @@ export function registerApplicationTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:recruitment", user.isAdmin);
-      await prisma.application.delete({ where: { id: Number(id) } });
-      return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
+      const deletedId = await deleteApplication({
+        id,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+      });
+      // Same not-found shape as a cross-tenant id: a 403 here would confirm the
+      // row exists in another tenant.
+      if (deletedId === null) {
+        throw Object.assign(new Error("Application not found"), {
+          status: 404,
+          code: "HR-4040",
+        });
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, id: deletedId }) }] };
     }, "hr_application_delete")
   );
 }

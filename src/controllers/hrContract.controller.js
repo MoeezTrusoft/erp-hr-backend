@@ -199,27 +199,30 @@ export const updateRequisition = handle(
   "Requisition updated"
 );
 
+// BLOCKER-1 / C.2 — the requisition transitions take the verified tenant from
+// the service-JWT claim (tenantOf) so a cross-tenant id is a 404, not a
+// successful transition of another tenant's requisition.
 export const submitRequisition = handle(
-  (req) => hrContract.submitRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.submitRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition submitted"
 );
 
 export const approveRequisition = handle(
-  (req) => hrContract.approveRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.approveRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition approved"
 );
 
 export const rejectRequisition = handle(
-  (req) => hrContract.rejectRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.rejectRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition rejected"
 );
 
 export const closeRequisition = handle(
-  (req) => hrContract.closeRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.closeRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition closed"
 );
 
 export const reopenRequisition = handle(
-  (req) => hrContract.reopenRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.reopenRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition reopened"
 );

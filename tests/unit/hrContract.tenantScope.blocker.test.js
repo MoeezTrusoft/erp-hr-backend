@@ -29,6 +29,16 @@ const ATTENDANCE = [
   { id: 13, employeeId: 4, tenantId: null, status: "ABSENT", date: new Date() },
 ];
 
+// Requisition transition fixtures: the same id space, three tenants' worth of
+// rows. The legacy /api/hr transition used to resolve by id alone, so tenant A
+// could submit/approve/close tenant B's requisition.
+const REQUISITIONS = [
+  { id: 100, title: "Backend Engineer", status: "DRAFT", tenantId: TENANT_A },
+  { id: 200, title: "B's Private Role", status: "DRAFT", tenantId: TENANT_B },
+  { id: 300, title: "Legacy null-tenant", status: "DRAFT", tenantId: null },
+];
+const APPROVALS = [];
+
 // Pull the tenant value the service folded into `where` (directly or nested in
 // AND) for the given column. `undefined` ⇒ no scope was requested.
 function tenantFromWhere(where, col) {
@@ -62,6 +72,30 @@ const prismaMock = {
   attendance: {
     findMany: jest.fn(async ({ where }) => filterByTenant(ATTENDANCE, where, "tenantId")),
   },
+  jobRequisition: {
+    findFirst: jest.fn(async ({ where }) => {
+      const scoped = filterByTenant(REQUISITIONS, where, "tenantId");
+      const id = where?.id;
+      return scoped.find((r) => (id == null ? true : r.id === id)) || null;
+    }),
+    findMany: jest.fn(async ({ where }) => filterByTenant(REQUISITIONS, where, "tenantId")),
+    update: jest.fn(async ({ where, data }) => {
+      const row = REQUISITIONS.find((r) => r.id === where.id);
+      if (!row) throw new Error("Record to update not found");
+      Object.assign(row, data);
+      return row;
+    }),
+  },
+  requisitionApproval: {
+    create: jest.fn(async ({ data }) => {
+      const row = { id: APPROVALS.length + 1, ...data };
+      APPROVALS.push(row);
+      return row;
+    }),
+  },
+  // tenantTransaction runs `SELECT set_config(...)` through the client before the
+  // callback; the fake records it so the tenant GUC is observable, not ignored.
+  $executeRaw: jest.fn(async () => 1),
 };
 prismaMock.$transaction = jest.fn(async (arg) =>
   typeof arg === "function" ? arg(prismaMock) : Promise.all(arg)
@@ -76,6 +110,13 @@ const attendanceSvc = await import("../../src/services/attendance.service.js");
 beforeEach(() => {
   for (const fn of Object.values(prismaMock.employee)) fn.mockClear?.();
   prismaMock.attendance.findMany.mockClear();
+  prismaMock.jobRequisition.findFirst.mockClear();
+  prismaMock.jobRequisition.update.mockClear();
+  prismaMock.requisitionApproval.create.mockClear();
+  prismaMock.$executeRaw.mockClear();
+  APPROVALS.length = 0;
+  // Restore the fixtures mutated by the transition tests.
+  for (const row of REQUISITIONS) row.status = "DRAFT";
 });
 
 describe("BLOCKER-1 — hr_employees_list is tenant-scoped (no foreign/null-tenant leak)", () => {
@@ -103,5 +144,62 @@ describe("BLOCKER-2 — hr_attendance_list is tenant-scoped (no foreign/null-ten
     expect(ids).toContain(11); // tenant A
     expect(ids).not.toContain(12); // foreign tenant
     expect(ids).not.toContain(13); // null tenant
+  });
+});
+
+// Phase 1.2 — the legacy /api/hr requisition transitions. `transitionRequisition`
+// resolved the row with a bare `findUnique({ where: { id } })`, so a caller in
+// tenant A could move tenant B's requisition through submit/approve/reject/
+// close/reopen by id. Tenant is now required and the row is fetched scoped.
+describe("Phase 1.2 — requisition transitions are tenant-scoped", () => {
+  it("refuses to transition a foreign tenant's requisition", async () => {
+    await expect(
+      hrContract.submitRequisition(200, TENANT_A, 1, "please review")
+    ).rejects.toThrow(/not found/i);
+
+    expect(prismaMock.jobRequisition.update).not.toHaveBeenCalled();
+    expect(REQUISITIONS.find((r) => r.id === 200).status).toBe("DRAFT");
+  });
+
+  it("refuses a null-tenant legacy requisition", async () => {
+    await expect(hrContract.approveRequisition(300, TENANT_A, 1)).rejects.toThrow(/not found/i);
+    expect(prismaMock.jobRequisition.update).not.toHaveBeenCalled();
+  });
+
+  it("still transitions the caller's own requisition", async () => {
+    await hrContract.submitRequisition(100, TENANT_A, 1, "please review");
+
+    expect(REQUISITIONS.find((r) => r.id === 100).status).toBe("PENDING_APPROVAL");
+    // The lookup that gated the write carried the tenant predicate.
+    expect(prismaMock.jobRequisition.findFirst.mock.calls[0][0].where).toMatchObject({
+      id: 100,
+      tenantId: TENANT_A,
+    });
+  });
+
+  it("fails closed when the tenant is missing rather than reading unscoped", async () => {
+    await expect(hrContract.submitRequisition(100, null, 1)).rejects.toThrow(
+      /tenant context is required/i
+    );
+    expect(prismaMock.jobRequisition.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("stamps the verified tenant on the approval row it writes", async () => {
+    await hrContract.approveRequisition(100, TENANT_A, 7, "within budget");
+
+    expect(APPROVALS).toHaveLength(1);
+    expect(APPROVALS[0]).toMatchObject({
+      requisitionId: 100,
+      approverId: 7,
+      status: "APPROVED",
+      tenantId: TENANT_A,
+    });
+  });
+
+  it("reopens only the caller's own requisition", async () => {
+    await expect(hrContract.reopenRequisition(200, TENANT_A, 1)).rejects.toThrow(/not found/i);
+    await hrContract.reopenRequisition(100, TENANT_A, 1);
+
+    expect(REQUISITIONS.find((r) => r.id === 100).status).toBe("DRAFT");
   });
 });

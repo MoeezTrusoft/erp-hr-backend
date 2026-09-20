@@ -2,6 +2,58 @@
 import prisma from "../config/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { transitionApplicationStage } from "./applicationWorkflow.service.js";
+import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
+
+// Phase 1.4 (remainder) — application reads/writes are TENANT-scoped and, when a
+// caller passes a scope, ROW-scoped. The MCP tools used to reach prisma directly
+// with `findUnique({ where: { id } })` / `delete({ where: { id } })`, which has no
+// tenant predicate at all: a valid `hr:recruitment` grant was enough to read ANY
+// tenant's application (with candidate PII, interviews and the offer) or delete
+// it. Both now go through here so REST and MCP share one gate.
+const APPLICATION_INCLUDE = {
+    candidate: true,
+    jobRequisition: true,
+    interviews: true,
+    offer: true,
+};
+
+/**
+ * Read one application, tenant-scoped and row-scoped.
+ *
+ * An out-of-scope or cross-tenant id returns null, which callers surface as
+ * not-found — never as forbidden, since a 403 on a guessed id confirms the row
+ * exists.
+ */
+export const getApplication = async ({ id, tenantId, scope = null }) => {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) return null;
+    return prisma.application.findFirst({
+        where: {
+            id: numericId,
+            tenantId: tenantId ?? null,
+            ...(scope ? applicationScopeWhere(scope) : {}),
+        },
+        include: APPLICATION_INCLUDE,
+    });
+};
+
+/**
+ * Delete one application, tenant-scoped and row-scoped.
+ * Returns the deleted id, or null when the row is not the caller's to delete.
+ */
+export const deleteApplication = async ({ id, tenantId, scope = null }) => {
+    const existing = await prisma.application.findFirst({
+        where: {
+            id: Number(id),
+            tenantId: tenantId ?? null,
+            ...(scope ? applicationScopeWhere(scope) : {}),
+        },
+        select: { id: true },
+    });
+    if (!existing) return null;
+    await prisma.application.delete({ where: { id: existing.id } });
+    return existing.id;
+};
 /**
  * Create an application: candidate → jobRequisition
  */
@@ -134,11 +186,16 @@ export const listApplications = async ({
     status,
     page = 1,
     limit = 20,
+    scope = null,
 }) => {
     const skip = (page - 1) * limit;
 
+    // `scope` is optional so internal callers keep the previous behaviour; when a
+    // transport passes one (REST + MCP both do) the caller only sees the
+    // applications their role reaches.
     const where = {
         tenantId: tenantId ?? null,
+        ...(scope ? applicationScopeWhere(scope) : {}),
         ...(jobRequisitionId ? { jobRequisitionId } : {}),
         ...(candidateId ? { candidateId } : {}),
         ...(stage ? { stage } : {}),

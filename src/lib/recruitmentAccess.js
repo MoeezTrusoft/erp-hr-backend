@@ -172,7 +172,34 @@ export function candidateScopeWhere(scope) {
     return { ...MATCH_NONE };
 }
 
-/** Where-clause fragment restricting offers to the caller's scope. */
+/**
+ * Where-clause fragment restricting applications to the caller's scope.
+ *
+ * The application is the join that grants a manager or an interviewer their view,
+ * so the rule mirrors candidateScopeWhere: MANAGED reaches applications on the
+ * requisitions they own, ASSIGNED reaches the applications they sit on a panel for.
+ * FINANCE and AGENCY reach none — a pricing reviewer has no business reading
+ * candidate submissions, and a submission-level agency boundary needs an
+ * ownership column that does not exist (see the module header).
+ */
+export function applicationScopeWhere(scope) {
+    if (scope.unrestricted) return {};
+    if (scope.level === RECRUITMENT_SCOPE.MANAGED && scope.employeeId) {
+        return {
+            jobRequisition: {
+                OR: [{ requestedById: scope.employeeId }, { approvedById: scope.employeeId }],
+            },
+        };
+    }
+    if (scope.level === RECRUITMENT_SCOPE.ASSIGNED && scope.employeeId) {
+        return { interviews: { some: { interviewers: { some: { employeeId: scope.employeeId } } } } };
+    }
+    return { ...MATCH_NONE };
+}
+
+/**
+ * Where-clause fragment restricting offers to the caller's scope.
+ */
 export function offerScopeWhere(scope) {
     if (scope.unrestricted) return {};
     // Finance and hiring managers both need the offer for the requisition they

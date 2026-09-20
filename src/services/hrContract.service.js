@@ -1820,22 +1820,39 @@ export const updateRequisition = async (id, data) => {
   return requisitionRow(requisition);
 };
 
-const transitionRequisition = async ({ id, status, actorId, comments }) => {
+// Phase 1.2 (legacy /api/hr surface) — this transition used to read the
+// requisition with a bare `findUnique({ where: { id } })`. JobRequisition carries
+// a tenant column, so nothing stopped a caller in tenant A from submitting,
+// approving, rejecting, closing or reopening tenant B's requisition by id — the
+// same class of hole the newer requisition.service path was already closed
+// against. Tenant is now required and the row is fetched tenant-scoped: a
+// cross-tenant id reads as not-found, never as a successful transition.
+const transitionRequisition = async ({ id, tenantId, status, actorId, comments }) => {
   if (!actorId) throw new Error("Employee context is required");
+  if (!tenantId) {
+    throw Object.assign(new Error("Tenant context is required"), {
+      status: 400,
+      code: "HR-TENANT-REQUIRED",
+    });
+  }
 
-  const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
+  const requisition = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+  });
   if (!requisition) throw new Error("Requisition not found");
 
   const updated = await tenantTransaction(prisma, async (tx) => {
     if (["APPROVED", "REJECTED"].includes(status)) {
+      // Stamp the verified tenant (RequisitionApproval.tenantId, per
+      // requisition.service.js) rather than writing a null-tenant approval row.
       await tx.requisitionApproval.create({
-        data: {
+        data: scopedData(tenantId, {
           requisitionId: Number(id),
           approverId: Number(actorId),
           status,
           comments,
           decidedAt: new Date(),
-        },
+        }),
       });
     }
 
@@ -1857,17 +1874,17 @@ const transitionRequisition = async ({ id, status, actorId, comments }) => {
   return requisitionRow(updated);
 };
 
-export const submitRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "PENDING_APPROVAL" });
+export const submitRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "PENDING_APPROVAL" });
 
-export const approveRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "APPROVED" });
+export const approveRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "APPROVED" });
 
-export const rejectRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "REJECTED" });
+export const rejectRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "REJECTED" });
 
-export const closeRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "CLOSED" });
+export const closeRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "CLOSED" });
 
-export const reopenRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "DRAFT" });
+export const reopenRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "DRAFT" });

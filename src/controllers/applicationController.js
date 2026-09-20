@@ -1,6 +1,7 @@
 // src/controllers/applicationController.js
 import * as applicationService from "../services/applicationService.js";
 import { respondServerError } from '../utils/httpError.js';
+import { resolveRecruitmentScope } from '../lib/recruitmentAccess.js';
 
 export const createApplication = async (req, res) => {
     try {
@@ -57,6 +58,8 @@ export const listApplications = async (req, res) => {
 
         const result = await applicationService.listApplications({
             tenantId,
+            // Phase 1.4 — applications are row-scoped too, not just tenant-scoped.
+            scope: resolveRecruitmentScope(user),
             jobRequisitionId: jobRequisitionId ? Number(jobRequisitionId) : undefined,
             candidateId: candidateId ? Number(candidateId) : undefined,
             stage,
