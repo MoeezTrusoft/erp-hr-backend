@@ -75,7 +75,7 @@ export function registerInterviewMgmtTools(server) {
 
   server.tool(
     "hr_interview_score",
-    "Submit interview feedback: upsert the caller's scorecard (ratings, overall score, recommendation, comments) and set the interview decision/outcome.",
+    "Submit interview feedback: upsert the caller's scorecard (ratings, overall score, recommendation, comments) and set the interview decision/outcome. A scorecard that has already been submitted is LOCKED — changing it requires amendmentReason, and an identical resubmit is a no-op.",
     {
       interviewId: z.coerce.number().int().positive().describe("Interview id (references Interview)"),
       ratings: ratingsSchema.describe("Scorecard ratings; each of technicalSkills, problemSolving, communication, cultureFit is an integer 1-5. Stored as the NOT-NULL scores JSON; overallScore is their average."),
@@ -85,8 +85,9 @@ export function registerInterviewMgmtTools(server) {
       overrideReason: z.string().optional().describe("Required only when recording a decisive outcome with no scorecard on file — the override is stamped on the interview and audited"),
       comments: z.string().optional().describe("Free-text reviewer comments (stored as the scorecard notes)"),
       reviewerId: z.coerce.number().int().positive().optional().describe("Reviewer employee id (references Employee); defaults to the caller's employeeId. Provide when the caller has no employeeId (e.g. an admin scoring on someone's behalf) — the service 400s if neither is present."),
+      amendmentReason: z.string().optional().describe("Required only to CHANGE a scorecard that has already been submitted (Phase 3.4 lock). Without it a changed payload is refused with HR-RECRUITMENT-SCORECARD-LOCKED; the reason is appended to the scorecard's amendment log with the values it replaced. Resending the identical payload never needs one."),
     },
-    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId, reason, overrideReason }) => {
+    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId, reason, overrideReason, amendmentReason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       await scoreInterview({
@@ -96,6 +97,7 @@ export function registerInterviewMgmtTools(server) {
         recommendation,
         comments,
         tenantId: user.tenantId,
+        amendmentReason,
       });
       const data = await setInterviewOutcome({
         interviewId,

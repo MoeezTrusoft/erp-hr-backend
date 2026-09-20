@@ -245,6 +245,7 @@ export const scoreInterview = async ({
   recommendation,
   comments,
   tenantId,
+  amendmentReason = null,
 } = {}) => {
   const idNum = Number(interviewId);
   const reviewer = Number(reviewerId);
@@ -285,6 +286,10 @@ export const scoreInterview = async ({
       submittedAt,
     },
     tenantId,
+    // Phase 3.4 — changing an ALREADY SUBMITTED scorecard requires an explicit
+    // amendment reason; without one the shared writer refuses with
+    // HR-RECRUITMENT-SCORECARD-LOCKED. An identical resubmit stays a no-op.
+    amendment: amendmentReason ? { reason: amendmentReason, by: reviewer } : null,
   });
 
   return getInterviewManaged({ id: idNum, tenantId });

@@ -396,6 +396,12 @@ export function registerRecruitmentTools(server) {
         })
         .optional()
         .describe("Scorecard feedback — persisted to InterviewScorecard for the acting reviewer"),
+      amendmentReason: z
+        .string()
+        .optional()
+        .describe(
+          "Required only to CHANGE a scorecard the acting reviewer has already SUBMITTED (Phase 3.4 lock): without it the change is refused with HR-RECRUITMENT-SCORECARD-LOCKED, and the reason is appended to the scorecard's amendment log with the values it replaced. Resending the identical feedback never needs one.",
+        ),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

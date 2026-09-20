@@ -147,7 +147,10 @@ const interviewInclude = {
 };
 
 const normalizeInterviewUpdateData = (data = {}) => {
-    const { feedback, decision, type, interviewType, reviewerId, ...rest } = data;
+    // Phase 3.4 — `amendmentReason` is a control input, not a column: it must be
+    // pulled out here so it can never land in updateData (which spreads into the
+    // prisma update) and so the scorecard writer learns a change is authorised.
+    const { feedback, decision, type, interviewType, reviewerId, amendmentReason, ...rest } = data;
     const updateData = { ...rest };
 
     if (type || interviewType) {
@@ -160,7 +163,7 @@ const normalizeInterviewUpdateData = (data = {}) => {
             : `Decision: ${decision}`;
     }
 
-    return { updateData, feedback, reviewerId };
+    return { updateData, feedback, reviewerId, amendmentReason };
 };
 
 const averageRating = (ratings = {}) => {
@@ -171,7 +174,7 @@ const averageRating = (ratings = {}) => {
 
 export const updateInterview = async (id, data = {}, tenantId) => {
     const interviewId = Number(id);
-    const { updateData, feedback, reviewerId } = normalizeInterviewUpdateData(data);
+    const { updateData, feedback, reviewerId, amendmentReason } = normalizeInterviewUpdateData(data);
 
     // Tenant-scoped pre-read so a cross-tenant id cannot be mutated (fail-closed).
     const existingInterview = await prisma.interview.findFirst({ where: scopedWhere(tenantId, { id: interviewId }) });
@@ -212,6 +215,11 @@ export const updateInterview = async (id, data = {}, tenantId) => {
             reviewerId: resolvedReviewerId,
             data: scorePayload,
             tenantId,
+            // Phase 3.4 — an already-submitted scorecard only changes through
+            // this explicit, attributed amendment path.
+            amendment: amendmentReason
+                ? { reason: amendmentReason, by: resolvedReviewerId }
+                : null,
         });
     }
 

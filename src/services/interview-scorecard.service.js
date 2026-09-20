@@ -32,6 +32,70 @@ const currentTenantId = () => {
     return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
 };
 
+// Phase 3.4 (remainder) — a SUBMITTED scorecard is evidence, so it locks.
+//
+// Before this, a submitted scorecard was freely re-writable: the same reviewer
+// (or anyone who could reach the update path) could rewrite a rating after the
+// hiring decision had been made, leaving no trace that the record changed. The
+// pipeline prerequisites were enforced, but the record they justified was not.
+//
+// The rule now:
+//   * no submittedAt on the stored row        -> write normally (first submit)
+//   * stored row submitted, payload IDENTICAL -> idempotent no-op, returns as-is
+//     (a double-click, or a retry of the same request, must not fail)
+//   * stored row submitted, payload DIFFERS   -> REFUSED (409
+//     HR-RECRUITMENT-SCORECARD-LOCKED) unless the caller passes an explicit
+//     `amendment: { reason }`, which is the authorised path and appends to the
+//     scorecard's own amendment log (who, when, why, and the values replaced).
+//
+// `amendmentLog` / `lastAmendedAt` are columns on interview_scorecards (which is
+// already tenant-scoped and under FORCE RLS), so the trail travels with the
+// scorecard and needs no new table, no new grant and no new policy.
+
+// Only the fields a reviewer actually owns are compared/amended. `submittedAt`
+// is bookkeeping and is deliberately excluded, so re-sending the same payload
+// with a fresh timestamp still counts as unchanged.
+const COMPARABLE_FIELDS = ["scores", "overallScore", "recommendation", "notes"];
+
+const stable = (value) => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (Array.isArray(value)) return value.map(stable);
+    if (typeof value === "object") {
+        return Object.keys(value)
+            .sort()
+            .reduce((acc, key) => {
+                acc[key] = stable(value[key]);
+                return acc;
+            }, {});
+    }
+    return value;
+};
+
+/** The stored/incoming values for the fields a reviewer may change. */
+const comparable = (row = {}) =>
+    COMPARABLE_FIELDS.reduce((acc, field) => {
+        if (row[field] !== undefined) acc[field] = row[field];
+        return acc;
+    }, {});
+
+/** True when the incoming payload would change anything the reviewer owns. */
+export const scorecardPayloadChanged = (existing, data = {}) => {
+    const before = stable(comparable(existing));
+    const after = stable(comparable(data));
+    return COMPARABLE_FIELDS.some(
+        (field) => JSON.stringify(before[field] ?? null) !== JSON.stringify(after[field] ?? null),
+    );
+};
+
+const lockedError = () =>
+    Object.assign(
+        new Error(
+            "This interview scorecard has been submitted and is locked; resubmit it with an amendment reason to change it",
+        ),
+        { status: 409, code: "HR-RECRUITMENT-SCORECARD-LOCKED" },
+    );
+
 /**
  * Create-or-update the (interviewId, reviewerId) scorecard.
  *
@@ -40,9 +104,11 @@ const currentTenantId = () => {
  * @param {number}  params.reviewerId   Employee id of the reviewer
  * @param {object}  params.data         column values (scores, overallScore, recommendation, notes, submittedAt)
  * @param {string} [params.tenantId]    caller tenant; defaults to the async-local request tenant
+ * @param {object} [params.amendment]   authorised change to a LOCKED scorecard:
+ *                                      `{ reason, by? }` — reason is mandatory
  * @returns {Promise<object>} the written scorecard row
  */
-export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data = {}, tenantId } = {}) => {
+export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data = {}, tenantId, amendment = null } = {}) => {
     const interview = Number(interviewId);
     const reviewer = Number(reviewerId);
     if (!Number.isInteger(interview) || interview <= 0) {
@@ -76,6 +142,38 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
         throw Object.assign(
             new Error('This interview scorecard belongs to another tenant and cannot be modified'),
             { status: 409 },
+        );
+    }
+
+    // Phase 3.4 — lock enforcement. A submitted scorecard only changes through
+    // the explicit amendment path; an identical resubmit stays a no-op so a
+    // retry or a double-click does not surface a spurious 409.
+    if (existing.submittedAt) {
+        if (!scorecardPayloadChanged(existing, data)) return existing;
+
+        const reason = typeof amendment?.reason === "string" ? amendment.reason.trim() : "";
+        if (!reason) throw lockedError();
+
+        const entry = {
+            at: new Date().toISOString(),
+            by: amendment?.by ?? null,
+            reason,
+            replaced: comparable(existing),
+        };
+
+        // Ours, or a legacy tenant-less row on our interview: amend and adopt it.
+        // The log is appended, never overwritten, and the ORIGINAL submittedAt is
+        // preserved so `lastAmendedAt` is what shows a record has moved.
+        return asSystem(async () =>
+            prisma.interviewScorecard.update({
+                where: { id: existing.id },
+                data: {
+                    ...data,
+                    ...(tenant ? { tenantId: tenant } : {}),
+                    amendmentLog: [...(Array.isArray(existing.amendmentLog) ? existing.amendmentLog : []), entry],
+                    lastAmendedAt: new Date(),
+                },
+            }),
         );
     }
 

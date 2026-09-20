@@ -2929,6 +2929,13 @@ model InterviewScorecard {
   recommendation String?
   notes          String?
   submittedAt    DateTime?
+  // Phase 3.4 (remainder) — a SUBMITTED scorecard is locked: it is the evidence
+  // the hiring decision rests on, so a later change must be an explicit,
+  // attributed amendment rather than a silent rewrite. Each authorised change
+  // appends `{ at, by, reason, replaced }` here and stamps lastAmendedAt; the
+  // original submittedAt is preserved.
+  amendmentLog   Json?
+  lastAmendedAt  DateTime?
   created_at     DateTime  @default(now())
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)

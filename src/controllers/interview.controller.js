@@ -43,7 +43,10 @@ export const updateInterview = async (req, res) => {
             reviewerId,
         }, tenantId);
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(400).json({ success: false, message: e.message }); }
+        // Phase 3.4 — carry the service's own status + HR-nnnn code through this
+        // legacy catch. Hardcoding 400 dropped both, so a locked-scorecard refusal
+        // reached an MCP client as a generic 400 with no code to key on.
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
 };
 
 export const submitScorecard = async (req, res) => {
@@ -53,7 +56,7 @@ export const submitScorecard = async (req, res) => {
         if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
         const result = await svc.submitScorecard({ ...req.body, interviewId: req.params.id, reviewerId, tenantId });
         res.status(201).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(400).json({ success: false, message: e.message }); }
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
 };
 
 export const getScorecards = async (req, res) => {
