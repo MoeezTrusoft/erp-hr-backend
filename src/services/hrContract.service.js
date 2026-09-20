@@ -1,6 +1,10 @@
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { assertRequisitionTransition, recordRequisitionTransition } from "./requisitionWorkflow.service.js";
+import {
+  assertRequisitionTransition,
+  assertRequisitionNotFrozen,
+  recordRequisitionTransition,
+} from "./requisitionWorkflow.service.js";
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
@@ -1868,6 +1872,9 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
   // inside the workflow guard, because this path also has to enforce the legal
   // transition and the rejection-reason rule.
   assertRequisitionTransition(requisition.status, status, { comments, requisition });
+  // Phase 4 — and a hiring freeze blocks submission here too, or the freeze would
+  // be bypassable simply by using the older endpoint.
+  await assertRequisitionNotFrozen(tenantId, requisition, status);
 
   const updated = await tenantTransaction(prisma, async (tx) => {
     if (["APPROVED", "REJECTED"].includes(status)) {

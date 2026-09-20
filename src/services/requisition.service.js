@@ -1,6 +1,10 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
-import { assertRequisitionTransition, recordRequisitionTransition } from "./requisitionWorkflow.service.js";
+import {
+  assertRequisitionTransition,
+  assertRequisitionNotFrozen,
+  recordRequisitionTransition,
+} from "./requisitionWorkflow.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
@@ -246,6 +250,9 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
   // Phase 3.2 — publish is a state transition (APPROVED → POSTED), so it goes
   // through the same guard as every other move rather than a bare status check.
   assertRequisitionTransition(requisition.status, "POSTED");
+  // Phase 4 — a hiring freeze blocks PUBLICATION. An approved requisition may sit
+  // in APPROVED for the duration of the freeze and be posted the day it lifts.
+  await assertRequisitionNotFrozen(tenantId, requisition, "POSTED");
 
   // Phase 11 — the posting row, the status flip and the event are one unit: a
   // published posting must never exist without the requisition saying POSTED.
@@ -343,6 +350,10 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
     updateData.status = assertRequisitionTransition(existing.status, status, {
       requisition: { ...existing, ...updateData },
     });
+    // Phase 4 — a freeze blocks ADVANCING the requisition. Checked against the
+    // merged row so a same-PATCH department change is judged on where the
+    // requisition is going, not where it was.
+    await assertRequisitionNotFrozen(tenantId, { ...existing, ...updateData }, updateData.status);
   }
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.

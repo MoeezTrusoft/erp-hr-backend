@@ -206,6 +206,9 @@ const prisma = {
   requisitionTransition: { create: jest.fn() },
   jobPosting: { create: jest.fn() },
   businessUnit: { findMany: jest.fn() },
+  // Phase 4 — the submit path also consults the hiring freeze. This suite is
+  // about the FIELD gate, so no freeze is ever in effect here.
+  recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
 };
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));

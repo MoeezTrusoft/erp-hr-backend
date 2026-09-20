@@ -154,6 +154,10 @@ const RLS_MODELS = new Set([
     // is tenant-owned even though its bytes live in DAM: the pointer's visibility
     // rule must not be readable across tenants.
     'RequisitionAttachment',
+    // Phase 4 — hiring freezes (20260920240000). Read on the SUBMISSION and
+    // PUBLICATION paths, which run under the ordinary request tenant context; a
+    // freeze that reads back empty would silently stop gating anything.
+    'RecruitmentHiringFreeze',
     'OfferApproval',
     'OfferHandoff',
     'OfferHandoffAttempt',

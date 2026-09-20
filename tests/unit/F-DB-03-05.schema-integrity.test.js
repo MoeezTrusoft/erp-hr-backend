@@ -88,7 +88,10 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // documents. Nullable-tenant for the same reason: the pointer hangs off a
     // requisition that may predate tenancy, and the row must not be unwritable
     // just because the parent is legacy.
-    expect(nullableModels).toHaveLength(125);
+    // 125 + RecruitmentHiringFreeze (Phase 4) — a freeze is a tenant control and
+    // every recruitment table beside it follows the same nullable-tenant
+    // convention. It carries its own RLS policy in the migration that creates it.
+    expect(nullableModels).toHaveLength(126);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

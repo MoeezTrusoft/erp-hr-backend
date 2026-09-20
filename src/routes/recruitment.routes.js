@@ -24,6 +24,12 @@ import {
 } from "../controllers/applicationController.js";
 
 import {
+    listHiringFreezesController,
+    setHiringFreezeController,
+    liftHiringFreezeController,
+} from "../controllers/recruitmentFreeze.controller.js";
+
+import {
     recordConsentHandler,
     listConsentHandler,
     recordDncHandler,
@@ -59,6 +65,16 @@ router.get("/applications", listApplications);
 router.post("/applications", createApplication);
 router.put("/applications/:id/stage", updateStage);
 router.put("/applications/:id/status", updateStatus);
+
+// HIRING FREEZE (Phase 4 / §2.7). Deliberately mounted at /api/recruitment/freeze
+// so F-02 resolves the DEDICATED `hr.recruitment.freeze` resource, which
+// RESOURCE_PREFIXES matches before the general /api/recruitment entry. Setting or
+// lifting a freeze must not be reachable with an ordinary recruitment grant —
+// otherwise the control an HR leader sets is one any recruiter can undo.
+// A test pins the prefix ordering, because it is the only thing enforcing that.
+router.get("/freeze", listHiringFreezesController);
+router.post("/freeze", setHiringFreezeController);
+router.post("/freeze/:id/lift", liftHiringFreezeController);
 
 // PRIVACY (Phase 2.5/10). Mounted under /api/recruitment so F-02 resolves the
 // resource to hr.recruitment and the action from the HTTP method — one policy

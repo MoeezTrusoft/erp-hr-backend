@@ -19,6 +19,9 @@ const prisma = {
   // the same transaction, so the double must model it.
   requisitionTransition: { create: jest.fn(async () => ({ id: 1 })) },
   jobPosting: { create: jest.fn(async () => ({ id: 1 })) },
+  // Phase 4 — submitting and publishing now also consult the hiring freeze. This
+  // suite is about the state machine, so no freeze is in effect.
+  recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
   outboxEvent: { create: jest.fn(async () => ({ id: 1 })) },
   // Approval/posting now run in a tenant transaction (decision + approval row +
   // outbox event commit together), so the double must hand back the same client.

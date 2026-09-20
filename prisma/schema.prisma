@@ -1598,6 +1598,34 @@ model RequisitionAttachment {
   @@map("requisition_attachments")
 }
 
+// Phase 4 / decision record §2.7 — a hiring freeze.
+//
+// Company-wide OR department-level (scope + departmentId, with the pairing pinned
+// by a CHECK constraint so a BUSINESS_UNIT freeze cannot exist without naming the
+// unit). A freeze blocks SUBMISSION and PUBLICATION only — DRAFTING continues, so
+// HR can keep preparing work it will be able to publish the day the freeze lifts.
+//
+// Rows are never deleted on lift: `isActive` false plus who/when/why is the
+// record of the freeze, and a re-issued freeze is a new row rather than an
+// overwrite of the old one.
+model RecruitmentHiringFreeze {
+  id           Int       @id @default(autoincrement())
+  tenantId     String?   @db.Uuid
+  scope        String    @default("COMPANY") // COMPANY | BUSINESS_UNIT
+  departmentId Int? // the business-unit id (JobRequisition.departmentId space)
+  reason       String
+  isActive     Boolean   @default(true)
+  createdById  Int?
+  created_at   DateTime  @default(now())
+  liftedById   Int?
+  liftedAt     DateTime?
+  liftReason   String?
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("recruitment_hiring_freezes")
+}
+
 model RequisitionApproval {
   id            Int       @id @default(autoincrement())
   requisitionId Int

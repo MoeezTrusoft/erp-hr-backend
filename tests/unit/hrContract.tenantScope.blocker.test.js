@@ -121,6 +121,9 @@ const prismaMock = {
   requisitionTransition: {
     create: jest.fn(async ({ data }) => ({ id: 1, ...data })),
   },
+  // Phase 4 — a submission now also checks for a hiring freeze. This suite is
+  // about tenant scoping, so no freeze is in effect.
+  recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
   // tenantTransaction runs `SELECT set_config(...)` through the client before the
   // callback; the fake records it so the tenant GUC is observable, not ignored.
   $executeRaw: jest.fn(async () => 1),

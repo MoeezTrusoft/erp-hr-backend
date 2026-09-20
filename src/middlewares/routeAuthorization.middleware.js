@@ -34,6 +34,11 @@ const RESOURCE_PREFIXES = Object.freeze([
   ["/api/attendance", "hr.attendance"],
   ["/api/reimbursements", "hr.reimbursement"],
   ["/api/requisitions", "hr.requisition"],
+  // Phase 4 / §2.7 — the hiring freeze is a CONTROL, not an ordinary recruitment
+  // write, so it resolves to its own resource. This entry MUST stay above
+  // "/api/recruitment" (first match wins): below it, a plain recruiter's
+  // hr.recruitment:create grant would let them lift the freeze an HR leader set.
+  ["/api/recruitment/freeze", "hr.recruitment.freeze"],
   ["/api/recruitment", "hr.recruitment"],
   ["/api/interviews", "hr.recruitment"],
   ["/api/talent-pool", "hr.recruitment"],

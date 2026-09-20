@@ -18,7 +18,11 @@ import prisma from "../lib/prisma.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
-import { assertRequisitionTransition, recordRequisitionTransition } from "./requisitionWorkflow.service.js";
+import {
+  assertRequisitionTransition,
+  assertRequisitionNotFrozen,
+  recordRequisitionTransition,
+} from "./requisitionWorkflow.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { exportRows } from "../lib/export.util.js";
 
@@ -217,6 +221,9 @@ export const submitRequisition = async (id, tenantId, actorId = null) => {
   // Phase 2.2 — the row goes in so the mandatory-field gate can reject an
   // incomplete requisition instead of pushing it into the approval chain.
   assertRequisitionTransition(current.status, "PENDING_APPROVAL", { requisition: current });
+  // Phase 4 — and a hiring freeze blocks submission outright. Drafting is not
+  // blocked, so this is the first moment the freeze can apply.
+  await assertRequisitionNotFrozen(tenantId, current, "PENDING_APPROVAL");
   await tenantTransaction(
     prisma,
     async (tx) => {

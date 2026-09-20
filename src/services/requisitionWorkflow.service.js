@@ -22,6 +22,7 @@ export const REQUISITION_STATUSES = Object.freeze([
 ]);
 
 import { assertRequisitionSubmittable } from "../lib/requisitionFields.js";
+import { assertNotHiringFrozen } from "./recruitmentFreeze.service.js";
 
 // DRAFT ──submit──▶ PENDING_APPROVAL ──decide──▶ APPROVED ──post──▶ POSTED ──▶ CLOSED
 //   │                      │                        │                          ▲
@@ -89,6 +90,29 @@ export function assertRequisitionTransition(from, to, { comments, requisition } 
     }
     return target;
 }
+
+/**
+ * Phase 4 / decision record §2.7 — the HIRING FREEZE gate for a status move.
+ *
+ * Kept as a separate async guard rather than folded into
+ * `assertRequisitionTransition` because it needs a database read and that function
+ * is deliberately synchronous and pure (callers use it to pre-check). Callers that
+ * ADVANCE a requisition await this immediately after the transition guard, so the
+ * two blockers read together and neither can be satisfied by accident.
+ *
+ * A freeze blocks SUBMISSION and PUBLICATION only. Drafting, revising and
+ * CLOSING are not blocked — closing an in-flight requisition during a freeze is
+ * exactly what a freeze is for.
+ *
+ * Returns the freeze it blocked on (null when nothing is frozen) so a caller can
+ * surface which freeze applied without a second lookup.
+ */
+export const assertRequisitionNotFrozen = async (tenantId, requisition, targetStatus) => {
+    const target = normalizeStatus(targetStatus);
+    if (target === "PENDING_APPROVAL") return assertNotHiringFrozen(tenantId, requisition, "submission");
+    if (target === "POSTED") return assertNotHiringFrozen(tenantId, requisition, "publication");
+    return null;
+};
 
 /**
  * Phase 2.1 — append one immutable row to a requisition's transition history.

@@ -27,6 +27,9 @@ const prisma = {
   requisitionTransition: { create: jest.fn() },
   jobPosting: { create: jest.fn() },
   businessUnit: { findMany: jest.fn() },
+  // Phase 4 — the submit and publish paths also consult the hiring freeze; no
+  // freeze is in effect in this suite, which is about the history rows written.
+  recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
 };
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
