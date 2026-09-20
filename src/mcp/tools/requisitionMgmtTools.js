@@ -20,6 +20,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
 import {
   listManagedRequisitions,
   getManagedRequisition,
@@ -59,7 +60,8 @@ export function registerRequisitionMgmtTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const query = { page: 1, pageSize: 10, ...args };
-      const data = await listManagedRequisitions(query, user.tenantId);
+      // Phase 1.4 — MCP parity with the REST list: same record scope.
+      const data = await listManagedRequisitions(query, user.tenantId, resolveRecruitmentScope(user));
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisitions_manage_list")
   );
@@ -71,7 +73,7 @@ export function registerRequisitionMgmtTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await getManagedRequisition(id, user.tenantId);
+      const data = await getManagedRequisition(id, user.tenantId, resolveRecruitmentScope(user));
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisition_manage_get")
   );
@@ -141,7 +143,8 @@ export function registerRequisitionMgmtTools(server) {
     withToolError(async ({ format, ...query }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await exportManagedRequisitions(query, user.tenantId, format);
+      // An export must not become the way around the record scope.
+      const data = await exportManagedRequisitions(query, user.tenantId, format, resolveRecruitmentScope(user));
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisitions_export")
   );

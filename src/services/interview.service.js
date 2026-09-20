@@ -4,6 +4,8 @@ import { interviewScopeWhere, maskInterviewsForScope } from "../lib/recruitmentA
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
 import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { interviewScheduledEvent } from "./hrEvents.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
@@ -44,11 +46,15 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
             },
         });
 
+        // Hoisted for the event below (the lookup lives inside the branch, the
+        // candidate id is needed after it).
+        let applicationCandidateId = null;
         if (applicationId != null) {
             const application = await tx.application.findFirst({
                 where: scopedWhere(tenantId, { id: Number(applicationId) }),
-                select: { id: true, stage: true },
+                select: { id: true, stage: true, candidateId: true },
             });
+            applicationCandidateId = application?.candidateId ?? null;
             if (!application) {
                 throw Object.assign(new Error(`Application "${applicationId}" not found`), { status: 404 });
             }
@@ -62,6 +68,24 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
                 }, tx);
             }
         }
+
+        // Phase 11 — the invitation is announced with the interview it describes,
+        // in the same transaction. ids-only, so a downstream notification consumer
+        // fans out to the panel without HR ever publishing names or addresses.
+        await enqueueHrDomainEvent(
+            tx,
+            interviewScheduledEvent(
+                {
+                    id: interview.id,
+                    applicationId: Number(applicationId) || null,
+                    candidateId: applicationCandidateId,
+                    scheduledAt: scheduledDate.toISOString(),
+                    tenantId: interview.tenantId ?? null,
+                },
+                { actorId: null },
+                { interviewerIds: (interviewerIds ?? []).map(Number) },
+            ),
+        );
 
         return interview;
     });

@@ -13,6 +13,10 @@ const prisma = {
     update: jest.fn(async () => ({ id: 1 })),
   },
   interviewScorecard: { count: jest.fn() },
+  outboxEvent: { create: jest.fn(async () => ({ id: 1 })) },
+  // The outcome now writes inside a tenant transaction (decision + audit + event
+  // commit together), so the double must hand the same client back.
+  $transaction: jest.fn((fn) => fn(prisma)),
 };
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
@@ -75,6 +79,36 @@ describe("Interview outcome rules (Phase 3.4)", () => {
 
     await expect(setInterviewOutcome({ interviewId: 1, decision: "REJECTED", tenantId: "t" }))
       .rejects.toMatchObject({ code: "HR-RECRUITMENT-INTERVIEW-REASON-REQUIRED" });
+  });
+
+  it("announces the outcome with the row's tenant, inside the transaction", async () => {
+    const TENANT = "66666666-6666-4666-8666-666666666666";
+    prisma.interview.findFirst.mockResolvedValue({
+      id: 1,
+      notes: null,
+      applicationId: 9,
+      tenantId: TENANT,
+    });
+    prisma.interviewScorecard.count.mockResolvedValue(1);
+
+    await setInterviewOutcome({ interviewId: 1, decision: "NEXT_ROUND", tenantId: TENANT, actorId: 5 });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const written = prisma.outboxEvent.create.mock.calls[0][0].data;
+    expect(written.eventName).toBe("hr.recruitment.interview_outcome_recorded.v1");
+    expect(written.tenantId).toBe(TENANT);
+    expect(written.payload.payload).toMatchObject({ interviewId: "1", outcome: "NEXT_ROUND", overridden: false });
+  });
+
+  it("emits no event for a legacy interview row with no tenant", async () => {
+    prisma.interview.findFirst.mockResolvedValue({ id: 1, notes: null, applicationId: 9, tenantId: null });
+    prisma.interviewScorecard.count.mockResolvedValue(1);
+
+    await setInterviewOutcome({ interviewId: 1, decision: "NEXT_ROUND", tenantId: "tenant-a" });
+
+    // Fail-closed: the decision still lands, but nothing is announced.
+    expect(prisma.interview.update).toHaveBeenCalled();
+    expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
   });
 
   it("allows HOLD without evidence — it is an interim state, not a decision", async () => {

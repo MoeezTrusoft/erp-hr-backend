@@ -15,6 +15,7 @@ import {
 } from "../../services/interviewMgmt.service.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
 import { withToolError } from "../utils/toolError.js";
 
 function getCtx() {
@@ -47,7 +48,13 @@ export function registerInterviewMgmtTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await listInterviewsManaged({ ...args, tenantId: user.tenantId });
+      // Phase 1.4 — MCP parity: the same record scope the REST list applies, so a
+      // manager cannot read another manager's panels by switching transport.
+      const data = await listInterviewsManaged({
+        ...args,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interviews_manage_list")
   );

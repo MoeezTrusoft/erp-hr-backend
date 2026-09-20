@@ -17,6 +17,7 @@
 import prisma from "../lib/prisma.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
+import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import { assertRequisitionTransition } from "./requisitionWorkflow.service.js";
 import { exportRows } from "../lib/export.util.js";
 
@@ -135,9 +136,13 @@ const buildRows = async (rows, tenantId) => {
 // priority, status, jobDescription, requirements, approvalHistory. Paginated +
 // searchable (title) + filterable (status/priority/departmentId) + sortable
 // (createdAt|title|priority|status).
-export const listManagedRequisitions = async (query, tenantId) => {
+// Phase 1.4 — `scope` narrows the management list the same way the REST list is
+// narrowed, so the transport cannot be used to widen a caller's reach.
+export const listManagedRequisitions = async (query, tenantId, scope = null) => {
   const list = parseListQuery(query, { sort: "createdAt" });
-  const { where, filters } = buildRequisitionWhere(query, tenantId, list.q);
+  const built = buildRequisitionWhere(query, tenantId, list.q);
+  const { filters } = built;
+  const where = scope ? { AND: [built.where, requisitionScopeWhere(scope)] } : built.where;
   const sort = REQUISITION_SORTS.includes(list.sort) ? list.sort : "createdAt";
 
   const [total, rows] = await Promise.all([
@@ -161,9 +166,9 @@ export const listManagedRequisitions = async (query, tenantId) => {
 };
 
 // Single requisition with full management detail + approvalHistory.
-export const getManagedRequisition = async (id, tenantId) => {
+export const getManagedRequisition = async (id, tenantId, scope = null) => {
   const requisition = await prisma.jobRequisition.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), ...(scope ? requisitionScopeWhere(scope) : {}) }),
     include: requisitionInclude,
   });
   if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
@@ -245,9 +250,12 @@ const REQUISITION_EXPORT_COLUMNS = [
 
 // Export the requisition-management view (all rows matching the filters) as CSV
 // or PDF. Same filters/sort as the list; returns a base64 buffer.
-export const exportManagedRequisitions = async (query, tenantId, format = "csv") => {
+// Phase 1.4 — an export is a read at bulk scale, so it carries the caller's
+// record scope too; otherwise the export endpoint would be the way around it.
+export const exportManagedRequisitions = async (query, tenantId, format = "csv", scope = null) => {
   const list = parseListQuery(query, { sort: "createdAt" });
-  const { where } = buildRequisitionWhere(query, tenantId, list.q);
+  const built = buildRequisitionWhere(query, tenantId, list.q);
+  const where = scope ? { AND: [built.where, requisitionScopeWhere(scope)] } : built.where;
   const sort = REQUISITION_SORTS.includes(list.sort) ? list.sort : "createdAt";
 
   const rows = await prisma.jobRequisition.findMany({

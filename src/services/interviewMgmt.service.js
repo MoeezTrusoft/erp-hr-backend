@@ -14,6 +14,10 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { logAction } from "../utils/logs.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { interviewOutcomeRecordedEvent } from "./hrEvents.js";
 
 const RATING_KEYS = ["technicalSkills", "problemSolving", "communication", "cultureFit"];
 
@@ -164,6 +168,7 @@ export const listInterviewsManaged = async ({
   page = 1,
   pageSize = 20,
   tenantId,
+  scope = null, // Phase 1.4 — record-level narrowing (optional)
 } = {}) => {
   const resolvedPage = Number(page) > 0 ? Number(page) : 1;
   const resolvedPageSize = Number(pageSize) > 0 ? Number(pageSize) : 20;
@@ -184,7 +189,8 @@ export const listInterviewsManaged = async ({
     };
   }
 
-  const where = scopedWhere(tenantId, filter);
+  // The scope predicate composes with the caller's own filters; both must hold.
+  const where = scopedWhere(tenantId, scope ? { AND: [filter, interviewScopeWhere(scope)] } : filter);
   const orderBy = { [sort === "scheduledAt" ? "scheduledAt" : sort]: order === "desc" ? "desc" : "asc" };
 
   const [items, total] = await Promise.all([
@@ -209,9 +215,9 @@ export const listInterviewsManaged = async ({
 /**
  * Full interview detail incl. per-reviewer scorecards (tenant-scoped).
  */
-export const getInterviewManaged = async ({ id, tenantId } = {}) => {
+export const getInterviewManaged = async ({ id, tenantId, scope = null } = {}) => {
   const interview = await prisma.interview.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), ...(scope ? interviewScopeWhere(scope) : {}) }),
     include: interviewInclude,
   });
   if (!interview) {
@@ -331,7 +337,8 @@ export const setInterviewOutcome = async ({
 
   const interview = await prisma.interview.findFirst({
     where: scopedWhere(tenantId, { id: idNum }),
-    select: { id: true, notes: true },
+    // applicationId + tenantId travel to the outcome event (ids-only payload).
+    select: { id: true, notes: true, applicationId: true, tenantId: true },
   });
   if (!interview) {
     throw Object.assign(new Error("Interview not found"), { status: 404 });
@@ -361,18 +368,35 @@ export const setInterviewOutcome = async ({
   if (overriddenWithoutFeedback) stamps.push(`Overridden without scorecard: ${overrideText}`);
   const notes = interview.notes ? `${interview.notes}\n${stamps.join("\n")}` : stamps.join("\n");
 
-  await prisma.interview.update({
-    where: { id: idNum },
-    data: { decision: normalizedDecision, status: "COMPLETED", notes },
-  });
+  // Phase 11 — the decision and its announcement commit together. The event is
+  // ids-only and flags whether the outcome rode an override, so the fabric shows
+  // that a human overrode the evidence gate rather than leaving it invisible.
+  await tenantTransaction(prisma, async (tx) => {
+    await tx.interview.update({
+      where: { id: idNum },
+      data: { decision: normalizedDecision, status: "COMPLETED", notes },
+    });
 
-  await logAction({
-    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
-    type: "UPDATE",
-    module: "InterviewOutcome",
-    result: "SUCCESS",
-    notes: `Interview "${idNum}" outcome set to "${normalizedDecision}"${overriddenWithoutFeedback ? " (overridden without scorecard)" : ""}.`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    await logAction({
+      employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+      type: "UPDATE",
+      module: "InterviewOutcome",
+      result: "SUCCESS",
+      notes: `Interview "${idNum}" outcome set to "${normalizedDecision}"${overriddenWithoutFeedback ? " (overridden without scorecard)" : ""}.`,
+      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    });
+
+    await enqueueHrDomainEvent(
+      tx,
+      interviewOutcomeRecordedEvent(
+        // The ROW's tenant is authoritative (as in the application workflow): a
+        // legacy tenantless interview simply produces no event, rather than an
+        // event attributed to whatever tenant the caller passed in.
+        { id: idNum, applicationId: interview.applicationId ?? null, tenantId: interview.tenantId ?? null, outcome: normalizedDecision },
+        { actorId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null },
+        { overridden: overriddenWithoutFeedback, reason: reasonText || overrideText || null },
+      ),
+    );
   });
 
   return getInterviewManaged({ id: idNum, tenantId });
