@@ -188,14 +188,17 @@ export const getRequisition = handle(
   "Requisition loaded"
 );
 
+// BLOCKER-1 / C.2 — the verified tenant (tenantOf) is threaded into the legacy
+// create/update too: create stamps it, update is scoped by it. Without it these
+// two paths were the only requisition writes with no tenant predicate.
 export const createRequisition = handle(
-  (req) => hrContract.createRequisition(req.body, actorId(req)),
+  (req) => hrContract.createRequisition(req.body, actorId(req), tenantOf(req)),
   "Requisition created",
   201
 );
 
 export const updateRequisition = handle(
-  (req) => hrContract.updateRequisition(req.params.id, req.body),
+  (req) => hrContract.updateRequisition(req.params.id, req.body, tenantOf(req)),
   "Requisition updated"
 );
 

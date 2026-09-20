@@ -21,6 +21,8 @@ export const REQUISITION_STATUSES = Object.freeze([
     "CLOSED",
 ]);
 
+import { assertRequisitionSubmittable } from "../lib/requisitionFields.js";
+
 // DRAFT ──submit──▶ PENDING_APPROVAL ──decide──▶ APPROVED ──post──▶ POSTED ──▶ CLOSED
 //   │                      │                        │                          ▲
 //   │                      └──▶ REJECTED ──revise──▶ DRAFT                     │
@@ -50,8 +52,15 @@ export function canTransitionRequisition(from, to) {
 /**
  * Assert that a status transition is legal, and that a REJECTED decision carries
  * a reason. Returns the normalized target status.
+ *
+ * Phase 2.2 — SUBMISSION GATE. Moving into PENDING_APPROVAL requires the caller
+ * to pass the requisition row (`{ requisition }`), which is checked against the
+ * mandatory-field set in lib/requisitionFields.js. The row is REQUIRED, not
+ * optional: an optional parameter would let a new submit path forget it and
+ * silently reintroduce "approve a requisition with no cost center", which is the
+ * exact hole this closes. A caller that omits it gets an explicit error.
  */
-export function assertRequisitionTransition(from, to, { comments } = {}) {
+export function assertRequisitionTransition(from, to, { comments, requisition } = {}) {
     const target = normalizeStatus(to);
     if (!REQUISITION_STATUSES.includes(target)) {
         throw workflowError(`Unsupported requisition status: ${target || "(missing)"}`, "HR-RECRUITMENT-REQUISITION-STATUS-INVALID");
@@ -68,6 +77,15 @@ export function assertRequisitionTransition(from, to, { comments } = {}) {
     }
     if (target === "REJECTED" && !String(comments || "").trim()) {
         throw workflowError("Rejecting a requisition requires a reason", "HR-RECRUITMENT-REQUISITION-REASON-REQUIRED");
+    }
+    if (target === "PENDING_APPROVAL") {
+        if (!requisition || typeof requisition !== "object") {
+            throw workflowError(
+                "Submitting a requisition requires its record so the mandatory-field gate can run",
+                "HR-RECRUITMENT-REQUISITION-GATE-CONTEXT-REQUIRED",
+            );
+        }
+        assertRequisitionSubmittable(requisition);
     }
     return target;
 }

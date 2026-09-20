@@ -196,10 +196,12 @@ export const getManagedRequisition = async (id, tenantId, scope = null) => {
 // Fail-closed tenant-scoped fetch of the raw row for a mutation. Throws 404 when
 // the requisition is not in the caller's tenant so a cross-tenant id can never
 // be transitioned.
+// Phase 2.2 — the FULL row, not `{ id, status }`. The submission gate has to see
+// every mandatory field, and a narrower select here would make the gate silently
+// read undefined for everything it was written to check.
 const requireScoped = async (id, tenantId) => {
   const requisition = await prisma.jobRequisition.findFirst({
     where: scopedWhere(tenantId, { id: Number(id) }),
-    select: { id: true, status: true },
   });
   if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
   return requisition;
@@ -212,7 +214,9 @@ const requireScoped = async (id, tenantId) => {
 // verified caller rather than an anonymous service call.
 export const submitRequisition = async (id, tenantId, actorId = null) => {
   const current = await requireScoped(id, tenantId);
-  assertRequisitionTransition(current.status, "PENDING_APPROVAL");
+  // Phase 2.2 — the row goes in so the mandatory-field gate can reject an
+  // incomplete requisition instead of pushing it into the approval chain.
+  assertRequisitionTransition(current.status, "PENDING_APPROVAL", { requisition: current });
   await tenantTransaction(
     prisma,
     async (tx) => {

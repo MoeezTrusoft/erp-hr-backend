@@ -150,6 +150,10 @@ const RLS_MODELS = new Set([
     // Phase 2.1 — requisition transition history (20260920210000). Same
     // convention: tenantId column, its own policy in the same migration.
     'RequisitionTransition',
+    // Phase 2.2 — typed, ACL'd requisition attachments (20260920230000). The row
+    // is tenant-owned even though its bytes live in DAM: the pointer's visibility
+    // rule must not be readable across tenants.
+    'RequisitionAttachment',
     'OfferApproval',
     'OfferHandoff',
     'OfferHandoffAttempt',

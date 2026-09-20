@@ -358,6 +358,11 @@ model Employee {
   positionId            Int?
   requisitionsRequested JobRequisition[]        @relation("RequestedBy")
   requisitionsApproved  JobRequisition[]        @relation("ApprovedBy")
+  // Phase 2.2 — the requisition's RECRUITER (who works the pipeline) is a
+  // different person from the HIRING MANAGER (`requestedById`); conflating them
+  // in one column is why the requisition row could not answer either question.
+  requisitionsRecruited  JobRequisition[]       @relation("RequisitionRecruiter")
+  requisitionsReplacing  JobRequisition[]       @relation("RequisitionReplacementFor")
   approvals             RequisitionApproval[]
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
@@ -526,6 +531,10 @@ model GradeLevel {
 
   employees        Employee[]
   salaryComponents SalaryComponent[]
+  // Phase 2.2 — the requisition's SALARY BAND is the grade, not a copy of its
+  // numbers: GradeLevel already carries min/mid/max + currency, so the band is
+  // referenced (and can be re-read) rather than duplicated and drifting.
+  requisitions     JobRequisition[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -1513,11 +1522,80 @@ model JobRequisition {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  // ── Phase 2.2 — requisition expansion (all additive + nullable) ────────────
+  // Every field below is nullable ON PURPOSE: existing requisitions must stay
+  // readable and editable, and the requirement (decision record §1.1) is that
+  // they COMPLY AT SUBMISSION rather than be force-migrated in place.
+  location        String? // free text — this codebase has no Location/Office table; Employee/Candidate/Interview all carry `location` as text
+  employmentType  String? // FULL_TIME | PART_TIME | CONTRACT | INTERN | TEMPORARY
+  targetStartDate DateTime?
+  // Salary band = a reference to GradeLevel (min/mid/max + bandCurrency live there).
+  gradeLevelId    Int?
+  // Finance-owned references. The label is a CACHE for display/audit only and is
+  // never the source of truth (decision record §1.2).
+  costCenterRef   String?
+  costCenterLabel String?
+  budgetRef       String?
+  budgetLabel     String?
+  hiringReason    String? // NEW_HIRE | REPLACEMENT | EXPANSION | SEASONAL | PROJECT | OTHER
+  // Required only when hiringReason = REPLACEMENT (who this hire replaces).
+  replacementEmployeeId Int?
+  recruiterId     Int?
+  // Structured, versioned job content — {
+  //   schemaVersion, summary, responsibilities[], requirements[], skills[],
+  //   benefits[], hiringProcess[], faq[] }. Replaces the description blob as the
+  //   publishable contract; `description`/`requirements` remain for compatibility.
+  jobContent      Json?
+  // Lifecycle stamps the plan asked for; set by the transitions themselves.
+  publishedAt     DateTime?
+  closedAt        DateTime?
+  // The FINANCE SNAPSHOT captured when the requisition was approved (approved
+  // budget, currency, headcount, source, capturedAt). It records what was true at
+  // approval, so a later change in Finance cannot silently rewrite the audit
+  // trail — it is NOT a second source of truth (decision record §2.2).
+  budgetApprovalSnapshot Json?
+
+  recruiter           Employee?   @relation("RequisitionRecruiter", fields: [recruiterId], references: [id])
+  replacementEmployee Employee?   @relation("RequisitionReplacementFor", fields: [replacementEmployeeId], references: [id])
+  gradeLevel          GradeLevel? @relation(fields: [gradeLevelId], references: [id])
+  attachments         RequisitionAttachment[]
+
   @@index([tenantId])
   @@index([positionId])
   @@index([requestedById])
   @@index([approvedById])
   @@index([employeeId])
+  @@index([recruiterId])
+  @@index([gradeLevelId])
+}
+
+// Phase 2.2 / decision record §1.4 — requisition attachments.
+//
+// The BYTES live in DAM; this row is the typed, ACL'd pointer. Typing matters
+// because an internal business justification or budget-approval document must
+// never ride along into an interviewer's or candidate's view just because it was
+// attached to the same requisition.
+//
+// `visibility` is deliberately INTERNAL | HIRING_TEAM only: there is no
+// candidate-facing value here, because candidate-facing publication assets are
+// managed separately from internal requisition documents (decision record §1.4).
+model RequisitionAttachment {
+  id            Int      @id @default(autoincrement())
+  requisitionId Int
+  tenantId      String?  @db.Uuid
+  category      String // JOB_DESCRIPTION | BUSINESS_JUSTIFICATION | BUDGET_APPROVAL | HIRING_APPROVAL | OTHER_INTERNAL
+  visibility    String   @default("INTERNAL") // INTERNAL | HIRING_TEAM
+  mediaId       Int? // DAM asset id
+  fileName      String?
+  label         String?
+  uploadedById  Int?
+  created_at    DateTime @default(now())
+
+  requisition JobRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([requisitionId])
+  @@map("requisition_attachments")
 }
 
 model RequisitionApproval {

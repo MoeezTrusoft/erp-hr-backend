@@ -61,6 +61,19 @@ const {
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 
+// Phase 2.2 — what a requisition must carry before it can be SUBMITTED. Spread
+// into a fixture when holding back one field deliberately (the gate test below),
+// so the fixture never fails for an unrelated missing field as well.
+const SUBMITTABLE = {
+  departmentId: 1,
+  location: "Karachi",
+  employmentType: "FULL_TIME",
+  openings: 1,
+  requestedById: 1,
+  hiringReason: "NEW_HIRE",
+  costCenterRef: "CC-100",
+};
+
 // The single history row this call wrote.
 const historyRow = (nth = 0) => prisma.requisitionTransition.create.mock.calls[nth][0].data;
 
@@ -95,10 +108,11 @@ describe("Phase 2.1 — requisition transition history", () => {
   it("records the submit transition, attributed to the caller", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({
       id: 5,
+      title: "Backend Engineer",
       status: "DRAFT",
-      departmentId: null,
       approvals: [],
       transitions: [],
+      ...SUBMITTABLE,
     });
     prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "PENDING_APPROVAL" });
 

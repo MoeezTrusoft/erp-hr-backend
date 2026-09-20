@@ -32,11 +32,34 @@ const ATTENDANCE = [
 // Requisition transition fixtures: the same id space, three tenants' worth of
 // rows. The legacy /api/hr transition used to resolve by id alone, so tenant A
 // could submit/approve/close tenant B's requisition.
+// Phase 2.2 — the mandatory fields a requisition now needs before it can be
+// SUBMITTED. These tests are about tenant scoping, not about the gate, so the
+// fixtures simply comply; a non-complying fixture would fail for the wrong reason
+// and stop proving that the tenant predicate is what gated the write.
+const SUBMITTABLE = {
+  departmentId: 1,
+  location: "Karachi",
+  employmentType: "FULL_TIME",
+  openings: 1,
+  requestedById: 1,
+  hiringReason: "NEW_HIRE",
+  costCenterRef: "CC-100",
+};
+
 const REQUISITIONS = [
-  { id: 100, title: "Backend Engineer", status: "DRAFT", tenantId: TENANT_A },
-  { id: 200, title: "B's Private Role", status: "DRAFT", tenantId: TENANT_B },
-  { id: 300, title: "Legacy null-tenant", status: "DRAFT", tenantId: null },
+  { id: 100, title: "Backend Engineer", status: "DRAFT", tenantId: TENANT_A, ...SUBMITTABLE },
+  { id: 200, title: "B's Private Role", status: "DRAFT", tenantId: TENANT_B, ...SUBMITTABLE },
+  { id: 300, title: "Legacy null-tenant", status: "DRAFT", tenantId: null, ...SUBMITTABLE },
 ];
+
+// Phase 3.2 — the legacy /api/hr transitions now honour the canonical state
+// machine too. Before that, DRAFT → APPROVED was accepted here, which meant this
+// surface could approve a requisition that was never submitted — and, once the
+// Phase 2.2 submission gate exists, bypass it entirely. A test that wants to
+// approve or reopen therefore has to start from a status where that move is legal.
+const setStatus = (id, status) => {
+  REQUISITIONS.find((r) => r.id === id).status = status;
+};
 const APPROVALS = [];
 
 // Pull the tenant value the service folded into `where` (directly or nested in
@@ -172,6 +195,8 @@ describe("Phase 1.2 — requisition transitions are tenant-scoped", () => {
   });
 
   it("still transitions the caller's own requisition", async () => {
+    // Also exercises the Phase 2.2 gate: submission is refused unless the
+    // mandatory fields are set, and this fixture sets them.
     await hrContract.submitRequisition(100, TENANT_A, 1, "please review");
 
     expect(REQUISITIONS.find((r) => r.id === 100).status).toBe("PENDING_APPROVAL");
@@ -190,6 +215,7 @@ describe("Phase 1.2 — requisition transitions are tenant-scoped", () => {
   });
 
   it("stamps the verified tenant on the approval row it writes", async () => {
+    setStatus(100, "PENDING_APPROVAL"); // only a submitted requisition may be decided
     await hrContract.approveRequisition(100, TENANT_A, 7, "within budget");
 
     expect(APPROVALS).toHaveLength(1);
@@ -202,6 +228,7 @@ describe("Phase 1.2 — requisition transitions are tenant-scoped", () => {
   });
 
   it("reopens only the caller's own requisition", async () => {
+    setStatus(100, "REJECTED"); // reopening is a REJECTED/CLOSED → DRAFT move
     await expect(hrContract.reopenRequisition(200, TENANT_A, 1)).rejects.toThrow(/not found/i);
     await hrContract.reopenRequisition(100, TENANT_A, 1);
 

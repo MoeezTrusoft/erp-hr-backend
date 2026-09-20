@@ -84,7 +84,11 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // transition history. Nullable-tenant like RequisitionApproval beside it: a
     // legacy tenantless requisition must still be able to record a transition
     // rather than fail its write on a NOT NULL column.
-    expect(nullableModels).toHaveLength(124);
+    // 124 + RequisitionAttachment (Phase 2.2), the typed/ACL'd requisition
+    // documents. Nullable-tenant for the same reason: the pointer hangs off a
+    // requisition that may predate tenancy, and the row must not be unwritable
+    // just because the parent is legacy.
+    expect(nullableModels).toHaveLength(125);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

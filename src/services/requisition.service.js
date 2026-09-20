@@ -8,6 +8,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
+import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -16,6 +17,10 @@ import { getDepartmentById, listDepartments } from "./rbac.client.js"; // depart
 // ✅ Create a new requisition
 export const createRequisition = async (data, requestedBy, tenantId) => {
   const { title, description, departmentId, positionId, employeeId, openings, status, priority } = data;
+  // Phase 2.2 — the expansion fields. Normalized (and validated) here rather than
+  // spread raw into `data`, so an unknown employmentType is a 422 instead of a
+  // value the CHECK constraint rejects later with an opaque Prisma error.
+  const expansion = pickRequisitionFields(data);
   if (!title) throw new Error("Title  are required");
   // Phase 3.2 — a requisition is BORN as a draft. Accepting an arbitrary
   // initial status let a caller create an already-APPROVED requisition and skip
@@ -28,6 +33,10 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
   }
   const requesterId = requestedBy || employeeId;
   if (!requesterId) throw new Error("Hiring manager is required");
+  // Phase 2.2 — a requisition created AS a replacement must name who it replaces.
+  // Checked against the values actually being written so the caller gets a 422
+  // naming the field rather than the raw CHECK-constraint violation.
+  assertReplacementPairing({ ...expansion, requestedById: requesterId });
 
   // Phase 2.1 — the requisition and its opening history row are ONE unit. A
   // requisition whose own origin is unrecorded is exactly the gap this closes;
@@ -47,6 +56,7 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
           openings: openings ? Number(openings) : 1,
           priority: priority ?? undefined, // persisted (JobRequisition.priority String?): Low | Medium | High | Urgent
           status: status || "DRAFT",
+          ...expansion,
         }),
         include: {
           position: true,
@@ -293,6 +303,11 @@ export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
 // ✅ Update requisition
 export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   const { title, description, departmentId, positionId, employeeId, openings, status, priority, requestedById } = data;
+  // Phase 2.2 — expansion fields. Present-only semantics: an absent key leaves the
+  // column untouched (a partial PATCH must not wipe the cost center), an explicit
+  // null clears it, and pickRequisitionFields already rejects a REPLACEMENT
+  // requisition that names nobody.
+  const expansion = pickRequisitionFields(data);
 
   // API-2 — optimistic-concurrency guard (opt-in via expectedVersion; threaded
   // through the MCP body / REST payload). Absent ⇒ no reject.
@@ -303,6 +318,10 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   if (!existing) throw new Error("Requisition not found");
 
   const updateData = {};
+  // Phase 2.2 — checked against the MERGED row: reclassifying to REPLACEMENT is
+  // legal when the row already names a replacement, and naming one is legal when
+  // the reason is already REPLACEMENT.
+  assertReplacementPairing({ ...existing, ...expansion });
   if (title !== undefined) updateData.title = title;
   if (description !== undefined) updateData.description = description;
   if (departmentId !== undefined) updateData.departmentId = departmentId ? Number(departmentId) : null;
@@ -311,12 +330,19 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   if (requestedById) updateData.requestedById = Number(requestedById); // NOT-NULL FK — only reassign when a truthy id is supplied
   if (openings !== undefined) updateData.openings = openings ? Number(openings) : undefined;
   if (priority !== undefined) updateData.priority = priority; // JobRequisition.priority String?: Low | Medium | High | Urgent
+  Object.assign(updateData, expansion);
   if (status !== undefined && String(status).toUpperCase() !== String(existing.status).toUpperCase()) {
     // Phase 3.2 — status is not a free field. A generic update may only perform a
     // LEGAL transition (e.g. REJECTED → DRAFT to revise); it can never jump to
     // APPROVED/POSTED and bypass the approval chain. Re-sending the current
     // status (full-object PATCH) stays a harmless no-op.
-    updateData.status = assertRequisitionTransition(existing.status, status);
+    // Phase 2.2 — the gate validates the requisition AS IT WILL BE after this
+    // update, not as it is now: a caller that fixes the missing fields and
+    // submits in ONE PATCH (the normal form-submit) must succeed, while a caller
+    // that only flips the status must still be rejected.
+    updateData.status = assertRequisitionTransition(existing.status, status, {
+      requisition: { ...existing, ...updateData },
+    });
   }
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.

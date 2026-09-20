@@ -1,6 +1,7 @@
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { recordRequisitionTransition } from "./requisitionWorkflow.service.js";
+import { assertRequisitionTransition, recordRequisitionTransition } from "./requisitionWorkflow.service.js";
+import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1780,28 +1781,47 @@ export const getRequisition = async (id, tenantId) => {
   return { ...requisitionRow(requisition), postings: requisition.postings };
 };
 
-export const createRequisition = async (data, actorId) => {
+export const createRequisition = async (data, actorId, tenantId = null) => {
   if (!data.title) throw new Error("Title is required");
   if (!actorId) throw new Error("Employee context is required");
 
+  // Phase 2.2 — the legacy surface writes the expansion fields too. Without this
+  // a requisition created here could never satisfy the submission gate, so the
+  // legacy UI would be able to create requisitions it cannot submit.
+  const expansion = pickRequisitionFields(data);
+  const requestedById = toInt(data.requestedById) || Number(actorId);
+  assertReplacementPairing({ ...expansion, requestedById });
+
   const requisition = await prisma.jobRequisition.create({
-    data: {
+    data: scopedData(tenantId, {
       title: data.title,
       description: data.description || null,
       departmentId: toInt(data.departmentId),
       positionId: toInt(data.positionId),
       // Hiring manager: an explicitly chosen requestedById wins, else the creator.
-      requestedById: toInt(data.requestedById) || Number(actorId),
+      requestedById,
       openings: Number(data.openings || 1),
       status: data.status || "DRAFT",
-    },
+      ...expansion,
+    }),
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
 
   return requisitionRow(requisition);
 };
 
-export const updateRequisition = async (id, data) => {
+export const updateRequisition = async (id, data, tenantId = null) => {
+  // Phase 1.2 — tenant-scoped pre-read so a cross-tenant id is not-found rather
+  // than a successful write. Previously this was a bare `update({ where: { id } })`
+  // with no tenant predicate at all, unlike the transition paths beside it.
+  const existing = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+  });
+  if (!existing) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+
+  const expansion = pickRequisitionFields(data);
+  assertReplacementPairing({ ...existing, ...expansion });
+
   const requisition = await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: {
@@ -1814,6 +1834,7 @@ export const updateRequisition = async (id, data) => {
         data.requestedById === undefined || data.requestedById === ''
           ? undefined
           : toInt(data.requestedById),
+      ...expansion,
     },
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
@@ -1841,6 +1862,12 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
     where: scopedWhere(tenantId, { id: Number(id) }),
   });
   if (!requisition) throw new Error("Requisition not found");
+
+  // Phase 2.2 — the legacy /api/hr surface submits like any other, so it runs the
+  // same mandatory-field gate. Enforced here (before the transaction) as well as
+  // inside the workflow guard, because this path also has to enforce the legal
+  // transition and the rejection-reason rule.
+  assertRequisitionTransition(requisition.status, status, { comments, requisition });
 
   const updated = await tenantTransaction(prisma, async (tx) => {
     if (["APPROVED", "REJECTED"].includes(status)) {

@@ -7,9 +7,24 @@ import {
   getByIdRequisitions,
   updateRequisition,
 } from "../services/requisition.service.js";
+import {
+  listRequisitionAttachments,
+  addRequisitionAttachment,
+  removeRequisitionAttachment,
+} from "../services/requisitionAttachment.service.js";
 import { respondPreconditionAware } from "../utils/httpError.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
 import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
+
+// Phase 2.2 — the attachment service throws with an explicit `status` (404 for a
+// cross-tenant/unknown requisition, 403 for a caller who may not change
+// documents, 422 for a category/visibility that cannot be stored). Flattening all
+// of those into 400 would tell an interviewer "bad request" when the real answer
+// is "not yours".
+const respondAttachmentError = (res, error) => {
+  const status = Number(error?.status) || 400;
+  res.status(status).json({ success: false, message: error.message, code: error.code });
+};
 
 // Verified tenant from the service-JWT claim (mapped to req.user.tenantId by the
 // gateway / MCP runner); `?? null` keeps it out of the scopedWhere fail-open
@@ -37,6 +52,46 @@ export const createRequisitionController = async (req, res) => {
     res.status(201).json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// ── Phase 2.2 — requisition documents (decision record §1.4) ────────────────
+// The caller's SCOPE, not a role name, decides what comes back: an ORG caller
+// sees internal documents, a hiring manager or interviewer sees only the rows
+// tagged HIRING_TEAM.
+export const listRequisitionAttachmentsController = async (req, res) => {
+  try {
+    const result = await listRequisitionAttachments(req.params.id, tenantOf(req), resolveRecruitmentScope(req.user));
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const addRequisitionAttachmentController = async (req, res) => {
+  try {
+    const result = await addRequisitionAttachment(
+      req.params.id,
+      tenantOf(req),
+      resolveRecruitmentScope(req.user),
+      { ...req.body, uploadedById: req.body?.uploadedById ?? (await actorOf(req)) },
+    );
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const removeRequisitionAttachmentController = async (req, res) => {
+  try {
+    const result = await removeRequisitionAttachment(
+      req.params.attachmentId,
+      tenantOf(req),
+      resolveRecruitmentScope(req.user),
+    );
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    respondAttachmentError(res, error);
   }
 };
 

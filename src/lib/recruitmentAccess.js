@@ -216,6 +216,33 @@ export function offerScopeWhere(scope) {
  * Internal notes are the recruiter's working record and are not part of what an
  * interviewer or an external agency needs to do their job.
  */
+// Phase 2.2 / decision record §1.4 — requisition attachment visibility.
+//
+// Two audiences, because "attached to the requisition" is not one permission:
+// the JOB_DESCRIPTION is hiring-team material, while a BUSINESS_JUSTIFICATION or
+// BUDGET_APPROVAL document is internal. The rule is derived from the SAME scope
+// the rest of recruitment uses rather than a new role list — an ORG caller
+// (recruiter/HR) sees everything, everyone else sees only HIRING_TEAM rows. An
+// AGENCY caller sees none, matching the existing "no requisition view" rule.
+//
+// Least privilege by construction: an unrecognised or narrower scope gets the
+// NARROW arm, so a new scope added later cannot accidentally start exposing
+// budget documents.
+export function attachmentAudience(scope) {
+    return scope === RECRUITMENT_SCOPE.ORG ? "INTERNAL" : "HIRING_TEAM";
+}
+
+/** Rows of `requisition_attachments` the caller may read. */
+export function requisitionAttachmentScopeWhere(scope) {
+    if (scope === RECRUITMENT_SCOPE.AGENCY) return { id: { in: [] } }; // no requisition view at all
+    return attachmentAudience(scope) === "INTERNAL" ? {} : { visibility: "HIRING_TEAM" };
+}
+
+/** May this caller upload/remove attachments (as opposed to only reading them)? */
+export function canManageRequisitionAttachments(scope) {
+    return scope === RECRUITMENT_SCOPE.ORG || scope === RECRUITMENT_SCOPE.MANAGED;
+}
+
 export function maskCandidateForScope(candidate, scope) {
     if (!candidate || scope.canSeeInternalNotes) return candidate;
     // Copy-then-delete rather than rest-destructuring: the discarded binding in
