@@ -2516,13 +2516,24 @@ model Candidate {
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
 
+  // ── Phase 2.3/10 — privacy state (additive; UNKNOWN for pre-existing rows) ──
+  consentStatus   String    @default("UNKNOWN") // UNKNOWN | GRANTED | WITHDRAWN
+  consentUpdatedAt DateTime?
+  retentionUntil  DateTime?
+  anonymizedAt    DateTime?
+  archivedAt      DateTime?
+
   tags            CandidateTag[]
   applications    Application[]
   talentPools     TalentPool[]
   offers          Offer[]
   candidateSkills CandidateSkill[]
+  consents        CandidateConsent[]
+  legalHolds      CandidateLegalHold[]
 
   @@unique([tenantId, email])
+  @@index([tenantId, status])
+  @@index([tenantId, retentionUntil])
 }
 
 model CandidateSkill {
@@ -2565,8 +2576,11 @@ model Application {
   id               Int      @id @default(autoincrement())
   candidateId      Int
   jobRequisitionId Int
-  stage            String   @default("applied") // applied | screening | interview | offer | hired | rejected
+  stage            String   @default("applied") // applied | screening | interview | offer | hired | rejected | on_hold | withdrawn
   status           String   @default("open") // open | closed
+  dispositionReason String?
+  holdReason       String?
+  withdrawnReason  String?
   tenantId         String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById      Int?
   appliedAt        DateTime @default(now())
@@ -2576,10 +2590,29 @@ model Application {
   jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
   interviews     Interview[]
   offer          Offer?
+  stageHistory   ApplicationStageHistory[]
 
   @@unique([candidateId, jobRequisitionId])
   @@index([candidateId])
   @@index([jobRequisitionId])
+}
+
+model ApplicationStageHistory {
+  id            Int      @id @default(autoincrement())
+  applicationId Int
+  tenantId      String   @db.Uuid
+  fromStage     String
+  toStage       String
+  reason        String?
+  actorId       Int?
+  source        String   @default("application")
+  createdAt     DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([applicationId, createdAt])
+  @@map("application_stage_history")
 }
 
 model PerformanceMetric {
@@ -2925,13 +2958,16 @@ model Offer {
   employmentType     String? // Full-time | Part-time | Contract
   terms              Json? // { probationMonths, noticePeriodDays, additionalTerms, specialClauses }
   compensation       Json? // { baseSalary, currency, bonus, allowances, benefits:[...] }
-  approvals          Json? // { hiringManager, hrHead, finance } each { by, decision, at, reason }
+  approvals          Json? // legacy presentation snapshot; canonical decisions live in OfferApproval
+  approvalStatus     String      @default("PENDING") // PENDING | APPROVED | REJECTED
   createdById        Int?
   created_at         DateTime    @default(now())
   updated_at         DateTime    @updatedAt
 
   application    Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   candidate      Candidate      @relation(fields: [candidateId], references: [id])
+  approvalRecords OfferApproval[]
+  handoff        OfferHandoff?
   jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
 
   // API-2 — optimistic-concurrency guard (see Employee.version).
@@ -2942,7 +2978,211 @@ model Offer {
   @@index([tenantId])
   @@index([candidateId])
   @@index([jobRequisitionId])
+  // The approval gate reads "this tenant's offers awaiting approval" on every
+  // send attempt, so the tenant leads the index (a bare approvalStatus index is
+  // near-useless: three distinct values across all tenants).
+  @@index([tenantId, approvalStatus])
   @@map("offers")
+}
+
+model OfferApproval {
+  id        Int      @id @default(autoincrement())
+  offerId   Int
+  tenantId  String   @db.Uuid
+  stage     String
+  decision  String
+  approverId Int?
+  reason    String?
+  decidedAt DateTime @default(now())
+
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@unique([offerId, stage])
+  @@index([tenantId])
+  @@index([offerId, tenantId])
+  @@map("offer_approvals")
+}
+
+// Phase 9 — accepted-offer → employee/onboarding handoff. One row per offer
+// (@unique offerId) is the idempotency guard: a second acceptance call replays
+// this row instead of provisioning a second employee.
+model OfferHandoff {
+  id           Int       @id @default(autoincrement())
+  offerId      Int       @unique
+  tenantId     String    @db.Uuid
+  status       String    @default("IN_PROGRESS") // IN_PROGRESS | COMPLETED | FAILED
+  attemptCount Int       @default(0)
+  employeeId   Int?
+  checklistId  Int?
+  lastStep     String?
+  lastError    String?   @db.Text
+  completedAt  DateTime?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  offer    Offer                 @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  attempts OfferHandoffAttempt[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("offer_handoffs")
+}
+
+// Append-only record of each provisioning step so a partial/failed handoff is
+// visible and diagnosable without re-running it.
+model OfferHandoffAttempt {
+  id        Int      @id @default(autoincrement())
+  handoffId Int
+  tenantId  String   @db.Uuid
+  step      String
+  status    String // OK | FAILED
+  error     String?  @db.Text
+  created_at DateTime @default(now())
+
+  handoff OfferHandoff @relation(fields: [handoffId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([handoffId, created_at])
+  @@map("offer_handoff_attempts")
+}
+
+// ── Phase 2.5 / 10 — candidate privacy, DNC, retention ────────────────────────
+//
+// Candidate data is pre-hire personal data, so its privacy state is modelled
+// explicitly rather than inferred from `status`. Every table is tenant-scoped and
+// append-only where the fact is historical (consent, anonymization, retention
+// actions) so an audit can reconstruct what was known at any point in time.
+
+// Append-only consent history. The CURRENT state is mirrored onto
+// Candidate.consentStatus for cheap filtering; this table is the evidence.
+model CandidateConsent {
+  id            Int      @id @default(autoincrement())
+  candidateId   Int
+  tenantId      String   @db.Uuid
+  purpose       String // PROCESSING | TALENT_POOL | MARKETING
+  status        String // GRANTED | WITHDRAWN
+  policyVersion String?
+  source        String? // portal | recruiter | import
+  evidence      String?  @db.Text
+  occurredAt    DateTime @default(now())
+  recordedById  Int?
+  created_at    DateTime @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([candidateId, purpose, occurredAt])
+  @@map("candidate_consents")
+}
+
+// Do-not-contact register, keyed by NORMALIZED email so a DNC recorded against an
+// address blocks a later candidate row created with the same address. A lift keeps
+// the original row (status=LIFTED) rather than deleting it — a DNC that was
+// applied and removed is itself compliance-relevant.
+//
+// NOTE: uniqueness of ACTIVE entries is enforced in the service, not by a partial
+// unique index, because Prisma cannot express `WHERE status='ACTIVE'` in the
+// schema and a schema/migration mismatch fails the F-DB-01 drift gate.
+model CandidateDncEntry {
+  id           Int       @id @default(autoincrement())
+  tenantId     String    @db.Uuid
+  email        String // normalized (trimmed, lowercased)
+  candidateId  Int?
+  reasonCode   String // mandatory compliance reason code
+  reason       String    @db.Text
+  scope        String    @default("ALL") // ALL | TENANT_CHANNEL…
+  status       String    @default("ACTIVE") // ACTIVE | LIFTED
+  effectiveFrom DateTime @default(now())
+  expiresAt    DateTime?
+  createdById  Int?
+  liftedAt     DateTime?
+  liftedById   Int?
+  liftReason   String?   @db.Text
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, email, status])
+  @@map("candidate_dnc_entries")
+}
+
+// Per-tenant retention policy: how long candidate data may be kept per population.
+model CandidateRetentionPolicy {
+  id              Int      @id @default(autoincrement())
+  tenantId        String   @db.Uuid
+  appliesTo       String // APPLICANT | TALENT_POOL
+  retentionMonths Int
+  legalBasis      String?
+  isActive        Boolean  @default(true)
+  createdById     Int?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([tenantId, appliesTo])
+  @@index([tenantId])
+  @@map("candidate_retention_policies")
+}
+
+// A legal hold SUSPENDS retention deletion/anonymization: while one is active the
+// candidate's data must survive, whatever the policy says.
+model CandidateLegalHold {
+  id            Int       @id @default(autoincrement())
+  tenantId      String    @db.Uuid
+  candidateId   Int
+  reason        String    @db.Text
+  placedById    Int?
+  placedAt      DateTime  @default(now())
+  releasedAt    DateTime?
+  releasedById  Int?
+  releaseReason String?   @db.Text
+  created_at    DateTime  @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([candidateId, releasedAt])
+  @@map("candidate_legal_holds")
+}
+
+// Irreversible action log. Kept even though the candidate's PII is gone: it is the
+// proof that erasure happened, and by whom.
+model CandidateAnonymizationLog {
+  id              Int      @id @default(autoincrement())
+  tenantId        String   @db.Uuid
+  candidateId     Int
+  redactedFields  String[]
+  reason          String   @db.Text
+  legalBasis      String?
+  retainedSummary Json? // aggregate/statistical data deliberately preserved
+  performedById   Int?
+  performedAt     DateTime @default(now())
+  created_at      DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([candidateId])
+  @@map("candidate_anonymization_logs")
+}
+
+// Statutory data-subject requests (access / correction / erasure) with an SLA clock.
+model CandidateDataAccessRequest {
+  id              Int       @id @default(autoincrement())
+  tenantId        String    @db.Uuid
+  candidateId     Int?
+  subjectEmail    String
+  type            String // ACCESS | CORRECTION | ERASURE
+  status          String    @default("RECEIVED") // RECEIVED | IN_PROGRESS | FULFILLED | REJECTED
+  receivedAt      DateTime  @default(now())
+  dueAt           DateTime?
+  closedAt        DateTime?
+  handledById     Int?
+  notes           String?   @db.Text
+  rejectionReason String?   @db.Text
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, status, dueAt])
+  @@map("candidate_data_access_requests")
 }
 
 model TalentPool {

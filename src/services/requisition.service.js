@@ -1,7 +1,11 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { assertRequisitionTransition } from "./requisitionWorkflow.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
@@ -12,6 +16,15 @@ import { getDepartmentById, listDepartments } from "./rbac.client.js"; // depart
 export const createRequisition = async (data, requestedBy, tenantId) => {
   const { title, description, departmentId, positionId, employeeId, openings, status, priority } = data;
   if (!title) throw new Error("Title  are required");
+  // Phase 3.2 — a requisition is BORN as a draft. Accepting an arbitrary
+  // initial status let a caller create an already-APPROVED requisition and skip
+  // the entire approval chain.
+  if (status && String(status).toUpperCase() !== "DRAFT") {
+    throw Object.assign(
+      new Error("New requisitions must start in DRAFT and be submitted for approval"),
+      { status: 409, code: "HR-RECRUITMENT-REQUISITION-INITIAL-STATUS" },
+    );
+  }
   const requesterId = requestedBy || employeeId;
   if (!requesterId) throw new Error("Hiring manager is required");
 
@@ -100,83 +113,131 @@ export const deleteRequisitions = async (id, deletedBy, tenantId) => {
 };
 
 // ✅ Approve or reject requisition
+// Phase 3.2 — the decision is only legal on a requisition that was actually
+// SUBMITTED (PENDING_APPROVAL), a rejection needs a reason, and re-deciding an
+// already-decided requisition is refused instead of stacking another
+// RequisitionApproval row onto the history.
 export const approveRequisition = async (id, status, comments, approvedBy, tenantId) => {
-  if (!["APPROVED", "REJECTED"].includes(status)) throw new Error("Invalid status");
+  const target = String(status || "").toUpperCase();
+  if (!["APPROVED", "REJECTED"].includes(target)) {
+    throw Object.assign(new Error("Invalid status"), { status: 400, code: "HR-RECRUITMENT-REQUISITION-STATUS-INVALID" });
+  }
+
+  const approverId = Number(approvedBy);
+  if (!Number.isInteger(approverId) || approverId <= 0) {
+    throw Object.assign(new Error("An approver (employee) id is required"), { status: 400, code: "HR-RECRUITMENT-APPROVER-REQUIRED" });
+  }
 
   const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!requisition) throw new Error("Requisition not found");
+  if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
 
-  await prisma.requisitionApproval.create({
-    data: scopedData(tenantId, {
-      requisitionId: Number(id),
-      approverId: Number(approvedBy),
-      status,
-      comments,
-      decidedAt: new Date(),
-    }),
-  });
+  // Throws on an illegal transition, a no-op re-decision, or a missing reason.
+  assertRequisitionTransition(requisition.status, target, { comments });
 
-  const update = await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: {
-      status,
-      approvedById: Number(approvedBy),
-    },
-    approvedBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
+  // Phase 11 — the decision, its approval row and the event commit together. The
+  // transition is re-asserted INSIDE the transaction: the pre-read above is only
+  // a fast fail, and a decision raced by a concurrent one must not overwrite it.
+  return tenantTransaction(prisma, async (tx) => {
+    const current = await tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+    if (!current) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+    assertRequisitionTransition(current.status, target, { comments });
+
+    await tx.requisitionApproval.create({
+      data: scopedData(tenantId, {
+        requisitionId: Number(id),
+        approverId,
+        status: target,
+        comments,
+        decidedAt: new Date(),
+      }),
+    });
+
+    const update = await tx.jobRequisition.update({
+      where: { id: Number(id) },
+      data: {
+        status: target,
+        approvedById: approverId,
+      },
+      approvedBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
       }
-    }
+    });
+    await logAction({
+      employeeId: approvedBy,
+      type: "UPDATE",
+      module: "Requisition Approve",
+      result: "SUCCESS",
+      notes: `Requisition approve "${id}" updated successfully`,
+      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    });
+
+    // Outbox-on-write, ids-only: consumers react to the decision, never to the
+    // justification text beyond the reason the workflow already made mandatory.
+    await enqueueHrDomainEvent(
+      tx,
+      requisitionDecisionEvent(
+        update,
+        { actorId: approverId },
+        { decision: target, reason: comments, decidedById: approverId },
+      ),
+    );
+
+    return update;
   });
-  await logAction({
-    employeeId: approvedBy,
-    type: "UPDATE",
-    module: "Requisition Approve",
-    result: "SUCCESS",
-    notes: `Requisition approve "${id}" updated successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-  return update;
 };
 
 // ✅ Post approved job externally
 export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
   const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!requisition) throw new Error("Requisition not found");
-  if (requisition.status !== "APPROVED") throw new Error("Only approved requisitions can be posted");
+  if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+  // Phase 3.2 — publish is a state transition (APPROVED → POSTED), so it goes
+  // through the same guard as every other move rather than a bare status check.
+  assertRequisitionTransition(requisition.status, "POSTED");
 
-  await prisma.jobPosting.create({
-    data: scopedData(tenantId, {
-      requisitionId: Number(id),
-      externalUrl,
-      isActive: true,
-      createdById: Number(createdBy),
-    }),
-    createdBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    },
-  });
+  // Phase 11 — the posting row, the status flip and the event are one unit: a
+  // published posting must never exist without the requisition saying POSTED.
+  return tenantTransaction(prisma, async (tx) => {
+    await tx.jobPosting.create({
+      data: scopedData(tenantId, {
+        requisitionId: Number(id),
+        externalUrl,
+        isActive: true,
+        createdById: Number(createdBy),
+      }),
+      createdBy: {
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true
+        }
+      },
+    });
 
-  const jobPosted = await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: { status: "POSTED" },
-  });
+    const jobPosted = await tx.jobRequisition.update({
+      where: { id: Number(id) },
+      data: { status: "POSTED" },
+    });
 
-  await logAction({
-    employeeId: createdBy,
-    type: "UPDATE",
-    module: "Requisition Post",
-    result: "SUCCESS",
-    notes: `Post Requisition "${id}" Posted successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    await logAction({
+      employeeId: createdBy,
+      type: "UPDATE",
+      module: "Requisition Post",
+      result: "SUCCESS",
+      notes: `Post Requisition "${id}" Posted successfully`,
+      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    });
+
+    await enqueueHrDomainEvent(
+      tx,
+      requisitionPostedEvent({ ...jobPosted, externalUrl }, { actorId: Number(createdBy) || null }),
+    );
+
+    return jobPosted;
   });
-  return jobPosted;
 };
 
 // ✅ Update requisition
@@ -200,7 +261,13 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   if (requestedById) updateData.requestedById = Number(requestedById); // NOT-NULL FK — only reassign when a truthy id is supplied
   if (openings !== undefined) updateData.openings = openings ? Number(openings) : undefined;
   if (priority !== undefined) updateData.priority = priority; // JobRequisition.priority String?: Low | Medium | High | Urgent
-  if (status !== undefined) updateData.status = status;
+  if (status !== undefined && String(status).toUpperCase() !== String(existing.status).toUpperCase()) {
+    // Phase 3.2 — status is not a free field. A generic update may only perform a
+    // LEGAL transition (e.g. REJECTED → DRAFT to revise); it can never jump to
+    // APPROVED/POSTED and bypass the approval chain. Re-sending the current
+    // status (full-object PATCH) stays a harmless no-op.
+    updateData.status = assertRequisitionTransition(existing.status, status);
+  }
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
   const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };

@@ -1,6 +1,9 @@
 import { z } from "zod";
 import {
   mcpApproveRequisition,
+  mcpApproveOffer,
+  mcpOfferHandoffGet,
+  mcpOfferHandoffRetry,
   mcpCreateApplication,
   mcpCreateCandidate,
   mcpCreateInterview,
@@ -319,12 +322,13 @@ export function registerRecruitmentTools(server) {
     "Move an application to a different recruitment stage",
     {
       id: z.string().min(1).describe("Application id; numeric string"),
-      stage: z.string().min(1).describe("Target pipeline stage (lowercased server-side): applied | screening | interview | offer | hired | rejected"),
+      stage: z.string().min(1).describe("Target pipeline stage (lowercased server-side): applied | screening | interview | offer | hired | rejected | on_hold | withdrawn"),
+      reason: z.string().optional().describe("Required when rejecting, holding, or withdrawing an application"),
     },
-    withToolError(async ({ id, stage }) => {
+    withToolError(async ({ id, stage, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await mcpUpdateApplicationStage(user, id, { stage });
+      const data = await mcpUpdateApplicationStage(user, id, { stage, reason });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -335,11 +339,12 @@ export function registerRecruitmentTools(server) {
     {
       id: z.string().min(1).describe("Application id; numeric string"),
       status: z.string().min(1).describe("Application status: open | closed | hired | rejected"),
+      reason: z.string().optional().describe("Required when status changes to rejected"),
     },
-    withToolError(async ({ id, status }) => {
+    withToolError(async ({ id, status, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await mcpUpdateApplicationStatus(user, id, { status });
+      const data = await mcpUpdateApplicationStatus(user, id, { status, reason });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -460,6 +465,23 @@ export function registerRecruitmentTools(server) {
   );
 
   server.tool(
+    "hr_offer_approve",
+    "Record one required offer approval decision",
+    {
+      id: z.string().min(1).describe("Offer id"),
+      stage: z.enum(["hiringManager", "hrHead", "finance"]).describe("Approval stage"),
+      decision: z.enum(["APPROVED", "REJECTED"]).describe("Approval decision"),
+      reason: z.string().optional().describe("Required for REJECTED decisions"),
+    },
+    withToolError(async ({ id, ...data }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const result = await mcpApproveOffer(user, id, data);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.tool(
     "hr_offer_send",
     "Send an offer",
     { id: z.string().min(1).describe("Offer id to send (references Offer); numeric string. Flips status to SENT and emits hr.recruitment.offer_sent.v1") },
@@ -467,6 +489,30 @@ export function registerRecruitmentTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpSendOffer(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_handoff_get",
+    "Inspect the accepted-offer handoff (employee/onboarding provisioning) for an offer",
+    { id: z.string().min(1).describe("Offer id; numeric string") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await mcpOfferHandoffGet(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_handoff_retry",
+    "Retry a FAILED accepted-offer handoff; replays an already-completed handoff unchanged",
+    { id: z.string().min(1).describe("Offer id; numeric string") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      const data = await mcpOfferHandoffRetry(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

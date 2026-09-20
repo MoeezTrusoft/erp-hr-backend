@@ -2,6 +2,7 @@ import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
+import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
@@ -43,13 +44,22 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
         });
 
         if (applicationId != null) {
-            await tx.application.updateMany({
-                where: scopedWhere(tenantId, {
-                    id: Number(applicationId),
-                    stage: { notIn: ["interview", "offer", "hired", "rejected"] },
-                }),
-                data: { stage: "interview" },
+            const application = await tx.application.findFirst({
+                where: scopedWhere(tenantId, { id: Number(applicationId) }),
+                select: { id: true, stage: true },
             });
+            if (!application) {
+                throw Object.assign(new Error(`Application "${applicationId}" not found`), { status: 404 });
+            }
+            if (application.stage !== "interview" && !["offer", "hired", "rejected", "withdrawn"].includes(application.stage)) {
+                await transitionApplicationStageInTransaction({
+                    id: application.id,
+                    tenantId,
+                    targetStage: "interview",
+                    reason: "Interview scheduled",
+                    source: "interview-schedule",
+                }, tx);
+            }
         }
 
         return interview;

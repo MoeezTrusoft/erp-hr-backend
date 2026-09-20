@@ -1721,13 +1721,24 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
 // computeProgressiveTaxMinor) which processPayrollRun drives — the same code the
 // golden-file regression test exercises (no mock copy of the logic).
 
-const getBaseSalaryEarningTypeId = async (tenantId) => {
-    let earningType = await prisma.payrollEarningType.findFirst({
+// Composition support (Phase 9): `db` lets a CALLER-owned tenant transaction
+// compose these payroll writes instead of them landing on a separate connection,
+// and `audit: false` suppresses this module's own audit row when the caller owns
+// the audit trail — so a rolled-back composition never leaves a
+// "created successfully" log describing a write that did not survive.
+const resolveWriteTarget = (options) => ({
+    db: options?.db ?? prisma,
+    audit: options?.audit !== false,
+});
+
+export const getBaseSalaryEarningTypeId = async (tenantId, options = {}) => {
+    const { db } = resolveWriteTarget(options);
+    let earningType = await db.payrollEarningType.findFirst({
         where: withTenant(tenantId, { code: 'BASE_SALARY' })
     });
 
     if (!earningType) {
-        earningType = await prisma.payrollEarningType.create({
+        earningType = await db.payrollEarningType.create({
             data: {
                 tenantId: tenantId ?? null,
                 code: 'BASE_SALARY',
@@ -2136,34 +2147,38 @@ export const getEmployeePayrollData = async (employeeId, tenantId) => {
 };
 
 
-export const createEmploymentTerms = async (data, createdBy, tenantId) => {
+export const createEmploymentTerms = async (data, createdBy, tenantId, options = {}) => {
+  const { db, audit } = resolveWriteTarget(options);
   // strip the non-column `createdBy` the controller folds into the payload
   // (legacy shape) so the scoped create only persists real columns + tenantId.
   const { createdBy: _ignored, ...termsData } = data;
-  const create = await prisma.employmentTerms.create({
+  const create = await db.employmentTerms.create({
     data: { ...termsData, tenantId: tenantId ?? null }
   });
 
-  await logAction({
-    employeeId: Number(createdBy),
-    type: "Create",
-    module: "Employment Terms",
-    result: "SUCCESS",
-    notes: `Employment terms created for employee ID: ${create.employeeId || "N/A"}`,
-    tenantId: tenantId ?? null,
-  });
+  if (audit) {
+    await logAction({
+      employeeId: Number(createdBy),
+      type: "Create",
+      module: "Employment Terms",
+      result: "SUCCESS",
+      notes: `Employment terms created for employee ID: ${create.employeeId || "N/A"}`,
+      tenantId: tenantId ?? null,
+    });
+  }
 
   return create;
 };
 
-export const createPayrollAssignment = async (data, createdBy, tenantId) => {
+export const createPayrollAssignment = async (data, createdBy, tenantId, options = {}) => {
+  const { db, audit } = resolveWriteTarget(options);
   // strip the non-column `createdBy` the controller folds into the payload
   // (legacy shape) so the scoped create only persists real columns + tenantId.
   const { createdBy: _ignored, ...assignmentData } = data;
   if (assignmentData.amount != null) {
     assignmentData.amount = money.decimalToPersistence(assignmentData.amount);
   }
-  const create = await prisma.payrollAssignment.create({
+  const create = await db.payrollAssignment.create({
     data: { ...assignmentData, tenantId: tenantId ?? null },
     include: {
       earningType: true,
@@ -2171,16 +2186,118 @@ export const createPayrollAssignment = async (data, createdBy, tenantId) => {
     }
   });
 
-  await logAction({
-    employeeId: Number(createdBy),
-    type: "Create",
-    module: "Payroll Assignment",
-    result: "SUCCESS",
-    notes: `Payroll assignment created for employee ID: ${create.employeeId} (EarningType: ${create.earningTypeId || "N/A"}, DeductionType: ${create.deductionTypeId || "N/A"})`,
-    tenantId: tenantId ?? null,
-  });
+  if (audit) {
+    await logAction({
+      employeeId: Number(createdBy),
+      type: "Create",
+      module: "Payroll Assignment",
+      result: "SUCCESS",
+      notes: `Payroll assignment created for employee ID: ${create.employeeId} (EarningType: ${create.earningTypeId || "N/A"}, DeductionType: ${create.deductionTypeId || "N/A"})`,
+      tenantId: tenantId ?? null,
+    });
+  }
 
   return create;
+};
+
+// ── Phase 9 — hire compensation provisioning (payroll-owned) ────────────────
+//
+// The single payroll-owned entry point a hire goes through, so Recruitment never
+// writes payroll-owned tables itself. Payroll owns WHICH table carries the new
+// hire's contractual base, and the answer is not "both":
+//
+//   N-15 (operator law 2026-09-11): the contractual Basic lives in
+//   employment_terms.baseSalary. When terms exist, a BASE_SALARY/BASIC earning
+//   ASSIGNMENT is a DUPLICATE the engine drops before pricing — four tenants
+//   carried both and salaries came out at 145% of package.
+//
+// So `baseSource` is explicit:
+//   'TERMS'      (default) — create employment terms; the terms carry the base.
+//                            No duplicate assignment is written.
+//   'ASSIGNMENT'           — the legacy assignment-driven pattern: resolve/
+//                            create the BASE_SALARY earning type and assign it.
+//                            No terms row is written.
+//
+// Idempotency: an existing terms row or active base assignment is reused, never
+// duplicated, so a retried (or replayed) handoff cannot double-provision.
+export const provisionHireCompensation = async ({
+  employeeId,
+  tenantId,
+  baseSalary,
+  currency = 'USD',
+  startDate,
+  payFrequency = 'MONTHLY',
+  actorId = null,
+  baseSource = 'TERMS',
+} = {}, options = {}) => {
+  const { db, audit } = resolveWriteTarget(options);
+  const target = String(baseSource || 'TERMS').toUpperCase();
+  if (!['TERMS', 'ASSIGNMENT'].includes(target)) {
+    throw Object.assign(
+      new Error(`Unsupported baseSource: ${baseSource} (expected TERMS or ASSIGNMENT)`),
+      { status: 400, code: 'HR-PAYROLL-BASE-SOURCE-INVALID' },
+    );
+  }
+
+  const employeeIdNum = Number(employeeId);
+  if (!Number.isInteger(employeeIdNum) || employeeIdNum <= 0) {
+    throw Object.assign(new Error('A valid employee id is required'), { status: 400, code: 'HR-PAYROLL-EMPLOYEE-REQUIRED' });
+  }
+  if (tenantId === undefined || tenantId === null || tenantId === '') {
+    throw Object.assign(new Error('Tenant context is required'), { status: 400, code: 'HR-TENANT-REQUIRED' });
+  }
+  if (baseSalary == null || String(baseSalary).trim() === '') {
+    throw Object.assign(new Error('baseSalary is required'), { status: 400, code: 'HR-PAYROLL-SALARY-REQUIRED' });
+  }
+
+  const effectiveFrom = startDate ? new Date(startDate) : new Date();
+  const existingTerms = await db.employmentTerms.findFirst({
+    where: withTenant(tenantId, { employeeId: employeeIdNum }),
+    select: { id: true },
+  });
+
+  if (target === 'TERMS') {
+    if (existingTerms) {
+      return { baseSource: target, employmentTermsId: existingTerms.id, created: { employmentTerms: false } };
+    }
+    const terms = await createEmploymentTerms(
+      {
+        employeeId: employeeIdNum,
+        baseSalary: String(baseSalary),
+        currency,
+        payFrequency,
+        effectiveFrom,
+      },
+      actorId,
+      tenantId,
+      { db, audit },
+    );
+    return { baseSource: target, employmentTermsId: terms.id, created: { employmentTerms: true } };
+  }
+
+  // baseSource === 'ASSIGNMENT' — the assignment-driven tenant pattern.
+  const earningTypeId = await getBaseSalaryEarningTypeId(tenantId, { db });
+  const existingAssignment = await db.payrollAssignment.findFirst({
+    where: withTenant(tenantId, { employeeId: employeeIdNum, earningTypeId, isActive: true }),
+    select: { id: true },
+  });
+  if (existingAssignment) {
+    return { baseSource: target, earningTypeId, payrollAssignmentId: existingAssignment.id, created: { payrollAssignment: false } };
+  }
+
+  const assignment = await createPayrollAssignment(
+    {
+      employeeId: employeeIdNum,
+      earningTypeId,
+      amount: baseSalary,
+      effectiveFrom,
+      isActive: true,
+    },
+    actorId,
+    tenantId,
+    { db, audit },
+  );
+  return { baseSource: target, earningTypeId, payrollAssignmentId: assignment.id, created: { payrollAssignment: true } };
 };
 
 // Payslip Operations

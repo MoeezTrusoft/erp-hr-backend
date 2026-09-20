@@ -46,6 +46,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/payrollMcpController.js',
   mcpListPayrollRuns: jest.fn(),
   mcpListPayslips: jest.fn(),
   mcpProcessPayrollRun: jest.fn(),
+  mcpRejectPayrollRun: jest.fn(),
 }));
 
 const benefitCtl = await import('../../../src/mcp/controllers/benefitMcpController.js');

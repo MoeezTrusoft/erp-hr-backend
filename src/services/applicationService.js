@@ -1,6 +1,7 @@
 // src/services/applicationService.js
 import prisma from "../config/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { transitionApplicationStage } from "./applicationWorkflow.service.js";
 /**
  * Create an application: candidate → jobRequisition
  */
@@ -12,6 +13,13 @@ export const createApplication = async ({
     tenantId,
     createdById,
 }) => {
+    if (String(stage).toLowerCase() !== "applied") {
+        throw Object.assign(new Error("New applications must start in the applied stage"), { status: 409, code: "HR-RECRUITMENT-INITIAL-STAGE" });
+    }
+    if (tenantId === undefined || tenantId === null || tenantId === "") {
+        throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+    }
+
     const create = await prisma.application.create({
         data: {
             // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
@@ -30,6 +38,17 @@ export const createApplication = async ({
             jobRequisition: true,
         },
     });
+    await prisma.applicationStageHistory.create({
+        data: {
+            applicationId: create.id,
+            tenantId,
+            fromStage: "applied",
+            toStage: "applied",
+            reason: "initial application",
+            actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+            source: "application",
+        },
+    });
     await logAction({
         employeeId: createdById ?? null,
         type: "CREATE",
@@ -46,53 +65,63 @@ export const createApplication = async ({
 /**
  * Update stage of an application
  */
-export const updateApplicationStage = async ({ id, tenantId, stage, updatedById }) => {
-    // The Kanban board groups by the lowercase PIPELINE_STAGES enum and SKIPS
-    // unknown-cased stages, so normalize here — callers may send "SCREENING".
-    const normalizedStage = String(stage).toLowerCase();
-    const update = await prisma.application.updateMany({
-        where: { id, tenantId: tenantId ?? null },
-        data: { stage: normalizedStage },
+export const updateApplicationStage = async ({ id, tenantId, stage, reason, updatedById }) => {
+    return transitionApplicationStage({
+        id,
+        tenantId,
+        targetStage: stage,
+        reason,
+        actorId: updatedById,
+        source: "rest",
     });
-
-    if (!update.count) {
-        throw new Error(`Application "${id}" not found`);
-    }
-
-    await logAction({
-        employeeId: Number(updatedById) || null,
-        type: "UPDATE",
-        module: "Application",
-        result: "SUCCESS",
-        notes: `Application "${id}" stage updated to "${normalizedStage}".`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-    return { success: true, id, stage: normalizedStage, count: update.count };
 };
+
 
 /**
  * Update status (open/closed/hired/rejected)
  */
-export const updateApplicationStatus = async ({ id, tenantId, status, updatedById }) => {
-    const updateStatus = await prisma.application.updateMany({
-        where: { id, tenantId: tenantId ?? null },
-        data: { status },
-    });
-
-    if (!updateStatus.count) {
-        throw new Error(`Application "${id}" not found`);
+export const updateApplicationStatus = async ({ id, tenantId, status, reason, updatedById }) => {
+    const normalizedStatus = String(status || "").trim().toLowerCase();
+    if (!["open", "closed", "hired", "rejected"].includes(normalizedStatus)) {
+        throw Object.assign(new Error(`Unsupported application status: ${normalizedStatus}`), {
+            status: 409,
+            code: "HR-RECRUITMENT-STATUS-INVALID",
+        });
     }
-
+    if (["hired", "rejected"].includes(normalizedStatus)) {
+        return prisma.$transaction(async (tx) => {
+            const transition = await transitionApplicationStage({
+                id,
+                tenantId,
+                targetStage: normalizedStatus,
+                reason,
+                actorId: updatedById,
+                source: "rest-status",
+                db: tx,
+            });
+            const updated = await tx.application.updateMany({
+                where: { id: Number(id), tenantId },
+                data: { status: normalizedStatus },
+            });
+            return { ...transition, status: normalizedStatus, count: updated.count };
+        });
+    }
+    const updateStatus = await prisma.application.updateMany({
+        where: { id: Number(id), tenantId },
+        data: { status: normalizedStatus },
+    });
+    if (!updateStatus.count) throw Object.assign(new Error(`Application "${id}" not found`), { status: 404 });
     await logAction({
         employeeId: Number(updatedById) || null,
         type: "UPDATE",
         module: "Application",
         result: "SUCCESS",
-        notes: `Application "${id}" status updated to "${status}".`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-    return { success: true, id, status, count: updateStatus.count };
+        notes: `Application "${id}" status updated to "${normalizedStatus}".`,
+        tenantId,
+    });
+    return { success: true, id, status: normalizedStatus, count: updateStatus.count };
 };
+
 
 /**
  * List applications with filters

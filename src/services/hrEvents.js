@@ -141,6 +141,175 @@ export function offerSentEvent(offer, ctx = {}) {
     });
 }
 
+// Phase 9 — the candidate answered a sent offer. ids-only (no PII, no salary):
+// downstream consumers react to the decision, never to compensation.
+export function offerAcceptedEvent(offer, ctx = {}) {
+    return baseArgs('hr.recruitment.offer_accepted.v1', offer, ctx, {
+        aggregateType: 'Offer',
+        aggregateId: offer?.id,
+        payload: {
+            offerId: String(offer?.id),
+            applicationId: offer?.applicationId != null ? String(offer.applicationId) : null,
+            candidateId: offer?.candidateId != null ? String(offer.candidateId) : null,
+        },
+    });
+}
+
+// Phase 9 — the accepted-offer handoff finished: one employee + checklist exist.
+export function offerHandoffCompletedEvent(handoff, ctx = {}) {
+    return baseArgs('hr.recruitment.handoff_completed.v1', handoff, ctx, {
+        aggregateType: 'OfferHandoff',
+        aggregateId: handoff?.id,
+        payload: {
+            handoffId: String(handoff?.id),
+            offerId: handoff?.offerId != null ? String(handoff.offerId) : null,
+            employeeId: handoff?.employeeId != null ? String(handoff.employeeId) : null,
+            checklistId: handoff?.checklistId != null ? String(handoff.checklistId) : null,
+        },
+    });
+}
+
+// Phase 9 — the handoff failed and was rolled back. The failure DETAIL stays in
+// offer_handoffs.lastError; the event carries only ids + the failing step so an
+// operator can be alerted without leaking a database error into the fabric.
+export function offerHandoffFailedEvent(handoff, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.handoff_failed.v1', handoff, ctx, {
+        aggregateType: 'OfferHandoff',
+        aggregateId: handoff?.id,
+        payload: {
+            handoffId: String(handoff?.id),
+            offerId: handoff?.offerId != null ? String(handoff.offerId) : null,
+            step: extra?.step ?? null,
+            attemptCount: handoff?.attemptCount ?? null,
+        },
+    });
+}
+
+// Phase 11 — requisition lifecycle. Payloads carry the state fact + the ids a
+// consumer needs to route (approvers, recruiters); no compensation, no PII.
+export function requisitionSubmittedEvent(requisition, ctx = {}) {
+    return baseArgs('hr.recruitment.requisition_submitted.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: 'PENDING_APPROVAL',
+            title: requisition?.title ?? null,
+            departmentId: requisition?.departmentId != null ? String(requisition.departmentId) : null,
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+        },
+    });
+}
+
+// A decision on a submitted requisition. `APPROVED` and `REJECTED` are the same
+// fact from the fabric's point of view (a decision was taken), so one builder
+// carries the outcome rather than two near-identical names consumers must both
+// subscribe to.
+export function requisitionDecisionEvent(requisition, ctx = {}, extra = {}) {
+    const decision = String(extra?.decision ?? requisition?.status ?? '').toUpperCase();
+    return baseArgs('hr.recruitment.requisition_decided.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            decision: decision === 'REJECTED' ? 'REJECTED' : 'APPROVED',
+            // A rejection must carry why; the reason is the operator's own text
+            // (compliance-relevant), not candidate data.
+            reason: extra?.reason ?? null,
+            decidedById: extra?.decidedById != null ? String(extra.decidedById) : null,
+        },
+    });
+}
+
+// The requisition became visible to candidates (or stopped being).
+export function requisitionPostedEvent(requisition, ctx = {}) {
+    return baseArgs('hr.recruitment.requisition_posted.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: 'POSTED',
+            externalUrl: requisition?.externalUrl ?? null,
+        },
+    });
+}
+
+export function requisitionClosedEvent(requisition, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.requisition_closed.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: 'CLOSED',
+            reason: extra?.reason ?? null,
+        },
+    });
+}
+
+// Phase 11 — application lifecycle. A stage change is the event recruiters and
+// hiring managers actually want ("moved to interview"), so `from`/`to` travel
+// with the ids and the optional reason that the workflow already enforces.
+export function applicationCreatedEvent(application, ctx = {}) {
+    return baseArgs('hr.recruitment.application_created.v1', application, ctx, {
+        aggregateType: 'Application',
+        aggregateId: application?.id,
+        payload: {
+            applicationId: String(application?.id),
+            candidateId: application?.candidateId != null ? String(application.candidateId) : null,
+            jobRequisitionId: application?.jobRequisitionId != null ? String(application.jobRequisitionId) : null,
+            stage: application?.stage ?? null,
+        },
+    });
+}
+
+export function applicationStageChangedEvent(application, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.application_stage_changed.v1', application, ctx, {
+        aggregateType: 'Application',
+        aggregateId: application?.id,
+        payload: {
+            applicationId: String(application?.id),
+            candidateId: application?.candidateId != null ? String(application.candidateId) : null,
+            jobRequisitionId: application?.jobRequisitionId != null ? String(application.jobRequisitionId) : null,
+            fromStage: extra?.fromStage ?? null,
+            toStage: extra?.toStage ?? application?.stage ?? null,
+            status: application?.status ?? null,
+            reason: extra?.reason ?? null,
+        },
+    });
+}
+
+// Phase 11 — interview scheduled + outcome. `interviewerIds` is the routing list
+// a notification consumer fans out over (ids-only, no names/emails).
+export function interviewScheduledEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_scheduled.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            scheduledAt: interview?.scheduledAt ?? null,
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+export function interviewOutcomeRecordedEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_outcome_recorded.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            outcome: interview?.outcome ?? extra?.outcome ?? null,
+            // Whether the outcome rode an override rather than evidence — the
+            // fabric should show that a human overrode the gate.
+            overridden: Boolean(extra?.overridden),
+            reason: extra?.reason ?? null,
+        },
+    });
+}
+
 // ── Documents (compliance / expiry) ──────────────────────────────────────────
 // HR Reports → Document Expiry Alerts: a manually-sent reminder for an
 // employee's about-to-expire (or expired) document. HR only EMITS this event;

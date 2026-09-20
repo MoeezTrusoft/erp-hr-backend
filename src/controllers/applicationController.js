@@ -4,9 +4,9 @@ import { respondServerError } from '../utils/httpError.js';
 
 export const createApplication = async (req, res) => {
     try {
-        const user = req.headers['user-id'];;
-        const tenantId = user.tenantId ?? null;
-        const createdById = user || user.employeeId || user.id || null;
+        const actor = req.user || {};
+        const tenantId = actor.tenantId ?? null;
+        const createdById = actor.employeeId ?? null;
 
         const { candidateId, requisitionId, jobRequisitionId: bodyJobRequisitionId, stage, status } = req.body;
         const jobRequisitionId = bodyJobRequisitionId || requisitionId;
@@ -15,6 +15,13 @@ export const createApplication = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: "candidateId and jobRequisitionId are required",
+            });
+        }
+
+        if (!tenantId) {
+            return res.status(400).json({
+                success: false,
+                message: "Tenant context is required",
             });
         }
 
@@ -44,6 +51,7 @@ export const listApplications = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
+        if (!tenantId) return respondServerError(req, res, Object.assign(new Error("Tenant context is required"), { status: 400 }));
         const { jobRequisitionId, candidateId, stage, status, page, limit } =
             req.query;
 
@@ -70,9 +78,9 @@ export const updateStage = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const updatedById = user.employeeId || user.id || null;
+        const updatedById = user.employeeId ?? null;
         const { id } = req.params;
-        const { stage } = req.body;
+        const { stage, reason } = req.body;
 
         if (!stage) {
             return res.status(400).json({
@@ -80,11 +88,15 @@ export const updateStage = async (req, res) => {
                 message: "stage is required",
             });
         }
+        if (!tenantId) {
+            return res.status(400).json({ success: false, message: "Tenant context is required" });
+        }
 
         await applicationService.updateApplicationStage({
             id: Number(id),
             tenantId,
             stage,
+            reason,
             updatedById
         });
 
@@ -101,9 +113,9 @@ export const updateStatus = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const updatedById = user.employeeId || user.id || null;
+        const updatedById = user.employeeId ?? null;
         const { id } = req.params;
-        const { status } = req.body;
+        const { status, reason } = req.body;
 
         if (!status) {
             return res.status(400).json({
@@ -111,11 +123,15 @@ export const updateStatus = async (req, res) => {
                 message: "status is required",
             });
         }
+        if (!tenantId) {
+            return res.status(400).json({ success: false, message: "Tenant context is required" });
+        }
 
         await applicationService.updateApplicationStatus({
             id: Number(id),
             tenantId,
             status,
+            reason,
             updatedById
         });
 

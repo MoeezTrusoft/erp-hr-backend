@@ -5,6 +5,11 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { offerSentEvent } from "./hrEvents.js";
+import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
+import { assertOfferApproved } from "./offerApproval.service.js";
+import { getOfferHandoff, runOfferHandoff } from "./recruitmentHandoff.service.js";
+import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
+import { offerAcceptedEvent } from "./hrEvents.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
 // param; folded into reads and stamped on creates. Offer mutations pre-read
@@ -12,35 +17,48 @@ import { offerSentEvent } from "./hrEvents.js";
 // (fail-closed); offers carry compensation, so isolation is sensitive.
 
 export const createOffer = async ({ applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, createdById, tenantId }) => {
-    // Offer.candidateId / jobRequisitionId / salary are NOT-NULL columns (salary is
-    // a C4-encrypted String). Assert the required FKs/amount are present so we never
-    // write NaN into an Int FK or null into a NOT-NULL column.
     const candidateFk = Number(candidateId);
     if (!Number.isFinite(candidateFk)) throw new Error("candidateId is required");
     const requisitionFk = Number(jobRequisitionId);
     if (!Number.isFinite(requisitionFk)) throw new Error("jobRequisitionId is required");
     if (salary == null || salary === "") throw new Error("baseSalary is required");
+    if (tenantId === undefined || tenantId === null || tenantId === "") {
+        throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+    }
 
-    // Validate FK existence to prevent Prisma FK constraint violations
-    const [candidate, requisition] = await Promise.all([
-        prisma.candidate.findUnique({ where: { id: candidateFk }, select: { id: true } }),
-        prisma.jobRequisition.findUnique({ where: { id: requisitionFk }, select: { id: true } }),
-    ]);
-    if (!candidate) throw new Error(`Candidate #${candidateFk} not found`);
-    if (!requisition) throw new Error(`Job requisition #${requisitionFk} not found`);
+    return tenantTransaction(prisma, async (tx) => {
+        const [candidate, requisition] = await Promise.all([
+            tx.candidate.findFirst({ where: scopedWhere(tenantId, { id: candidateFk }), select: { id: true } }),
+            tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: requisitionFk }), select: { id: true } }),
+        ]);
+        if (!candidate) throw new Error(`Candidate #${candidateFk} not found`);
+        if (!requisition) throw new Error(`Job requisition #${requisitionFk} not found`);
 
-    return prisma.offer.create({
-        data: scopedData(tenantId, {
-            applicationId: applicationId ? Number(applicationId) : null,
-            candidateId: candidateFk,
-            jobRequisitionId: requisitionFk,
-            salary: String(salary), // NOT-NULL String column (C4-encrypted at rest)
-            currency: currency || "USD",
-            startDate: startDate ? new Date(startDate) : null,
-            expiryDate: expiryDate ? new Date(expiryDate) : null,
-            notes,
-            createdById: createdById ? Number(createdById) : null,
-        }),
+        const created = await tx.offer.create({
+            data: scopedData(tenantId, {
+                applicationId: applicationId ? Number(applicationId) : null,
+                candidateId: candidateFk,
+                jobRequisitionId: requisitionFk,
+                salary: String(salary),
+                currency: currency || "USD",
+                startDate: startDate ? new Date(startDate) : null,
+                expiryDate: expiryDate ? new Date(expiryDate) : null,
+                notes,
+                createdById: createdById ? Number(createdById) : null,
+            }),
+        });
+
+        if (applicationId != null) {
+            await transitionApplicationStageInTransaction({
+                id: Number(applicationId),
+                tenantId,
+                targetStage: "offer",
+                reason: "Offer created",
+                actorId: createdById,
+                source: "offer-create",
+            }, tx);
+        }
+        return created;
     });
 };
 
@@ -75,10 +93,21 @@ const assertOfferInTenant = async (id, tenantId) => {
 };
 
 export const sendOffer = async (id, tenantId, ctx = {}) => {
-    const existing = await assertOfferInTenant(id, tenantId);
+    const existing = await assertOfferApproved({ offerId: id, tenantId });
+    // Phase 10 — an offer IS candidate-facing contact, so it must pass the privacy
+    // gate: a recorded do-not-contact request, or a withdrawn processing consent,
+    // blocks the send even when every approval stage is in place.
+    await assertCommunicationsAllowed({ tenantId, candidateId: existing.candidateId, purpose: "PROCESSING" });
     // M1-HR: the SENT flip + hr.recruitment.offer_sent.v1 outbox event are
     // atomic (outbox-on-write, validate-before-write). Ids-only, tenant-scoped.
     return tenantTransaction(prisma, async (tx) => {
+        await assertOfferApproved({ offerId: id, tenantId, db: tx });
+        // Re-check inside the transaction: a DNC recorded between the two reads
+        // must not be raced by an already-in-flight send.
+        await assertCommunicationsAllowed(
+            { tenantId, candidateId: existing.candidateId, purpose: "PROCESSING" },
+            { db: tx }
+        );
         const row = await tx.offer.update({ where: { id: Number(id) }, data: { status: "SENT", sentAt: new Date() } });
         const event = offerSentEvent(
             { id: row.id, candidateId: row.candidateId, tenantId: row.tenantId ?? existing.tenantId ?? tenantId },
@@ -89,88 +118,65 @@ export const sendOffer = async (id, tenantId, ctx = {}) => {
     });
 };
 
-export const respondOffer = async (id, accepted, tenantId) => {
-    await assertOfferInTenant(id, tenantId);
+export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
+    const existing = await assertOfferInTenant(id, tenantId);
+    const acceptedFlag = accepted === true || accepted === "true" || accepted === "ACCEPTED";
+    const desired = acceptedFlag ? "ACCEPTED" : "DECLINED";
 
-    const updated = await prisma.offer.update({
-        where: { id: Number(id) },
-        data: { status: accepted ? "ACCEPTED" : "DECLINED", respondedAt: new Date() },
-    });
-
-    // AUTO-PROVISION: When offer is accepted, create Employee + EmploymentTerms + PayrollAssignment
-    if (accepted) {
-        const offer = await prisma.offer.findUnique({
-            where: { id: Number(id) },
-            include: {
-                application: { include: { candidate: true } },
-            },
-        });
-
-        if (offer?.application?.candidate) {
-            const candidate = offer.application.candidate;
-            const salaryStr = String(offer.salary || '0');
-            const salaryNum = parseFloat(salaryStr) || 0;
-
-            // 1) Create Employee from Candidate data
-            const employee = await prisma.employee.create({
-                data: {
-                    tenant_id: tenantId ?? null,
-                    first_name: candidate.firstName,
-                    last_name: candidate.lastName || '',
-                    email: candidate.email || `${candidate.firstName.toLowerCase()}@company.com`,
-                    personal_contact: candidate.phone || null,
-                    hire_date: offer.startDate || new Date(),
-                    date_of_birth: null,
-                    employee_type: offer.employmentType || 'FULL_TIME',
-                    employement_status: 'active',
-                    status: 'active',
-                    job_title: offer.notes || 'New Hire',
-                    createdById: offer.createdById || null,
-                },
-            });
-
-            // 2) Create EmploymentTerms from Offer salary
-            const employmentTerm = await prisma.employmentTerms.create({
-                data: {
-                    tenantId: tenantId ?? null,
-                    employeeId: employee.id,
-                    baseSalary: salaryStr,
-                    currency: offer.currency || 'USD',
-                    payFrequency: 'MONTHLY',
-                    effectiveFrom: offer.startDate || new Date(),
-                },
-            });
-
-            // 3) Resolve or create BASE_SALARY earning type
-            let earningType = await prisma.payrollEarningType.findFirst({
-                where: { ...(tenantId ? { tenantId } : {}), code: 'BASE_SALARY' },
-            });
-            if (!earningType) {
-                earningType = await prisma.payrollEarningType.create({
-                    data: {
-                        tenantId: tenantId ?? null,
-                        code: 'BASE_SALARY',
-                        name: 'Base Salary',
-                        computation: 'FIXED',
-                    },
-                });
-            }
-
-            // 4) Create PayrollAssignment for base salary
-            await prisma.payrollAssignment.create({
-                data: {
-                    tenantId: tenantId ?? null,
-                    employeeId: employee.id,
-                    earningTypeId: earningType.id,
-                    amount: salaryNum,
-                    effectiveFrom: offer.startDate || new Date(),
-                    isActive: true,
-                },
-            });
-        }
+    // A replayed response is RETURNED, never re-processed: repeating an
+    // acceptance hands back the same handoff instead of provisioning a second
+    // employee (recruitmentHandoff.service.js owns that idempotency).
+    if (existing.status === desired) {
+        return {
+            offer: existing,
+            handoff: acceptedFlag ? await getOfferHandoff({ offerId: existing.id, tenantId }) : null,
+            replayed: true,
+        };
+    }
+    if (["ACCEPTED", "DECLINED", "EXPIRED", "WITHDRAWN"].includes(existing.status)) {
+        throw Object.assign(
+            new Error(`Offer is already finalized as ${existing.status}`),
+            { status: 409, code: "HR-RECRUITMENT-OFFER-FINALIZED" },
+        );
+    }
+    // Only a SENT offer is answerable — a draft was never put to the candidate.
+    if (existing.status !== "SENT") {
+        throw Object.assign(
+            new Error(`Only a SENT offer can be responded to (current status: ${existing.status})`),
+            { status: 409, code: "HR-RECRUITMENT-OFFER-NOT-SENT" },
+        );
     }
 
-    return updated;
+    const updated = await tenantTransaction(prisma, async (tx) => {
+        const row = await tx.offer.update({
+            where: { id: Number(id) },
+            data: { status: desired, respondedAt: new Date() },
+        });
+        // Acceptance closes the pipeline: offer → hired. The canonical workflow
+        // re-reads the now-ACCEPTED offer inside this same transaction, so the
+        // "accepted offer required" invariant holds here too.
+        if (acceptedFlag) {
+            await enqueueHrDomainEvent(tx, offerAcceptedEvent(row, { actorId: ctx.actorId }));
+        }
+        if (acceptedFlag && row.applicationId) {
+            await transitionApplicationStageInTransaction({
+                id: Number(row.applicationId),
+                tenantId,
+                targetStage: "hired",
+                reason: "Offer accepted",
+                actorId: ctx.actorId,
+                source: "offer-accept",
+            }, tx);
+        }
+        return row;
+    }, { tenantId });
+
+    if (!acceptedFlag) return { offer: updated, handoff: null, replayed: false };
+
+    // Provisioning runs AFTER acceptance commits: a failed handoff must not undo
+    // the candidate's decision. Its FAILED row is retryable.
+    const { handoff } = await runOfferHandoff({ offerId: updated.id, tenantId, actorId: ctx.actorId });
+    return { offer: updated, handoff, replayed: false };
 };
 
 export const uploadOfferLetter = async (id, file, tenantId) => {

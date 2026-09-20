@@ -17,6 +17,7 @@
 import prisma from "../lib/prisma.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
+import { assertRequisitionTransition } from "./requisitionWorkflow.service.js";
 import { exportRows } from "../lib/export.util.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
@@ -184,8 +185,11 @@ const requireScoped = async (id, tenantId) => {
 };
 
 // Submit for approval: status → PENDING_APPROVAL.
+// Phase 3.2 — only a DRAFT (or a REJECTED one revised back to draft) may be
+// submitted; submitting an APPROVED/POSTED/CLOSED requisition is refused.
 export const submitRequisition = async (id, tenantId) => {
-  await requireScoped(id, tenantId);
+  const current = await requireScoped(id, tenantId);
+  assertRequisitionTransition(current.status, "PENDING_APPROVAL");
   await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: { status: "PENDING_APPROVAL" },
@@ -196,7 +200,10 @@ export const submitRequisition = async (id, tenantId) => {
 // Reject: status → REJECTED and record a RequisitionApproval row for the
 // caller (approverId = caller employeeId) with the rejection comments.
 export const rejectRequisition = async (id, tenantId, { comments, approverId } = {}) => {
-  await requireScoped(id, tenantId);
+  const current = await requireScoped(id, tenantId);
+  // Phase 3.2 — a decision is only legal on a SUBMITTED requisition, and a
+  // rejection must carry a reason (the guard throws on both).
+  assertRequisitionTransition(current.status, "REJECTED", { comments });
   await prisma.$transaction([
     prisma.jobRequisition.update({
       where: { id: Number(id) },
@@ -215,9 +222,10 @@ export const rejectRequisition = async (id, tenantId, { comments, approverId } =
   return getManagedRequisition(id, tenantId);
 };
 
-// Close: status → CLOSED.
+// Close: status → CLOSED (terminal).
 export const closeRequisition = async (id, tenantId) => {
-  await requireScoped(id, tenantId);
+  const current = await requireScoped(id, tenantId);
+  assertRequisitionTransition(current.status, "CLOSED");
   await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: { status: "CLOSED" },

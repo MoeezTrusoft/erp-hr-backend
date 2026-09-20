@@ -14,6 +14,7 @@
 // layer computes from hr:payroll VIEW; encryption ≠ authorization.
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
 
 const MASK = "••••••";
 
@@ -316,7 +317,8 @@ export const createOfferFull = async (input, { tenantId, createdById, showSensit
     ...(jobTitle ? { jobTitle } : {}),
   };
 
-  const created = await prisma.offer.create({
+  const created = await prisma.$transaction(async (tx) => {
+    const created = await tx.offer.create({
     data: scopedData(tenantId, {
       applicationId: applicationIdNum,
       candidateId: candidateIdNum,
@@ -333,6 +335,17 @@ export const createOfferFull = async (input, { tenantId, createdById, showSensit
       createdById: createdById != null ? Number(createdById) : null,
     }),
     include: OFFER_INCLUDE,
+    });
+
+    await transitionApplicationStageInTransaction({
+      id: applicationIdNum,
+      tenantId,
+      targetStage: "offer",
+      reason: "Offer created",
+      actorId: createdById,
+      source: "offer-create",
+    }, tx);
+    return created;
   });
 
   return getOfferManage(created.id, { tenantId, showSensitive });

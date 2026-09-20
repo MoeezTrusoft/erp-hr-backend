@@ -20,6 +20,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/payrollMcpController.js',
   mcpListPayrollRuns: jest.fn(async () => ({ success: true })),
   mcpListPayslips: jest.fn(async () => ({ success: true })),
   mcpProcessPayrollRun: jest.fn(async () => ({ success: true })),
+  mcpRejectPayrollRun: jest.fn(async () => ({ success: true })),
   mcpExportBankDisbursementFile: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/mcp/controllers/taxFormMcpController.js', () => ({
@@ -55,6 +56,7 @@ const TOOLS = [
   { name: 'hr_payroll_run_process', ctrl: () => payrollCtl.mcpProcessPayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: 1 } },
   { name: 'hr_payroll_run_approve', ctrl: () => payrollCtl.mcpApprovePayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: 1 } },
   { name: 'hr_payroll_run_finalize', ctrl: () => payrollCtl.mcpFinalizePayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: 1 } },
+  { name: 'hr_payroll_run_reject', ctrl: () => payrollCtl.mcpRejectPayrollRun, gate: 'hr:payroll', action: 'EDIT', args: { id: '1', reason: 'Incorrect overtime' } },
   { name: 'hr_payroll_run_delete', ctrl: () => payrollCtl.mcpCancelPayrollRun, gate: 'hr:payroll', action: 'DELETE', args: { id: 1 } },
   { name: 'hr_payslip_distribute', ctrl: () => payrollCtl.mcpDistributePayslip, gate: 'hr:payroll', action: 'CREATE', args: { id: '1' } },
   { name: 'hr_payroll_employment_terms_create', ctrl: () => payrollCtl.mcpCreateEmploymentTerms, gate: 'hr:payroll', action: 'CREATE', args: { employeeId: 7 } },

@@ -13,6 +13,7 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
+import { logAction } from "../utils/logs.js";
 
 const RATING_KEYS = ["technicalSkills", "problemSolving", "communication", "cultureFit"];
 
@@ -283,23 +284,95 @@ export const scoreInterview = async ({
   return getInterviewManaged({ id: idNum, tenantId });
 };
 
+// Phase 3.4 — interview outcome rules.
+//
+// A decisive outcome (NEXT_ROUND / REJECTED) feeds the OFFER prerequisite in the
+// application workflow ("a completed interview with a NEXT_ROUND decision"). If a
+// bare button press could set it, that prerequisite would be satisfiable with no
+// evidence behind it and the whole Phase 3 gate would be decorative. So a
+// decisive outcome requires at least one SUBMITTED scorecard; the only way past
+// that is an explicit `overrideReason`, which is stamped on the interview and
+// audited. HOLD stays available — it is an interim state, not a decision.
+const INTERVIEW_DECISIONS = Object.freeze(["NEXT_ROUND", "HOLD", "REJECTED"]);
+const DECISIVE_DECISIONS = new Set(["NEXT_ROUND", "REJECTED"]);
+
 /**
  * OUTCOME — set Interview.decision and mark the interview COMPLETED.
  * Tenant-scoped pre-read (fail-closed) so a cross-tenant id cannot be mutated.
  */
-export const setInterviewOutcome = async ({ interviewId, decision, tenantId } = {}) => {
+export const setInterviewOutcome = async ({
+  interviewId,
+  decision,
+  reason,
+  overrideReason,
+  actorId,
+  tenantId,
+} = {}) => {
   const idNum = Number(interviewId);
+  if (!Number.isInteger(idNum) || idNum <= 0) {
+    throw Object.assign(new Error("A valid interview id is required"), { status: 400 });
+  }
+
+  const normalizedDecision = String(decision || "").trim().toUpperCase();
+  if (!INTERVIEW_DECISIONS.includes(normalizedDecision)) {
+    throw Object.assign(
+      new Error(`Unsupported interview decision: ${normalizedDecision || "(missing)"}`),
+      { status: 409, code: "HR-RECRUITMENT-INTERVIEW-DECISION-INVALID" },
+    );
+  }
+
+  const reasonText = String(reason || "").trim();
+  if (normalizedDecision === "REJECTED" && !reasonText) {
+    throw Object.assign(
+      new Error("A reason is required when rejecting a candidate at interview"),
+      { status: 409, code: "HR-RECRUITMENT-INTERVIEW-REASON-REQUIRED" },
+    );
+  }
+
   const interview = await prisma.interview.findFirst({
     where: scopedWhere(tenantId, { id: idNum }),
-    select: { id: true },
+    select: { id: true, notes: true },
   });
   if (!interview) {
     throw Object.assign(new Error("Interview not found"), { status: 404 });
   }
 
+  const overrideText = String(overrideReason || "").trim();
+  let overriddenWithoutFeedback = false;
+  if (DECISIVE_DECISIONS.has(normalizedDecision)) {
+    const submitted = await prisma.interviewScorecard.count({
+      where: scopedWhere(tenantId, { interviewId: idNum }),
+    });
+    if (!submitted) {
+      if (!overrideText) {
+        throw Object.assign(
+          new Error("At least one submitted scorecard is required before a decisive interview outcome (pass overrideReason to override)"),
+          { status: 409, code: "HR-RECRUITMENT-INTERVIEW-FEEDBACK-REQUIRED" },
+        );
+      }
+      overriddenWithoutFeedback = true;
+    }
+  }
+
+  // The decision (plus why it was made) is appended to the interview notes so the
+  // record explains itself without relying on the audit log alone.
+  const stamps = [`Decision: ${normalizedDecision}`];
+  if (reasonText) stamps.push(`Reason: ${reasonText}`);
+  if (overriddenWithoutFeedback) stamps.push(`Overridden without scorecard: ${overrideText}`);
+  const notes = interview.notes ? `${interview.notes}\n${stamps.join("\n")}` : stamps.join("\n");
+
   await prisma.interview.update({
     where: { id: idNum },
-    data: { decision, ...(decision ? { status: "COMPLETED" } : {}) },
+    data: { decision: normalizedDecision, status: "COMPLETED", notes },
+  });
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "UPDATE",
+    module: "InterviewOutcome",
+    result: "SUCCESS",
+    notes: `Interview "${idNum}" outcome set to "${normalizedDecision}"${overriddenWithoutFeedback ? " (overridden without scorecard)" : ""}.`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return getInterviewManaged({ id: idNum, tenantId });

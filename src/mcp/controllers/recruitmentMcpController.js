@@ -12,7 +12,7 @@ import { createApplication, listApplications, updateStage, updateStatus } from "
 import { listTags } from "../../controllers/tagController.js";
 import { listPools, addToPool, removeFromPool } from "../../controllers/talentPool.controller.js";
 import { scheduleInterview, listInterviews, updateInterview } from "../../controllers/interview.controller.js";
-import { createOffer, updateOffer, listOffers, sendOffer } from "../../controllers/offer.controller.js";
+import { createOffer, updateOffer, listOffers, sendOffer, approve, getHandoff, retryHandoff } from "../../controllers/offer.controller.js";
 
 export const mcpListRequisitions = (user) => runController(getRequisitionsController, { user });
 export const mcpListCandidates = (user, query = {}) => runController(listCandidates, { user, query });
@@ -55,5 +55,8 @@ export const mcpUpdateOffer = (user, id, data) => {
   return runController(updateOffer, { user, params: { id: String(id) }, body });
 };
 export const mcpSendOffer = (user, id) => runController(sendOffer, { user, params: { id: String(id) } });
+export const mcpApproveOffer = (user, id, data) => runController(approve, { user, params: { id: String(id) }, body: data });
+export const mcpOfferHandoffGet = (user, id) => runController(getHandoff, { user, params: { id: String(id) } });
+export const mcpOfferHandoffRetry = (user, id) => runController(retryHandoff, { user, params: { id: String(id) } });
 export const mcpAddTalentPool = (user, data) => runController(addToPool, { user, body: data });
 export const mcpRemoveTalentPool = (user, id) => runController(removeFromPool, { user, params: { id: String(id) } });

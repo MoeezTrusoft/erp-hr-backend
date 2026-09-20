@@ -51,6 +51,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/recruitmentMcpController.
      'mcpCreateOffer', 'mcpCreateRequisition', 'mcpAddTalentPool', 'mcpDeleteRequisition',
      'mcpListApplications', 'mcpListRecruitmentTags', 'mcpListInterviews', 'mcpListOffers',
      'mcpListTalentPool', 'mcpPostRequisition', 'mcpRemoveTalentPool', 'mcpSendOffer',
+     'mcpApproveOffer', 'mcpOfferHandoffGet', 'mcpOfferHandoffRetry',
      'mcpUpdateApplicationStage', 'mcpUpdateApplicationStatus', 'mcpUpdateCandidate',
      'mcpUpdateInterview', 'mcpUpdateRequisition', 'mcpUpdateOffer'],
     {
@@ -69,7 +70,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/payrollMcpController.js',
      'mcpCreatePayrollAssignment', 'mcpCreatePayrollRun', 'mcpDistributePayslip', 'mcpFinalizePayrollRun',
      'mcpApprovePayrollRun',
      'mcpListDeductionTypes', 'mcpListEarningTypes', 'mcpListPayrollAuditLogs', 'mcpListPayrollRuns',
-     'mcpProcessPayrollRun', 'mcpExportBankDisbursementFile'],
+     'mcpProcessPayrollRun', 'mcpRejectPayrollRun', 'mcpExportBankDisbursementFile'],
     { mcpListPayslips: jest.fn(async () => ({ success: true, data: { items: [{ id: 'pay-1' }], total: 3 } })) }
   )
 );

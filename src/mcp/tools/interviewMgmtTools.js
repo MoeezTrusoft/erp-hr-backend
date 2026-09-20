@@ -74,10 +74,12 @@ export function registerInterviewMgmtTools(server) {
       ratings: ratingsSchema.describe("Scorecard ratings; each of technicalSkills, problemSolving, communication, cultureFit is an integer 1-5. Stored as the NOT-NULL scores JSON; overallScore is their average."),
       decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]).describe("Interview outcome decision — one of NEXT_ROUND | HOLD | REJECTED"),
       recommendation: z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]).describe("Reviewer recommendation — one of STRONG_HIRE | HIRE | HOLD | REJECTED"),
+      reason: z.string().optional().describe("Required when decision is REJECTED"),
+      overrideReason: z.string().optional().describe("Required only when recording a decisive outcome with no scorecard on file — the override is stamped on the interview and audited"),
       comments: z.string().optional().describe("Free-text reviewer comments (stored as the scorecard notes)"),
       reviewerId: z.coerce.number().int().positive().optional().describe("Reviewer employee id (references Employee); defaults to the caller's employeeId. Provide when the caller has no employeeId (e.g. an admin scoring on someone's behalf) — the service 400s if neither is present."),
     },
-    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId }) => {
+    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId, reason, overrideReason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       await scoreInterview({
@@ -88,7 +90,14 @@ export function registerInterviewMgmtTools(server) {
         comments,
         tenantId: user.tenantId,
       });
-      const data = await setInterviewOutcome({ interviewId, decision, tenantId: user.tenantId });
+      const data = await setInterviewOutcome({
+        interviewId,
+        decision,
+        reason,
+        overrideReason,
+        actorId: user.employeeId,
+        tenantId: user.tenantId,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interview_score")
   );
@@ -99,11 +108,20 @@ export function registerInterviewMgmtTools(server) {
     {
       interviewId: z.coerce.number().int().positive().describe("Interview id (references Interview)"),
       decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]).describe("Interview outcome decision — one of NEXT_ROUND | HOLD | REJECTED; setting it also marks the interview COMPLETED"),
+      reason: z.string().optional().describe("Required when decision is REJECTED"),
+      overrideReason: z.string().optional().describe("Required only for a decisive outcome (NEXT_ROUND | REJECTED) when no scorecard has been submitted; recorded on the interview and audited"),
     },
-    withToolError(async ({ interviewId, decision }) => {
+    withToolError(async ({ interviewId, decision, reason, overrideReason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await setInterviewOutcome({ interviewId, decision, tenantId: user.tenantId });
+      const data = await setInterviewOutcome({
+        interviewId,
+        decision,
+        reason,
+        overrideReason,
+        actorId: user.employeeId,
+        tenantId: user.tenantId,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interview_set_outcome")
   );
