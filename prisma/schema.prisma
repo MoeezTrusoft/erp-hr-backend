@@ -2068,6 +2068,10 @@ model EmployeeDeviceEnrolment {
 
   @@index([tenantId, deviceUserId, effectiveFrom])
   @@index([tenantId, employeeId, effectiveFrom])
+  // HR-ATT-PRIMARY-DEVICE-01 — declared with an explicit map because
+  // 20260916180000 created it under this name. It was missing from the model, so
+  // the replay-from-zero schema didn't match the migrations (F-DB-01 drift).
+  @@index([tenantId, employeeId, isPrimary, effectiveFrom], map: "employee_device_enrolments_primary_idx")
   @@map("employee_device_enrolments")
 }
 

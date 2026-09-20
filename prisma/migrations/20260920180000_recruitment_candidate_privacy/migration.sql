@@ -144,3 +144,31 @@ CREATE INDEX "candidate_data_access_requests_tenantId_idx"
   ON "candidate_data_access_requests"("tenantId");
 CREATE INDEX "candidate_data_access_requests_tenantId_status_dueAt_idx"
   ON "candidate_data_access_requests"("tenantId", "status", "dueAt");
+
+-- ── App-role grants + FORCE ROW LEVEL SECURITY on the 6 new tables ───────────
+-- Fleet convention for a tenant table: hr_app gets the DML grant, the policy is
+-- what actually filters by tenant, and the matching RLS_MODELS entry in
+-- src/lib/rlsTenant.js is what sets the GUC the policy reads. A grant without a
+-- policy is unscoped (the table reads across tenants); a policy without the
+-- model entry reads back EMPTY, because nothing ever sets the GUC.
+--
+-- Unlike the legacy fleet tables, every table here has a NOT NULL tenantId, so
+-- the policy needs no null-tenant arm: there is no "global" row to preserve.
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['candidate_consents','candidate_dnc_entries','candidate_retention_policies','candidate_legal_holds','candidate_anonymization_logs','candidate_data_access_requests']
+  LOOP
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO hr_app', t);
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format(
+      'CREATE POLICY tenant_isolation ON %I '
+      'USING ("tenantId" = public.hr_current_tenant() OR current_setting(''app.tenant_bypass'', true) = ''on'') '
+      'WITH CHECK ("tenantId" = public.hr_current_tenant() OR current_setting(''app.tenant_bypass'', true) = ''on'')',
+      t);
+  END LOOP;
+END $$;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hr_app;

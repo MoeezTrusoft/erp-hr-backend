@@ -136,6 +136,26 @@ const RLS_MODELS = new Set([
     'AttendanceDeductionRule',
     'AttendanceApprovalLevel',
     'AttendanceAnomalyApproval',
+    // Recruitment workflow, offer approvals, hire handoff and candidate privacy
+    // tables (migrations 20260920130000 / 143000 / 160000 / 180000) — FORCE-RLS
+    // with a tenantId NOT NULL on every one of them, so the policy needs no
+    // null-tenant arm. Their policies ship in the same migrations.
+    //
+    // Same trap as the attendance-policy block above: a model listed here without
+    // a policy sets a GUC nothing reads, but a table WITH a policy and NO entry
+    // here is worse — tenantTransaction still sets the GUC for the writes it
+    // wraps, so writes appear to work, while ordinary reads run with no GUC, the
+    // policy hides every row, and the feature silently reads back empty.
+    'ApplicationStageHistory',
+    'OfferApproval',
+    'OfferHandoff',
+    'OfferHandoffAttempt',
+    'CandidateConsent',
+    'CandidateDncEntry',
+    'CandidateRetentionPolicy',
+    'CandidateLegalHold',
+    'CandidateAnonymizationLog',
+    'CandidateDataAccessRequest',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

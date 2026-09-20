@@ -39,3 +39,23 @@ CREATE TABLE "offer_handoff_attempts" (
 CREATE INDEX "offer_handoff_attempts_tenantId_idx" ON "offer_handoff_attempts"("tenantId");
 CREATE INDEX "offer_handoff_attempts_handoffId_created_at_idx"
   ON "offer_handoff_attempts"("handoffId", "created_at");
+
+-- ── App-role grants + FORCE ROW LEVEL SECURITY on both new tables ────────────
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['offer_handoffs','offer_handoff_attempts']
+  LOOP
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO hr_app', t);
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format(
+      'CREATE POLICY tenant_isolation ON %I '
+      'USING ("tenantId" = public.hr_current_tenant() OR current_setting(''app.tenant_bypass'', true) = ''on'') '
+      'WITH CHECK ("tenantId" = public.hr_current_tenant() OR current_setting(''app.tenant_bypass'', true) = ''on'')',
+      t);
+  END LOOP;
+END $$;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hr_app;
