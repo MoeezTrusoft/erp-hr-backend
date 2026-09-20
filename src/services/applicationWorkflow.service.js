@@ -9,6 +9,7 @@ import { logAction } from "../utils/logs.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationStageChangedEvent } from "./hrEvents.js";
+import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisitionEligibility.js";
 
 export const APPLICATION_STAGES = Object.freeze([
     "applied",
@@ -92,6 +93,23 @@ async function assertPrerequisites(db, application, targetStage) {
         });
         if (!acceptedOffer) {
             throw workflowError("An accepted offer is required before moving to hired stage", "HR-RECRUITMENT-ACCEPTED-OFFER-REQUIRED");
+        }
+
+        // Phase 4 / §2.9 — the requisition must still be in an accepting state.
+        // Closing or withdrawing a requisition is an operator decision that ends
+        // the search; a hire already in flight MAY complete (an offer accepted the
+        // day before the close should not be invalidated), so this is deliberately
+        // a state check, not a full eligibility re-evaluation — a past closesAt or
+        // a lapsed posting does not undo an accepted offer.
+        const requisition = await db.jobRequisition.findFirst({
+            where: { id: application.jobRequisitionId, tenantId: application.tenantId ?? null },
+            select: { id: true, status: true },
+        });
+        if (requisition && !APPLICATION_ACCEPTING_STATUSES.includes(String(requisition.status).toUpperCase())) {
+            throw workflowError(
+                `The requisition is ${String(requisition.status).toLowerCase()} — a hire cannot be recorded against a closed or withdrawn search`,
+                "HR-RECRUITMENT-REQUISITION-NOT-ACCEPTING",
+            );
         }
     }
 }

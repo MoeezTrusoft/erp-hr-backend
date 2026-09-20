@@ -1548,6 +1548,20 @@ model JobRequisition {
   // Required only when hiringReason = REPLACEMENT (who this hire replaces).
   replacementEmployeeId Int?
   recruiterId     Int?
+  // ── Phase 4 / decision record §2.5 — the application window ────────────────
+  // Nullable on purpose: an absent closesAt means the posting stays open until a
+  // human closes or withdraws it. "Optional autoCloseWhenFilled, not
+  // irreversible" (§2.5) is a default-false flag plus a manual reopen below —
+  // auto-close flips the STATUS and stamps autoClosedAt, it never deletes
+  // postings, never locks fields, and a requisition reopened after an auto-close
+  // is a plain state move, not an exception path.
+  closesAt            DateTime?
+  autoCloseWhenFilled Boolean   @default(false)
+  autoClosedAt        DateTime?
+
+  // The read path the eligibility check and the candidate-facing listing use
+  // (mirrored by migration 20260920280000).
+  @@index([status, closesAt])
   // Structured, versioned job content — {
   //   schemaVersion, summary, responsibilities[], requirements[], skills[],
   //   benefits[], hiringProcess[], faq[] }. Replaces the description blob as the

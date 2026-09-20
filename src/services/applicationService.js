@@ -3,6 +3,8 @@ import prisma from "../config/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { transitionApplicationStage } from "./applicationWorkflow.service.js";
 import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
+import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 
 // Phase 1.4 (remainder) — application reads/writes are TENANT-scoped and, when a
 // caller passes a scope, ROW-scoped. The MCP tools used to reach prisma directly
@@ -56,6 +58,13 @@ export const deleteApplication = async ({ id, tenantId, scope = null }) => {
 };
 /**
  * Create an application: candidate → jobRequisition
+ *
+ * Phase 4 / §2.9 — gated by the requisition's APPLICATION ELIGIBILITY: an
+ * application is refused unless a channel is live, the requisition is in an
+ * accepting state, and the closing date has not passed. The eligibility read
+ * happens INSIDE the write transaction, so a withdrawal or auto-close that lands
+ * between the check and the insert still wins — the gate re-runs against the
+ * same snapshot the insert commits on, rather than against a stale pre-read.
  */
 export const createApplication = async ({
     candidateId,
@@ -72,46 +81,80 @@ export const createApplication = async ({
         throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
     }
 
-    const create = await prisma.application.create({
-        data: {
-            // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
-            // numeric strings from the MCP boundary) to align with sibling services.
-            candidateId: Number(candidateId),
-            jobRequisitionId: Number(jobRequisitionId),
-            stage,
-            status,
-            tenantId: tenantId ?? null,
-            // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
-            // finite creator id, else null (createdById is nullable).
-            createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
-        },
-        include: {
-            candidate: true,
-            jobRequisition: true,
-        },
-    });
-    await prisma.applicationStageHistory.create({
-        data: {
-            applicationId: create.id,
-            tenantId,
-            fromStage: "applied",
-            toStage: "applied",
-            reason: "initial application",
-            actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
-            source: "application",
-        },
-    });
-    await logAction({
-        employeeId: createdById ?? null,
-        type: "CREATE",
-        module: "Application",
-        result: "SUCCESS",
+    return tenantTransaction(prisma, async (tx) => {
+        const requisition = await tx.jobRequisition.findFirst({
+            where: { id: Number(jobRequisitionId), tenantId: tenantId ?? null },
+            include: { postings: { where: { isActive: true } } },
+        });
+        if (!requisition) {
+            throw Object.assign(new Error(`Job requisition "${jobRequisitionId}" not found`), {
+                status: 404,
+                code: "HR-RECRUITMENT-REQUISITION-NOT-FOUND",
+            });
+        }
+
+        // §2.9 — the eligibility gate. Refused with the structured reason list so
+        // the caller can show "applications closed 2026-09-01" instead of a bare
+        // conflict, and with the §2.9a copy contract attached.
+        const evaluation = evaluateRequisitionEligibility(requisition, {
+            postings: requisition.postings,
+        });
+        if (!evaluation.eligible) {
+            throw Object.assign(
+                new Error(
+                    `This requisition is not accepting applications: ${evaluation.reasons.join(", ")}`,
+                ),
+                {
+                    status: 409,
+                    code: "HR-RECRUITMENT-APPLICATIONS-CLOSED",
+                    details: {
+                        reasons: evaluation.reasons,
+                        candidateMessage: closedApplicationMessage(requisition, evaluation),
+                    },
+                },
+            );
+        }
+
+        const create = await tx.application.create({
+            data: {
+                // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
+                // numeric strings from the MCP boundary) to align with sibling services.
+                candidateId: Number(candidateId),
+                jobRequisitionId: Number(jobRequisitionId),
+                stage,
+                status,
+                tenantId: tenantId ?? null,
+                // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
+                // finite creator id, else null (createdById is nullable).
+                createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+            },
+            include: {
+                candidate: true,
+                jobRequisition: true,
+            },
+        });
+        await tx.applicationStageHistory.create({
+            data: {
+                applicationId: create.id,
+                tenantId,
+                fromStage: "applied",
+                toStage: "applied",
+                reason: "initial application",
+                actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+                source: "application",
+            },
+        });
+        await logAction({
+            employeeId: createdById ?? null,
+            type: "CREATE",
+            module: "Application",
+            result: "SUCCESS",
             notes: `Application "${create.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
+            tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+        });
 
-
-    return create;
+        return create;
+    });
 };
 
 /**

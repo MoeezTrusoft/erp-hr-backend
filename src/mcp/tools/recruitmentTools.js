@@ -177,7 +177,7 @@ export function registerRecruitmentTools(server) {
       employeeId: z.string().optional().describe("Employee id the requisition is linked to (numeric string); also a requester fallback"),
       requestedById: z.string().min(1).describe("Hiring manager employee id (references Employee, requestedById); numeric string. Required — the requisition has a NOT-NULL requester."),
       openings: z.number().int().positive().optional().describe("Number of open seats; defaults to 1"),
-      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED"]).optional().describe("RequisitionStatus enum; defaults to DRAFT"),
+      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED", "WITHDRAWN"]).optional().describe("RequisitionStatus enum; defaults to DRAFT"),
       priority: z.enum(["Low", "Medium", "High", "Urgent"]).optional().describe("Requisition priority (JobRequisition.priority): Low | Medium | High | Urgent"),
       description: z.string().optional().describe("Job description / free text"),
       // ── Phase 2.2 expansion fields ──
@@ -192,6 +192,9 @@ export function registerRecruitmentTools(server) {
       hiringReason: z.enum(["NEW_HIRE", "REPLACEMENT", "EXPANSION", "SEASONAL", "PROJECT", "OTHER"]).optional(),
       replacementEmployeeId: z.string().optional().describe("Employee id being replaced; required when hiringReason=REPLACEMENT"),
       recruiterId: z.string().optional().describe("Employee id of the recruiter who owns the pipeline (distinct from requestedById, the hiring manager)"),
+      // ── Phase 4 / §2.5 — the application window ──
+      closesAt: z.string().optional().describe("When applications stop being accepted; ISO date. Omit for no deadline"),
+      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible"),
       jobContent: z.record(z.any()).optional().describe("Structured job content {summary, responsibilities[], requirements[], skills[], benefits[], hiringProcess[], faq[{question,answer}]}"),
     },
     withToolError(async (args) => {
@@ -213,7 +216,7 @@ export function registerRecruitmentTools(server) {
       employeeId: z.string().optional().describe("Linked employee id; numeric string"),
       requestedById: z.string().optional().describe("Hiring manager employee id (references Employee); numeric string"),
       openings: z.number().int().positive().optional().describe("Number of open seats"),
-      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED"]).optional().describe("RequisitionStatus enum"),
+      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED", "WITHDRAWN"]).optional().describe("RequisitionStatus enum — WITHDRAWN is terminal and requires a reason (use hr_requisition_withdraw)"),
       priority: z.enum(["Low", "Medium", "High", "Urgent"]).optional().describe("Requisition priority: Low | Medium | High | Urgent"),
       description: z.string().optional().describe("Job description / free text"),
       // ── Phase 2.2 expansion fields (absent ⇒ unchanged; explicit null clears) ──
@@ -228,6 +231,9 @@ export function registerRecruitmentTools(server) {
       hiringReason: z.enum(["NEW_HIRE", "REPLACEMENT", "EXPANSION", "SEASONAL", "PROJECT", "OTHER"]).nullable().optional(),
       replacementEmployeeId: z.string().nullable().optional(),
       recruiterId: z.string().nullable().optional(),
+      // ── Phase 4 / §2.5 — the application window (absent ⇒ unchanged) ──
+      closesAt: z.string().nullable().optional().describe("When applications stop being accepted; ISO date, or null for no deadline. The eligibility gate refuses applications after it"),
+      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible (a human can reopen)"),
       jobContent: z.record(z.any()).nullable().optional(),
       expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
@@ -345,7 +351,7 @@ export function registerRecruitmentTools(server) {
 
   server.tool(
     "hr_application_create",
-    "Create a job application for a candidate",
+    "Create a job application for a candidate. Phase 4 eligibility applies: the requisition must be in an accepting state, have a live posting, and its closesAt (if set) must not have passed — otherwise the call is refused with HR-RECRUITMENT-APPLICATIONS-CLOSED and the candidate-facing reason attached.",
     {
       candidateId: z.string().min(1).describe("Candidate id (references Candidate); numeric string"),
       requisitionId: z.string().min(1).describe("Job requisition id (references JobRequisition); numeric string"),

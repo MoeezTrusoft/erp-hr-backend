@@ -152,13 +152,22 @@ export function normalizeVocabulary(value, allowed, field) {
 
 const toId = (value) => (isBlank(value) ? null : Number(value));
 const toText = (value) => (isBlank(value) ? null : String(value).trim());
-const toDate = (value) => {
+const toDate = (value, field = "targetStartDate") => {
     if (isBlank(value)) return null;
     const parsed = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(parsed.getTime())) {
-        throw fieldError("targetStartDate is not a valid date", "HR-RECRUITMENT-TARGET-START-DATE-INVALID");
+        throw fieldError(`${field} is not a valid date`, `HR-RECRUITMENT-${field.toUpperCase()}-INVALID`);
     }
     return parsed;
+};
+const normalizeBoolean = (value, field) => {
+    if (isBlank(value)) return null;
+    if (typeof value === "boolean") return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (!["true", "false"].includes(normalized)) {
+        throw fieldError(`${field} must be a boolean`, `HR-RECRUITMENT-${field.toUpperCase()}-INVALID`);
+    }
+    return normalized === "true";
 };
 const toIdOrThrow = (value, field) => {
     const id = toId(value);
@@ -192,6 +201,11 @@ export function pickRequisitionFields(data = {}) {
     if (has("hiringReason")) out.hiringReason = normalizeVocabulary(data.hiringReason, HIRING_REASONS, "hiringReason");
     if (has("replacementEmployeeId")) out.replacementEmployeeId = toIdOrThrow(data.replacementEmployeeId, "replacementEmployeeId");
     if (has("recruiterId")) out.recruiterId = toIdOrThrow(data.recruiterId, "recruiterId");
+    // Phase 4 / §2.5 — the application window. Normalized (and rejected early if
+    // it is not a date) here like the other expansion fields; the eligibility
+    // module owns the rule, this owns the shape.
+    if (has("closesAt")) out.closesAt = toDate(data.closesAt, "closesAt");
+    if (has("autoCloseWhenFilled")) out.autoCloseWhenFilled = normalizeBoolean(data.autoCloseWhenFilled, "autoCloseWhenFilled");
     if (has("jobContent")) out.jobContent = normalizeJobContent(data.jobContent);
 
     return out;

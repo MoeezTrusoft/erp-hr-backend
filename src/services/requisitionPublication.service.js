@@ -372,6 +372,93 @@ export const closeActivePostingsForRequisition = async (
     return count;
 };
 
+// ── Phase 4 / §2.5 — auto-close when filled ─────────────────────────────────
+//
+// "A hire happens" and "the requisition should stop advertising" are different
+// events at different moments, so NEITHER the hired transition nor this sweep
+// closes the requisition as a side effect of the other. The sweep is the one
+// place auto-close happens, it only touches requisitions that OPTED IN
+// (autoCloseWhenFilled), and it is deliberately NOT irreversible: it stamps
+// autoClosedAt and moves the status to CLOSED — a plain state move a human can
+// reopen. It never deletes postings, never locks fields, and never touches a
+// requisition that did not ask for it.
+
+/**
+ * Auto-close every eligible requisition whose required openings are filled.
+ *
+ * "Filled" means applications in the HIRED stage >= `openings` — the same
+ * definition the fill-rate analytics uses, so a dashboard and the sweep cannot
+ * disagree about whether a requisition is filled. Returns the closed rows.
+ *
+ * Designed as a sweep (not a hook on the hired transition) so a backfilled hire,
+ * a data fix, or a batch of hires landing out of order all converge on the same
+ * outcome without re-running per-hire side effects.
+ */
+export const autoCloseFilledRequisitions = async ({ tenantId = null, now = new Date() } = {}) => {
+    const candidates = await prisma.jobRequisition.findMany({
+        where: scopedWhere(tenantId, {
+            status: { in: ["APPROVED", "POSTED"] },
+            autoCloseWhenFilled: true,
+            autoClosedAt: null,
+        }),
+        select: { id: true, tenantId: true, status: true, openings: true },
+    });
+
+    const closed = [];
+    for (const requisition of candidates) {
+        const hiredCount = await prisma.application.count({
+            where: scopedWhere(requisition.tenantId ?? tenantId, {
+                jobRequisitionId: requisition.id,
+                stage: "hired",
+            }),
+        });
+        if (hiredCount < Number(requisition.openings || 1)) continue;
+
+        const closedAt = now;
+        await tenantTransaction(
+            prisma,
+            async (tx) => {
+                // The postings-closure helper is the SAME one close and withdraw
+                // use, so an auto-closed requisition leaves no channel advertising.
+                const closedPostings = await closeActivePostingsForRequisition(tx, {
+                    requisitionId: requisition.id,
+                    tenantId: requisition.tenantId ?? tenantId,
+                    closeReason: "FILLED",
+                    actorId: null,
+                });
+                const updated = await tx.jobRequisition.update({
+                    where: { id: requisition.id },
+                    data: { status: "CLOSED", closedAt, autoClosedAt: closedAt },
+                });
+                await recordRequisitionTransition(tx, {
+                    requisitionId: requisition.id,
+                    tenantId: requisition.tenantId ?? tenantId,
+                    fromStatus: requisition.status,
+                    toStatus: "CLOSED",
+                    reason: `Auto-closed: all ${requisition.openings} opening(s) filled`,
+                    actorId: null,
+                    source: "requisition.autoclose",
+                });
+                await logAction({
+                    employeeId: null,
+                    type: "UPDATE",
+                    module: "Requisition Auto-close",
+                    result: "SUCCESS",
+                    notes: `Requisition "${requisition.id}" auto-closed (${hiredCount}/${requisition.openings} filled); ${closedPostings} posting(s) closed`,
+                    tenantId: requisition.tenantId ?? tenantId,
+                });
+                await enqueueHrDomainEvent(
+                    tx,
+                    requisitionClosedEvent(updated, {}, { reason: "AUTO_CLOSED_FILLED" }),
+                );
+                closed.push({ id: requisition.id, hiredCount, closedPostings });
+            },
+            { tenantId: requisition.tenantId ?? tenantId },
+        );
+    }
+    return closed;
+};
+
 /** Every posting for a requisition, active first. Tenant-scoped read. */
 export const listRequisitionPostings = async (id, tenantId, { includeClosed = true } = {}) => {
     const requisition = await requireRequisition(prisma, id, tenantId);
