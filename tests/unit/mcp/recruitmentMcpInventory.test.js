@@ -67,7 +67,7 @@ for (const [module, register] of RECRUITMENT_REGISTRARS) {
 // The pinned surface. Mirrors the gateway map (hr-recruitment-mcp-exposure).
 const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentTools: 22,
-  requisitionMgmtTools: 9,
+  requisitionMgmtTools: 14,
   candidatePipelineTools: 2,
   interviewMgmtTools: 5,
   offerMgmtTools: 5,
@@ -138,6 +138,11 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_requisition_posting_unpublish",
   "hr_requisition_postings_list",
   "hr_requisition_reject",
+  "hr_requisition_question_create",
+  "hr_requisition_question_deactivate",
+  "hr_requisition_question_update",
+  "hr_requisition_questions_list",
+  "hr_requisition_questions_reorder",
   "hr_requisition_submit",
   "hr_requisition_update",
   "hr_requisition_withdraw",
@@ -158,7 +163,7 @@ const EXPECTED_TOOLS = Object.freeze([
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
 
 describe("Recruitment MCP tool inventory", () => {
-  it("registers exactly the pinned 73 tools — no more, no less", () => {
+  it("registers exactly the pinned 78 tools — no more, no less", () => {
     expect([...allRecruitmentTools].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
@@ -187,7 +192,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(513);
+    expect(all).toHaveLength(518);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

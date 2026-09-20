@@ -29,6 +29,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationCreatedEvent } from "./hrEvents.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
+import { validateAnswer } from "../lib/applicationQuestions.js";
 import { parsePublicApplicationInput } from "../lib/publicPortal.js";
 
 const fail = (message, status, code, details) =>
@@ -125,6 +126,49 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
             throw fail("Application already received", 409, "HR-PORTAL-DUPLICATE");
         }
 
+        // ── §3.5 per-requisition questions ───────────────────────────────────
+        // The requisition's ACTIVE question set is the form contract. Every
+        // answer is validated and scored HERE, at submission time, against the
+        // same pure module the recruiter-facing CRUD uses — scores are stored,
+        // never recomputed, so later weight edits cannot rewrite a candidate's
+        // record. A skipped optional question still gets a row (value null),
+        // so "was this question asked?" stays answerable for analytics.
+        const questions = await tx.applicationQuestion.findMany({
+            where: { requisitionId: reqId, tenantId, isActive: true },
+            orderBy: [{ orderIndex: "asc" }, { id: "asc" }],
+        });
+        const rawAnswers = input.answers ?? {};
+        const answerErrors = [];
+        const scoredAnswers = [];
+        for (const question of questions) {
+            const key = String(question.id);
+            const raw = Object.prototype.hasOwnProperty.call(rawAnswers, key)
+                ? rawAnswers[key]
+                : undefined;
+            const result = validateAnswer(question, raw);
+            if (!result.ok) answerErrors.push(...result.errors);
+            else {
+                scoredAnswers.push({
+                    questionId: question.id,
+                    value: result.value,
+                    score: result.score,
+                });
+            }
+        }
+        // Keys that map to no active question mean the caller is answering a
+        // form the requisition no longer presents — refuse rather than silently
+        // drop what the candidate typed.
+        for (const key of Object.keys(rawAnswers)) {
+            if (!questions.some((q) => String(q.id) === key)) {
+                answerErrors.push(`Unknown answer for question "${key}"`);
+            }
+        }
+        if (answerErrors.length) {
+            throw fail("Please review your answers", 400, "HR-PORTAL-ANSWERS-INVALID", {
+                errors: answerErrors,
+            });
+        }
+
         const application = await tx.application.create({
             data: {
                 candidateId,
@@ -135,6 +179,17 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
                 createdById: null, // anonymous — no employee actor exists
             },
         });
+
+        if (scoredAnswers.length) {
+            await tx.applicationAnswer.createMany({
+                data: scoredAnswers.map((a) => ({
+                    applicationId: application.id,
+                    questionId: a.questionId,
+                    value: a.value,
+                    score: a.score,
+                })),
+            });
+        }
 
         await tx.applicationStageHistory.create({
             data: {

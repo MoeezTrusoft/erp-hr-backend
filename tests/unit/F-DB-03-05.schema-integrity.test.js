@@ -93,7 +93,10 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // convention. It carries its own RLS policy in the migration that creates it.
     // 126 + RequisitionApprovalRule (Phase 4) — the approval matrix, same
     // convention and same own-policy-in-own-migration rule.
-    expect(nullableModels).toHaveLength(127);
+    // 127 + ApplicationQuestion (Phase 5 §3.5) — the public intake-form
+    // questions, nullable-tenant like every recruitment table beside it and
+    // carrying its own RLS policy in its creating migration.
+    expect(nullableModels).toHaveLength(128);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

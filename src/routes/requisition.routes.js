@@ -12,6 +12,11 @@ import {
   unpublishPostingController,
   withdrawRequisitionController,
   listRequisitionPostingsController,
+  listRequisitionQuestionsController,
+  createRequisitionQuestionController,
+  updateRequisitionQuestionController,
+  deactivateRequisitionQuestionController,
+  reorderRequisitionQuestionsController,
 } from "../controllers/requisition.controller.js";
 
 const router = express.Router();
@@ -29,6 +34,14 @@ router.get("/:id/postings", listRequisitionPostingsController);
 router.post("/:id/withdraw", withdrawRequisitionController);
 router.post("/:id/postings/:postingId/unpublish", unpublishPostingController);
 router.post("/:id/postings/channel/:channel/unpublish", unpublishPostingController);
+
+// Phase 5 / §3.5 — application-question CRUD on the requisition (the public
+// intake form's schema).
+router.get("/:id/questions", listRequisitionQuestionsController);
+router.post("/:id/questions", createRequisitionQuestionController);
+router.put("/:id/questions/:questionId", updateRequisitionQuestionController);
+router.delete("/:id/questions/:questionId", deactivateRequisitionQuestionController);
+router.put("/:id/questions/order", reorderRequisitionQuestionsController);
 router.get("/:id", getByIdRequisitionsController);
 router.delete("/:id", deletRequisitionsController);
 router.put("/approve/:id", approveRequisitionController);

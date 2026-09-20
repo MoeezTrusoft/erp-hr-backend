@@ -17,6 +17,14 @@ import {
   withdrawRequisition,
   listRequisitionPostings,
 } from "../services/requisitionPublication.service.js";
+import {
+  listQuestions,
+  createQuestion,
+  updateQuestion,
+  deactivateQuestion,
+  reorderQuestions,
+  ApplicationQuestionError,
+} from "../services/applicationQuestion.service.js";
 import { respondPreconditionAware } from "../utils/httpError.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
 import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
@@ -28,7 +36,11 @@ import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 // is "not yours".
 const respondAttachmentError = (res, error) => {
   const status = Number(error?.status) || 400;
-  res.status(status).json({ success: false, message: error.message, code: error.code });
+  // §3.5 — structured validation details (e.g. the question-definition error
+  // list) ride along when present; absent details leave the shape unchanged.
+  const body = { success: false, message: error.message, code: error.code };
+  if (error?.details !== undefined) body.details = error.details;
+  res.status(status).json(body);
 };
 
 // Verified tenant from the service-JWT claim (mapped to req.user.tenantId by the
@@ -206,6 +218,62 @@ export const listRequisitionPostingsController = async (req, res) => {
   try {
     const includeClosed = String(req.query.includeClosed ?? "true") !== "false";
     const data = await listRequisitionPostings(req.params.id, tenantOf(req), { includeClosed });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+// Phase 5 / §3.5 — per-requisition application questions (the public intake
+// form's schema, authored by recruiters). CRUD is demand-safe: a question with
+// answers refuses in-place edits (409) and a deactivation soft-deletes when
+// history exists.
+export const listRequisitionQuestionsController = async (req, res) => {
+  try {
+    const data = await listQuestions(Number(req.params.id), tenantOf(req));
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const createRequisitionQuestionController = async (req, res) => {
+  try {
+    const data = await createQuestion(Number(req.params.id), tenantOf(req), req.body ?? {}, await actorOf(req));
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const updateRequisitionQuestionController = async (req, res) => {
+  try {
+    const data = await updateQuestion(
+      Number(req.params.id),
+      tenantOf(req),
+      Number(req.params.questionId),
+      req.body ?? {},
+      await actorOf(req),
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const deactivateRequisitionQuestionController = async (req, res) => { 
+  try {
+    const data = await deactivateQuestion(Number(req.params.id), tenantOf(req), Number(req.params.questionId));
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const reorderRequisitionQuestionsController = async (req, res) => {
+  try {
+    const { orderedIds } = req.body ?? {};
+    const data = await reorderQuestions(Number(req.params.id), tenantOf(req), orderedIds);
     res.status(200).json({ success: true, data });
   } catch (error) {
     respondAttachmentError(res, error);

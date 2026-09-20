@@ -30,6 +30,14 @@ import {
   exportManagedRequisitions,
 } from "../../services/requisitionMgmt.service.js";
 import {
+  listQuestions,
+  createQuestion,
+  updateQuestion,
+  deactivateQuestion,
+  reorderQuestions,
+} from "../../services/applicationQuestion.service.js";
+import { QUESTION_TYPES } from "../../lib/applicationQuestions.js";
+import {
   withdrawRequisition,
   unpublishPosting,
   listRequisitionPostings,
@@ -218,6 +226,93 @@ export function registerRequisitionMgmtTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisition_withdraw")
+  );
+
+  // ── Phase 5 / §3.5 — per-requisition application questions ──────────────
+  // A question that already has answers is immutable (409); the tool message
+  // says exactly what to do instead, because an agent that just sees "conflict"
+  // tends to retry rather than version.
+
+  server.tool(
+    "hr_requisition_questions_list",
+    "List the active application questions (form schema) for a requisition, in display order, with type, prompt, required flag, options, scoring weights and maxScore.",
+    { id: z.string().min(1).describe("Requisition ID") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listQuestions(Number(id), user.tenantId);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_requisition_questions_list")
+  );
+
+  server.tool(
+    `hr_requisition_question_create`,
+    `Add an application question to a requisition's intake form. Types: ${QUESTION_TYPES.join(" | ")}. Choice types need options [{value,label}]; NUMBER may carry options {min,max}; optional weights make it scored deterministically (maxScore is derived from the weights, never claimed separately).`,
+    {
+      id: z.string().min(1).describe("Requisition ID"),
+      type: z.enum(QUESTION_TYPES),
+      prompt: z.string().min(1).max(2000),
+      required: z.boolean().optional().describe("Default false"),
+      orderIndex: z.coerce.number().int().min(0).optional().describe("Defaults to appending last"),
+      options: z.any().optional().describe("[{value,label}] for choice types; {min,max} for NUMBER"),
+      weights: z.any().optional().describe("Scoring map; omit for an unscored question"),
+    },
+    withToolError(async ({ id, ...definition }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await createQuestion(Number(id), user.tenantId, definition, user.employeeId ?? null);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_requisition_question_create")
+  );
+
+  server.tool(
+    "hr_requisition_question_update",
+    "Update a question that has NO answers yet. A question with answers is immutable — the tool refuses (409) and the caller should deactivate it and create a new version.",
+    {
+      id: z.string().min(1).describe("Requisition ID"),
+      questionId: z.coerce.number().int().describe("ApplicationQuestion ID"),
+      prompt: z.string().min(1).max(2000).optional(),
+      required: z.boolean().optional(),
+      orderIndex: z.coerce.number().int().min(0).optional(),
+      options: z.any().optional(),
+      weights: z.any().optional(),
+    },
+    withToolError(async ({ id, questionId, ...definition }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await updateQuestion(Number(id), user.tenantId, questionId, definition, user.employeeId ?? null);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_requisition_question_update")
+  );
+
+  server.tool(
+    "hr_requisition_question_deactivate",
+    "Remove a question from the requisition's intake form. With answers it is deactivated (history keeps pointing at it); with none it is deleted outright.",
+    {
+      id: z.string().min(1).describe("Requisition ID"),
+      questionId: z.coerce.number().int().describe("ApplicationQuestion ID"),
+    },
+    withToolError(async ({ id, questionId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await deactivateQuestion(Number(id), user.tenantId, questionId);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_requisition_question_deactivate")
+  );
+
+  server.tool(
+    "hr_requisition_questions_reorder",
+    "Set the display order of a requisition's active application questions. orderedIds must contain exactly the active question IDs in the desired order.",
+    {
+      id: z.string().min(1).describe("Requisition ID"),
+      orderedIds: z.array(z.coerce.number().int()).min(1),
+    },
+    withToolError(async ({ id, orderedIds }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await reorderQuestions(Number(id), user.tenantId, orderedIds);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_requisition_questions_reorder")
   );
 
   server.tool(

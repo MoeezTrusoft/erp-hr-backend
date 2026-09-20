@@ -33,6 +33,7 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { PUBLICATION_CHANNELS } from "../../lib/requisitionPublication.js";
+import { listQuestions } from "../../services/applicationQuestion.service.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
@@ -51,6 +52,20 @@ export function registerRecruitmentTools(server) {
     async (uri) => {
       const { user } = getCtx();
       const data = await mcpListRequisitions(user);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
+  // Phase 5 / §3.5 — the live intake form for one requisition: exactly the
+  // questions the public portal asks, in display order. A resource (read-only,
+  // no mutation surface) rather than a tool, mirroring the tags-list precedent.
+  server.resource(
+    "hr_recruitment_public_form",
+    "hr://recruitment/requisitions/{id}/public-form",
+    { description: "The application form (active questions, ordered) a candidate sees for one requisition" },
+    async (uri, { id }) => {
+      const { user } = getCtx();
+      const data = await listQuestions(Number(id), user.tenantId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );

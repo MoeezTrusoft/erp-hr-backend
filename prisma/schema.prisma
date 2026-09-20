@@ -1524,6 +1524,9 @@ model JobRequisition {
   applications Application[]
   offers       Offer[]
 
+  // ── Phase 5 / §3.5 — the requisition's application-form questions ──
+  questions    ApplicationQuestion[]
+
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
 
@@ -2827,10 +2830,70 @@ model Application {
   interviews     Interview[]
   offer          Offer?
   stageHistory   ApplicationStageHistory[]
+  answers        ApplicationAnswer[]
 
   @@unique([candidateId, jobRequisitionId])
   @@index([candidateId])
   @@index([jobRequisitionId])
+}
+
+// ── Phase 5 / decision record §3.5 — per-requisition application questions ──
+//
+// Recruiter-defined screening questions attached to ONE requisition. The
+// question SET is versioned by `version` so a candidate's answers always name
+// the exact question they answered: editing a live requisition's questions
+// creates a new version rather than mutating rows that answers already point
+// at, so a report can never join an answer to a question that has since been
+// reworded.
+model ApplicationQuestion {
+  id            Int      @id @default(autoincrement())
+  requisitionId Int
+  version       Int      @default(1)
+  orderIndex    Int      @default(0)
+  type          String   // TEXT_SHORT | TEXT_LONG | SINGLE_CHOICE | MULTI_CHOICE | NUMBER | BOOLEAN | DATE
+  prompt        String
+  required      Boolean  @default(false)
+  // For *_CHOICE: [{ value: "..", label: ".." }]. For NUMBER: [{ min }, { max }].
+  // Absent for the free-text types. Json rather than columns so the shape can
+  // evolve with the question type vocabulary.
+  options       Json?
+  // §3.5 — "optional deterministic scoring". weights maps an answer value (or
+  // the literal answer for NUMBER) to a point value; maxScore is the sum, so a
+  // scored question's ceiling is declared, not guessed. Null = unscored.
+  weights       Json?
+  maxScore      Int?
+  isActive      Boolean  @default(true)
+  tenantId      String?  @db.Uuid
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  requisition JobRequisition      @relation(fields: [requisitionId], references: [id])
+  answers     ApplicationAnswer[]
+
+  @@index([tenantId])
+  @@index([requisitionId, version, orderIndex])
+  @@map("application_questions")
+}
+
+// One candidate's answer to one question version. Unique on
+// (applicationId, questionId): a resubmitted application updates its answers
+// rather than appending a second set, so the answer set is always the
+// candidate's CURRENT response.
+model ApplicationAnswer {
+  id          Int      @id @default(autoincrement())
+  applicationId Int
+  questionId  Int
+  value       Json?    // string | number | boolean | string[] (multi) — null when skipped
+  score       Int?     // the deterministic score awarded; null when the question is unscored
+  answeredAt  DateTime @default(now())
+
+  application Application        @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  question    ApplicationQuestion @relation(fields: [questionId], references: [id])
+
+  @@unique([applicationId, questionId])
+  @@index([applicationId])
+  @@index([questionId])
+  @@map("application_answers")
 }
 
 model ApplicationStageHistory {

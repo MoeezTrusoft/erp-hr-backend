@@ -135,6 +135,13 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
       application: { findFirst: jest.fn(), create: jest.fn() },
       applicationStageHistory: { create: jest.fn() },
       candidateConsent: { create: jest.fn() },
+      // Phase 5 §3.5 — the intake reads the requisition's question set inside the
+      // same transaction. Default: no questions configured (the pre-§3.5 shape);
+      // question-bearing tests override this via prisma.__questions.
+      applicationQuestion: {
+        findMany: jest.fn(async () => prisma.__questions ?? []),
+      },
+      applicationAnswer: { createMany: jest.fn(async () => ({ count: 0 })) },
       $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
     };
     jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
@@ -190,6 +197,12 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
     prisma.candidateConsent.create.mockImplementation(async ({ data }) => ({ id: 1, ...data }));
     prisma.__applications = applications;
     prisma.__consents = consents;
+    prisma.__questions = [];
+    prisma.__answers = [];
+    prisma.applicationAnswer.createMany.mockImplementation(async ({ data }) => {
+      data.forEach((row, i) => prisma.__answers.push({ id: i + 1, ...row }));
+      return { count: data.length };
+    });
   };
 
   beforeEach(() => {
