@@ -32,6 +32,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
+import { PUBLICATION_CHANNELS } from "../../lib/requisitionPublication.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
@@ -255,10 +256,26 @@ export function registerRecruitmentTools(server) {
 
   server.tool(
     "hr_requisition_post",
-    "Post an approved job requisition as a job posting",
+    "Publish an approved job requisition to one or more channels (Phase 4). Omit postingChannels to publish to the built-in CAREER_SITE. Publishing an ADDITIONAL channel to an already-posted requisition is allowed and does not re-run the approval. Use hr_requisition_postings_list to inspect the result and hr_requisition_posting_unpublish to take one channel down.",
     {
       id: z.string().min(1),
-      postingChannels: z.array(z.string()).optional().describe("e.g. LINKEDIN, INTERNAL, WEBSITE"),
+      externalUrl: z
+        .string()
+        .optional()
+        .describe("Public URL of the posting; required for every channel except CAREER_SITE"),
+      postingChannels: z
+        .array(
+          z.union([
+            z.enum(PUBLICATION_CHANNELS),
+            z.object({
+              channel: z.enum(PUBLICATION_CHANNELS),
+              externalUrl: z.string().optional(),
+              channelRef: z.string().optional().describe("The channel's own id for this posting"),
+            }),
+          ]),
+        )
+        .optional()
+        .describe(`Channels to publish to (${PUBLICATION_CHANNELS.join(" | ")}); default CAREER_SITE`),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();

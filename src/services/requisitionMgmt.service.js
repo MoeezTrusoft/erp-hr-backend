@@ -25,6 +25,8 @@ import {
 } from "./requisitionWorkflow.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { exportRows } from "../lib/export.util.js";
+import { logAction } from "../utils/logs.js";
+import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
 // the C4 client extension on the shared prisma singleton).
@@ -289,12 +291,24 @@ export const rejectRequisition = async (id, tenantId, { comments, approverId } =
 };
 
 // Close: status → CLOSED (terminal).
-export const closeRequisition = async (id, tenantId, actorId = null) => {
+//
+// Phase 4 / §2.4a — closing a PUBLISHED requisition requires a reason and closes
+// every active posting in the same transaction. A closed requisition that is still
+// advertised on a job board is the failure this prevents, and "closed" without a
+// reason is indistinguishable from "closed because we filled it" in reporting.
+// A draft or rejected requisition still closes with no reason (housekeeping).
+export const closeRequisition = async (id, tenantId, actorId = null, reason = null) => {
   const current = await requireScoped(id, tenantId);
-  assertRequisitionTransition(current.status, "CLOSED");
+  assertRequisitionTransition(current.status, "CLOSED", { comments: reason });
   await tenantTransaction(
     prisma,
     async (tx) => {
+      const closedPostings = await closeActivePostingsForRequisition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        closeReason: "REQUISITION_CLOSED",
+        actorId,
+      });
       await tx.jobRequisition.update({
         where: { id: Number(id) },
         data: { status: "CLOSED" },
@@ -304,9 +318,20 @@ export const closeRequisition = async (id, tenantId, actorId = null) => {
         tenantId,
         fromStatus: current.status,
         toStatus: "CLOSED",
+        reason,
         actorId,
         source: "requisition.close",
       });
+      if (closedPostings) {
+        await logAction({
+          employeeId: actorId,
+          type: "UPDATE",
+          module: "Requisition Close",
+          result: "SUCCESS",
+          notes: `Requisition "${id}" closed; ${closedPostings} active posting(s) closed`,
+          tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+        });
+      }
     },
     { tenantId },
   );

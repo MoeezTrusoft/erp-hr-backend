@@ -240,13 +240,18 @@ export function requisitionPostedEvent(requisition, ctx = {}) {
     });
 }
 
+// Phase 4 — the `status` is 'CLOSED' by default but can be overridden with
+// 'WITHDRAWN'. A withdrawal is a closure from the consumer's point of view (the
+// same audience learns the same fact), so it reuses this event rather than adding
+// a name the hub would have no mapper for — but the payload still states which of
+// the two happened, so analytics does not have to infer it.
 export function requisitionClosedEvent(requisition, ctx = {}, extra = {}) {
     return baseArgs('hr.recruitment.requisition_closed.v1', requisition, ctx, {
         aggregateType: 'JobRequisition',
         aggregateId: requisition?.id,
         payload: {
             requisitionId: String(requisition?.id),
-            status: 'CLOSED',
+            status: extra?.status === 'WITHDRAWN' ? 'WITHDRAWN' : 'CLOSED',
             reason: extra?.reason ?? null,
             // Phase 11 — routing id (see requisitionDecisionEvent).
             requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,

@@ -26,7 +26,14 @@ const prisma = {
   requisitionApproval: { create: jest.fn(), findMany: jest.fn(async () => []) },
   requisitionApprovalRule: { findMany: jest.fn(async () => []) },
   requisitionTransition: { create: jest.fn() },
-  jobPosting: { create: jest.fn() },
+  // Phase 4 — publication is per channel: it checks whether the channel is
+  // already live before writing, and the close paths close postings in place.
+  jobPosting: {
+    create: jest.fn(),
+    findFirst: jest.fn(async () => null),
+    findMany: jest.fn(async () => []),
+    updateMany: jest.fn(async () => ({ count: 0 })),
+  },
   businessUnit: { findMany: jest.fn() },
   // Phase 4 — the submit and publish paths also consult the hiring freeze; no
   // freeze is in effect in this suite, which is about the history rows written.
@@ -86,6 +93,8 @@ beforeEach(() => {
   prisma.requisitionTransition.create.mockResolvedValue({ id: 1 });
   prisma.requisitionApproval.create.mockResolvedValue({ id: 1 });
   prisma.jobPosting.create.mockResolvedValue({ id: 1 });
+  prisma.jobPosting.findFirst.mockResolvedValue(null);
+  prisma.jobPosting.updateMany.mockResolvedValue({ count: 0 });
   prisma.businessUnit.findMany.mockResolvedValue([]);
   prisma.jobRequisition.update.mockImplementation(async ({ where }) => ({ id: where.id, status: "POSTED" }));
   prisma.jobRequisition.count.mockResolvedValue(0);
@@ -142,11 +151,13 @@ describe("Phase 2.1 — requisition transition history", () => {
     });
     prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "CLOSED" });
 
-    await closeRequisition(5, TENANT, 9);
+    // Phase 4 / §2.4a — closing a PUBLISHED requisition owes a reason.
+    await closeRequisition(5, TENANT, 9, "Opening filled");
 
     expect(historyRow()).toMatchObject({
       fromStatus: "POSTED",
       toStatus: "CLOSED",
+      reason: "Opening filled",
       actorId: 9,
       source: "requisition.close",
     });

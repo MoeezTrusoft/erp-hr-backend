@@ -86,6 +86,11 @@ enum RequisitionStatus {
   REJECTED
   POSTED
   CLOSED
+  // Phase 4 / decision record §2.4a — WITHDRAWN is deliberately NOT CLOSED. A
+  // withdrawal is "this recruitment was cancelled before it filled", which
+  // analytics and fill-rate reporting must be able to tell apart from a
+  // requisition that closed because the opening was filled.
+  WITHDRAWN
 }
 
 enum CourseMode {
@@ -1745,10 +1750,26 @@ model JobPosting {
   // Relations
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])
 
+  // ── Phase 4 / decision record §2.4 — ONE row per CHANNEL ───────────────────
+  // "Postings per channel" cannot be answered from a single externalUrl, and the
+  // decision asks for the model to be per-channel NOW so LinkedIn/agencies need
+  // no schema change later. A partial unique index (migration 20260920270000)
+  // keeps at most ONE ACTIVE posting per requisition+tenant+channel, so
+  // re-posting a channel is a close-then-open, never a silent duplicate.
+  channel    String  @default("CAREER_SITE")
+  channelRef String? // the channel's own id for this posting (external job id, agency ref)
+  postedById Int? // who published it to this channel (plain id, like RequisitionTransition.actorId)
+
+  // ── §2.4a — closing is a recorded fact, never a delete ────────────────────
+  closedAt    DateTime?
+  closeReason String? // coded reason (lib/requisitionPublication.js CLOSE_REASONS)
+  closedById  Int?
+
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
   @@index([requisitionId])
+  @@index([tenantId, requisitionId, isActive])
 }
 
 model TrainingCategory {

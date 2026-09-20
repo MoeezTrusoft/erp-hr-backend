@@ -83,7 +83,14 @@ const prisma = {
     findMany: jest.fn(),
     count: jest.fn(),
   },
-  jobPosting: { create: jest.fn() },
+  // Phase 4 — closing a requisition now also closes its channel postings, and
+  // publication checks whether a channel is already live.
+  jobPosting: {
+    create: jest.fn(),
+    findFirst: jest.fn(async () => null),
+    findMany: jest.fn(async () => []),
+    updateMany: jest.fn(async () => ({ count: 0 })),
+  },
   requisitionApproval: { create: jest.fn(), findMany: jest.fn(async () => []) },
   requisitionApprovalRule: { findMany: jest.fn(async () => []) },
   requisitionTransition: { create: jest.fn() },
@@ -123,6 +130,8 @@ beforeEach(() => {
   FREEZES = [];
   prisma.requisitionTransition.create.mockResolvedValue({ id: 1 });
   prisma.jobPosting.create.mockResolvedValue({ id: 1 });
+  prisma.jobPosting.findFirst.mockResolvedValue(null);
+  prisma.jobPosting.updateMany.mockResolvedValue({ count: 0 });
   prisma.businessUnit.findMany.mockResolvedValue([]);
   prisma.jobRequisition.findMany.mockResolvedValue([]);
   prisma.jobRequisition.updateMany.mockResolvedValue({ count: 1 });

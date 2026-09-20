@@ -8,6 +8,7 @@ import {
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
 import { applyApprovalDecision, chainFor } from "./requisitionApprovalChain.service.js";
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
+import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1926,6 +1927,19 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
           stepOrder: step ? step.stepOrder : null,
           role: step ? step.role : null,
         }),
+      });
+    }
+
+    // Phase 4 / §2.4a — CLOSING from this surface takes the requisition off every
+    // channel it was published to, in the same transaction as the status flip. The
+    // legacy route has no separate "unpublish", so without this a closed
+    // requisition would stay advertised on a job board.
+    if (status === "CLOSED") {
+      await closeActivePostingsForRequisition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        closeReason: "REQUISITION_CLOSED",
+        actorId,
       });
     }
 

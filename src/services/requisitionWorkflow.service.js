@@ -19,6 +19,7 @@ export const REQUISITION_STATUSES = Object.freeze([
     "REJECTED",
     "POSTED",
     "CLOSED",
+    "WITHDRAWN",
 ]);
 
 import { assertRequisitionSubmittable } from "../lib/requisitionFields.js";
@@ -32,13 +33,21 @@ import { assertChainSubmittable } from "./requisitionApprovalChain.service.js";
 // CLOSED is terminal: a closed requisition is a historical record.
 // REJECTED may be abandoned (CLOSED) as well as revised back into DRAFT — HR
 // closes requisitions that were never going to be revisited.
+//
+// Phase 4 / §2.4a — WITHDRAWN is a SECOND terminal state, reachable only for a
+// requisition that was actually live or in the approval process (submitted,
+// approved or posted). Withdrawing is refused for a DRAFT (a draft is deleted, not
+// withdrawn — DRAFT→CLOSED already covers it) and for a REJECTED requisition
+// (nothing is running to withdraw). It is not reachable FROM CLOSED either: a
+// filled requisition cannot be retroactively withdrawn.
 const ALLOWED_TRANSITIONS = Object.freeze({
     DRAFT: new Set(["PENDING_APPROVAL", "CLOSED"]),
-    PENDING_APPROVAL: new Set(["APPROVED", "REJECTED"]),
-    APPROVED: new Set(["POSTED", "CLOSED"]),
+    PENDING_APPROVAL: new Set(["APPROVED", "REJECTED", "WITHDRAWN"]),
+    APPROVED: new Set(["POSTED", "CLOSED", "WITHDRAWN"]),
     REJECTED: new Set(["DRAFT", "CLOSED"]),
-    POSTED: new Set(["CLOSED"]),
+    POSTED: new Set(["CLOSED", "WITHDRAWN"]),
     CLOSED: new Set(),
+    WITHDRAWN: new Set(),
 });
 
 const normalizeStatus = (status) => String(status || "").trim().toUpperCase();
@@ -79,6 +88,24 @@ export function assertRequisitionTransition(from, to, { comments, requisition } 
     }
     if (target === "REJECTED" && !String(comments || "").trim()) {
         throw workflowError("Rejecting a requisition requires a reason", "HR-RECRUITMENT-REQUISITION-REASON-REQUIRED");
+    }
+    // §2.4a — a withdrawal requires a reason too. Enforced here as well as by the
+    // coded-reason normalization in the service, so a future call path that writes
+    // WITHDRAWN directly cannot file an unexplained cancellation.
+    if (target === "WITHDRAWN" && !String(comments || "").trim()) {
+        throw workflowError("Withdrawing a requisition requires a reason", "HR-RECRUITMENT-REQUISITION-REASON-REQUIRED");
+    }
+    // §2.4a — "withdraw/CLOSE of a PUBLISHED requisition requires a reason". Scoped
+    // to a requisition that actually went live: closing a draft or a rejected
+    // requisition is housekeeping, and demanding a justification for it would
+    // train people to type "-". This is the check that makes the reason reachable
+    // from every close path (management service, legacy /api/hr, generic update)
+    // instead of only from the one someone remembered to update.
+    if (target === "CLOSED" && current === "POSTED" && !String(comments || "").trim()) {
+        throw workflowError(
+            "Closing a published requisition requires a reason",
+            "HR-RECRUITMENT-REQUISITION-REASON-REQUIRED",
+        );
     }
     if (target === "PENDING_APPROVAL") {
         if (!requisition || typeof requisition !== "object") {

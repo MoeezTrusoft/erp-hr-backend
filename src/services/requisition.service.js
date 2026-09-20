@@ -15,6 +15,7 @@ import { getDepartmentById, listDepartments } from "./rbac.client.js"; // depart
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
 import { applyApprovalDecision, chainFor, chainStatusFor } from "./requisitionApprovalChain.service.js";
+import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -306,67 +307,28 @@ export const approveRequisition = async (id, status, comments, approvedBy, tenan
 };
 
 // ✅ Post approved job externally
-export const postRequisition = async (id, externalUrl, createdBy, tenantId) => {
-  const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
-  // Phase 3.2 — publish is a state transition (APPROVED → POSTED), so it goes
-  // through the same guard as every other move rather than a bare status check.
-  assertRequisitionTransition(requisition.status, "POSTED");
-  // Phase 4 — a hiring freeze blocks PUBLICATION. An approved requisition may sit
-  // in APPROVED for the duration of the freeze and be posted the day it lifts.
-  await assertRequisitionAdvanceAllowed(tenantId, requisition, "POSTED");
-
-  // Phase 11 — the posting row, the status flip and the event are one unit: a
-  // published posting must never exist without the requisition saying POSTED.
-  return tenantTransaction(prisma, async (tx) => {
-    await tx.jobPosting.create({
-      data: scopedData(tenantId, {
-        requisitionId: Number(id),
-        externalUrl,
-        isActive: true,
-        createdById: Number(createdBy),
-      }),
-      createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-    });
-
-    const jobPosted = await tx.jobRequisition.update({
-      where: { id: Number(id) },
-      data: { status: "POSTED" },
-    });
-
-    // Phase 2.1 — a publication is a state transition too, and previously it
-    // left no trace at all (not even a RequisitionApproval row).
-    await recordRequisitionTransition(tx, {
-      requisitionId: Number(id),
-      tenantId,
-      fromStatus: requisition.status,
-      toStatus: "POSTED",
-      actorId: createdBy,
-      source: "requisition.post",
-    });
-
-    await logAction({
-      employeeId: createdBy,
-      type: "UPDATE",
-      module: "Requisition Post",
-      result: "SUCCESS",
-      notes: `Post Requisition "${id}" Posted successfully`,
-      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-    });
-
-    await enqueueHrDomainEvent(
-      tx,
-      requisitionPostedEvent({ ...jobPosted, externalUrl }, { actorId: Number(createdBy) || null }),
-    );
-
-    return jobPosted;
+//
+// Phase 4 / §2.4 — this is now a thin wrapper over the per-CHANNEL publication
+// service, kept because `/api/hr/requisitions/post/:id` and the
+// `hr_requisition_post` MCP tool call it by this name.
+//
+// It was also BROKEN before this change: it wrote `createdById` on `jobPosting`
+// and passed a nested `createdBy` relation, and neither exists on the JobPosting
+// model (the column was dropped in 20251118112502). Prisma rejects unknown
+// arguments, so every publication through this path failed at runtime — which is
+// why the per-channel service, not this wrapper, now owns the write.
+//
+export const postRequisition = async (id, externalUrl, createdBy, tenantId, postingChannels = null) => {
+  const result = await publishRequisition({
+    id,
+    postingChannels,
+    externalUrl: externalUrl ?? null,
+    actorId: createdBy,
+    tenantId,
   });
+  // The legacy contract returns the requisition row. The postings it opened are on
+  // the result too, but a caller written against the old shape keeps working.
+  return result.requisition;
 };
 
 // ✅ Update requisition
@@ -409,8 +371,12 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
     // update, not as it is now: a caller that fixes the missing fields and
     // submits in ONE PATCH (the normal form-submit) must succeed, while a caller
     // that only flips the status must still be rejected.
+    // Phase 4 / §2.4a — `comments` (or `reason`) travels with the payload so a
+    // PUBLISHED → CLOSED move made through the generic update carries the same
+    // mandatory justification the management and legacy close paths require.
     updateData.status = assertRequisitionTransition(existing.status, status, {
       requisition: { ...existing, ...updateData },
+      comments: data.comments ?? data.reason,
     });
     // Phase 4 — a freeze blocks ADVANCING the requisition. Checked against the
     // merged row so a same-PATCH department change is judged on where the
@@ -432,11 +398,23 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
         data: { ...updateData, version: { increment: 1 } },
       });
       if (result.count > 0 && statusMove) {
+        // §2.4a — a close from this surface also takes the requisition off every
+        // channel, so "CLOSED" cannot mean two different things depending on
+        // which endpoint performed it.
+        if (statusMove.to === "CLOSED") {
+          await closeActivePostingsForRequisition(tx, {
+            requisitionId: Number(id),
+            tenantId,
+            closeReason: "REQUISITION_CLOSED",
+            actorId: updatedBy,
+          });
+        }
         await recordRequisitionTransition(tx, {
           requisitionId: Number(id),
           tenantId,
           fromStatus: statusMove.from,
           toStatus: statusMove.to,
+          reason: data.comments ?? data.reason ?? null,
           actorId: updatedBy,
           source: "requisition.update",
         });

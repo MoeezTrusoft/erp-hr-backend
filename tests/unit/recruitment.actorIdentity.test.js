@@ -12,16 +12,25 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 const createRequisition = jest.fn(async () => ({ id: 1 }));
 const deleteRequisitions = jest.fn(async () => ({ count: 1 }));
 const approveRequisition = jest.fn(async () => ({ id: 1 }));
-const postRequisition = jest.fn(async () => ({ id: 1 }));
 const updateRequisition = jest.fn(async () => ({ id: 1 }));
 jest.unstable_mockModule("../../src/services/requisition.service.js", () => ({
   createRequisition,
   deleteRequisitions,
   approveRequisition,
-  postRequisition,
   updateRequisition,
   getAllRequisitions: jest.fn(async () => []),
   getByIdRequisitions: jest.fn(async () => null),
+}));
+
+// Phase 4 — publication moved to its own service (per-channel postings), so this
+// is where the posting actor is observed now.
+const publishRequisition = jest.fn(async () => ({ requisition: { id: 1 }, postings: [] }));
+jest.unstable_mockModule("../../src/services/requisitionPublication.service.js", () => ({
+  publishRequisition,
+  unpublishPosting: jest.fn(async () => ({ id: 1 })),
+  withdrawRequisition: jest.fn(async () => ({ requisition: { id: 1 } })),
+  listRequisitionPostings: jest.fn(async () => ({ postings: [] })),
+  closeActivePostingsForRequisition: jest.fn(async () => 0),
 }));
 
 const addToPool = jest.fn(async () => ({ id: 1 }));
@@ -78,7 +87,16 @@ describe("Recruitment actor identity comes from the verified claim", () => {
     await req.updateRequisitionController(REQUEST(), response());
     await req.deletRequisitionsController(REQUEST(), response());
 
-    expect(postRequisition).toHaveBeenCalledWith("42", undefined, 77, TENANT);
+    // The publication actor comes from the verified claim too — never from the
+    // forged `employee-id` headers on the request.
+    expect(publishRequisition).toHaveBeenCalledWith({
+      id: "42",
+      postingChannels: undefined,
+      externalUrl: undefined,
+      channelRef: undefined,
+      actorId: 77,
+      tenantId: TENANT,
+    });
     expect(updateRequisition).toHaveBeenCalledWith("42", {}, 77, TENANT);
     expect(deleteRequisitions).toHaveBeenCalledWith("42", 77, TENANT);
   });

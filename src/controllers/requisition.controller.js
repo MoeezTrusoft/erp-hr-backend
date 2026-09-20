@@ -2,7 +2,6 @@ import {
   createRequisition,
   getAllRequisitions,
   approveRequisition,
-  postRequisition,
   deleteRequisitions,
   getByIdRequisitions,
   updateRequisition,
@@ -12,6 +11,12 @@ import {
   addRequisitionAttachment,
   removeRequisitionAttachment,
 } from "../services/requisitionAttachment.service.js";
+import {
+  publishRequisition,
+  unpublishPosting,
+  withdrawRequisition,
+  listRequisitionPostings,
+} from "../services/requisitionPublication.service.js";
 import { respondPreconditionAware } from "../utils/httpError.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
 import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
@@ -141,11 +146,69 @@ export const postRequisitionController = async (req, res) => {
   try {
     const { id } = req.params;
     const createdBy = await actorOf(req);
-    const { externalUrl } = req.body;
-    const result = await postRequisition(id, externalUrl, createdBy, tenantOf(req));
+    const { externalUrl, postingChannels, channelRef } = req.body ?? {};
+    // Phase 4 / §2.4 — publish to ONE OR MORE CHANNELS. `postingChannels` accepts
+    // the compact form (["LINKEDIN", "CAREER_SITE"]) or the explicit form
+    // ([{ channel, externalUrl, channelRef }]), and an absent list means the
+    // built-in career site, which is what this endpoint used to do implicitly.
+    const result = await publishRequisition({
+      id,
+      postingChannels,
+      externalUrl,
+      channelRef,
+      actorId: createdBy,
+      tenantId: tenantOf(req),
+    });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    respondAttachmentError(res, error);
+  }
+};
+
+// §2.4a — close ONE channel's posting. The requisition stays POSTED.
+export const unpublishPostingController = async (req, res) => {
+  try {
+    const { reason, note } = req.body ?? {};
+    const data = await unpublishPosting({
+      postingId: req.params.postingId ?? null,
+      requisitionId: req.params.id ?? null,
+      channel: req.params.channel ?? null,
+      reason,
+      note,
+      actorId: await actorOf(req),
+      tenantId: tenantOf(req),
+    });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+// §2.4a / FR-01.07 — withdraw the requisition. Requires a coded reason and closes
+// ALL active postings in the same transaction.
+export const withdrawRequisitionController = async (req, res) => {
+  try {
+    const { reason, note } = req.body ?? {};
+    const data = await withdrawRequisition({
+      id: req.params.id,
+      reason,
+      note,
+      actorId: await actorOf(req),
+      tenantId: tenantOf(req),
+    });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
+  }
+};
+
+export const listRequisitionPostingsController = async (req, res) => {
+  try {
+    const includeClosed = String(req.query.includeClosed ?? "true") !== "false";
+    const data = await listRequisitionPostings(req.params.id, tenantOf(req), { includeClosed });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    respondAttachmentError(res, error);
   }
 };
 

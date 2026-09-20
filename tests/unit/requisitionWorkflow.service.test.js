@@ -19,7 +19,14 @@ const prisma = {
   // Phase 2.1 — every status move now also writes an immutable transition row in
   // the same transaction, so the double must model it.
   requisitionTransition: { create: jest.fn(async () => ({ id: 1 })) },
-  jobPosting: { create: jest.fn(async () => ({ id: 1 })) },
+  // Phase 4 — publishing is now per CHANNEL, so it looks up whether a channel is
+  // already live before writing, and the close paths close postings in place.
+  jobPosting: {
+    create: jest.fn(async () => ({ id: 1 })),
+    findFirst: jest.fn(async () => null),
+    findMany: jest.fn(async () => []),
+    updateMany: jest.fn(async () => ({ count: 0 })),
+  },
   // Phase 4 — submitting and publishing now also consult the hiring freeze. This
   // suite is about the state machine, so no freeze is in effect.
   recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
@@ -138,8 +145,11 @@ describe("Requisition state machine (Phase 3.2)", () => {
   it("only publishes an APPROVED requisition", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ id: 1, status: "PENDING_APPROVAL" });
 
+    // Phase 4 — the refusal is now the PUBLICATION status rule rather than the
+    // generic transition code: publishing is refused unless the requisition is
+    // APPROVED (first publication) or already POSTED (an additional channel).
     await expect(postRequisition(1, "https://jobs.example.com/1", 5, "tenant-a"))
-      .rejects.toMatchObject({ code: "HR-RECRUITMENT-REQUISITION-TRANSITION-INVALID" });
+      .rejects.toMatchObject({ code: "HR-RECRUITMENT-PUBLICATION-STATUS-INVALID" });
     expect(prisma.jobPosting.create).not.toHaveBeenCalled();
   });
 

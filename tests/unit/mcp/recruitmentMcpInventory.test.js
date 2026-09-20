@@ -7,7 +7,7 @@
 // how the whole candidate-privacy family, offer approval/handoff, the
 // application list and the analytics export ended up exposed-but-ungated.
 //
-// The gateway side pins the same 70 names in
+// The gateway side pins the same 73 names in
 // erp-gateway-backend/tests/hr-recruitment-mcp-exposure.test.js. Adding or
 // removing a Recruitment tool must update BOTH files; this one fails first,
 // naming the delta, so the gateway map cannot be forgotten.
@@ -67,7 +67,7 @@ for (const [module, register] of RECRUITMENT_REGISTRARS) {
 // The pinned surface. Mirrors the gateway map (hr-recruitment-mcp-exposure).
 const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentTools: 22,
-  requisitionMgmtTools: 6,
+  requisitionMgmtTools: 9,
   candidatePipelineTools: 2,
   interviewMgmtTools: 5,
   offerMgmtTools: 5,
@@ -135,9 +135,12 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_requisition_delete",
   "hr_requisition_manage_get",
   "hr_requisition_post",
+  "hr_requisition_posting_unpublish",
+  "hr_requisition_postings_list",
   "hr_requisition_reject",
   "hr_requisition_submit",
   "hr_requisition_update",
+  "hr_requisition_withdraw",
   "hr_requisitions_export",
   "hr_requisitions_list",
   "hr_requisitions_manage_list",
@@ -155,7 +158,7 @@ const EXPECTED_TOOLS = Object.freeze([
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
 
 describe("Recruitment MCP tool inventory", () => {
-  it("registers exactly the pinned 70 tools — no more, no less", () => {
+  it("registers exactly the pinned 73 tools — no more, no less", () => {
     expect([...allRecruitmentTools].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
@@ -184,7 +187,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(510);
+    expect(all).toHaveLength(513);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
