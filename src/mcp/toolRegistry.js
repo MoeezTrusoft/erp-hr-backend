@@ -18,6 +18,7 @@ import { registerRequisitionMgmtTools } from "./tools/requisitionMgmtTools.js";
 import { registerCandidatePipelineTools } from "./tools/candidatePipelineTools.js";
 import { registerInterviewMgmtTools } from "./tools/interviewMgmtTools.js";
 import { registerOfferMgmtTools } from "./tools/offerMgmtTools.js";
+import { registerCandidatePrivacyTools } from "./tools/candidatePrivacyTools.js";
 import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
@@ -271,6 +272,7 @@ export function registerAllTools(server) {
   registerRecruitmentAnalyticsTools(server);
   registerOnboardingMgmtTools(server);
   registerRecruitmentExtraTools(server);
+  registerCandidatePrivacyTools(server);
   registerOnboardingDashboardTools(server);
   registerOnboardingDetailTools(server);
   registerOnboardingScheduleTools(server);
