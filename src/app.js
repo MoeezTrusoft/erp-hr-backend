@@ -58,6 +58,7 @@ import payrollRoutes from "./routes/payrollRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
+import publicPortalRoutes from "./routes/publicPortal.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
@@ -169,6 +170,13 @@ export const createApp = () => {
     // /api guard because the device cannot present a gateway service-JWT; the
     // route has its own X-Intake-Key gate. Not proxied by the public gateway.
     app.use("/device-attendance", deviceAttendanceRoutes);
+
+    // Phase 5 / §3.1 — the PUBLIC careers portal. Mounted OUTSIDE the /api
+    // internal-service guard because an anonymous candidate cannot present a
+    // gateway service-JWT; the router carries its own guards (tenant pinning,
+    // rate limiting, uniform failures) and exposes only the two read shapes and
+    // the one write the portal needs — never the recruiter surface.
+    app.use("/public", publicPortalRoutes);
 
     app.use("/api", internalServiceGuard);
     // Bind the verified tenant to the async context so the Prisma tenant-scope
