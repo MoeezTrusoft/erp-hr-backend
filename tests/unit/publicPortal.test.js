@@ -124,6 +124,7 @@ describe("Phase 5 — the public job listing (§3.1)", () => {
 describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
   let prisma;
   let submitPublicApplication;
+  let sendCandidateEmail;
 
   // One stable double per describe block; seed() swaps the mock implementations
   // in place so the service's captured module import always sees the current
@@ -144,6 +145,11 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
       applicationAnswer: { createMany: jest.fn(async () => ({ count: 0 })) },
       $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
     };
+    // Phase 5 / §3.2 — the verification token lifecycle gets its own doubles.
+    prisma.candidateEmailVerification = {
+      updateMany: jest.fn(async () => ({ count: 0 })),
+      create: jest.fn(async ({ data }) => ({ id: 1, ...data })),
+    };
     jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
     jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
     jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
@@ -154,7 +160,14 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
       tenantTransaction: jest.fn((client, fn) => fn(client)),
       rlsTenantExtension: jest.fn((client) => client),
     }));
+    // The email plane is mocked (this suite is about the portal, not the hub
+    // client) but the SEND must be observed: token issuance on every intake,
+    // mailbox notice only on the reconciled path.
+    jest.unstable_mockModule("../../src/lib/notificationClient.js", () => ({
+      sendCandidateEmail: jest.fn(async () => ({ sent: true })),
+    }));
     ({ submitPublicApplication } = await import("../../src/services/publicPortal.service.js"));
+    ({ sendCandidateEmail } = await import("../../src/lib/notificationClient.js"));
   });
 
   const seed = (requisition, candidates = [], applications = [], consents = []) => {
@@ -358,7 +371,8 @@ describe("Phase 5 — the public router's guards", () => {
       .filter((l) => l.route)
       .map((l) => `${Object.keys(l.route.methods)[0].toUpperCase()} ${l.route.path}`)
       .sort();
-    expect(paths).toEqual(["GET /jobs", "GET /jobs/:id", "POST /jobs/:id/apply"]);
+    // §3.2 — the magic-link consumption endpoint joins the public surface.
+    expect(paths).toEqual(["GET /candidates/verify-email", "GET /jobs", "GET /jobs/:id", "POST /jobs/:id/apply"]);
     delete process.env.HR_PORTAL_HOSTS;
   });
 

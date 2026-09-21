@@ -2772,6 +2772,11 @@ model Candidate {
   anonymizedAt     DateTime?
   archivedAt       DateTime?
 
+  // Phase 5 / §3.2 — when the mailbox owner proved control of this address via
+  // a magic-link token (candidate_email_verifications). Null = never verified
+  // (or pre-existing before the column). Never set by a recruiter write.
+  emailVerifiedAt  DateTime?
+
   tags            CandidateTag[]
   applications    Application[]
   talentPools     TalentPool[]
@@ -2780,6 +2785,7 @@ model Candidate {
   consents        CandidateConsent[]
   legalHolds      CandidateLegalHold[]
   aiInferences    AiInferenceRecord[]
+  emailVerifications CandidateEmailVerification[]
 
   @@unique([tenantId, email])
   @@index([tenantId, status])
@@ -3673,6 +3679,28 @@ model OfferHandoffAttempt {
 // explicitly rather than inferred from `status`. Every table is tenant-scoped and
 // append-only where the fact is historical (consent, anonymization, retention
 // actions) so an audit can reconstruct what was known at any point in time.
+
+// Phase 5 / §3.2 — candidate EMAIL VERIFICATION tokens (magic links).
+//
+// One row per candidate per purpose; re-issuing REPLACES the unconsumed token
+// (the old link dies). The raw token lives only in the email body — the row
+// stores sha256(token). No password, no account: §3.2 is proof-of-mailbox.
+model CandidateEmailVerification {
+  id          Int       @id @default(autoincrement())
+  candidateId Int
+  email       String
+  tokenHash   String    @unique
+  purpose     String    // APPLY_VERIFICATION (constraint-pinned vocabulary)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  created_at  DateTime  @default(now())
+  tenantId    String?   @db.Uuid
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId])
+  @@index([tenantId])
+}
 
 // Append-only consent history. The CURRENT state is mirrored onto
 // Candidate.consentStatus for cheap filtering; this table is the evidence.

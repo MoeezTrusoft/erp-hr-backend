@@ -109,7 +109,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // tenant-configurable templates and their scope links, same convention.
     // 136-137 + SkillAlias, AiInferenceRecord (Phase 13 §7.2/§7.4) — the
     // taxonomy alias layer and the AI provenance ledger, same convention.
-    expect(nullableModels).toHaveLength(138);
+    // 139 + CandidateEmailVerification (Phase 5 §3.2) — the magic-link token
+    // table, same convention and own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(139);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

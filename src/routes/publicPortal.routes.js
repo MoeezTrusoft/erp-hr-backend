@@ -22,6 +22,7 @@
 //     (§3.4's rule, applied to jobs as well as emails).
 import express from "express";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
+import { consumeEmailVerification } from "../services/candidateVerification.service.js";
 import logger from "../lib/logger.js";
 
 const router = express.Router();
@@ -152,6 +153,25 @@ router.post(
             body: req.body,
         });
         return res.status(201).json({ success: true, data: result });
+    }),
+);
+
+// GET /public/candidates/verify-email?token= — §3.2 magic-link consumption.
+// Anonymous BY DESIGN (the token IS the credential) and rate-limited like a
+// read: a brute-force sweep hits the fixed window before it hits the token
+// space (256-bit), and every failure returns the SAME uniform 400 — the
+// endpoint cannot reveal which emails exist or which links are live (§3.4).
+router.get(
+    "/candidates/verify-email",
+    ...guard("read", async (req, res) => {
+        try {
+            const result = await consumeEmailVerification({ token: req.query.token });
+            return res.json({ success: true, data: result });
+        } catch (err) {
+            // Uniform failure body — never leak the failure class to the wire.
+            const status = Number(err?.status) || 400;
+            return res.status(status).json({ success: false, message: "This verification link is not valid" });
+        }
     }),
 );
 

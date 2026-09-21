@@ -29,6 +29,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationCreatedEvent } from "./hrEvents.js";
+import { issueEmailVerification, sendVerificationEmail, notifyMailboxOwner } from "./candidateVerification.service.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { validateAnswer } from "../lib/applicationQuestions.js";
 import { parsePublicApplicationInput } from "../lib/publicPortal.js";
@@ -60,7 +61,7 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
         throw fail("Position not found", 404, "HR-PORTAL-NOT-FOUND");
     }
 
-    return tenantTransaction(prisma, async (tx) => {
+    const result = await tenantTransaction(prisma, async (tx) => {
         const requisition = await tx.jobRequisition.findFirst({
             where: { id: reqId, tenantId, status: "POSTED" },
             include: { postings: { where: { isActive: true } } },
@@ -239,12 +240,49 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
 
         await enqueueHrDomainEvent(tx, applicationCreatedEvent(application, {}));
 
-        return {
-            ...SUBMITTED,
-            applicationId: application.id,
-            requisitionId: reqId,
-        };
+        // (returns: the application id rides out of the transaction; the token
+        // and the reconciled-candidate artifacts are sent post-commit below)
+
+        // §3.2 — the verification token row JOINS the application transaction
+        // (HTTP-free; the email goes out after commit — an outbound call must
+        // never hold a DB transaction open). §3.4 second half — the
+        // mailbox-owner notice fires only on the RECONCILED path (an existing
+        // row means the address predates this application; a fresh row IS the
+        // submitter), and never alters the byte-identical response contract.
+        const issued = await issueEmailVerification(tx, {
+            tenantId,
+            candidate: { id: candidateId, firstName: input.firstName },
+            email: input.email,
+        });
+        const reconciled = existing ? { candidate: existing, title: requisition.title } : null;
+
+        return { applicationId: application.id, issued, reconciled };
     });
+
+    // AFTER commit: the fire-and-forget sends. The tenantTransaction helper
+    // returns whatever the callback returned, so unwrap both artifacts here —
+    // outside the transaction, where an outbound HTTP call belongs.
+    if (result.issued) {
+        await sendVerificationEmail({
+            tenantId,
+            email: result.issued.email,
+            firstName: result.issued.firstName,
+            token: result.issued.token,
+        });
+    }
+    if (result.reconciled) {
+        await notifyMailboxOwner({
+            tenantId,
+            candidate: result.reconciled.candidate,
+            requisitionTitle: result.reconciled.title,
+        });
+    }
+
+    return {
+        ...SUBMITTED,
+        applicationId: result.applicationId,
+        requisitionId: reqId,
+    };
 };
 
 /** The public listing/detail reads — thin re-exports so routes import one module. */
