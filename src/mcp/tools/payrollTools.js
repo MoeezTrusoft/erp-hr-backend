@@ -390,7 +390,10 @@ export function registerPayrollTools(server) {
       const payslip = await prisma.payrollPayslip.findFirst({
         where: { id: Number(payslipId), ...(user.tenantId ? { tenantId: user.tenantId } : {}) },
         include: {
-          employee: { select: { first_name: true, last_name: true, job_title: true, department: true } },
+          // PDF header needs department name — Employee carries it as the
+          // businessUnit relation (a bare `department: true` select here was a
+          // latent PrismaClientValidationError that 500'd every PDF render).
+          employee: { select: { first_name: true, last_name: true, job_title: true, businessUnit: { select: { name: true } } } },
           earnings: true,
           deductions: true,
           payrollRun: { select: { periodStart: true, periodEnd: true, currencyCode: true, countryCode: true } },
@@ -401,7 +404,7 @@ export function registerPayrollTools(server) {
       const pdfBuffer = await generatePayslipPdf({
         employeeName: `${payslip.employee?.first_name || ""} ${payslip.employee?.last_name || ""}`.trim(),
         employeeId: payslip.employeeId,
-        department: payslip.employee?.department,
+        department: payslip.employee?.businessUnit?.name ?? null,
         jobTitle: payslip.employee?.job_title,
         periodStart: payslip.payrollRun?.periodStart?.toISOString().split("T")[0],
         periodEnd: payslip.payrollRun?.periodEnd?.toISOString().split("T")[0],
