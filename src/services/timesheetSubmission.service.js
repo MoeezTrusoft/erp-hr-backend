@@ -77,6 +77,42 @@ export async function isTimesheetSubmitted(tenantId, month) {
   return audit ? { submitted: true, run } : { submitted: false, run: null };
 }
 
+/**
+ * Full submission-state probe for the UI's Submit-Timesheet gating
+ * (TS-GATE-UI-01, operator items 5.1/5.2, 2026-09-21).
+ *
+ * Returns everything the button needs to disable itself with a REASON:
+ *   submitted        — the TIMESHEET_SUBMITTED audit marker exists
+ *   attendanceLocked — the month's attendance cutoff has passed (gate 1)
+ *   attendanceCutoff — the configured cutoff instant (null = unconfigured)
+ *   pendingAnomalies — unresolved anomaly requests in the month (gate 2)
+ *
+ * Mirrors submitTimesheet's gates exactly — the button must never enable on a
+ * looser reading than the submit itself enforces.
+ */
+export async function getTimesheetSubmissionState(tenantId, month) {
+  if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
+    throw new AppError("month must be YYYY-MM", 400);
+  }
+  const submittedState = await isTimesheetSubmitted(tenantId, month);
+  const { from, to } = submissionWindow(month);
+
+  const calendar = await prisma.payrollCalendar.findFirst({
+    where: scopedWhere(tenantId, {}),
+    select: { attendanceCutoff: true },
+  });
+  const cutoff = calendar?.attendanceCutoff ?? null;
+  const attendanceLocked = cutoff != null && new Date(cutoff).getTime() <= Date.now();
+  const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to });
+
+  return {
+    ...submittedState,
+    attendanceLocked,
+    attendanceCutoff: cutoff ? new Date(cutoff).toISOString() : null,
+    pendingAnomalies,
+  };
+}
+
 /** Count unresolved anomaly requests inside the month window. */
 async function pendingAnomalyCount(tenantId, { from, to }) {
   return prisma.attendanceAnomaly.count({

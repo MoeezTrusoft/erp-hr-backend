@@ -15,7 +15,7 @@ import {
   listCheckInOuts,
 } from "../../services/timesheetReport.service.js";
 import {
-  isTimesheetSubmitted,
+  getTimesheetSubmissionState,
   submitTimesheet,
   unsubmitTimesheet,
 } from "../../services/timesheetSubmission.service.js";
@@ -174,7 +174,9 @@ export function registerTimesheetReportTools(server) {
     withToolError(async ({ month }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const state = await isTimesheetSubmitted(user.tenantId, month);
+      // TS-GATE-UI-01 — full gating state so the UI can disable the Submit
+      // button WITH a reason (lock state, cutoff, unresolved anomalies).
+      const state = await getTimesheetSubmissionState(user.tenantId, month);
       return { content: [{ type: "text", text: JSON.stringify(state) }] };
     }, "hr_timesheet_submission_status")
   );
