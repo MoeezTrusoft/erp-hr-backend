@@ -395,8 +395,8 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function parseResumePreview(mediaId) {
-  return parseResumeWithRetry(mediaId, { kind: "CANDIDATE" });
+export async function parseResumePreview(mediaId, { tenantId = null } = {}) {
+  return parseResumeWithRetry(mediaId, { kind: "CANDIDATE", tenantId });
 }
 
 /**

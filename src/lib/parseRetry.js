@@ -46,6 +46,8 @@ const PERMANENT_ERROR_CODES = new Set([
     "HR-RESUME-NO-KEY", // no API key — an operator fix, not a retry fix
     "HR-RESUME-UNSUPPORTED-TYPE", // the file will never extract
     "HR-RESUME-EMPTY-DOCUMENT", // no text to parse
+    "HR-AI-PLANE-UNAVAILABLE", // no REDIS_URL / plane down — an operator fix (Phase 13 §7.1)
+    "HR-RECRUITMENT-AI-DISABLED", // flag off — retrying against a closed gate is waste (Phase 15)
 ]);
 
 export function isRetryableFailure(error) {

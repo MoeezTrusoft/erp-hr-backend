@@ -31,7 +31,8 @@ export function registerResumeTools(server) {
     withToolError(async ({ resumeMediaId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
-      const data = await parseResumePreview(resumeMediaId);
+      // The plane requires a tenantId (per-tenant token ceiling keying).
+      const data = await parseResumePreview(resumeMediaId, { tenantId: user.tenantId ?? null });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_resume_parse_preview")
   );
