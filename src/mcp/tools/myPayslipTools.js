@@ -19,7 +19,7 @@
 import { z } from "zod";
 
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import {
@@ -31,6 +31,28 @@ import {
 } from "../../services/myPayslip.service.js";
 
 const RESOURCE_KEY = "hr:payroll";
+
+// HR-RBAC-01 T1.3c — self-service entitlement for the my-payslip family.
+// After the Employee-role grant remediation (D1=A) a plain employee holds
+// hr:self VIEW and NO hr:payroll grant, so the old bare
+// assertPermission(GET, hr:payroll) locked employees out of their OWN slips.
+// A session passes with hr:self read OR any hr:payroll grant; scope narrowing
+// (pin to acting employee, refuse foreign ids) is resolveActorScope's job —
+// VIEW alone never grants the admin surface (T1.7).
+function assertSelfOrPayrollRead(user, permissions) {
+  // The verified admin claim rides the service JWT (never a client header) and
+  // outranks the blob — same precedence as assertPermission's call sites.
+  const ok =
+    user?.isAdmin === true ||
+    hasPermission(permissions, "hr:self", "VIEW") ||
+    hasPermission(permissions, "hr:payroll", "VIEW");
+  if (!ok) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:self:VIEW or hr:payroll grant required"),
+      { status: 403, code: "HR-4030" },
+    );
+  }
+}
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -64,7 +86,7 @@ export function registerMyPayslipTools(server) {
     },
     withToolError(async ({ payslipId, employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
+      assertSelfOrPayrollRead(user, permissions);
       const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: payslipId != null });
       const data = await getMyPayslip({
         tenantId: user.tenantId,
@@ -94,7 +116,7 @@ export function registerMyPayslipTools(server) {
     },
     withToolError(async ({ payslipId, employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
+      assertSelfOrPayrollRead(user, permissions);
       const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: payslipId != null });
       const data = await getPayslipDistribution({
         tenantId: user.tenantId,
@@ -117,7 +139,7 @@ export function registerMyPayslipTools(server) {
     },
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
+      assertSelfOrPayrollRead(user, permissions);
       const empId = resolveEmployeeId(user, permissions, employeeId);
       const data = await getEarningTrend6mo({ tenantId: user.tenantId, employeeId: empId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -137,7 +159,7 @@ export function registerMyPayslipTools(server) {
     },
     withToolError(async ({ employeeId, page, pageSize }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
+      assertSelfOrPayrollRead(user, permissions);
       const empId = resolveEmployeeId(user, permissions, employeeId);
       const data = await listMyPayslips({ tenantId: user.tenantId, employeeId: empId, page, pageSize });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };

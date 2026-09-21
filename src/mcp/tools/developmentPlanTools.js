@@ -3,8 +3,27 @@
 // DevPlan: LIST + GET + UPDATE + DELETE (CREATE exists). PayslipQuestion: LIST + GET + UPDATE + DELETE (CREATE exists).
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { resolveActorScope } from "../utils/actorScope.js";
+import { scopedWhere } from "../../lib/tenancy.js";
+
+// HR-RBAC-01 T1.3c — same self-service entitlement as the my-payslip family:
+// hr:self read OR any hr:payroll grant; scope narrowing happens per call.
+function assertSelfOrPayrollRead(user, permissions) {
+  // The verified admin claim rides the service JWT (never a client header) and
+  // outranks the blob — same precedence as assertPermission's call sites.
+  const ok =
+    user?.isAdmin === true ||
+    hasPermission(permissions, "hr:self", "VIEW") ||
+    hasPermission(permissions, "hr:payroll", "VIEW");
+  if (!ok) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:self:VIEW or hr:payroll grant required"),
+      { status: 403, code: "HR-4030" },
+    );
+  }
+}
 import { createPlan, listPlans, addPlanItem, listPlanItems, updatePlanItem } from "../../services/developmentPlan.service.js";
 import prisma from "../../lib/prisma.js";
 
@@ -147,8 +166,12 @@ export function registerDevelopmentPlanTools(server) {
     },
     withToolError(async ({ payslipId } = {}) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
-      const where = payslipId ? { payslipId: Number(payslipId) } : {};
+      // HR-RBAC-01 T1.3c — self-service sessions read ONLY their own questions;
+      // hr:payroll readers see the tenant's. scopedWhere keeps RLS tenancy.
+      assertSelfOrPayrollRead(user, permissions);
+      const scope = resolveActorScope(user, permissions);
+      const where = scopedWhere(user.tenantId, payslipId ? { payslipId: Number(payslipId) } : {});
+      if (!scope.canViewOthers) where.employeeId = scope.actingEmployeeId ?? -1;
       const data = await prisma.payslipQuestion.findMany({ where, orderBy: { createdAt: "desc" } });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_payslip_question_list")
@@ -160,8 +183,13 @@ export function registerDevelopmentPlanTools(server) {
     { id: z.union([z.number(), z.string()]).describe("Question ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
-      const data = await prisma.payslipQuestion.findUnique({ where: { id: Number(id) } });
+      // HR-RBAC-01 T1.3c — tenant-scoped, and self-service sessions may open
+      // only their own questions (fail-closed for unbound sessions).
+      assertSelfOrPayrollRead(user, permissions);
+      const scope = resolveActorScope(user, permissions);
+      const where = scopedWhere(user.tenantId, { id: Number(id) });
+      if (!scope.canViewOthers) where.employeeId = scope.actingEmployeeId ?? -1;
+      const data = await prisma.payslipQuestion.findFirst({ where });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_payslip_question_get")
   );
