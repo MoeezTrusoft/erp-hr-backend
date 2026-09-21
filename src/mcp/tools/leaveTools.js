@@ -102,6 +102,10 @@ export function registerLeaveTools(server) {
       status: z.string().optional(),
       employeeId: z.union([z.string(), z.number()]).optional(),
       leaveType: z.string().optional(),
+      // HR-LEAVE-MONTH-01 — month-window filter (requests OVERLAPPING the
+      // range), passed through to getLeaveRequests verbatim.
+      startDate: z.string().optional().describe("ISO date — only requests overlapping the window are returned (with endDate)"),
+      endDate: z.string().optional().describe("ISO date — window end for the overlap filter"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
