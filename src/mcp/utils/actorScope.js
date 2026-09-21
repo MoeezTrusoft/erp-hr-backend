@@ -16,6 +16,7 @@
 // explicit employeeId/payslipId arguments selecting someone else are refused,
 // not silently remapped, so misuse is observable in logs.
 import { hasPermission } from "./assertPermission.js";
+import { HR_ERRORS } from "../../constants/errorCodes.js";
 
 // Actions that prove the caller belongs on the payroll/employee ADMIN surface.
 const ADMIN_SURFACE_ACTIONS = ["EDIT", "EXPORT", "CREATE", "DELETE"];
@@ -136,6 +137,6 @@ export function assertEmployeeScope({ user, permissions, explicit, actingEmploye
 export function assertPayslipOwnership({ slip, actingEmployeeId, canViewOthers, explicitPayslipId }) {
   if (canViewOthers || explicitPayslipId == null || slip == null) return;
   if (actingEmployeeId != null && Number(slip.employeeId) !== actingEmployeeId) {
-    throw Object.assign(new Error("No payslip found for this employee"), { status: 404, code: "HR-4004" });
+    throw Object.assign(new Error("No payslip found for this employee"), { status: 404, code: HR_ERRORS.NOT_FOUND.code });
   }
 }

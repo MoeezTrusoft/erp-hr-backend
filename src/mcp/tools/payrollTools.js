@@ -24,6 +24,7 @@ import {
 } from "../controllers/taxFormMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { HR_ERRORS } from "../../constants/errorCodes.js";
 import { assertPayrollAdminSurface, resolveActorScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
@@ -380,7 +381,7 @@ export function registerPayrollTools(server) {
           select: { id: true },
         });
         if (!owned) {
-          throw Object.assign(new Error("No payslip found for this employee"), { status: 404, code: "HR-4004" });
+          throw Object.assign(new Error("No payslip found for this employee"), { status: 404, code: HR_ERRORS.NOT_FOUND.code });
         }
       }
       const { default: prisma } = await import("../../lib/prisma.js");

@@ -17,6 +17,10 @@ import logger from "../lib/logger.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+// T1.9 — HR-4040 via the central registry (the HR-4004 literal was registry
+// drift: unmapped in the JSON-RPC table, so ownership-404s surfaced as -32603
+// internal instead of -32004 not-found).
+import { HR_ERRORS } from "../constants/errorCodes.js";
 import { payslipQuestionRaisedEvent } from "./hrEvents.js";
 
 const DEFAULT_TOTAL_WORKING_DAYS = 26;
@@ -26,8 +30,11 @@ const DEFAULT_TOTAL_WORKING_DAYS = 26;
 // has no finalized/distributed slip yet (e.g. mid-run previews).
 const YTD_OFFICIAL_STATUSES = ["FINALIZED", "DISTRIBUTED"];
 
+// T1.9 — HR-4040 via the central registry (the HR-4004 literal was registry
+// drift: unmapped in the JSON-RPC table, so ownership-404s surfaced as -32603
+// internal instead of -32004 not-found).
 function notFound(message) {
-  return Object.assign(new Error(message), { status: 404, code: "HR-4004" });
+  return Object.assign(new Error(message), { status: 404, code: HR_ERRORS.NOT_FOUND.code });
 }
 
 function round1(n) {
