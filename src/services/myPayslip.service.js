@@ -57,7 +57,7 @@ const PAYSLIP_INCLUDE = {
 
 // Resolve the target payslip: explicit payslipId (self-scoped) else the LATEST
 // slip by payrollRun.periodEnd for the employee. Returns null if none.
-async function resolvePayslip({ tenantId, employeeId, payslipId }) {
+async function resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped = false }) {
   // HR-PAYSLIP-ADMIN-VIEW-01 (2026-09-14) — an explicit payslipId identifies
   // the row (and therefore its employee) on its own; employeeId is only needed
   // to find "my latest". The FE route /hr/payroll/payslip/:id is opened by
@@ -65,10 +65,22 @@ async function resolvePayslip({ tenantId, employeeId, payslipId }) {
   // ("employeeId is required (no employee bound to the session)") before ever
   // looking at the row. Tenant isolation is unchanged: tenantId still comes
   // from the verified session via scopedWhere, so a cross-tenant id 404s.
+  //
+  // HR-RBAC-01 (2026-09-21, T1.2) — the route is ALSO deep-linkable by a plain
+  // employee, and payslipId-keyed resolution ignored employeeId entirely, so
+  // any employee could open ANY tenant payslip by id (audit C1). When the
+  // caller is employee-scoped, an explicit payslipId resolves ONLY within the
+  // caller's own slips: the admin-style row lookup now includes employeeId in
+  // the where-clause, so a foreign slip 404s with the same generic text as a
+  // missing one (no enumeration oracle). Admin-surface sessions (flag passed
+  // by the tool layer) keep the unscoped row lookup.
   const scope = scopedWhere(tenantId, {});
   const where = payslipId != null
     ? { ...scope, id: Number(payslipId) }
     : { ...scope, employeeId: Number(employeeId) };
+  if (payslipId != null && employeeScoped) {
+    where.employeeId = Number(employeeId);
+  }
   return prisma.payrollPayslip.findFirst({
     where,
     include: PAYSLIP_INCLUDE,
@@ -151,8 +163,8 @@ async function computeOvertimeHours({ tenantId, employeeId, periodStart, periodE
  * The employee's payslip (explicit payslipId, else the latest by period end),
  * enriched with YTD figures + working-day / leave / overtime accounting.
  */
-export async function getMyPayslip({ tenantId, employeeId, payslipId }) {
-  const slip = await resolvePayslip({ tenantId, employeeId, payslipId });
+export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeScoped = false }) {
+  const slip = await resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped });
   if (!slip) throw notFound("No payslip found for this employee");
 
   // The row's own employee drives every enrichment (correct for the admin
@@ -211,8 +223,8 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId }) {
  * Pie-chart split for the payslip: earnings as a pct of gross, deductions as a
  * pct of total deductions (1dp).
  */
-export async function getPayslipDistribution({ tenantId, employeeId, payslipId }) {
-  const slip = await resolvePayslip({ tenantId, employeeId, payslipId });
+export async function getPayslipDistribution({ tenantId, employeeId, payslipId, employeeScoped = false }) {
+  const slip = await resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped });
   if (!slip) throw notFound("No payslip found for this employee");
 
   const gross = Number(slip.grossAmount) || 0;

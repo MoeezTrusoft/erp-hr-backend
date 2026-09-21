@@ -6,14 +6,21 @@
 // arg exists for admin/support flows that still pass the hr:payroll gate). A
 // tool 400s when neither an explicit employeeId nor a ctx employeeId is present.
 //
-// AUTHZ: all tools gate on the hr:payroll resourceKey per HTTP method
-// (GET→VIEW, POST→CREATE) via assertPermission — the same gate as the payroll
-// admin surface. TENANCY is threaded from ctx.user.tenantId into the service,
-// which folds it through scopedWhere (fail-closed) + FORCE-RLS.
+// AUTHZ (HR-RBAC-01, 2026-09-21): the VIEW gate alone no longer unlocks the
+// admin-view selector. resolveActorScope classifies the session — only the
+// payroll/employee WRITE/EXPORT surface (or a verified admin claim) may pass
+// explicit employeeId/payslipId selecting OTHER employees. Employee-scoped
+// sessions are pinned to their own rows: a foreign employeeId 403s, a foreign
+// payslipId 404s (same generic text as a missing slip — no enumeration).
+// The tools still assert the per-method hr:payroll gate first; the scope check
+// beneath it is what stops the IDOR (audit C1 / plan T1.2+T1.3).
+// TENANCY is threaded from ctx.user.tenantId into the service, which folds it
+// through scopedWhere (fail-closed) + FORCE-RLS.
 import { z } from "zod";
 
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   getMyPayslip,
@@ -31,21 +38,14 @@ function getCtx() {
   return ctx;
 }
 
-// Resolve the self-scoped employeeId: explicit arg wins, else ctx.user.employeeId.
-// 400 when neither is present — EXCEPT on payslipId-keyed flows, where the
-// payslip row itself identifies the subject (HR-PAYSLIP-ADMIN-VIEW-01): an
-// HR/admin session has no employee binding but must still open
-// /hr/payroll/payslip/:id.
-function resolveEmployeeId(user, explicit, { allowUnbound = false } = {}) {
-  const raw = explicit ?? user?.employeeId;
-  if (raw == null || raw === "") {
-    if (allowUnbound) return null; // service resolves the employee from the slip
-    throw Object.assign(new Error("employeeId is required (no employee bound to the session)"), {
-      status: 400,
-      code: "HR-4000",
-    });
-  }
-  return raw;
+// Resolve the self-scoped employeeId (HR-RBAC-01): employee-scope sessions are
+// pinned to the verified claim id — a DIFFERENT explicit employeeId is refused
+// (403), not honored. Admin-surface sessions keep the old behavior: explicit
+// arg wins; none needed on payslipId-keyed flows (HR-PAYSLIP-ADMIN-VIEW-01,
+// the slip row identifies the subject).
+function resolveEmployeeId(user, permissions, explicit, { allowUnbound = false } = {}) {
+  const { actingEmployeeId, canViewOthers } = resolveActorScope(user, permissions);
+  return assertEmployeeScope({ user, permissions, explicit, actingEmployeeId, canViewOthers, allowUnbound });
 }
 
 export function registerMyPayslipTools(server) {
@@ -65,8 +65,16 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ payslipId, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId, { allowUnbound: payslipId != null });
-      const data = await getMyPayslip({ tenantId: user.tenantId, employeeId: empId, payslipId });
+      const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: payslipId != null });
+      const data = await getMyPayslip({
+        tenantId: user.tenantId,
+        employeeId: empId,
+        payslipId,
+        // HR-RBAC-01: when the caller is NOT on the admin surface, the explicit
+        // payslipId resolves only inside the caller's own slips (service-side
+        // where-clause) — the IDOR fix beneath the tool gate.
+        employeeScoped: !resolveActorScope(user, permissions).canViewOthers,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslip")
   );
@@ -87,8 +95,13 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ payslipId, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId, { allowUnbound: payslipId != null });
-      const data = await getPayslipDistribution({ tenantId: user.tenantId, employeeId: empId, payslipId });
+      const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: payslipId != null });
+      const data = await getPayslipDistribution({
+        tenantId: user.tenantId,
+        employeeId: empId,
+        payslipId,
+        employeeScoped: !resolveActorScope(user, permissions).canViewOthers,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslip_distribution")
   );
@@ -105,7 +118,7 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId);
+      const empId = resolveEmployeeId(user, permissions, employeeId);
       const data = await getEarningTrend6mo({ tenantId: user.tenantId, employeeId: empId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_earning_trend")
@@ -125,7 +138,7 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ employeeId, page, pageSize }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId);
+      const empId = resolveEmployeeId(user, permissions, employeeId);
       const data = await listMyPayslips({ tenantId: user.tenantId, employeeId: empId, page, pageSize });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslips_list")
@@ -149,7 +162,7 @@ export function registerMyPayslipTools(server) {
     withToolError(async ({ payslipId, question, employeeId }) => {
       const { user, permissions, correlationId } = getCtx();
       assertPermission(permissions, "POST", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, employeeId, { allowUnbound: true });
+      const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: true });
       const ctx = { actorId: user.userId ?? user.employeeId, correlationId };
       const data = await questionPayslip({
         tenantId: user.tenantId,
