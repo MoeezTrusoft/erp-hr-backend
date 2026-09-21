@@ -22,6 +22,7 @@ import {
 import { buildMonthlyReconciliation } from "../../services/attendanceReconciliation.service.js";
 import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 
