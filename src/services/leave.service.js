@@ -1507,8 +1507,13 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
 
   for (const day of workingDays) {
     const dayDate = new Date(day.date);
+    // HR-LEAVE-TYPELESS-01 fix — the Attendance table is tenant-scoped: its
+    // compound unique is tenantId_employeeId_date (see attendanceImport.service
+    // upsert), NOT the legacy bare employeeId_date. The stale selector made
+    // EVERY approval with an in-window working day throw
+    // PrismaClientValidationError → HR-5000 at the decide tool.
     const existing = await prisma.attendance.findUnique({
-      where: { employeeId_date: { employeeId, date: dayDate } },
+      where: { tenantId_employeeId_date: { tenantId, employeeId, date: dayDate } },
       select: { id: true, check_in: true, check_out: true, status: true },
     });
 
