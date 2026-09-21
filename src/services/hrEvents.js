@@ -187,7 +187,7 @@ export function offerHandoffFailedEvent(handoff, ctx = {}, extra = {}) {
 
 // Phase 11 — requisition lifecycle. Payloads carry the state fact + the ids a
 // consumer needs to route (approvers, recruiters); no compensation, no PII.
-export function requisitionSubmittedEvent(requisition, ctx = {}) {
+export function requisitionSubmittedEvent(requisition, ctx = {}, extra = {}) {
     return baseArgs('hr.recruitment.requisition_submitted.v1', requisition, ctx, {
         aggregateType: 'JobRequisition',
         aggregateId: requisition?.id,
@@ -197,6 +197,18 @@ export function requisitionSubmittedEvent(requisition, ctx = {}) {
             title: requisition?.title ?? null,
             departmentId: requisition?.departmentId != null ? String(requisition.departmentId) : null,
             requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+            // Phase 4 shipped the approval chain, so the event now carries the
+            // FIRST PENDING step's resolved approver — the recipient the hub
+            // maps this event to. Null when the chain is un-stepped (a tenant
+            // with no configured rules: the single decision needs no routing),
+            // or when the first step names a role with no pinned approver (the
+            // tenant routes those decisions through its own directory lookup).
+            // ids-only, same convention as requestedById.
+            pendingApproverId:
+                extra?.pendingApproverId != null ? String(extra.pendingApproverId) : null,
+            // The step the routing id was resolved for, so a consumer can show
+            // or log WHICH decision is awaited (e.g. 2 = HR Manager).
+            pendingStepOrder: extra?.pendingStepOrder != null ? Number(extra.pendingStepOrder) : null,
         },
     });
 }

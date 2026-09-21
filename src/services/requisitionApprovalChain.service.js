@@ -17,6 +17,8 @@
 // (nobody has signed anything yet).
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { requisitionSubmittedEvent } from "./hrEvents.js";
 import {
   DEFAULT_CHAIN,
   RULE_ROLES,
@@ -226,4 +228,47 @@ export const chainStatusFor = async (tenantId, requisition) => {
     where: scopedWhere(tenantId, { requisitionId: Number(requisition.id) }),
   });
   return chainProgress(chain, decisions);
+};
+
+// ── Submit-time event with approver routing ─────────────────────────────────
+
+/**
+ * Phase 4 closure — emit `hr.recruitment.requisition_submitted.v1` with the
+ * routing id the notification hub needs.
+ *
+ * The hub left this event deliberately unmapped because Phase 4 (the chain)
+ * did not exist and the payload carried no approver. Both gaps are closed: the
+ * builder now accepts the routing fields, and this helper resolves them off the
+ * SAME chain resolution the decision path uses — so the notified approver and
+ * the gate that will judge the decision cannot disagree.
+ *
+ * Routing rule:
+ *   * first pending step with a pinned approver  → that employee id;
+ *   * chain of zero steps (tenant with no matrix) → null: the single un-stepped
+ *     decision has no pre-known actor, the hub skips the in-app copy, and the
+ *     requester's own "submitted" record plus the decide endpoint's authz is
+ *     what routes it;
+ *   * first step names only a role               → null: the tenant routes
+ *     role-based decisions through its own directory, inventing one here would
+ *     be wrong.
+ *
+ * Caller MUST call inside its transaction (the outbox row joins the status
+ * flip). Fire-and-forget by contract: enqueueHrDomainEvent never throws past
+ * its own guards, and a routing miss degrades to null rather than failing a
+ * submission that the gate already accepted.
+ */
+export const emitRequisitionSubmittedEvent = async (tx, { tenantId, requisition, actorId = null }) => {
+  const chain = await chainFor(requisition, { db: tx, tenantId });
+  const first = nextPendingStep(chain, []);
+  await enqueueHrDomainEvent(
+    tx,
+    requisitionSubmittedEvent(
+      requisition,
+      { actorId },
+      {
+        pendingApproverId: first?.approverId ?? null,
+        pendingStepOrder: first?.stepOrder ?? null,
+      },
+    ),
+  );
 };

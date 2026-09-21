@@ -14,7 +14,7 @@ import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js"
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
-import { applyApprovalDecision, chainFor, chainStatusFor } from "./requisitionApprovalChain.service.js";
+import { applyApprovalDecision, chainFor, chainStatusFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
@@ -418,6 +418,17 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
           actorId: updatedBy,
           source: "requisition.update",
         });
+        // Phase 4 closure — a submission through the generic PATCH surface emits
+        // the same approver-routed event the management and legacy surfaces do,
+        // so the notified approver cannot depend on which URL was used.
+        if (statusMove.to === "PENDING_APPROVAL") {
+          const submitted = await tx.jobRequisition.findFirst({
+            where: scopedWhere(tenantId, { id: Number(id) }),
+          });
+          if (submitted) {
+            await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: submitted, actorId: updatedBy });
+          }
+        }
       }
       return result;
     },

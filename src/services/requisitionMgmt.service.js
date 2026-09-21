@@ -28,6 +28,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { exportRows } from "../lib/export.util.js";
 import { logAction } from "../utils/logs.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
 // the C4 client extension on the shared prisma singleton).
@@ -242,6 +243,10 @@ export const submitRequisition = async (id, tenantId, actorId = null) => {
         actorId,
         source: "requisition.submit",
       });
+      // Phase 4 closure — the approval chain exists, so the hub can now route
+      // the submitted event to the first pending approver. Same transaction as
+      // the flip: an outbox row can never survive without its status change.
+      await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: current, actorId });
     },
     { tenantId },
   );

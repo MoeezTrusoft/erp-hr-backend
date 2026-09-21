@@ -6,7 +6,7 @@ import {
   recordRequisitionTransition,
 } from "./requisitionWorkflow.service.js";
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
-import { applyApprovalDecision, chainFor } from "./requisitionApprovalChain.service.js";
+import { applyApprovalDecision, chainFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import logger from "../lib/logger.js";
@@ -1969,6 +1969,12 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
       actorId,
       source: "requisition.legacy",
     });
+
+    // Phase 4 closure — the legacy submit routes the approver notification the
+    // same way the newer surfaces do; the audience must not depend on the URL.
+    if (status === "PENDING_APPROVAL") {
+      await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: moved, actorId });
+    }
 
     return moved;
   });
