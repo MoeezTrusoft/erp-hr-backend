@@ -3434,6 +3434,64 @@ model InterviewLifecycleEvent {
   @@map("interview_lifecycle_events")
 }
 
+// Phase 7 / decision record §5.5–5.5b — the tenant-configurable SCORECARD
+// TEMPLATE.
+//
+// One row per template; the criteria are JSON (an ordered list of
+// { key, label, weight, required }) so a template evolves without a migration.
+// The DECISION lives in lib/scorecardTemplates.js — this table only stores it:
+//   * §5.5a weights are optional per criterion; EQUAL weighting is the default
+//     (the weighted overall is computed only when at least one weight differs)
+//   * §5.5b each criterion is required/optional; the write path refuses a
+//     submission missing any required criterion
+//   * §5.5c locking is NOT here — a submitted scorecard already locks through
+//     the Phase 3.4 amendment path, and templates never rewrite history
+// Deactivation is soft: templates with submitted scorecards must keep
+// resolving for the scorecards that cite them.
+model ScorecardTemplate {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  criteria    Json // ordered [{ key, label, weight?, required }]
+  isActive    Boolean  @default(true)
+  createdById Int?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  links ScorecardTemplateLink[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("scorecard_templates")
+}
+
+// §5.5 — a template "attachable to requisitions / interview stages / job
+// families". One link row = one attachment. Resolution is MOST-SPECIFIC-FIRST
+// (requisition → stage → job family; lib/scorecardTemplates.js owns the order)
+// so a tenant can layer a general template with a sharper one.
+model ScorecardTemplateLink {
+  id          Int      @id @default(autoincrement())
+  templateId  Int
+  scopeType   String // REQUISITION | STAGE | JOB_FAMILY
+  scopeId     Int? // requisition id / position id; null for STAGE (scopeKey carries it)
+  scopeKey    String? // STAGE: the interview stage this template applies to
+  isActive    Boolean  @default(true)
+  createdById Int?
+  created_at  DateTime @default(now())
+
+  template ScorecardTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([templateId, scopeType, scopeId, scopeKey])
+  @@index([tenantId])
+  @@index([scopeType, scopeId])
+  @@index([scopeType, scopeKey])
+  @@map("scorecard_template_links")
+}
+
 model Offer {
   id                 Int         @id @default(autoincrement())
   applicationId      Int         @unique

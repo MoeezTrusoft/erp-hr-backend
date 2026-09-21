@@ -22,6 +22,14 @@ import {
   markCalendarSync,
   listLifecycleEvents,
 } from "../../services/interviewSchedule.service.js";
+import {
+  createTemplate,
+  updateTemplate,
+  deactivateTemplate,
+  listTemplates,
+  linkTemplate,
+  resolveForInterview,
+} from "../../services/scorecardTemplate.service.js";
 import { RESCHEDULE_REASONS } from "../../lib/interviewScheduling.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -296,5 +304,91 @@ export function registerInterviewMgmtTools(server) {
       const data = await listLifecycleEvents({ interviewId, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interview_lifecycle_list")
+  );
+
+  // ── Phase 7 / §5.5–5.5b — scorecard templates ───────────────────────────
+
+  server.tool(
+    "hr_scorecard_template_create",
+    "Create a tenant scorecard template: an ordered criteria list [{ key, label?, weight?, required? }]. Weights are optional per §5.5a but all-or-none; equal weighting is the default; required defaults to true.",
+    {
+      name: z.string().min(1).describe("Template name"),
+      description: z.string().optional(),
+      criteria: z.array(z.object({
+        key: z.string().min(1),
+        label: z.string().optional(),
+        weight: z.number().positive().optional(),
+        required: z.boolean().optional(),
+      })).min(1).describe("Ordered criteria"),
+    },
+    withToolError(async ({ name, description, criteria }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      const data = await createTemplate({ name, description: description ?? null, criteria, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_scorecard_template_create")
+  );
+
+  server.tool(
+    "hr_scorecard_template_update",
+    "Update a template's name/description/criteria. History note: submitted scorecards keep the §5.5c lock — updating a template never rewrites past submissions.",
+    {
+      templateId: z.coerce.number().int().positive(),
+      name: z.string().min(1).optional(),
+      description: z.string().optional(),
+      criteria: z.array(z.object({
+        key: z.string().min(1),
+        label: z.string().optional(),
+        weight: z.number().positive().optional(),
+        required: z.boolean().optional(),
+      })).min(1).optional(),
+    },
+    withToolError(async ({ templateId, name, description, criteria }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await updateTemplate({ templateId, name, description, criteria, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_scorecard_template_update")
+  );
+
+  server.tool(
+    "hr_scorecard_template_deactivate",
+    "Deactivate a template (soft while links exist — it must keep resolving for the scorecards that cite it; hard-deleted only when nothing links to it).",
+    { templateId: z.coerce.number().int().positive() },
+    withToolError(async ({ templateId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await deactivateTemplate({ templateId, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_scorecard_template_deactivate")
+  );
+
+  server.tool(
+    "hr_scorecard_template_link",
+    "Attach a template to a scope: REQUISITION (scopeId = requisition id), STAGE (scopeKey = interview type) or JOB_FAMILY (scopeId = position id). Resolution is most-specific-first: requisition → stage → job family.",
+    {
+      templateId: z.coerce.number().int().positive(),
+      scopeType: z.enum(["REQUISITION", "STAGE", "JOB_FAMILY"]),
+      scopeId: z.coerce.number().int().positive().optional(),
+      scopeKey: z.string().min(1).optional(),
+    },
+    withToolError(async ({ templateId, scopeType, scopeId, scopeKey }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      const data = await linkTemplate({ templateId, scopeType, scopeId, scopeKey, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_scorecard_template_link")
+  );
+
+  server.tool(
+    "hr_scorecard_template_resolve",
+    "Which template governs one interview? Most-specific-first resolution (requisition → stage → job family); null means free-form scoring.",
+    { interviewId: z.coerce.number().int().positive().describe("Interview id") },
+    withToolError(async ({ interviewId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await resolveForInterview({ interviewId, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_scorecard_template_resolve")
   );
 }

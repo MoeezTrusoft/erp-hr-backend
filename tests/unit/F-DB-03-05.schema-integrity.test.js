@@ -105,7 +105,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // nullable-tenant convention and own-policy-in-own-migration rule.
     // 133 + InterviewLifecycleEvent (Phase 7 §5.4) — the coded cancel/reschedule
     // ledger, same convention and own-policy-in-own-migration rule.
-    expect(nullableModels).toHaveLength(134);
+    // 134-135 + ScorecardTemplate, ScorecardTemplateLink (Phase 7 §5.5) —
+    // tenant-configurable templates and their scope links, same convention.
+    expect(nullableModels).toHaveLength(136);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

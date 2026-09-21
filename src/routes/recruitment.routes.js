@@ -64,6 +64,16 @@ import {
 } from "../controllers/interviewSchedule.controller.js";
 
 import {
+    createTemplateHandler,
+    updateTemplateHandler,
+    deactivateTemplateHandler,
+    listTemplatesHandler,
+    linkTemplateHandler,
+    unlinkTemplateHandler,
+    resolveTemplateHandler,
+} from "../controllers/scorecardTemplate.controller.js";
+
+import {
     recordConsentHandler,
     listConsentHandler,
     recordDncHandler,
@@ -127,6 +137,15 @@ router.put("/interviews/:id/reschedule", confirmRescheduleHandler);
 router.post("/interviews/availability", availabilityHandler);
 router.put("/interviews/:id/calendar-sync", markCalendarSyncHandler);
 router.get("/interviews/:id/lifecycle", listLifecycleEventsHandler);
+
+// Phase 7 / §5.5–5.5b — scorecard templates
+router.get("/scorecard-templates", listTemplatesHandler);
+router.post("/scorecard-templates", createTemplateHandler);
+router.put("/scorecard-templates/:id", updateTemplateHandler);
+router.delete("/scorecard-templates/:id", deactivateTemplateHandler);
+router.post("/scorecard-templates/links", linkTemplateHandler);
+router.delete("/scorecard-templates/links/:linkId", unlinkTemplateHandler);
+router.get("/interviews/:id/scorecard-template", resolveTemplateHandler);
 
 // HIRING FREEZE (Phase 4 / §2.7). Deliberately mounted at /api/recruitment/freeze
 // so F-02 resolves the DEDICATED `hr.recruitment.freeze` resource, which

@@ -1,0 +1,156 @@
+// src/lib/scorecardTemplates.js
+//
+// Phase 7 / decision record §5.5–5.5b — the PURE template rules.
+//
+// No DB, no I/O. The service stores templates and resolves links; THIS module
+// owns the decisions so the write path, the tools and any future reporting
+// surface cannot drift:
+//
+//   * §5.5a — weights are OPTIONAL per criterion and EQUAL weighting is the
+//     default. The weighted overall is computed only when at least one weight
+//     actually differs from the others; a template that never sets weights
+//     behaves exactly like the plain average that existed before templates.
+//   * §5.5b — each criterion is required/optional; a submission missing any
+//     required criterion refuses (the list of missing keys travels in the
+//     error details, so the reviewer's UI can underline the gaps).
+//   * §5.5c — locking is NOT here. A submitted scorecard already locks through
+//     the Phase 3.4 amendment path; a template never rewrites history.
+//
+// Template resolution is MOST-SPECIFIC-FIRST:
+//     REQUISITION → STAGE → JOB_FAMILY → (tenant default = most-recent active
+//     template with no REQUISITION/STAGE link? No — a default is just the
+//     JOB_FAMILY/STAGE-less lookup falling through to any active template the
+//     tenant linked broadly; if nothing matches, scores are free-form as
+//     before). Falling through to free-form is deliberate: a tenant that never
+//     configures templates must not find its existing interview flow broken.
+
+/** The link scope vocabulary (mirrors the migration's CHECK). */
+export const TEMPLATE_SCOPES = ["REQUISITION", "STAGE", "JOB_FAMILY"];
+
+/**
+ * Validate a criteria list. Ordered, non-empty, unique keys; optional numeric
+ * weight > 0; required defaults to true? No — §5.5b says each criterion IS
+ * required/optional, and the safer default for evidence is REQUIRED: a tenant
+ * that forgets to mark a criterion gets an enforced one, not a skippable one.
+ * Label defaults to the key when omitted.
+ *
+ * @returns {{ ok: true, criteria: object[] } | { ok: false, error: string }}
+ */
+export function validateCriteria(criteria) {
+    if (!Array.isArray(criteria) || criteria.length === 0) {
+        return { ok: false, error: "A template needs at least one criterion" };
+    }
+    const seen = new Set();
+    const out = [];
+    for (const [i, raw] of criteria.entries()) {
+        const key = typeof raw?.key === "string" ? raw.key.trim() : "";
+        if (!key) return { ok: false, error: `Criterion ${i + 1}: key is required` };
+        if (seen.has(key)) return { ok: false, error: `Duplicate criterion key "${key}"` };
+        seen.add(key);
+
+        const weight = raw.weight === undefined || raw.weight === null ? null : Number(raw.weight);
+        if (weight !== null && (!Number.isFinite(weight) || weight <= 0)) {
+            return { ok: false, error: `Criterion "${key}": weight must be a positive number` };
+        }
+
+        out.push({
+            key,
+            label: typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : key,
+            weight,
+            required: raw.required === undefined ? true : raw.required === true,
+        });
+    }
+
+    // §5.5a — weights are all-or-none meaningful: if ANY weight is set, they
+    // must all be set, otherwise the weighted overall would silently mix
+    // declared importance with an implicit 1.
+    const weighted = out.filter((c) => c.weight !== null);
+    if (weighted.length > 0 && weighted.length !== out.length) {
+        return { ok: false, error: "Weights must be set on every criterion, or on none (equal weighting)" };
+    }
+    return { ok: true, criteria: out };
+}
+
+/** Does this template use weighted scoring at all (§5.5a)? */
+export function isWeighted(criteria = []) {
+    return criteria.length > 0 && criteria.every((c) => typeof c.weight === "number" && c.weight > 0);
+}
+
+/**
+ * The overall score for a submission against a template.
+ *
+ * Equal weighting (default): the plain average of the submitted values —
+ * identical to the pre-template behaviour. Weighted: sum(value × weight) /
+ * sum(weight), over the criteria that were actually submitted; optional
+ * criteria left blank drop out of BOTH numerator and denominator, so an
+ * unanswered optional criterion does not drag the score down.
+ *
+ * @param {object[]} criteria  the template's criteria
+ * @param {object} scores      { [criterionKey]: number }
+ * @returns {{ overall: number|null, weighted: boolean }}
+ */
+export function computeOverall(criteria = [], scores = {}) {
+    const weighted = isWeighted(criteria);
+    let num = 0;
+    let den = 0;
+    for (const c of criteria) {
+        const v = scores?.[c.key];
+        if (v === undefined || v === null || v === "") continue;
+        const n = Number(v);
+        if (!Number.isFinite(n)) continue;
+        num += weighted ? n * c.weight : n;
+        den += weighted ? c.weight : 1;
+    }
+    if (den === 0) return { overall: null, weighted };
+    const overall = weighted ? num / den : num / den;
+    return { overall, weighted };
+}
+
+/**
+ * §5.5b — which REQUIRED criteria did the submission miss? Optional criteria
+ * left blank are fine. Unknown keys (submitted but not in the template) are
+ * reported separately so a typo'd key surfaces instead of vanishing.
+ *
+ * @returns {{ missing: string[], unknown: string[] }}
+ */
+export function checkRequiredCriteria(criteria = [], scores = {}) {
+    const missing = [];
+    const unknown = [];
+    const known = new Set(criteria.map((c) => c.key));
+    for (const c of criteria) {
+        const v = scores?.[c.key];
+        if (c.required && (v === undefined || v === null || v === "")) missing.push(c.key);
+    }
+    for (const k of Object.keys(scores ?? {})) {
+        if (!known.has(k)) unknown.push(k);
+    }
+    return { missing, unknown };
+}
+
+/**
+ * §5.5 — pick the template for an interview, MOST-SPECIFIC-FIRST:
+ * REQUISITION → STAGE → JOB_FAMILY. The caller passes the already-fetched
+ * candidate link rows (active, tenant-scoped, template included); the ORDER
+ * lives here so every surface resolves identically. Ties (two links of the
+ * same scope) resolve to the lowest template id — deterministic, stable.
+ *
+ * @param {{ scopeType: string, scopeId: number|null, scopeKey: string|null,
+ *            template: object }[]} links
+ * @param {{ jobRequisitionId: number|null, positionId: number|null, interviewType: string|null }} ctx
+ * @returns {object|null} the winning template, or null (→ free-form scoring)
+ */
+export function resolveTemplate(links = [], ctx = {}) {
+    const pick = (scopeType, match) => {
+        const hits = links
+            .filter((l) => l.scopeType === scopeType && match(l))
+            .sort((a, b) => a.template.id - b.template.id);
+        return hits[0]?.template ?? null;
+    };
+
+    return (
+        pick("REQUISITION", (l) => l.scopeId === ctx.jobRequisitionId) ??
+        pick("STAGE", (l) => l.scopeKey === ctx.interviewType) ??
+        pick("JOB_FAMILY", (l) => l.scopeId === ctx.positionId) ??
+        null
+    );
+}

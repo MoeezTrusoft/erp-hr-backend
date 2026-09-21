@@ -24,6 +24,7 @@
 // construction — InterviewScorecard.interviewId is a cascading FK on Interview.
 import prisma from '../lib/prisma.js';
 import { mcpCtx } from '../mcp/context.js';
+import { resolveForInterview, validateSubmission } from './scorecardTemplate.service.js';
 
 const asSystem = (fn) => mcpCtx.run({ system: true }, fn);
 
@@ -124,6 +125,26 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
     }
 
     const tenant = tenantId ?? currentTenantId();
+
+    // Phase 7 / §5.5b — if a template governs this interview, the submission
+    // must complete every REQUIRED criterion and may not invent criteria the
+    // template does not define; the overall becomes the template's weighted
+    // (or equal-weighted) computation rather than the reviewer's claim.
+    // No template → free-form scoring, exactly as before templates existed.
+    let template = null;
+    try {
+        template = await resolveForInterview({ interviewId: interview, tenantId: tenant });
+    } catch {
+        // A template-resolution failure must not block feedback; fall back to
+        // free-form (the write stays attributable either way).
+        template = null;
+    }
+    if (template) {
+        const verdict = validateSubmission({ template, scores: data.scores ?? {} });
+        if (verdict.overall !== null && verdict.overall !== undefined) {
+            data = { ...data, overallScore: verdict.overall };
+        }
+    }
 
     // Resolve by the REAL unique key — tenant-blind, like the index itself.
     const existing = await asSystem(async () =>
