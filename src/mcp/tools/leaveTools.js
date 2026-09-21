@@ -147,7 +147,30 @@ export function registerLeaveTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
+      // HR-LEAVE-SELFSCOPE-02 (2026-09-22) — filing a request is SELF-SERVICE:
+      // an employee (hr:leave VIEW only) may create a request for THEMSELVES
+      // even without the hr:leave POST grant. The admin/HR write path is
+      // unchanged (POST grant → may create for anyone, pre-typed or not). A
+      // VIEW-only session naming someone else is refused, never remapped.
+      let canWriteOthers = false;
+      try {
+        assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
+        canWriteOthers = true;
+      } catch {
+        canWriteOthers = false;
+      }
+      if (!canWriteOthers) {
+        const { actingEmployeeId } = resolveActorScope(user, permissions);
+        const requestedSelf =
+          args.employeeId == null || args.employeeId === "" || Number(args.employeeId) === actingEmployeeId;
+        if (actingEmployeeId == null || !requestedSelf) {
+          throw Object.assign(
+            new Error("Insufficient permissions: employees may only file their own leave requests"),
+            { status: 403, code: "HR-4030" },
+          );
+        }
+        args.employeeId = String(actingEmployeeId);
+      }
       const data = await mcpCreateLeaveRequest(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
