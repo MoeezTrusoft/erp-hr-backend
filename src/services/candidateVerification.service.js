@@ -124,6 +124,45 @@ export const sendStatusLinkEmail = async ({ tenantId, email, firstName, token })
 };
 
 /**
+ * FR-04.11 — the APPLICATION CONFIRMATION, sent to EVERY applicant after the
+ * intake commits. This is also the spec's "existing candidate email must offer
+ * sign-in/recovery" edge case made concrete: the confirmation CARRIES the
+ * §3.5a status link, so the applicant — new or returning — immediately has
+ * their personal, mailbox-proven self-service entry point. For the reconciled
+ * applicant it doubles as the §3.4 mailbox-owner notice: the copy tells the
+ * recipient an application was submitted with this address and what to do if
+ * it was not them, so no second email is needed (and none of the response's
+ * byte-identical contract depends on which variant was rendered — the
+ * template choice happens here, off the wire).
+ *
+ * @param {{tenantId: string, email: string, firstName: string, token: string,
+ *          jobTitle: string, applicationRef: string|number, reconciled: boolean}} p
+ */
+export const sendApplicationConfirmation = async ({ tenantId, email, firstName, token, jobTitle, applicationRef, reconciled }) => {
+    if (!token || !email || !tenantId) {
+        recordRecruitmentNotification("application_confirmation", "dropped-error");
+        return { sent: false, reason: "missing-token-or-address" };
+    }
+    const base = process.env.HR_PORTAL_BASE_URL || "";
+    const statusUrl = `${base}${PORTAL_STATUS_PATH}?token=${token}`;
+    const result = await sendCandidateEmail({
+        tenantId,
+        email,
+        templateId: reconciled
+            ? "hr.recruitment.portal_application_confirmed_existing"
+            : "hr.recruitment.portal_application_confirmed",
+        data: {
+            firstName,
+            jobTitle,
+            applicationRef: String(applicationRef ?? ""),
+            statusUrl,
+        },
+    });
+    recordRecruitmentNotification("application_confirmation", result.sent ? "enqueued" : "dropped-error");
+    return result;
+};
+
+/**
  * §3.5a — mint a STATUS LINK for the candidate: a long-lived, re-usable,
  * NON-consuming token whose presentation returns the candidate's own visible
  * application statuses. The link is emailed to the candidate's address (the

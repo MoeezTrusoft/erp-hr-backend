@@ -221,6 +221,7 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
   beforeEach(() => {
     // Call counts must reset between tests, but the mock IMPLEMENTATIONS set by
     // seed() must survive — clearAllMocks would strip them.
+    sendCandidateEmail.mockClear();
     for (const table of Object.values(prisma)) {
       if (table && typeof table === "object") {
         for (const fn of Object.values(table)) {
@@ -238,6 +239,41 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
     phone: "+923001234567",
     policyVersion: "privacy-2026-09",
     ...overrides,
+  });
+
+  it("FR-04.11 — every applicant gets a confirmation email carrying their personal status link", async () => {
+    await submitPublicApplication({ tenantId: TENANT, requisitionId: 5, body: payload() });
+
+    // TWO token rows issued in-transaction: APPLY_VERIFICATION + STATUS_LINK.
+    const purposes = prisma.candidateEmailVerification.create.mock.calls.map(
+      (c) => c[0].data.purpose,
+    );
+    expect(purposes.sort()).toEqual(["APPLY_VERIFICATION", "STATUS_LINK"]);
+
+    // TWO candidate emails: the verification mail + the confirmation mail.
+    const templates = sendCandidateEmail.mock.calls.map((c) => c[0].templateId);
+    expect(templates).toContain("hr.recruitment.portal_email_verification");
+    expect(templates).toContain("hr.recruitment.portal_application_confirmed");
+    const confirmation = sendCandidateEmail.mock.calls.find(
+      (c) => c[0].templateId === "hr.recruitment.portal_application_confirmed",
+    )[0];
+    expect(confirmation.data.statusUrl).toContain("/public/candidates/status?token=");
+    expect(confirmation.data.applicationRef).toBeTruthy();
+  });
+
+  it("FR-04.11 reconciled — the confirmation doubles as the mailbox-owner notice (one email, existing variant)", async () => {
+    seed(liveRequisition(), [
+      { id: 3, email: "ayesha@example.com", tenantId: TENANT, anonymizedAt: null, status: "active", firstName: "", lastName: null, phone: null },
+    ]);
+
+    await submitPublicApplication({ tenantId: TENANT, requisitionId: 5, body: payload() });
+
+    const templates = sendCandidateEmail.mock.calls.map((c) => c[0].templateId);
+    expect(templates).toContain("hr.recruitment.portal_application_confirmed_existing");
+    // No SEPARATE mailbox-notice send any more — the confirmation IS the notice.
+    expect(templates).not.toContain("hr.recruitment.portal_mailbox_notice");
+    expect(templates).not.toContain("hr.recruitment.portal_application_confirmed");
+    expect(prisma.candidate.create).not.toHaveBeenCalled();
   });
 
   it("creates a candidate, an application, a stage-history row and a PROCESSING consent in one transaction", async () => {

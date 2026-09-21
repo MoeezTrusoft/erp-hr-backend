@@ -29,7 +29,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationCreatedEvent } from "./hrEvents.js";
-import { issueEmailVerification, sendVerificationEmail, notifyMailboxOwner } from "./candidateVerification.service.js";
+import { issueEmailVerification, sendVerificationEmail, issueStatusLink, sendApplicationConfirmation } from "./candidateVerification.service.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { validateAnswer } from "../lib/applicationQuestions.js";
 import { parsePublicApplicationInput } from "../lib/publicPortal.js";
@@ -245,23 +245,38 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
 
         // §3.2 — the verification token row JOINS the application transaction
         // (HTTP-free; the email goes out after commit — an outbound call must
-        // never hold a DB transaction open). §3.4 second half — the
-        // mailbox-owner notice fires only on the RECONCILED path (an existing
-        // row means the address predates this application; a fresh row IS the
-        // submitter), and never alters the byte-identical response contract.
+        // never hold a DB transaction open). FR-04.11 — a STATUS LINK is also
+        // issued in-transaction, because the confirmation email that goes out
+        // after commit CARRIES it: every applicant — new or returning — gets
+        // their self-service tracking/recovery entry point at submission (the
+        // spec's "existing candidate email must offer sign-in/recovery" edge
+        // case, made concrete). The §3.4 mailbox-owner notice is folded into
+        // the RECONCILED confirmation variant, so the reconciled applicant
+        // gets ONE email that both confirms and warns — and none of the
+        // response's byte-identical contract depends on which variant was
+        // chosen (that happens off the wire, in the post-commit send).
         const issued = await issueEmailVerification(tx, {
             tenantId,
             candidate: { id: candidateId, firstName: input.firstName },
             email: input.email,
         });
-        const reconciled = existing ? { candidate: existing, title: requisition.title } : null;
+        const statusLink = await issueStatusLink(tx, {
+            tenantId,
+            candidate: { id: candidateId, firstName: input.firstName },
+            email: input.email,
+        });
 
-        return { applicationId: application.id, issued, reconciled };
+        return {
+            applicationId: application.id,
+            issued,
+            statusLink,
+            reconciled: Boolean(existing),
+            jobTitle: requisition.title,
+        };
     });
 
-    // AFTER commit: the fire-and-forget sends. The tenantTransaction helper
-    // returns whatever the callback returned, so unwrap both artifacts here —
-    // outside the transaction, where an outbound HTTP call belongs.
+    // AFTER commit: the fire-and-forget sends. A hub outage never fails the
+    // submission (sendCandidateEmail is fail-soft and outcome-logged).
     if (result.issued) {
         await sendVerificationEmail({
             tenantId,
@@ -270,11 +285,15 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
             token: result.issued.token,
         });
     }
-    if (result.reconciled) {
-        await notifyMailboxOwner({
+    if (result.statusLink) {
+        await sendApplicationConfirmation({
             tenantId,
-            candidate: result.reconciled.candidate,
-            requisitionTitle: result.reconciled.title,
+            email: result.statusLink.email,
+            firstName: result.statusLink.firstName,
+            token: result.statusLink.token,
+            jobTitle: result.jobTitle,
+            applicationRef: result.applicationId,
+            reconciled: result.reconciled,
         });
     }
 

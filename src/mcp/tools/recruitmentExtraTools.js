@@ -1,11 +1,13 @@
 // src/mcp/tools/recruitmentExtraTools.js — recruitment cost config (real
-// cost-per-hire) + candidate resume upload to DAM.
+// cost-per-hire), candidate resume upload to DAM, and the FR-04.10
+// duplicate-candidate MERGE (typo-recovery).
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { getCostConfig, setCostConfig } from "../../services/recruitmentCost.service.js";
 import { uploadCandidateResume } from "../../services/candidateResume.service.js";
+import { mergeCandidates } from "../../services/candidateMerge.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -14,6 +16,31 @@ function getCtx() {
 }
 
 export function registerRecruitmentExtraTools(server) {
+  // FR-04.10 — the recruiter half of duplicate recovery. The portal half is
+  // the reconciliation + status link; this tool folds a typo-duplicate row
+  // into the survivor inside one transaction. Registered as a TOOL (never a
+  // resource) so the gateway's edge pre-check sees the name.
+  server.tool(
+    "hr_candidate_merge",
+    "Merge a duplicate candidate into a survivor (FR-04.10 typo recovery). Fill-only-blanks on the survivor, transfer applications except where the survivor already has one to the same requisition, re-point consents/pool/skills/AI records, archive (never delete/anonymize) the source. Refuses self-merge, anonymized rows, legal holds and unconfirmed live-application conflicts.",
+    {
+      sourceId: z.string().min(1).describe("Duplicate candidate id to fold away; numeric string"),
+      targetId: z.string().min(1).describe("Survivor candidate id that keeps its identity; numeric string"),
+      keepTargetOnConflict: z.coerce.boolean().optional().describe("Confirm keep-target when both rows have live applications to one requisition (default true; set false to refuse conflicts)") ,
+    },
+    withToolError(async ({ sourceId, targetId, keepTargetOnConflict }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await mergeCandidates({
+        tenantId: user.tenantId,
+        sourceId,
+        targetId,
+        actorId: user.employeeId ?? null,
+        keepTargetOnConflict,
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_candidate_merge")
+  );
   server.tool(
     "hr_recruitment_cost_config_get",
     "Get the tenant's recruitment cost inputs (jobAds, agencyFees, tools, other, currency) used for real cost-per-hire.",
