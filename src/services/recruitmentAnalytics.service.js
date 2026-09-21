@@ -14,6 +14,21 @@
 // once with the relations we need and compute in JS to avoid N+1 round-trips.
 import prisma from "../lib/prisma.js";
 import { getCostConfig } from "./recruitmentCost.service.js";
+// Phase 12 / decision record §6 — the FROZEN, versioned KPI definitions. The
+// service only assembles inputs; the definitions live in the lib.
+import {
+  aggregateTimeToFill,
+  aggregateTimeToHire,
+  finalApprovalAt,
+  metricsVersionBlock,
+  offerAcceptance,
+  slaAging,
+  sourceEffectiveness,
+  stageFunnel,
+  timeInStageForApplication,
+  timeToFillForRequisition,
+  timeToHireForApplication,
+} from "../lib/recruitmentMetrics.js";
 
 // Stage constants (Application.stage is stored lower-case per schema).
 const STAGE_HIRED = "hired";
@@ -152,6 +167,130 @@ export async function computeRecruitmentAnalytics(tenantId) {
     };
   });
 
+  // ── Phase 12 / §6 — the canonical, versioned metrics block ─────────────
+  // ADDITIVE (§6.3): every legacy field above stays exactly where it was; the
+  // frozen definitions arrive as a sibling `canonicalMetrics` object so no
+  // consumer breaks. Sources: requisition_transitions (final approval),
+  // accepted offers (fills), application_stage_history (time-in-stage),
+  // offers (acceptance), candidates.source, screening dispositions
+  // (drop-off classification). SLAs come from configuration when set;
+  // absent SLAs report null, never a guess.
+  let canonical = null;
+  try {
+    const requisitions = await prisma.jobRequisition.findMany({
+      where: { tenantId: tenantId ?? undefined },
+      select: {
+        id: true,
+        openings: true,
+        transitions: { select: { fromStatus: true, toStatus: true, createdAt: true } },
+        applications: {
+          select: {
+            id: true,
+            stage: true,
+            appliedAt: true,
+            candidate: { select: { source: true } },
+            offer: { select: { status: true, respondedAt: true } },
+            stageHistory: { select: { fromStage: true, toStage: true, createdAt: true } },
+            screenings: { select: { outcome: true, reasonCode: true, reviewedAt: true } },
+          },
+        },
+      },
+    });
+
+    const perRequisition = requisitions.map((r) =>
+      timeToFillForRequisition(
+        r.transitions,
+        r.applications.map((a) => a.offer ?? { status: null, respondedAt: null }),
+        r.openings,
+      ),
+    );
+    const tthPerApp = applications.map((a) => timeToHireForApplication(a));
+
+    // The latest REJECT/HOLD disposition code per application classifies its
+    // drop-off; ADVANCE rows never classify (§6 row 7 + §4.2).
+    const dispositionByApp = new Map();
+    for (const r of requisitions) {
+      for (const a of r.applications) {
+        const coded = (a.screenings ?? [])
+          .filter((s) => s.outcome !== "ADVANCE" && s.reasonCode)
+          .sort((x, y) => new Date(y.reviewedAt) - new Date(x.reviewedAt))[0];
+        if (coded) dispositionByApp.set(a.id, coded.reasonCode);
+      }
+    }
+
+    const allApplications = requisitions.flatMap((r) => r.applications);
+    const funnel = stageFunnel(
+      allApplications.map((a) => ({
+        applicationId: a.id,
+        currentStage: a.stage,
+        appliedAt: a.appliedAt,
+        history: a.stageHistory,
+        dispositionReasonCode: dispositionByApp.get(a.id) ?? null,
+      })),
+    );
+
+    const offerRows = allApplications.map((a) => a.offer).filter(Boolean);
+
+    const slaByStage = getSlaConfig();
+    const slaRows = allApplications
+      .map((a) => {
+        const durations = timeInStageForApplication(a.stageHistory, a.stage, a.appliedAt);
+        const current = durations.find((d) => d.isCurrent);
+        return current ? slaAging(current.stage, current.daysInStage, slaByStage) : null;
+      })
+      .filter(Boolean);
+
+    canonical = {
+      ...metricsVersionBlock(),
+      timeToFill: {
+        ...aggregateTimeToFill(perRequisition),
+        perRequisition: perRequisition.map((r, i) => ({
+          requisitionId: requisitions[i].id,
+          openings: r.openings,
+          filled: r.filled,
+          startAt: r.startAt,
+          overallFillAt: r.overallFillAt,
+          timeToFillDays: r.timeToFillDays,
+          timeToFirstFillDays: r.timeToFirstFillDays,
+          perOpeningFillDates: r.perOpeningFillDates,
+        })),
+      },
+      timeToHire: aggregateTimeToHire(tthPerApp),
+      stageFunnel: funnel,
+      offerAcceptance: offerAcceptance(offerRows),
+      sourceEffectiveness: sourceEffectiveness(
+        allApplications.map((a) => ({
+          source: a.candidate?.source ?? null,
+          applicationId: a.id,
+          enteredInterview:
+            (a.stageHistory ?? []).some((h) => h.toStage === "interview") ||
+            a.stage === "interview" ||
+            ["offer", "hired"].includes(a.stage),
+          isHire: a.stage === "hired",
+          timeToHireDays: timeToHireForApplication(a),
+        })),
+      ),
+      slaAging: {
+        configured: Object.keys(slaByStage).length > 0,
+        openApplications: slaRows.length,
+        breached: slaRows.filter((s) => s.breached).length,
+        byStage: slaRows.reduce((acc, s) => {
+          acc[s.stage] ??= { open: 0, breached: 0, worstAgingDays: null };
+          acc[s.stage].open += 1;
+          if (s.breached) acc[s.stage].breached += 1;
+          if (s.agingDays !== null && (acc[s.stage].worstAgingDays === null || s.agingDays > acc[s.stage].worstAgingDays)) {
+            acc[s.stage].worstAgingDays = s.agingDays;
+          }
+          return acc;
+        }, {}),
+      },
+    };
+  } catch {
+    // §6.3 — the canonical block is additive: a failure computing it must not
+    // take the legacy payload down. It reports as unavailable, not as zeros.
+    canonical = { version: null, unavailable: true };
+  }
+
   return {
     illustrativeCostData: costModel === "illustrative",
     totalHires,
@@ -162,5 +301,18 @@ export async function computeRecruitmentAnalytics(tenantId) {
     sourceEffectiveness,
     costBreakdown,
     metrics,
+    canonicalMetrics: canonical,
   };
+}
+
+/** §6 row 5 — SLA days per stage, from configuration (HR_RECRUITMENT_STAGE_SLA_DAYS). */
+function getSlaConfig() {
+  const raw = process.env.HR_RECRUITMENT_STAGE_SLA_DAYS;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
