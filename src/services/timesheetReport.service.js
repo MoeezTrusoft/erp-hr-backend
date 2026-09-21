@@ -871,6 +871,7 @@ export async function listCheckInOuts({
       }),
       select: {
         id: true, employeeId: true, date: true, type: true, status: true,
+        sourceKind: true,
         reason: true, detail: true, fromTime: true, toTime: true,
         createdAt: true, decidedAt: true, reviewNote: true, requestDeadline: true,
         expectedTime: true, actualTime: true, positionSnapshot: true,
@@ -883,8 +884,18 @@ export async function listCheckInOuts({
   for (const an of anomaliesForWindow) {
     if (an.date == null) continue; // window-wide forms don't attach to a day
     const key = `${an.employeeId}:${dayKey(an.date)}`;
-    // orderBy desc ⇒ the first seen per key is the newest request.
-    if (!anomalyByKey.has(key)) anomalyByKey.set(key, an);
+    // TS-REQUEST-04 — an employee form (REGULARIZATION) outranks the
+    // evaluator's grading row of the same day; among equals the newest wins
+    // (the list is ordered newest-first). The row builder then only treats
+    // REGULARIZATION rows as "requests".
+    const existing = anomalyByKey.get(key);
+    if (!existing) {
+      anomalyByKey.set(key, an);
+      continue;
+    }
+    const existingIsForm = String(existing.sourceKind ?? "").toUpperCase() === "REGULARIZATION";
+    const isForm = String(an.sourceKind ?? "").toUpperCase() === "REGULARIZATION";
+    if (isForm && !existingIsForm) anomalyByKey.set(key, an);
   }
   const approvalRows = anomalyByKey.size
     ? await prisma.attendanceAnomalyApproval.findMany({
@@ -910,7 +921,18 @@ export async function listCheckInOuts({
     let request = null;
     const key = Number.isFinite(a.employeeId) ? `${a.employeeId}:${dayKey(a.date)}` : null;
     const an = key ? anomalyByKey.get(key) : null;
-    if (an) {
+    // TS-REQUEST-04 (2026-09-22) — only an EMPLOYEE-SUBMITTED form is a
+    // "request" for the Request column. The evaluator also stamps machine
+    // grading rows (LATE/MISSING_*) into this table with its own sourceKind;
+    // those have no form behind them — "View anomaly request" must not be
+    // offered and the chip must read "No Request", not "Pending". The map is
+    // ordered newest-first, so the first row per employee+day decides: a real
+    // REGULARIZATION form wins over the evaluator's grading row of the same
+    // day (an employee CAN answer a machine-flagged day).
+    const submitted = an != null && String(an.sourceKind ?? "").toUpperCase() === "REGULARIZATION";
+    if (an && !submitted) {
+      request = null; // machine grading only — not an employee request
+    } else if (an && submitted) {
       request = {
         anomalyId: an.id,
         status: an.status, // PENDING | APPROVED | REJECTED

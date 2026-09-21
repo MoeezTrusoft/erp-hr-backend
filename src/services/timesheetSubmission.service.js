@@ -115,10 +115,18 @@ export async function getTimesheetSubmissionState(tenantId, month) {
 
 /** Count unresolved anomaly requests inside the month window. */
 async function pendingAnomalyCount(tenantId, { from, to }) {
+  // TS-SUBMIT-GATE-02 (2026-09-22) — only EMPLOYEE-SUBMITTED requests block
+  // the submission. The evaluator stamps machine-raised anomalies with its own
+  // sourceKind; those are grading records an employee hasn't answered yet —
+  // per the operator's ruling they simply become payroll deductions, they are
+  // not open requests HR must resolve. Without the filter a month with 46
+  // un-answered evaluator rows showed "46 anomaly requests still awaiting
+  // resolution" although no employee had submitted anything.
   return prisma.attendanceAnomaly.count({
     where: scopedWhere(tenantId, {
       date: { gte: from, lte: to },
       status: { in: PENDING_ANOMALY_STATUSES },
+      sourceKind: "REGULARIZATION",
     }),
   });
 }
