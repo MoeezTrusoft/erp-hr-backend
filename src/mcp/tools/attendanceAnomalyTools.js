@@ -20,6 +20,7 @@ import {
   createAnomalyRequest,
 } from "../../services/attendanceAnomalyRequest.service.js";
 import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.service.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { correctAttendanceDay, listCorrections } from "../../services/attendanceCorrection.service.js";
 import { markAbsences } from "../../services/absenceMarking.service.js";
 import {
@@ -156,6 +157,14 @@ export function registerAttendanceAnomalyTools(server) {
     withToolError(async ({ employeeId, date }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-RBAC-01 T1.5 — work mode is attendance data: VIEW-only callers are
+      // pinned to their own id.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      if (!scope.canViewOthers && employeeId !== scope.employeeId) {
+        throw Object.assign(new Error(
+          `Insufficient permissions: hr:attendance GET with employeeId ${employeeId} is restricted to your own records`,
+        ), { statusCode: 403, code: "HR-4030" });
+      }
       return ok(await getDayWorkMode({ employeeId, date }));
     }, "hr_attendance_day_work_mode_get")
   );
@@ -225,7 +234,13 @@ export function registerAttendanceAnomalyTools(server) {
     withToolError(async ({ from, to, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      return ok(await listCorrections({ tenantId: user.tenantId, from, to, employeeId }));
+      // HR-RBAC-01 T1.5 — the corrections audit trail is tenant-wide for HR;
+      // VIEW-only sessions see only corrections made on their own days.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const effectiveEmployeeId = scope.canViewOthers
+        ? employeeId
+        : scope.employeeId;
+      return ok(await listCorrections({ tenantId: user.tenantId, from, to, employeeId: effectiveEmployeeId }));
     }, "hr_attendance_corrections_list")
   );
 

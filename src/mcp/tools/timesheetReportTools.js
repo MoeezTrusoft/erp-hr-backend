@@ -46,7 +46,14 @@ export function registerTimesheetReportTools(server) {
     withToolError(async ({ from, to, employeeId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getTimesheetKpis({ tenantId: user.tenantId, from, to, employeeId });
+      // HR-RBAC-01 T1.5 — a VIEW-only session reads its OWN KPIs only; the
+      // employeeId argument cannot widen it and omitting it cannot go
+      // tenant-wide. HR/admin surface keeps the tenant-wide default.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const effective = scope.canViewOthers
+        ? employeeId
+        : scope.employeeId;
+      const data = await getTimesheetKpis({ tenantId: user.tenantId, from, to, employeeId: effective });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_timesheet_kpis")
   );
@@ -103,7 +110,14 @@ export function registerTimesheetReportTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listCheckInOuts({ tenantId: user.tenantId, ...args });
+      // HR-RBAC-01 T1.5 — VIEW-only sessions are pinned to their own rows
+      // regardless of the employeeId argument (the table otherwise served the
+      // whole tenant's punches to every employee).
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const effectiveArgs = scope.canViewOthers
+        ? args
+        : { ...args, employeeId: String(scope.employeeId ?? -1) };
+      const data = await listCheckInOuts({ tenantId: user.tenantId, ...effectiveArgs });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_checkinout_list")
   );
@@ -118,7 +132,13 @@ export function registerTimesheetReportTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getAttendanceMonthGrid({ tenantId: user.tenantId, ...args });
+      // HR-RBAC-01 T1.5 — same pin as the table: employee-scope sessions get
+      // their own heatmap, never the tenant grid.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const effectiveArgs = scope.canViewOthers
+        ? args
+        : { ...args, employeeId: String(scope.employeeId ?? -1) };
+      const data = await getAttendanceMonthGrid({ tenantId: user.tenantId, ...effectiveArgs });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_month_grid")
   );

@@ -30,6 +30,7 @@ import {
   setPrimaryEnrolment,
   clearPrimaryEnrolment,
 } from "../../services/deviceEnrolment.service.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
@@ -227,7 +228,21 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await mcpListAttendanceRecords(user, toListQuery(args));
+      // HR-RBAC-01 T1.5 — a VIEW-only session is pinned to its own rows: the
+      // record list otherwise returns the whole tenant's punches to any
+      // employee (audit: employee token pulled employee 487's rows).
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const query = toListQuery(args);
+      if (!scope.canViewOthers) {
+        if (scope.employeeId == null) {
+          throw Object.assign(new Error("Insufficient permissions: no employee is bound to this session"), {
+            status: 403,
+            code: "HR-4030",
+          });
+        }
+        query.employeeId = String(scope.employeeId);
+      }
+      const data = await mcpListAttendanceRecords(user, query);
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_attendance_list")
   );

@@ -197,20 +197,25 @@ export const getAttendanceByEmployee = async (employeeId, tenantId) => {
   });
 };
 
-export const listAttendanceRecords = async ({ date, limit = 100, tenantId } = {}) => {
+export const listAttendanceRecords = async ({ date, limit = 100, tenantId, employeeId } = {}) => {
   const target = date ? new Date(date) : new Date();
   const start = new Date(target);
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
 
+  // HR-RBAC-01 T1.5 — employee-scope pin. When the tool layer forces an
+  // employeeId (a VIEW-only session), the where-clause narrows to that person's
+  // rows; a forced pin of null (unbound employee session) matches NOTHING
+  // (Prisma `in: []` semantics) — fail-closed, never the whole tenant.
+  const scope = { date: { gte: start, lt: end } };
+  if (employeeId !== undefined) {
+    const pin = Number(employeeId);
+    scope.employeeId = Number.isInteger(pin) && pin > 0 ? pin : { in: [] };
+  }
+
   return prisma.attendance.findMany({
-    where: scopedWhere(tenantId, {
-      date: {
-        gte: start,
-        lt: end,
-      },
-    }),
+    where: scopedWhere(tenantId, scope),
     include: {
       employee: {
         select: {

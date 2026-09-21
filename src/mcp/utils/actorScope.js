@@ -20,6 +20,26 @@ import { hasPermission } from "./assertPermission.js";
 // Actions that prove the caller belongs on the payroll/employee ADMIN surface.
 const ADMIN_SURFACE_ACTIONS = ["EDIT", "EXPORT", "CREATE", "DELETE"];
 
+// Attendance admin surface: anyone who may write attendance (corrections,
+// manual punches, imports) or export it may read everyone's. A VIEW-only
+// session (a plain Employee) reads only their own rows (plan T1.5).
+const ATTENDANCE_ADMIN_ACTIONS = ["EDIT", "EXPORT", "CREATE", "DELETE"];
+
+/**
+ * Attendance/timesheet read scope (T1.5, ruling D1=A): a caller with the
+ * attendance WRITE surface reads tenant-wide; everyone else is pinned to the
+ * acting employee. Returns the effective employeeId to force downstream
+ * (null = no pinning — the tenant-wide path).
+ */
+export function resolveAttendanceReadScope(user, permissions) {
+  const canViewOthers =
+    user?.isAdmin === true ||
+    ATTENDANCE_ADMIN_ACTIONS.some((action) => hasPermission(permissions, "hr:attendance", action));
+  if (canViewOthers) return { canViewOthers, employeeId: null };
+  const n = Number(user?.employeeId);
+  return { canViewOthers: false, employeeId: Number.isInteger(n) && n > 0 ? n : null };
+}
+
 function isAdminClaim(user) {
   return user?.isAdmin === true;
 }

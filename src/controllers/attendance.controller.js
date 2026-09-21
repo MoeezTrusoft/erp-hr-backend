@@ -49,6 +49,13 @@ export const listAttendanceRecords = async (req, res) => {
       date: req.query?.date,
       limit: req.query?.limit,
       tenantId: req.user?.tenantId ?? null,
+      // HR-RBAC-01 T1.5 — full-read callers (HR/admin/service principals, which
+      // the route middleware only admits WITH hr.attendance.read) keep the
+      // tenant-wide list. Callers admitted via the `.self` fallback are pinned
+      // to their own employee id; an unbound pin matches nothing (fail-closed).
+      ...(!req.user?.permissions?.includes("hr.attendance.read")
+        ? { employeeId: req.user?.employeeId ?? { in: [] } }
+        : {}),
     });
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
