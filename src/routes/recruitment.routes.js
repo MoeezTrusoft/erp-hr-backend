@@ -89,6 +89,7 @@ import {
     listDataAccessRequestsHandler,
     closeDataAccessRequestHandler,
 } from "../controllers/candidatePrivacy.controller.js";
+import { matchCandidateHandler, reconcileSkillsHandler } from "../controllers/aiAdvisory.controller.js";
 
 const router = express.Router();
 
@@ -165,6 +166,12 @@ router.get("/approval-matrix", listApprovalMatrixController);
 router.get("/approval-matrix/default", getDefaultApprovalMatrixController);
 router.put("/approval-matrix", setApprovalMatrixController);
 router.post("/approval-matrix/seed-default", seedDefaultApprovalMatrixController);
+
+// AI ADVISORY (Phase 13 / §7). Read-only evidence surfaces: the taxonomy-
+// anchored match report and the parse reconciliation preview. No state changes
+// live here (§7.3) — advancing/rejecting stays with the application workflow.
+router.get("/ai/candidates/:candidateId/match/:requisitionId", matchCandidateHandler);
+router.get("/ai/candidates/:candidateId/skills/reconcile", reconcileSkillsHandler);
 
 // PRIVACY (Phase 2.5/10). Mounted under /api/recruitment so F-02 resolves the
 // resource to hr.recruitment and the action from the HTTP method — one policy

@@ -2779,6 +2779,7 @@ model Candidate {
   candidateSkills CandidateSkill[]
   consents        CandidateConsent[]
   legalHolds      CandidateLegalHold[]
+  aiInferences    AiInferenceRecord[]
 
   @@unique([tenantId, email])
   @@index([tenantId, status])
@@ -3011,6 +3012,71 @@ model ShortlistEntry {
 // per parse KIND (candidate vs employee ingestion differ in their write path).
 // §4.5a's "three idempotent attempts" is decided by lib/parseRetry.js; this
 // table is that policy's memory.
+// Phase 13 / §7.2 — controlled canonical skills taxonomy. The Skill catalogue
+// is deterministic reference data; THIS table is its synonym/alias layer plus
+// tenant extensions. AI may map raw resume/job text to canonical names and
+// SUGGEST aliases (§7.2a) but never becomes the source of truth: a resolution
+// only exists if a row here (or a Skill) says so.
+model SkillAlias {
+  id        Int      @id @default(autoincrement())
+  // The canonical Skill this alias resolves to. platform = global core
+  // taxonomy (§7.2b: platform/product owns the core); tenant rows extend it
+  // (§7.2b: authorized tenant HR admins manage approved extensions).
+  skillId   Int
+  alias     String
+  scope     String   @default("TENANT") // PLATFORM | TENANT
+  // Provenance of the alias itself (§7.2a): "manual" (admin-authored) or
+  // "ai-suggested" — an AI suggestion is recorded as evidence, never as an
+  // auto-accepted mapping.
+  origin    String   @default("manual") // manual | ai-suggested
+  status    String   @default("ACTIVE") // ACTIVE | RETIRED
+  createdAt DateTime @default(now())
+
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid; nullable, fail-closed. NULL = platform scope.
+
+  @@unique([tenantId, alias])
+  @@index([tenantId])
+  @@index([skillId])
+  @@map("skill_aliases")
+}
+
+// Phase 13 / §7.4 — AI inference provenance. One row per AI task whose output
+// influenced a recruitment surface. Stores enough to reproduce/audit the
+// technology path WITHOUT duplicating sensitive content: provider, model,
+// prompt version (the plane's registry key), input-content hash, output-schema
+// version, status/failure, trace id, confidence. §7.4a: candidate-linked rows
+// follow the candidate retention/erasure policy — hence the FK below.
+model AiInferenceRecord {
+  id             Int      @id @default(autoincrement())
+  kind           String // resume-parse | candidate-match
+  promptKey      String // the plane's registry key = prompt/template version
+  provider       String? // filled from the plane's result envelope
+  model          String?
+  inputHash      String // sha-256 of the redacted input we sent
+  outputSchemaV  Int      @default(1) // bumped when the expected output shape changes
+  status         String // ok | error | pending | degraded-unavailable
+  errorMessage   String?
+  confidence     Float?
+  tokensUsed     Int?
+  traceId        String?
+  candidateId    Int?
+  applicationId  Int?
+  requisitionId  Int?
+  createdAt      DateTime @default(now())
+
+  candidate Candidate? @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid; nullable, fail-closed
+
+  @@index([tenantId, kind])
+  @@index([candidateId])
+  @@index([requisitionId])
+  @@index([createdAt])
+  @@map("ai_inference_records")
+}
+
 model ResumeParseAttempt {
   id           Int      @id @default(autoincrement())
   kind         String // CANDIDATE | EMPLOYEE
@@ -3970,6 +4036,7 @@ model Skill {
   created_at DateTime @default(now())
 
   employeeSkills EmployeeSkill[]
+  aliases        SkillAlias[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
