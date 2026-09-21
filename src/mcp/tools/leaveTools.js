@@ -53,6 +53,22 @@ export function registerLeaveTools(server) {
     }
   );
 
+  // TOOL twin of the resource (IC-1 pattern, same trap hr_leave_requests_list
+  // fell into): callTool cannot resolve resources, and the Leave screen needs
+  // the policies catalog to render the HR type-assignment select. Gated on
+  // hr:leave:VIEW; the catalog is global (LeavePolicy has no tenant column).
+  server.tool(
+    "hr_leave_policies_list",
+    "List active leave policies (the leave TYPES HR assigns at approval)",
+    {},
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await mcpListLeavePolicies(user);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_leave_policies_list")
+  );
+
   server.resource(
     "hr_leave_balances_list",
     "hr://leaves/balances",
