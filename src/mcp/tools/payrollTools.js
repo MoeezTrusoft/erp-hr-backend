@@ -24,6 +24,7 @@ import {
 } from "../controllers/taxFormMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertPayrollAdminSurface, resolveActorScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
@@ -110,7 +111,9 @@ export function registerPayrollTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      // HR-RBAC-01 T1.7 — every-payslip listing is the money surface (T1.7);
+      // per-slip access stays governed by resolveActorScope ownership checks.
+      assertPayrollAdminSurface(permissions);
       const data = await mcpListPayslips(user, toListQuery(args));
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_payslips_list")
@@ -126,7 +129,8 @@ export function registerPayrollTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      // HR-RBAC-01 T1.7 — run register exposes company-wide totals.
+      assertPayrollAdminSurface(permissions);
       const data = await mcpListPayrollRuns(user, toListQuery(args));
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_payroll_run_list")
@@ -366,8 +370,19 @@ export function registerPayrollTools(server) {
     },
     withToolError(async ({ payslipId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
-
+      // HR-RBAC-01 T1.7 — dual gate: the HR surface needs payroll CREATE;
+      // everyone else (employee self-service PDF download) must own the slip.
+      const scope = resolveActorScope(user, permissions);
+      if (!scope.canViewOthers) {
+        const { default: prisma } = await import("../../lib/prisma.js");
+        const owned = await prisma.payrollPayslip.findFirst({
+          where: { id: Number(payslipId), employeeId: scope.actingEmployeeId ?? -1 },
+          select: { id: true },
+        });
+        if (!owned) {
+          throw Object.assign(new Error("No payslip found for this employee"), { status: 404, code: "HR-4004" });
+        }
+      }
       const { default: prisma } = await import("../../lib/prisma.js");
       const { generatePayslipPdf } = await import("../../services/payslipPdfService.js");
 

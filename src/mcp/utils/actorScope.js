@@ -31,6 +31,36 @@ const ATTENDANCE_ADMIN_ACTIONS = ["EDIT", "EXPORT", "CREATE", "DELETE"];
  * acting employee. Returns the effective employeeId to force downstream
  * (null = no pinning — the tenant-wide path).
  */
+// HR-RBAC-01 T1.6 (ruling D2=Hidden) — the employee directory is an HR
+// surface. A session without hr:employee VIEW gets nothing from it — not a
+// sanitized subset: an employee roster, even names-only, is exactly the
+// org-chart / reporting-line data this ruling was meant to protect. The one
+// sanctioned exception is hr_employee_resolve (display name + work email for
+// cross-service recipient cards), which lives outside this gate.
+export function assertDirectoryAccess(permissions) {
+  if (!hasPermission(permissions, "hr:employee", "VIEW")) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:employee:VIEW"),
+      { statusCode: 403, status: 403, code: "HR-4030" },
+    );
+  }
+}
+
+// HR-RBAC-01 T1.7 — the payroll ADMIN surface (employee grids, payslip
+// listings, run lists, money KPIs) requires a WRITE/EXPORT-class grant, not a
+// read. A VIEW-only session is refused outright (ruling D4: employees get the
+// Forbidden page) — self-service money reads are the hr_my_payslip* family,
+// which gate on identity, not on this surface.
+export function assertPayrollAdminSurface(permissions) {
+  const ok = ADMIN_SURFACE_ACTIONS.some((action) => hasPermission(permissions, "hr:payroll", action));
+  if (!ok) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:payroll:VIEW is not sufficient for the payroll admin surface"),
+      { statusCode: 403, status: 403, code: "HR-4030" },
+    );
+  }
+}
+
 export function resolveAttendanceReadScope(user, permissions) {
   const canViewOthers =
     user?.isAdmin === true ||

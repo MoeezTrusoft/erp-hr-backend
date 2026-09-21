@@ -217,3 +217,29 @@ describe("HR-RBAC-01 hr_my_payslip tool scoping", () => {
     );
   });
 });
+
+// ── T1.6 / T1.7 surface gates (audit 2026-09-21) ────────────────────────────
+describe("HR-RBAC-01 T1.6/T1.7 surface gates", () => {
+  it("assertDirectoryAccess accepts hr:employee VIEW", () => {
+    expect(() => actorScope.assertDirectoryAccess({ "hr:employee": ["VIEW"] })).not.toThrow();
+    expect(() => actorScope.assertDirectoryAccess(["hr.employee.read"])).not.toThrow();
+  });
+
+  it("assertDirectoryAccess (D2=Hidden) refuses every other shape — no sanitized subset", () => {
+    for (const perms of [{}, { "hr:attendance": ["VIEW", "EDIT"] }, { "hr:payroll": ["EDIT"] }, { "hr:self": ["VIEW"] }]) {
+      expect(() => actorScope.assertDirectoryAccess(perms)).toThrow(/hr:employee:VIEW/);
+    }
+  });
+
+  it("assertPayrollAdminSurface accepts WRITE/EXPORT-class grants", () => {
+    for (const actions of [["EDIT"], ["CREATE"], ["EXPORT"], ["DELETE"], ["VIEW", "EDIT"]]) {
+      expect(() => actorScope.assertPayrollAdminSurface({ "hr:payroll": actions })).not.toThrow();
+    }
+  });
+
+  it("assertPayrollAdminSurface (D4=Forbidden) refuses VIEW-only sessions", () => {
+    for (const perms of [{}, { "hr:payroll": ["VIEW"] }, ["hr.payroll.read"], { "hr:attendance": ["EDIT"] }]) {
+      expect(() => actorScope.assertPayrollAdminSurface(perms)).toThrow(/payroll admin surface/);
+    }
+  });
+});

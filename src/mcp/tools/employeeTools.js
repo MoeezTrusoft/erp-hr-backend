@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertDirectoryAccess } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import logger from "../../lib/logger.js";
@@ -109,7 +110,10 @@ export function registerEmployeeTools(server) {
     listToolShape,
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // HR-RBAC-01 T1.6 (ruling D2=Hidden) — the directory is an HR surface;
+      // without hr:employee VIEW the tool answers nothing (not a scoped
+      // subset). Callers needing "who is this id" use hr_employee_resolve.
+      assertDirectoryAccess(permissions);
       const query = { page: 1, pageSize: 10, ...args };
       logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_employees_list pagination resolved");
       // BLOCKER-1: thread the verified tenant so the directory is tenant-scoped.
@@ -261,7 +265,8 @@ export function registerEmployeeTools(server) {
     { id: z.string().min(1).describe("Employee ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // HR-RBAC-01 T1.6 (D2=Hidden) — quick-view cards are directory data.
+      assertDirectoryAccess(permissions);
       const data = await mcpGetEmployeeQuickView(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_quick_view_get")
@@ -860,7 +865,10 @@ export function registerEmployeeTools(server) {
     },
     withToolError(async ({ userIds }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // HR-RBAC-01 T1.6 (D2=Hidden) — id→display resolution is the one
+      // directory read cross-service features (Communication recipient cards)
+      // legitimately need; it stays available to permission-less callers and
+      // returns name + work email ONLY — never phone, CNIC, bank or salary.
       const prisma = (await import("../../lib/prisma.js")).default;
       const tenantId = user.tenantId;
       if (!tenantId) {

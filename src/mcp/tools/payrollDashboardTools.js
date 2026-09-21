@@ -15,6 +15,7 @@ import {
 } from "../../services/payrollDashboard.service.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertPayrollAdminSurface } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 
 const RESOURCE = "hr:payroll";
@@ -42,7 +43,8 @@ export function registerPayrollDashboardTools(server) {
     { runId: runIdArg },
     withToolError(async ({ runId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      // HR-RBAC-01 T1.7 — company-wide money KPI.
+      assertPayrollAdminSurface(permissions);
       const data = await getPayrollThisMonth({ tenantId: user.tenantId, runId });
       return jsonResult(data);
     }, "hr_payroll_this_month")
@@ -111,7 +113,11 @@ export function registerPayrollDashboardTools(server) {
     },
     withToolError(async ({ runId, q, department, status, sortBy, sortDir, page, pageSize }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      // HR-RBAC-01 T1.7 — the payroll employee grid is the money surface:
+      // salary, net, variance for EVERY employee. VIEW-only sessions (plain
+      // employees) are hard-refused; per D4 they get the Forbidden page, not
+      // a redacted grid. Self-service reads are hr_my_payslip* only.
+      assertPayrollAdminSurface(permissions);
       const data = await listPayrollEmployees({
         tenantId: user.tenantId,
         runId,
