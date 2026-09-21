@@ -55,6 +55,15 @@ import {
 } from "../controllers/interviewPacket.controller.js";
 
 import {
+    cancelInterviewHandler,
+    requestRescheduleHandler,
+    confirmRescheduleHandler,
+    availabilityHandler,
+    markCalendarSyncHandler,
+    listLifecycleEventsHandler,
+} from "../controllers/interviewSchedule.controller.js";
+
+import {
     recordConsentHandler,
     listConsentHandler,
     recordDncHandler,
@@ -110,6 +119,14 @@ router.post("/interviews/:id/packet", addPacketItemHandler);
 router.get("/interviews/:id/packet", listPacketHandler);
 router.delete("/interviews/:id/packet/:itemId", removePacketItemHandler);
 router.get("/interviews/:id/packet/me", myPacketViewHandler);
+
+// Phase 7 / §5.1–5.4 — interview scheduling lifecycle
+router.put("/interviews/:id/cancel", cancelInterviewHandler);
+router.post("/interviews/:id/reschedule-requests", requestRescheduleHandler);
+router.put("/interviews/:id/reschedule", confirmRescheduleHandler);
+router.post("/interviews/availability", availabilityHandler);
+router.put("/interviews/:id/calendar-sync", markCalendarSyncHandler);
+router.get("/interviews/:id/lifecycle", listLifecycleEventsHandler);
 
 // HIRING FREEZE (Phase 4 / §2.7). Deliberately mounted at /api/recruitment/freeze
 // so F-02 resolves the DEDICATED `hr.recruitment.freeze` resource, which

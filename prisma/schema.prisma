@@ -3303,17 +3303,30 @@ model Interview {
   decision        String? // NEXT_ROUND | HOLD | REJECTED (interview outcome)
   notes           String?
   created_at      DateTime        @default(now())
-  updated_at      DateTime        @updatedAt
+  updated_at      DateTime @updatedAt
+
+  // Phase 7 / decision record §5.1a–5.1b — the recruitment LINKAGE to the
+  // external calendar event, not a copy of it. The external calendar stays
+  // authoritative for availability/events (§5.1a); these columns only record
+  // which external event an interview corresponds to and its sync state, so
+  // cancel/update can find what to write/update/cancel without ever owning
+  // the event itself. Provider-neutral: the provider name is data, not code.
+  calendarProvider    String? // GOOGLE_WORKSPACE | OUTLOOK_365 (extensible; §5.1)
+  calendarEventId     String? // provider event id
+  calendarSyncedAt    DateTime?
+  calendarSyncStatus  String? // PENDING | SYNCED | FAILED
 
   application  Application            @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   interviewers InterviewInterviewer[]
   scorecards   InterviewScorecard[]
   packetItems  InterviewPacketItem[]
+  lifecycleEvents InterviewLifecycleEvent[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
   @@index([applicationId])
+  @@index([calendarProvider, calendarEventId]) // webhook-driven updates find the interview by its external event
   @@map("interviews")
 }
 
@@ -3388,6 +3401,37 @@ model InterviewPacketItem {
   @@index([tenantId])
   @@index([interviewId])
   @@map("interview_packet_items")
+}
+
+// Phase 7 / decision record §5.4 — the interview LIFECYCLE ledger.
+//
+// A cancel or a reschedule is a first-class, CODED, attributable fact — never a
+// silent mutation of scheduledAt or status. Rows are appended, never edited:
+// the history of what happened to an interview and WHY is the audit, and the
+// reason vocabulary (CANDIDATE_REQUEST, INTERVIEWER_CONFLICT, BUSINESS_REQUEST,
+// TECHNICAL_ISSUE, LOGISTICS_ISSUE, REQUISITION_CLOSED, OTHER) is the reportable
+// grouping. OTHER requires free-text notes; every row names the actor.
+// previousScheduledAt/newScheduledAt are null except on RESCHEDULE rows, where
+// they carry what moved: null→value on the confirm of a candidate request, or
+// value→value on a direct recruiter reschedule.
+model InterviewLifecycleEvent {
+  id                  Int      @id @default(autoincrement())
+  interviewId         Int
+  eventType           String // CANCELLED | RESCHEDULED | RESCHEDULE_REQUESTED
+  reasonCode          String
+  notes               String?
+  previousScheduledAt DateTime?
+  newScheduledAt      DateTime?
+  actorId             Int?
+  created_at          DateTime @default(now())
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([interviewId])
+  @@map("interview_lifecycle_events")
 }
 
 model Offer {

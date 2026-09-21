@@ -69,7 +69,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentTools: 22,
   requisitionMgmtTools: 14,
   candidatePipelineTools: 2,
-  interviewMgmtTools: 5,
+  interviewMgmtTools: 11,
   offerMgmtTools: 5,
   candidatePrivacyTools: 15,
   talentPoolMgmtTools: 4,
@@ -114,13 +114,19 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_disposition_reasons_list",
   "hr_disposition_reason_deactivate",
   "hr_disposition_reason_version",
+  "hr_interview_availability_check",
+  "hr_interview_calendar_sync",
+  "hr_interview_cancel",
   "hr_interview_create",
   "hr_interview_feedback_consolidate",
+  "hr_interview_lifecycle_list",
   "hr_interview_manage_get",
   "hr_interview_packet_add",
   "hr_interview_packet_list",
   "hr_interview_packet_remove",
   "hr_interview_packet_view",
+  "hr_interview_reschedule_confirm",
+  "hr_interview_reschedule_request",
   "hr_interview_score",
   "hr_interview_set_outcome",
   "hr_interview_update",
@@ -175,7 +181,7 @@ const EXPECTED_TOOLS = Object.freeze([
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
 
 describe("Recruitment MCP tool inventory", () => {
-  it("registers exactly the pinned 90 tools — no more, no less", () => {
+  it("registers exactly the pinned 96 tools — no more, no less", () => {
     expect([...allRecruitmentTools].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
@@ -204,7 +210,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(530);
+    expect(all).toHaveLength(536);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

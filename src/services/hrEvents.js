@@ -339,6 +339,64 @@ export function interviewOutcomeRecordedEvent(interview, ctx = {}, extra = {}) {
     });
 }
 
+// Phase 7 / §5.4 — an interview was CANCELLED with a coded reason. ids-only;
+// the candidate-facing copy is the consumer's job.
+export function interviewCancelledEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_cancelled.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            scheduledAt: interview?.scheduledAt ?? null,
+            reasonCode: extra?.reasonCode ?? null,
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+// Phase 7 / §5.3a — the replacement schedule is CONFIRMED; the panel may now be
+// notified (the point of the two-phase §5.3a contract is to avoid calendar
+// churn, so the panel event fires exactly once, on confirmation).
+export function interviewRescheduledEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_rescheduled.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            previousScheduledAt: extra?.previousScheduledAt ?? null,
+            newScheduledAt: interview?.scheduledAt ?? extra?.newScheduledAt ?? null,
+            reasonCode: extra?.reasonCode ?? null,
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+// Phase 7 / §5.3 — a candidate REQUESTED a reschedule. The recruiter is the
+// audience; the panel is deliberately NOT told (§5.3a: only after the
+// replacement schedule is confirmed). interviewerIds is absent on purpose —
+// its presence would invite a consumer to fan out to the panel.
+export function interviewRescheduleRequestedEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_reschedule_requested.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            scheduledAt: interview?.scheduledAt ?? null,
+            requestedFor: extra?.requestedFor ?? null,
+            note: extra?.note ?? null,
+            // §5.3 — the routing id: the REQUISITION OWNER (the recruiter who
+            // owns the confirmation). ids-only, no names/addresses.
+            recruiterId: extra?.recruiterId ?? null,
+        },
+    });
+}
+
 // ── Documents (compliance / expiry) ──────────────────────────────────────────
 // HR Reports → Document Expiry Alerts: a manually-sent reminder for an
 // employee's about-to-expire (or expired) document. HR only EMITS this event;

@@ -14,6 +14,15 @@ import {
   setInterviewOutcome,
   consolidateInterviewFeedback,
 } from "../../services/interviewMgmt.service.js";
+import {
+  cancelInterview,
+  requestReschedule,
+  confirmReschedule,
+  checkInterviewerAvailability,
+  markCalendarSync,
+  listLifecycleEvents,
+} from "../../services/interviewSchedule.service.js";
+import { RESCHEDULE_REASONS } from "../../lib/interviewScheduling.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
@@ -153,5 +162,139 @@ export function registerInterviewMgmtTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interview_set_outcome")
+  );
+
+  // ── Phase 7 / §5.1–5.4 — scheduling lifecycle ───────────────────────────
+
+  server.tool(
+    "hr_interview_cancel",
+    "Cancel an interview with a MANDATORY coded reason (§5.4): CANDIDATE_REQUEST, INTERVIEWER_CONFLICT, BUSINESS_REQUEST, TECHNICAL_ISSUE, LOGISTICS_ISSUE, REQUISITION_CLOSED, OTHER (OTHER requires notes). The cancel is append-only audited; the candidate and panel are notified via the lifecycle event.",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+      reasonCode: z.enum(["CANDIDATE_REQUEST", "INTERVIEWER_CONFLICT", "BUSINESS_REQUEST", "TECHNICAL_ISSUE", "LOGISTICS_ISSUE", "REQUISITION_CLOSED", "OTHER"]).describe("Why the interview is being cancelled"),
+      notes: z.string().optional().describe("Free-text notes; REQUIRED when reasonCode is OTHER"),
+    },
+    withToolError(async ({ interviewId, reasonCode, notes }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await cancelInterview({
+        interviewId,
+        reasonCode,
+        notes: notes ?? null,
+        tenantId: user.tenantId,
+        actorId: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_cancel")
+  );
+
+  server.tool(
+    "hr_interview_reschedule_request",
+    "Record a candidate's reschedule REQUEST (§5.3). Routes to the recruiter only — the panel is NOT notified until the replacement schedule is confirmed (§5.3a, no calendar churn).",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+      reasonCode: z.enum(["CANDIDATE_REQUEST", "INTERVIEWER_CONFLICT", "BUSINESS_REQUEST", "TECHNICAL_ISSUE", "LOGISTICS_ISSUE", "REQUISITION_CLOSED", "OTHER"]).describe("Why the reschedule is requested"),
+      requestedFor: z.string().optional().describe("Proposed replacement time (ISO 8601)"),
+      notes: z.string().optional().describe("Free-text notes; REQUIRED when reasonCode is OTHER"),
+    },
+    withToolError(async ({ interviewId, reasonCode, requestedFor, notes }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      const data = await requestReschedule({
+        interviewId,
+        reasonCode,
+        notes: notes ?? null,
+        requestedFor: requestedFor ?? null,
+        tenantId: user.tenantId,
+        actorId: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_reschedule_request")
+  );
+
+  server.tool(
+    "hr_interview_reschedule_confirm",
+    "Confirm the replacement schedule (§5.3 recruiter-owned). Runs the §5.2a availability gate first: approved leave = hard block (refused); non-working-day = warning requiring override=true + overrideReason. Moves the time and notifies the panel — the ONLY path that does.",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+      scheduledAt: z.string().describe("New time (ISO 8601)"),
+      reasonCode: z.enum(["CANDIDATE_REQUEST", "INTERVIEWER_CONFLICT", "BUSINESS_REQUEST", "TECHNICAL_ISSUE", "LOGISTICS_ISSUE", "REQUISITION_CLOSED", "OTHER"]).describe("Why the interview is moving"),
+      notes: z.string().optional().describe("Free-text notes; REQUIRED when reasonCode is OTHER"),
+      override: z.boolean().optional().describe("Authorize past a non-working-day warning"),
+      overrideReason: z.string().optional().describe("Required when override is true"),
+    },
+    withToolError(async ({ interviewId, scheduledAt, reasonCode, notes, override, overrideReason }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await confirmReschedule({
+        interviewId,
+        scheduledAt,
+        reasonCode,
+        notes: notes ?? null,
+        override: override === true,
+        overrideReason: overrideReason ?? null,
+        tenantId: user.tenantId,
+        actorId: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_reschedule_confirm")
+  );
+
+  server.tool(
+    "hr_interview_availability_check",
+    "Check interviewer availability for a proposed slot (§5.2/5.2a): returns hard-blocked interviewers (approved leave — never overridable) and non-working-day warnings (overridable with authorization + reason). Call BEFORE scheduling or confirming.",
+    {
+      scheduledAt: z.string().describe("Proposed slot start (ISO 8601)"),
+      durationMinutes: z.coerce.number().int().positive().optional().describe("Slot length (default 60)"),
+      interviewerIds: z.array(z.coerce.number().int().positive()).describe("Employee ids to check"),
+    },
+    withToolError(async ({ scheduledAt, durationMinutes, interviewerIds }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await checkInterviewerAvailability({
+        scheduledAt,
+        durationMinutes,
+        interviewerIds,
+        tenantId: user.tenantId,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_availability_check")
+  );
+
+  server.tool(
+    "hr_interview_calendar_sync",
+    "Record/refresh the external calendar linkage for an interview (§5.1a): provider, provider event id and sync state. Called by the Communication calendar-sync boundary after it writes the provider event — HR stores the linkage, never the event content.",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+      provider: z.string().min(1).describe("Calendar provider, e.g. GOOGLE_WORKSPACE | OUTLOOK_365"),
+      calendarEventId: z.string().min(1).describe("Provider event id"),
+      status: z.enum(["PENDING", "SYNCED", "FAILED"]).describe("Sync state"),
+    },
+    withToolError(async ({ interviewId, provider, calendarEventId, status }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await markCalendarSync({
+        interviewId,
+        provider,
+        calendarEventId,
+        status,
+        tenantId: user.tenantId,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_calendar_sync")
+  );
+
+  server.tool(
+    "hr_interview_lifecycle_list",
+    "The lifecycle history of one interview: every cancel, reschedule and reschedule request with its coded §5.4 reason, notes, actor and the times involved. Oldest first — the order it happened.",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+    },
+    withToolError(async ({ interviewId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listLifecycleEvents({ interviewId, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_lifecycle_list")
   );
 }

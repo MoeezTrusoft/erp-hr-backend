@@ -5,13 +5,18 @@ import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
 import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { logAction } from "../utils/logs.js";
 import { interviewScheduledEvent } from "./hrEvents.js";
+// Phase 7 / §5.2/5.2a — the SAME availability rule the reschedule-confirm path
+// uses, so a fresh schedule and a moved schedule cannot disagree about what
+// counts as a conflict.
+import { blockedInterviewers } from "../lib/interviewScheduling.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
 // so tenant B can never read/mutate tenant A's interviews/scorecards.
 
-export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes, tenantId }) => {
+export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes, tenantId, conflictOverride }) => {
     // Scheduling an interview also advances the linked application's pipeline
     // stage to "interview" (parity with hr_application_update_stage), so the
     // recruitment board stays coherent without a separate manual move. The two
@@ -23,6 +28,39 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
         throw new Error("scheduledAt must be a valid ISO 8601 datetime");
     }
     return tenantTransaction(prisma, async (tx) => {
+        // Phase 7 / §5.2a — the availability gate runs BEFORE any write.
+        // APPROVED leave on any panelist is a HARD block (refused, not
+        // overridable); a non-working-day conflict is only a warning tier, so
+        // the scheduling UI may pass it with an authorized override + reason —
+        // audited below. Same rule the reschedule-confirm path applies.
+        const ids = (interviewerIds ?? []).map(Number).filter(Boolean);
+        if (ids.length) {
+            const end = new Date(scheduledDate.getTime() + Number(durationMinutes || 60) * 60000);
+            const leaveRows = await tx.leaveRequest.findMany({
+                where: scopedWhere(tenantId, { employeeId: { in: ids }, status: "APPROVED" }),
+                select: { employeeId: true, startDate: true, endDate: true },
+            });
+            const blocked = blockedInterviewers(scheduledDate, end, leaveRows);
+            if (blocked.length) {
+                throw Object.assign(new Error("Interviewer(s) on approved leave for the proposed slot"), {
+                    status: 409,
+                    details: { code: "HR-RECRUITMENT-SCHEDULE-LEAVE-BLOCK", blockedInterviewerIds: blocked },
+                });
+            }
+            if (conflictOverride) {
+                // Recorded as the caller's attestation; the non-working-day
+                // warning is advisory (§5.2a), so scheduling proceeds.
+                await logAction({
+                    employeeId: null,
+                    type: "UPDATE",
+                    module: "Interview Scheduling",
+                    result: "SUCCESS",
+                    notes: `Non-working-day conflict overridden on new interview for application "${applicationId}": ${String(conflictOverride).slice(0, 500)}`,
+                    tenantId: tenantId ?? null,
+                });
+            }
+        }
+
         const interview = await tx.interview.create({
             data: scopedData(tenantId, {
                 applicationId: Number(applicationId),
@@ -31,6 +69,7 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
                 durationMinutes: durationMinutes || 60,
                 location,
                 notes,
+                calendarSyncStatus: "PENDING",
                 interviewers: interviewerIds?.length
                     ? { create: interviewerIds.map(id => ({ employeeId: Number(id), ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
                     : undefined,

@@ -103,7 +103,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // ledger, own RLS policy in its creating migration.
     // 132 + InterviewPacketItem (Phase 6 §4.4) — the interview packet, same
     // nullable-tenant convention and own-policy-in-own-migration rule.
-    expect(nullableModels).toHaveLength(133);
+    // 133 + InterviewLifecycleEvent (Phase 7 §5.4) — the coded cancel/reschedule
+    // ledger, same convention and own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(134);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");
