@@ -22,6 +22,13 @@ import {
   listShortlist,
   removeFromShortlist,
 } from "../../services/applicationScreening.service.js";
+import {
+  addPacketItem,
+  listPacket,
+  removePacketItem,
+  getPacketForViewer,
+} from "../../services/interviewPacket.service.js";
+import { PACKETABLE_CLASSES } from "../../lib/documentAccess.js";
 import { SCREENING_OUTCOMES } from "../../lib/dispositionReasons.js";
 
 function getCtx() {
@@ -239,5 +246,78 @@ export function registerApplicationTools(server) {
       const data = await removeFromShortlist({ applicationId: id, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_application_shortlist_remove")
+  );
+
+  // ── Phase 6 / §4.4 — the interview packet ────────────────────────────────
+  // Only matrix-permitted classes can be packeted (the service refuses the
+  // rest); the interviewer-context view (hr_interview_packet_view) is the
+  // "only if in the interview packet" cells made real, gated on the caller's
+  // InterviewInterviewer row.
+
+  server.tool(
+    "hr_interview_packet_add",
+    "Add a document to an interview's packet. Only PORTFOLIO, GENERAL_APPLICATION_DOC and INTERVIEW_BRIEF are packetable — screening notes, budget/approval and offer documents never are.",
+    {
+      interviewId: z.union([z.number(), z.string()]).describe("Interview ID"),
+      docClass: z.enum(["PORTFOLIO", "GENERAL_APPLICATION_DOC", "INTERVIEW_BRIEF"]).describe("Document class"),
+      mediaId: z.union([z.number(), z.string()]).describe("DAM media asset ID"),
+      label: z.string().optional().describe("Display label"),
+    },
+    withToolError(async ({ interviewId, docClass, mediaId, label }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      const data = await addPacketItem({
+        interviewId,
+        docClass,
+        mediaId,
+        label: label ?? null,
+        tenantId: user.tenantId,
+        actorId: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_packet_add")
+  );
+
+  server.tool(
+    "hr_interview_packet_list",
+    "List an interview's full packet (recruiter/hiring-team view).",
+    { interviewId: z.union([z.number(), z.string()]).describe("Interview ID") },
+    withToolError(async ({ interviewId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listPacket({ interviewId, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_packet_list")
+  );
+
+  server.tool(
+    "hr_interview_packet_remove",
+    "Remove a document from an interview's packet.",
+    {
+      interviewId: z.union([z.number(), z.string()]).describe("Interview ID"),
+      itemId: z.union([z.number(), z.string()]).describe("Packet item ID"),
+    },
+    withToolError(async ({ interviewId, itemId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await removePacketItem({ interviewId, itemId, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_packet_remove")
+  );
+
+  server.tool(
+    "hr_interview_packet_view",
+    "The caller's own packet view for one interview: requires an active interviewer assignment; returns the resume, packeted portfolio/application documents and briefs the caller may see. Not assigned — empty packet.",
+    { interviewId: z.union([z.number(), z.string()]).describe("Interview ID") },
+    withToolError(async ({ interviewId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await getPacketForViewer({
+        interviewId,
+        tenantId: user.tenantId,
+        viewerEmployeeId: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_interview_packet_view")
   );
 }

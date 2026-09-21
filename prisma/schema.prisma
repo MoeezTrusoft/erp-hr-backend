@@ -3308,6 +3308,7 @@ model Interview {
   application  Application            @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   interviewers InterviewInterviewer[]
   scorecards   InterviewScorecard[]
+  packetItems  InterviewPacketItem[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -3357,6 +3358,36 @@ model InterviewScorecard {
   @@unique([interviewId, reviewerId])
   @@index([tenantId])
   @@map("interview_scorecards")
+}
+
+// Phase 6 / decision record §4.4 — the INTERVIEW PACKET.
+//
+// The matrix's "only if in the interview packet" cells (portfolio, general
+// application documents) need a real persistence point: a document reaches an
+// assigned interviewer's view BECAUSE a row exists here, not because the viewer
+// happens to be assigned to an interview. Document class and audience remain
+// independent — lib/documentAccess.js is the single decision, and only classes
+// the matrix permits may be added to a packet (screening notes and budget or
+// approval documents can never be packeted, regardless of who asks).
+// mediaId is a DAM asset id, deliberately without an FK (same as
+// RequisitionAttachment): the DAM is a shared service, not a local table.
+model InterviewPacketItem {
+  id          Int      @id @default(autoincrement())
+  interviewId Int
+  mediaId     Int
+  docClass    String // PORTFOLIO | GENERAL_APPLICATION_DOC | INTERVIEW_BRIEF
+  label       String?
+  addedById   Int?
+  created_at  DateTime @default(now())
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([interviewId, mediaId])
+  @@index([tenantId])
+  @@index([interviewId])
+  @@map("interview_packet_items")
 }
 
 model Offer {

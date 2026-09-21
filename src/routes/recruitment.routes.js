@@ -48,6 +48,13 @@ import {
 } from "../controllers/applicationScreening.controller.js";
 
 import {
+    addPacketItemHandler,
+    listPacketHandler,
+    removePacketItemHandler,
+    myPacketViewHandler,
+} from "../controllers/interviewPacket.controller.js";
+
+import {
     recordConsentHandler,
     listConsentHandler,
     recordDncHandler,
@@ -97,6 +104,12 @@ router.delete("/disposition-reasons/:code", deactivateDispositionReasonHandler);
 router.post("/applications/:id/shortlist", addToShortlistHandler);
 router.get("/requisitions/:requisitionId/shortlist", listShortlistHandler);
 router.delete("/applications/:id/shortlist", removeFromShortlistHandler);
+
+// Phase 6 / §4.4 — the interview packet (document ACL matrix made real)
+router.post("/interviews/:id/packet", addPacketItemHandler);
+router.get("/interviews/:id/packet", listPacketHandler);
+router.delete("/interviews/:id/packet/:itemId", removePacketItemHandler);
+router.get("/interviews/:id/packet/me", myPacketViewHandler);
 
 // HIRING FREEZE (Phase 4 / §2.7). Deliberately mounted at /api/recruitment/freeze
 // so F-02 resolves the DEDICATED `hr.recruitment.freeze` resource, which

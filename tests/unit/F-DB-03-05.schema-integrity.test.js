@@ -101,7 +101,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // rule, all three in one migration.
     // 131 + ResumeParseAttempt (Phase 6 §4.5a) — the content-hash-keyed parse
     // ledger, own RLS policy in its creating migration.
-    expect(nullableModels).toHaveLength(132);
+    // 132 + InterviewPacketItem (Phase 6 §4.4) — the interview packet, same
+    // nullable-tenant convention and own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(133);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");
