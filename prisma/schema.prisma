@@ -2786,6 +2786,7 @@ model Candidate {
   legalHolds      CandidateLegalHold[]
   aiInferences    AiInferenceRecord[]
   emailVerifications CandidateEmailVerification[]
+  applicationDrafts  ApplicationDraft[]
 
   @@unique([tenantId, email])
   @@index([tenantId, status])
@@ -3679,6 +3680,34 @@ model OfferHandoffAttempt {
 // explicitly rather than inferred from `status`. Every table is tenant-scoped and
 // append-only where the fact is historical (consent, anonymization, retention
 // actions) so an audit can reconstruct what was known at any point in time.
+
+// Phase 5 / FR-04.07 — SAVE-AND-RETURN application drafts.
+//
+// ONE draft per candidate per requisition (re-saving overwrites). The payload
+// is stored verbatim and re-validated against the CURRENT question set at
+// final submit. The resume link is a §3.2-class token (sha256 in the row, raw
+// token only in the emailed link); saving replaces the token, so the old link
+// dies. 30-day expiry clock from last update; the sweep lives in
+// lib/draftExpiry.js. Anonymization of the owner purges the draft.
+model ApplicationDraft {
+  id            Int       @id @default(autoincrement())
+  candidateId   Int
+  requisitionId Int
+  payload       Json
+  resumeMediaId Int?
+  tokenHash     String    @unique
+  expiresAt     DateTime
+  submittedAt   DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+  tenantId      String?   @db.Uuid
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateId, requisitionId])
+  @@index([tenantId])
+  @@index([expiresAt])
+}
 
 // Phase 5 / §3.2 — candidate EMAIL VERIFICATION tokens (magic links).
 //

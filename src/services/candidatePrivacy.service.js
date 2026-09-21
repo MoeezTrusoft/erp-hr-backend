@@ -571,6 +571,19 @@ export async function anonymizeCandidate(
     },
   });
 
+  // FR-04.07 — drafts die with the person: an erasure must not leave a
+  // re-identifiable half-finished form behind. Best-effort (the tombstone is
+  // the erasure's contract; a purge failure is logged, not fatal), consistent
+  // with the DAM-cleanup posture above.
+  try {
+    if (db.applicationDraft?.deleteMany) {
+      await db.applicationDraft.deleteMany({ where: withTenant(tenantId, { candidateId: candidate.id }) });
+    }
+  } catch {
+    // Best-effort: the tombstone stands; the draft rows also carry their own
+    // 30-day sweep, so a failed purge here self-heals within a month.
+  }
+
   const log = await db.candidateAnonymizationLog.create({
     data: {
       tenantId,

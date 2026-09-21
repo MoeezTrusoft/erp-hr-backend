@@ -24,6 +24,11 @@ import express from "express";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
 import { consumeEmailVerification } from "../services/candidateVerification.service.js";
 import { requestStatusLink, readStatusViaLink } from "../services/candidateStatus.service.js";
+import {
+    saveApplicationDraft,
+    loadApplicationDraft,
+    submitApplicationDraft,
+} from "../services/applicationDraft.service.js";
 import logger from "../lib/logger.js";
 
 const router = express.Router();
@@ -191,6 +196,75 @@ router.post(
             const status = Number(err?.status) || 500;
             if (status >= 500) logger.error({ err: err?.message }, "status link request failed");
             return res.status(status).json({ success: false, message: status >= 500 ? "Something went wrong" : err.message });
+        }
+    }),
+);
+
+// POST /public/candidates/draft — FR-04.07 save-and-return: upsert the
+// candidate's draft for one requisition and email the resume link. Auth is the
+// EMAIL ITSELF (the link is the credential, like every candidate surface);
+// the response is uniform and the real link goes only to the real mailbox.
+router.post(
+    "/candidates/draft",
+    express.json({ limit: "256kb" }),
+    ...guard("apply", async (req, res, tenantId) => {
+        try {
+            const result = await saveApplicationDraft({
+                tenantId,
+                requisitionId: req.body?.requisitionId,
+                email: req.body?.email,
+                firstName: req.body?.firstName,
+                body: req.body,
+            });
+            return res.json({ success: true, data: result });
+        } catch (err) {
+            const status = Number(err?.status) || 500;
+            if (status >= 500) logger.error({ err: err?.message }, "draft save failed");
+            return res.status(status).json({ success: false, message: status >= 500 ? "Something went wrong" : err.message });
+        }
+    }),
+);
+
+// GET /public/candidates/draft?token= — load the saved draft behind the
+// emailed link. Unknown/expired/submitted tokens and anonymized owners all
+// render the SAME uniform body (§3.4): the endpoint cannot be probed.
+router.get(
+    "/candidates/draft",
+    ...guard("read", async (req, res) => {
+        const NOT_FOUND = { success: false, message: "This draft link is not valid" };
+        try {
+            const draft = await loadApplicationDraft({ token: req.query.token });
+            if (!draft) return res.status(404).json(NOT_FOUND);
+            return res.json({ success: true, data: draft });
+        } catch (err) {
+            logger.error({ err: err?.message }, "draft load failed");
+            return res.status(404).json(NOT_FOUND);
+        }
+    }),
+);
+
+// POST /public/candidates/draft/submit — submit the draft as a real
+// application THROUGH the intake gates. Failures are uniform (the same body
+// as a bad link) so a stale draft reveals nothing.
+router.post(
+    "/candidates/draft/submit",
+    express.json({ limit: "16kb" }),
+    ...guard("apply", async (req, res) => {
+        const NOT_FOUND = { success: false, message: "This draft link is not valid" };
+        try {
+            const result = await submitApplicationDraft({ token: req.body?.token });
+            return res.status(201).json({ success: true, data: result });
+        } catch (err) {
+            const status = Number(err?.status) || 400;
+            if (status >= 500) logger.error({ err: err?.message }, "draft submit failed");
+            // Question/eligibility refusals carry their message (actionable
+            // for the candidate); anything else is the uniform link body.
+            const actionable = [400, 409].includes(status) && err?.code !== "HR-PORTAL-DRAFT-INVALID";
+            return res.status(status).json({
+                success: false,
+                message: actionable ? err.message : "This draft link is not valid",
+                ...(actionable && err?.details ? { details: err.details } : {}),
+            });
         }
     }),
 );

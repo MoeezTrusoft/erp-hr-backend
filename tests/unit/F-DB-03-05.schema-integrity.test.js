@@ -111,7 +111,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // taxonomy alias layer and the AI provenance ledger, same convention.
     // 139 + CandidateEmailVerification (Phase 5 §3.2) — the magic-link token
     // table, same convention and own-policy-in-own-migration rule.
-    expect(nullableModels).toHaveLength(139);
+    // 140 + ApplicationDraft (Phase 5 FR-04.07) — save-and-return drafts,
+    // same convention and own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(140);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

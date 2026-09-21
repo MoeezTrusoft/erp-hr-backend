@@ -410,10 +410,13 @@ describe("Phase 5 — the public router's guards", () => {
     // §3.2 + §3.5a — the candidate email/verification/status endpoints join
     // the public surface.
     expect(paths).toEqual([
+        "GET /candidates/draft",
         "GET /candidates/status",
         "GET /candidates/verify-email",
         "GET /jobs",
         "GET /jobs/:id",
+        "POST /candidates/draft",
+        "POST /candidates/draft/submit",
         "POST /candidates/status-link",
         "POST /jobs/:id/apply",
     ]);
