@@ -210,7 +210,12 @@ export function registerRecruitmentTools(server) {
       // ── Phase 4 / §2.5 — the application window ──
       closesAt: z.string().optional().describe("When applications stop being accepted; ISO date. Omit for no deadline"),
       autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible"),
-      jobContent: z.record(z.any()).optional().describe("Structured job content {summary, responsibilities[], requirements[], skills[], benefits[], hiringProcess[], faq[{question,answer}]}"),
+      // z.record(z.string(), z.unknown()) — NOT z.record(z.any()): in Zod v4.3.x
+      // the single-argument record crashes the SDK's tools/list JSON-Schema
+      // conversion (Cannot read properties of undefined (reading '_zod')), which
+      // 404s the ENTIRE tool surface for every MCP client. Same contract, safe
+      // wire schema.
+      jobContent: z.record(z.string(), z.unknown()).optional().describe("Structured job content {summary, responsibilities[], requirements[], skills[], benefits[], hiringProcess[], faq[{question,answer}]}"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -249,7 +254,7 @@ export function registerRecruitmentTools(server) {
       // ── Phase 4 / §2.5 — the application window (absent ⇒ unchanged) ──
       closesAt: z.string().nullable().optional().describe("When applications stop being accepted; ISO date, or null for no deadline. The eligibility gate refuses applications after it"),
       autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible (a human can reopen)"),
-      jobContent: z.record(z.any()).nullable().optional(),
+      jobContent: z.record(z.string(), z.unknown()).nullable().optional(),
       expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
