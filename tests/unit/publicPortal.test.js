@@ -371,8 +371,16 @@ describe("Phase 5 — the public router's guards", () => {
       .filter((l) => l.route)
       .map((l) => `${Object.keys(l.route.methods)[0].toUpperCase()} ${l.route.path}`)
       .sort();
-    // §3.2 — the magic-link consumption endpoint joins the public surface.
-    expect(paths).toEqual(["GET /candidates/verify-email", "GET /jobs", "GET /jobs/:id", "POST /jobs/:id/apply"]);
+    // §3.2 + §3.5a — the candidate email/verification/status endpoints join
+    // the public surface.
+    expect(paths).toEqual([
+        "GET /candidates/status",
+        "GET /candidates/verify-email",
+        "GET /jobs",
+        "GET /jobs/:id",
+        "POST /candidates/status-link",
+        "POST /jobs/:id/apply",
+    ]);
     delete process.env.HR_PORTAL_HOSTS;
   });
 

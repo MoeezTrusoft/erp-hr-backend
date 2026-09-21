@@ -23,6 +23,7 @@
 import express from "express";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
 import { consumeEmailVerification } from "../services/candidateVerification.service.js";
+import { requestStatusLink, readStatusViaLink } from "../services/candidateStatus.service.js";
 import logger from "../lib/logger.js";
 
 const router = express.Router();
@@ -171,6 +172,46 @@ router.get(
             // Uniform failure body — never leak the failure class to the wire.
             const status = Number(err?.status) || 400;
             return res.status(status).json({ success: false, message: "This verification link is not valid" });
+        }
+    }),
+);
+
+// POST /public/candidates/status-link — §3.5a: request (or re-request) the
+// status-tracking link. Uniform response for known and unknown addresses:
+// only the REAL candidate's mailbox ever receives a link, so the endpoint
+// cannot be probed for which emails have applied (§3.4).
+router.post(
+    "/candidates/status-link",
+    express.json({ limit: "16kb" }),
+    ...guard("apply", async (req, res, tenantId) => {
+        try {
+            const result = await requestStatusLink({ tenantId, email: req.body?.email });
+            return res.json({ success: true, data: result });
+        } catch (err) {
+            const status = Number(err?.status) || 500;
+            if (status >= 500) logger.error({ err: err?.message }, "status link request failed");
+            return res.status(status).json({ success: false, message: status >= 500 ? "Something went wrong" : err.message });
+        }
+    }),
+);
+
+// GET /public/candidates/status?token= — §3.5a: the candidate-visible view.
+// A wrong, revoked or expired link — and a link-holder with no visible
+// applications — all render the SAME empty body (§3.4 no-oracle); the
+// candidate-visible projection (lib/candidateStatusView.js) never exposes
+// internal stages, rejection reasons, comments or scores (§3.5a).
+router.get(
+    "/candidates/status",
+    ...guard("read", async (req, res) => {
+        const EMPTY = { success: true, data: { applications: [] } };
+        try {
+            const result = await readStatusViaLink({ token: req.query.token });
+            if (!result) return res.json(EMPTY);
+            return res.json({ success: true, data: result.view });
+        } catch (err) {
+            // A read failure must not distinguish itself from "nothing here".
+            logger.error({ err: err?.message }, "status link read failed");
+            return res.json(EMPTY);
         }
     }),
 );

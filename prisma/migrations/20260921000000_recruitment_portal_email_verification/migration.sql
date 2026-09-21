@@ -14,8 +14,10 @@
 -- proof-of-mailbox, not an account system.
 --
 -- Purpose vocabulary: APPLY_VERIFICATION (a portal application triggered it —
--- §3.2) — and nothing else today; adding a purpose is a constraint change, not
--- a silent write, same convention as the packet docClass.
+-- §3.2) and STATUS_LINK (§3.5a self-service tracking — a re-usable, non-
+-- consuming link to the candidate's own application statuses); adding a
+-- purpose is a constraint change, not a silent write, same convention as the
+-- packet docClass.
 
 CREATE TABLE "candidate_email_verifications" (
     "id"          SERIAL PRIMARY KEY,
@@ -43,7 +45,7 @@ CREATE INDEX IF NOT EXISTS "candidate_email_verifications_tenantId_idx"
 
 ALTER TABLE "candidate_email_verifications" DROP CONSTRAINT IF EXISTS "candidate_email_verifications_purpose_check";
 ALTER TABLE "candidate_email_verifications" ADD CONSTRAINT "candidate_email_verifications_purpose_check"
-    CHECK ("purpose" IN ('APPLY_VERIFICATION'));
+    CHECK ("purpose" IN ('APPLY_VERIFICATION', 'STATUS_LINK'));
 
 -- ── The candidate-facing verified state (additive, nullable — UNKNOWN for
 --    pre-existing rows, same posture as every privacy column). ────────────────

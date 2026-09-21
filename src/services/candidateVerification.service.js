@@ -22,6 +22,7 @@ import { recordRecruitmentNotification } from "../lib/recruitmentOpsMetrics.js";
 import logger from "../lib/logger.js";
 
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24; // 24h — long enough for a busy applicant
+const STATUS_LINK_TTL_MS = 1000 * 60 * 60 * 24 * 180; // §3.5a link: 180d, re-requestable
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -30,9 +31,10 @@ const hashToken = (token) => crypto.createHash("sha256").update(token).digest("h
 
 const newToken = () => crypto.randomBytes(32).toString("base64url");
 
-export const EMAIL_VERIFICATION_PURPOSES = Object.freeze(["APPLY_VERIFICATION"]);
+export const EMAIL_VERIFICATION_PURPOSES = Object.freeze(["APPLY_VERIFICATION", "STATUS_LINK"]);
 
 export const PORTAL_VERIFY_PATH = "/public/candidates/verify-email";
+export const PORTAL_STATUS_PATH = "/public/candidates/status";
 
 /**
  * §3.2 — mint a verification token for the candidate's email. TX-SCOPED and
@@ -98,6 +100,89 @@ export const sendVerificationEmail = async ({ tenantId, email, firstName, token 
     });
     recordRecruitmentNotification("email_verification", result.sent ? "enqueued" : "dropped-error");
     return result;
+};
+
+/**
+ * §3.5a — send the status-link email ("track your applications"). Same
+ * fail-soft delivery as the verification mail; its own candidate-safe copy.
+ */
+export const sendStatusLinkEmail = async ({ tenantId, email, firstName, token }) => {
+    if (!token || !email || !tenantId) {
+        recordRecruitmentNotification("status_link", "dropped-error");
+        return { sent: false, reason: "missing-token-or-address" };
+    }
+    const base = process.env.HR_PORTAL_BASE_URL || "";
+    const link = `${base}${PORTAL_STATUS_PATH}?token=${token}`;
+    const result = await sendCandidateEmail({
+        tenantId,
+        email,
+        templateId: "hr.recruitment.portal_status_link",
+        data: { firstName, statusUrl: link },
+    });
+    recordRecruitmentNotification("status_link", result.sent ? "enqueued" : "dropped-error");
+    return result;
+};
+
+/**
+ * §3.5a — mint a STATUS LINK for the candidate: a long-lived, re-usable,
+ * NON-consuming token whose presentation returns the candidate's own visible
+ * application statuses. The link is emailed to the candidate's address (the
+ * same hub-owned delivery as §3.2), so possession of the mailbox is the only
+ * way to obtain or refresh it. Re-issue replaces the previous live link.
+ *
+ * TX-scoped like issueEmailVerification (HTTP-free); call
+ * `sendVerificationEmail` with purpose "STATUS_LINK" after commit.
+ *
+ * @returns {Promise<null | {candidateId: number, email: string, firstName: string, token: string}>}
+ */
+export const issueStatusLink = async (tx, { tenantId, candidate, email, now = new Date() }) => {
+    const address = email ?? candidate?.email;
+    if (!address || !candidate?.id) return null;
+
+    await tx.candidateEmailVerification.updateMany({
+        where: scopedWhere(tenantId, {
+            candidateId: candidate.id,
+            purpose: "STATUS_LINK",
+            consumedAt: null,
+        }),
+        data: { consumedAt: now },
+    });
+
+    const token = newToken();
+    await tx.candidateEmailVerification.create({
+        data: scopedData(tenantId, {
+            candidateId: candidate.id,
+            email: address,
+            tokenHash: hashToken(token),
+            purpose: "STATUS_LINK",
+            // Long-lived but not forever: re-requesting is cheap and safe.
+            expiresAt: new Date(now.getTime() + STATUS_LINK_TTL_MS),
+        }),
+    });
+    return { candidateId: candidate.id, email: address, firstName: candidate.firstName ?? "", token };
+};
+
+/**
+ * §3.5a — resolve a presented STATUS-LINK token to the candidate's visible
+ * applications. NOT consuming: the link keeps working until it expires or is
+ * replaced, so the candidate can re-check.
+ *
+ * Returns the candidate only for a LIVE (unconsumed, unexpired) token — the
+ * caller renders the uniform empty body otherwise, so a wrong/revoked/expired
+ * link and a link-holder with no applications are indistinguishable (§3.4).
+ *
+ * @returns {Promise<null | {candidateId: number, email: string}>}
+ */
+export const resolveStatusLink = async ({ token, now = new Date() } = {}) => {
+    const trimmed = String(token ?? "").trim();
+    if (!trimmed) return null;
+    const row = await prisma.candidateEmailVerification.findUnique({
+        where: { tokenHash: hashToken(trimmed) },
+    });
+    if (!row || row.purpose !== "STATUS_LINK" || row.consumedAt || row.expiresAt.getTime() <= now.getTime()) {
+        return null;
+    }
+    return { candidateId: row.candidateId, email: row.email };
 };
 
 /**

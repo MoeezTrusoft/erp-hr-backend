@@ -3690,7 +3690,7 @@ model CandidateEmailVerification {
   candidateId Int
   email       String
   tokenHash   String    @unique
-  purpose     String    // APPLY_VERIFICATION (constraint-pinned vocabulary)
+  purpose     String    // APPLY_VERIFICATION | STATUS_LINK (constraint-pinned vocabulary)
   expiresAt   DateTime
   consumedAt  DateTime?
   created_at  DateTime  @default(now())
