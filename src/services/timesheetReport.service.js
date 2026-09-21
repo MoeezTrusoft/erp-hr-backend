@@ -924,15 +924,14 @@ export async function listCheckInOuts({
     // TS-REQUEST-04 (2026-09-22) — only an EMPLOYEE-SUBMITTED form is a
     // "request" for the Request column. The evaluator also stamps machine
     // grading rows (LATE/MISSING_*) into this table with its own sourceKind;
-    // those have no form behind them — "View anomaly request" must not be
-    // offered and the chip must read "No Request", not "Pending". The map is
-    // ordered newest-first, so the first row per employee+day decides: a real
-    // REGULARIZATION form wins over the evaluator's grading row of the same
-    // day (an employee CAN answer a machine-flagged day).
-    const submitted = an != null && String(an.sourceKind ?? "").toUpperCase() === "REGULARIZATION";
-    if (an && !submitted) {
-      request = null; // machine grading only — not an employee request
-    } else if (an && submitted) {
+    // those carry no form. A machine-only day therefore falls through to the
+    // UNSUBMITTED branch below — the FE renders it as the grey "No Request"
+    // chip with NO "View anomaly request" action — while a real REGULARIZATION
+    // form renders Pending/Approved/Disapproved and IS viewable. The map is
+    // ordered newest-first with forms outranking grading rows, so an employee
+    // CAN still answer a machine-flagged day.
+    const anForm = an != null && String(an.sourceKind ?? "").toUpperCase() === "REGULARIZATION" ? an : null;
+    if (anForm) {
       request = {
         anomalyId: an.id,
         status: an.status, // PENDING | APPROVED | REJECTED
