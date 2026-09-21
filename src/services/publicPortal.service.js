@@ -26,6 +26,7 @@
 import prisma from "../config/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationCreatedEvent } from "./hrEvents.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
@@ -45,6 +46,12 @@ const SUBMITTED = Object.freeze({
 });
 
 export const submitPublicApplication = async ({ tenantId, requisitionId, body = {}, now = new Date() } = {}) => {
+    // Phase 15 — the portal is flag-gated (§3). Off returns the SAME 404 shape
+    // as an unknown job: an anonymous caller must never learn whether the
+    // portal is disabled or the position does not exist (§3.4's no-oracle rule).
+    if (!isRecruitmentFlagEnabled("portal")) {
+        throw fail("Position not found", 404, "HR-PORTAL-NOT-FOUND");
+    }
     if (!tenantId) throw fail("Tenant context is required", 500, "HR-TENANT-REQUIRED");
     const input = parsePublicApplicationInput(body);
     const reqId = Number(requisitionId);

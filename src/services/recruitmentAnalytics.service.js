@@ -13,6 +13,7 @@
 // The dataset is tiny (~24 applications/tenant), so we fetch the applications
 // once with the relations we need and compute in JS to avoid N+1 round-trips.
 import prisma from "../lib/prisma.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { getCostConfig } from "./recruitmentCost.service.js";
 // Phase 12 / decision record §6 — the FROZEN, versioned KPI definitions. The
 // service only assembles inputs; the definitions live in the lib.
@@ -175,8 +176,12 @@ export async function computeRecruitmentAnalytics(tenantId) {
   // offers (acceptance), candidates.source, screening dispositions
   // (drop-off classification). SLAs come from configuration when set;
   // absent SLAs report null, never a guess.
+  // Phase 15 — the block is also flag-gated (HR_RECRUITMENT_CANONICAL_ANALYTICS):
+  // off reports as unavailable rather than disappearing, so consumers keep the
+  // same payload shape during a staged rollout.
   let canonical = null;
-  try {
+  if (!isRecruitmentFlagEnabled("analytics")) canonical = { version: null, unavailable: true, reason: "flag-disabled" };
+  else try {
     const requisitions = await prisma.jobRequisition.findMany({
       where: { tenantId: tenantId ?? undefined },
       select: {

@@ -4,6 +4,7 @@
 // what that call may do. Forwarded x-user-* headers are never authorization
 // truth.
 import { mcpCtx } from "../mcp/context.js";
+import { recordDenial } from "../lib/recruitmentOpsMetrics.js";
 
 const PROTECTED = Symbol("F-02-route-protected");
 
@@ -176,12 +177,18 @@ export function resolveHrRoutePolicy(req) {
   };
 }
 
-const deny = (req, res, code, message) => res.status(403).json({
-  success: false,
-  message: "Forbidden",
-  errors: [{ code, message }],
-  requestId: req.requestId,
-});
+const deny = (req, res, code, message) => {
+  // Phase 15 — denials are a rollout metric (HR_RECRUITMENT_DENIALS). The
+  // metric records the CODE family only, never the actor, route params or
+  // message, so there is no PII in the label and no cardinality risk.
+  recordDenial(code);
+  return res.status(403).json({
+    success: false,
+    message: "Forbidden",
+    errors: [{ code, message }],
+    requestId: req.requestId,
+  });
+};
 
 const syncVerifiedAmbientActor = (req) => {
   const store = mcpCtx.getStore();

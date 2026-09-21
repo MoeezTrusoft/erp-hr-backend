@@ -25,6 +25,8 @@
 // the row belongs to the caller's tenant before touching it.
 import prisma from "../lib/prisma.js";
 import { withTenant } from "../lib/tenancy.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { recordRetentionRun } from "../lib/recruitmentOpsMetrics.js";
 import { deleteDamAsset } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
 
@@ -695,7 +697,24 @@ export async function archiveInactiveCandidates(
 export async function applyRetention({ tenantId, asOf = new Date(), actorId = null, dryRun = true, limit = 100 } = {}, options = {}) {
   const preview = await previewRetentionDue({ tenantId, asOf, limit }, options);
   if (dryRun) {
+    recordRetentionRun("dry-run");
     return { dryRun: true, asOf: preview.asOf, wouldAnonymize: preview.due.map((c) => c.id), suspendedByLegalHold: preview.suspendedByLegalHold };
+  }
+  // Phase 15 — APPLY mode is flag-gated (HR_RECRUITMENT_RETENTION_AUTOMATION).
+  // DRY-RUN is always available regardless of the flag; this gate only stops
+  // the destructive path, mirroring §8's "dry-run until the policy owner
+  // approves, then tenant by tenant". Off → the caller gets the dry-run
+  // result with a flag-disabled marker instead of an error.
+  if (!isRecruitmentFlagEnabled("retention")) {
+    recordRetentionRun("refused-flag");
+    return {
+      dryRun: true,
+      refused: true,
+      reason: "flag-disabled",
+      asOf: preview.asOf,
+      wouldAnonymize: preview.due.map((c) => c.id),
+      suspendedByLegalHold: preview.suspendedByLegalHold,
+    };
   }
 
   const anonymized = [];
@@ -712,6 +731,7 @@ export async function applyRetention({ tenantId, asOf = new Date(), actorId = nu
     );
     anonymized.push(result.candidateId);
   }
+  recordRetentionRun("applied");
   return { dryRun: false, asOf: preview.asOf, anonymized, suspendedByLegalHold: preview.suspendedByLegalHold };
 }
 

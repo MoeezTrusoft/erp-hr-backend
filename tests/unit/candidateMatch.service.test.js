@@ -45,6 +45,10 @@ const REQ = {
 
 beforeEach(() => {
     jest.clearAllMocks();
+    // These suites exercise the AI path — enable the flag explicitly (the
+    // default is OFF per §7.1b; flag-disabled behaviour has its own tests in
+    // recruitmentFlags.test.js).
+    process.env.HR_RECRUITMENT_AI = "true";
     prisma.candidate.findUnique.mockResolvedValue(CAND);
     prisma.jobRequisition.findUnique.mockResolvedValue(REQ);
     prisma.skillAlias.findMany.mockResolvedValue([

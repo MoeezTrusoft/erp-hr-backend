@@ -18,6 +18,7 @@
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
+import { recordHandoff } from "../lib/recruitmentOpsMetrics.js";
 import { provisionHireCompensation } from "./payrollService.js";
 import { buildOnboardingTaskRows } from "../lib/onboardingDefaults.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -212,11 +213,13 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
         { actorId: actorId ?? null },
       ));
 
+      recordHandoff(completed.status === HANDOFF_STATUS.COMPLETED ? "enqueued" : "other");
       return { handoff: completed, replayed: false };
     }, { tenantId });
   } catch (error) {
     // Rolled back — nothing partial survived. Persist the failure so an operator
     // can see and retry it (the unique offerId row keeps retries idempotent).
+    recordHandoff("failed");
     await tenantTransaction(prisma, async (tx) => {
       const row = await tx.offerHandoff.update({
         where: { id: handoff.id },

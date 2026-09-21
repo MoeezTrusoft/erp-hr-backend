@@ -30,6 +30,7 @@
 //             policy (the FK is ON DELETE CASCADE).
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { runAiTask } from "../lib/aiPlaneClient.js";
 import { buildAliasIndex, matchCandidateToRequisition, resolveSkill } from "../lib/skillNormalization.js";
 import { createHash } from "node:crypto";
@@ -102,8 +103,11 @@ export async function matchCandidateToRequisitionAdvisory({ candidateId, requisi
     const report = matchCandidateToRequisition(index, candidateItems, reqSkills);
 
     // 2. Optional AI advisory summary (§7.2a: AI adds analysis, not decisions).
+    // Phase 15 — gated by HR_RECRUITMENT_AI (§7.1b: no approved config → AI off).
     let ai = null;
-    if (withAiSummary) {
+    if (withAiSummary && !isRecruitmentFlagEnabled("ai")) {
+        ai = { unavailable: true, reason: "flag-disabled" };
+    } else if (withAiSummary) {
         ai = await aiSummary({
             requisition,
             candidateItems,

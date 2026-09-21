@@ -22,6 +22,8 @@ import { createHash } from "node:crypto";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { downloadDamAssetBuffer } from "./dam.media.service.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { recordResumeParse } from "../lib/recruitmentOpsMetrics.js";
 import { runAiTask } from "../lib/aiPlaneClient.js";
 import {
   PARSE_MAX_ATTEMPTS,
@@ -158,6 +160,15 @@ const normCert = (raw) => {
 async function parseResumeText(text, { tenantId = null, candidateId = null, correlationId = null } = {}) {
   if (!text || text.length < 20) {
     return { skills: [], competencies: [], certifications: [], warning: "resume text was empty or too short" };
+  }
+  // Phase 15 — AI features are flag-gated (§7.1b): a disabled deployment gets
+  // the same typed 503 as a missing plane, so callers need no new error shape.
+  if (!isRecruitmentFlagEnabled("ai")) {
+    recordResumeParse({ kind: "CANDIDATE", outcome: "flag-disabled" });
+    throw Object.assign(new Error("Recruitment AI features are disabled (HR_RECRUITMENT_AI=off)"), {
+      status: 503,
+      code: "HR-RECRUITMENT-AI-DISABLED",
+    });
   }
 
   // §7.4 — provenance is captured at the boundary, not inferred later: hash the
@@ -300,6 +311,7 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
   if (decision.action === "SKIP") {
     const cached = prior.parsedJson ?? null;
     logger.info({ kind, contentHash: contentHash.slice(0, 12), mediaId }, "resume: parse cache hit (§4.5a)");
+    recordResumeParse({ kind, outcome: "cache-hit" });
     return {
       mediaId: Number(mediaId),
       fileName: dl.fileName,
@@ -310,6 +322,7 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
     };
   }
   if (decision.action === "EXHAUSTED") {
+    recordResumeParse({ kind, outcome: "exhausted" });
     throw Object.assign(new Error(`Resume parsing exhausted its ${PARSE_MAX_ATTEMPTS} attempts for this content`), {
       status: 429,
       code: "HR-RESUME-ATTEMPTS-EXHAUSTED",
@@ -317,6 +330,7 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
     });
   }
   if (decision.action === "RETRY_LATER") {
+    recordResumeParse({ kind, outcome: "throttled" });
     throw Object.assign(new Error(`A prior parse attempt failed; retry is throttled (backoff ${Math.ceil(decision.waitMs / 1000)}s)`), {
       status: 429,
       code: "HR-RESUME-BACKOFF",
@@ -339,9 +353,11 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
       where: { id: row.id },
       data: { status: "COMPLETED", parsedJson: result, lastError: null },
     });
+    recordResumeParse({ kind, outcome: "ok" });
     return { mediaId: Number(mediaId), fileName: dl.fileName, mimeType: dl.mimeType, fromCache: false, contentHash, ...result };
   } catch (err) {
     const retryable = isRetryableFailure(err);
+    recordResumeParse({ kind, outcome: "failed" });
     await ledger.update({
       where: { id: row.id },
       data: {

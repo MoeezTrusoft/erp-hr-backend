@@ -10,6 +10,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationStageChangedEvent } from "./hrEvents.js";
 import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisitionEligibility.js";
+import { recordTransitionFailure } from "../lib/recruitmentOpsMetrics.js";
 
 export const APPLICATION_STAGES = Object.freeze([
     "applied",
@@ -45,6 +46,7 @@ const actorNumber = (actorId) => {
 
 const assertReason = (targetStage, reason) => {
     if (["rejected", "on_hold", "withdrawn"].includes(targetStage) && !String(reason || "").trim()) {
+        recordTransitionFailure("REASON-REQUIRED");
         throw workflowError(`${targetStage} transitions require a reason`, "HR-RECRUITMENT-REASON-REQUIRED");
     }
 };
@@ -65,6 +67,7 @@ async function assertPrerequisites(db, application, targetStage) {
             select: { id: true },
         });
         if (!advance) {
+            recordTransitionFailure("SCREENING-ADVANCE-REQUIRED");
             throw workflowError(
                 "A recorded screening with outcome ADVANCE is required before moving to interview stage",
                 "HR-RECRUITMENT-SCREENING-ADVANCE-REQUIRED",
@@ -86,6 +89,7 @@ async function assertPrerequisites(db, application, targetStage) {
             select: { id: true },
         });
         if (!interview) {
+            recordTransitionFailure("INTERVIEW-REQUIRED");
             throw workflowError("An active interview is required before moving to interview stage", "HR-RECRUITMENT-INTERVIEW-REQUIRED");
         }
     }
@@ -101,6 +105,7 @@ async function assertPrerequisites(db, application, targetStage) {
             select: { id: true },
         });
         if (!completedInterview) {
+            recordTransitionFailure("INTERVIEW-OUTCOME-REQUIRED");
             throw workflowError("A completed interview with a NEXT_ROUND decision is required before an offer stage", "HR-RECRUITMENT-INTERVIEW-OUTCOME-REQUIRED");
         }
     }
@@ -115,6 +120,7 @@ async function assertPrerequisites(db, application, targetStage) {
             select: { id: true },
         });
         if (!acceptedOffer) {
+            recordTransitionFailure("ACCEPTED-OFFER-REQUIRED");
             throw workflowError("An accepted offer is required before moving to hired stage", "HR-RECRUITMENT-ACCEPTED-OFFER-REQUIRED");
         }
 
@@ -129,6 +135,7 @@ async function assertPrerequisites(db, application, targetStage) {
             select: { id: true, status: true },
         });
         if (requisition && !APPLICATION_ACCEPTING_STATUSES.includes(String(requisition.status).toUpperCase())) {
+            recordTransitionFailure("REQUISITION-NOT-ACCEPTING");
             throw workflowError(
                 `The requisition is ${String(requisition.status).toLowerCase()} — a hire cannot be recorded against a closed or withdrawn search`,
                 "HR-RECRUITMENT-REQUISITION-NOT-ACCEPTING",
@@ -171,6 +178,7 @@ async function transitionApplicationStageCore({
 
     const normalizedTarget = normalizeStage(targetStage);
     if (!APPLICATION_STAGES.includes(normalizedTarget)) {
+        recordTransitionFailure("STAGE-INVALID");
         throw workflowError(`Unsupported application stage: ${normalizedTarget}`, "HR-RECRUITMENT-STAGE-INVALID");
     }
 
@@ -184,7 +192,8 @@ async function transitionApplicationStageCore({
     }
 
     if (!ALLOWED_TRANSITIONS[application.stage]?.has(normalizedTarget)) {
-        throw workflowError(`Invalid application transition: ${application.stage} → ${normalizedTarget}`, "HR-RECRUITMENT-TRANSITION-INVALID");
+        recordTransitionFailure("TRANSITION-INVALID");
+      throw workflowError(`Invalid application transition: ${application.stage} → ${normalizedTarget}`, "HR-RECRUITMENT-TRANSITION-INVALID");
     }
 
     assertReason(normalizedTarget, reason);

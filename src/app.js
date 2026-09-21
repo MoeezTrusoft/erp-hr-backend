@@ -66,6 +66,7 @@ import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
 import { establishTenantContext } from "./middlewares/tenantContext.middleware.js";
 import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
+import { attachRecruitmentOpsMetrics } from "./lib/recruitmentOpsMetrics.js";
 import {
     createHttpMetricsMiddleware,
     attachHttpRequestDurationMetric,
@@ -108,6 +109,10 @@ export const createApp = () => {
     // same exposition the rest of the service uses. attachInternal-
     // BoundaryMetric is idempotent across createApp() calls.
     attachInternalBoundaryMetric(register);
+    // Phase 15 — the seven recruitment rollout counters (transition failures,
+    // handoffs, parses, notifications, denials, exports, retention) on the
+    // same /metrics exposition. Idempotent across createApp() calls.
+    attachRecruitmentOpsMetrics(register);
     // A-RED (08-sota-roadmap §DO-NOW #2): surface the shared
     // http_request_duration_seconds histogram on this app's /metrics so
     // Prometheus/Grafana can compute Rate / Error / p95 per route.

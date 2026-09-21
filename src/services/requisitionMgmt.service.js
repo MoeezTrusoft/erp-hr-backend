@@ -18,6 +18,7 @@ import prisma from "../lib/prisma.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
+import { recordExport } from "../lib/recruitmentOpsMetrics.js";
 import {
   assertRequisitionTransition,
   assertRequisitionAdvanceAllowed,
@@ -353,6 +354,20 @@ const REQUISITION_EXPORT_COLUMNS = [
 // Phase 1.4 — an export is a read at bulk scale, so it carries the caller's
 // record scope too; otherwise the export endpoint would be the way around it.
 export const exportManagedRequisitions = async (query, tenantId, format = "csv", scope = null) => {
+  // Phase 15 — exports are a rollout metric (format × outcome, no row data in
+  // labels). The happy path records below; a denial never reaches the service
+  // (F-02 denies first), but a computation failure records `failed`.
+  try {
+    const result = await exportManagedRequisitionsInner(query, tenantId, format, scope);
+    recordExport(format, "ok");
+    return result;
+  } catch (err) {
+    recordExport(format, "failed");
+    throw err;
+  }
+};
+
+const exportManagedRequisitionsInner = async (query, tenantId, format = "csv", scope = null) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const built = buildRequisitionWhere(query, tenantId, list.q);
   const where = scope ? { AND: [built.where, requisitionScopeWhere(scope)] } : built.where;
