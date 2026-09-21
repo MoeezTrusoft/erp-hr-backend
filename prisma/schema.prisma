@@ -353,30 +353,30 @@ model Employee {
   tenureMonths   String? // Tenure in months (system-calculated)
 
   // Existing relations
-  emergencyContact      EmergencyContacts[]     @relation("RelationWithEmployee")
-  attendance            Attendance[]
-  leaves                Leave[]
-  reviewsGiven          PerformanceReview[]     @relation("Reviewer")
-  reviewsReceived       PerformanceReview[]     @relation("EmployeeReviews")
-  feedbackGiven         ReviewFeedback[]        @relation("FeedbackByEmployee")
-  Position              Position?               @relation(fields: [positionId], references: [id])
-  positionId            Int?
-  requisitionsRequested JobRequisition[]        @relation("RequestedBy")
-  requisitionsApproved  JobRequisition[]        @relation("ApprovedBy")
+  emergencyContact         EmergencyContacts[]       @relation("RelationWithEmployee")
+  attendance               Attendance[]
+  leaves                   Leave[]
+  reviewsGiven             PerformanceReview[]       @relation("Reviewer")
+  reviewsReceived          PerformanceReview[]       @relation("EmployeeReviews")
+  feedbackGiven            ReviewFeedback[]          @relation("FeedbackByEmployee")
+  Position                 Position?                 @relation(fields: [positionId], references: [id])
+  positionId               Int?
+  requisitionsRequested    JobRequisition[]          @relation("RequestedBy")
+  requisitionsApproved     JobRequisition[]          @relation("ApprovedBy")
   // Phase 2.2 — the requisition's RECRUITER (who works the pipeline) is a
   // different person from the HIRING MANAGER (`requestedById`); conflating them
   // in one column is why the requisition row could not answer either question.
-  requisitionsRecruited  JobRequisition[]       @relation("RequisitionRecruiter")
-  requisitionsReplacing  JobRequisition[]       @relation("RequisitionReplacementFor")
+  requisitionsRecruited    JobRequisition[]          @relation("RequisitionRecruiter")
+  requisitionsReplacing    JobRequisition[]          @relation("RequisitionReplacementFor")
   // Phase 4 — an approval-matrix step may be pinned to a named employee.
   requisitionApprovalRules RequisitionApprovalRule[] @relation("RequisitionApprovalRuleApprover")
-  approvals             RequisitionApproval[]
-  JobRequisition        JobRequisition[]
-  TrainingCourse        TrainingCourse[]
-  coursesCreated        TrainingCourse[]        @relation("CourseCreatedBy")
-  courseReviews         CourseReview[]
-  attendanceAnomalies   AttendanceAnomaly[]
-  payrollApprovalRoles  PayrollApprovalMatrix[] @relation("PayrollApprover")
+  approvals                RequisitionApproval[]
+  JobRequisition           JobRequisition[]
+  TrainingCourse           TrainingCourse[]
+  coursesCreated           TrainingCourse[]          @relation("CourseCreatedBy")
+  courseReviews            CourseReview[]
+  attendanceAnomalies      AttendanceAnomaly[]
+  payrollApprovalRoles     PayrollApprovalMatrix[]   @relation("PayrollApprover")
 
   // HR-ATT-POLICY-01
   attendanceAnomalyApprovals AttendanceAnomalyApproval[] @relation("AttendanceAnomalyApprover")
@@ -699,7 +699,7 @@ model AttendanceAnomaly {
   // by the system; the employee only explains themselves. Position/department
   // are SNAPSHOTS taken at raise time: a transfer months later must not rewrite
   // the record a decision was made on.
-  applicationDate    DateTime  @default(now()) // defaults to the raise date
+  applicationDate    DateTime @default(now()) // defaults to the raise date
   positionSnapshot   String?
   departmentSnapshot String?
 
@@ -708,8 +708,8 @@ model AttendanceAnomaly {
   // anomaly day (day 1); every other type: 2 working days AFTER. Null on
   // evaluator-sourced rows means "not employee-subject" (informational).
   requestDeadline DateTime?
-  expectedTime       DateTime? // e.g. rostered shift start for a LATE_CHECKIN
-  actualTime         DateTime? // e.g. the punch that was actually recorded
+  expectedTime    DateTime? // e.g. rostered shift start for a LATE_CHECKIN
+  actualTime      DateTime? // e.g. the punch that was actually recorded
 
   // Dedup key for auto-raised anomalies. DISAPPROVED_LEAVE can arrive from BOTH
   // a rejected LeaveRequest and a rejected regularization, so the generator
@@ -1514,21 +1514,21 @@ model JobRequisition {
   updatedAt     DateTime          @updatedAt
 
   // Relations
-  position     Position?             @relation(fields: [positionId], references: [id])
-  requestedBy  Employee              @relation("RequestedBy", fields: [requestedById], references: [id])
-  approvedBy   Employee?             @relation("ApprovedBy", fields: [approvedById], references: [id])
+  position     Position?               @relation(fields: [positionId], references: [id])
+  requestedBy  Employee                @relation("RequestedBy", fields: [requestedById], references: [id])
+  approvedBy   Employee?               @relation("ApprovedBy", fields: [approvedById], references: [id])
   approvals    RequisitionApproval[]
   transitions  RequisitionTransition[]
   postings     JobPosting[]
-  employee     Employee?             @relation(fields: [employeeId], references: [id])
+  employee     Employee?               @relation(fields: [employeeId], references: [id])
   applications Application[]
   offers       Offer[]
 
   // ── Phase 5 / §3.5 — the requisition's application-form questions ──
-  questions    ApplicationQuestion[]
+  questions ApplicationQuestion[]
 
   // ── Phase 6 / §4.3 — the requisition shortlist ──
-  shortlist    ShortlistEntry[]
+  shortlist ShortlistEntry[]
 
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
@@ -1539,21 +1539,21 @@ model JobRequisition {
   // Every field below is nullable ON PURPOSE: existing requisitions must stay
   // readable and editable, and the requirement (decision record §1.1) is that
   // they COMPLY AT SUBMISSION rather than be force-migrated in place.
-  location        String? // free text — this codebase has no Location/Office table; Employee/Candidate/Interview all carry `location` as text
-  employmentType  String? // FULL_TIME | PART_TIME | CONTRACT | INTERN | TEMPORARY
-  targetStartDate DateTime?
+  location               String? // free text — this codebase has no Location/Office table; Employee/Candidate/Interview all carry `location` as text
+  employmentType         String? // FULL_TIME | PART_TIME | CONTRACT | INTERN | TEMPORARY
+  targetStartDate        DateTime?
   // Salary band = a reference to GradeLevel (min/mid/max + bandCurrency live there).
-  gradeLevelId    Int?
+  gradeLevelId           Int?
   // Finance-owned references. The label is a CACHE for display/audit only and is
   // never the source of truth (decision record §1.2).
-  costCenterRef   String?
-  costCenterLabel String?
-  budgetRef       String?
-  budgetLabel     String?
-  hiringReason    String? // NEW_HIRE | REPLACEMENT | EXPANSION | SEASONAL | PROJECT | OTHER
+  costCenterRef          String?
+  costCenterLabel        String?
+  budgetRef              String?
+  budgetLabel            String?
+  hiringReason           String? // NEW_HIRE | REPLACEMENT | EXPANSION | SEASONAL | PROJECT | OTHER
   // Required only when hiringReason = REPLACEMENT (who this hire replaces).
-  replacementEmployeeId Int?
-  recruiterId     Int?
+  replacementEmployeeId  Int?
+  recruiterId            Int?
   // ── Phase 4 / decision record §2.5 — the application window ────────────────
   // Nullable on purpose: an absent closesAt means the posting stays open until a
   // human closes or withdraws it. "Optional autoCloseWhenFilled, not
@@ -1561,21 +1561,17 @@ model JobRequisition {
   // auto-close flips the STATUS and stamps autoClosedAt, it never deletes
   // postings, never locks fields, and a requisition reopened after an auto-close
   // is a plain state move, not an exception path.
-  closesAt            DateTime?
-  autoCloseWhenFilled Boolean   @default(false)
-  autoClosedAt        DateTime?
-
-  // The read path the eligibility check and the candidate-facing listing use
-  // (mirrored by migration 20260920280000).
-  @@index([status, closesAt])
+  closesAt               DateTime?
+  autoCloseWhenFilled    Boolean   @default(false)
+  autoClosedAt           DateTime?
   // Structured, versioned job content — {
   //   schemaVersion, summary, responsibilities[], requirements[], skills[],
   //   benefits[], hiringProcess[], faq[] }. Replaces the description blob as the
   //   publishable contract; `description`/`requirements` remain for compatibility.
-  jobContent      Json?
+  jobContent             Json?
   // Lifecycle stamps the plan asked for; set by the transitions themselves.
-  publishedAt     DateTime?
-  closedAt        DateTime?
+  publishedAt            DateTime?
+  closedAt               DateTime?
   // The FINANCE SNAPSHOT captured when the requisition was approved (approved
   // budget, currency, headcount, source, capturedAt). It records what was true at
   // approval, so a later change in Finance cannot silently rewrite the audit
@@ -1585,19 +1581,22 @@ model JobRequisition {
   // A CACHE of the Finance-owned number, like costCenterLabel — Finance remains
   // the source of truth, and an unknown amount is treated as "at or above every
   // threshold" so a missing figure escalates rather than slips through.
-  budgetedAmount Decimal? @db.Decimal(18, 4)
-  budgetCurrency String?
+  budgetedAmount         Decimal?  @db.Decimal(18, 4)
+  budgetCurrency         String?
   // Phase 4 — the approval chain frozen at the first decision, so a matrix edit
   // mid-approval cannot change what the in-flight requisition is being judged
   // against. Written lazily (first decision) rather than at submit so all three
   // submit paths need no extra write.
-  approvalChainSnapshot Json?
+  approvalChainSnapshot  Json?
 
-  recruiter           Employee?   @relation("RequisitionRecruiter", fields: [recruiterId], references: [id])
-  replacementEmployee Employee?   @relation("RequisitionReplacementFor", fields: [replacementEmployeeId], references: [id])
-  gradeLevel          GradeLevel? @relation(fields: [gradeLevelId], references: [id])
+  recruiter           Employee?               @relation("RequisitionRecruiter", fields: [recruiterId], references: [id])
+  replacementEmployee Employee?               @relation("RequisitionReplacementFor", fields: [replacementEmployeeId], references: [id])
+  gradeLevel          GradeLevel?             @relation(fields: [gradeLevelId], references: [id])
   attachments         RequisitionAttachment[]
 
+  // The read path the eligibility check and the candidate-facing listing use
+  // (mirrored by migration 20260920280000).
+  @@index([status, closesAt])
   @@index([tenantId])
   @@index([positionId])
   @@index([requestedById])
@@ -1652,11 +1651,11 @@ model RequisitionAttachment {
 // caller authorized on the requisition who is not excluded by the
 // distinct-approver rule; naming one PINS the step to that employee.
 model RequisitionApprovalRule {
-  id       Int  @id @default(autoincrement())
+  id       Int     @id @default(autoincrement())
   tenantId String? @db.Uuid
 
-  stepOrder Int // 1, 2, 3 … evaluated in ascending order
-  role      String // HIRING_MANAGER | HR_HEAD | FINANCE | CUSTOM
+  stepOrder  Int // 1, 2, 3 … evaluated in ascending order
+  role       String // HIRING_MANAGER | HR_HEAD | FINANCE | CUSTOM
   approverId Int?
 
   // Trigger conditions — all null ⇒ the step always applies.
@@ -2735,7 +2734,7 @@ model Tag {
 }
 
 model Candidate {
-  id            Int      @id @default(autoincrement())
+  id            Int     @id @default(autoincrement())
   firstName     String
   lastName      String?
   email         String
@@ -2745,25 +2744,33 @@ model Candidate {
   resumeUrl     String? // legacy - use resumeMediaId for new uploads
   resumeMediaId Int? // DAM asset ID for resume file
   notes         String?
-  status        String   @default("active") // active | archived
+  status        String  @default("active") // active | archived
   // AI resume-parsing output (skills/competencies/certifications + raw meta).
   // Additive nullable JSON; candidates have no Certification relation so their
   // extracted certs live here.
   parsedResume  Json?
-  tenantId      String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
-  createdById   Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+
+  // Phase 6 / §4.5a — parse state for the retry contract. The AUTHORITATIVE
+  // dedupe key lives on ResumeParseAttempt (content hash); these columns are the
+  // candidate-facing projection ("what happened to MY resume") and the reset
+  // happens by content, not by candidate.
+  parseStatus String? // PENDING | RUNNING | COMPLETED | FAILED | EXHAUSTED
+  parseError  String?
+  parsedAt    DateTime?
+  tenantId    String?   @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
+  createdById Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
 
   // ── Phase 2.3/10 — privacy state (additive; UNKNOWN for pre-existing rows) ──
-  consentStatus   String    @default("UNKNOWN") // UNKNOWN | GRANTED | WITHDRAWN
+  consentStatus    String    @default("UNKNOWN") // UNKNOWN | GRANTED | WITHDRAWN
   consentUpdatedAt DateTime?
-  retentionUntil  DateTime?
-  anonymizedAt    DateTime?
-  archivedAt      DateTime?
+  retentionUntil   DateTime?
+  anonymizedAt     DateTime?
+  archivedAt       DateTime?
 
   tags            CandidateTag[]
   applications    Application[]
@@ -2815,29 +2822,29 @@ model CandidateTag {
 }
 
 model Application {
-  id               Int      @id @default(autoincrement())
-  candidateId      Int
-  jobRequisitionId Int
-  stage            String   @default("applied") // applied | screening | interview | offer | hired | rejected | on_hold | withdrawn
-  status           String   @default("open") // open | closed
+  id                Int      @id @default(autoincrement())
+  candidateId       Int
+  jobRequisitionId  Int
+  stage             String   @default("applied") // applied | screening | interview | offer | hired | rejected | on_hold | withdrawn
+  status            String   @default("open") // open | closed
   dispositionReason String?
-  holdReason       String?
-  withdrawnReason  String?
-  tenantId         String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
-  createdById      Int?
-  appliedAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  holdReason        String?
+  withdrawnReason   String?
+  tenantId          String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
+  createdById       Int?
+  appliedAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  candidate      Candidate      @relation(fields: [candidateId], references: [id])
-  jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+  candidate      Candidate                 @relation(fields: [candidateId], references: [id])
+  jobRequisition JobRequisition            @relation(fields: [jobRequisitionId], references: [id])
   interviews     Interview[]
   offer          Offer?
   stageHistory   ApplicationStageHistory[]
   answers        ApplicationAnswer[]
 
   // Phase 6 / §4.1 + §4.3
-  screenings     ApplicationScreening[]
-  shortlist      ShortlistEntry[]
+  screenings ApplicationScreening[]
+  shortlist  ShortlistEntry[]
 
   @@unique([candidateId, jobRequisitionId])
   @@index([candidateId])
@@ -2857,7 +2864,7 @@ model ApplicationQuestion {
   requisitionId Int
   version       Int      @default(1)
   orderIndex    Int      @default(0)
-  type          String   // TEXT_SHORT | TEXT_LONG | SINGLE_CHOICE | MULTI_CHOICE | NUMBER | BOOLEAN | DATE
+  type          String // TEXT_SHORT | TEXT_LONG | SINGLE_CHOICE | MULTI_CHOICE | NUMBER | BOOLEAN | DATE
   prompt        String
   required      Boolean  @default(false)
   // For *_CHOICE: [{ value: "..", label: ".." }]. For NUMBER: [{ min }, { max }].
@@ -2887,14 +2894,14 @@ model ApplicationQuestion {
 // rather than appending a second set, so the answer set is always the
 // candidate's CURRENT response.
 model ApplicationAnswer {
-  id          Int      @id @default(autoincrement())
+  id            Int      @id @default(autoincrement())
   applicationId Int
-  questionId  Int
-  value       Json?    // string | number | boolean | string[] (multi) — null when skipped
-  score       Int?     // the deterministic score awarded; null when the question is unscored
-  answeredAt  DateTime @default(now())
+  questionId    Int
+  value         Json? // string | number | boolean | string[] (multi) — null when skipped
+  score         Int? // the deterministic score awarded; null when the question is unscored
+  answeredAt    DateTime @default(now())
 
-  application Application        @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  application Application         @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   question    ApplicationQuestion @relation(fields: [questionId], references: [id])
 
   @@unique([applicationId, questionId])
@@ -2987,13 +2994,40 @@ model ShortlistEntry {
   addedById     Int?
   addedAt       DateTime @default(now())
 
-  application Application      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  requisition JobRequisition   @relation(fields: [requisitionId], references: [id])
+  application Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  requisition JobRequisition @relation(fields: [requisitionId], references: [id])
 
   @@unique([applicationId])
   @@index([requisitionId])
   @@index([tenantId])
   @@map("shortlist_entries")
+}
+
+// ── Phase 6 / decision record §4.5a — the resume-parse attempt ledger ────────
+//
+// Keyed by the ASSET'S CONTENT HASH (sha-256 of the bytes), not the media id:
+// re-uploading an identical file must HIT the cache — no second vendor call, no
+// second charge, no parsing drift between attempts. One row per content hash
+// per parse KIND (candidate vs employee ingestion differ in their write path).
+// §4.5a's "three idempotent attempts" is decided by lib/parseRetry.js; this
+// table is that policy's memory.
+model ResumeParseAttempt {
+  id           Int      @id @default(autoincrement())
+  kind         String // CANDIDATE | EMPLOYEE
+  contentHash  String
+  mediaId      Int?
+  status       String   @default("PENDING") // PENDING | RUNNING | COMPLETED | FAILED
+  attemptCount Int      @default(0)
+  lastError    String?
+  parsedJson   Json? // the completed parse — the cache payload
+  tenantId     String?  @db.Uuid
+  startedAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([kind, contentHash])
+  @@index([tenantId])
+  @@index([status, updatedAt])
+  @@map("resume_parse_attempts")
 }
 
 model PerformanceMetric {
@@ -3352,11 +3386,11 @@ model Offer {
   created_at         DateTime    @default(now())
   updated_at         DateTime    @updatedAt
 
-  application    Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  candidate      Candidate      @relation(fields: [candidateId], references: [id])
+  application     Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  candidate       Candidate       @relation(fields: [candidateId], references: [id])
   approvalRecords OfferApproval[]
-  handoff        OfferHandoff?
-  jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+  handoff         OfferHandoff?
+  jobRequisition  JobRequisition  @relation(fields: [jobRequisitionId], references: [id])
 
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
@@ -3374,14 +3408,14 @@ model Offer {
 }
 
 model OfferApproval {
-  id        Int      @id @default(autoincrement())
-  offerId   Int
-  tenantId  String   @db.Uuid
-  stage     String
-  decision  String
+  id         Int      @id @default(autoincrement())
+  offerId    Int
+  tenantId   String   @db.Uuid
+  stage      String
+  decision   String
   approverId Int?
-  reason    String?
-  decidedAt DateTime @default(now())
+  reason     String?
+  decidedAt  DateTime @default(now())
 
   offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
 
@@ -3419,12 +3453,12 @@ model OfferHandoff {
 // Append-only record of each provisioning step so a partial/failed handoff is
 // visible and diagnosable without re-running it.
 model OfferHandoffAttempt {
-  id        Int      @id @default(autoincrement())
-  handoffId Int
-  tenantId  String   @db.Uuid
-  step      String
-  status    String // OK | FAILED
-  error     String?  @db.Text
+  id         Int      @id @default(autoincrement())
+  handoffId  Int
+  tenantId   String   @db.Uuid
+  step       String
+  status     String // OK | FAILED
+  error      String?  @db.Text
   created_at DateTime @default(now())
 
   handoff OfferHandoff @relation(fields: [handoffId], references: [id], onDelete: Cascade)
@@ -3472,22 +3506,22 @@ model CandidateConsent {
 // unique index, because Prisma cannot express `WHERE status='ACTIVE'` in the
 // schema and a schema/migration mismatch fails the F-DB-01 drift gate.
 model CandidateDncEntry {
-  id           Int       @id @default(autoincrement())
-  tenantId     String    @db.Uuid
-  email        String // normalized (trimmed, lowercased)
-  candidateId  Int?
-  reasonCode   String // mandatory compliance reason code
-  reason       String    @db.Text
-  scope        String    @default("ALL") // ALL | TENANT_CHANNEL…
-  status       String    @default("ACTIVE") // ACTIVE | LIFTED
-  effectiveFrom DateTime @default(now())
-  expiresAt    DateTime?
-  createdById  Int?
-  liftedAt     DateTime?
-  liftedById   Int?
-  liftReason   String?   @db.Text
-  created_at   DateTime  @default(now())
-  updated_at   DateTime  @updatedAt
+  id            Int       @id @default(autoincrement())
+  tenantId      String    @db.Uuid
+  email         String // normalized (trimmed, lowercased)
+  candidateId   Int?
+  reasonCode    String // mandatory compliance reason code
+  reason        String    @db.Text
+  scope         String    @default("ALL") // ALL | TENANT_CHANNEL…
+  status        String    @default("ACTIVE") // ACTIVE | LIFTED
+  effectiveFrom DateTime  @default(now())
+  expiresAt     DateTime?
+  createdById   Int?
+  liftedAt      DateTime?
+  liftedById    Int?
+  liftReason    String?   @db.Text
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
 
   @@index([tenantId])
   @@index([tenantId, email, status])

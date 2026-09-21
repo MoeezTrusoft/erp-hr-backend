@@ -13,6 +13,14 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { downloadDamAssetBuffer } from "./dam.media.service.js";
+import {
+  PARSE_MAX_ATTEMPTS,
+  backoffDelayMs,
+  hashResumeContent,
+  isRetryableFailure,
+  storedErrorIsRetryable,
+  decideParse,
+} from "../lib/parseRetry.js";
 
 const OPENAI_MODEL = process.env.OPENAI_RESUME_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const MAX_RESUME_CHARS = parseInt(process.env.RESUME_MAX_CHARS || "24000", 10);
@@ -215,7 +223,13 @@ async function parseResumeText(text) {
 }
 
 // Download a resume asset from DAM and parse it (no DB writes).
-export async function parseResumePreview(mediaId) {
+// Phase 6 / §4.5a — the ledger-driven parse entrypoint. EVERY parse goes
+// through here (both ingestion kinds and the preview), so the content-hash
+// cache and the three-attempt ceiling are the only behaviour, not one surface
+// among several. The retry decision itself is pure policy (lib/parseRetry.js);
+// this wrapper owns: the DAM fetch, the hash, the ledger row, and the
+// attempt-loop that respects the backoff.
+export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenantId = null, force = false } = {}) {
   const dl = await downloadDamAssetBuffer(mediaId);
   if (!dl?.buffer) {
     throw Object.assign(new Error(`Could not download resume asset ${mediaId} from DAM`), {
@@ -223,9 +237,106 @@ export async function parseResumePreview(mediaId) {
       code: "HR-RESUME-DAM-FETCH",
     });
   }
-  const text = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
-  const result = await parseResumeText(text);
-  return { mediaId: Number(mediaId), fileName: dl.fileName, mimeType: dl.mimeType, ...result };
+
+  const contentHash = hashResumeContent(dl.buffer);
+  const ledger = prisma.resumeParseAttempt;
+
+  // Retry/EXHAUSTED on an EXHAUSTED ledger row: an explicit force re-parse is
+  // the operator's "I know, run it again" — it resets the ceiling for THIS
+  // content only (a new row version), never silently.
+  let prior = await ledger.findUnique({ where: { kind_contentHash: { kind, contentHash } } });
+  if (force && prior && prior.status === "COMPLETED") {
+    // Same content, completed, forced → re-run but keep ONE ledger row (reset).
+    await ledger.delete({ where: { id: prior.id } });
+    prior = null;
+  }
+
+  let decision = decideParse({ priorAttempt: prior, contentHash, now: new Date() });
+
+  if (decision.action === "SKIP") {
+    const cached = prior.parsedJson ?? null;
+    logger.info({ kind, contentHash: contentHash.slice(0, 12), mediaId }, "resume: parse cache hit (§4.5a)");
+    return {
+      mediaId: Number(mediaId),
+      fileName: dl.fileName,
+      mimeType: dl.mimeType,
+      fromCache: true,
+      contentHash,
+      ...(cached ?? {}),
+    };
+  }
+  if (decision.action === "EXHAUSTED") {
+    throw Object.assign(new Error(`Resume parsing exhausted its ${PARSE_MAX_ATTEMPTS} attempts for this content`), {
+      status: 429,
+      code: "HR-RESUME-ATTEMPTS-EXHAUSTED",
+      details: { reason: decision.reason, attempts: prior?.attemptCount ?? 0 },
+    });
+  }
+  if (decision.action === "RETRY_LATER") {
+    throw Object.assign(new Error(`A prior parse attempt failed; retry is throttled (backoff ${Math.ceil(decision.waitMs / 1000)}s)`), {
+      status: 429,
+      code: "HR-RESUME-BACKOFF",
+      details: { retryAfterMs: decision.waitMs, attempt: decision.attempt },
+    });
+  }
+
+  // PARSE or RETRY: mark RUNNING and go. attemptCount carried forward on retry.
+  const attemptNo = decision.attempt;
+  const row = await ledger.upsert({
+    where: { kind_contentHash: { kind, contentHash } },
+    create: { kind, contentHash, mediaId: Number(mediaId) || null, status: "RUNNING", attemptCount: 1, tenantId },
+    update: { status: "RUNNING", attemptCount: attemptNo, lastError: null, mediaId: Number(mediaId) || null },
+  });
+
+  try {
+    const text = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
+    const result = await parseResumeText(text);
+    await ledger.update({
+      where: { id: row.id },
+      data: { status: "COMPLETED", parsedJson: result, lastError: null },
+    });
+    return { mediaId: Number(mediaId), fileName: dl.fileName, mimeType: dl.mimeType, fromCache: false, contentHash, ...result };
+  } catch (err) {
+    const retryable = isRetryableFailure(err);
+    await ledger.update({
+      where: { id: row.id },
+      data: {
+        status: "FAILED",
+        lastError: `${err?.code ?? ""} ${err?.message ?? err}`.trim().slice(0, 500),
+      },
+    });
+    // §4.5a — the loop runs up to the ceiling HERE (synchronously), each retry
+    // after its backoff. A caller that wants async scheduling re-invokes; the
+    // ledger makes that safe and identical.
+    if (retryable && attemptNo < PARSE_MAX_ATTEMPTS) {
+      let nextAttempt = attemptNo + 1;
+      let waitMs = backoffDelayMs(attemptNo);
+      while (nextAttempt <= PARSE_MAX_ATTEMPTS) {
+        await sleep(waitMs);
+        try {
+          const text2 = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
+          const result2 = await parseResumeText(text2);
+          await ledger.update({ where: { id: row.id }, data: { status: "COMPLETED", parsedJson: result2, lastError: null } });
+          return { mediaId: Number(mediaId), fileName: dl.fileName, mimeType: dl.mimeType, fromCache: false, contentHash, ...result2 };
+        } catch (err2) {
+          if (!isRetryableFailure(err2)) {
+            await ledger.update({ where: { id: row.id }, data: { lastError: `${err2?.code ?? ""} ${err2?.message ?? err2}`.trim().slice(0, 500) } });
+            throw err2;
+          }
+          await ledger.update({ where: { id: row.id }, data: { attemptCount: nextAttempt, lastError: `${err2?.code ?? ""} ${err2?.message ?? err2}`.trim().slice(0, 500) } });
+          waitMs = backoffDelayMs(nextAttempt);
+          nextAttempt += 1;
+        }
+      }
+    }
+    throw err;
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function parseResumePreview(mediaId) {
+  return parseResumeWithRetry(mediaId, { kind: "CANDIDATE" });
 }
 
 /**
@@ -326,7 +437,28 @@ export async function ingestCandidateResume({ candidateId, mediaId, tenantId = n
   const resumeMediaId = mediaId ?? candidate.resumeMediaId;
   if (!resumeMediaId) throw Object.assign(new Error("Candidate has no resumeMediaId to parse"), { status: 400 });
 
-  const parsed = await parseResumePreview(resumeMediaId);
+  // Phase 6 / §4.5a — the parse goes through the ledger entrypoint; the
+  // candidate row gets the parse-state projection (status/error/time) so the
+  // candidate-facing UI can show "parsing…/parsed/failed" without reading the
+  // ledger. FAILED is a terminal projection until a successful re-parse — the
+  // ledger decides when a retry is allowed, not the candidate row.
+  let parsed;
+  try {
+    parsed = await parseResumeWithRetry(resumeMediaId, { kind: "CANDIDATE", tenantId: tenant });
+    await prisma.candidate.update({
+      where: { id },
+      data: { parseStatus: "COMPLETED", parseError: null, parsedAt: new Date() },
+    });
+  } catch (err) {
+    const failed = err?.code === "HR-RESUME-ATTEMPTS-EXHAUSTED" || err?.code === "HR-RESUME-BACKOFF" || err?.code === "HR-RESUME-BAD-JSON" || err?.status >= 500;
+    if (failed) {
+      await prisma.candidate.update({
+        where: { id },
+        data: { parseStatus: "FAILED", parseError: String(err?.message ?? err).slice(0, 300) },
+      });
+    }
+    throw err;
+  }
   const items = [...parsed.skills, ...parsed.competencies];
 
   for (const item of items) {
@@ -350,6 +482,7 @@ export async function ingestCandidateResume({ candidateId, mediaId, tenantId = n
     data: {
       parsedResume: {
         mediaId: Number(resumeMediaId),
+        contentHash: parsed.contentHash,
         model: parsed.model,
         skills: parsed.skills,
         competencies: parsed.competencies,
