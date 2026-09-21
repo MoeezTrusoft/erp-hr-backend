@@ -436,6 +436,7 @@ export const getLeaveRequests = async (filters = {}) => {
             first_name: true,
             last_name: true,
             job_title: true,
+            businessUnit: { select: { id: true, name: true } },
             // C.2 bugfix: the Employee→Position relation is `Position` (schema
             // l.246), not `position`; Position has no `department` relation, so
             // a plain include is the correct, working read.
@@ -590,40 +591,21 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     throw new Error('No working days in the selected date range');
   }
 
-  // Check leave balance
-  const balance = await prisma.leaveBalance.findUnique({
-    where: {
-      employeeId_leavePolicyId: {
-        employeeId: parseInt(employeeId),
-        leavePolicyId: parseInt(leavePolicyId)
-      }
-    }
-  });
-
-  if (!balance || balance.balance < durationDays) {
-    throw new Error(`Insufficient leave balance. Available: ${balance?.balance || 0} days, Requested: ${durationDays} days`);
-  }
-
-  // Get leave policy to check approval workflow
-  const leavePolicy = await prisma.leavePolicy.findUnique({
-    where: { id: parseInt(leavePolicyId) },
-    include: {
-      approvalWorkflow: {
-        include: {
-          steps: {
-            orderBy: { stepOrder: 'asc' }
-          }
-        }
-      }
-    }
-  });
+  // HR-LEAVE-TYPELESS-01 (2026-09-22, operator ruling) — the EMPLOYEE does
+  // NOT pick a leave type: they submit dates + reason only, and HR assigns
+  // the type (= LeavePolicy) at approval. A pending request therefore has no
+  // policy, so the balance check and the approval-workflow lookup move to
+  // approveLeaveRequest, which refuses to approve a still-typeless request
+  // (C5 guard). Deduction/balance integrity is enforced where the type is
+  // actually known, not guessed here.
 
   const create = await prisma.leaveRequest.create({
     // C.2: stamp the verified tenant on the new row (omitted → unchanged legacy
     // behavior; present → fail-closed via tenantData).
     data: (tenantId === undefined ? (d) => d : (d) => tenantData(tenantId, d))({
       employeeId: parseInt(employeeId),
-      leavePolicyId: parseInt(leavePolicyId),
+      // Typeless while PENDING — HR assigns the LeavePolicy at approval.
+      leavePolicyId: leavePolicyId != null ? parseInt(leavePolicyId) : null,
       startDate: start,
       endDate: end,
       totalDays: durationDays,

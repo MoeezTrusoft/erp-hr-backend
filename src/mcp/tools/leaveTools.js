@@ -19,6 +19,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
+import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import prisma from "../../lib/prisma.js";
 
 function getCtx() {
@@ -105,7 +106,19 @@ export function registerLeaveTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
-      const data = await mcpListLeaveRequests(user, toListQuery(args));
+      // HR-LEAVE-SELFSCOPE-01 (2026-09-22) — an employee session (VIEW-only on
+      // hr:leave) must see ONLY its own requests. Pin to the acting employee;
+      // a foreign employeeId is refused, not remapped (D1=A).
+      const { actingEmployeeId, canViewOthers } = resolveActorScope(user, permissions);
+      const pinnedEmployeeId = assertEmployeeScope({
+        user,
+        permissions,
+        explicit: args.employeeId,
+        actingEmployeeId,
+        canViewOthers,
+        allowUnbound: true,
+      });
+      const data = await mcpListLeaveRequests(user, toListQuery({ ...args, employeeId: pinnedEmployeeId ?? undefined }));
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_leave_requests_list")
   );
@@ -122,7 +135,8 @@ export function registerLeaveTools(server) {
       leaveType: z
         .string()
         .min(1)
-        .describe("Leave type code (e.g. ANNUAL, SICK, MATERNITY); resolved server-side to an active LeavePolicy by leaveTypeCode or name"),
+        .optional()
+        .describe("HR-LEAVE-TYPELESS-01 — OPTIONAL: employees file WITHOUT a type (HR assigns one at approval). HR/manager may still create a pre-typed request by passing the policy code."),
       startDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be today or later and ≤ endDate"),
       endDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be ≥ startDate"),
       reason: z.string().optional().describe("Optional free-text reason shown on the request"),

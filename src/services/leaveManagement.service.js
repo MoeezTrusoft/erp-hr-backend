@@ -26,6 +26,14 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
+// HR-LEAVE-TYPELESS-01 — decisions dispatch through the CANONICAL approve /
+// reject services (leave.service.js) so the balance decrement, the attendance
+// write-back and the hr.leave.approved.v1 outbox event can never drift from
+// the pairwise endpoints again.
+import {
+  approveLeaveRequest as canonicalApproveLeaveRequest,
+  rejectLeaveRequest as canonicalRejectLeaveRequest,
+} from "./leave.service.js";
 
 // ── type bucketing ─────────────────────────────────────────────────────────
 // The 4 canonical buckets + "other". A policy is bucketed by a case-insensitive
@@ -207,7 +215,7 @@ export const getLeaveRequestsDashboard = async (query, tenantId) => {
 // Mirrors the existing leave.service approve/reject shape: records a
 // LeaveRequestApproval row, flips the request status, and (on approve) deducts
 // the leave balance. Kept self-contained so it needs no shared-file edits.
-export const decideLeaveRequest = async ({ id, decision, reason }, user, tenantId) => {
+export const decideLeaveRequest = async ({ id, decision, reason, leavePolicyId }, user, tenantId) => {
   const leaveRequestId = Number(id);
   const norm = String(decision || "").toLowerCase();
   if (norm !== "approve" && norm !== "reject") {
@@ -231,56 +239,161 @@ export const decideLeaveRequest = async ({ id, decision, reason }, user, tenantI
     throw Object.assign(new Error("Leave request is not pending"), { status: 409 });
   }
 
-  const isApprove = norm === "approve";
-  const newStatus = isApprove ? "APPROVED" : "REJECTED";
-  const approverRole = Array.isArray(user?.roles) && user.roles.length ? String(user.roles[0]) : "APPROVER";
-
-  const ops = [
-    prisma.leaveRequestApproval.create({
-      data: {
-        leaveRequestId,
-        approverId,
-        approverRole,
-        decision: newStatus,
-        comments: reason ?? null,
-        decision_date: new Date(),
-        createdById: approverId,
-        ...scopedWhere(tenantId, {}),
-      },
-    }),
-    prisma.leaveRequest.update({
-      where: { id: leaveRequestId },
-      data: { status: newStatus, updatedById: approverId, ...(reason ? { reason } : {}) },
-    }),
-  ];
-
-  if (isApprove) {
-    // Deduct from balance (best-effort — only if a balance row exists).
-    const bal = await prisma.leaveBalance.findUnique({
-      where: {
-        employeeId_leavePolicyId: {
-          employeeId: request.employeeId,
-          leavePolicyId: request.leavePolicyId,
-        },
-      },
-    });
-    if (bal) {
-      ops.push(
-        prisma.leaveBalance.update({
-          where: {
-            employeeId_leavePolicyId: {
-              employeeId: request.employeeId,
-              leavePolicyId: request.leavePolicyId,
-            },
-          },
-          data: { balance: (bal.balance || 0) - (request.totalDays || 0), lastUpdated: new Date() },
-        })
+  // HR-LEAVE-TYPELESS-01 (2026-09-22) — the employee files WITHOUT a leave
+  // type; HR selects it in the approve modal. Accept an explicit
+  // leavePolicyId, else fall back to the policy already on the request.
+  // Rejecting a typeless request stays legal (no type is ever needed).
+  let policyId = request.leavePolicyId;
+  if (norm === "approve") {
+    const explicitPolicy = leavePolicyId != null && leavePolicyId !== "" ? Number(leavePolicyId) : null;
+    if (explicitPolicy != null && !Number.isNaN(explicitPolicy)) {
+      const policy = await prisma.leavePolicy.findUnique({ where: { id: explicitPolicy } });
+      if (!policy || policy.active === false) {
+        throw Object.assign(new Error(`Leave policy ${explicitPolicy} not found or inactive`), { status: 400 });
+      }
+      policyId = explicitPolicy;
+    }
+    if (policyId == null) {
+      throw Object.assign(
+        new Error("Leave type must be selected to approve this request. Pick a leave type, then approve."),
+        { status: 400 },
       );
+    }
+    if (policyId !== request.leavePolicyId) {
+      await prisma.leaveRequest.update({
+        where: { id: leaveRequestId },
+        data: { leavePolicyId: policyId, updatedById: approverId },
+      });
     }
   }
 
-  const results = await prisma.$transaction(ops);
-  return { id: leaveRequestId, status: newStatus, decision: norm, updated: results[1] };
+  // Dispatch through the canonical services — balance decrement, attendance
+  // write-back (createLeaveAttendanceRecords) and the outbox event all run.
+  if (norm === "approve") {
+    const updated = await canonicalApproveLeaveRequest(leaveRequestId, {
+      approverId,
+      approverRole: Array.isArray(user?.roles) && user.roles.length ? String(user.roles[0]) : "APPROVER",
+      comments: reason ?? null,
+      createdById: approverId,
+    });
+    return { id: leaveRequestId, status: "APPROVED", decision: norm, updated };
+  }
+  const updated = await canonicalRejectLeaveRequest(leaveRequestId, {
+    approverId,
+    approverRole: Array.isArray(user?.roles) && user.roles.length ? String(user.roles[0]) : "APPROVER",
+    comments: String(reason || "").trim(),
+    createdById: approverId,
+  });
+  return { id: leaveRequestId, status: "REJECTED", decision: norm, updated };
+};
+
+// ────────────────────────────────────────────────────────────────────────────
+// 3b. hr_leave_month_overview — one call feeding the reworked dashboard:
+//     per-type KPI counts, per-department leave counts and a per-day heatmap
+//     of approved/disapproved/requested leaves for the SELECTED month.
+// ────────────────────────────────────────────────────────────────────────────
+export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId) => {
+  const m = /^\d{4}-\d{2}$/.exec(String(month || ""));
+  if (!m) throw Object.assign(new Error("month must be YYYY-MM"), { status: 400 });
+  const from = new Date(`${m[0]}-01T00:00:00.000Z`);
+  // Last day of the month: year/monthIndex come from `from`; day 0 of the
+  // NEXT month index = the month's final day (handles 28/30/31 correctly).
+  const to = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0));
+  to.setUTCHours(23, 59, 59, 999);
+  const daysInMonth = to.getUTCDate();
+
+  const empId = employeeId != null && employeeId !== "" ? Number(employeeId) : null;
+
+  // Requests overlapping the month (RLS scopes LeaveRequest by tenant).
+  const requests = await prisma.leaveRequest.findMany({
+    where: {
+      startDate: { lte: to },
+      endDate: { gte: from },
+      ...(empId != null ? { employeeId: empId } : {}),
+    },
+    select: {
+      id: true, employeeId: true, leavePolicyId: true, startDate: true,
+      endDate: true, status: true, created_at: true, reason: true,
+      employee: {
+        select: { id: true, first_name: true, last_name: true, job_title: true, Position: true },
+      },
+      leavePolicy: { select: { id: true, name: true, leaveTypeCode: true } },
+    },
+  });
+
+  const bucketOf = (r) => {
+    const code = String(r.leavePolicy?.leaveTypeCode || "").toUpperCase();
+    const name = String(r.leavePolicy?.name || "").toLowerCase();
+    if (code === "ANNUAL" || name.includes("annual")) return "annual";
+    if (code === "SICK" || name.includes("sick")) return "sick";
+    if (code === "CASUAL" || name.includes("casual")) return "casual";
+    if (code === "MATERNITY" || code === "PATERNITY" || name.includes("matern") || name.includes("patern")) return "maternity";
+    return "other";
+  };
+
+  // Employee → department map (business unit, same source as coverage).
+  const empIds = [...new Set(requests.map((r) => r.employeeId))];
+  const employees = empIds.length
+    ? await prisma.employee.findMany({
+        where: { id: { in: empIds } },
+        select: { id: true, businessUnit: { select: { name: true } } },
+      })
+    : [];
+  const deptOf = new Map(employees.map((e) => [e.id, e.businessUnit?.name || "Unassigned"]));
+
+  const byType = { annual: 0, sick: 0, casual: 0, maternity: 0, other: 0 };
+  const byDepartment = new Map();
+  const dayGrid = Array.from({ length: daysInMonth }, () => ({ approved: 0, disapproved: 0, requested: 0 }));
+  const perDayEmployees = Array.from({ length: daysInMonth }, () => []);
+
+  for (const r of requests) {
+    if (r.status === "CANCELLED") continue;
+    const bucket = bucketOf(r);
+    if (r.status === "APPROVED") byType[bucket] += r.totalDays || 0;
+    const dept = deptOf.get(r.employeeId) || "Unassigned";
+    if (!byDepartment.has(dept)) byDepartment.set(dept, { department: dept, employees: new Set(), requests: 0, days: 0 });
+    const bucketDept = byDepartment.get(dept);
+    bucketDept.employees.add(r.employeeId);
+    bucketDept.requests += 1;
+    bucketDept.days += r.totalDays || 0;
+
+    // Per-day overlaps for the heatmap. "requested" = still PENDING.
+    const s = startOfDay(new Date(r.startDate));
+    const e = startOfDay(new Date(r.endDate));
+    for (let d = 1; d <= daysInMonth; d++) {
+      const day = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), d));
+      if (day >= s && day <= e) {
+        const cell = dayGrid[d - 1];
+        if (r.status === "APPROVED") cell.approved += 1;
+        else if (r.status === "REJECTED") cell.disapproved += 1;
+        else if (r.status === "PENDING") cell.requested += 1;
+        perDayEmployees[d - 1].push({
+          id: r.id,
+          employeeId: r.employeeId,
+          name: employeeName(r.employee),
+          type: r.leavePolicy?.name || "Unassigned",
+          status: r.status,
+          reason: r.reason || null,
+        });
+      }
+    }
+  }
+
+  return {
+    month: m[0],
+    from: from.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+    byType: Object.fromEntries(Object.entries(byType).map(([k, v]) => [k, Math.round(v * 100) / 100])),
+    byDepartment: [...byDepartment.values()]
+      .map((d) => ({ department: d.department, employees: d.employees.size, requests: d.requests, days: Math.round(d.days * 100) / 100 }))
+      .sort((a, b) => a.department.localeCompare(b.department)),
+    days: dayGrid.map((c, i) => ({
+      date: `${m[0]}-${String(i + 1).padStart(2, "0")}`,
+      ...c,
+      leaves: perDayEmployees[i],
+    })),
+    totalRequests: requests.filter((r) => r.status !== "CANCELLED").length,
+  };
 };
 
 // ────────────────────────────────────────────────────────────────────────────
