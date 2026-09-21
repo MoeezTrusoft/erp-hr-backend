@@ -90,8 +90,17 @@ import {
     closeDataAccessRequestHandler,
 } from "../controllers/candidatePrivacy.controller.js";
 import { matchCandidateHandler, reconcileSkillsHandler } from "../controllers/aiAdvisory.controller.js";
+import { idempotency } from "../middlewares/idempotency.middleware.js";
 
 const router = express.Router();
+
+// Phase 14 — replay protection on the three CREATE surfaces where a double-
+// click or a network retry would duplicate a business object (an application
+// against a requisition, an offer against an application, a candidate).
+// Opt-in per request via Idempotency-Key (header or body.idempotencyKey); the
+// middleware namespaces by the VERIFIED tenant, fails open on store errors,
+// and only applies to POSTs with JSON bodies already parsed.
+const createIdempotency = idempotency();
 
 // TAGS
 router.get("/tags", listTags);
@@ -100,14 +109,14 @@ router.delete("/tags/:id", deactivateTag);
 
 // CANDIDATES
 router.get("/candidates", listCandidates);
-router.post("/candidates", createCandidate);
+router.post("/candidates", createIdempotency, createCandidate);
 router.get("/candidates/:id", getCandidate);
 router.put("/candidates/:id", updateCandidate);
 router.post("/candidates/:id/resume", dynamicUpload, uploadCandidateResume);
 
 // APPLICATIONS
 router.get("/applications", listApplications);
-router.post("/applications", createApplication);
+router.post("/applications", createIdempotency, createApplication);
 router.put("/applications/:id/stage", updateStage);
 router.put("/applications/:id/status", updateStatus);
 
