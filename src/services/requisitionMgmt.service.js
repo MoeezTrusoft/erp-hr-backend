@@ -29,6 +29,7 @@ import { exportRows } from "../lib/export.util.js";
 import { logAction } from "../utils/logs.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
+import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
 // the C4 client extension on the shared prisma singleton).
@@ -228,12 +229,17 @@ export const submitRequisition = async (id, tenantId, actorId = null) => {
   // Phase 4 — and a hiring freeze blocks submission outright. Drafting is not
   // blocked, so this is the first moment the freeze can apply.
   await assertRequisitionAdvanceAllowed(tenantId, current, "PENDING_APPROVAL");
+  // FR-02.10 / decision B1.1–B1.2 — the Finance cost-center VALIDITY gate.
+  // Dormant until FINANCE_SERVICE_URL is configured; advisory records evidence
+  // on the snapshot; enforce blocks an invalid reference. Runs BEFORE the
+  // transaction: an outbound HTTP call must not hold a DB connection open.
+  const financeSnapshot = await assertFinanceValidityAtSubmit(tenantId, current, current.budgetApprovalSnapshot);
   await tenantTransaction(
     prisma,
     async (tx) => {
       await tx.jobRequisition.update({
         where: { id: Number(id) },
-        data: { status: "PENDING_APPROVAL" },
+        data: { status: "PENDING_APPROVAL", ...(financeSnapshot ? { budgetApprovalSnapshot: financeSnapshot } : {}) },
       });
       await recordRequisitionTransition(tx, {
         requisitionId: Number(id),

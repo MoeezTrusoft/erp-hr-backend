@@ -1,6 +1,7 @@
 // src/mcp/tools/recruitmentExtraTools.js — recruitment cost config (real
-// cost-per-hire), candidate resume upload to DAM, and the FR-04.10
-// duplicate-candidate MERGE (typo-recovery).
+// cost-per-hire), candidate resume upload to DAM, the FR-04.10
+// duplicate-candidate MERGE (typo-recovery), and the §1.4 requisition
+// ATTACHMENT tools (list/upload/delete) closing decision B2.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -8,6 +9,13 @@ import { withToolError } from "../utils/toolError.js";
 import { getCostConfig, setCostConfig } from "../../services/recruitmentCost.service.js";
 import { uploadCandidateResume } from "../../services/candidateResume.service.js";
 import { mergeCandidates } from "../../services/candidateMerge.service.js";
+import {
+  listRequisitionAttachments,
+  addRequisitionAttachment,
+  removeRequisitionAttachment,
+} from "../../services/requisitionAttachment.service.js";
+import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { ATTACHMENT_CATEGORIES } from "../../lib/requisitionFields.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -70,6 +78,63 @@ export function registerRecruitmentExtraTools(server) {
       const cfg = await setCostConfig(user.tenantId, args);
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data: cfg }) }] };
     }, "hr_recruitment_cost_config_set")
+  );
+
+  server.tool(
+    "hr_requisition_attachment_list",
+    "List a requisition's typed attachments (decision §1.4). Scope-filtered: an ORG caller sees internal documents; a hiring-team caller sees only HIRING_TEAM rows. Metadata only — bytes stay in DAM.",
+    {
+      requisitionId: z.union([z.string(), z.number()]).describe("Requisition id; numeric string or number"),
+    },
+    withToolError(async ({ requisitionId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listRequisitionAttachments(requisitionId, user.tenantId, resolveRecruitmentScope(user));
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_requisition_attachment_list")
+  );
+
+  server.tool(
+    "hr_requisition_attachment_upload",
+    "Attach a document pointer to a requisition (decision §1.4). The BYTES live in DAM — pass the DAM media id you already uploaded. Category must be one of JOB_DESCRIPTION, BUSINESS_JUSTIFICATION, BUDGET_APPROVAL, HIRING_APPROVAL, OTHER_INTERNAL; a category that is not hiring-team material can never be tagged HIRING_TEAM.",
+    {
+      requisitionId: z.union([z.string(), z.number()]).describe("Requisition id; numeric string or number"),
+      category: z.enum(ATTACHMENT_CATEGORIES).describe("Document category — drives the ACL"),
+      mediaId: z.union([z.string(), z.number()]).describe("DAM media id of the uploaded file"),
+      fileName: z.string().optional().describe("Original filename for display"),
+      label: z.string().optional().describe("Free-text label for the document"),
+      visibility: z.enum(["INTERNAL", "HIRING_TEAM"]).optional().describe('Defaults to INTERNAL; HIRING_TEAM is refused for non-hiring-team categories'),
+    },
+    withToolError(async ({ requisitionId, category, mediaId, fileName, label, visibility }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await addRequisitionAttachment(requisitionId, user.tenantId, resolveRecruitmentScope(user), {
+        category,
+        mediaId,
+        fileName,
+        label,
+        visibility,
+        uploadedById: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_requisition_attachment_upload")
+  );
+
+  server.tool(
+    "hr_requisition_attachment_delete",
+    "Remove a requisition attachment POINTER (decision §1.4). The DAM asset itself is untouched. A hiring-team caller can only delete rows it could read.",
+    {
+      requisitionId: z.union([z.string(), z.number()]).describe("Requisition id the attachment belongs to"),
+      attachmentId: z.union([z.string(), z.number()]).describe("RequisitionAttachment id to remove"),
+    },
+    withToolError(async ({ requisitionId, attachmentId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      // The delete is scoped by tenant + audience inside the service, so a
+      // foreign-tenant or unreadable row resolves to the same not-found.
+      const data = await removeRequisitionAttachment(attachmentId, user.tenantId, resolveRecruitmentScope(user));
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_requisition_attachment_delete")
   );
 
   server.tool(

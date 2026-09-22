@@ -9,6 +9,7 @@ import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalC
 import { applyApprovalDecision, chainFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1881,6 +1882,12 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
   // Phase 4 — and a hiring freeze blocks submission here too, or the freeze would
   // be bypassable simply by using the older endpoint.
   await assertRequisitionAdvanceAllowed(tenantId, requisition, status);
+  // FR-02.10 / decision B1.1–B1.2 — the Finance validity gate on the legacy
+  // submit too, so the posture cannot depend on which URL was used. Dormant
+  // until configured; runs before the transaction (no HTTP inside a tx).
+  const financeSnapshot = status === "PENDING_APPROVAL"
+    ? await assertFinanceValidityAtSubmit(tenantId, requisition, requisition.budgetApprovalSnapshot)
+    : null;
 
   // Phase 4 — the legacy decision goes through the same approval CHAIN as the
   // newer surface, so a tenant cannot get a different number of required
@@ -1951,6 +1958,7 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
       data: {
         status,
         approvedById: status === "APPROVED" || status === "REJECTED" ? Number(actorId) : undefined,
+        ...(financeSnapshot ? { budgetApprovalSnapshot: financeSnapshot } : {}),
       },
       include: {
         position: true,

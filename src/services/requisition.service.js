@@ -16,6 +16,7 @@ import { pickRequisitionFields, assertReplacementPairing, assertRequisitionField
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
 import { applyApprovalDecision, chainFor, chainStatusFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -389,6 +390,14 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
     // merged row so a same-PATCH department change is judged on where the
     // requisition is going, not where it was.
     await assertRequisitionAdvanceAllowed(tenantId, { ...existing, ...updateData }, updateData.status);
+    // FR-02.10 / decision B1.1–B1.2 — the Finance cost-center VALIDITY gate.
+    // Dormant until FINANCE_SERVICE_URL is configured; advisory records evidence
+    // on the snapshot; enforce blocks an invalid reference. Judged on the merged
+    // row like the freeze, so a fix-and-submit PATCH validates what will exist.
+    if (updateData.status === "PENDING_APPROVAL") {
+      const validitySnapshot = await assertFinanceValidityAtSubmit(tenantId, { ...existing, ...updateData }, existing.budgetApprovalSnapshot);
+      if (validitySnapshot) updateData.budgetApprovalSnapshot = validitySnapshot;
+    }
   }
 
   // API-2 — atomic compare-and-set + version bump, still tenant-scoped.

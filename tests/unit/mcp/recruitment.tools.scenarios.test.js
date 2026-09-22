@@ -105,10 +105,13 @@ const TOOLS = [
   // --- recruitmentAnalyticsTools.js (2 tools) ---
   { name: 'hr_recruitment_analytics_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_recruitment_analytics_export', gate: 'hr:recruitment', action: 'VIEW', args: { format: 'csv' } },
-  // --- recruitmentExtraTools.js (3 tools) ---
+  // --- recruitmentExtraTools.js (7 tools) ---
   { name: 'hr_recruitment_cost_config_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_recruitment_cost_config_set', gate: 'hr:recruitment', action: 'EDIT', args: {} },
   { name: 'hr_candidate_resume_upload', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1', fileBase64: 'dGVzdA==' } },
+  { name: 'hr_requisition_attachment_list', gate: 'hr:recruitment', action: 'VIEW', args: { requisitionId: '1' } },
+  { name: 'hr_requisition_attachment_upload', gate: 'hr:recruitment', action: 'EDIT', args: { requisitionId: '1', category: 'JOB_DESCRIPTION', mediaId: '9' } },
+  { name: 'hr_requisition_attachment_delete', gate: 'hr:recruitment', action: 'DELETE', args: { requisitionId: '1', attachmentId: '1' } },
 ];
 
 describe('RECRUITMENT-SCENARIOS — registration', () => {
