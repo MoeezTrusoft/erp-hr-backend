@@ -592,6 +592,10 @@ model Log {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  // NFR-03 — the cross-service chain id (x-correlation-id), bound automatically
+  // from the request context by logAction; background writers pass it explicitly.
+  correlationId String?
+
   @@index([tenantId])
 }
 
