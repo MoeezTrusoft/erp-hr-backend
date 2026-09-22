@@ -10,6 +10,10 @@ const router = express.Router();
 // request via Idempotency-Key; namespaced by the verified tenant.
 router.post("/", idempotency(), ctrl.createOffer);
 router.get("/", ctrl.listOffers);
+// FR-09 residue — the offer approval policy. Declared BEFORE "/:id" so
+// "approval-policy" is never parsed as an offer id.
+router.get("/approval-policy", ctrl.getOfferApprovalPolicy);
+router.put("/approval-policy", ctrl.setOfferApprovalPolicy);
 router.get("/:id", ctrl.getOffer);
 router.put("/:id/approve", ctrl.approve);
 router.put("/:id/send", ctrl.sendOffer);

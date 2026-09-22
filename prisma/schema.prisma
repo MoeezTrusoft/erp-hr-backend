@@ -3666,6 +3666,36 @@ model OfferApproval {
   @@map("offer_approvals")
 }
 
+// FR-09 residue — the tenant OFFER approval policy: which stage must sign an
+// offer, in which order, optionally narrowed by a compensation window and
+// currency. No active rules ⇒ lib/offerApprovalPolicy.js resolves the previous
+// hard-coded triple, so an unconfigured tenant behaves exactly as before.
+model OfferApprovalRule {
+  id       Int     @id @default(autoincrement())
+  tenantId String? @db.Uuid
+
+  stepOrder Int // evaluated in ascending order
+  // hiringManager | hrHead | finance — the closed stage vocabulary, matching
+  // OfferApproval.stage so a rule and its decision always name the same step.
+  stage     String
+  role      String?
+
+  // Compensation-exception window; both null ⇒ the rule always applies.
+  minAmount Decimal? @db.Decimal(18, 4)
+  maxAmount Decimal? @db.Decimal(18, 4)
+  currency  String?
+
+  isActive    Boolean @default(true)
+  createdById Int?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("offer_approval_rules")
+}
+
 // Phase 9 — accepted-offer → employee/onboarding handoff. One row per offer
 // (@unique offerId) is the idempotency guard: a second acceptance call replays
 // this row instead of provisioning a second employee.

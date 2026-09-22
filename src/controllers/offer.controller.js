@@ -1,6 +1,10 @@
 import * as svc from "../services/offer.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
-import { approveOffer } from "../services/offerApproval.service.js";
+import {
+    approveOffer,
+    getOfferApprovalPolicy as getOfferApprovalPolicySvc,
+    setOfferApprovalPolicy as setOfferApprovalPolicySvc,
+} from "../services/offerApproval.service.js";
 import { getOfferHandoff, runOfferHandoff, listFailedHandoffs as listFailedHandoffsSvc } from "../services/recruitmentHandoff.service.js";
 import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
@@ -112,6 +116,41 @@ export const retryHandoff = async (req, res) => {
             actorId: req.user?.employeeId ?? null,
         });
         res.status(200).json({ success: true, data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+// FR-09 residue — the tenant offer approval policy (role-specific approver
+// chains with compensation windows). Reads are VIEW (the policy is not
+// compensation data); writes are EDIT and gated by the route authorization
+// layer exactly like every other recruitment write.
+export const getOfferApprovalPolicy = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const amount = req.query?.amount === undefined || req.query?.amount === "" ? null : Number(req.query.amount);
+        if (amount !== null && !Number.isFinite(amount)) {
+            return res.status(400).json({ success: false, message: "amount must be a number" });
+        }
+        const result = await getOfferApprovalPolicySvc({
+            tenantId,
+            amount,
+            currency: req.query?.currency ?? null,
+        });
+        res.status(200).json({ success: true, data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+export const setOfferApprovalPolicy = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        await setOfferApprovalPolicySvc({
+            tenantId,
+            rules: req.body?.rules,
+            createdById: req.user?.employeeId ?? null,
+        });
+        const policy = await getOfferApprovalPolicySvc({ tenantId });
+        res.status(200).json({ success: true, data: policy });
     } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
 };
 

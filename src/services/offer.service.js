@@ -9,7 +9,7 @@ import { transitionApplicationStageInTransaction } from "./applicationWorkflow.s
 import { assertOfferApproved } from "./offerApproval.service.js";
 import { getOfferHandoff, runOfferHandoff } from "./recruitmentHandoff.service.js";
 import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
-import { offerScopeWhere } from "../lib/recruitmentAccess.js";
+import { offerScopeWhere, maskOfferForScope, maskOffersForScope } from "../lib/recruitmentAccess.js";
 import { offerAcceptedEvent } from "./hrEvents.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
@@ -66,11 +66,14 @@ export const createOffer = async ({ applicationId, candidateId, jobRequisitionId
 // Phase 1.4 — `scope` narrows which offers a caller may read: a hiring manager
 // sees the offers for their requisitions, finance the offers it prices, and an
 // interviewer or agency none at all. Out-of-scope ids read as not-found.
+// FR-09 residue — and the ROWS are masked for compensation on the way out, so a
+// MANAGED caller who may legitimately open the offer does not receive its salary.
 export const getOffer = async (id, tenantId, scope = null) => {
-    return prisma.offer.findFirst({
+    const offer = await prisma.offer.findFirst({
         where: scopedWhere(tenantId, { id: Number(id), ...(scope ? offerScopeWhere(scope) : {}) }),
         include: { candidate: true, jobRequisition: true },
     });
+    return scope ? maskOfferForScope(offer, scope) : offer;
 };
 
 export const listOffers = async ({ page = 1, limit = 20, tenantId, scope = null }) => {
@@ -86,7 +89,10 @@ export const listOffers = async ({ page = 1, limit = 20, tenantId, scope = null 
         }),
         prisma.offer.count({ where }),
     ]);
-    return { items, total, page, limit };
+    // FR-09 residue — mask the page, not just the detail read: a list that leaks
+    // salary is the same leak in a different shape. `total` is unchanged (the
+    // caller may know HOW MANY they can see, not what those offers pay).
+    return { items: scope ? maskOffersForScope(items, scope) : items, total, page, limit };
 };
 
 // Tenant-scoped pre-read guard reused by every offer mutation (fail-closed).

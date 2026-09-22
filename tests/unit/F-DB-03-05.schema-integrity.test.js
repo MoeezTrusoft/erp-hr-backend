@@ -113,7 +113,13 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // table, same convention and own-policy-in-own-migration rule.
     // 140 + ApplicationDraft (Phase 5 FR-04.07) — save-and-return drafts,
     // same convention and own-policy-in-own-migration rule.
-    expect(nullableModels).toHaveLength(140);
+    // 141 + OnboardingTemplate (Phase 9 residue FR-13) — tenant-configurable
+    // onboarding checklists, same convention and own-policy-in-own-migration
+    // rule.
+    // 142 + OfferApprovalRule (Phase 9 residue FR-09) — the tenant offer
+    // approval policy (role-specific approver chains with compensation
+    // windows), same convention and own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(142);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

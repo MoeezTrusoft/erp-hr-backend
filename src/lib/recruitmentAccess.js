@@ -200,6 +200,38 @@ export function applicationScopeWhere(scope) {
 /**
  * Where-clause fragment restricting offers to the caller's scope.
  */
+/**
+ * FR-09 residue — SENSITIVE-FIELD MASKING PARITY for offers.
+ *
+ * `offerScopeWhere` decides WHICH offers a caller may read; this decides which
+ * FIELDS of those offers they may see. The two must agree, and until now they
+ * did not: a hiring manager legitimately reads the offers for their own
+ * requisitions (`offerScopeWhere` grants it) while `canSeeCompensation` is
+ * ORG/FINANCE only — so a MANAGED caller was handed `salary`, `currency` and the
+ * structured `compensation` block by a row they were allowed to open. Masking
+ * is the second half of the ACL, exactly as it already is for candidates and
+ * interviews.
+ *
+ * Masked fields are replaced by `null` plus an explicit `compensationRedacted`
+ * marker, so a UI shows "restricted" rather than a misleading zero — and a
+ * consumer can tell "not granted" apart from "no data". Contractual terms a
+ * non-comp scope still needs to act on (respondedAt, status, dates) are kept.
+ */
+export function maskOfferForScope(offer, scope) {
+    if (!offer || scope?.canSeeCompensation) return offer;
+    return {
+        ...offer,
+        salary: null,
+        currency: null,
+        compensation: null,
+        compensationRedacted: true,
+    };
+}
+
+/** Same treatment for a page/list of offers. */
+export const maskOffersForScope = (offers, scope) =>
+    Array.isArray(offers) ? offers.map((o) => maskOfferForScope(o, scope)) : offers;
+
 export function offerScopeWhere(scope) {
     if (scope.unrestricted) return {};
     // Finance and hiring managers both need the offer for the requisition they
