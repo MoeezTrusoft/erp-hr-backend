@@ -44,6 +44,7 @@ jest.unstable_mockModule('../../../src/mcp/utils/listEnvelope.js', () => ({
 }));
 jest.unstable_mockModule('../../../src/services/recruitmentAnalytics.service.js', () => ({
   computeRecruitmentAnalytics: jest.fn(async () => ({ success: true })),
+  drillDownRecruitmentMetric: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/lib/export.util.js', () => ({
   exportRows: jest.fn(async () => ({ ext: 'csv', mimeType: 'text/csv', buffer: Buffer.from('') })),
@@ -104,6 +105,7 @@ const TOOLS = [
   { name: 'hr_talent_pool_remove', gate: 'hr:recruitment', action: 'DELETE', args: { id: '1' } },
   // --- recruitmentAnalyticsTools.js (2 tools) ---
   { name: 'hr_recruitment_analytics_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
+  { name: 'hr_recruitment_analytics_drilldown', gate: 'hr:recruitment', action: 'VIEW', args: { metric: 'totalHires' } },
   { name: 'hr_recruitment_analytics_export', gate: 'hr:recruitment', action: 'VIEW', args: { format: 'csv' } },
   // --- recruitmentExtraTools.js (7 tools) ---
   { name: 'hr_recruitment_cost_config_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },

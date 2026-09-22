@@ -73,7 +73,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   offerMgmtTools: 5,
   candidatePrivacyTools: 15,
   talentPoolMgmtTools: 4,
-  recruitmentAnalyticsTools: 2,
+  recruitmentAnalyticsTools: 3, // + hr_recruitment_analytics_drilldown (NFR-12)
   recruitmentExtraTools: 7, // + hr_candidate_merge (FR-04.10) + the 3 requisition attachment tools (§1.4 decision B2)
   applicationTools: 15,
   resumeTools: 6,
@@ -152,6 +152,7 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_offer_send",
   "hr_offer_update",
   "hr_offers_manage_list",
+  "hr_recruitment_analytics_drilldown",
   "hr_recruitment_analytics_export",
   "hr_recruitment_analytics_get",
   "hr_recruitment_cost_config_get",
@@ -223,7 +224,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(549);
+    expect(all).toHaveLength(550);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

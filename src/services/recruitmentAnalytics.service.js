@@ -85,27 +85,29 @@ function round1(n) {
  *          departmentId?: number, stage?: string, source?: string}} [filters]
  * @returns {Promise<object>} the same payload shape, narrowed
  */
-export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
-  const ALLOWED_FILTER_KEYS = new Set(["dateFrom", "dateTo", "requisitionIds", "departmentId", "stage", "source"]);
-  const unknown = Object.keys(filters || {}).filter((k) => !ALLOWED_FILTER_KEYS.has(k));
-  if (unknown.length > 0) {
-    throw Object.assign(
-      new Error(`Unsupported analytics filter(s): ${unknown.join(", ")}`),
-      { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" },
-    );
-  }
+// ── NFR-12 reporting integrity — the SHARED filter/loader seam ─────────────
+//
+// The requirement's sharpest line is "allow drill-down to the data behind
+// metrics". A drill-down that re-derives its own row set is not evidence: it can
+// silently disagree with the number it is supposed to explain. So the filter
+// normalization and the fetch/filter pipeline live here ONCE and both the
+// metric payload and the drill-down consume them.
+
+const ANALYTICS_FILTER_KEYS = Object.freeze(["dateFrom", "dateTo", "requisitionIds", "departmentId", "stage", "source"]);
+
+const badFilter = (message) =>
+  Object.assign(new Error(message), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
+
+/** Validate + normalize a filter object (unknown keys are REFUSED, never ignored). */
+export function normalizeAnalyticsFilters(filters = {}) {
+  const unknown = Object.keys(filters || {}).filter((k) => !ANALYTICS_FILTER_KEYS.includes(k));
+  if (unknown.length > 0) throw badFilter(`Unsupported analytics filter(s): ${unknown.join(", ")}`);
 
   const dateFrom = filters?.dateFrom ? new Date(filters.dateFrom) : null;
   const dateTo = filters?.dateTo ? new Date(filters.dateTo) : null;
-  if (filters?.dateFrom && Number.isNaN(dateFrom.getTime())) {
-    throw Object.assign(new Error("dateFrom is not a valid date"), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
-  }
-  if (filters?.dateTo && Number.isNaN(dateTo.getTime())) {
-    throw Object.assign(new Error("dateTo is not a valid date"), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
-  }
-  if (dateFrom && dateTo && dateFrom > dateTo) {
-    throw Object.assign(new Error("dateFrom must not be after dateTo"), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
-  }
+  if (filters?.dateFrom && Number.isNaN(dateFrom.getTime())) throw badFilter("dateFrom is not a valid date");
+  if (filters?.dateTo && Number.isNaN(dateTo.getTime())) throw badFilter("dateTo is not a valid date");
+  if (dateFrom && dateTo && dateFrom > dateTo) throw badFilter("dateFrom must not be after dateTo");
 
   const requisitionIds = Array.isArray(filters?.requisitionIds)
     ? filters.requisitionIds.map(Number).filter((n) => Number.isInteger(n) && n > 0)
@@ -114,9 +116,23 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
   const stage = typeof filters?.stage === "string" && filters.stage.trim() ? filters.stage.trim().toLowerCase() : null;
   const source = typeof filters?.source === "string" && filters.source.trim() ? filters.source.trim() : null;
 
-  const hasDateFilter = Boolean(dateFrom || dateTo);
-  const hasRowFilter = Boolean(requisitionIds?.length || departmentId || stage || source);
+  return {
+    dateFrom,
+    dateTo,
+    requisitionIds,
+    departmentId,
+    stage,
+    source,
+    hasDateFilter: Boolean(dateFrom || dateTo),
+    hasRowFilter: Boolean(requisitionIds?.length || departmentId || stage || source),
+  };
+}
 
+/** The one fetch + JS filter both consumers use. */
+export async function loadFilteredApplications(tenantId, n = {}) {
+  const {
+    dateFrom, dateTo, requisitionIds, departmentId, stage, source, hasDateFilter, hasRowFilter,
+  } = n;
   // Single fetch with the relations we need; compute everything in JS.
   const applications = await prisma.application.findMany({
     where: { tenantId: tenantId ?? undefined },
@@ -155,6 +171,145 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
       return true;
     });
   }
+  return filteredApplications;
+}
+
+/**
+ * NFR-12 — the metric vocabulary a drill-down may name. Canonical keys are the
+ * frozen §6 names; the prefixed forms address one bucket of a grouped metric
+ * (`funnel:<stage>`, `source:<name>`, `disposition:<code>`) so an operator can
+ * drill into the exact slice a chart drew.
+ */
+export const DRILLDOWN_METRICS = Object.freeze([
+  "totalHires",
+  "timeToFillDays",
+  "timeToFirstFillDays",
+  "timeToHireDays",
+  "stageConversion",
+  "dropOff",
+  "offerAcceptanceRate",
+  "sourceEffectiveness",
+  "funnel",
+]);
+
+const isKnownMetric = (metric) =>
+  DRILLDOWN_METRICS.includes(metric) ||
+  /^(funnel|source|disposition|stage):.+$/.test(String(metric || ""));
+
+/**
+ * NFR-12 — the row-level evidence behind a metric.
+ *
+ * Runs the IDENTICAL filter + fetch pipeline as `computeRecruitmentAnalytics`
+ * and returns the applications the named metric was computed over, with the
+ * facts that metric used. Tenant-scoped by the same `where` (and the RLS policy
+ * beneath it), so an export or a drill-down can never widen a caller's view.
+ *
+ * @returns {Promise<{metric: string, filters: object, total: number,
+ *   returned: number, truncated: boolean, rows: object[]}>}
+ */
+export async function drillDownRecruitmentMetric(tenantId, metric, filters = {}, { limit = 100 } = {}) {
+  const key = String(metric || "").trim();
+  if (!key || !isKnownMetric(key)) {
+    throw Object.assign(
+      new Error(`Unsupported drill-down metric: ${key || "(missing)"} (expected one of ${DRILLDOWN_METRICS.join(", ")} or <group>:<value>)`),
+      { status: 400, code: "HR-RECRUITMENT-ANALYTICS-DRILLDOWN-INVALID" },
+    );
+  }
+
+  const normalized = normalizeAnalyticsFilters(filters);
+  const applications = await loadFilteredApplications(tenantId, normalized);
+
+  const [group, value] = key.includes(":") ? key.split(/:(.+)/) : [null, null];
+  let selected = applications;
+  let basis = key;
+
+  if (key === "totalHires" || key === "timeToHireDays") {
+    selected = applications.filter((a) => a.stage === STAGE_HIRED);
+  } else if (group === "funnel" && value) {
+    selected = applications.filter((a) => a.stage === value);
+  } else if (key === "sourceEffectiveness" || group === "source") {
+    const wanted = group === "source" ? value : null;
+    selected = applications.filter((a) => (a.candidate?.source ?? "Unknown") === wanted || wanted === null && true);
+  } else if (group === "stage" && value) {
+    selected = applications.filter((a) => a.stage === value);
+  } else if (group === "disposition") {
+    // Dispositions live on the screening records; the application ids they carry
+    // are the evidence, so this bucket is resolved through the screening table.
+    const screenings = await prisma.applicationScreening.findMany({
+      where: { tenantId: tenantId ?? undefined, ...(value ? { reasonCode: value } : {}) },
+      select: { applicationId: true, outcome: true, reasonCode: true },
+    });
+    const ids = new Set(screenings.map((s) => s.applicationId));
+    selected = applications.filter((a) => ids.has(a.id));
+    basis = `disposition:${value ?? "(any)"}`;
+  } else if (key === "timeToFillDays" || key === "timeToFirstFillDays" || key === "stageConversion" || key === "offerAcceptanceRate" || key === "dropOff") {
+    // Requisition- and offer-shaped metrics: the drill-down answers with the
+    // requisitions (the aggregate's unit), each carrying its own applications.
+    const byRequisition = new Map();
+    for (const a of applications) {
+      const id = a.jobRequisition?.id ?? null;
+      if (id == null) continue;
+      if (!byRequisition.has(id)) byRequisition.set(id, { requisitionId: id, title: a.jobRequisition?.title ?? null, applicationIds: [] });
+      byRequisition.get(id).applicationIds.push(a.id);
+    }
+    const rows = [...byRequisition.values()];
+    return {
+      metric: key,
+      basis,
+      filters: serializeFilters(normalized),
+      unit: "requisition",
+      total: rows.length,
+      returned: Math.min(rows.length, limit),
+      truncated: rows.length > limit,
+      rows: rows.slice(0, limit),
+    };
+  }
+
+  const rows = selected.map((a) => ({
+    applicationId: a.id,
+    stage: a.stage,
+    appliedAt: a.appliedAt,
+    candidateId: a.candidate?.id ?? null,
+    source: a.candidate?.source ?? "Unknown",
+    requisitionId: a.jobRequisition?.id ?? null,
+    requisitionTitle: a.jobRequisition?.title ?? null,
+    interviewCount: a.interviews?.length ?? 0,
+    offerStatus: a.offer?.status ?? null,
+    offerRespondedAt: a.offer?.respondedAt ?? null,
+  }));
+
+  return {
+    metric: key,
+    basis,
+    filters: serializeFilters(normalized),
+    unit: "application",
+    total: rows.length,
+    returned: Math.min(rows.length, limit),
+    truncated: rows.length > limit,
+    rows: rows.slice(0, limit),
+  };
+}
+
+/** The filter echo an operator can compare against what they asked for. */
+const serializeFilters = (n) => ({
+  ...(n.dateFrom ? { dateFrom: n.dateFrom.toISOString() } : {}),
+  ...(n.dateTo ? { dateTo: n.dateTo.toISOString() } : {}),
+  ...(n.requisitionIds?.length ? { requisitionIds: n.requisitionIds } : {}),
+  ...(n.departmentId != null ? { departmentId: n.departmentId } : {}),
+  ...(n.stage ? { stage: n.stage } : {}),
+  ...(n.source ? { source: n.source } : {}),
+});
+
+export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
+  // FR-11 + NFR-12 — ONE normalizer and ONE loader for the payload AND the
+  // drill-down, so a reported number and the rows behind it can never come from
+  // two slightly different queries.
+  const normalized = normalizeAnalyticsFilters(filters);
+  const {
+    dateFrom, dateTo, requisitionIds, departmentId, stage, source, hasDateFilter, hasRowFilter,
+  } = normalized;
+
+  const filteredApplications = await loadFilteredApplications(tenantId, normalized);
 
   // FR-11 — every downstream computation reads the FILTERED set; the variable
   // name stays `applications` so the legacy code body is untouched.
