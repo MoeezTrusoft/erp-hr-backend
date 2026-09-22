@@ -77,7 +77,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   interviewMgmtTools: 16,
   offerMgmtTools: 7, // + hr_offer_approval_policy_get/_set (FR-09 residue)
   candidatePrivacyTools: 15,
-  talentPoolMgmtTools: 4,
+  talentPoolMgmtTools: 8, // + the invitation lifecycle, segment and pool sweep (FR-10 residue)
   recruitmentAnalyticsTools: 3, // + hr_recruitment_analytics_drilldown (NFR-12)
   recruitmentExtraTools: 7, // + hr_candidate_merge (FR-04.10) + the 3 requisition attachment tools (§1.4 decision B2)
   onboardingTemplateTools: 3, // FR-13 residue — list/set/deactivate
@@ -199,8 +199,12 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_talent_pool_invite",
   "hr_talent_pool_manage_list",
   "hr_talent_pool_move_to_pipeline",
+  "hr_talent_pool_invitation_list",
+  "hr_talent_pool_invitation_respond",
   "hr_talent_pool_profile_get",
   "hr_talent_pool_remove",
+  "hr_talent_pool_retention_sweep",
+  "hr_talent_pool_segment",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -235,7 +239,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(555);
+    expect(all).toHaveLength(559);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
@@ -243,7 +247,10 @@ describe("Recruitment MCP tool inventory", () => {
     const privacy = EXPECTED_TOOLS.filter((n) =>
       /consent|dnc|legal_hold|retention|anonymize|request_/.test(n)
     );
-    expect(privacy).toHaveLength(14);
+    // 15 = 14 + hr_talent_pool_retention_sweep (FR-10 residue), which the
+    // /retention/ pattern catches and which IS a retention-surface tool: it acts
+    // on the pool clock, so a resource-shaped registration would bypass the gate.
+    expect(privacy).toHaveLength(15);
     for (const name of privacy) expect(allRecruitmentTools).toContain(name);
   });
 

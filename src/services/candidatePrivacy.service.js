@@ -453,14 +453,23 @@ export async function previewRetentionDue({ tenantId, asOf = new Date(), limit =
   const db = options.db ?? prisma;
   const due = await db.candidate.findMany({
     where: withTenant(tenantId, {}),
-    select: { id: true, email: true, retentionUntil: true, anonymizedAt: true },
+    select: { id: true, email: true, retentionUntil: true, retentionPopulation: true, anonymizedAt: true },
     orderBy: { id: "asc" },
     take: Math.min(Number(limit) || 100, 500),
   });
 
   const cutoff = new Date(asOf);
+  // FR-10 residue — ONLY the applicant clock. A TALENT_POOL clock belongs to a
+  // different lawful basis (kept on file for future roles), and its population's
+  // action is to leave the pool, not to be erased. NULL is a pre-existing clock,
+  // stamped before the population was recorded — under the APPLICANT policy,
+  // which is the only one that existed then, so it stays readable here.
   const candidates = due.filter(
-    (c) => c.retentionUntil && new Date(c.retentionUntil) <= cutoff && !c.anonymizedAt,
+    (c) =>
+      c.retentionUntil &&
+      new Date(c.retentionUntil) <= cutoff &&
+      !c.anonymizedAt &&
+      c.retentionPopulation !== "TALENT_POOL",
   );
 
   // A legal hold SUSPENDS retention: those rows are reported separately so an

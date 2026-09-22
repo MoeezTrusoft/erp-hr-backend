@@ -1534,6 +1534,9 @@ model JobRequisition {
   // ── Phase 6 / §4.3 — the requisition shortlist ──
   shortlist ShortlistEntry[]
 
+  // ── FR-10 residue — talent-pool invitations aimed at this requisition ──
+  invitations TalentPoolInvitation[]
+
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
 
@@ -2773,6 +2776,12 @@ model Candidate {
   consentStatus    String    @default("UNKNOWN") // UNKNOWN | GRANTED | WITHDRAWN
   consentUpdatedAt DateTime?
   retentionUntil   DateTime?
+  // FR-10 residue — WHICH lawful basis the retention clock above belongs to:
+  // APPLICANT (they applied) or TALENT_POOL (they were kept on file for future
+  // roles). The two clocks are different populations with different rules, so
+  // the sweep must know which one it is counting. NULL means a pre-existing
+  // clock, stamped under the APPLICANT policy — the only one that existed.
+  retentionPopulation String? // APPLICANT | TALENT_POOL
   anonymizedAt     DateTime?
   archivedAt       DateTime?
 
@@ -2791,6 +2800,8 @@ model Candidate {
   aiInferences    AiInferenceRecord[]
   emailVerifications CandidateEmailVerification[]
   applicationDrafts  ApplicationDraft[]
+  // FR-10 residue — the invitation lifecycle rows.
+  invitations        TalentPoolInvitation[]
 
   @@unique([tenantId, email])
   @@index([tenantId, status])
@@ -3949,6 +3960,41 @@ model TalentPool {
   @@unique([candidateId, poolName])
   @@index([tenantId])
   @@map("talent_pools")
+}
+
+// FR-10 residue — the talent-pool INVITATION lifecycle.
+//
+// "Invited to apply" used to be free text appended to a pool row, which cannot
+// answer the questions the process asks: is there an open invitation, did the
+// candidate answer, has it lapsed. One row per invitation, one-way transitions
+// (lib/talentPoolPolicy.js owns the map), so the answer is history rather than a
+// field that gets overwritten.
+model TalentPoolInvitation {
+  id                Int      @id @default(autoincrement())
+  tenantId          String?  @db.Uuid
+  candidateId       Int
+  // Set when the invitation is for a specific role; null for a general
+  // "we'd like to keep in touch" invitation.
+  jobRequisitionId Int?
+  poolName          String?
+
+  status     String // INVITED | ACCEPTED | DECLINED | WITHDRAWN | EXPIRED
+  invitedById Int?
+  invitedAt  DateTime @default(now())
+  expiresAt  DateTime?
+  respondedAt DateTime?
+  responseNote String?
+
+  candidate      Candidate       @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  jobRequisition JobRequisition? @relation(fields: [jobRequisitionId], references: [id])
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, status, expiresAt])
+  @@index([candidateId])
+  @@map("talent_pool_invitations")
 }
 
 // Per-tenant recruitment cost inputs so cost-per-hire is real (not illustrative).

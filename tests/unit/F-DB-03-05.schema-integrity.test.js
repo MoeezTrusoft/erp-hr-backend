@@ -119,7 +119,9 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // 142 + OfferApprovalRule (Phase 9 residue FR-09) — the tenant offer
     // approval policy (role-specific approver chains with compensation
     // windows), same convention and own-policy-in-own-migration rule.
-    expect(nullableModels).toHaveLength(142);
+    // 143 + TalentPoolInvitation (FR-10 residue) — the invitation lifecycle,
+    // same convention and own-policy-in-own-migration rule.
+    expect(nullableModels).toHaveLength(143);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

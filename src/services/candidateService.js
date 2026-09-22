@@ -72,6 +72,11 @@ export const createCandidate = async ({
                 resumeMediaId: resumeMediaId != null ? Number(resumeMediaId) : null,
                 tenantId: tenantId ?? null,
                 retentionUntil,
+                // FR-10 residue — NAME the clock's population. A candidate created
+                // here applied, so this is the APPLICANT basis; the pool basis is
+                // stamped when they are added to a talent pool. Without the
+                // marker a later sweep cannot tell which clock it is reading.
+                retentionPopulation: retentionUntil ? "APPLICANT" : null,
                 // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
                 // finite creator id, else null (createdById is nullable).
                 createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,

@@ -46,11 +46,15 @@ export const addToPool = async ({ candidateId, poolName, notes, addedById, tenan
             { db: prisma },
         );
         if (!retentionUntil) return entry;
+        // FR-10 residue — and which clock it is. The candidate may also be a
+        // live applicant, so the row has to say which lawful basis is counting
+        // down; without the marker the APPLICANT sweep would erase someone kept
+        // on file for future roles, under a basis that never applied to them.
         await prisma.candidate.updateMany({
             where: scopedWhere(tenantId, { id: Number(candidateId) }),
-            data: { retentionUntil },
+            data: { retentionUntil, retentionPopulation: "TALENT_POOL" },
         });
-        return { ...entry, retentionUntil };
+        return { ...entry, retentionUntil, retentionPopulation: "TALENT_POOL" };
     } catch (err) {
         logger.warn(
             { errMessage: err?.message, candidateId, tenantId },

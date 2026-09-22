@@ -21,6 +21,7 @@
 
 import prisma from "../lib/prisma.js";
 import { scopedWhere, withTenant } from "../lib/tenancy.js";
+import { inviteToApply } from "./talentPoolInvitation.service.js";
 
 // ── DERIVATION HELPERS ──────────────────────────────────────────────────────
 
@@ -315,6 +316,17 @@ export const inviteCandidate = async ({ candidateId, jobRequisitionId, tenantId,
     throw err;
   }
 
+  // FR-10 residue — the invitation is now a LIFECYCLE row, not just a note. The
+  // note append below is kept for continuity (readers of the pool row still see
+  // the history in place), but the authority is the invocation record: it carries
+  // the status, the expiry and the answer, which a note cannot.
+  const lifecycle = await inviteToApply({
+    tenantId,
+    candidateId: cId,
+    jobRequisitionId: jobRequisitionId ?? null,
+    actorId: addedById,
+  });
+
   const stamp = `Invited to apply ${new Date().toISOString().slice(0, 10)}`;
 
   const appendNote = (prev) => (prev && prev.trim().length ? `${prev}\n${stamp}` : stamp);
@@ -353,5 +365,9 @@ export const inviteCandidate = async ({ candidateId, jobRequisitionId, tenantId,
     updatedMemberships,
     updatedCandidateNotes: memberships.length === 0,
     pipeline,
+    // The row that now carries the state: id, status, expiry. `reused` means an
+    // open invitation already existed, so this call did not create a second one.
+    invitation: lifecycle.invitation,
+    invitationReused: lifecycle.reused,
   };
 };

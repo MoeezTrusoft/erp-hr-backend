@@ -49,7 +49,12 @@ describe("Phase 10 — TALENT_POOL retention wiring", () => {
       expect.anything(),
     );
     expect(prisma.candidate.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { retentionUntil: until } }),
+      // FR-10 residue — the population marker travels with the clock: the row has
+      // to say WHICH basis is counting down, or a later sweep cannot tell whether
+      // this candidate is a pool contact or a live applicant.
+      expect.objectContaining({
+        data: { retentionUntil: until, retentionPopulation: "TALENT_POOL" },
+      }),
     );
     // The caller sees the clock the entry now carries.
     expect(result.retentionUntil).toBe(until);

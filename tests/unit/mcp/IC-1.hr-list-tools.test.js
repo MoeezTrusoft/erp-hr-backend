@@ -52,6 +52,8 @@ jest.unstable_mockModule('../../../src/mcp/controllers/recruitmentMcpController.
      'mcpListApplications', 'mcpListRecruitmentTags', 'mcpListInterviews', 'mcpListOffers',
      'mcpListTalentPool', 'mcpPostRequisition', 'mcpRemoveTalentPool', 'mcpSendOffer',
      'mcpApproveOffer', 'mcpOfferHandoffGet', 'mcpOfferHandoffRetry',
+     // Phase 9 residue — the operator fleet view of FAILED handoffs.
+     'mcpOfferHandoffsFailedList',
      'mcpUpdateApplicationStage', 'mcpUpdateApplicationStatus', 'mcpUpdateCandidate',
      'mcpUpdateInterview', 'mcpUpdateRequisition', 'mcpUpdateOffer'],
     {
