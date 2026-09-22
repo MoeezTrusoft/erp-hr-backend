@@ -165,7 +165,7 @@ describe("scorecardTemplate service (§5.5)", () => {
         const row = await service.createTemplate({ name: "Engineering", criteria: [{ key: "a" }], tenantId: tenant, actorId: 12 });
         expect(row.id).toBe(1);
         expect(prisma.scorecardTemplate.create).toHaveBeenCalledWith(
-            expect.objectContaining({ data: expect.objectContaining({ criteria: [{ key: "a", label: "a", weight: null, required: true }] }) }),
+            expect.objectContaining({ data: expect.objectContaining({ criteria: [{ key: "a", label: "a", weight: null, required: true, numeric: false }] }) }),
         );
         expect(logAction).toHaveBeenCalledTimes(1);
     });

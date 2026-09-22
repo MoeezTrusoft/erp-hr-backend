@@ -202,6 +202,44 @@ export const unlinkTemplate = async ({ linkId, tenantId }) => {
  * Loads the interview's requisition→position chain itself so callers cannot
  * resolve with a half-context.
  */
+/**
+ * FR-07 residue — the screening-scorecard half of the same lookup. Resolves the
+ * template for an APPLICATION's requisition (REQUISITION → STAGE → JOB_FAMILY,
+ * the identical order interviews use) so a screening scorecard is judged against
+ * the same template the tenant configured, never a parallel one.
+ *
+ * Returns null when nothing is linked (→ free-form criteria, pre-residue
+ * behavior) — a tenant that never configures templates sees no change.
+ */
+export const resolveForApplication = async ({ applicationId, tenantId }) => {
+    const id = toInt(applicationId);
+    if (!id) return null;
+    const application = await prisma.application.findFirst({
+        where: scopedWhere(tenantId, { id }),
+        select: { jobRequisition: { select: { id: true, positionId: true } } },
+    });
+    if (!application) return null;
+
+    const links = await prisma.scorecardTemplateLink.findMany({
+        where: scopedWhere(tenantId, { isActive: true }),
+        include: { template: { select: { id: true, name: true, criteria: true, isActive: true } } },
+    });
+    const ctx = {
+        jobRequisitionId: application.jobRequisition?.id ?? null,
+        positionId: application.jobRequisition?.positionId ?? null,
+        // The STAGE rung is interview-type keyed and a screening happens before
+        // any interview type exists, so it deliberately cannot match here: a
+        // screening scorecard resolves by REQUISITION → JOB_FAMILY only. Passing
+        // null (rather than a guess) keeps that scoping explicit and testable.
+        interviewType: null,
+    };
+    const template = resolveTemplate(
+        links.filter((l) => l.template.isActive).map((l) => ({ scopeType: l.scopeType, scopeId: l.scopeId, scopeKey: l.scopeKey, template: l.template })),
+        ctx,
+    );
+    return template ? { ...template, source: "TEMPLATE" } : null;
+};
+
 export const resolveForInterview = async ({ interviewId, tenantId }) => {
     const id = toInt(interviewId);
     if (!id) return null;

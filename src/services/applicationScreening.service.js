@@ -31,6 +31,10 @@ import {
     validateCriteria,
     validateScreeningDecision,
 } from "../lib/dispositionReasons.js";
+import { validateScreeningAgainstTemplate } from "../lib/scorecardTemplates.js";
+import { resolveForApplication as resolveScreeningTemplate } from "./scorecardTemplate.service.js";
+import { scopedWhere } from "../lib/tenancy.js";
+import { requisitionScopeWhere, maskCandidateForScope } from "../lib/recruitmentAccess.js";
 
 export class ScreeningError extends Error {
     constructor(message, status = 400, details = undefined) {
@@ -97,6 +101,33 @@ export async function recordScreening({ applicationId, tenantId, outcome, reason
             throw fail("Invalid screening decision", 400, { errors: decision.errors });
         }
 
+        // FR-07 residue — numeric screening scorecards. When the tenant linked a
+        // scorecard template for this requisition, the submitted criteria are
+        // judged against it: required keys must be present and a criterion the
+        // template marks NUMERIC must carry a number. No template → free-form, so
+        // a tenant that never configured one is unaffected.
+        const template = criteriaCheck.normalized
+            ? await resolveScreeningTemplate({ applicationId: application.id, tenantId })
+            : null;
+        let scoreOverall = null;
+        let templateId = null;
+        if (template) {
+            const verdict = validateScreeningAgainstTemplate({
+                criteria: criteriaCheck.normalized ?? [],
+                templateCriteria: Array.isArray(template.criteria) ? template.criteria : [],
+            });
+            if (!verdict.ok) {
+                throw fail("Screening scorecard does not satisfy its template", 400, {
+                    errors: verdict.errors,
+                    missing: verdict.missing,
+                    unknown: verdict.unknown,
+                    templateId: template.id,
+                });
+            }
+            scoreOverall = verdict.overall;
+            templateId = template.id;
+        }
+
         const row = await tx.applicationScreening.create({
             data: {
                 applicationId: application.id,
@@ -105,6 +136,8 @@ export async function recordScreening({ applicationId, tenantId, outcome, reason
                 reasonCode: outcome === "ADVANCE" ? null : reasonCode,
                 notes: decision.notes,
                 criteria: criteriaCheck.normalized ?? undefined,
+                scoreOverall,
+                templateId,
                 reviewedById: actorId ?? null,
             },
         });
@@ -207,10 +240,30 @@ export async function addToShortlist({ applicationId, tenantId, note = null, act
     });
 }
 
-/** The requisition's current shortlist, oldest-first (matches marking order). */
-export async function listShortlist(requisitionId, tenantId) {
-    return prisma.shortlistEntry.findMany({
-        where: { requisitionId: Number(requisitionId), tenantId },
+/**
+ * The requisition's current shortlist, oldest-first (matches marking order).
+ *
+ * FR-07 residue — ROW-LEVEL hiring-team ACL. `scope` is the caller's resolved
+ * recruitment scope: the requisition must be visible under it (a MANAGED caller
+ * only reaches its own requisitions, an INTERVIEWER only assigned ones) and
+ * candidate contact details are masked for scopes that may not see them. An
+ * unscopable requisition is NOT-FOUND, never a partially-populated list — the
+ * same fail-closed rule the rest of recruitment uses.
+ */
+export async function listShortlist(requisitionId, tenantId, scope = null) {
+    const id = Number(requisitionId);
+    if (scope) {
+        const visible = await prisma.jobRequisition.findFirst({
+            where: scopedWhere(tenantId, { id, ...requisitionScopeWhere(scope) }),
+            select: { id: true },
+        });
+        if (!visible) {
+            throw fail("Requisition not found", 404, "HR-RECRUITMENT-REQUISITION-NOT-FOUND");
+        }
+    }
+
+    const rows = await prisma.shortlistEntry.findMany({
+        where: scopedWhere(tenantId, { requisitionId: id }),
         orderBy: { addedAt: "asc" },
         include: {
             application: {
@@ -223,6 +276,16 @@ export async function listShortlist(requisitionId, tenantId) {
             },
         },
     });
+    if (!scope) return rows;
+
+    // Mask per row rather than dropping rows: a hiring manager must see WHO is
+    // shortlisted (that is the point of the list) without the PII their scope
+    // does not grant.
+    return rows.map((row) =>
+        row?.application?.candidate
+            ? { ...row, application: { ...row.application, candidate: maskCandidateForScope(row.application.candidate, scope) } }
+            : row,
+    );
 }
 
 /** Remove an application from the shortlist. The screening/disposition record is the audit of WHY. */

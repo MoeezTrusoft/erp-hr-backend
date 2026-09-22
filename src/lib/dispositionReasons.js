@@ -37,7 +37,17 @@ export const SCREENING_OUTCOMES = Object.freeze(["ADVANCE", "REJECT", "HOLD"]);
 const MAX_NOTES_LENGTH = 5000;
 const MAX_CRITERIA = 50;
 
-/** Validate an optional criteria array: [{ criterion, result, note? }]. */
+/**
+ * Validate an optional criteria array: [{ criterion, result, score?, note? }].
+ *
+ * FR-07 residue — a criterion may additionally carry a NUMERIC `score`: a
+ * template-required screening scorecard reports numbers alongside the
+ * PASS/FAIL/UNSURE verdict. The number is validated here (finite, non-negative)
+ * so a stringified "7" from a form still normalizes, while garbage is refused
+ * with the entry's name rather than silently stored. Whether a numeric score is
+ * REQUIRED is a template question — templateCriteria is the only thing that can
+ * answer it — so this function stays verdict-shaped.
+ */
 export function validateCriteria(criteria) {
     if (criteria === undefined || criteria === null) return { ok: true, errors: [], normalized: null };
     if (!Array.isArray(criteria)) return { ok: false, errors: ["criteria must be an array"], normalized: null };
@@ -54,8 +64,17 @@ export function validateCriteria(criteria) {
         else if (!["PASS", "FAIL", "UNSURE"].includes(result)) {
             errors.push(`criterion "${criterion}" result must be PASS, FAIL or UNSURE`);
         }
+        let score = null;
+        if (entry?.score !== undefined && entry?.score !== null && entry?.score !== "") {
+            const n = Number(entry.score);
+            if (!Number.isFinite(n) || n < 0) {
+                errors.push(`criterion "${criterion || "(unnamed)"}" score must be a finite number >= 0`);
+            } else {
+                score = n;
+            }
+        }
         const note = typeof entry?.note === "string" && entry.note.trim() !== "" ? entry.note.trim() : null;
-        normalized.push({ criterion, result, ...(note ? { note } : {}) });
+        normalized.push({ criterion, result, ...(score !== null ? { score } : {}), ...(note ? { note } : {}) });
     }
     return { ok: errors.length === 0, errors, normalized: errors.length ? null : normalized };
 }

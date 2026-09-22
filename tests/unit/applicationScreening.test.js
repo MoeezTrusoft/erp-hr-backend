@@ -27,6 +27,9 @@ const prisma = {
         create: jest.fn(),
     },
     shortlistEntry: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), deleteMany: jest.fn(), findMany: jest.fn() },
+    // FR-07 residue — the screening scorecard template lookup. Default: no
+    // template linked, so criteria stay free-form (the pre-residue behavior).
+    scorecardTemplateLink: { findMany: jest.fn(async () => []) },
     $transaction: jest.fn(),
 };
 const logAction = jest.fn(async () => undefined);

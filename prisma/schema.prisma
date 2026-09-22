@@ -2961,6 +2961,11 @@ model ApplicationScreening {
   // array of { criterion, result, note? }. Json rather than a child table: the
   // criterion vocabulary is tenant-defined and display-shaped, not queried.
   criteria      Json?
+  // FR-07 residue — the template-computed overall when a screening scorecard
+  // template resolved for the application, and which template produced it.
+  // Null means free-form criteria (the pre-template behavior), never zero.
+  scoreOverall  Float?
+  templateId    Int?
   reviewedById  Int?
   reviewedAt    DateTime @default(now())
 

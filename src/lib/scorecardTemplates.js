@@ -40,6 +40,8 @@ export function validateCriteria(criteria) {
     if (!Array.isArray(criteria) || criteria.length === 0) {
         return { ok: false, error: "A template needs at least one criterion" };
     }
+    // NB: this validates a TEMPLATE's criteria (key/label/weight/required/numeric),
+    // not a submitted scorecard — see validateScreeningAgainstTemplate for that.
     const seen = new Set();
     const out = [];
     for (const [i, raw] of criteria.entries()) {
@@ -58,6 +60,10 @@ export function validateCriteria(criteria) {
             label: typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : key,
             weight,
             required: raw.required === undefined ? true : raw.required === true,
+            // FR-07 residue — a criterion may declare itself NUMERIC, which makes
+            // a numeric score mandatory at submission time. Additive + optional:
+            // a template that never sets it behaves exactly as before.
+            numeric: raw.numeric === true,
         });
     }
 
@@ -138,6 +144,60 @@ export function checkRequiredCriteria(criteria = [], scores = {}) {
  *            template: object }[]} links
  * @param {{ jobRequisitionId: number|null, positionId: number|null, interviewType: string|null }} ctx
  * @returns {object|null} the winning template, or null (→ free-form scoring)
+ */
+/**
+ * FR-07 residue — validate a SCREENING record's criteria against the template
+ * that resolves for its requisition, when one does.
+ *
+ * A screening entry is `{ criterion, result, score? }` where `criterion` is the
+ * template KEY (that is what makes the two linkable). Rules, in order:
+ *   * every REQUIRED template criterion must be present (by key)
+ *   * a numeric score is REQUIRED when the template marks the criterion numeric
+ *     (`numeric: true`) — the "template requires them" half of the residue;
+ *     a numeric score on a non-numeric criterion is allowed but not demanded
+ *   * unknown keys are reported, never silently dropped (same rule as §5.5b)
+ *   * the overall is computed with the SAME math the interview scorecard uses,
+ *     so a screening score and an interview score are comparable
+ *
+ * @returns {{ ok: boolean, errors: string[], missing: string[], unknown: string[],
+ *             overall: number|null, weighted: boolean }}
+ */
+export function validateScreeningAgainstTemplate({ criteria = [], templateCriteria = [] } = {}) {
+    const errors = [];
+    const byKey = new Map();
+    for (const entry of criteria) {
+        const key = typeof entry?.criterion === "string" ? entry.criterion.trim() : "";
+        if (key) byKey.set(key, entry);
+    }
+
+    const known = new Set(templateCriteria.map((c) => c.key));
+    const missing = templateCriteria
+        .filter((c) => c.required && !byKey.has(c.key))
+        .map((c) => c.key);
+    if (missing.length) errors.push(`missing required criteria: ${missing.join(", ")}`);
+
+    const scores = {};
+    for (const c of templateCriteria) {
+        const entry = byKey.get(c.key);
+        if (!entry) continue;
+        const hasScore = entry.score !== undefined && entry.score !== null;
+        if (c.numeric === true && !hasScore) {
+            errors.push(`criterion "${c.key}" requires a numeric score`);
+        }
+        if (hasScore) scores[c.key] = entry.score;
+    }
+
+    const unknown = [...byKey.keys()].filter((k) => !known.has(k));
+    const { overall, weighted } = computeOverall(templateCriteria, scores);
+    return { ok: errors.length === 0, errors, missing, unknown, overall, weighted };
+}
+
+/**
+ * §5.5 — the template lookup shared by every surface that resolves one
+ * (interview scorecard, screening scorecard). The ORDER lives in
+ * `resolveTemplate`; this is the fetch.
+ *
+ * @returns {Promise<object|null>} the winning template WITH its criteria, or null
  */
 export function resolveTemplate(links = [], ctx = {}) {
     const pick = (scopeType, match) => {

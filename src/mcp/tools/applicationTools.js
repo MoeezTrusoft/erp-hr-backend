@@ -231,7 +231,7 @@ export function registerApplicationTools(server) {
     withToolError(async ({ requisitionId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await listShortlist(requisitionId, user.tenantId);
+      const data = await listShortlist(requisitionId, user.tenantId, resolveRecruitmentScope(user));
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_requisition_shortlist_list")
   );

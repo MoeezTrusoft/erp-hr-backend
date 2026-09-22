@@ -17,6 +17,7 @@ import {
     removeFromShortlist,
     ScreeningError,
 } from "../services/applicationScreening.service.js";
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorOf = (req) => req.user?.employeeId ?? null;
@@ -114,7 +115,7 @@ export const addToShortlistHandler = async (req, res) => {
 
 export const listShortlistHandler = async (req, res) => {
     try {
-        const rows = await listShortlist(req.params.requisitionId, tenantOf(req));
+        const rows = await listShortlist(req.params.requisitionId, tenantOf(req), resolveRecruitmentScope(req.user));
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
         respond(res, error);
