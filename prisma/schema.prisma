@@ -3179,6 +3179,32 @@ enum OnboardingTaskCategory {
 
 // ==================== ONBOARDING MODELS ====================
 
+// FR-13 residue — TENANT-CONFIGURABLE ONBOARDING CHECKLIST TEMPLATES.
+//
+// The baseline in lib/onboardingDefaults.js is a DEFAULT, not tenant policy.
+// A tenant that authors a template here gets its task list seeded into every
+// subsequently provisioned hire's checklist; a tenant that configures nothing
+// keeps the baseline behaviour byte-for-byte.
+model OnboardingChecklistTemplate {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  // [{ title, description, stage, category, assigneeType, dueInDays }] — the
+  // shape is validated by lib/onboardingTemplates.js on write, never trusted.
+  tasks       Json
+  isActive    Boolean  @default(true)
+  isDefault   Boolean  @default(false)
+  createdById Int?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+  tenantId    String?  @db.Uuid
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, isDefault, isActive])
+  @@map("onboarding_checklist_templates")
+}
+
 model OnboardingChecklist {
   id                Int              @id @default(autoincrement())
   employeeId        Int

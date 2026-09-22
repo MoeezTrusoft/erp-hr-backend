@@ -20,7 +20,8 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { recordHandoff } from "../lib/recruitmentOpsMetrics.js";
 import { provisionHireCompensation } from "./payrollService.js";
-import { buildOnboardingTaskRows } from "../lib/onboardingDefaults.js";
+import { materializeOnboardingTaskRows } from "../lib/onboardingDefaults.js";
+import { resolveTasksForProvisioning } from "./onboardingTemplate.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { offerHandoffCompletedEvent, offerHandoffFailedEvent } from "./hrEvents.js";
 
@@ -221,10 +222,13 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
         error: `base source: ${compensation.baseSource}`,
       });
 
-      // 4) Onboarding checklist — one per employee, seeded with the default
-      // baseline task set so HR starts from a real checklist, not an empty one.
-      // Seeding happens ONLY on creation, so the (idempotent) handoff cannot
-      // duplicate tasks.
+      // 4) Onboarding checklist — one per employee, seeded so HR starts from a
+      // real checklist, not an empty one. FR-13 residue: the task set is the
+      // TENANT'S configured template when one is active+default, else the
+      // documented baseline — resolved inside this transaction so the template
+      // read and the checklist write cannot straddle a config change. Seeding
+      // happens ONLY on creation, so the (idempotent) handoff cannot duplicate
+      // tasks.
       let checklist = await tx.onboardingChecklist.findFirst({
         where: scopedWhere(tenantId, { employeeId: employee.id }),
         select: { id: true },
@@ -239,12 +243,21 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
           }),
           select: { id: true },
         });
+        const taskPlan = await resolveTasksForProvisioning(tx, tenantId);
         await tx.onboardingTask.createMany({
-          data: buildOnboardingTaskRows({
+          data: materializeOnboardingTaskRows({
+            tasks: taskPlan.tasks,
             checklistId: checklist.id,
             tenantId,
             startDate: hireDate,
           }),
+        });
+        await recordAttempt(tx, {
+          handoffId: handoff.id,
+          tenantId,
+          step: "onboarding_checklist_source",
+          status: "OK",
+          error: taskPlan.source === "TEMPLATE" ? `template:${taskPlan.templateId}` : "baseline",
         });
       }
       await recordAttempt(tx, { handoffId: handoff.id, tenantId, step: "onboarding_checklist", status: "OK" });

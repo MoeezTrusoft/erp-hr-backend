@@ -30,6 +30,7 @@ import { registerRecruitmentAnalyticsTools } from "../../../src/mcp/tools/recrui
 import { registerRecruitmentExtraTools } from "../../../src/mcp/tools/recruitmentExtraTools.js";
 import { registerApplicationTools } from "../../../src/mcp/tools/applicationTools.js";
 import { registerResumeTools } from "../../../src/mcp/tools/resumeTools.js";
+import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboardingTemplateTools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -47,6 +48,10 @@ const RECRUITMENT_REGISTRARS = [
   ["recruitmentExtraTools", registerRecruitmentExtraTools],
   ["applicationTools", registerApplicationTools],
   ["resumeTools", registerResumeTools],
+  // FR-13 residue — tenant-configurable onboarding checklist templates. Its
+  // tools serve the recruitment handoff's checklist seeding, so they belong to
+  // this inventory (the gateway edge map gates them with the rest).
+  ["onboardingTemplateTools", registerOnboardingTemplateTools],
 ];
 
 function collect(register) {
@@ -75,6 +80,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   talentPoolMgmtTools: 4,
   recruitmentAnalyticsTools: 3, // + hr_recruitment_analytics_drilldown (NFR-12)
   recruitmentExtraTools: 7, // + hr_candidate_merge (FR-04.10) + the 3 requisition attachment tools (§1.4 decision B2)
+  onboardingTemplateTools: 3, // FR-13 residue — list/set/deactivate
   applicationTools: 15,
   resumeTools: 6,
 });
@@ -152,6 +158,9 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_offer_send",
   "hr_offer_update",
   "hr_offers_manage_list",
+  "hr_onboarding_template_deactivate",
+  "hr_onboarding_template_list",
+  "hr_onboarding_template_set",
   "hr_recruitment_analytics_drilldown",
   "hr_recruitment_analytics_export",
   "hr_recruitment_analytics_get",
@@ -224,7 +233,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(550);
+    expect(all).toHaveLength(553);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

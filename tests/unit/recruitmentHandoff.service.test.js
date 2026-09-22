@@ -11,6 +11,9 @@ const tx = {
   payrollAssignment: { findFirst: jest.fn(), create: jest.fn() },
   onboardingChecklist: { findFirst: jest.fn(), create: jest.fn() },
   onboardingTask: { createMany: jest.fn() },
+  // FR-13 residue — the checklist template resolver reads the tenant's default
+  // template; none configured here, so provisioning seeds the baseline.
+  onboardingChecklistTemplate: { findFirst: jest.fn(async () => null) },
   offerHandoff: { update: jest.fn() },
   offerHandoffAttempt: { create: jest.fn() },
 };

@@ -23,6 +23,7 @@ import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
 import { registerRecruitmentExtraTools } from "./tools/recruitmentExtraTools.js";
+import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
 import { registerOnboardingScheduleTools } from "./tools/onboardingScheduleTools.js";
@@ -272,6 +273,8 @@ export function registerAllTools(server) {
   registerRecruitmentAnalyticsTools(server);
   registerOnboardingMgmtTools(server);
   registerRecruitmentExtraTools(server);
+  // FR-13 residue — tenant-configurable onboarding checklist templates.
+  registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);
   registerOnboardingDashboardTools(server);
   registerOnboardingDetailTools(server);

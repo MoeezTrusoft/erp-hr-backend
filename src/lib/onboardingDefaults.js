@@ -136,16 +136,32 @@ const dayOffset = (startDate, days) => {
  * @param {Date|string} [args.startDate]  the hire date (offsets are relative to it)
  * @returns {object[]} rows ready for `createMany`
  */
-export function buildOnboardingTaskRows({ checklistId, tenantId, startDate }) {
-    return DEFAULT_ONBOARDING_TASKS.map((task, index) => ({
+export const ONBOARDING_TASK_STAGES = Object.freeze(["pre_joining", "pre_boarding", "first_week", "equipment"]);
+export const ONBOARDING_TASK_ASSIGNEES = Object.freeze(["HR", "IT", "MANAGER", "NEW_HIRE"]);
+
+/**
+ * Materialize stored task DEFINITIONS into checklist rows for one hire.
+ *
+ * FR-13 residue — the single materializer. Whether the definitions came from the
+ * tenant's template or from the baseline below, the row shape, the due-date
+ * arithmetic and the ordering are identical, so a tenant template cannot drift
+ * from what the default path produces.
+ */
+export function materializeOnboardingTaskRows({ tasks, checklistId, tenantId, startDate }) {
+    return (Array.isArray(tasks) ? tasks : []).map((task, index) => ({
         checklistId: Number(checklistId),
         tenantId: tenantId ?? null,
         title: task.title,
-        description: task.description,
+        description: task.description ?? null,
         stage: task.stage,
         category: task.category,
         assigneeType: task.assigneeType,
         dueDate: dayOffset(startDate, task.dueInDays),
         sortOrder: index,
     }));
+}
+
+/** The baseline path — the same materializer over the default definitions. */
+export function buildOnboardingTaskRows({ checklistId, tenantId, startDate }) {
+    return materializeOnboardingTaskRows({ tasks: DEFAULT_ONBOARDING_TASKS, checklistId, tenantId, startDate });
 }
