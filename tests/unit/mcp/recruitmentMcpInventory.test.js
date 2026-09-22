@@ -66,7 +66,7 @@ for (const [module, register] of RECRUITMENT_REGISTRARS) {
 
 // The pinned surface. Mirrors the gateway map (hr-recruitment-mcp-exposure).
 const EXPECTED_PER_MODULE = Object.freeze({
-  recruitmentTools: 22,
+  recruitmentTools: 23, // + hr_offer_handoffs_failed_list (Phase 9 operator fleet view)
   requisitionMgmtTools: 14,
   candidatePipelineTools: 2,
   interviewMgmtTools: 16,
@@ -142,6 +142,7 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_offer_create_full",
   "hr_offer_handoff_get",
   "hr_offer_handoff_retry",
+  "hr_offer_handoffs_failed_list",
   "hr_offer_manage_get",
   "hr_offer_preboarding",
   "hr_offer_preview",
@@ -190,7 +191,7 @@ const EXPECTED_TOOLS = Object.freeze([
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
 
 describe("Recruitment MCP tool inventory", () => {
-  it("registers exactly the pinned 104 tools — no more, no less", () => {
+  it("registers exactly the pinned 105 tools — no more, no less", () => {
     expect([...allRecruitmentTools].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
@@ -219,7 +220,7 @@ describe("Recruitment MCP tool inventory", () => {
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(545);
+    expect(all).toHaveLength(546);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

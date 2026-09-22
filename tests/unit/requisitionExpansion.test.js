@@ -11,7 +11,9 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
 import {
   EMPLOYMENT_TYPES,
+  FIELD_LOCKED_KEYS,
   HIRING_REASONS,
+  assertRequisitionFieldsEditable,
   assertRequisitionSubmittable,
   assertReplacementPairing,
   missingSubmissionFields,
@@ -103,6 +105,64 @@ describe("Phase 2.2 — mandatory-field submission gate", () => {
       "hiringReason",
       "costCenterRef",
     ]);
+  });
+});
+
+describe("FR-02.02 — the post-submission field lock", () => {
+  it("allows field edits on a DRAFT and on a status-less legacy row", () => {
+    expect(() => assertRequisitionFieldsEditable({ status: "DRAFT" }, { title: "New" })).not.toThrow();
+    expect(() => assertRequisitionFieldsEditable({}, { title: "New" })).not.toThrow();
+  });
+
+  it("refuses field edits once the requisition left DRAFT, naming the fields", () => {
+    for (const status of ["PENDING_APPROVAL", "APPROVED", "POSTED", "CLOSED"]) {
+      try {
+        assertRequisitionFieldsEditable({ status }, { openings: 3 });
+        expect.unreachable(`${status} should have refused`);
+      } catch (e) {
+        expect(e.status).toBe(409);
+        expect(e.code).toBe("HR-RECRUITMENT-REQUISITION-LOCKED");
+        expect(e.fields).toEqual(["openings"]);
+      }
+    }
+  });
+
+  it("passes a status-only payload through — transitions are not field edits", () => {
+    expect(() =>
+      assertRequisitionFieldsEditable({ status: "PENDING_APPROVAL" }, { status: "PENDING_APPROVAL", comments: "resubmit" }),
+    ).not.toThrow();
+  });
+
+  it("ignores transport keys (expectedVersion) and absent-field partial PATCHes", () => {
+    expect(() =>
+      assertRequisitionFieldsEditable({ status: "APPROVED" }, { expectedVersion: 4 }),
+    ).not.toThrow();
+    expect(() => assertRequisitionFieldsEditable({ status: "APPROVED" }, {})).not.toThrow();
+  });
+
+  it("locks every field the two write surfaces can change", () => {
+    // Every expansion key plus the core keys must be covered — a new field that
+    // forgets to join the list would be editable on a POSTED requisition.
+    const expansionKeys = Object.keys(pickRequisitionFields({
+      location: "x", employmentType: "FULL_TIME", targetStartDate: "2026-01-01",
+      gradeLevelId: 1, costCenterRef: "x", costCenterLabel: "x", budgetRef: "x",
+      budgetLabel: "x", hiringReason: "NEW_HIRE", replacementEmployeeId: 1,
+      recruiterId: 1, closesAt: "2026-12-01", autoCloseWhenFilled: true,
+      jobContent: { summary: "s" },
+    }));
+    for (const key of expansionKeys) expect(FIELD_LOCKED_KEYS).toContain(key);
+    for (const key of ["title", "description", "departmentId", "positionId", "openings", "priority"]) {
+      expect(FIELD_LOCKED_KEYS).toContain(key);
+    }
+  });
+
+  it("is wired into BOTH field-editing services", async () => {
+    const requisitionSrc = await import("fs").then((fs) =>
+      fs.promises.readFile("src/services/requisition.service.js", "utf8"));
+    const legacySrc = await import("fs").then((fs) =>
+      fs.promises.readFile("src/services/hrContract.service.js", "utf8"));
+    expect(requisitionSrc).toContain("assertRequisitionFieldsEditable");
+    expect(legacySrc).toContain("assertRequisitionFieldsEditable");
   });
 });
 

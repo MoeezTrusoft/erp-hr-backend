@@ -204,11 +204,14 @@ describe('hrEvents builders', () => {
 
     it('offerAcceptedEvent → hr.recruitment.offer_accepted.v1', () => {
         const env = assertValid(
-            offerAcceptedEvent({ id: 6, applicationId: 4, candidateId: 8, tenantId: TENANT }, ctx),
+            offerAcceptedEvent({ id: 6, applicationId: 4, candidateId: 8, createdById: 12, tenantId: TENANT }, ctx),
             'hr.recruitment.offer_accepted.v1'
         );
         expect(env.payload.offerId).toBe('6');
         expect(env.payload.applicationId).toBe('4');
+        // Phase 11 residue — the owner id rides for hub routing (nullable).
+        expect(env.payload.createdById).toBe('12');
+        expect(offerAcceptedEvent({ id: 6, applicationId: 4, candidateId: 8, tenantId: TENANT }, ctx).payload.createdById).toBeNull();
     });
 
     it('offerHandoffCompletedEvent → hr.recruitment.handoff_completed.v1', () => {
@@ -226,11 +229,19 @@ describe('hrEvents builders', () => {
 
     it('offerHandoffFailedEvent → hr.recruitment.handoff_failed.v1', () => {
         const env = assertValid(
-            offerHandoffFailedEvent({ id: 2, offerId: 6, attemptCount: 3, tenantId: TENANT }, ctx, { step: 'provision' }),
+            offerHandoffFailedEvent({ id: 2, offerId: 6, attemptCount: 3, tenantId: TENANT }, ctx, { step: 'provision', operatorId: '12' }),
             'hr.recruitment.handoff_failed.v1'
         );
         expect(env.payload.step).toBe('provision');
         expect(env.payload.attemptCount).toBe(3);
+        // Phase 11 residue — operator routing id (from extra or the offer owner).
+        expect(env.payload.operatorId).toBe('12');
+        expect(
+            offerHandoffFailedEvent({ id: 2, offerId: 6, attemptCount: 3, offer: { createdById: 44 }, tenantId: TENANT }, ctx, { step: 'provision' }).payload.operatorId,
+        ).toBe('44');
+        expect(
+            offerHandoffFailedEvent({ id: 2, offerId: 6, attemptCount: 3, tenantId: TENANT }, ctx, { step: 'provision' }).payload.operatorId,
+        ).toBeNull();
     });
 
     it('performanceReviewFinalizedEvent → hr.performance.review_finalized.v1', () => {

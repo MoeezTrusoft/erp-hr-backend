@@ -17,7 +17,7 @@ const tx = {
 
 const prismaDouble = {
   offer: { findFirst: jest.fn() },
-  offerHandoff: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn() },
+  offerHandoff: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn(), findMany: jest.fn() },
   offerHandoffAttempt: { create: jest.fn() },
 };
 // `config/prisma.js` is a legacy re-export of `lib/prisma.js`, and the handoff
@@ -38,7 +38,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 
 const prisma = (await import("../../src/config/prisma.js")).default;
-const { runOfferHandoff, HANDOFF_STATUS } = await import(
+const { runOfferHandoff, listFailedHandoffs, HANDOFF_STATUS } = await import(
   "../../src/services/recruitmentHandoff.service.js"
 );
 
@@ -180,6 +180,71 @@ describe("Recruitment accepted-offer handoff", () => {
 
   it("requires a tenant", async () => {
     await expect(runOfferHandoff({ offerId: 9, tenantId: null }))
+      .rejects.toMatchObject({ code: "HR-TENANT-REQUIRED" });
+  });
+});
+
+describe("listFailedHandoffs — the operator fleet view (Phase 9 residue)", () => {
+  const TENANT = "tenant-a";
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("returns operator-shaped rows for FAILED handoffs, oldest first", async () => {
+    prismaDouble.offerHandoff.findMany.mockResolvedValue([
+      {
+        id: 2,
+        offerId: 9,
+        status: "FAILED",
+        attemptCount: 2,
+        lastStep: "provision",
+        updated_at: new Date("2026-09-20T10:00:00Z"),
+        offer: {
+          id: 9,
+          status: "ACCEPTED",
+          application: {
+            id: 3,
+            jobRequisition: { id: 7, title: "Senior Backend Engineer" },
+            candidate: { id: 5, firstName: "Ayesha", lastName: "Khan" },
+          },
+        },
+      },
+    ]);
+
+    const result = await listFailedHandoffs({ tenantId: TENANT });
+
+    // FAILED-first filtering is the default; ordering is oldest-failure-first.
+    expect(prismaDouble.offerHandoff.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: TENANT, status: "FAILED" }),
+        orderBy: [{ updated_at: "asc" }],
+      }),
+    );
+    expect(result.total).toBe(1);
+    expect(result.items[0]).toMatchObject({
+      handoffId: 2,
+      status: "FAILED",
+      offerId: 9,
+      requisitionId: 7,
+      requisitionTitle: "Senior Backend Engineer",
+      candidateName: "Ayesha Khan",
+    });
+    // lastError deliberately stays OFF the fleet surface (it is on the
+    // per-offer detail read) — assert it is not projected.
+    expect(result.items[0].lastError).toBeUndefined();
+  });
+
+  it("supports an unfiltered listing when status is empty", async () => {
+    prismaDouble.offerHandoff.findMany.mockResolvedValue([]);
+    await listFailedHandoffs({ tenantId: TENANT, status: "" });
+    expect(prismaDouble.offerHandoff.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: TENANT } }),
+    );
+  });
+
+  it("requires a tenant", async () => {
+    await expect(listFailedHandoffs({ tenantId: null }))
       .rejects.toMatchObject({ code: "HR-TENANT-REQUIRED" });
   });
 });

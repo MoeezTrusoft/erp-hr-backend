@@ -1,7 +1,7 @@
 import * as svc from "../services/offer.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 import { approveOffer } from "../services/offerApproval.service.js";
-import { getOfferHandoff, runOfferHandoff } from "../services/recruitmentHandoff.service.js";
+import { getOfferHandoff, runOfferHandoff, listFailedHandoffs as listFailedHandoffsSvc } from "../services/recruitmentHandoff.service.js";
 import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 export const createOffer = async (req, res) => {
@@ -75,6 +75,20 @@ export const respondOffer = async (req, res) => {
             actorId: req.user?.employeeId ?? null,
         });
         res.status(200).json({ success: true, message: "Success", data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+// Phase 9 residue — the operator fleet view of FAILED handoffs.
+export const listFailedHandoffs = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await listFailedHandoffsSvc({
+            tenantId,
+            status: req.query.status || "FAILED",
+            limit: req.query.limit,
+        });
+        res.status(200).json({ success: true, data: result });
     } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
 };
 

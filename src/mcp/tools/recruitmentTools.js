@@ -4,6 +4,7 @@ import {
   mcpApproveOffer,
   mcpOfferHandoffGet,
   mcpOfferHandoffRetry,
+  mcpOfferHandoffsFailedList,
   mcpCreateApplication,
   mcpCreateCandidate,
   mcpCreateInterview,
@@ -588,6 +589,21 @@ export function registerRecruitmentTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpOfferHandoffRetry(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_handoffs_failed_list",
+    "List FAILED (or in-progress) accepted-offer handoffs needing operator action — the fleet view behind handoff retries",
+    {
+      status: z.enum(["FAILED", "IN_PROGRESS", "COMPLETED"]).default("FAILED").describe("Filter by handoff status; defaults to FAILED"),
+      limit: z.string().optional().describe("Max rows (1-200); defaults to 50"),
+    },
+    withToolError(async ({ status, limit }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await mcpOfferHandoffsFailedList(user, { status, limit });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

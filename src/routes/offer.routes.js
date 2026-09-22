@@ -14,6 +14,9 @@ router.get("/:id", ctrl.getOffer);
 router.put("/:id/approve", ctrl.approve);
 router.put("/:id/send", ctrl.sendOffer);
 router.put("/:id/respond", ctrl.respondOffer);
+// Operator fleet view of FAILED handoffs (Phase 9 residue) — BEFORE the :id
+// routes so "failed" is never parsed as an offer id.
+router.get("/handoffs/failed", ctrl.listFailedHandoffs);
 router.get("/:id/handoff", ctrl.getHandoff);
 // Operator retry for a FAILED accepted-offer handoff (idempotent).
 router.post("/:id/handoff/retry", ctrl.retryHandoff);

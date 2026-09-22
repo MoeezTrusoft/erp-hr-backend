@@ -14,6 +14,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/recruitmentMcpController.
   mcpApproveOffer: jest.fn(async () => ({ success: true })),
   mcpOfferHandoffGet: jest.fn(async () => ({ success: true })),
   mcpOfferHandoffRetry: jest.fn(async () => ({ success: true })),
+  mcpOfferHandoffsFailedList: jest.fn(async () => ({ success: true })),
   mcpPostRequisition: jest.fn(async () => ({ success: true })),
   mcpDeleteRequisition: jest.fn(async () => ({ success: true })),
   mcpCreateCandidate: jest.fn(async () => ({ success: true })),

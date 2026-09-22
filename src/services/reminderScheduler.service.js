@@ -10,6 +10,7 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 import { applyRetention } from "./candidatePrivacy.service.js";
+import { purgeExpiredDrafts } from "./applicationDraft.service.js";
 
 const reminderLog = logger.child({ component: "reminder-jobs" });
 
@@ -75,6 +76,21 @@ export async function runDocumentExpiryJob() {
  * @param {number} [opts.retentionDays=30]
  * @returns {Promise<{ deleted: number }>}
  */
+// ── Phase 5 residue — the save-and-return draft expiry sweep ─────────────────
+//
+// `purgeExpiredDrafts` (applicationDraft.service.js) already deleted drafts
+// whose 30-day clock ran out, but nothing SCHEDULED it: the sweep was exposed
+// for the job ladder and then left as a document rather than a control — the
+// exact posture the candidate-retention job comment below warns about. This job
+// body closes that. Deletion (not anonymization) is the correct action for a
+// never-submitted WIP form: a draft holds only verbatim form input, the owner's
+// candidate row is untouched, and the 30-day clock is the §3.4-minimizing choice.
+export async function runApplicationDraftSweepJob() {
+  const result = await purgeExpiredDrafts();
+  reminderLog.info({ purged: result.purged }, "application draft sweep job: done");
+  return result;
+}
+
 export async function runRetentionSweepJob({ retentionDays = 30 } = {}) {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   const writer = prisma?.outboxEvent;

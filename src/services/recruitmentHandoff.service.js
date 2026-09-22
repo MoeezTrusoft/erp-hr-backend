@@ -51,6 +51,61 @@ export async function getOfferHandoff({ offerId, tenantId, db = prisma } = {}) {
   });
 }
 
+/**
+ * Phase 9 residue — the OPERATOR view of failed handoffs.
+ *
+ * A handoff failure is persisted (status=FAILED + an append-only attempt row),
+ * but before now the only way to see one was to already know the offer id and
+ * call `getOfferHandoff` — which means the failure was visible to nobody who
+ * didn't already know about it. This is the fleet view: every non-completed
+ * handoff in the tenant, FAILED first (oldest failure first — the one that has
+ * been silently broken the longest sorts first), with the identifying offer /
+ * candidate / requisition context an operator needs to act. Ids + status only:
+ * `lastError` is on the per-offer detail read, not the fleet surface.
+ */
+export async function listFailedHandoffs({ tenantId, status = "FAILED", limit = 50 } = {}) {
+  requireTenant(tenantId);
+  const where = scopedWhere(tenantId, status ? { status } : {});
+  const rows = await prisma.offerHandoff.findMany({
+    where,
+    orderBy: [{ updated_at: "asc" }],
+    take: Math.min(Number(limit) || 50, 200),
+    include: {
+      offer: {
+        select: {
+          id: true,
+          status: true,
+          application: {
+            select: {
+              id: true,
+              jobRequisition: { select: { id: true, title: true } },
+              candidate: { select: { id: true, firstName: true, lastName: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  return {
+    items: rows.map((h) => ({
+      handoffId: h.id,
+      status: h.status,
+      attemptCount: h.attemptCount,
+      lastStep: h.lastStep,
+      updatedAt: h.updated_at,
+      offerId: h.offerId,
+      offerStatus: h.offer?.status ?? null,
+      requisitionId: h.offer?.application?.jobRequisition?.id ?? null,
+      requisitionTitle: h.offer?.application?.jobRequisition?.title ?? null,
+      candidateId: h.offer?.application?.candidate?.id ?? null,
+      candidateName: [h.offer?.application?.candidate?.firstName, h.offer?.application?.candidate?.lastName]
+        .filter(Boolean)
+        .join(" ") || null,
+    })),
+    total: rows.length,
+  };
+}
+
 async function recordAttempt(db, { handoffId, tenantId, step, status, error = null }) {
   await db.offerHandoffAttempt.create({
     data: { handoffId, tenantId, step, status, error },
@@ -235,7 +290,9 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
       await enqueueHrDomainEvent(tx, offerHandoffFailedEvent(
         { ...row, tenantId },
         { actorId: actorId ?? null },
-        { step: "provision" },
+        // The offer's owning recruiter rides as the OPERATOR routing id — the
+        // hire whose provisioning failed must never be the notice's recipient.
+        { step: "provision", operatorId: offer.createdById != null ? String(offer.createdById) : null },
       ));
       return row;
     }, { tenantId });

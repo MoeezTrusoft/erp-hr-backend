@@ -20,6 +20,36 @@
 // 20260920230000_recruitment_requisition_expansion so the database agrees with
 // the service instead of trusting it.
 
+// FR-02.02 — the keys whose presence in an update payload counts as a FIELD EDIT
+// for the post-submission lock. Everything the core update path writes plus the
+// whole expansion set from pickRequisitionFields. `status`, `expectedVersion`
+// and `comments`/`reason` are deliberately NOT here: they are transition/transport
+// concerns, not requisition content.
+export const FIELD_LOCKED_KEYS = Object.freeze([
+    "title",
+    "description",
+    "departmentId",
+    "positionId",
+    "employeeId",
+    "openings",
+    "priority",
+    "requestedById",
+    "location",
+    "employmentType",
+    "targetStartDate",
+    "gradeLevelId",
+    "costCenterRef",
+    "costCenterLabel",
+    "budgetRef",
+    "budgetLabel",
+    "hiringReason",
+    "replacementEmployeeId",
+    "recruiterId",
+    "closesAt",
+    "autoCloseWhenFilled",
+    "jobContent",
+]);
+
 export const EMPLOYMENT_TYPES = Object.freeze([
     "FULL_TIME",
     "PART_TIME",
@@ -209,6 +239,55 @@ export function pickRequisitionFields(data = {}) {
     if (has("jobContent")) out.jobContent = normalizeJobContent(data.jobContent);
 
     return out;
+}
+
+/**
+ * FR-02.02 — the FIELD LOCK. Once a requisition leaves DRAFT (submitted into
+ * the approval chain), its normal editable fields are frozen: an approver must
+ * judge a fixed artifact, a posted requisition must not silently change what
+ * candidates applied to, and "the requisition I approved" must stay the
+ * requisition that exists. Editing returns to the REJECTED → DRAFT revision
+ * path, which is a legal transition back into DRAFT — the lock is on FIELDS,
+ * not on the requisition's life.
+ *
+ * Pure and shared by both field-writing surfaces (requisition.service and the
+ * legacy hrContract path) so the lock cannot differ between URLs. `status`-only
+ * payloads are not field edits and pass through: legal moves are the state
+ * machine's business (assertRequisitionTransition), and a same-status PATCH is
+ * a harmless no-op there.
+ *
+ * @param {{ status?: string|null }} _existing  the row as it is NOW (pre-merge);
+ *                                              kept in the signature for caller symmetry
+ * @param {object} payload                     the incoming body
+ * @returns {string[]} the payload keys that are field edits
+ */
+export function requisitionFieldEdits(_existing = {}, payload = {}) {
+    const has = (key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
+    return FIELD_LOCKED_KEYS.filter(has);
+}
+
+/**
+ * FR-02.02 — assert a requisition's editable fields may change.
+ *
+ * Throws 409 HR-RECRUITMENT-REQUISITION-LOCKED when the requisition is beyond
+ * DRAFT and the payload carries at least one field edit. A caller that wants to
+ * also move the status passes the row AFTER merging its payload (the same shape
+ * `assertRequisitionTransition`'s gate consumes), so a DRAFT → PENDING_APPROVAL
+ * submit-with-fields PATCH is judged as the edit it is — allowed from DRAFT.
+ */
+export function assertRequisitionFieldsEditable(existing = {}, payload = {}) {
+    const status = String(existing.status || "").trim().toUpperCase();
+    if (status === "DRAFT" || status === "") return; // legacy tenantless rows behave as drafts
+    const edits = requisitionFieldEdits(existing, payload);
+    if (edits.length > 0) {
+        throw Object.assign(
+            new Error(
+                `Requisition fields are locked after submission (status ${status}); ` +
+                `reject it back to DRAFT to edit. Locked fields attempted: ${edits.join(", ")}`,
+            ),
+            { status: 409, code: "HR-RECRUITMENT-REQUISITION-LOCKED", fields: edits },
+        );
+    }
 }
 
 /**

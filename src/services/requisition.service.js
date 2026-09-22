@@ -12,7 +12,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
-import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
+import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
 import { applyApprovalDecision, chainFor, chainStatusFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
@@ -347,6 +347,13 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   // Tenant-scoped pre-read so a cross-tenant id cannot be mutated (fail-closed).
   const existing = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Requisition not found");
+
+  // FR-02.02 — the field lock: past DRAFT the requisition's editable fields are
+  // frozen. Judged on the merged payload so a same-PATCH submit (DRAFT →
+  // PENDING_APPROVAL with fields) still works, while editing a POSTED or
+  // PENDING_APPROVAL requisition refuses. Status-only payloads pass through to
+  // the transition guard below.
+  assertRequisitionFieldsEditable(existing, { ...data, ...expansion });
 
   const updateData = {};
   // Phase 2.2 — checked against the MERGED row: reclassifying to REPLACEMENT is

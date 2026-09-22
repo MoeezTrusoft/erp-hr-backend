@@ -7,7 +7,7 @@ import {
 } from "./requisitionWorkflow.service.js";
 import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
 import { applyApprovalDecision, chainFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
-import { pickRequisitionFields, assertReplacementPairing } from "../lib/requisitionFields.js";
+import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
@@ -1828,6 +1828,9 @@ export const updateRequisition = async (id, data, tenantId = null) => {
 
   const expansion = pickRequisitionFields(data);
   assertReplacementPairing({ ...existing, ...expansion });
+  // FR-02.02 — the legacy /api/hr surface enforces the same post-submission
+  // field lock as the newer path, or the lock would be bypassable by URL choice.
+  assertRequisitionFieldsEditable(existing, { ...data, ...expansion });
 
   const requisition = await prisma.jobRequisition.update({
     where: { id: Number(id) },

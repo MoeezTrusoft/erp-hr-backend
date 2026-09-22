@@ -29,6 +29,7 @@ import {
     runDocumentExpiryJob,
     runRetentionSweepJob,
     runCandidateRetentionJob,
+    runApplicationDraftSweepJob,
 } from '../services/reminderScheduler.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
@@ -47,6 +48,12 @@ export const JOB_RETENTION_SWEEP = 'retention-sweep';
 // how an operator ends up believing candidate erasure runs when only housekeeping
 // does.
 export const JOB_CANDIDATE_RETENTION = 'candidate-retention';
+// Phase 5 residue — save-and-return draft expiry (deletes never-submitted WIP
+// forms past their 30-day clock). Deliberately a distinct job name from
+// JOB_RETENTION_SWEEP (queue housekeeping) and JOB_CANDIDATE_RETENTION (GDPR
+// erasure): three "retention" meanings in one name is how an operator stops
+// knowing which sweep did what.
+export const JOB_APPLICATION_DRAFT_SWEEP = 'application-draft-sweep';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -94,6 +101,13 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:candidate-retention', repeat: { pattern: '0 4 * * *' } },
         },
+        {
+            // 04:10 daily — after the candidate-retention window, so sweeps never
+            // contend; the purge itself is a single deleteMany on expired rows.
+            name: JOB_APPLICATION_DRAFT_SWEEP,
+            data: {},
+            opts: { jobId: 'repeat:application-draft-sweep', repeat: { pattern: '10 4 * * *' } },
+        },
     ];
 }
 
@@ -107,6 +121,7 @@ export function buildReminderProcessor({
     documentExpiry = runDocumentExpiryJob,
     retentionSweep = runRetentionSweepJob,
     candidateRetention = runCandidateRetentionJob,
+    applicationDraftSweep = runApplicationDraftSweepJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -127,6 +142,8 @@ export function buildReminderProcessor({
                     return retentionSweep(data);
                 case JOB_CANDIDATE_RETENTION:
                     return candidateRetention(data);
+                case JOB_APPLICATION_DRAFT_SWEEP:
+                    return applicationDraftSweep(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

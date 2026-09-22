@@ -143,6 +143,10 @@ export function offerSentEvent(offer, ctx = {}) {
 
 // Phase 9 — the candidate answered a sent offer. ids-only (no PII, no salary):
 // downstream consumers react to the decision, never to compensation.
+// Phase 11 residue — `createdById` (the recruiter who owns the offer) is now
+// carried so the hub can route an internal "offer accepted" notice; a candidate
+// is not a platform user, so without it there is no routable recipient and the
+// mapper skips (the previous reason this name was deliberately unmapped).
 export function offerAcceptedEvent(offer, ctx = {}) {
     return baseArgs('hr.recruitment.offer_accepted.v1', offer, ctx, {
         aggregateType: 'Offer',
@@ -151,6 +155,7 @@ export function offerAcceptedEvent(offer, ctx = {}) {
             offerId: String(offer?.id),
             applicationId: offer?.applicationId != null ? String(offer.applicationId) : null,
             candidateId: offer?.candidateId != null ? String(offer.candidateId) : null,
+            createdById: offer?.createdById != null ? String(offer.createdById) : null,
         },
     });
 }
@@ -172,6 +177,9 @@ export function offerHandoffCompletedEvent(handoff, ctx = {}) {
 // Phase 9 — the handoff failed and was rolled back. The failure DETAIL stays in
 // offer_handoffs.lastError; the event carries only ids + the failing step so an
 // operator can be alerted without leaking a database error into the fabric.
+// Phase 11 residue — `createdById` rides along as the OPERATOR routing id: the
+// offer's owning recruiter is the person who must chase provisioning, and the
+// handoff's hire is exactly who a failure notice must NOT be addressed to.
 export function offerHandoffFailedEvent(handoff, ctx = {}, extra = {}) {
     return baseArgs('hr.recruitment.handoff_failed.v1', handoff, ctx, {
         aggregateType: 'OfferHandoff',
@@ -181,6 +189,7 @@ export function offerHandoffFailedEvent(handoff, ctx = {}, extra = {}) {
             offerId: handoff?.offerId != null ? String(handoff.offerId) : null,
             step: extra?.step ?? null,
             attemptCount: handoff?.attemptCount ?? null,
+            operatorId: extra?.operatorId ?? (handoff?.offer?.createdById != null ? String(handoff.offer.createdById) : null),
         },
     });
 }

@@ -60,7 +60,63 @@ function round1(n) {
  * @param {string|null} tenantId RBAC Company.uuid (verbatim; null => no rows).
  * @returns {Promise<object>} analytics object (see hr_recruitment_analytics_get).
  */
-export async function computeRecruitmentAnalytics(tenantId) {
+/**
+ * FR-11 residue — DRILL-DOWN FILTERS + DATE RANGES on the canonical block.
+ *
+ * Additive (§6.3 discipline): `computeRecruitmentAnalytics(tenantId)` keeps its
+ * exact all-time behaviour; the new optional second argument narrows BOTH the
+ * legacy payload and the canonical block through the same fetch, so the two
+ * can never disagree about the window. Filters are ANDed:
+ *
+ *   - `dateFrom` / `dateTo`  — applications whose appliedAt (or the
+ *     requisition's createdAt when the application edge is absent) falls in the
+ *     window; inclusive, ISO strings or Dates.
+ *   - `requisitionIds`       — restrict to specific requisitions.
+ *   - `departmentId`         — the requisition's department (RBAC Company space).
+ *   - `stage`                — the application's CURRENT stage.
+ *   - `source`               — the candidate's source string.
+ *
+ * Unknown keys are refused rather than silently ignored: a filter that does
+ * nothing is worse than an error, because the caller believes the numbers are
+ * narrower than they are.
+ *
+ * @param {string|null} tenantId
+ * @param {{dateFrom?: string|Date, dateTo?: string|Date, requisitionIds?: number[],
+ *          departmentId?: number, stage?: string, source?: string}} [filters]
+ * @returns {Promise<object>} the same payload shape, narrowed
+ */
+export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
+  const ALLOWED_FILTER_KEYS = new Set(["dateFrom", "dateTo", "requisitionIds", "departmentId", "stage", "source"]);
+  const unknown = Object.keys(filters || {}).filter((k) => !ALLOWED_FILTER_KEYS.has(k));
+  if (unknown.length > 0) {
+    throw Object.assign(
+      new Error(`Unsupported analytics filter(s): ${unknown.join(", ")}`),
+      { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" },
+    );
+  }
+
+  const dateFrom = filters?.dateFrom ? new Date(filters.dateFrom) : null;
+  const dateTo = filters?.dateTo ? new Date(filters.dateTo) : null;
+  if (filters?.dateFrom && Number.isNaN(dateFrom.getTime())) {
+    throw Object.assign(new Error("dateFrom is not a valid date"), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
+  }
+  if (filters?.dateTo && Number.isNaN(dateTo.getTime())) {
+    throw Object.assign(new Error("dateTo is not a valid date"), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
+  }
+  if (dateFrom && dateTo && dateFrom > dateTo) {
+    throw Object.assign(new Error("dateFrom must not be after dateTo"), { status: 400, code: "HR-RECRUITMENT-ANALYTICS-FILTER-INVALID" });
+  }
+
+  const requisitionIds = Array.isArray(filters?.requisitionIds)
+    ? filters.requisitionIds.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    : null;
+  const departmentId = filters?.departmentId != null && Number.isInteger(Number(filters.departmentId)) ? Number(filters.departmentId) : null;
+  const stage = typeof filters?.stage === "string" && filters.stage.trim() ? filters.stage.trim().toLowerCase() : null;
+  const source = typeof filters?.source === "string" && filters.source.trim() ? filters.source.trim() : null;
+
+  const hasDateFilter = Boolean(dateFrom || dateTo);
+  const hasRowFilter = Boolean(requisitionIds?.length || departmentId || stage || source);
+
   // Single fetch with the relations we need; compute everything in JS.
   const applications = await prisma.application.findMany({
     where: { tenantId: tenantId ?? undefined },
@@ -76,7 +132,33 @@ export async function computeRecruitmentAnalytics(tenantId) {
     },
   });
 
-  const hiredApps = applications.filter((a) => a.stage === STAGE_HIRED);
+  // FR-11 — filter in JS (additive; unfiltered callers take the exact legacy
+  // path). Requisitions carrying ZERO applications still matter to time-to-fill,
+  // so when a requisition-level filter (ids/department) is active the
+  // requisition fetch below is narrowed by the SAME predicates instead.
+  let filteredApplications = applications;
+  if (hasRowFilter) {
+    filteredApplications = filteredApplications.filter((a) => {
+      const req = a.jobRequisition;
+      if (requisitionIds?.length && !requisitionIds.includes(req?.id)) return false;
+      if (departmentId != null && req?.departmentId !== departmentId) return false;
+      if (stage && a.stage !== stage) return false;
+      if (source && (a.candidate?.source ?? "Unknown") !== source) return false;
+      return true;
+    });
+  }
+  if (hasDateFilter) {
+    filteredApplications = filteredApplications.filter((a) => {
+      const at = a.appliedAt ? new Date(a.appliedAt) : null;
+      if (dateFrom && (!at || at < dateFrom)) return false;
+      if (dateTo && (!at || at > dateTo)) return false;
+      return true;
+    });
+  }
+
+  // FR-11 — every downstream computation reads the FILTERED set; the variable
+  // name stays `applications` so the legacy code body is untouched.
+  const hiredApps = filteredApplications.filter((a) => a.stage === STAGE_HIRED);
   const totalHires = hiredApps.length;
 
   // ── timeToHireDays ──────────────────────────────────────────────────────
@@ -96,7 +178,7 @@ export async function computeRecruitmentAnalytics(tenantId) {
   // ACCEPTED / (SENT + ACCEPTED + DECLINED + EXPIRED) * 100, rounded.
   let accepted = 0;
   let extended = 0;
-  for (const a of applications) {
+  for (const a of filteredApplications) {
     const status = a.offer?.status;
     if (!status) continue;
     if (EXTENDED_OFFER_STATUSES.has(status)) extended += 1;
@@ -121,10 +203,10 @@ export async function computeRecruitmentAnalytics(tenantId) {
 
   // ── hiringFunnel ────────────────────────────────────────────────────────
   const hiringFunnel = {
-    applied: applications.length,
-    screened: applications.filter((a) => SCREENED_STAGES.has(a.stage)).length,
-    interviewed: applications.filter((a) => (a.interviews?.length ?? 0) >= 1).length,
-    offered: applications.filter((a) => a.offer != null).length,
+    applied: filteredApplications.length,
+    screened: filteredApplications.filter((a) => SCREENED_STAGES.has(a.stage)).length,
+    interviewed: filteredApplications.filter((a) => (a.interviews?.length ?? 0) >= 1).length,
+    offered: filteredApplications.filter((a) => a.offer != null).length,
     hired: totalHires,
   };
 
@@ -133,7 +215,7 @@ export async function computeRecruitmentAnalytics(tenantId) {
   // is counted once per source; hires count that candidate's hired applications.
   const bySource = new Map();
   const seenCandidatesBySource = new Map();
-  for (const a of applications) {
+  for (const a of filteredApplications) {
     const source = a.candidate?.source ?? "Unknown";
     if (!bySource.has(source)) {
       bySource.set(source, { source, candidates: 0, hires: 0 });
@@ -182,8 +264,15 @@ export async function computeRecruitmentAnalytics(tenantId) {
   let canonical = null;
   if (!isRecruitmentFlagEnabled("analytics")) canonical = { version: null, unavailable: true, reason: "flag-disabled" };
   else try {
+    // FR-11 — the canonical requisition fetch is narrowed by the SAME row-level
+    // predicates (ids/department) so time-to-fill per requisition agrees with
+    // the application-level numbers above; date/stage/source filtering happens
+    // per application below, matching the legacy block's semantics.
+    const requisitionWhere = { tenantId: tenantId ?? undefined };
+    if (requisitionIds?.length) requisitionWhere.id = { in: requisitionIds };
+    if (departmentId != null) requisitionWhere.departmentId = departmentId;
     const requisitions = await prisma.jobRequisition.findMany({
-      where: { tenantId: tenantId ?? undefined },
+      where: requisitionWhere,
       select: {
         id: true,
         openings: true,
@@ -209,7 +298,7 @@ export async function computeRecruitmentAnalytics(tenantId) {
         r.openings,
       ),
     );
-    const tthPerApp = applications.map((a) => timeToHireForApplication(a));
+    const tthPerApp = filteredApplications.map((a) => timeToHireForApplication(a));
 
     // The latest REJECT/HOLD disposition code per application classifies its
     // drop-off; ADVANCE rows never classify (§6 row 7 + §4.2).
@@ -223,7 +312,13 @@ export async function computeRecruitmentAnalytics(tenantId) {
       }
     }
 
-    const allApplications = requisitions.flatMap((r) => r.applications);
+    const allApplications = requisitions.flatMap((r) => r.applications).filter((a) => {
+      if (stage && a.stage !== stage) return false;
+      if (source && (a.candidate?.source ?? "Unknown") !== source) return false;
+      if (dateFrom && (!a.appliedAt || new Date(a.appliedAt) < dateFrom)) return false;
+      if (dateTo && (!a.appliedAt || new Date(a.appliedAt) > dateTo)) return false;
+      return true;
+    });
     const funnel = stageFunnel(
       allApplications.map((a) => ({
         applicationId: a.id,

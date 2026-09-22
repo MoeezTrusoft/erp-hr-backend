@@ -27,12 +27,27 @@ const today = () => new Date().toISOString().slice(0, 10);
 export function registerRecruitmentAnalyticsTools(server) {
   server.tool(
     "hr_recruitment_analytics_get",
-    "Compute tenant-scoped recruitment analytics: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, and an ILLUSTRATIVE cost-per-hire / cost breakdown (constants, not DB spend — flagged illustrativeCostData:true).",
-    z.object({}),
-    withToolError(async () => {
+    "Compute tenant-scoped recruitment analytics: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, and an ILLUSTRATIVE cost-per-hire / cost breakdown (constants, not DB spend — flagged illustrativeCostData:true). Optional drill-down filters (FR-11): dateFrom/dateTo (ISO), requisitionIds, departmentId, stage, source.",
+    {
+      dateFrom: z.string().optional().describe("ISO date — include applications applied at or after this instant"),
+      dateTo: z.string().optional().describe("ISO date — include applications applied at or before this instant"),
+      requisitionIds: z.array(z.string()).optional().describe("Restrict to these requisition ids (numeric strings)"),
+      departmentId: z.string().optional().describe("Restrict to this department id (numeric string)"),
+      stage: z.string().optional().describe("Restrict to this current application stage (e.g. 'interview')"),
+      source: z.string().optional().describe("Restrict to this candidate source string"),
+    },
+    withToolError(async ({ dateFrom, dateTo, requisitionIds, departmentId, stage, source }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await computeRecruitmentAnalytics(user.tenantId);
+      const filters = {
+        ...(dateFrom ? { dateFrom } : {}),
+        ...(dateTo ? { dateTo } : {}),
+        ...(requisitionIds?.length ? { requisitionIds: requisitionIds.map(Number) } : {}),
+        ...(departmentId ? { departmentId: Number(departmentId) } : {}),
+        ...(stage ? { stage } : {}),
+        ...(source ? { source } : {}),
+      };
+      const data = await computeRecruitmentAnalytics(user.tenantId, filters);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_recruitment_analytics_get")
   );
