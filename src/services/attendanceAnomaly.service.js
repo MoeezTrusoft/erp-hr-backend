@@ -12,6 +12,7 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
+import { routeAnomaly } from "./attendanceAnomalyRouting.service.js";
 
 const ANOMALY_TYPES = new Set([
   "LATE_CHECKIN",
@@ -104,26 +105,67 @@ export async function informAbnormality({
     );
   }
 
+  // HR-CHAIN-RAISE-01 (2026-09-23) — an anomaly raised ON BEHALF OF an
+  // employee (hr_anomaly_create / hr_anomaly_inform, the HR ops path) was
+  // written bare: no tenantId, no sourceKind, and NO approval-chain routing.
+  // The Timesheet panel filters sourceKind=REGULARIZATION, so HR-raised rows
+  // never appeared there, and `decideAnomaly` refuses any anomaly whose
+  // currentApprovalLevel is not a configured level ("not pointed at a
+  // configured approval level") — so a request HR raised could NEVER be
+  // decided and no deduction could ever be released.
+  //
+  // It now lands in the same shape as the self-service flow and is routed
+  // through the configured chain (level 1 manager → 2 HR → 3 management).
+  const anomalyDate = toDateOrNull(date);
+  const dayRef = anomalyDate ? anomalyDate.toISOString().slice(0, 10) : null;
+  const sourceRef = dayRef ? `regularization:${empId}:${dayRef}` : null;
+
+  // One OPEN request per employee-day. The self-service path enforces the same
+  // invariant from its side; without it here an HR raise beside a pending
+  // employee request would give one day two outcomes (and two deductions).
+  // A dateless raise keeps the legacy behaviour and is not deduped.
+  if (sourceRef) {
+    const open = await prisma.attendanceAnomaly.findFirst({
+      where: scopedWhere(tenantId, { sourceKind: "REGULARIZATION", sourceRef, status: "PENDING" }),
+      select: { id: true },
+    });
+    if (open) {
+      throw Object.assign(
+        new Error(`An open regularization request for ${sourceRef} already exists (id ${open.id})`),
+        { status: 400 },
+      );
+    }
+  }
+
   const created = await prisma.attendanceAnomaly.create({
     data: {
+      tenantId,
       employeeId: empId,
       type,
       reason: reason ?? null,
       detail: detail ?? null,
-      date: toDateOrNull(date),
+      date: anomalyDate,
       fromTime: toDateOrNull(fromTime),
       toTime: toDateOrNull(toTime),
+      applicationDate: new Date(),
+      sourceKind: "REGULARIZATION",
+      sourceRef,
       status: "PENDING",
+      // Seeded so the row is never "unroutable by construction"; routeAnomaly
+      // below points it at the first ACTIONABLE level.
+      currentApprovalLevel: 1,
       createdAt: new Date(),
     },
     include: { employee: { select: EMPLOYEE_SELECT } },
   });
 
+  const routing = await routeAnomaly({ tenantId, anomalyId: created.id });
+
   logger.info(
-    { anomalyId: created.id, employeeId: empId, type },
+    { anomalyId: created.id, employeeId: empId, type, routed: routing.routed },
     "attendance anomaly raised"
   );
-  return rowDto(created);
+  return { ...rowDto(created), routing };
 }
 
 /**
