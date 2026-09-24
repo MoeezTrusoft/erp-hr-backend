@@ -687,6 +687,14 @@ model AttendanceAnomaly {
   positionSnapshot   String?
   departmentSnapshot String?
 
+  // TS-ONBEHALF-01 — WHO filled the form. Null on rows raised before the field
+  // existed. raisedById === employeeId means the employee filed it themselves;
+  // a different id (or the ops raise path) means HR filed it on their behalf.
+  // The name is a SNAPSHOT for the same reason position/department are: the
+  // card must say who filed it at raise time, not who they are today.
+  raisedById   Int? // plain ref — no FK, same pattern as reviewerId
+  raisedByName String?
+
   // HR-ANOM-DEADLINE-01 — last date the employee could submit this request.
   // LATE / MISSING_CHECKIN / MISSING_CHECKOUT: 2nd working day COUNTING the
   // anomaly day (day 1); every other type: 2 working days AFTER. Null on
@@ -702,6 +710,7 @@ model AttendanceAnomaly {
   sourceRef  String? // e.g. "leaveRequest:123"
 
   currentApprovalLevel Int @default(1)
+
 
   employee  Employee                    @relation(fields: [employeeId], references: [id])
   approvals AttendanceAnomalyApproval[]

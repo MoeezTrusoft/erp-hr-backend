@@ -313,6 +313,10 @@ export async function createAnomalyRequest({ tenantId, employeeId, date, reason 
         sourceRef,
         status: "PENDING",
         currentApprovalLevel: 1,
+        // TS-ONBEHALF-01 — the employee filed this themselves (raisedById ===
+        // employeeId); the ops path stamps the HR filler instead.
+        raisedById: employeeId,
+        raisedByName: null,
         requestDeadline: deadline,
       },
     });

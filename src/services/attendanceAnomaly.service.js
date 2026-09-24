@@ -12,7 +12,7 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
-import { routeAnomaly } from "./attendanceAnomalyRouting.service.js";
+import { routeAnomaly, resolveApprovalChain } from "./attendanceAnomalyRouting.service.js";
 
 const ANOMALY_TYPES = new Set([
   "LATE_CHECKIN",
@@ -72,7 +72,15 @@ function rowDto(row) {
     toTime: row.toTime ?? null,
     status: row.status,
     employee: employeeDto(row.employee),
+    // TS-ONBEHALF-01 — who filled the form (employee vs HR on behalf) and the
+    // raise-time snapshots the approval card renders.
+    raisedById: row.raisedById ?? null,
+    raisedByName: row.raisedByName ?? null,
+    position: row.positionSnapshot ?? null,
+    department: row.departmentSnapshot ?? null,
+    currentApprovalLevel: row.currentApprovalLevel ?? null,
     createdAt: row.createdAt ?? null,
+    applicationDate: row.applicationDate ?? null,
     decidedAt: row.decidedAt ?? null,
     reviewNote: row.reviewNote ?? null,
   };
@@ -91,6 +99,7 @@ export async function informAbnormality({
   date,
   fromTime,
   toTime,
+  raisedById,
 }) {
   const empId = toIntOrNull(employeeId);
   if (empId == null) {
@@ -103,6 +112,20 @@ export async function informAbnormality({
       ),
       { status: 400 }
     );
+  }
+
+  // TS-ONBEHALF-01 — the filler is the CALLING employee (HR when raised on
+  // behalf, the employee themselves when self-raised through this path). The
+  // name is snapshotted so the approval card keeps saying who filed it even
+  // after an HR transfer/rename.
+  const fillerId = toIntOrNull(raisedById);
+  let raisedByName = null;
+  if (fillerId != null && fillerId !== empId) {
+    const filler = await prisma.employee.findUnique({
+      where: { id: fillerId },
+      select: EMPLOYEE_SELECT,
+    });
+    raisedByName = fullName(filler);
   }
 
   // HR-CHAIN-RAISE-01 (2026-09-23) — an anomaly raised ON BEHALF OF an
@@ -154,6 +177,8 @@ export async function informAbnormality({
       // Seeded so the row is never "unroutable by construction"; routeAnomaly
       // below points it at the first ACTIONABLE level.
       currentApprovalLevel: 1,
+      raisedById: fillerId,
+      raisedByName,
       createdAt: new Date(),
     },
     include: { employee: { select: EMPLOYEE_SELECT } },
@@ -162,7 +187,7 @@ export async function informAbnormality({
   const routing = await routeAnomaly({ tenantId, anomalyId: created.id });
 
   logger.info(
-    { anomalyId: created.id, employeeId: empId, type, routed: routing.routed },
+    { anomalyId: created.id, employeeId: empId, type, routed: routing.routed, raisedById: fillerId },
     "attendance anomaly raised"
   );
   return { ...rowDto(created), routing };
@@ -225,11 +250,95 @@ export async function listAnomalies({
       orderBy: [{ [sortField]: dir }, { id: dir }],
       skip: (pageNum - 1) * size,
       take: size,
-      include: { employee: { select: EMPLOYEE_SELECT } },
+      include: {
+        employee: { select: EMPLOYEE_SELECT },
+        // TS-CARD-01 — the decision trail for the approval-matrix timeline.
+        approvals: { orderBy: { level: "asc" } },
+      },
     }),
   ]);
 
-  return { items: rows.map(rowDto), total, page: pageNum, pageSize: size };
+  // TS-CARD-01 (2026-09-24) — the approval-matrix view: every configured
+  // chain level with its RESOLVED approver and the timeline state for THIS
+  // request (APPROVED / REJECTED / PENDING-current / SKIPPED / WAITING).
+  // The chain is per-requester (level 1 is usually the employee's manager),
+  // so it must be resolved per row; the approver names are batch-fetched.
+  const decisionsByAnomaly = new Map();
+  for (const row of rows) {
+    decisionsByAnomaly.set(
+      row.id,
+      (row.approvals ?? []).map((d) => ({
+        level: d.level,
+        approverId: d.approverId,
+        approverRole: d.approverRole,
+        decision: d.decision,
+        comments: d.comments ?? null,
+        decidedAt: d.decidedAt ?? null,
+      }))
+    );
+  }
+
+  const chainByAnomaly = new Map();
+  const approverIds = new Set();
+  for (const row of rows) {
+    try {
+      const chain = await resolveApprovalChain({ tenantId, employeeId: row.employeeId });
+      chainByAnomaly.set(row.id, chain);
+      for (const lvl of chain) if (lvl.approverId) approverIds.add(lvl.approverId);
+      for (const d of decisionsByAnomaly.get(row.id) ?? []) {
+        if (d.approverId) approverIds.add(d.approverId);
+      }
+    } catch {
+      chainByAnomaly.set(row.id, []);
+    }
+  }
+
+  const nameById = new Map();
+  if (approverIds.size > 0) {
+    const approvers = await prisma.employee.findMany({
+      where: { id: { in: [...approverIds] } },
+      select: EMPLOYEE_SELECT,
+    });
+    for (const emp of approvers) nameById.set(emp.id, fullName(emp));
+  }
+
+  const matrixFor = (row) => {
+    const chain = chainByAnomaly.get(row.id) ?? [];
+    const decisions = decisionsByAnomaly.get(row.id) ?? [];
+    return chain.map((lvl) => {
+      const dec = decisions.find((d) => d.level === lvl.level);
+      let state = "WAITING";
+      if (dec) {
+        state = dec.decision; // APPROVED | REJECTED
+      } else if (row.status !== "PENDING") {
+        // The request closed without this level deciding (e.g. a terminal HR
+        // rejection at an earlier level) — it never came up for them.
+        state = "CLOSED";
+      } else if (!lvl.resolved) {
+        state = lvl.skippable ? "SKIPPED" : "UNRESOLVED";
+      } else if (row.currentApprovalLevel === lvl.level) {
+        state = "PENDING";
+      }
+      return {
+        level: lvl.level,
+        role: lvl.role,
+        approverId: lvl.approverId,
+        approverName: lvl.approverId ? nameById.get(lvl.approverId) ?? null : null,
+        resolved: lvl.resolved,
+        reason: lvl.reason ?? null,
+        state,
+        comments: dec?.comments ?? null,
+        decidedAt: dec?.decidedAt ?? null,
+      };
+    });
+  };
+
+  return {
+    items: rows.map((row) => ({ ...rowDto(row), chain: matrixFor(row) })),
+    total,
+    page: pageNum,
+    pageSize: size,
+  };
 }
 
 /**

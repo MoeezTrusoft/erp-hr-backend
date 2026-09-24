@@ -27,7 +27,7 @@ const prismaMock = {
   workSchedule: { findFirst: jest.fn(async () => null) },
   employee: {
     findUnique: jest.fn(async () => ({
-      id: 1, employee_code: 'EMP-001', employee_name: 'Test Emp', first_name: 'Test', last_name: 'Emp',
+      id: 1, tenant_id: 't', employee_code: 'EMP-001', employee_name: 'Test Emp', first_name: 'Test', last_name: 'Emp',
       job_title: null, Position: null, businessUnit: null,
     })),
   },

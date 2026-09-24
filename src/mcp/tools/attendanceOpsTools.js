@@ -73,6 +73,9 @@ export function registerAttendanceOpsTools(server) {
         date: args.date,
         fromTime: args.fromTime,
         toTime: args.toTime,
+        // TS-ONBEHALF-01 — the FILLER is the calling employee (HR when raised
+        // on an employee's behalf), NOT the anomaly's subject employee.
+        raisedById: user.employeeId,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_anomaly_inform")
@@ -123,6 +126,7 @@ export function registerAttendanceOpsTools(server) {
         date: args.date,
         fromTime: args.fromTime,
         toTime: args.toTime,
+        raisedById: user.employeeId,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_anomaly_create")
