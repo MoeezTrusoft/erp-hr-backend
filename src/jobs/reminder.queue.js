@@ -28,6 +28,7 @@ import {
     runReviewReminderJob,
     runDocumentExpiryJob,
     runRetentionSweepJob,
+    runAbsenceMarkingJob,
 } from '../services/reminderScheduler.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
@@ -40,6 +41,15 @@ export const REMINDER_DLQ = 'hr-reminders-dead';
 export const JOB_REVIEW_REMINDER = 'review-reminder';
 export const JOB_DOCUMENT_EXPIRY = 'document-expiry';
 export const JOB_RETENTION_SWEEP = 'retention-sweep';
+// HR-ATT-ABSENCE-02 (2026-09-28) — nothing ever SCHEDULED the absence marking;
+// `hr_attendance_mark_absences` was the only entrypoint, so ABSENT days only
+// existed when HR remembered to run it manually (the September table went dark
+// after Sep 15). The repeatable below closes the day in Pakistan time the same
+// way the self-service regularization deadline does (Asia/Karachi +05:00): the
+// 22:00 UTC pattern is 03:00 PKT, so "yesterday" is always the FULL previous
+// day when the body runs. The job body itself (tenant sweep + guards) lives
+// with the other processors in reminderScheduler.service.js.
+export const JOB_ABSENCE_MARKING = 'absence-marking';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -53,7 +63,7 @@ export function defaultJobOptions() {
     };
 }
 
-// The three migrated cron jobs as BullMQ REPEATABLES. Each carries a STABLE
+// The scheduled cron jobs as BullMQ REPEATABLES. Each carries a STABLE
 // jobId so re-registering on every boot de-dups (BullMQ keys repeatables by
 // name+pattern; the explicit jobId makes the de-dup intent unambiguous and lets
 // us upsert deterministically).
@@ -74,6 +84,12 @@ export function repeatableJobs() {
             data: { retentionDays: 30 },
             opts: { jobId: 'repeat:retention-sweep', repeat: { pattern: '30 3 * * *' } }, // 03:30 daily
         },
+        {
+            name: JOB_ABSENCE_MARKING,
+            data: {},
+            // 22:00 UTC == 03:00 PKT — closes yesterday's window in Karachi.
+            opts: { jobId: 'repeat:absence-marking', repeat: { pattern: '0 22 * * *' } },
+        },
     ];
 }
 
@@ -86,6 +102,7 @@ export function buildReminderProcessor({
     reviewReminder = runReviewReminderJob,
     documentExpiry = runDocumentExpiryJob,
     retentionSweep = runRetentionSweepJob,
+    absenceMarking = runAbsenceMarkingJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -104,6 +121,8 @@ export function buildReminderProcessor({
                     return documentExpiry(data);
                 case JOB_RETENTION_SWEEP:
                     return retentionSweep(data);
+                case JOB_ABSENCE_MARKING:
+                    return absenceMarking(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }
