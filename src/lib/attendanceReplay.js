@@ -121,7 +121,15 @@ export function shiftFor(pattern, day, anchor) {
 export function sessioniseByRoster(
   punches,
   pattern,
-  { windowHours = 5, dedupeSeconds = 120, closeHours = 8 } = {},
+  // ATT-CLOSE-9H-01 (2026-10-01) — closeHours 8→9. Trusoft's 15:00–00:00
+  // Moeez/Subhan crew scanned OUT at 08:30, 8.5h past the rostered end, and
+  // the 8h close window refused the punch: it opened a phantom next-day
+  // session and the day's real arrival then paired with IT, turning the
+  // departure into the next day's check-in. HR: shifts end when the work
+  // ends, never more than nine hours after. The nearest-next-start guard
+  // still protects day-shift crews whose 08:30 punch is minutes from a
+  // 09:00 rostered arrival.
+  { windowHours = 5, dedupeSeconds = 120, closeHours = 9 } = {},
 ) {
   const ordered = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
 
@@ -203,8 +211,25 @@ export function sessioniseByRoster(
         && t <= open.end + closeTol
         && (t - open.end) < toNearestStart(p.punchedAt);
 
+      // HR-ATT-DIRECTION-02 (2026-10-01) — a device check-out closes the open
+      // shift even past the close window's positional logic. Two guards stack
+      // ahead of it: the punch must sit within nine hours of the rostered end,
+      // and the session must be OPEN — i.e. a genuine earlier punch opened it.
+      // The nearest-next-start test is deliberately NOT applied: Moeez's 08:30
+      // OUT sits 6.5h from the next 15:00 start but 8.5h from the midnight end,
+      // so "nearer the next start" reads it as an arrival — yet a device check-
+      // out cannot be an arrival, and the validated device direction
+      // (HR-ATT-POLICY-01: 4404 rows, zero disagreements) outranks the
+      // positional heuristic. A mis-stamped genuine arrival is protected by the
+      // other two guards: its own shift has usually closed already (open=null)
+      // or it lands outside the nine-hour window.
+      const closesByDevice = open
+        && (p.status === 1 || p.status === 5)
+        && t > open.end
+        && t <= open.end + closeTol;
+
       // 1. Does this punch belong to the shift already in progress?
-      if (open && ((t >= open.start - tol && t <= open.end + tol) || late)) {
+      if (open && ((t >= open.start - tol && t <= open.end + tol) || late || closesByDevice)) {
         key = open.key;
         // Past the rostered end, the shift is finished; a later punch is a new
         // arrival rather than a third scan of the same shift.
