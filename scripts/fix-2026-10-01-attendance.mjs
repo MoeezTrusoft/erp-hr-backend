@@ -64,7 +64,14 @@ for (const e of people) {
 // ── A. shift 19:00-dated ABSENT rows onto the intended UTC midnight ───────
 // (Model queries throughout — $queryRaw runs on a pool connection where the
 // tenant GUC is not set, so forced RLS hides every row from raw SQL here.)
-console.log("\n== A. 19:00-dated ABSENT rows (+5h to the intended day) ==");
+//
+// ORDER MATTERS: an ABSENT row can only move onto a day that has NO row yet.
+// Where the target day already has one (a real PRESENT row, or another
+// ABSENT), the shifted row would violate Attendance_tenant_employee_day_key —
+// so the collision is resolved FIRST by deleting the ABSENT row, never the
+// real one. Deletion is the fix: the ABSENT row's date is wrong and its day
+// is accounted for by the row that already exists.
+console.log("\n== A. 19:00-dated ABSENT rows: dedupe against target day, then +5h ==");
 const absentRows = await prisma.attendance.findMany({
   where: {
     status: "ABSENT",
@@ -73,20 +80,59 @@ const absentRows = await prisma.attendance.findMany({
   select: { id: true, employeeId: true, date: true, status: true, created_at: true },
 });
 const misplaced = absentRows.filter((r) => r.date.getUTCHours() === 19);
-console.log(`rows to shift: ${misplaced.length}`);
-if (WRITE) {
-  for (const r of misplaced) {
-    await prisma.attendance.update({
-      where: { id: r.id },
-      data: { date: new Date(r.date.getTime() + PKT_MS) },
-    });
+console.log(`19:00-dated ABSENT rows: ${misplaced.length}`);
+
+// Rows already present on each target day (id, status) — the collision map.
+// Fetched across ALL attendance rows in the window once, then keyed.
+const allRows = await prisma.attendance.findMany({
+  where: { date: { gte: new Date(`${FROM}T00:00:00Z`), lt: new Date(`${TO}T00:00:00Z`) } },
+  select: { id: true, employeeId: true, date: true, status: true },
+});
+const byEmpDay = new Map();
+for (const r of allRows) {
+  const key = `${r.employeeId}|${r.date.toISOString().slice(0, 10)}`;
+  if (!byEmpDay.has(key)) byEmpDay.set(key, []);
+  byEmpDay.get(key).push(r);
+}
+
+const toShift = [];
+const toDelete = [];
+for (const r of misplaced) {
+  const target = new Date(r.date.getTime() + PKT_MS);
+  const key = `${r.employeeId}|${target.toISOString().slice(0, 10)}`;
+  // Occupants that matter are rows that will STILL be on the target day after
+  // this run: another 19:00-dated ABSENT row moves away (+5h) itself, so it
+  // does not block. Without this exclusion a run of consecutive absence days
+  // would cascade-delete all but the last row (each target "occupied" by the
+  // next day's 19:00 row). Genuine occupants — device rows, weekly offs and
+  // midnight ABSENTs — do block, and the incoming ABSENT loses to them.
+  const occupants = (byEmpDay.get(key) ?? []).filter(
+    (o) => o.id !== r.id && !(o.status === "ABSENT" && o.date.getUTCHours() === 19),
+  );
+  if (occupants.length === 0) {
+    toShift.push({ id: r.id, from: r.date, to: target });
+  } else {
+    // The intended day already has a settled row — the ABSENT row is a
+    // duplicate of it (or of the day the occupancy accounts for). Drop it.
+    toDelete.push({ id: r.id, emp: r.employeeId, target: key, occupants });
   }
-  console.log(`shifted ${misplaced.length} rows by +5h`);
 }
-for (const r of misplaced.slice(0, 6)) {
-  console.log(`  e.g. emp ${r.employeeId}: ${r.date.toISOString()} -> ${new Date(r.date.getTime() + PKT_MS).toISOString()}`);
+console.log(`plan: ${toShift.length} to shift (+5h), ${toDelete.length} to delete (target day occupied)`);
+for (const d of toDelete.slice(0, 12)) {
+  console.log(`  DEL emp ${d.emp} ${d.target}: occupied by ids ${d.occupants.map((o) => `${o.id}(${o.status})`).join(",")}`);
 }
-if (misplaced.length > 6) console.log(`  ... and ${misplaced.length - 6} more`);
+if (toDelete.length > 12) console.log(`  ... and ${toDelete.length - 12} more`);
+
+if (WRITE) {
+  for (const d of toDelete) {
+    await prisma.attendance.deleteMany({ where: { id: d.id } });
+  }
+  console.log(`deleted ${toDelete.length} duplicate ABSENT rows`);
+  for (const s of toShift) {
+    await prisma.attendance.update({ where: { id: s.id }, data: { date: s.to } });
+  }
+  console.log(`shifted ${toShift.length} rows by +5h to their intended UTC midnight`);
+}
 
 // ── B. delete duplicates created by the shift (kept from the ORIGINAL plan:
 //      the arriving ABSENT loses to any existing row on the target day) ────
