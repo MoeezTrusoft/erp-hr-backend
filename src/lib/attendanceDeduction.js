@@ -27,9 +27,10 @@ const dayKey = (value) => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 };
 
-// The stored daily verdict maps 1:1 onto a rule key. HALF_DAY and ABSENT are
-// absent from this table on purpose: they are already priced through
-// Attendance.day_credit, so charging them here as well would dock the day twice.
+// The stored daily verdict maps 1:1 onto a rule key. HALF_DAY, EARLY_CHECKOUT
+// and ABSENT are absent from this table on purpose: they are already priced
+// through Attendance.day_credit (T&A-RULE-06 — both early-checkout bands cost
+// half a day), so charging them here as well would dock the day twice.
 const STATUS_TO_RULE = {
   LATE: "LATE",
   MISSING_CHECKIN: "MISSING_CHECKIN",
@@ -75,14 +76,24 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
     seen.add(`${ruleKey}|${day}`);
   };
 
-  // ABSENT/HALF_DAY are priced from Attendance.day_credit by the payslip
-  // bridge. Keep their day keys here so an EARLY_CHECKOUT anomaly on the same
-  // row is not also emitted as a rule violation and charged twice. If the
-  // employee worked a full-credit day, EARLY_CHECKOUT remains rule-priced.
+  // ABSENT/HALF_DAY/EARLY_CHECKOUT are priced from Attendance.day_credit by
+  // the payslip bridge. Keep their day keys here so an EARLY_CHECKOUT anomaly
+  // on the same row is not also emitted as a rule violation and charged twice.
+  // T&A-RULE-07 widened this beyond the status names: a day whose credit was
+  // docked for ANY reason (a LATE arrival past the half-day mark now carries
+  // day_credit 0.5 under status LATE) has already lost money, so the guard
+  // reads day_credit whenever it is present.
   for (const row of attendance) {
     const day = dayKey(row?.date);
     if (!day || row?.manually_corrected || excused.has(day)) continue;
-    if (row?.status === "ABSENT" || row?.status === "HALF_DAY") creditLossDays.add(day);
+    if (
+      row?.status === "ABSENT" ||
+      row?.status === "HALF_DAY" ||
+      row?.status === "EARLY_CHECKOUT" ||
+      (row?.day_credit != null && row?.day_credit < 1)
+    ) {
+      creditLossDays.add(day);
+    }
   }
 
   for (const row of attendance) {

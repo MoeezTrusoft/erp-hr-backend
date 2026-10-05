@@ -200,7 +200,7 @@ export function registerAttendanceAnomalyTools(server) {
         .describe("HH:MM, or null to clear. Anchored to the work date"),
       checkOut: z.string().nullable().optional()
         .describe("HH:MM, or null. Rolls to the next day automatically when earlier than check-in, so night shifts need no special handling"),
-      status: z.enum(["PRESENT", "ABSENT", "LATE", "HALF_DAY", "MISSING_CHECKIN", "MISSING_CHECKOUT"]).optional()
+      status: z.enum(["PRESENT", "ABSENT", "LATE", "HALF_DAY", "EARLY_CHECKOUT", "MISSING_CHECKIN", "MISSING_CHECKOUT"]).optional()
         .describe("IGNORED — status is derived from the supplied times (HR-ATT-CORRECTION-POLICY-01: only missing check-in/out days are correctable)"),
       workMode: z.enum(["Remote", "Hybrid", "Onsite"]).optional()
         .describe("Optionally set the day's work mode at the same time"),

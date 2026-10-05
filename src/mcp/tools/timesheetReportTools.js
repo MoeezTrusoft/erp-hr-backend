@@ -89,13 +89,13 @@ export function registerTimesheetReportTools(server) {
 
   server.tool(
     "hr_checkinout_list",
-    "Paginated / filtered / sorted check-in-out table. Each row: attendanceId, date, employee{id,name,avatar}, status (display: on-time|late|half-day|absent), checkIn, checkOut, workMode.",
+    "Paginated / filtered / sorted check-in-out table. Each row: attendanceId, date, employee{id,name,avatar}, status (display: on-time|late|half-day|early-checkout|absent), checkIn, checkOut, workMode.",
     {
       q: z.string().optional().describe("Employee-name contains, case-insensitive."),
       status: z
-        .enum(["on-time", "late", "half-day", "absent", "missing-checkin", "missing-checkout", "on-leave", "weekly-off", "holiday"])
+        .enum(["on-time", "late", "half-day", "early-checkout", "absent", "missing-checkin", "missing-checkout", "on-leave", "weekly-off", "holiday"])
         .optional()
-        .describe("Display status filter — on-time | late | half-day | absent | missing-checkin | missing-checkout | on-leave | weekly-off | holiday (mapped to the stored enum)."),
+        .describe("Display status filter — on-time | late | half-day | early-checkout | absent | missing-checkin | missing-checkout | on-leave | weekly-off | holiday (mapped to the stored enum)."),
       exclude: z
         .string()
         .optional()

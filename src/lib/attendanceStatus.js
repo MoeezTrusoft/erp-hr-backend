@@ -7,9 +7,13 @@
 // reads the stored status (no per-row shift resolution on read).
 //
 //   on-time  → PRESENT   (check-in ≤ shiftStart + grace)
-//   late     → LATE      (grace < lateness < HALF_DAY threshold)
-//   half-day → HALF_DAY  (lateness ≥ HALF_DAY threshold, default 30 min)
+//   late     → LATE      (grace < lateness, ANY lateness — T&A-RULE-07)
 //   absent   → ABSENT    (no check-in)
+//
+// T&A-RULE-07 (2026-10-05) — lateness past the half-day threshold (default
+// 30 min) still DEDUCTS half a day, but the table shows Late: the half-day
+// deduction lives in Attendance.day_credit, written by the evaluator
+// (attendanceEvaluator.js), never in this display label.
 //
 // All thresholds are env-tunable so ops can adjust without a redeploy.
 
@@ -64,9 +68,11 @@ export function resolveShiftStartMin({ shiftStartMinutes, schedulePattern, date 
 
 /**
  * Derive StatusAttendance from a check-in time and shift start.
+ * T&A-RULE-07: past HALF_DAY_MIN the label stays LATE (the half-day
+ * deduction is the evaluator's day_credit, not this label).
  * @param {Date|string|null} checkIn
  * @param {number} [shiftStartMin=DEFAULT_SHIFT_START_MIN]
- * @returns {"PRESENT"|"LATE"|"HALF_DAY"|"ABSENT"}
+ * @returns {"PRESENT"|"LATE"|"ABSENT"}
  */
 export function deriveAttendanceStatus(checkIn, shiftStartMin = DEFAULT_SHIFT_START_MIN) {
   if (!checkIn) return "ABSENT";
@@ -74,7 +80,7 @@ export function deriveAttendanceStatus(checkIn, shiftStartMin = DEFAULT_SHIFT_ST
   if (mod == null) return "ABSENT";
   const lateness = mod - (shiftStartMin + LATE_GRACE_MIN);
   if (lateness <= 0) return "PRESENT";
-  if (lateness >= HALF_DAY_MIN) return "HALF_DAY";
+  // T&A-RULE-07 — display ≠ deduction: even ≥ HALF_DAY_MIN the row reads LATE.
   return "LATE";
 }
 

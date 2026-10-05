@@ -21,7 +21,9 @@ import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 
 // Statuses that count as "showed up" for a working day.
-const PRESENT_STATUSES = ["PRESENT", "LATE", "HALF_DAY"];
+// T&A-RULE-06 — EARLY_CHECKOUT is an attended (half-credit) day: it counts as
+// present here, never as a late arrival.
+const PRESENT_STATUSES = ["PRESENT", "LATE", "HALF_DAY", "EARLY_CHECKOUT"];
 // Statuses that count as a late arrival.
 const LATE_STATUSES = ["LATE", "HALF_DAY"];
 
@@ -684,6 +686,8 @@ const STATUS_DISPLAY = {
   PRESENT: "on-time",
   LATE: "late",
   HALF_DAY: "half-day",
+  // T&A-RULE-06 — the after-half-day-mark early checkout status.
+  EARLY_CHECKOUT: "early-checkout",
   ABSENT: "absent",
   // HR-FE-TIMESHEET-TABLE-01 — map the non-attendance statuses too so the FE
   // receives one consistent token spelling (it filters weekly-off/holiday rows
@@ -711,6 +715,8 @@ function toEnumStatus(raw) {
       return "LATE";
     case "half-day":
       return "HALF_DAY";
+    case "early-checkout":
+      return "EARLY_CHECKOUT";
     case "absent":
       return "ABSENT";
     case "missing-checkin":

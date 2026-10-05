@@ -193,8 +193,10 @@ describe('HR-ATT-ROLLUP-01 shift-aware daily roll-up', () => {
         });
 
         // 00:30 is 2.5h into a 22:00 shift. Comparing raw minutes-of-day made it
-        // look 21.5h EARLY and scored PRESENT.
-        expect(attendance[0].status).toBe('HALF_DAY');
+        // look 21.5h EARLY and scored PRESENT. T&A-RULE-07 — the label is LATE
+        // even past the half-day mark; the half-day deduction is day_credit,
+        // written by the evaluator, not this device-time label.
+        expect(attendance[0].status).toBe('LATE');
     });
 
     it('treats a pre-midnight arrival for a 00:00 shift as early, not a day late', async () => {

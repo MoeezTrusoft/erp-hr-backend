@@ -30,8 +30,14 @@ enum LeaveAccrualPeriod {
 enum StatusAttendance {
   PRESENT
   ABSENT
-  LATE
-  HALF_DAY // check-in later than shift-start + HALF_DAY grace (default 30 min)
+  LATE // late arrival at any lateness past grace; when lateness ≥ the half-day
+  // mark the day is still docked half a day via day_credit — T&A-RULE-07
+  // splits the display (LATE) from the deduction (day_credit 0.5).
+  HALF_DAY // T&A-RULE-06: checked out BEFORE the half-day mark (half credit)
+  // T&A-RULE-06: checked out AFTER the half-day mark but before the shift end
+  // (half credit) — both early-checkout bands cost half a day and count as
+  // early checkout.
+  EARLY_CHECKOUT
   // HR-ATT-POLICY-01 — a punch pair that never completed. These are BLOCKING
   // states, not shades of present: day_credit stays null and
   // requires_regularization is set, so payroll holds the day instead of

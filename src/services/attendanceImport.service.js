@@ -61,7 +61,8 @@ const key = (v) => norm(v).toLowerCase().replace(/[\s_-]+/g, " ");
 // carry 0; the payroll bridge skips them by status (N-09).
 export function creditForStatus(status) {
   if (status === "PRESENT" || status === "LATE") return 1;
-  if (status === "HALF_DAY") return 0.5;
+  // T&A-RULE-06 — both early-checkout bands cost half a day.
+  if (status === "HALF_DAY" || status === "EARLY_CHECKOUT") return 0.5;
   if (status === "ABSENT" || status === "WEEKLY_OFF" || status === "HOLIDAY" || status === "ON_LEAVE") return 0;
   return null; // MISSING_* and anything unresolved stays held
 }

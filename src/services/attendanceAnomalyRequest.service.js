@@ -108,6 +108,16 @@ function deriveCategory({ attendance, shift }) {
         expectedTime: shift.from,
         actualTime: attendance.check_in,
       };
+    // T&A-RULE-06 — an early checkout is its own stored status now; the
+    // window is the same one the evaluator's EARLY_CHECKOUT anomaly uses.
+    case "EARLY_CHECKOUT":
+      return {
+        type: "EARLY_CHECKOUT",
+        fromTime: attendance.check_out ?? shift.to,
+        toTime: shift.to,
+        expectedTime: shift.to,
+        actualTime: attendance.check_out,
+      };
     case "ABSENT":
       return {
         type: "ABSENT",

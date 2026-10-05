@@ -10,10 +10,23 @@
 //
 //   1. anti-passback — identical punches inside a small window collapse to one
 //   2. missing punches — an IN with no OUT (past the cutoff), or an OUT with no IN
-//   3. arrival — PRESENT / LATE / HALF_DAY against the employee's own shift start
+//   3. arrival — PRESENT / LATE against the employee's own shift start
 //   4. early departure — leaving before shift end, beyond a grace
 //   5. duration — worked time as a PERCENTAGE of the rostered shift
 //   6. precedence — the day takes the WORSE of the arrival and duration verdicts
+//
+// T&A-RULE-06 / T&A-RULE-07 (2026-10-05) — display and deduction are split:
+//
+//   * RULE-07 — arrival past the half-day mark still DEDUCTS a half day
+//     (dayCredit HALF), but the table shows LATE. HALF_DAY as an arrival
+//     verdict is gone; the deduction lives in day_credit, the label in status.
+//   * RULE-06 — an early CHECKOUT (beyond earlyLeaveGraceMin) labels the day
+//     by where the checkout fell against the half-day mark:
+//         checked out BEFORE half the shift  → status HALF_DAY  (half credit)
+//         checked out AFTER  half the shift  → status EARLY_CHECKOUT (half credit)
+//     Both count as early checkout: both cost half a day and both raise an
+//     EARLY_CHECKOUT anomaly. A short day caused by a LATE ARRIVAL (checkout
+//     at the rostered end) is NOT an early checkout — it stays LATE.
 //
 // Rule 5 is a percentage rather than absolute hours because this fleet runs
 // 3-hour shifts (EMG 15:30-18:30) alongside 12-hour ones (Homenet 22:00-10:00);
@@ -72,9 +85,13 @@ function latenessMinutes(checkIn, shiftStart) {
   return diff;
 }
 
-function creditToStatus(credit, arrivalStatus) {
+function creditToStatus(credit, arrivalStatus, durationStatus) {
   if (credit === DAY_CREDIT.NONE) return "ABSENT";
-  if (credit === DAY_CREDIT.HALF) return "HALF_DAY";
+  // T&A-RULE-06 — when the CHECKOUT shortened the day, its label wins
+  // (EARLY_CHECKOUT / HALF_DAY-by-early-leave), even if the arrival was also
+  // late. Otherwise the arrival label carries the half credit: T&A-RULE-07,
+  // an arrival past the half-day mark shows LATE while day_credit holds 0.5.
+  if (credit < DAY_CREDIT.FULL && durationStatus) return durationStatus;
   return arrivalStatus;
 }
 
@@ -228,13 +245,12 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
     // arrival (LATE, or HALF_DAY once the half-day threshold is crossed);
     // dayCredit stays null and inProgress stays true — credit is only granted
     // when the window closes and the row finalizes.
+    // T&A-RULE-07 — the live row shows LATE for every arrival past grace;
+    // the half-day deduction only materialises when the row finalises
+    // (dayCredit stays null while in progress).
     const lateNow = latenessMinutes(checkIn, shift.start);
     const openStatus =
-      lateNow != null && lateNow > p.graceMinutes
-        ? lateNow >= halfDayAfter
-          ? "HALF_DAY"
-          : "LATE"
-        : "PRESENT";
+      lateNow != null && lateNow > p.graceMinutes ? "LATE" : "PRESENT";
     return {
       status: openStatus,
       dayCredit: null,
@@ -268,13 +284,15 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   // Half-day threshold is hoisted above (shared with the in-progress branch).
 
   if (late != null && late > p.graceMinutes) {
+    // T&A-RULE-07 — the label is LATE for any arrival past grace; crossing the
+    // half-day threshold (default 30 min) changes only the CREDIT: the day is
+    // docked half a day, the table still says Late (display ≠ deduction).
+    arrivalStatus = "LATE";
     if (late >= halfDayAfter) {
-      arrivalStatus = "HALF_DAY";
       arrivalCredit = DAY_CREDIT.HALF;
     } else {
       // Late but still a full day's credit — the flag is the penalty, and a
       // deduction rule may convert repeated lates separately.
-      arrivalStatus = "LATE";
       arrivalCredit = DAY_CREDIT.FULL;
     }
     anomalies.push({
@@ -288,12 +306,16 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   }
 
   // ── Early departure ───────────────────────────────────────────────────────
+  let leftEarlyBeyondGrace = false;
   if (shift.end && checkOut) {
     // ATT-GRACE-MIN-01 — same elapsed-minutes rule as lateness: floor, never
     // round, so a 04:59:5x checkout against a 05:00 shift end is 0 minutes
     // early, not 1.
     const early = Math.floor((shift.end.getTime() - checkOut.getTime()) / MIN_MS);
     if (early > p.earlyLeaveGraceMin) {
+      // T&A-RULE-06 — this is the fact that decides the day's LABEL below,
+      // not just whether an anomaly is raised.
+      leftEarlyBeyondGrace = true;
       anomalies.push({
         type: "EARLY_CHECKOUT",
         fromTime: checkOut,
@@ -309,12 +331,27 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   const workedMinutes = Math.max(minutesBetween(checkIn, checkOut), 0);
   let workedPercent = null;
   let durationCredit = DAY_CREDIT.FULL;
+  // T&A-RULE-06 — the label the CHECKOUT earns; null when duration does not
+  // shorten the day (or the shortfall is an arrival problem, not a departure).
+  let durationStatus = null;
 
   if (scheduledMinutes && scheduledMinutes > 0) {
     workedPercent = (workedMinutes / scheduledMinutes) * 100;
-    if (workedPercent >= p.fullDayMinPercent) durationCredit = DAY_CREDIT.FULL;
-    else if (workedPercent >= p.halfDayMinPercent) durationCredit = DAY_CREDIT.HALF;
-    else durationCredit = DAY_CREDIT.NONE;
+    if (workedPercent >= p.fullDayMinPercent) {
+      durationCredit = DAY_CREDIT.FULL;
+    } else if (leftEarlyBeyondGrace) {
+      // An actual early checkout: BOTH bands cost half a day and BOTH count
+      // as early checkout. Checked out BEFORE the half-day mark the day reads
+      // HALF_DAY (it used to fall through to ABSENT); AFTER the mark it reads
+      // EARLY_CHECKOUT.
+      durationCredit = DAY_CREDIT.HALF;
+      durationStatus =
+        workedPercent >= p.halfDayMinPercent ? "EARLY_CHECKOUT" : "HALF_DAY";
+    } else if (workedPercent >= p.halfDayMinPercent) {
+      durationCredit = DAY_CREDIT.HALF;
+    } else {
+      durationCredit = DAY_CREDIT.NONE;
+    }
   }
   // With no rostered shift there is nothing to measure against, so duration
   // cannot downgrade the day. The 16 roster-only employees land here.
@@ -323,7 +360,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   // On-time but two hours worked is not a full day; late but a full shift
   // worked is not half a day.
   const dayCredit = Math.min(arrivalCredit, durationCredit);
-  const status = creditToStatus(dayCredit, arrivalStatus);
+  const status = creditToStatus(dayCredit, arrivalStatus, durationStatus);
 
   return {
     status,

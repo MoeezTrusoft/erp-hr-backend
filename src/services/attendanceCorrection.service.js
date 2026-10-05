@@ -74,7 +74,8 @@ function atClock(day, hhmm, { after = null } = {}) {
  *  hours: HR is stating what the day is worth, not asking us to infer it. */
 function creditFor(status) {
   if (status === "PRESENT" || status === "LATE") return 1.0;
-  if (status === "HALF_DAY") return 0.5;
+  // T&A-RULE-06 — both early-checkout bands cost half a day.
+  if (status === "HALF_DAY" || status === "EARLY_CHECKOUT") return 0.5;
   if (status === "ABSENT") return 0.0;
   return null; // MISSING_* stays unresolved
 }

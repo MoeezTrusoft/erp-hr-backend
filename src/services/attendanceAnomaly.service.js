@@ -79,6 +79,10 @@ function rowDto(row) {
     position: row.positionSnapshot ?? null,
     department: row.departmentSnapshot ?? null,
     currentApprovalLevel: row.currentApprovalLevel ?? null,
+    // T&A-RULE-03 — the request's own time facts (rostered vs punched) shown
+    // beside the check-in/check-out on the approval card and request modal.
+    expectedTime: row.expectedTime ?? null,
+    actualTime: row.actualTime ?? null,
     createdAt: row.createdAt ?? null,
     applicationDate: row.applicationDate ?? null,
     decidedAt: row.decidedAt ?? null,
@@ -280,6 +284,29 @@ export async function listAnomalies({
 
   const chainByAnomaly = new Map();
   const approverIds = new Set();
+
+  // T&A-RULE-03 (2026-10-05) — "show check-in and check-out time with the
+  // anomaly request": one batched join per page against Attendance, keyed by
+  // (employeeId, date). The anomaly row itself carries no punches.
+  const punchByEmpDay = new Map();
+  {
+    const dated = rows.filter((r) => r.date instanceof Date);
+    if (dated.length) {
+      const distinctDates = [...new Set(dated.map((r) => r.date.getTime()))].map((t) => new Date(t));
+      const distinctEmployees = [...new Set(dated.map((r) => r.employeeId))];
+      const punches = await prisma.attendance.findMany({
+        where: scopedWhere(tenantId, {
+          employeeId: { in: distinctEmployees },
+          date: { in: distinctDates },
+        }),
+        select: { employeeId: true, date: true, check_in: true, check_out: true },
+      });
+      for (const p of punches) {
+        punchByEmpDay.set(`${p.employeeId}:${p.date.getTime()}`, p);
+      }
+    }
+  }
+
   for (const row of rows) {
     try {
       const chain = await resolveApprovalChain({ tenantId, employeeId: row.employeeId });
@@ -334,7 +361,19 @@ export async function listAnomalies({
   };
 
   return {
-    items: rows.map((row) => ({ ...rowDto(row), chain: matrixFor(row) })),
+    items: rows.map((row) => {
+      const punch =
+        row.date instanceof Date
+          ? punchByEmpDay.get(`${row.employeeId}:${row.date.getTime()}`)
+          : null;
+      return {
+        ...rowDto(row),
+        chain: matrixFor(row),
+        // T&A-RULE-03 — the day's punches, when the row has a date.
+        checkIn: punch?.check_in ?? null,
+        checkOut: punch?.check_out ?? null,
+      };
+    }),
     total,
     page: pageNum,
     pageSize: size,

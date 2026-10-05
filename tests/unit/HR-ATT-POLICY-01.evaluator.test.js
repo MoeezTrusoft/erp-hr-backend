@@ -76,13 +76,15 @@ describe('HR-ATT-POLICY-01 arrival', () => {
         expect(r.status).toBe('LATE');
     });
 
-    it('is HALF_DAY once lateness reaches the half-day threshold', () => {
+    // T&A-RULE-07 — past the half-day mark the day is still docked HALF a day,
+    // but the table says LATE: display ≠ deduction.
+    it('deducts half a day but still shows LATE once lateness reaches the half-day threshold', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:35:00Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.status).toBe('HALF_DAY');
+        expect(r.status).toBe('LATE');
         expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
     });
 
@@ -94,7 +96,9 @@ describe('HR-ATT-POLICY-01 arrival', () => {
 
         // 2.5h into a 22:00 shift. Minutes-of-day maths would call this 21.5h early.
         expect(r.latenessMinutes).toBe(150);
-        expect(r.status).toBe('HALF_DAY');
+        // T&A-RULE-07 — arrival verdicts never say HALF_DAY any more.
+        expect(r.status).toBe('LATE');
+        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
     });
 
     it('reads a pre-midnight arrival for a 00:00 shift as early', () => {
@@ -191,26 +195,29 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
 });
 
 describe('HR-ATT-POLICY-01 duration and precedence', () => {
-    it('downgrades an on-time day that was barely worked', () => {
-        // In at 10:00, out at 12:00 — 2h of an 8h shift = 25%.
+    // T&A-RULE-06 — a checkout before the half-day mark is a HALF DAY (half
+    // credit), not ABSENT: the person showed up and worked a real, if short,
+    // slice of the day.
+    it('classifies a checkout before the half-day mark as HALF_DAY', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T12:00:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.workedPercent).toBeCloseTo(25, 0);
-        expect(r.status).toBe('ABSENT');      // arrival said PRESENT; duration wins
-        expect(r.dayCredit).toBe(DAY_CREDIT.NONE);
+        expect(r.status).toBe('HALF_DAY');   // arrival said PRESENT; the CHECKOUT decides
+        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.anomalies.map((a) => a.type)).toContain('EARLY_CHECKOUT');
     });
 
-    it('gives half credit in the middle band', () => {
-        // 10:00 -> 15:00 = 5h of 8h = 62.5%.
+    it('gives half credit in the middle band, labelled EARLY_CHECKOUT', () => {
+        // 10:00 -> 15:00 = 5h of 8h = 62.5% — after the half-day mark.
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T15:00:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.status).toBe('HALF_DAY');
+        expect(r.status).toBe('EARLY_CHECKOUT');
         expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
     });
 
@@ -250,23 +257,26 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
         expect(r.status).toBe('PRESENT');
     });
 
-    it('classifies checkout before half the shift as ABSENT', () => {
+    // T&A-RULE-06 — both early-checkout bands cost half a day and BOTH count
+    // as early checkout. Before the mark the day reads HALF_DAY; after it,
+    // EARLY_CHECKOUT.
+    it('classifies checkout before half the shift as HALF_DAY (both bands cost half a day)', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T13:59:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.status).toBe('ABSENT');
-        expect(r.dayCredit).toBe(DAY_CREDIT.NONE);
+        expect(r.status).toBe('HALF_DAY');
+        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
     });
 
-    it('classifies checkout after half the shift but before the end as HALF_DAY', () => {
+    it('classifies checkout after half the shift but before the end as EARLY_CHECKOUT', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T14:01:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.status).toBe('HALF_DAY');
+        expect(r.status).toBe('EARLY_CHECKOUT');
         expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
     });
 
@@ -364,7 +374,7 @@ describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
         expect(r.status).toBe('LATE');
     });
 
-    it('becomes HALF_DAY once past half the shift', () => {
+    it('shows LATE (half-credit) once past half the shift — T&A-RULE-07', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T14:30:00Z'), OUT('2026-08-14T22:30:00Z')],
             shift: DAY_SHIFT, policy: PCT, nextDay: CLOSED, now: LATER,
@@ -372,9 +382,10 @@ describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
 
         expect(r.latenessMinutes).toBe(270);        // > 240
         expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.status).toBe('LATE');
     });
 
-    it('scales to a 3-hour shift, where half is only 90 minutes', () => {
+    it('shows LATE on a scaled threshold too, not HALF_DAY', () => {
         // EMG 15:30-18:30. A fixed 240-minute threshold could never be reached
         // on a shift this short; a percentage adapts.
         const shortShift = { start: at('2026-08-14T15:30:00Z'), end: at('2026-08-14T18:30:00Z') };
@@ -384,7 +395,8 @@ describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
         });
 
         expect(r.latenessMinutes).toBe(95);         // > 90
-        expect(r.status).toBe('HALF_DAY');
+        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.status).toBe('LATE');
     });
 
     it('falls back to fixed minutes when there is no rostered shift', () => {

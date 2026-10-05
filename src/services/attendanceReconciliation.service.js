@@ -29,7 +29,7 @@ import logger from "../lib/logger.js";
 const BLOCKING = new Set(["MISSING_CHECKIN", "MISSING_CHECKOUT"]);
 
 const EMPTY = () => ({
-  present: 0, late: 0, halfDay: 0, absent: 0,
+  present: 0, late: 0, halfDay: 0, earlyCheckout: 0, absent: 0,
   missingCheckin: 0, missingCheckout: 0,
   weeklyOff: 0, holiday: 0, onLeave: 0,
   corrected: 0, needsReview: 0,
@@ -73,6 +73,9 @@ export async function buildMonthlyReconciliation({ tenantId, from, to }) {
     if (r.status === "PRESENT") acc.present += 1;
     else if (r.status === "LATE") acc.late += 1;
     else if (r.status === "HALF_DAY") acc.halfDay += 1;
+    // T&A-RULE-06 — its own bucket: both early-checkout bands cost half a day
+    // and must count as ATTENDED (not silently vanish from every tally).
+    else if (r.status === "EARLY_CHECKOUT") acc.earlyCheckout += 1;
     else if (r.status === "ABSENT") acc.absent += 1;
     else if (r.status === "MISSING_CHECKIN") acc.missingCheckin += 1;
     else if (r.status === "MISSING_CHECKOUT") acc.missingCheckout += 1;
@@ -86,7 +89,7 @@ export async function buildMonthlyReconciliation({ tenantId, from, to }) {
 
   const employees = roster.map((e) => {
     const a = byEmployee.get(e.id);
-    const attended = a.present + a.late + a.halfDay;
+    const attended = a.present + a.late + a.halfDay + a.earlyCheckout;
     // Expected = the days they were rostered in. WEEKLY_OFF, HOLIDAY and
     // ON_LEAVE are excluded by construction rather than by a weekday guess.
     const expectedDays = attended + a.absent + a.missingCheckin + a.missingCheckout;
