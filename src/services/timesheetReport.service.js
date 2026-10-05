@@ -26,6 +26,10 @@ import logger from "../lib/logger.js";
 const PRESENT_STATUSES = ["PRESENT", "LATE", "HALF_DAY", "EARLY_CHECKOUT"];
 // Statuses that count as a late arrival.
 const LATE_STATUSES = ["LATE", "HALF_DAY"];
+// T&A-KPI-EARLY-01 (operator 2026-10-06) — the timesheet KPI row reports
+// EARLY CHECKOUT days instead of the WFH/Remote headcount. A remote shift is
+// not an attendance exception; leaving before the rostered end IS.
+const EARLY_CHECKOUT_STATUSES = ["EARLY_CHECKOUT"];
 
 // UI-FIX-2026-09-15 (#9) — stored statuses that mean a person was rostered in
 // but NOT satisfactorily present. The weekly tooltip lists these by name, so
@@ -339,10 +343,12 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
   const wfhEmp = new Set();
   const absentEmp = new Set();
   let lateArrivals = 0;
+  let earlyCheckouts = 0;
 
   for (const r of rows) {
     if (PRESENT_STATUSES.includes(r.status)) presentEmp.add(r.employeeId);
     if (LATE_STATUSES.includes(r.status)) lateArrivals += 1;
+    if (EARLY_CHECKOUT_STATUSES.includes(r.status)) earlyCheckouts += 1;
     if (r.status === "ABSENT") absentEmp.add(r.employeeId);
     if (r.work_mode && REMOTE_MODES.includes(r.work_mode)) wfhEmp.add(r.employeeId);
   }
@@ -394,6 +400,7 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
     deltas = {
       absentees: pct(absentEmp.size, prev.absentees),
       lateArrivals: pct(lateArrivals, prev.lateArrivals),
+      earlyCheckouts: pct(earlyCheckouts, prev.earlyCheckouts),
       wfhRemote: pct(wfhEmp.size, prev.wfhRemote),
       anomalies: pct(anomalies, prev.anomalies ?? 0),
     };
@@ -402,6 +409,8 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
   return {
     present: presentEmp.size,
     lateArrivals,
+    // T&A-KPI-EARLY-01 — early-checkout DAYS in the window.
+    earlyCheckouts,
     wfhRemote: wfhEmp.size,
     absentees: absentEmp.size,
     totalEmployees,
