@@ -12,6 +12,7 @@ import {
   informAbnormality,
   listAnomalies,
   decideAnomaly,
+  updateAnomaly,
 } from "../../services/attendanceAnomaly.service.js";
 import {
   listPendingApprovals,
@@ -218,7 +219,7 @@ export function registerAttendanceOpsTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_anomaly_update")
-  });
+  );
 
   // ── PENDING APPROVALS: list (GET → hr:attendance VIEW) ─────────────────────
   server.tool(
