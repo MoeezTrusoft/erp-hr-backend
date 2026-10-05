@@ -314,6 +314,11 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
     select: {
       id: true, employeeId: true, leavePolicyId: true, startDate: true,
       endDate: true, status: true, created_at: true, reason: true,
+      // totalDays was missing from this select, so every per-type and
+      // per-department day count below summed `undefined` and reported 0 —
+      // the Leaves by Department bars rendered empty no matter how much
+      // leave the month actually held.
+      totalDays: true,
       employee: {
         select: { id: true, first_name: true, last_name: true, job_title: true, Position: true },
       },
