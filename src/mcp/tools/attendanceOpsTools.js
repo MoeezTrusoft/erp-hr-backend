@@ -187,6 +187,39 @@ export function registerAttendanceOpsTools(server) {
     }, "hr_anomaly_decide")
   );
 
+  // ── ANOMALY: edit (PUT → hr:attendance EDIT) ────────────────────────────────
+  // HR edit of a PENDING anomaly request. Only type/reason/detail/date/times are
+  // editable; status/decisions/raise-info are frozen. Re-derives nothing — the
+  // server stores exactly what HR supplies (unlike create, which re-derives category).
+  server.tool(
+    "hr_anomaly_update",
+    "Edit a PENDING attendance anomaly request (type, reason, detail, date, times). Decisions and raise metadata are not editable.",
+    {
+      id: z.coerce.number().int().describe("Anomaly id to edit (required; references AttendanceAnomaly)"),
+      type: ANOMALY_TYPE.optional().describe("New anomaly type (optional; one of the enum values)"),
+      reason: z.string().optional().describe("New reason text (optional)"),
+      detail: z.string().optional().describe("New detail text (optional; use for OTHER specify)"),
+      date: z.string().optional().describe("New affected work date, ISO 8601 (optional)"),
+      fromTime: z.string().optional().describe("New time-range start, ISO 8601 datetime (optional)"),
+      toTime: z.string().optional().describe("New time-range end, ISO 8601 datetime (optional)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await updateAnomaly({
+        tenantId: user.tenantId,
+        id: args.id,
+        type: args.type,
+        reason: args.reason,
+        detail: args.detail,
+        date: args.date,
+        fromTime: args.fromTime,
+        toTime: args.toTime,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_anomaly_update")
+  });
+
   // ── PENDING APPROVALS: list (GET → hr:attendance VIEW) ─────────────────────
   server.tool(
     "hr_pending_approvals_list",

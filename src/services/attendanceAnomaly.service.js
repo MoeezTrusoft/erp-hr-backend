@@ -342,6 +342,70 @@ export async function listAnomalies({
 }
 
 /**
+ * Edit an existing anomaly request. Only HR may edit, and only PENDING
+ * requests are editable — a decision has already been recorded.
+ *
+ * Editable fields: type, reason, detail, date, fromTime, toTime.
+ * Non-editable: status, reviewerId, decidedAt, raisedById, snapshots.
+ */
+export async function updateAnomaly({
+  tenantId,
+  id,
+  type,
+  reason,
+  detail,
+  date,
+  fromTime,
+  toTime,
+}) {
+  const anomalyId = toIntOrNull(id);
+  if (anomalyId == null) {
+    throw Object.assign(new Error("id is required"), { status: 400 });
+  }
+
+  const existing = await prisma.attendanceAnomaly.findFirst({
+    where: scopedWhere(tenantId, { id: anomalyId }),
+    select: { id: true, status: true, type: true },
+  });
+  if (!existing) {
+    throw Object.assign(new Error("Anomaly not found"), { status: 404 });
+  }
+  if (existing.status !== "PENDING") {
+    throw Object.assign(
+      new Error(`Cannot edit a ${existing.status} anomaly — only PENDING requests are editable`),
+      { status: 400 },
+    );
+  }
+
+  // Validate type if provided.
+  if (type && !ANOMALY_TYPES.has(type)) {
+    throw Object.assign(
+      new Error("type must be one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"),
+      { status: 400 },
+    );
+  }
+
+  const updated = await prisma.attendanceAnomaly.update({
+    where: { id: anomalyId },
+    data: {
+      ...(type ? { type } : {}),
+      ...(reason != null ? { reason: reason ?? null } : {}),
+      ...(detail != null ? { detail: detail ?? null } : {}),
+      ...(date != null ? { date: toDateOrNull(date) } : {}),
+      ...(fromTime != null ? { fromTime: toDateOrNull(fromTime) } : {}),
+      ...(toTime != null ? { toTime: toDateOrNull(toTime) } : {}),
+    },
+    include: { employee: { select: EMPLOYEE_SELECT } },
+  });
+
+  logger.info(
+    { anomalyId, editedFields: { type: type != null, reason: reason != null, detail: detail != null, date: date != null, fromTime: fromTime != null, toTime: toTime != null } },
+    "attendance anomaly edited by HR",
+  );
+  return rowDto(updated);
+}
+
+/**
  * Approve or reject an anomaly. Loads the row tenant-scoped first (404 if
  * missing), then updates. Single update — RLS extension auto-wraps.
  */
