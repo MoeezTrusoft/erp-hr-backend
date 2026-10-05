@@ -132,13 +132,19 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
     const cycle = pattern?.cycle;
     const cycleDays = Number(cycle?.days) > 0 ? Number(cycle.days) : null;
     const cycleAnchor = cycleDays ? startOfDay(new Date(cycle.anchor)) : null;
-    const cycleOff = cycleDays ? Number(cycle.offIndex) : null;
-    const hasPhase = Boolean(cycleDays && cycleAnchor && !Number.isNaN(cycleOff));
+    // One rest position ("work, work, off") or several (4-day "day, night,
+    // off, off") — a number is shorthand for the single-element list. A Set so
+    // both spellings answer the same question: is this cycle index a rest?
+    const offList = Array.isArray(cycle?.offIndex) ? cycle.offIndex : [cycle?.offIndex];
+    const cycleOffs = new Set(
+      offList.map(Number).filter((n) => Number.isInteger(n) && n >= 0),
+    );
+    const hasPhase = Boolean(cycleDays && cycleAnchor && cycleOffs.size);
 
     return {
       offDays,
       hasPhase,
-      cycleOff,
+      cycleOffs,
       // Only an UNKNOWN phase needs the ROTATING-02 fallback.
       rotating: isRotating && !hasPhase,
       /** Index of `day` within the rotation, always non-negative. */
@@ -199,7 +205,7 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
       continue;
     }
 
-    if (roster.hasPhase && roster.cycleIndex(day) === roster.cycleOff) {
+    if (roster.hasPhase && roster.cycleOffs.has(roster.cycleIndex(day))) {
       out.set(key, { date: day, working: false, reason: "ROTATION_OFF", detail: null });
       continue;
     }

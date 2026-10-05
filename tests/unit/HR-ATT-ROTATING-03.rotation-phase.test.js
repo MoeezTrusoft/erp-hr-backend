@@ -54,6 +54,12 @@ const ROTATING = (offIndex) => ({
     offDays: [],
     cycle: { days: 3, offIndex, anchor: '2026-08-01' },
 });
+const ROTATING_4DAY = (offIndex) => ({
+    type: 'rotating',
+    rotatingShifts: [{ from: '10:00', to: '22:00' }, { from: '22:00', to: '10:00' }],
+    offDays: [],
+    cycle: { days: 4, offIndex, anchor: '2026-10-06' },
+});
 const NO_PHASE = {
     type: 'rotating',
     rotatingShifts: [{ from: '10:00', to: '22:00' }, { from: '22:00', to: '10:00' }],
@@ -104,6 +110,32 @@ describe('HR-ATT-ROTATING-03 rotation phase', () => {
         const map = await resolve(NO_PHASE);
         expect(map.get('2026-08-02')).toMatchObject({ working: true, rotating: true });
         expect(offDaysIn(map)).toEqual([]);
+    });
+
+    it('rests a 4-day "day, night, off, off" cycle on BOTH rest positions', async () => {
+        // HomeVision asked for 2 on, 2 off from 2026-10-06. offIndex is a list
+        // here — a single position could only ever express 3-on-1-off.
+        SCHEDULE.schedule_pattern = ROTATING_4DAY([2, 3]);
+        const map = await resolveWorkingDays({ employeeId: 1, from: '2026-10-06', to: '2026-10-17' });
+        const off = [...map.entries()].filter(([, v]) => !v.working).map(([k]) => k);
+        expect(off).toEqual([
+            '2026-10-08', '2026-10-09',
+            '2026-10-12', '2026-10-13',
+            '2026-10-16', '2026-10-17',
+        ]);
+        expect(map.get('2026-10-08').reason).toBe('ROTATION_OFF');
+        expect(map.get('2026-10-10').working).toBe(true);
+        expect(map.get('2026-10-11').working).toBe(true);
+    });
+
+    it('still flags `rotating` (unknown phase) when the off-index list is empty', async () => {
+        // An empty list is refused at the write boundary; if one ever lands in
+        // storage it must degrade the way a missing phase does, not mark every
+        // rest day as worked.
+        SCHEDULE.schedule_pattern = ROTATING_4DAY([]);
+        const map = await resolveWorkingDays({ employeeId: 1, from: '2026-10-06', to: '2026-10-10' });
+        expect(offDaysIn(map)).toEqual([]);
+        expect(map.get('2026-10-06').rotating).toBe(true);
     });
 
     it('handles a day before the anchor without drifting the phase', async () => {

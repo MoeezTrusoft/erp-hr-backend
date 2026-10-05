@@ -28,6 +28,10 @@ describe('HR-ROSTER-03 schedule pattern validation', () => {
         expect(ok({ offDays: [6, 7], shift: { from: '09:00', to: '18:00' } }).valid).toBe(true);
         expect(ok({ offDays: [], rotatingShifts: [{ from: '10:00', to: '22:00' }],
             cycle: { days: 3, anchor: '2026-08-01', offIndex: 0 } }).valid).toBe(true);
+        // 4-day "day, night, off, off" — a multi-day rest is a LIST of positions.
+        expect(ok({ offDays: [],
+            rotatingShifts: [{ from: '10:00', to: '22:00' }, { from: '22:00', to: '10:00' }],
+            cycle: { days: 4, anchor: '2026-10-06', offIndex: [2, 3] } }).valid).toBe(true);
         expect(ok({ offDays: [7], shift: { from: '07:30', to: '15:00' },
             shiftByDay: { 6: { from: '10:00', to: '13:00' } } }).valid).toBe(true);
     });
@@ -66,6 +70,12 @@ describe('HR-ROSTER-03 schedule pattern validation', () => {
             cycle: { days: 0, anchor: '2026-08-01', offIndex: 0 } }).valid).toBe(false);
         expect(ok({ rotatingShifts: [{ from: '10:00', to: '22:00' }],
             cycle: { days: 3, anchor: '2026-08-01', offIndex: 5 } }).valid).toBe(false);
+        // An off-index LIST is checked member by member — one stray index would
+        // quietly flip a working day into a rest day (or the reverse).
+        expect(ok({ rotatingShifts: [{ from: '10:00', to: '22:00' }],
+            cycle: { days: 4, anchor: '2026-10-06', offIndex: [2, 4] } }).valid).toBe(false);
+        expect(ok({ rotatingShifts: [{ from: '10:00', to: '22:00' }],
+            cycle: { days: 4, anchor: '2026-10-06', offIndex: [] } }).valid).toBe(false);
     });
 
     it('rejects a per-weekday shift on an impossible day', () => {

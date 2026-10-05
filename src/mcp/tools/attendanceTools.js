@@ -427,8 +427,11 @@ export function registerAttendanceTools(server) {
       cycle: z.object({
         days: z.number().int().positive(),
         anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "cycle.anchor must be YYYY-MM-DD"),
-        offIndex: z.number().int().min(0),
-      }).optional().describe("Rotation phase { days, anchor, offIndex }: offIndex is the 0-based rest-day position within the cycle"),
+        offIndex: z.union([
+          z.number().int().min(0),
+          z.array(z.number().int().min(0)).min(1),
+        ]),
+      }).optional().describe("Rotation phase { days, anchor, offIndex }: offIndex is the 0-based rest-day position(s) within the cycle — a number, or an array for multi-day rests (e.g. 4-day 'day, night, off, off' -> [2,3])"),
       crossesMidnight: z.boolean().optional().describe("True when the shift ends the next calendar day"),
       shiftHours: z.number().positive().optional().describe("Contracted shift length in hours"),
       source: z.string().optional().describe("Provenance label, e.g. 'Employees Workbook 2026-08'"),

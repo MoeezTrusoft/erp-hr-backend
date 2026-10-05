@@ -120,12 +120,21 @@ export function validateSchedulePattern(pattern) {
       if (!ISO_DATE.test(String(c.anchor ?? ""))) {
         errors.push(`cycle.anchor: expected YYYY-MM-DD, got ${JSON.stringify(c.anchor)}`);
       }
-      const off = Number(c.offIndex);
-      if (!Number.isInteger(off) || off < 0 || (daysOk && off >= days)) {
-        errors.push(
-          `cycle.offIndex: expected 0..${daysOk ? days - 1 : "days-1"}, `
-          + `got ${JSON.stringify(c.offIndex)}`,
-        );
+      // A rest position may be a single index (3-day "work, work, off") or a
+      // list of them (4-day "day, night, off, off"). Both spellings are read by
+      // workingDay.service, which normalises to a Set.
+      const offs = Array.isArray(c.offIndex) ? c.offIndex : [c.offIndex];
+      if (!offs.length) {
+        errors.push("cycle.offIndex: an off-index array must not be empty");
+      }
+      for (const raw of offs) {
+        const off = Number(raw);
+        if (!Number.isInteger(off) || off < 0 || (daysOk && off >= days)) {
+          errors.push(
+            `cycle.offIndex: expected 0..${daysOk ? days - 1 : "days-1"}, `
+            + `got ${JSON.stringify(raw)}`,
+          );
+        }
       }
     }
   }
