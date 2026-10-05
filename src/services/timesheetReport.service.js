@@ -772,6 +772,65 @@ function fullName(emp) {
  * @param {number} [args.pageSize=20]
  * @returns {Promise<{items:object[],total:number,page:number,pageSize:number}>}
  */
+// T&A-NEW-2 — the raw device punches behind a row's in/out pair.
+//
+// The table shows ONE check-in and ONE check-out, but a day routinely holds
+// more presses (double-taps, a forgotten break, an unpaired checkout). The row
+// now carries them all so the UI can show a "+n" badge with the full list on
+// hover: HR can see WHY the pair is what it is without leaving the table.
+//
+// One batched query for the whole page. Each row's window runs from its
+// session start (check-in, midnight when there is none) to the later of
+// midnight-plus-one or the stored check-out — so a night shift's
+// next-morning checkout rides along with ITS day, while the following day's
+// row (whose session starts that evening) never inherits it.
+const PUNCH_DIR = (status) =>
+  status === 0 || status === 4 ? "IN" : status === 1 || status === 5 ? "OUT" : String(status);
+const DAY_MS_NEW2 = 24 * 60 * 60 * 1000;
+
+async function punchesForPageRows(pageRows, tenantId) {
+  const byKey = new Map();
+  const specs = [];
+  for (const r of pageRows) {
+    if (!Number.isFinite(r._employeeId)) continue;
+    const dayStart = startOfDay(r.date);
+    const dayEnd = new Date(dayStart.getTime() + DAY_MS_NEW2);
+    const from =
+      r._checkIn != null && r._checkIn >= dayStart.getTime() ? new Date(r._checkIn) : dayStart;
+    const to = r._checkOut != null && r._checkOut > dayEnd.getTime() ? new Date(r._checkOut) : dayEnd;
+    specs.push({
+      key: `${r._employeeId}:${dayStart.toISOString().slice(0, 10)}`,
+      employeeId: r._employeeId,
+      from,
+      to,
+    });
+  }
+  if (!specs.length) return byKey;
+
+  const punches = await prisma.attendanceDevicePunch.findMany({
+    where: scopedWhere(tenantId, {
+      employeeId: { in: [...new Set(specs.map((s) => s.employeeId))] },
+      punchedAt: {
+        gte: new Date(Math.min(...specs.map((s) => s.from.getTime()))),
+        lte: new Date(Math.max(...specs.map((s) => s.to.getTime()))),
+      },
+    }),
+    select: { employeeId: true, punchedAt: true, status: true, sn: true },
+    orderBy: { punchedAt: "asc" },
+  });
+
+  for (const s of specs) {
+    const list = punches.filter(
+      (p) => p.employeeId === s.employeeId && p.punchedAt >= s.from && p.punchedAt <= s.to,
+    );
+    byKey.set(
+      s.key,
+      list.map((p) => ({ at: p.punchedAt, dir: PUNCH_DIR(p.status), sn: p.sn })),
+    );
+  }
+  return byKey;
+}
+
 export async function listCheckInOuts({
   tenantId,
   q,
@@ -974,6 +1033,7 @@ export async function listCheckInOuts({
       // internal sort keys (not serialized to the FE)
       _checkIn: a.check_in ? a.check_in.getTime() : null,
       _checkOut: a.check_out ? a.check_out.getTime() : null,
+      _employeeId: a.employeeId,
     };
   });
 
@@ -1030,7 +1090,16 @@ export async function listCheckInOuts({
   const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
   const safeSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 100) : 20;
   const start = (safePage - 1) * safeSize;
-  const items = rows.slice(start, start + safeSize).map(({ _checkIn, _checkOut, ...rest }) => rest);
+  const pageRows = rows.slice(start, start + safeSize);
+
+  // T&A-NEW-2 — batch-fetch this page's device punches (ONE query) so each row
+  // carries `punches: [{ at, dir, sn }]` for the "+n" hover list. Fetched AFTER
+  // pagination so a month of attendance never drags a month of punches with it.
+  const punchesByRow = await punchesForPageRows(pageRows, tenantId);
+  const items = pageRows.map(({ _checkIn, _checkOut, _employeeId, ...rest }) => ({
+    ...rest,
+    punches: punchesByRow.get(`${_employeeId}:${startOfDay(rest.date).toISOString().slice(0, 10)}`) ?? [],
+  }));
 
   logger.debug(
     { tenantId, total, page: safePage, pageSize: safeSize, sortBy, sortDir, from: period.from, to: period.to },
