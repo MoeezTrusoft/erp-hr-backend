@@ -136,6 +136,9 @@ const RLS_MODELS = new Set([
     'AttendanceDeductionRule',
     'AttendanceApprovalLevel',
     'AttendanceAnomalyApproval',
+    // Weekend on-call call-ins (HR-ATT-ONCALL-01) — tenant-owned; the policy
+    // ships in 20261005230000_hr_oncall_ins with the table.
+    'AttendanceCallIn',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

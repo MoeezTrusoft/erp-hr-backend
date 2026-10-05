@@ -1096,10 +1096,36 @@ export async function listCheckInOuts({
   // carries `punches: [{ at, dir, sn }]` for the "+n" hover list. Fetched AFTER
   // pagination so a month of attendance never drags a month of punches with it.
   const punchesByRow = await punchesForPageRows(pageRows, tenantId);
-  const items = pageRows.map(({ _checkIn, _checkOut, _employeeId, ...rest }) => ({
-    ...rest,
-    punches: punchesByRow.get(`${_employeeId}:${startOfDay(rest.date).toISOString().slice(0, 10)}`) ?? [],
-  }));
+
+  // HR-ATT-ONCALL-01 — flag called-in days so the table can show the chip and
+  // offer cancel. Batched the same way: one query for the whole page.
+  const pageEmployeeIds = [...new Set(pageRows.map((r) => r._employeeId).filter(Number.isFinite))];
+  const callInByKey = new Map();
+  if (pageEmployeeIds.length) {
+    const dates = pageRows.map((r) => startOfDay(r.date).getTime());
+    const callIns = await prisma.attendanceCallIn.findMany({
+      where: scopedWhere(tenantId, {
+        employeeId: { in: pageEmployeeIds },
+        date: { gte: new Date(Math.min(...dates)), lte: new Date(Math.max(...dates)) },
+      }),
+      select: { id: true, employeeId: true, date: true, reason: true, calledBy: true },
+    });
+    for (const c of callIns) {
+      callInByKey.set(`${c.employeeId}:${dayKey(c.date)}`, c);
+    }
+  }
+
+  const items = pageRows.map(({ _checkIn, _checkOut, _employeeId, ...rest }) => {
+    const key = Number.isFinite(_employeeId) ? `${_employeeId}:${dayKey(rest.date)}` : null;
+    const callIn = key ? callInByKey.get(key) : null;
+    return {
+      ...rest,
+      punches: punchesByRow.get(key) ?? [],
+      onCall: callIn
+        ? { id: callIn.id, reason: callIn.reason ?? null, calledBy: callIn.calledBy ?? null }
+        : null,
+    };
+  });
 
   logger.debug(
     { tenantId, total, page: safePage, pageSize: safeSize, sortBy, sortDir, from: period.from, to: period.to },

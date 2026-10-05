@@ -645,6 +645,30 @@ model Attendance {
 // or a mapping fix can rebuild Attendance without re-contacting the device.
 // deviceUserId is the device enrolment id; it maps to Employee.biometric_id
 // when the punch is rolled up. Unmatched punches are still stored here.
+// HR-ATT-ONCALL-01 — HR calls an employee in on a rostered day off.
+//
+// A weekend on-call is not a roster change and not an overtime request: HR
+// rings somebody in for ONE date. That date becomes a working day for that
+// employee (workingDay.service gives it precedence over the rostered off-day
+// and rotation rest), so punches on it score normally and a NO-SHOW on it is
+// an ordinary absence — marked ABSENT and charged by the existing deduction
+// path, with no anomaly form in the way. One row per employee-day.
+model AttendanceCallIn {
+  id         Int      @id @default(autoincrement())
+  employeeId Int // plain ref — same pattern as AttendanceDevicePunch
+  date       DateTime // the called-in calendar day
+  reason     String?  @db.Text // why they were called in
+  calledBy   String? // snapshot of the HR caller
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenantId String? @db.Uuid // stamped by tenantScope on create; FORCE-RLS
+
+  @@unique([tenantId, employeeId, date], map: "attendance_call_ins_day_key")
+  @@index([tenantId, date], map: "attendance_call_ins_tenant_date_idx")
+  @@map("attendance_call_ins")
+}
+
 model AttendanceDevicePunch {
   id           Int      @id @default(autoincrement())
   sn           String   @db.VarChar(64) // device serial number (iclock SN=)

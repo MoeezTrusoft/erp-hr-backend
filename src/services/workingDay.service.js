@@ -43,7 +43,7 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
   const first = startOfDay(from);
   const last = startOfDay(to);
 
-  const [schedules, holidays, leaves] = await Promise.all([
+  const [schedules, holidays, leaves, callIns] = await Promise.all([
     // HR-ROSTER-01 — EVERY schedule covering the window, resolved per day.
     //
     // This used to be a findFirst: one schedule, the newest overlapping the
@@ -103,6 +103,16 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
         end_date: { gte: first },
       },
       select: { start_date: true, end_date: true, type: true },
+    }),
+    // HR-ATT-ONCALL-01 — a weekend on-call is an explicit HR instruction for
+    // ONE date. Cheapest to read alongside the rest: one row per called-in day.
+    prisma.attendanceCallIn.findMany({
+      where: {
+        employeeId,
+        ...(tenantId !== undefined ? { tenantId } : {}),
+        date: { gte: first, lte: last },
+      },
+      select: { date: true, reason: true },
     }),
   ]);
 
@@ -180,6 +190,12 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
     holidayByDay.set(startOfDay(h.date).toISOString().slice(0, 10), h.name);
   }
 
+  // HR-ATT-ONCALL-01 — keyed by day; the value is the call-in's reason.
+  const callInByDay = new Map();
+  for (const c of callIns) {
+    callInByDay.set(startOfDay(c.date).toISOString().slice(0, 10), c.reason ?? null);
+  }
+
   const out = new Map();
   for (let t = first.getTime(); t <= last.getTime(); t += DAY_MS) {
     const day = new Date(t);
@@ -190,6 +206,16 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
     );
     if (onLeave) {
       out.set(key, { date: day, working: false, reason: "APPROVED_LEAVE", detail: onLeave.type });
+      continue;
+    }
+
+    // HR-ATT-ONCALL-01 — precedence: approved leave > called-in > holiday >
+    // rostered off-day. A call-in beats BOTH rest rules (weekday off and
+    // rotation rest) because it is a specific HR instruction for a specific
+    // date, and it beats a holiday for the same reason; only approved leave
+    // outranks it — the employee is not available even if HR asks.
+    if (callInByDay.has(key)) {
+      out.set(key, { date: day, working: true, reason: "ON_CALL", detail: callInByDay.get(key) });
       continue;
     }
 

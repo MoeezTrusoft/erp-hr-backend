@@ -61,6 +61,7 @@ const prismaMock = {
     employeeHolidayCalendar: { findMany: jest.fn(async () => []) },
     holiday: { findMany: jest.fn(async () => []) },
     leave: { findMany: jest.fn(async () => []) },
+    attendanceCallIn: { findMany: jest.fn(async () => []) },
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));

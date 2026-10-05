@@ -35,6 +35,7 @@ const prismaMock = {
         }),
     },
     leave: { findMany: jest.fn(async () => leaves) },
+    attendanceCallIn: { findMany: jest.fn(async () => []) },
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));

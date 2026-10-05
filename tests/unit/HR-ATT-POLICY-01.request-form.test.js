@@ -42,6 +42,7 @@ const prismaMock = {
     employeeHolidayCalendar: { findMany: jest.fn(async () => []) },
     holiday: { findMany: jest.fn(async () => []) },
     leave: { findMany: jest.fn(async () => []) },
+    attendanceCallIn: { findMany: jest.fn(async () => []) },
     attendance: { findFirst: jest.fn(async () => attendanceRow) },
     attendanceAnomaly: {
         findFirst: jest.fn(async () => anomalyRows[0] ?? null),

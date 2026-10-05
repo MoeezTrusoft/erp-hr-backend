@@ -104,7 +104,7 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       resolveWorkingDays({ tenantId, employeeId: emp.id, from: first, to: last }),
       prisma.attendance.findMany({
         where: { tenantId, employeeId: emp.id, date: { gte: first, lte: last } },
-        select: { id: true, date: true, manually_corrected: true },
+        select: { id: true, date: true, status: true, manually_corrected: true },
       }),
     ]);
     const byDay = new Map(existing.map((a) => [dayKey(a.date), a]));
@@ -132,7 +132,35 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       // Guard 3: never overwrite an existing or hand-corrected day.
       const row = byDay.get(key);
       if (row?.manually_corrected) { summary.manuallyCorrected += 1; continue; }
-      if (row) { summary.alreadyPresent += 1; continue; }
+      if (row) {
+        // HR-ATT-ONCALL-01 — a rostered-off row (WEEKLY_OFF / HOLIDAY) sitting
+        // on a day the resolver NOW calls working is not an answer, it is
+        // stale: the employee was called in and did not show. Restate it to
+        // ABSENT so the day is charged. Any other existing row (a punch that
+        // already scored, a leave day) still wins — guard 3 stands.
+        const staleOffRow = info.reason === "ON_CALL"
+          && (row.status === "WEEKLY_OFF" || row.status === "HOLIDAY");
+        if (!staleOffRow) { summary.alreadyPresent += 1; continue; }
+
+        summary.marked += 1;
+        summary.details.push({ employeeId: emp.id, employee_code: emp.employee_code, date: key });
+        if (!dryRun) {
+          await tenantTransaction(prisma, async (tx) =>
+            tx.attendance.update({
+              where: { id: row.id },
+              data: {
+                status: "ABSENT",
+                day_credit: 0,
+                check_in: null,
+                check_out: null,
+                requires_regularization: true,
+                remarks: "Called in (on-call) with no attendance recorded",
+              },
+            }),
+          );
+        }
+        continue;
+      }
 
       summary.marked += 1;
       summary.details.push({ employeeId: emp.id, employee_code: emp.employee_code, date: key });

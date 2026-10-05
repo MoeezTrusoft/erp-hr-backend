@@ -31,6 +31,11 @@ import {
   clearPrimaryEnrolment,
 } from "../../services/deviceEnrolment.service.js";
 import { resolveAttendanceReadScope } from "../utils/actorScope.js";
+import {
+  createCallIn,
+  listCallIns,
+  removeCallIn,
+} from "../../services/attendanceOnCall.service.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
@@ -504,6 +509,61 @@ export function registerAttendanceTools(server) {
   );
 
   // ── OVERTIME RULES ────────────────────────────────────────────────────────
+
+  // ── WEEKEND ON-CALL ───────────────────────────────────────────────────────
+  // HR-ATT-ONCALL-01 — HR rings an employee in for ONE date. That date becomes
+  // a working day (workingDay.service), punches score normally, and a no-show
+  // is an ordinary ABSENT day charged by the existing deduction path.
+
+  server.tool(
+    "hr_oncall_create",
+    "Record a weekend on-call: HR called this employee in on a rostered day off for the given date. The day becomes a working day for them — punches score normally and a no-show is marked ABSENT (charged). Creating again for the same day updates the reason.",
+    {
+      employeeId: z.coerce.number().int().positive().describe("Employee who was called in (references Employee)"),
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD").describe("The called-in calendar day"),
+      reason: z.string().max(500).optional().describe("Why they were called in (e.g. 'weekend site cover')"),
+      calledBy: z.string().max(200).optional().describe("Who called them in; defaults to the acting user"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      const data = await createCallIn({
+        employeeId: args.employeeId,
+        date: args.date,
+        reason: args.reason,
+        calledBy: args.calledBy ?? user.name ?? user.email ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_oncall_list",
+    "List weekend on-call call-ins in a date window (optionally one employee).",
+    {
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD inclusive start"),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD inclusive end"),
+      employeeId: z.coerce.number().int().positive().optional().describe("Limit to one employee"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await listCallIns(args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_oncall_delete",
+    "Cancel a weekend on-call call-in. The day falls back to the roster; an ABSENT row written for a no-show on it is reverted to WEEKLY_OFF.",
+    { id: z.coerce.number().int().positive().describe("Call-in id (references attendance_call_ins)") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
+      const data = await removeCallIn({ id });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
 
   server.resource(
     "hr_overtime_rules_list",
