@@ -133,13 +133,14 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       const row = byDay.get(key);
       if (row?.manually_corrected) { summary.manuallyCorrected += 1; continue; }
       if (row) {
-        // HR-ATT-ONCALL-01 — a rostered-off row (WEEKLY_OFF / HOLIDAY) sitting
-        // on a day the resolver NOW calls working is not an answer, it is
-        // stale: the employee was called in and did not show. Restate it to
-        // ABSENT so the day is charged. Any other existing row (a punch that
-        // already scored, a leave day) still wins — guard 3 stands.
-        const staleOffRow = info.reason === "ON_CALL"
-          && (row.status === "WEEKLY_OFF" || row.status === "HOLIDAY");
+        // HR-ATT-ONCALL-01 / HR-ATT-ROSTER-CORRECTION-01 — a rostered-off row
+        // (WEEKLY_OFF / HOLIDAY) sitting on a day the resolver NOW calls
+        // working is not an answer, it is stale: the day became a working day
+        // after the row was written (a weekend call-in, or a roster correction
+        // that moved the rest day off this date). Restate it to ABSENT so the
+        // day is charged. Any other existing row (a punch that already scored,
+        // a leave day) still wins — guard 3 stands.
+        const staleOffRow = row.status === "WEEKLY_OFF" || row.status === "HOLIDAY";
         if (!staleOffRow) { summary.alreadyPresent += 1; continue; }
 
         summary.marked += 1;
@@ -154,7 +155,9 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
                 check_in: null,
                 check_out: null,
                 requires_regularization: true,
-                remarks: "Called in (on-call) with no attendance recorded",
+                remarks: info.reason === "ON_CALL"
+                  ? "Called in (on-call) with no attendance recorded"
+                  : "No attendance recorded on a scheduled working day",
               },
             }),
           );

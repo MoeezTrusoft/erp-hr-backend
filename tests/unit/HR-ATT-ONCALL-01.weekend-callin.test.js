@@ -149,3 +149,50 @@ describe('HR-ATT-ONCALL-01 no-show -> ABSENT', () => {
         expect(updated).toHaveLength(0);
     });
 });
+
+describe('HR-ATT-ROSTER-CORRECTION-01 stale rest day after the roster moves', () => {
+    // A correction moves the rest day (Mon off -> Sun off). The row written for
+    // the old rest day is stale: the resolver now calls that date working, so
+    // absence marking must restate it to ABSENT, exactly as for a call-in.
+    const MON = '2026-09-21'; // Monday
+    const SUNDAY_20 = '2026-09-20'; // Sunday
+    const twoSchedules = () => ([
+        {
+            schedule_pattern: { type: 'weekly', shift: { from: '10:00', to: '22:00' }, offDays: [1], shiftHours: 12 },
+            effective_start_date: new Date('2020-01-01T00:00:00.000Z'),
+            effective_end_date: new Date('2026-09-15T00:00:00.000Z'),
+        },
+        {
+            schedule_pattern: { type: 'weekly', shift: { from: '10:00', to: '22:00' }, offDays: [7], shiftHours: 12 },
+            effective_start_date: new Date('2026-09-16T00:00:00.000Z'),
+            effective_end_date: null,
+        },
+    ]);
+
+    it('restates a rest-day row the corrected roster now calls working', async () => {
+        schedules = twoSchedules();
+        attendanceRows = [{ id: 9, date: day(MON), status: 'WEEKLY_OFF', manually_corrected: false }];
+
+        const s = await svc.markAbsences({ tenantId: TENANT, from: MON, to: MON, dryRun: false });
+
+        expect(s.marked).toBe(1);
+        expect(updated).toHaveLength(1);
+        expect(updated[0].data).toMatchObject({
+            status: 'ABSENT',
+            day_credit: 0,
+            requires_regularization: true,
+            remarks: 'No attendance recorded on a scheduled working day',
+        });
+        expect(created).toHaveLength(0);
+    });
+
+    it('leaves the rest-day row alone while the roster still calls the day off', async () => {
+        attendanceRows = [{ id: 9, date: day(SUNDAY_20), status: 'WEEKLY_OFF', manually_corrected: false }];
+
+        const s = await svc.markAbsences({ tenantId: TENANT, from: SUNDAY_20, to: SUNDAY_20, dryRun: false });
+
+        expect(s.notWorking).toBe(1);
+        expect(s.marked).toBe(0);
+        expect(updated).toHaveLength(0);
+    });
+});
