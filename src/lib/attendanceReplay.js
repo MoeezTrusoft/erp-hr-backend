@@ -457,7 +457,14 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       const verdict = evaluateShift({
         punches: session.punches,
         // The arrival anchors WHICH rotating window applies (HR-ATT-ROTATING-01).
-        shift: shiftFor(schedule?.schedule_pattern, day, session.punches[0]?.punchedAt),
+        // ATT-ROT-ANCHOR-01 — session punches are the SHAPED view
+        // ({ timestamp, type }), so the anchor is `timestamp`, not `punchedAt`.
+        // Reading `punchedAt` off a shaped punch is always undefined, which made
+        // shiftFor fall back to the FIRST rotating window — so every rotating
+        // employee was scored against the DAY window (10:00–22:00) even on a
+        // night shift, turning a 21:59 night arrival into "11h59 late" and a
+        // half-day deduction.
+        shift: shiftFor(schedule?.schedule_pattern, day, session.punches[0]?.timestamp),
         policy,
         nextDay: {
           working: Boolean(tomorrowInfo?.working),

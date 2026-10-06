@@ -88,3 +88,28 @@ describe('HR-ATT-ROTATING-01 sessionisation keeps a night shift on one day', () 
         expect(sessions.every((s) => s.punches.length === 2)).toBe(true);
     });
 });
+
+// ATT-ROT-ANCHOR-01 — the replay must anchor the rotating window on the
+// ARRIVAL. sessioniseByRoster emits the shaped view { timestamp, type }, so the
+// anchor has to come from `timestamp`. It previously read `punchedAt` off the
+// shaped punch (always undefined), so shiftFor fell back to the first window and
+// every rotating employee was scored against the DAY window — a 21:59 night
+// arrival read as "11h59 late" and was docked half a day.
+describe('ATT-ROT-ANCHOR-01 replay anchors the rotating window on the arrival', () => {
+    it('selects the NIGHT window for a 21:59 night arrival (not the day window)', () => {
+        const punches = [
+            { punchedAt: at('2026-08-29', '21:59'), status: 0 },
+            { punchedAt: at('2026-08-30', '11:08'), status: 1 },
+        ];
+        const sessions = sessioniseByRoster(punches, ROTATING);
+        expect(sessions).toHaveLength(1);
+
+        // The shaped punch the evaluator receives carries `timestamp`.
+        const anchor = sessions[0].punches[0].timestamp;
+        expect(anchor instanceof Date).toBe(true);
+
+        const win = shiftFor(ROTATING, sessions[0].day, anchor);
+        expect(win.start.getUTCHours()).toBe(22); // night, NOT 10:00
+        expect(win.end.getUTCHours()).toBe(10);
+    });
+});
