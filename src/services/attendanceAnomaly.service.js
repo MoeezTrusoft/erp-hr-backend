@@ -197,6 +197,24 @@ export async function informAbnormality({
   return { ...rowDto(created), routing };
 }
 
+// T&A-MONTH-FILTER (operator, 2026-10-06) — the approval inbox follows the
+// Timesheet's month selector, so `from`/`to` bound the request's OWN DAY ("For
+// date"), NOT the day it was filed on. Filtering by createdAt instead would
+// show a request raised this month for a day in August, and hide one raised in
+// August for a day in September — exactly the two the reviewer must see. The
+// bounds are plain YYYY-MM-DD, anchored in UTC because that is how the stored
+// day stamps are written, and `to` runs to the END of its day so a single-date
+// range is not off by one.
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+function dayRange(from, to) {
+  const f = String(from ?? "").trim();
+  const t = String(to ?? "").trim();
+  return {
+    gte: YMD.test(f) ? new Date(`${f}T00:00:00.000Z`) : null,
+    lte: YMD.test(t) ? new Date(`${t}T23:59:59.999Z`) : null,
+  };
+}
+
 /**
  * List anomalies with filter / sort / pagination.
  * @returns {{ items: object[], total: number, page: number, pageSize: number }}
@@ -208,6 +226,8 @@ export async function listAnomalies({
   type,
   sourceKind,
   q,
+  from,
+  to,
   sortBy,
   sortDir,
   page,
@@ -239,6 +259,11 @@ export async function listAnomalies({
         { employee: { last_name: { contains: needle, mode: "insensitive" } } },
       ],
     });
+  }
+  // T&A-MONTH-FILTER — the request's own day, inclusive of the whole `to` day.
+  const { gte, lte } = dayRange(from, to);
+  if (gte || lte) {
+    and.push({ date: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } });
   }
   const where = scopedWhere(tenantId, and.length ? { AND: and } : {});
 

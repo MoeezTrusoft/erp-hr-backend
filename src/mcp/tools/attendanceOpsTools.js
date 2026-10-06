@@ -149,6 +149,19 @@ export function registerAttendanceOpsTools(server) {
       sourceKind: z.enum(["REGULARIZATION", "evaluator", "IMPORT", "DISAPPROVED_LEAVE"]).optional()
         .describe("Filter by origin; REGULARIZATION means an employee-submitted form."),
       q: z.string().optional().describe("Search employee name or reason (case-insensitive contains)"),
+      // T&A-MONTH-FILTER (operator, 2026-10-06) — the Timesheet month
+      // selector. Both bound the request's OWN DAY ("For date"), inclusive,
+      // not the day the request was filed on.
+      from: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "from must be YYYY-MM-DD")
+        .optional()
+        .describe("Inclusive first 'For date' of the period (YYYY-MM-DD)"),
+      to: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "to must be YYYY-MM-DD")
+        .optional()
+        .describe("Inclusive last 'For date' of the period (YYYY-MM-DD)"),
       sortBy: z
         .enum(["createdAt", "date", "status"])
         .optional()
