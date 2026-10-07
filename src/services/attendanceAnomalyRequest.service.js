@@ -12,6 +12,7 @@
 // rewrite the record an approval decision was made on.
 //
 // HR-ATT-POLICY-01.
+import { uploadAnomalyAttachments } from './anomalyManagement.service.js';
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { routeAnomaly } from "./attendanceAnomalyRouting.service.js";
@@ -190,7 +191,7 @@ async function loadRequester(employeeId, tenantId) {
  * Everything the form shows before the employee types anything.
  * `reason` is the only field left blank.
  */
-export async function getAnomalyFormDefaults({ tenantId, employeeId, date }) {
+export async function getAnomalyFormDefaults({ tenantId, employeeId, date, type }) {
   const day = startOfDay(date);
   const [requester, shift, attendance] = await Promise.all([
     loadRequester(employeeId, tenantId),
@@ -201,7 +202,11 @@ export async function getAnomalyFormDefaults({ tenantId, employeeId, date }) {
     }),
   ]);
 
-  const derived = deriveCategory({ attendance, shift });
+  const detected = await prisma.attendanceAnomaly.findMany({where:{tenantId,employeeId,date:day,sourceKind:{in:['evaluator','DEVICE']}},select:{type:true,fromTime:true,toTime:true,expectedTime:true,actualTime:true}});
+  const primary = deriveCategory({attendance,shift});
+  const categories = [...new Set([primary.type,...detected.map(a=>a.type)])];
+  if (type && !categories.includes(type)) throw badRequest('Choose an anomaly detected on this shift');
+  const derived = type && type!==primary.type ? detected.find(a=>a.type===type) : primary;
 
   return {
     applicationDate: new Date(),
@@ -211,6 +216,7 @@ export async function getAnomalyFormDefaults({ tenantId, employeeId, date }) {
     leaveDate: day,
     // category is display-only; the server re-derives it on submit.
     category: derived.type,
+    categories,
     fromTime: derived.fromTime,
     toTime: derived.toTime,
     expectedTime: derived.expectedTime,
@@ -275,12 +281,12 @@ export async function computeAnomalyDeadline({ tenantId, employeeId, anomalyDate
  * category and times are re-derived server-side so a client cannot downgrade its
  * own anomaly to a cheaper one.
  */
-export async function createAnomalyRequest({ tenantId, employeeId, date, reason }) {
+export async function createAnomalyRequest({ tenantId, employeeId, date, reason, type, attachments = [] }) {
   const text = typeof reason === "string" ? reason.trim() : "";
   if (!text) throw badRequest("reason is required");
 
   const day = startOfDay(date);
-  const defaults = await getAnomalyFormDefaults({ tenantId, employeeId, date: day });
+  const defaults = await getAnomalyFormDefaults({ tenantId, employeeId, date: day, type });
 
   // HR-ANOM-DEADLINE-01 — the 2-working-day window, enforced BEFORE any write.
   const { deadline } = await computeAnomalyDeadline({ tenantId, employeeId, anomalyDate: day, type: defaults.category });
@@ -290,11 +296,12 @@ export async function createAnomalyRequest({ tenantId, employeeId, date, reason 
     );
   }
 
-  const sourceRef = `regularization:${employeeId}:${day.toISOString().slice(0, 10)}`;
+  const sourceRef = `regularization:${employeeId}:${day.toISOString().slice(0, 10)}:${defaults.category}`;
 
+  const uploadedAttachments = await uploadAnomalyAttachments(attachments);
   const anomaly = await tenantTransaction(prisma, async (tx) => {
     const existing = await tx.attendanceAnomaly.findFirst({
-      where: { tenantId, sourceKind: "REGULARIZATION", sourceRef },
+      where: { tenantId, sourceKind: "REGULARIZATION", employeeId, date: day, type: defaults.category },
     });
     // One open request per employee-day. Re-filing while a decision is pending
     // would give the same day two outcomes and, downstream, two deductions.
@@ -311,6 +318,7 @@ export async function createAnomalyRequest({ tenantId, employeeId, date, reason 
         employeeId,
         type: defaults.category,
         reason: text,
+        attachments: uploadedAttachments,
         date: day,
         fromTime: defaults.fromTime,
         toTime: defaults.toTime,

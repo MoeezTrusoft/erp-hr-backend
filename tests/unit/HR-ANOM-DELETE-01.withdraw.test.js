@@ -34,6 +34,8 @@ jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 
+jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({tenantTransaction:async(_client,fn)=>fn(prismaMock)}));
+
 const svc = await import('../../src/services/attendanceAnomaly.service.js');
 
 // scopedWhere folds the verified tenant into the where clause; here we only

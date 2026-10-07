@@ -66,13 +66,14 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
   for (const a of anomalies) {
     if (a?.status !== "APPROVED") continue;
     const key = dayKey(a.date);
-    if (key) excused.add(key);
+    if (key) excused.add(`${a.type || "*"}|${key}`);
   }
 
   const seen = new Set();
   const creditLossDays = new Set();
   const add = (ruleKey, day) => {
-    if (!day || excused.has(day)) return;
+    const type = {LATE:'LATE_CHECKIN',DISAPPROVED_LEAVE:'ABSENT'}[ruleKey] || ruleKey;
+    if (!day || excused.has(`*|${day}`) || excused.has(`${type}|${day}`)) return;
     seen.add(`${ruleKey}|${day}`);
   };
 
@@ -85,7 +86,7 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
   // reads day_credit whenever it is present.
   for (const row of attendance) {
     const day = dayKey(row?.date);
-    if (!day || row?.manually_corrected || excused.has(day)) continue;
+    if (!day || row?.manually_corrected || excused.has(`*|${day}`)) continue;
     if (
       row?.status === "ABSENT" ||
       row?.status === "HALF_DAY" ||

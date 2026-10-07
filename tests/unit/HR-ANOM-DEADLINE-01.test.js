@@ -33,6 +33,7 @@ const prismaMock = {
   },
   attendance: { findFirst: jest.fn(async () => null) },
   attendanceAnomaly: {
+    findMany: jest.fn(async()=>[]),
     findFirst: jest.fn(async () => null),
     create: jest.fn(async ({ data }) => ({ id: 1, ...data })),
   },
@@ -52,6 +53,7 @@ jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
   resolveWorkingDays: jest.fn(async ({ from, to }) => workingDaysOf(from, to)),
 }));
 jest.unstable_mockModule('../../src/services/attendanceAnomalyRouting.service.js', () => ({
+  resolveApprovalChain: jest.fn(async()=>[]),
   routeAnomaly: jest.fn(async () => ({ routed: false })),
 }));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
@@ -158,4 +160,20 @@ describe('HR-ANOM-DEADLINE-01 enforcement on submit', () => {
     expect(res.anomaly.requestDeadline).toBeTruthy();
     expect(new Date(res.anomaly.requestDeadline).getTime()).toBeGreaterThan(Date.now());
   });
+});
+
+
+describe('individual anomalies within a shift',()=>{
+ it('offers and accepts a secondary evaluator anomaly on the same shift',async()=>{
+  prismaMock.attendance.findFirst.mockResolvedValue({status:'LATE',check_in:new Date()});
+  prismaMock.attendanceAnomaly.findMany.mockResolvedValue([{type:'EARLY_CHECKOUT',expectedTime:new Date(),actualTime:new Date()}]);
+  const defaults=await svc.getAnomalyFormDefaults({tenantId:'t',employeeId:1,date:new Date()});
+  expect(defaults.categories).toEqual(['LATE_CHECKIN','EARLY_CHECKOUT']);
+  const result=await svc.createAnomalyRequest({tenantId:'t',employeeId:1,date:new Date(),type:'EARLY_CHECKOUT',reason:'Approved early departure'});
+  expect(result.anomaly.type).toBe('EARLY_CHECKOUT');
+  expect(result.anomaly.sourceRef).toMatch(/:EARLY_CHECKOUT$/);
+ });
+ it('rejects a client-selected anomaly absent from the shift',async()=>{
+  await expect(svc.createAnomalyRequest({tenantId:'t',employeeId:1,date:new Date(),type:'MISSING_CHECKOUT',reason:'Invalid selection'})).rejects.toThrow(/detected on this shift/);
+ });
 });

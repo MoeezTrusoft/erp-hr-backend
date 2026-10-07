@@ -4,6 +4,7 @@
 // (shared by the HR Timesheet and Leave & Anomaly screens). Wraps the
 // attendanceAnomaly + pendingApprovals services. All tools are permission-gated
 // (deny-by-default) and error-wrapped via withToolError.
+import { anomalyAttachmentsSchema } from './anomalyAttachmentSchema.js';
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -46,6 +47,7 @@ export function registerAttendanceOpsTools(server) {
         .int()
         .optional()
         .describe("Employee the anomaly is for (references Employee); defaults to the caller's employeeId when omitted (400 if neither)"),
+      attachments: anomalyAttachmentsSchema,
       type: ANOMALY_TYPE.describe(
         "enum AnomalyType (required): one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
       ),
@@ -70,6 +72,7 @@ export function registerAttendanceOpsTools(server) {
         tenantId: user.tenantId,
         employeeId,
         type: args.type,
+        attachments: args.attachments,
         reason: args.reason,
         detail: args.detail,
         date: args.date,
@@ -99,6 +102,7 @@ export function registerAttendanceOpsTools(server) {
         .int()
         .optional()
         .describe("Employee the anomaly is for (references Employee); defaults to the caller's employeeId when omitted (400 if neither)"),
+      attachments: anomalyAttachmentsSchema,
       type: ANOMALY_TYPE.describe(
         "enum AnomalyType (required): one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
       ),
@@ -123,6 +127,7 @@ export function registerAttendanceOpsTools(server) {
         tenantId: user.tenantId,
         employeeId,
         type: args.type,
+        attachments: args.attachments,
         reason: args.reason,
         detail: args.detail,
         date: args.date,

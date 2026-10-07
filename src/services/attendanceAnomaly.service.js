@@ -9,6 +9,8 @@
 // verified tenant via scopedWhere(tenantId, where). Each exported op does a
 // SINGLE create/update under ambient ctx, so the RLS extension auto-wraps the
 // write with the tenant GUC; no tenantTransaction is needed here.
+import { uploadAnomalyAttachments } from './anomalyManagement.service.js';
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
@@ -64,6 +66,13 @@ function toIntOrNull(raw) {
 function rowDto(row) {
   return {
     id: row.id,
+    employeeId: row.employeeId,
+    sourceKind: row.sourceKind,
+    workflowVersion: row.workflowVersion ?? 0,
+    workflowHistory: row.workflowHistory ?? [],
+    attachments: row.attachments ?? [],
+    manualDeductionDays: row.manualDeductionDays ?? null,
+    shiftGroupKey: row.date ? `${row.employeeId}:${new Date(row.date).toISOString().slice(0,10)}` : `anomaly:${row.id}`,
     type: row.type,
     reason: row.reason ?? null,
     detail: row.detail ?? null,
@@ -104,6 +113,7 @@ export async function informAbnormality({
   fromTime,
   toTime,
   raisedById,
+  attachments = [],
 }) {
   const empId = toIntOrNull(employeeId);
   if (empId == null) {
@@ -145,7 +155,7 @@ export async function informAbnormality({
   // through the configured chain (level 1 manager → 2 HR → 3 management).
   const anomalyDate = toDateOrNull(date);
   const dayRef = anomalyDate ? anomalyDate.toISOString().slice(0, 10) : null;
-  const sourceRef = dayRef ? `regularization:${empId}:${dayRef}` : null;
+  const sourceRef = dayRef ? `regularization:${empId}:${dayRef}:${type}` : null;
 
   // One OPEN request per employee-day. The self-service path enforces the same
   // invariant from its side; without it here an HR raise beside a pending
@@ -153,7 +163,7 @@ export async function informAbnormality({
   // A dateless raise keeps the legacy behaviour and is not deduped.
   if (sourceRef) {
     const open = await prisma.attendanceAnomaly.findFirst({
-      where: scopedWhere(tenantId, { sourceKind: "REGULARIZATION", sourceRef, status: "PENDING" }),
+      where: scopedWhere(tenantId, { sourceKind: "REGULARIZATION", employeeId: empId, date: anomalyDate, type }),
       select: { id: true },
     });
     if (open) {
@@ -164,6 +174,7 @@ export async function informAbnormality({
     }
   }
 
+  const uploadedAttachments = await uploadAnomalyAttachments(attachments);
   const created = await prisma.attendanceAnomaly.create({
     data: {
       tenantId,
@@ -183,6 +194,7 @@ export async function informAbnormality({
       currentApprovalLevel: 1,
       raisedById: fillerId,
       raisedByName,
+      attachments: uploadedAttachments,
       createdAt: new Date(),
     },
     include: { employee: { select: EMPLOYEE_SELECT } },
@@ -308,6 +320,7 @@ export async function listAnomalies({
   }
 
   const chainByAnomaly = new Map();
+  const chainByEmployee = new Map();
   const approverIds = new Set();
 
   // T&A-RULE-03 (2026-10-05) — "show check-in and check-out time with the
@@ -334,7 +347,8 @@ export async function listAnomalies({
 
   for (const row of rows) {
     try {
-      const chain = await resolveApprovalChain({ tenantId, employeeId: row.employeeId });
+      if (!chainByEmployee.has(row.employeeId)) chainByEmployee.set(row.employeeId, await resolveApprovalChain({ tenantId, employeeId: row.employeeId }));
+      const chain = chainByEmployee.get(row.employeeId);
       chainByAnomaly.set(row.id, chain);
       for (const lvl of chain) if (lvl.approverId) approverIds.add(lvl.approverId);
       for (const d of decisionsByAnomaly.get(row.id) ?? []) {
@@ -429,10 +443,13 @@ export async function updateAnomaly({
 
   const existing = await prisma.attendanceAnomaly.findFirst({
     where: scopedWhere(tenantId, { id: anomalyId }),
-    select: { id: true, status: true, type: true },
+    select: { id: true, status: true, type: true, date: true, sourceKind: true, workflowVersion: true, workflowHistory: true, manualDeductionDays: true },
   });
   if (!existing) {
     throw Object.assign(new Error("Anomaly not found"), { status: 404 });
+  }
+  if (existing.manualDeductionDays != null || existing.workflowHistory?.length) {
+    throw Object.assign(new Error("This request has recorded management actions; use the approval and return workflow to preserve its history"), {status:409});
   }
   if (existing.status !== "PENDING") {
     throw Object.assign(
@@ -441,6 +458,9 @@ export async function updateAnomaly({
     );
   }
 
+  if (existing.sourceKind === 'REGULARIZATION' && ((type && type !== existing.type) || (date && new Date(date).getTime() !== new Date(existing.date).getTime()))) {
+    throw Object.assign(new Error('The anomaly type and work date are fixed; submit a separate request for another anomaly'), {status:400});
+  }
   // Validate type if provided.
   if (type && !ANOMALY_TYPES.has(type)) {
     throw Object.assign(
@@ -450,8 +470,9 @@ export async function updateAnomaly({
   }
 
   const updated = await prisma.attendanceAnomaly.update({
-    where: { id: anomalyId },
+    where: { id: anomalyId, workflowVersion: existing.workflowVersion, status: "PENDING" },
     data: {
+      workflowVersion: {increment:1},
       ...(type ? { type } : {}),
       ...(reason != null ? { reason: reason ?? null } : {}),
       ...(detail != null ? { detail: detail ?? null } : {}),
@@ -507,10 +528,14 @@ export async function deleteAnomaly({
       raisedById: true,
       raisedByName: true,
       sourceRef: true,
+      workflowVersion: true, workflowHistory: true, manualDeductionDays: true,
     },
   });
   if (!existing) {
     throw Object.assign(new Error("Anomaly not found"), { status: 404 });
+  }
+  if (existing.manualDeductionDays != null || existing.workflowHistory?.length) {
+    throw Object.assign(new Error("This request has recorded management actions; use the approval and return workflow to preserve its history"), {status:409});
   }
   if (existing.status !== "PENDING") {
     throw Object.assign(
@@ -538,10 +563,10 @@ export async function deleteAnomaly({
     );
   }
 
-  await prisma.attendanceAnomalyApproval.deleteMany({
-    where: scopedWhere(tenantId, { anomalyId }),
-  });
-  await prisma.attendanceAnomaly.delete({ where: { id: anomalyId } });
+  await tenantTransaction(prisma, async tx => {
+    await tx.attendanceAnomalyApproval.deleteMany({where: scopedWhere(tenantId, {anomalyId})});
+    await tx.attendanceAnomaly.delete({where:{id:anomalyId,tenantId,status:'PENDING',workflowVersion:existing.workflowVersion}});
+  }, {tenantId});
 
   logger.info(
     {
@@ -586,14 +611,17 @@ export async function decideAnomaly({
 
   const existing = await prisma.attendanceAnomaly.findFirst({
     where: scopedWhere(tenantId, { id: anomalyId }),
-    select: { id: true },
+    select: { id: true, sourceKind: true, currentApprovalLevel: true, workflowVersion: true },
   });
   if (!existing) {
     throw Object.assign(new Error("Anomaly not found"), { status: 404 });
   }
 
+  if (existing.sourceKind === 'REGULARIZATION' || existing.sourceKind === 'DEVICE' || existing.sourceKind === 'evaluator') {
+    throw Object.assign(new Error('Use the configured approval matrix to decide attendance requests'), {status:400});
+  }
   const updated = await prisma.attendanceAnomaly.update({
-    where: { id: anomalyId },
+    where: { id: anomalyId, workflowVersion: existing.workflowVersion },
     data: {
       status: decision === "approve" ? "APPROVED" : "REJECTED",
       decidedAt: new Date(),

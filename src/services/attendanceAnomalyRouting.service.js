@@ -123,7 +123,7 @@ function firstActionableLevel(chain) {
 export async function routeAnomaly({ tenantId, anomalyId, skipLevelsBefore = 0 }) {
   const anomaly = await prisma.attendanceAnomaly.findUnique({
     where: { id: anomalyId },
-    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true, createdAt: true },
+    select: { id: true, tenantId: true, employeeId: true, status: true, workflowVersion: true, currentApprovalLevel: true, createdAt: true },
   });
   if (!anomaly || anomaly.tenantId !== tenantId) {
     throw notFound(`Anomaly ${anomalyId} not found in this tenant`);
@@ -186,11 +186,12 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
 
   const anomaly = await prisma.attendanceAnomaly.findUnique({
     where: { id: anomalyId },
-    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true },
+    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true, workflowVersion: true, sourceKind: true },
   });
   if (!anomaly || anomaly.tenantId !== tenantId) {
     throw notFound(`Anomaly ${anomalyId} not found in this tenant`);
   }
+  if (anomaly.sourceKind && anomaly.sourceKind !== "REGULARIZATION") throw badRequest("Submit a regularization request before approving a device anomaly");
   if (anomaly.status !== "PENDING") {
     throw badRequest(`Anomaly ${anomalyId} is already ${anomaly.status}`);
   }
@@ -211,8 +212,9 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
   //     requester.
   const isHrStandIn =
     approverId !== anomaly.employeeId &&
-    approverId === (await hrApproverIdFor({ tenantId }));
-  const isMatrixStandIn = current.standInForRole != null;
+    approverId === (await hrApproverIdFor({ tenantId })) &&
+    chain.some(step => step.approverId === approverId && step.level >= current.level);
+  const isMatrixStandIn = current.standInForRole != null && current.approverId === approverId;
   if (
     !current.resolved ||
     (current.approverId !== approverId && !isHrStandIn && !isMatrixStandIn)
@@ -267,7 +269,9 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
           reviewNote: comments ?? null,
         };
 
-    const updated = await tx.attendanceAnomaly.update({ where: { id: anomalyId }, data });
+    const changed = await tx.attendanceAnomaly.updateMany({where:{id:anomalyId,tenantId,status:'PENDING',currentApprovalLevel:anomaly.currentApprovalLevel,workflowVersion:anomaly.workflowVersion},data:{...data,workflowVersion:{increment:1}}});
+    if (changed.count!==1) throw Object.assign(new Error('Request changed; refresh before deciding'),{status:409});
+    const updated = await tx.attendanceAnomaly.findUnique({where:{id:anomalyId}});
 
     logger.info(
       { anomalyId, level: current.level, decision: verdict, final: !advances },
@@ -308,7 +312,7 @@ export async function listPendingForApprover({ tenantId, approverId }) {
       // HR-SELF-APPROVE-REPAIR — an anomaly parked at a level that resolved to
       // this approver via the self-approver passthrough (standInForRole set)
       // must appear in HER queue: she is the one who decides it.
-      const matrixStandIn = current.standInForRole != null;
+      const matrixStandIn = current.standInForRole != null && current.approverId === approverId;
       if (hers || standIn || matrixStandIn) {
         out.push({ ...anomaly, level: current.level, role: current.role });
       }

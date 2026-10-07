@@ -1,3 +1,4 @@
+import { combinedAttendanceDeductions, manualDeductionsByShift, isAttendanceExcused } from '../lib/anomalyPayroll.js';
 import { createHash } from "node:crypto";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -26,6 +27,7 @@ import { countViolationDays, computeAttendanceDeductions } from "../lib/attendan
 // persisted, and that is on purpose (see resolveDeductionTypeId below).
 const DEDUCTION_TYPE_NAMES = {
     ATTENDANCE_DEDUCTION: 'Attendance Deduction',
+    MANAGEMENT_ATTENDANCE_DEDUCTION: 'Management Attendance Deduction',
     BENEFIT_CONTRIBUTION: 'Benefit Contribution',
     LOAN_REPAYMENT: 'Loan Repayment',
     LWP_RECOVERY: 'Unpaid Leave (LWP) Recovery',
@@ -632,9 +634,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // Days may be fractional (a half-day attendance deduction, a half-day LWP),
     // so the multiplier is scaled by 100 before the BigInt. `BigInt(0.5)` threw
     // a RangeError and took the whole payslip build down with it.
+    const manualShiftDeductions = manualDeductionsByShift(bridges.anomalyRows || []);
     if (
         employmentTerm &&
-        (bridges.lwpDays > 0 ||
+        (manualShiftDeductions.size > 0 || bridges.lwpDays > 0 ||
             bridges.attendanceDeductionLines?.length > 0 ||
             ruleConfig.absenceRecoveryEnabled === true)
     ) {
@@ -681,6 +684,13 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             }
         }
 
+        if (manualShiftDeductions.size > 0) {
+            const lines=combinedAttendanceDeductions({attendance:bridges.attendanceRows,anomalies:bridges.anomalyRows,rules:bridges.attendanceDeductionRules||[],config:ruleConfig});
+            for(const line of lines) {
+                const amountMinor=daysToMinor(line.days);
+                if(amountMinor>0n) deductions.push({deductionTypeId:null,code:line.manualDays?'MANAGEMENT_ATTENDANCE_DEDUCTION':'ATTENDANCE_DEDUCTION',amount:money.minorToDecimal(amountMinor,currency),description:line.manualDays ? `Attendance ${line.date}: management override ${line.days} day(s); replaces automatic attendance deductions` : `Attendance ${line.date}: ${line.days} day(s)`});
+            }
+        } else {
         // 7a) BRIDGE: counted attendance violations → Deduction. The engine that
         //     produced these lines (src/lib/attendanceDeduction.js) has already
         //     applied triggerCount, counterGroup pooling and the per-period cap;
@@ -759,7 +769,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             const dayKey = (d) => dayOf(d);
             const excusedDays = new Set(
                 (bridges.anomalyRows || [])
-                    .filter((a) => a?.status === 'APPROVED')
+                    .filter((a) => a?.status === 'APPROVED' && (!a.type || a.type === 'ABSENT'))
                     .map((a) => (a.date ? dayKey(a.date) : null))
                     .filter(Boolean),
             );
@@ -775,7 +785,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 for (const row of bridges.attendanceRows || []) {
                     if (!row || row.day_credit == null) continue; // NULL credit = held (HR-ATT-CUTOVER-01)
                     if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
-                    if (excusedDays.has(dayKey(row.date))) continue; // approved anomaly
+                    if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // only this anomaly type is excused
                     const credit = Number(row.day_credit);
                     if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
                     const lost = 100n - BigInt(Math.round(credit * 100));
@@ -831,7 +841,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             const dayKey = (d) => dayOf(d);
             const excusedDays = new Set(
                 (bridges.anomalyRows || [])
-                    .filter((a) => a?.status === 'APPROVED')
+                    .filter((a) => a?.status === 'APPROVED' && (!a.type || a.type === 'ABSENT'))
                     .map((a) => (a.date ? dayKey(a.date) : null))
                     .filter(Boolean),
             );
@@ -840,7 +850,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             for (const row of bridges.attendanceRows || []) {
                 if (!row || row.day_credit == null) continue; // NULL credit = held
                 if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
-                if (excusedDays.has(dayKey(row.date))) continue; // approved anomaly
+                if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // only this anomaly type is excused
                 const credit = Number(row.day_credit);
                 if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
                 const lost = 100n - BigInt(Math.round(credit * 100));
@@ -866,6 +876,8 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             }
         }
     }
+
+        } // no manual markings: retain the existing policy pricing path
 
     // 7b) STATUTORY DEDUCTIONS: Country-specific mandatory contributions.
     //     Applied AFTER voluntary deductions but BEFORE income tax so the
@@ -1315,7 +1327,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             lte: payrollRun.periodEnd
                         }
                     },
-                    select: { date: true, status: true, type: true }
+                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true }
                 }
             }
         });
@@ -1467,6 +1479,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 // N-01 — the daily verdicts + anomaly decisions feed the absence
                 // bridge. Anomaly rows carry {date, status}; APPROVED ones excuse
                 // their day. Both ride the bridges object the engine already takes.
+                attendanceDeductionRules,
                 attendanceRows: employee.attendance || [],
                 anomalyRows: employee.attendanceAnomalies || [],
             };

@@ -35,6 +35,11 @@ const prismaMock = {
         return row ? { tenant_id: TENANT, ...row } : null;
     }) },
     attendanceAnomaly: {
+        updateMany: jest.fn(async ({where,data}) => {
+            const row=anomalies.get(where.id);
+            if(!row || (where.workflowVersion!==undefined && row.workflowVersion!==where.workflowVersion)) return {count:0};
+            anomalies.set(where.id,{...row,...data,workflowVersion:(row.workflowVersion||0)+1});return {count:1};
+        }),
         findUnique: jest.fn(async ({ where }) => anomalies.get(where.id) ?? null),
         findMany: jest.fn(async () => [...anomalies.values()].filter((a) => a.status === 'PENDING')),
         update: jest.fn(async ({ where, data }) => {
@@ -291,4 +296,10 @@ describe('HR-ATT-POLICY-01 approver queue', () => {
         // HR-DECIDE-ANY-LEVEL — HR sees it too (she may verify at level 1).
         expect(forHr.map((a) => a.id)).toEqual([1]);
     });
+});
+
+it('does not let HR bypass the final management level',async()=>{
+ anomalies.set(1,{...anomalies.get(1),currentApprovalLevel:3});
+ await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:1,approverId:HR,decision:'APPROVED'})).rejects.toMatchObject({status:403});
+ expect(approvalsWritten).toHaveLength(0);
 });

@@ -11,6 +11,8 @@
 // held day while rejection triggers a deduction.
 //
 // HR-ATT-POLICY-01.
+import { markAnomalyDeduction, returnAnomalyRequest, resubmitAnomalyRequest, anomalyAttachmentUrl } from '../../services/anomalyManagement.service.js';
+import { anomalyAttachmentsSchema } from './anomalyAttachmentSchema.js';
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
@@ -75,6 +77,18 @@ function actingEmployeeId(user) {
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 
 export function registerAttendanceAnomalyTools(server) {
+  const common={anomalyId:z.number().int().positive(),version:z.number().int().nonnegative()};
+  for (const [name,schema,handler,verb] of [
+    ['hr_attendance_anomaly_deduction', {...common,days:z.union([z.literal(0.5),z.literal(1),z.null()]),comment:z.string().trim().min(1).max(2000)},markAnomalyDeduction,'PUT'],
+    ['hr_attendance_anomaly_return', {...common,targetLevel:z.number().int().nonnegative(),comment:z.string().trim().min(1).max(2000)},returnAnomalyRequest,'GET'],
+    ['hr_attendance_anomaly_resubmit', {...common,reason:z.string().trim().min(1).max(2000),attachments:anomalyAttachmentsSchema},resubmitAnomalyRequest,'GET'],
+    ['hr_attendance_anomaly_attachment_url', {anomalyId:z.number().int().positive(),mediaId:z.coerce.number().int().positive()},anomalyAttachmentUrl,'GET'],
+  ]) server.tool(name,'Manage an attendance anomaly with participant authorization and an audit trail',schema,withToolError(async args=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,verb,'hr:attendance',user.isAdmin);
+    return ok(await handler({...args,tenantId:user.tenantId,actorEmployeeId:actingEmployeeId(user),actorUserId:String(user.id||user.userId||user.employeeId),isAdmin:user.isAdmin===true}));
+  },name));
+
   server.tool(
     "hr_attendance_anomaly_form_defaults",
     "Pre-fill the regularization request form for one date; every field except reason is derived",
@@ -99,9 +113,11 @@ export function registerAttendanceAnomalyTools(server) {
     "Raise a regularization request. Category and times are derived server-side; only reason is accepted",
     {
       date: z.string().describe("The affected work date (YYYY-MM-DD)"),
+      type: z.enum(["LATE_CHECKIN","MISSING_CHECKIN","MISSING_CHECKOUT","EARLY_CHECKOUT","ABSENT","OTHER"]).optional(),
+      attachments: anomalyAttachmentsSchema,
       reason: z.string().min(1).describe("Why the day should be regularized — the only employee-supplied field"),
     },
-    withToolError(async ({ date, reason }) => {
+    withToolError(async ({ date, reason, type, attachments }) => {
       const { user, permissions } = getCtx();
       assertSelfRaisePermission(permissions); // HR-ANOM-DEADLINE-02 — self-scoped raise
       return ok(
@@ -109,7 +125,7 @@ export function registerAttendanceAnomalyTools(server) {
           tenantId: user.tenantId,
           employeeId: actingEmployeeId(user),
           date,
-          reason,
+          reason, type, attachments,
         }),
       );
     }, "hr_attendance_anomaly_create")

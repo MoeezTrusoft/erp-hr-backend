@@ -740,6 +740,10 @@ model AttendanceAnomaly {
   sourceRef  String? // e.g. "leaveRequest:123"
 
   currentApprovalLevel Int @default(1)
+  workflowVersion Int @default(0)
+  workflowHistory Json @default("[]")
+  attachments Json @default("[]")
+  manualDeductionDays Float?
 
 
   employee  Employee                    @relation(fields: [employeeId], references: [id])
@@ -753,6 +757,7 @@ model AttendanceAnomaly {
   @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)], map: "attendance_anomalies_tenant_status_created_id_idx")
   @@index([employeeId])
   @@index([status])
+  @@index([tenantId, employeeId, date, type], map: "attendance_anomaly_employee_date_type_idx")
   @@map("attendance_anomalies")
 }
 

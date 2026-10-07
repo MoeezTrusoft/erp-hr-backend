@@ -89,6 +89,7 @@ const setup = ({
     unpaidLeaves = [],
     attendanceRules = [],
     attendance = [],
+    anomalies = [],
 } = {}) => {
     typeStore = new Map();
     for (const model of Object.values(prismaMock)) {
@@ -116,7 +117,7 @@ const setup = ({
             employmentTerms: [{ id: 1, baseSalary: 6543.21, payFrequency: 'MONTHLY', currency: currencyCode }],
             payrollAssignments: [],
             attendance,
-            attendanceAnomalies: [],
+            attendanceAnomalies: anomalies,
         },
     ]);
 
@@ -147,6 +148,7 @@ const setup = ({
     prismaMock.payrollPayslip.findFirst.mockResolvedValue(null);
     prismaMock.payrollPayslip.create.mockImplementation(async ({ data }) => ({ id: 7001, ...data }));
 
+    prismaMock.payrollAuditLog.findFirst.mockResolvedValue({ id: 1, action: "TIMESHEET_SUBMITTED" });
     prismaMock.payrollAuditLog.create.mockResolvedValue({ id: 1 });
 };
 
@@ -292,4 +294,11 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
         expect(again).toEqual(first);
         expect(rows.every((d) => Number.isInteger(d.deductionTypeId))).toBe(true);
     });
+});
+
+it('persists management deductions under their own type with a dated calculation',async()=>{
+ setup({countryCode:'PK',currencyCode:'PKR',taxRateRows:[],anomalies:[{id:9,date:new Date('2026-06-10'),type:'LATE_CHECKIN',status:'REJECTED',manualDeductionDays:.5}]});
+ await payroll.processPayrollRun(RUN_ID,PROCESSOR,TENANT);
+ const rows=persistedDeductions().filter(row=>codeOf(row)==='MANAGEMENT_ATTENDANCE_DEDUCTION');
+ expect(rows).toHaveLength(1);expect(rows[0].description).toContain('2026-06-10');
 });
