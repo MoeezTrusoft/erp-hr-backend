@@ -25,7 +25,11 @@ let anomalies;
 let approvalsWritten;
 
 const prismaMock = {
-    attendanceApprovalLevel: { findMany: jest.fn(async () => CHAIN) },
+    attendanceApprovalLevel: {
+        findMany: jest.fn(async () => CHAIN),
+        // HR-DECIDE-ANY-LEVEL — the tenant's configured HR approver.
+        findFirst: jest.fn(async () => ({ approverId: HR })),
+    },
     employee: { findUnique: jest.fn(async ({ where }) => {
         const row = employees.get(where.id);
         return row ? { tenant_id: TENANT, ...row } : null;
@@ -181,11 +185,46 @@ describe('HR-ATT-POLICY-01 decisions', () => {
     });
 
     it('refuses a decision from anyone but the current level approver', async () => {
-        // HR is level 2; the anomaly is sitting at level 1.
+        // MANAGEMENT is level 3; the anomaly is sitting at level 1.
         await expect(
-            routing.decideAnomaly({ tenantId: TENANT, anomalyId: 1, approverId: HR, decision: 'APPROVED' }),
+            routing.decideAnomaly({ tenantId: TENANT, anomalyId: 1, approverId: MANAGEMENT, decision: 'APPROVED' }),
         ).rejects.toThrow('not the approver for this level');
 
+        expect(approvalsWritten).toHaveLength(0);
+    });
+
+    // HR-DECIDE-ANY-LEVEL (operator, 2026-10-07) — HR verifies every anomaly
+    // for the tenant; a request parked at the manager level must not 403 her.
+    it('lets the tenant HR approver decide an anomaly parked at an earlier level', async () => {
+        const result = await routing.decideAnomaly({
+            tenantId: TENANT, anomalyId: 1, approverId: HR, decision: 'APPROVED', comments: 'verified',
+        });
+
+        // Her decision stands in at level 1, covers her own HR level (2), and
+        // the chain advances to Management (3) — one decision, two trail rows.
+        expect(approvalsWritten.map((r) => r.level)).toEqual([1, 2]);
+        expect(approvalsWritten[1].approverRole).toBe('HR');
+        expect(result.final).toBe(false);
+        expect(result.nextLevel).toBe(3);
+        expect(anomalies.get(1).currentApprovalLevel).toBe(3);
+    });
+
+    it('terminalises an HR stand-in rejection at the earlier level', async () => {
+        const result = await routing.decideAnomaly({
+            tenantId: TENANT, anomalyId: 1, approverId: HR, decision: 'REJECTED',
+        });
+
+        expect(result.final).toBe(true);
+        expect(anomalies.get(1).status).toBe('REJECTED');
+        expect(approvalsWritten.map((r) => r.level)).toEqual([1]); // no HR row on a rejection
+    });
+
+    it('never lets the requester decide via the HR stand-in', async () => {
+        anomalies.set(2, { id: 2, employeeId: HR, status: 'PENDING', currentApprovalLevel: 1, tenantId: TENANT });
+
+        await expect(
+            routing.decideAnomaly({ tenantId: TENANT, anomalyId: 2, approverId: HR, decision: 'APPROVED' }),
+        ).rejects.toThrow('not the approver for this level');
         expect(approvalsWritten).toHaveLength(0);
     });
 
@@ -205,11 +244,12 @@ describe('HR-ATT-POLICY-01 decisions', () => {
 });
 
 describe('HR-ATT-POLICY-01 approver queue', () => {
-    it('shows an anomaly only to the approver of its current level', async () => {
+    it('shows an anomaly to the current level approver and to the tenant HR approver', async () => {
         const forManager = await routing.listPendingForApprover({ tenantId: TENANT, approverId: MANAGER });
         const forHr = await routing.listPendingForApprover({ tenantId: TENANT, approverId: HR });
 
         expect(forManager.map((a) => a.id)).toEqual([1]);
-        expect(forHr).toHaveLength(0);        // not their turn yet
+        // HR-DECIDE-ANY-LEVEL — HR sees it too (she may verify at level 1).
+        expect(forHr.map((a) => a.id)).toEqual([1]);
     });
 });

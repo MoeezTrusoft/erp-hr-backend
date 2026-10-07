@@ -135,6 +135,22 @@ export async function routeAnomaly({ tenantId, anomalyId }) {
 }
 
 /**
+ * The tenant's configured HR approver (the attendance_approval_levels row with
+ * role HR), or null. HR-DECIDE-ANY-LEVEL (operator, 2026-10-07): HR verifies
+ * every anomaly for the tenant, so she may decide a request sitting at an
+ * EARLIER level (her decision stands in for that level), after which the chain
+ * advances normally — Management still decides last.
+ */
+export async function hrApproverIdFor({ tenantId }) {
+  const hr = await prisma.attendanceApprovalLevel.findFirst({
+    where: { tenantId, role: "HR", rowStatus: "ACTIVE", approverId: { not: null } },
+    orderBy: { level: "asc" },
+    select: { approverId: true },
+  });
+  return hr?.approverId ?? null;
+}
+
+/**
  * Record one decision and advance, or finalise.
  *
  * REJECTED is terminal at any level: one refusal ends the request, and that is
@@ -162,13 +178,28 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
   const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
   if (!current) throw badRequest("Anomaly is not pointed at a configured approval level");
 
-  // Only the approver this level resolves to may decide it.
-  if (!current.resolved || current.approverId !== approverId) {
+  // Only the approver this level resolves to may decide it — EXCEPT the
+  // tenant's HR approver (HR-DECIDE-ANY-LEVEL): HR verifies every anomaly for
+  // the tenant, so she decides an anomaly parked at an earlier level, her
+  // decision standing in for that level. The requester themselves never gains
+  // this (approverId === employeeId stays forbidden at every level).
+  const isHrStandIn =
+    approverId !== anomaly.employeeId &&
+    approverId === (await hrApproverIdFor({ tenantId }));
+  if (!current.resolved || (current.approverId !== approverId && !isHrStandIn)) {
     throw forbidden("You are not the approver for this level");
   }
 
   const remaining = chain.filter((c) => c.level > current.level);
-  const nextTarget = firstActionableLevel(remaining);
+  // HR-DECIDE-ANY-LEVEL — an HR stand-in VERIFY covers her own HR level as
+  // well (one decision, not two); the approval trail records both rows.
+  const coveredHrLevel =
+    isHrStandIn && verdict === "APPROVED"
+      ? chain.find((c) => c.level > current.level && c.approverId === approverId) ?? null
+      : null;
+  const nextTarget = firstActionableLevel(
+    coveredHrLevel ? remaining.filter((c) => c.level !== coveredHrLevel.level) : remaining
+  );
   const advances = verdict === "APPROVED" && nextTarget?.resolved;
 
   return tenantTransaction(prisma, async (tx) => {
@@ -183,6 +214,19 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
         comments: comments ?? null,
       },
     });
+    if (coveredHrLevel) {
+      await tx.attendanceAnomalyApproval.create({
+        data: {
+          tenantId,
+          anomalyId,
+          level: coveredHrLevel.level,
+          approverId,
+          approverRole: coveredHrLevel.role,
+          decision: verdict,
+          comments: `HR verify standing in at level ${current.level}${comments ? ` — ${comments}` : ""}`,
+        },
+      });
+    }
 
     const data = advances
       ? { currentApprovalLevel: nextTarget.level }
@@ -218,10 +262,22 @@ export async function listPendingForApprover({ tenantId, approverId }) {
   });
 
   const out = [];
+  const hrId = await hrApproverIdFor({ tenantId });
   for (const anomaly of pending) {
     const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
     const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
-    if (current?.resolved && current.approverId === approverId) {
+    if (!current) continue;
+    const hers = current.resolved && current.approverId === approverId;
+    // HR-DECIDE-ANY-LEVEL — the tenant's HR approver also sees requests parked
+    // at a level BEFORE her own HR level (she may verify them there). A request
+    // at or after her level follows the normal chain.
+    const hrLevel =
+      approverId === hrId
+        ? chain.find((c) => c.role === "HR" && c.approverId === approverId)
+        : null;
+    const standIn =
+      Boolean(hrLevel) && approverId !== anomaly.employeeId && current.level < hrLevel.level;
+    if (hers || standIn) {
       out.push({ ...anomaly, level: current.level, role: current.role });
     }
   }
