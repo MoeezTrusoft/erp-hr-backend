@@ -11,6 +11,9 @@ jest.unstable_mockModule('../../../src/services/attendanceAnomaly.service.js', (
   informAbnormality: jest.fn(async () => ({ id: 1, status: 'PENDING' })),
   listAnomalies: jest.fn(async () => ({ items: [], total: 0 })),
   decideAnomaly: jest.fn(async () => ({ id: 1, status: 'APPROVED' })),
+  // TS-ANOM-EDIT-01 — the edit tool must be pinned by the same registration /
+  // dispatch / permission-gate matrix as the rest of the anomaly surface.
+  updateAnomaly: jest.fn(async () => ({ id: 1, status: 'PENDING' })),
 }));
 jest.unstable_mockModule('../../../src/services/pendingApprovals.service.js', () => ({
   listPendingApprovals: jest.fn(async () => []),
@@ -43,6 +46,8 @@ const TOOLS = [
   { name: 'hr_anomaly_create', svc: () => anomalySvc.informAbnormality, gate: 'hr:attendance', action: 'CREATE', args: { type: 'MISSING_CHECKIN', reason: 'forgot badge' } },
   { name: 'hr_anomaly_list', svc: () => anomalySvc.listAnomalies, gate: 'hr:attendance', action: 'VIEW', args: {} },
   { name: 'hr_anomaly_decide', svc: () => anomalySvc.decideAnomaly, gate: 'hr:attendance', action: 'EDIT', args: { id: 1, decision: 'approve' } },
+  // TS-ANOM-EDIT-01 — PUT hr:attendance, same gate class as decide.
+  { name: 'hr_anomaly_update', svc: () => anomalySvc.updateAnomaly, gate: 'hr:attendance', action: 'EDIT', args: { id: 1, reason: 'edited' } },
 ];
 
 describe('ATTENDANCE-OPS-ANOMALY — registration', () => {
