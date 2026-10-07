@@ -157,6 +157,12 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
       cycleOffs,
       // Only an UNKNOWN phase needs the ROTATING-02 fallback.
       rotating: isRotating && !hasPhase,
+      // HR-ATT-PAID-NOPUNCH-01 — a standing paid-without-punches arrangement
+      // (schedule_pattern.paidWithoutPunches): the roster governs WHICH days
+      // are scheduled, but no punch is expected on them and every scheduled
+      // day is paid. The reason on the working-day verdict is how the absence
+      // marker tells this apart from an ordinary no-show.
+      paidWithoutPunches: pattern?.paidWithoutPunches === true,
       /** Index of `day` within the rotation, always non-negative. */
       cycleIndex: (day) => {
         const diff = Math.round((startOfDay(day) - cycleAnchor) / DAY_MS);
@@ -237,7 +243,11 @@ export async function resolveWorkingDays({ employeeId, from, to, tenantId }) {
     }
 
     out.set(key, {
-      date: day, working: true, reason: null, detail: null, rotating: roster.rotating,
+      date: day,
+      working: true,
+      reason: roster.paidWithoutPunches ? "PAID_NO_PUNCH" : null,
+      detail: null,
+      rotating: roster.rotating,
     });
   }
 

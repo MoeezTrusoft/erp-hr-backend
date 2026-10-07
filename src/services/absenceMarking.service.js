@@ -121,6 +121,12 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       const info = working.get(key);
       if (!info?.working) { summary.notWorking += 1; continue; }
 
+      // HR-ATT-PAID-NOPUNCH-01 — a standing paid-without-punches roster
+      // (schedule_pattern.paidWithoutPunches, operator request 2026-10-07):
+      // scheduled days are paid in full with no punch expected, so the marker
+      // writes a credited PRESENT instead of an absence.
+      const paidNoPunch = info.reason === "PAID_NO_PUNCH";
+
       // Guard 4 (HR-ATT-ROTATING-02): a rotating roster rests on the rotation,
       // not on a weekday, so its `offDays` is empty and guard 2 waves every
       // calendar day through. The rotation has no anchor date on file, so a day
@@ -141,7 +147,14 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
         // day is charged. Any other existing row (a punch that already scored,
         // a leave day) still wins — guard 3 stands.
         const staleOffRow = row.status === "WEEKLY_OFF" || row.status === "HOLIDAY";
-        if (!staleOffRow) { summary.alreadyPresent += 1; continue; }
+        // On a paid-without-punches roster an automatic ABSENT from an earlier
+        // run of this same marker is not an HR ruling — restate it to a paid
+        // PRESENT, exactly as the stale off-row below restates to ABSENT.
+        // Manually corrected rows still win (guard 3 stands).
+        if (!staleOffRow && !(paidNoPunch && row.status === "ABSENT")) {
+          summary.alreadyPresent += 1;
+          continue;
+        }
 
         summary.marked += 1;
         summary.details.push({ employeeId: emp.id, employee_code: emp.employee_code, date: key });
@@ -149,16 +162,25 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
           await tenantTransaction(prisma, async (tx) =>
             tx.attendance.update({
               where: { id: row.id },
-              data: {
-                status: "ABSENT",
-                day_credit: 0,
-                check_in: null,
-                check_out: null,
-                requires_regularization: true,
-                remarks: info.reason === "ON_CALL"
-                  ? "Called in (on-call) with no attendance recorded"
-                  : "No attendance recorded on a scheduled working day",
-              },
+              data: paidNoPunch
+                ? {
+                    status: "PRESENT",
+                    day_credit: 1,
+                    check_in: null,
+                    check_out: null,
+                    requires_regularization: false,
+                    remarks: "Full-time on-call (roster flag): paid day, no punch recorded",
+                  }
+                : {
+                    status: "ABSENT",
+                    day_credit: 0,
+                    check_in: null,
+                    check_out: null,
+                    requires_regularization: true,
+                    remarks: info.reason === "ON_CALL"
+                      ? "Called in (on-call) with no attendance recorded"
+                      : "No attendance recorded on a scheduled working day",
+                  },
             }),
           );
         }
@@ -171,14 +193,21 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       if (!dryRun) {
         await tenantTransaction(prisma, async (tx) =>
           tx.attendance.create({
-            data: {
-              tenantId, employeeId: emp.id, date: day,
-              status: "ABSENT", day_credit: 0,
-              // Raised for regularization, not treated as settled: the employee
-              // can file an anomaly request and have the day put right.
-              requires_regularization: true,
-              remarks: "No attendance recorded on a scheduled working day",
-            },
+            data: paidNoPunch
+              ? {
+                  tenantId, employeeId: emp.id, date: day,
+                  status: "PRESENT", day_credit: 1,
+                  requires_regularization: false,
+                  remarks: "Full-time on-call (roster flag): paid day, no punch recorded",
+                }
+              : {
+                  tenantId, employeeId: emp.id, date: day,
+                  status: "ABSENT", day_credit: 0,
+                  // Raised for regularization, not treated as settled: the employee
+                  // can file an anomaly request and have the day put right.
+                  requires_regularization: true,
+                  remarks: "No attendance recorded on a scheduled working day",
+                },
           }),
         );
       }
