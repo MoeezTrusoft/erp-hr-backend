@@ -210,12 +210,17 @@ export function registerAttendanceOpsTools(server) {
     "Edit a PENDING attendance anomaly request (type, reason, detail, date, times). Decisions and raise metadata are not editable.",
     {
       id: z.coerce.number().int().describe("Anomaly id to edit (required; references AttendanceAnomaly)"),
-      type: ANOMALY_TYPE.optional().describe("New anomaly type (optional; one of the enum values)"),
-      reason: z.string().optional().describe("New reason text (optional)"),
-      detail: z.string().optional().describe("New detail text (optional; use for OTHER specify)"),
-      date: z.string().optional().describe("New affected work date, ISO 8601 (optional)"),
-      fromTime: z.string().optional().describe("New time-range start, ISO 8601 datetime (optional)"),
-      toTime: z.string().optional().describe("New time-range end, ISO 8601 datetime (optional)"),
+      // TS-ANOM-EDIT-02 — the edit modal sends explicit JSON nulls for cleared
+      // fields (e.g. an ABSENT-type request carries no time range), and the
+      // service contract is null = leave unchanged. `.optional()` alone rejects
+      // null with -32602, which is what the live UI hit on 2026-10-07, so every
+      // client-supplied optional field is nullable too.
+      type: ANOMALY_TYPE.nullable().optional().describe("New anomaly type (optional; one of the enum values)"),
+      reason: z.string().nullable().optional().describe("New reason text (optional)"),
+      detail: z.string().nullable().optional().describe("New detail text (optional; use for OTHER specify)"),
+      date: z.string().nullable().optional().describe("New affected work date, ISO 8601 (optional)"),
+      fromTime: z.string().nullable().optional().describe("New time-range start, ISO 8601 datetime (optional)"),
+      toTime: z.string().nullable().optional().describe("New time-range end, ISO 8601 datetime (optional)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

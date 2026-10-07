@@ -6,6 +6,7 @@
 // surface (inform/create/list/decide): registration, dispatch, permission gate.
 // DB-free: services are mocked; tool→service dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { z } from 'zod';
 
 jest.unstable_mockModule('../../../src/services/attendanceAnomaly.service.js', () => ({
   informAbnormality: jest.fn(async () => ({ id: 1, status: 'PENDING' })),
@@ -25,8 +26,18 @@ const anomalySvc = await import('../../../src/services/attendanceAnomaly.service
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
+const schemas = new Map();
 const recording = {
-  tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
+  tool: (name, ...rest) => {
+    handlers.set(name, rest[rest.length - 1]);
+    // The zod schema lands immediately before the callback (tool name,
+    // description, schema, cb) — grab it for argument-contract tests.
+    const cb = rest[rest.length - 1];
+    const schemaArg = rest[rest.length - 2];
+    if (schemaArg && typeof schemaArg === 'object' && typeof cb === 'function') {
+      schemas.set(name, schemaArg);
+    }
+  },
   resource: () => {},
 };
 registerAttendanceOpsTools(recording);
@@ -53,6 +64,37 @@ const TOOLS = [
 describe('ATTENDANCE-OPS-ANOMALY — registration', () => {
   it.each(TOOLS.map((t) => t.name))('%s is registered', (name) => {
     expect(handlers.has(name)).toBe(true);
+  });
+});
+
+// TS-ANOM-EDIT-02 (2026-10-07) — the edit modal sends explicit JSON nulls for
+// cleared fields (an ABSENT-type request carries no time range) and the live
+// server answered -32602 because z.string().optional() rejects null. The
+// service contract is null = leave unchanged, so the argument schema must
+// accept null on every optional client-supplied field.
+describe('hr_anomaly_update argument contract', () => {
+  it('accepts explicit nulls on the optional edit fields', () => {
+    // The SDK registers a RAW SHAPE (plain object of validators) and builds the
+    // ZodObject itself — wrap before probing.
+    const shape = schemas.get('hr_anomaly_update');
+    expect(shape).toBeDefined();
+    const schema = z.object(shape);
+    const probe = schema.safeParse({
+      id: 1260,
+      type: null,
+      reason: null,
+      detail: null,
+      date: null,
+      fromTime: null,
+      toTime: null,
+    });
+    expect(probe.success).toBe(true);
+  });
+
+  it('still rejects a missing id and a bad type', () => {
+    const schema = z.object(schemas.get('hr_anomaly_update'));
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ id: 1, type: 'NOT_A_TYPE' }).success).toBe(false);
   });
 });
 
