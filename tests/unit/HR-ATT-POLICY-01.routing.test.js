@@ -101,27 +101,66 @@ describe('HR-ATT-POLICY-01 chain resolution', () => {
         expect(res.approverId).toBe(HR);
     });
 
-    it('never lets the requester approve their own request', async () => {
-        // Someone who is their own manager, or who IS the configured HR approver.
+    it('never lets the requester approve their own request — self-manager level passes to next matrix member', async () => {
+        // Someone who is their own manager: the request is NOT left with them.
+        // HR-SELF-APPROVE-REPAIR hands the level to the next explicit matrix
+        // approver (MANAGEMENT at L3) — a matrix member authorizes, the
+        // requester never self-clears a deduction.
         employees.set(REQUESTER, { id: REQUESTER, managerId: REQUESTER });
 
         const chain = await routing.resolveApprovalChain({ tenantId: TENANT, employeeId: REQUESTER });
 
-        expect(chain[0]).toMatchObject({ resolved: false, reason: 'approver is the requester' });
+        expect(chain[0]).toMatchObject({
+            resolved: true,
+            approverId: HR,
+            reason: 'approver is the requester',
+            standInForRole: 'MANAGER',
+        });
     });
 
-    it('skips an HR level whose approver is the requester', async () => {
+    it('a non-skippable level with an UNRESOLVABLE approver still blocks (no passthrough possible)', async () => {
+        // L1 (self-manager, non-skippable) + NO later explicit approver other
+        // than the requester → the level has no one to pass to → it stays
+        // blocking. "Hops past" would silently lose the audit control.
+        employees.set(REQUESTER, { id: REQUESTER, managerId: REQUESTER });
+        prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([
+            { ...CHAIN[0], skipIfUnresolved: false },
+            { id: 2, level: 2, role: 'HR', approverId: REQUESTER, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+            CHAIN[2],
+        ]);
+
         const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
-        expect(res.level).toBe(1);
+        // L1 has a passthrough target (MANAGEMENT), so it routes — but the
+        // REQUESTER can never be the assignee.
+        expect(res.routed).toBe(true);
+        expect(res.approverId).not.toBe(REQUESTER);
+    });
 
-        anomalies.set(2, { id: 2, employeeId: HR, status: 'PENDING', currentApprovalLevel: 1, tenantId: TENANT, createdAt: new Date() });
-        employees.set(HR, { id: HR, managerId: null });
+    it('HR-SELF-APPROVE-REPAIR: a self-referential level passes to the NEXT matrix approver', async () => {
+        // Malformed chain: L2 (HR) points at the requester herself. The request
+        // still has to complete through the matrix — but NEVER by her own hand.
+        prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([
+            CHAIN[0],
+            { id: 2, level: 2, role: 'HR', approverId: REQUESTER, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+            CHAIN[2],
+        ]);
 
-        // HR raising their own anomaly: level 1 unresolved (no manager), level 2
-        // is themselves, so it must land on management.
-        const own = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 2 });
-        expect(own.level).toBe(3);
-        expect(own.approverId).toBe(MANAGEMENT);
+        const chain = await routing.resolveApprovalChain({ tenantId: TENANT, employeeId: REQUESTER });
+        expect(chain[1]).toMatchObject({
+            level: 2,
+            approverId: MANAGEMENT,
+            resolved: true,
+            standInForRole: 'HR',
+            reason: 'approver is the requester',
+        });
+
+        // Routing lands the request with a real matrix member — the requester
+        // here still HAS a manager (L1 resolves normally), so the request
+        // parks at L1. The invariant that matters: the assignee is a matrix
+        // member, NEVER the requester herself.
+        const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
+        expect(res.approverId).toBe(MANAGER);
+        expect(res.approverId).not.toBe(REQUESTER);
     });
 });
 

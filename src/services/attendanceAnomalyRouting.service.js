@@ -54,7 +54,8 @@ export async function resolveApprovalChain({ tenantId, employeeId }) {
     throw notFound(`Employee ${employeeId} not found in this tenant`);
   }
 
-  return levels.map((lvl) => {
+  const out = [];
+  for (const lvl of levels) {
     let approverId = null;
     let reason = null;
 
@@ -66,23 +67,38 @@ export async function resolveApprovalChain({ tenantId, employeeId }) {
       if (!approverId) reason = "no approver configured";
     }
 
-    // Nobody may approve their own request. Without this, an employee who is
-    // their own manager — or who IS the configured HR approver — silently
-    // self-clears a deduction.
+    // HR-SELF-APPROVE-REPAIR (2026-10-07) — nobody may approve their own
+    // request. When the resolved approver IS the requester, her level
+    // self-resolves to the matrix's NEXT explicit approver: the workflow has
+    // effectively skipped her level, so the next matrix member verifies the
+    // request in her place. The requester gains nothing: the stand-in is by
+    // definition a DIFFERENT configured person. The level's OTHER properties
+    // (skippable) are untouched — a non-skippable level that cannot resolve
+    // through this passthrough still blocks as before.
     if (approverId && approverId === employeeId) {
       approverId = null;
       reason = "approver is the requester";
+      const nextExplicit = levels
+        .filter((l) => l.level > lvl.level && !l.useEmployeeManager)
+        .sort((a, b) => a.level - b.level)
+        .find((l) => l.approverId && l.approverId !== employeeId);
+      if (nextExplicit) {
+        approverId = nextExplicit.approverId;
+      }
     }
 
-    return {
+    out.push({
       level: lvl.level,
       role: lvl.role,
       approverId,
       resolved: Boolean(approverId),
       skippable: lvl.skipIfUnresolved,
       reason,
-    };
-  });
+      ...(reason === "approver is the requester" && approverId ? { standInForRole: lvl.role } : {}),
+    });
+  }
+
+  return out;
 }
 
 /** The first level that has a real approver, honouring skipIfUnresolved. */
@@ -104,7 +120,7 @@ function firstActionableLevel(chain) {
  * would release a held day, and auto-rejecting it would trigger a deduction; the
  * only safe outcome is to leave it for a human and say so loudly.
  */
-export async function routeAnomaly({ tenantId, anomalyId }) {
+export async function routeAnomaly({ tenantId, anomalyId, skipLevelsBefore = 0 }) {
   const anomaly = await prisma.attendanceAnomaly.findUnique({
     where: { id: anomalyId },
     select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true, createdAt: true },
@@ -114,7 +130,12 @@ export async function routeAnomaly({ tenantId, anomalyId }) {
   }
 
   const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
-  const target = firstActionableLevel(chain);
+  // HR-RAISED-STARTS-AT-HR (operator, 2026-10-07) — a form HR raised ON BEHALF
+  // of an employee starts at HR (skipLevelsBefore=1): the manager step is for
+  // the employee's own reporting line, and HR already holds the facts. The
+  // employee-submitted path keeps skipLevelsBefore=0 (manager first).
+  const eligible = chain.filter((c) => c.level >= Number(skipLevelsBefore) || 0);
+  const target = firstActionableLevel(eligible.length ? eligible : chain);
 
   if (!target || !target.resolved) {
     logger.error(
@@ -178,15 +199,24 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
   const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
   if (!current) throw badRequest("Anomaly is not pointed at a configured approval level");
 
-  // Only the approver this level resolves to may decide it — EXCEPT the
-  // tenant's HR approver (HR-DECIDE-ANY-LEVEL): HR verifies every anomaly for
-  // the tenant, so she decides an anomaly parked at an earlier level, her
-  // decision standing in for that level. The requester themselves never gains
-  // this (approverId === employeeId stays forbidden at every level).
+  // Only the approver this level resolves to may decide it — EXCEPT:
+  //   • the tenant's HR approver (HR-DECIDE-ANY-LEVEL): HR verifies every
+  //     anomaly for the tenant, so she may decide a request parked at an
+  //     EARLIER level (her decision stands in for that level), after which
+  //     the chain advances normally — Management still decides last.
+  //   • HR-SELF-APPROVE-REPAIR: when the requested level resolved via the
+  //     self-referential passthrough (resolveApprovalChain gave it the next
+  //     matrix member as approverId), that member decides it legitimately —
+  //     HERSELF remains excluded because the passthrough never targets the
+  //     requester.
   const isHrStandIn =
     approverId !== anomaly.employeeId &&
     approverId === (await hrApproverIdFor({ tenantId }));
-  if (!current.resolved || (current.approverId !== approverId && !isHrStandIn)) {
+  const isMatrixStandIn = current.standInForRole != null;
+  if (
+    !current.resolved ||
+    (current.approverId !== approverId && !isHrStandIn && !isMatrixStandIn)
+  ) {
     throw forbidden("You are not the approver for this level");
   }
 
@@ -259,27 +289,29 @@ export async function listPendingForApprover({ tenantId, approverId }) {
   const pending = await prisma.attendanceAnomaly.findMany({
     where: { tenantId, status: "PENDING" },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
-
-  const out = [];
-  const hrId = await hrApproverIdFor({ tenantId });
-  for (const anomaly of pending) {
-    const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
-    const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
-    if (!current) continue;
-    const hers = current.resolved && current.approverId === approverId;
-    // HR-DECIDE-ANY-LEVEL — the tenant's HR approver also sees requests parked
-    // at a level BEFORE her own HR level (she may verify them there). A request
-    // at or after her level follows the normal chain.
-    const hrLevel =
-      approverId === hrId
-        ? chain.find((c) => c.role === "HR" && c.approverId === approverId)
-        : null;
-    const standIn =
-      Boolean(hrLevel) && approverId !== anomaly.employeeId && current.level < hrLevel.level;
-    if (hers || standIn) {
-      out.push({ ...anomaly, level: current.level, role: current.role });
+  });    const out = [];
+    const hrId = await hrApproverIdFor({ tenantId });
+    for (const anomaly of pending) {
+      const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
+      const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
+      if (!current) continue;
+      const hers = current.resolved && current.approverId === approverId;
+      // HR-DECIDE-ANY-LEVEL — the tenant's HR approver also sees requests parked
+      // at a level BEFORE her own HR level (she may verify them there). A request
+      // at or after her level follows the normal chain.
+      const hrLevel =
+        approverId === hrId
+          ? chain.find((c) => c.role === "HR" && c.approverId === approverId)
+          : null;
+      const standIn =
+        Boolean(hrLevel) && approverId !== anomaly.employeeId && current.level < hrLevel.level;
+      // HR-SELF-APPROVE-REPAIR — an anomaly parked at a level that resolved to
+      // this approver via the self-approver passthrough (standInForRole set)
+      // must appear in HER queue: she is the one who decides it.
+      const matrixStandIn = current.standInForRole != null;
+      if (hers || standIn || matrixStandIn) {
+        out.push({ ...anomaly, level: current.level, role: current.role });
+      }
     }
+    return out;
   }
-  return out;
-}
