@@ -935,26 +935,30 @@ export async function listCheckInOuts({
     "LATE", "EARLY_CHECKOUT", "MISSING_CHECKIN", "MISSING_CHECKOUT", "HALF_DAY", "ABSENT",
   ]);
   const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
-  const rowEmployees = [...new Set(records.map((a) => a.employeeId).filter(Number.isFinite))];
-  let anomaliesForWindow = [];
-  if (rowEmployees.length) {
-    anomaliesForWindow = await prisma.attendanceAnomaly.findMany({
-      where: scopedWhere(tenantId, {
-        employeeId: { in: rowEmployees },
-        date: { gte: period.from, lte: period.to },
-      }),
-      select: {
-        id: true, employeeId: true, date: true, type: true, status: true,
-        sourceKind: true,
-        raisedById: true, raisedByName: true,
-        reason: true, detail: true, fromTime: true, toTime: true,
-        createdAt: true, decidedAt: true, reviewNote: true, requestDeadline: true,
-        expectedTime: true, actualTime: true, positionSnapshot: true,
-        departmentSnapshot: true, applicationDate: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-  }
+  // TS-REQUEST-05 (2026-10-07) — fetch the window's anomaly forms for the WHOLE
+  // tenant, not just the employees on the current page. The old
+  // `rowEmployees` scoping joined forms to the page's employees AFTER
+  // pagination, so a form whose employee sat on any other page (Homenet has
+  // 970 September rows; the page holds 100) never reached the FE — HR verified
+  // a request, the row flipped in the anomaly list, but the Timesheet Request
+  // chip stayed "Pending"/unsubmitted forever. The window is month-bounded,
+  // so the wider fetch stays cheap; the map still only ATTACHES to rows on
+  // this page, and page rows not in the map render exactly as before.
+  let anomaliesForWindow = await prisma.attendanceAnomaly.findMany({
+    where: scopedWhere(tenantId, {
+      date: { gte: period.from, lte: period.to },
+    }),
+    select: {
+      id: true, employeeId: true, date: true, type: true, status: true,
+      sourceKind: true,
+      raisedById: true, raisedByName: true,
+      reason: true, detail: true, fromTime: true, toTime: true,
+      createdAt: true, decidedAt: true, reviewNote: true, requestDeadline: true,
+      expectedTime: true, actualTime: true, positionSnapshot: true,
+      departmentSnapshot: true, applicationDate: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
   const anomalyByKey = new Map();
   for (const an of anomaliesForWindow) {
     if (an.date == null) continue; // window-wide forms don't attach to a day
