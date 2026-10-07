@@ -470,6 +470,99 @@ export async function updateAnomaly({
 }
 
 /**
+ * TS-ANOM-DELETE-01 (2026-10-07) — WITHDRAW a PENDING anomaly request.
+ *
+ * Who may delete (operator ruling): the EMPLOYEE the request is about, or HR
+ * when HR raised it on the employee's behalf (raisedById set by the HR ops
+ * path). Nobody else — a request someone else filed for me is theirs to
+ * withdraw, not mine. Decided requests are immutable: an APPROVED/REJECTED
+ * row is part of the payroll record and cannot be withdrawn out from under
+ * a deduction. HR's general edit/delete power lives in decideAnomaly
+ * (approve/reject), not here.
+ *
+ * Deletion also removes the request's approval-chain rows so a re-raise for
+ * the same employee-day (one-OPEN-per-day invariant) is not blocked by
+ * orphaned chain steps.
+ *
+ * Returns the deleted row's identifying fields for the UI toast/audit log.
+ */
+export async function deleteAnomaly({
+  tenantId,
+  id,
+  requesterEmployeeId,
+}) {
+  const anomalyId = toIntOrNull(id);
+  if (anomalyId == null) {
+    throw Object.assign(new Error("id is required"), { status: 400 });
+  }
+  const requesterId = toIntOrNull(requesterEmployeeId);
+
+  const existing = await prisma.attendanceAnomaly.findFirst({
+    where: scopedWhere(tenantId, { id: anomalyId }),
+    select: {
+      id: true,
+      status: true,
+      type: true,
+      employeeId: true,
+      raisedById: true,
+      raisedByName: true,
+      sourceRef: true,
+    },
+  });
+  if (!existing) {
+    throw Object.assign(new Error("Anomaly not found"), { status: 404 });
+  }
+  if (existing.status !== "PENDING") {
+    throw Object.assign(
+      new Error(`Cannot delete a ${existing.status} anomaly — only PENDING requests can be withdrawn`),
+      { status: 400 },
+    );
+  }
+
+  // Permission, dual-keyed: the caller passes the employee id their session
+  // carries. The subject employee may always withdraw their own request; HR's
+  // on-behalf raise keeps the filler's id in raisedById, so HR deleting their
+  // own raise is requester == raisedById. An admin escape hatch is NOT added
+  // deliberately — decided anomalies are immutable and PENDING ones belong to
+  // their filer.
+  const isSubject = requesterId != null && requesterId === existing.employeeId;
+  const isFiller = requesterId != null && existing.raisedById != null && requesterId === existing.raisedById;
+  if (!isSubject && !isFiller) {
+    throw Object.assign(
+      new Error(
+        existing.raisedById == null
+          ? "Only the employee the request is about can delete it"
+          : "Only the employee or the HR user who raised it on their behalf can delete it",
+      ),
+      { status: 403 },
+    );
+  }
+
+  await prisma.attendanceAnomalyApproval.deleteMany({
+    where: scopedWhere(tenantId, { anomalyId }),
+  });
+  await prisma.attendanceAnomaly.delete({ where: { id: anomalyId } });
+
+  logger.info(
+    {
+      anomalyId,
+      employeeId: existing.employeeId,
+      type: existing.type,
+      raisedById: existing.raisedById,
+      deletedBy: requesterId,
+    },
+    "attendance anomaly withdrawn",
+  );
+  return {
+    id: existing.id,
+    employeeId: existing.employeeId,
+    type: existing.type,
+    status: "DELETED",
+    deletedBy: requesterId,
+  };
+}
+
+/**
  * Approve or reject an anomaly. Loads the row tenant-scoped first (404 if
  * missing), then updates. Single update — RLS extension auto-wraps.
  */

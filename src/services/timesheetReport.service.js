@@ -946,6 +946,7 @@ export async function listCheckInOuts({
       select: {
         id: true, employeeId: true, date: true, type: true, status: true,
         sourceKind: true,
+        raisedById: true, raisedByName: true,
         reason: true, detail: true, fromTime: true, toTime: true,
         createdAt: true, decidedAt: true, reviewNote: true, requestDeadline: true,
         expectedTime: true, actualTime: true, positionSnapshot: true,
@@ -1012,6 +1013,11 @@ export async function listCheckInOuts({
         type: an.type,
         submittedAt: an.createdAt,
         decidedAt: an.decidedAt,
+        // TS-ANOM-DELETE-01 — the filer's employee id (set on HR's on-behalf
+        // raise): the FE offers Delete when the caller IS this id or the
+        // subject employee; the server re-checks authoritatively.
+        raisedById: an.raisedById ?? null,
+        raisedByName: an.raisedByName ?? null,
         reason: an.reason,
         detail: an.detail,
         fromTime: an.fromTime,

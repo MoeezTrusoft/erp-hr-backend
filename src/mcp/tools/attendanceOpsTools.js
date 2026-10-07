@@ -13,6 +13,7 @@ import {
   listAnomalies,
   decideAnomaly,
   updateAnomaly,
+  deleteAnomaly,
 } from "../../services/attendanceAnomaly.service.js";
 import {
   listPendingApprovals,
@@ -237,6 +238,30 @@ export function registerAttendanceOpsTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_anomaly_update")
+  );
+
+  // ── ANOMALY: delete (DELETE → hr:attendance EDIT) ──────────────────────────
+  // TS-ANOM-DELETE-01 — withdraw a PENDING request. The SERVICE enforces who:
+  // the subject employee, or the HR user who raised it on their behalf (the
+  // filler). The tool only passes the session's employee id through; the
+  // DELETE-permission gate at the edge is on the same EDIT class HR's
+  // decide already uses — deletion is a withdrawal, not a data-admin action.
+  server.tool(
+    "hr_anomaly_delete",
+    "Withdraw a PENDING attendance anomaly request. Allowed for the employee the request is about, or the HR user who raised it on their behalf. Decided (APPROVED/REJECTED) requests cannot be deleted.",
+    {
+      id: z.coerce.number().int().describe("Anomaly id to delete (required; references AttendanceAnomaly)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
+      const data = await deleteAnomaly({
+        tenantId: user.tenantId,
+        id: args.id,
+        requesterEmployeeId: user.employeeId,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_anomaly_delete")
   );
 
   // ── PENDING APPROVALS: list (GET → hr:attendance VIEW) ─────────────────────

@@ -15,6 +15,10 @@ jest.unstable_mockModule('../../../src/services/attendanceAnomaly.service.js', (
   // TS-ANOM-EDIT-01 — the edit tool must be pinned by the same registration /
   // dispatch / permission-gate matrix as the rest of the anomaly surface.
   updateAnomaly: jest.fn(async () => ({ id: 1, status: 'PENDING' })),
+  // TS-ANOM-DELETE-01 — the withdraw tool joins the same matrix. Who may
+  // delete is a SERVICE rule (subject employee / HR on-behalf filer); the
+  // tool gate is DELETE hr:attendance.
+  deleteAnomaly: jest.fn(async () => ({ id: 1, status: 'DELETED' })),
 }));
 jest.unstable_mockModule('../../../src/services/pendingApprovals.service.js', () => ({
   listPendingApprovals: jest.fn(async () => []),
@@ -59,6 +63,9 @@ const TOOLS = [
   { name: 'hr_anomaly_decide', svc: () => anomalySvc.decideAnomaly, gate: 'hr:attendance', action: 'EDIT', args: { id: 1, decision: 'approve' } },
   // TS-ANOM-EDIT-01 — PUT hr:attendance, same gate class as decide.
   { name: 'hr_anomaly_update', svc: () => anomalySvc.updateAnomaly, gate: 'hr:attendance', action: 'EDIT', args: { id: 1, reason: 'edited' } },
+  // TS-ANOM-DELETE-01 — DELETE hr:attendance (withdraw; who-may-delete lives
+  // in the service via requesterEmployeeId).
+  { name: 'hr_anomaly_delete', svc: () => anomalySvc.deleteAnomaly, gate: 'hr:attendance', action: 'DELETE', args: { id: 1 } },
 ];
 
 describe('ATTENDANCE-OPS-ANOMALY — registration', () => {
