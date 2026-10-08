@@ -1,6 +1,6 @@
 import prisma from '../lib/prisma.js';
 import {tenantTransaction} from '../lib/rlsTenant.js';
-import {payrollMonth,validatePayableDays,groupOfficePayroll} from '../lib/monthlyPayrollAttendance.js';
+import {payrollMonth,validatePayableDays,groupOfficePayroll,isHeadendEmployee,HEADEND_TENANT,HEADEND_OFFICE} from '../lib/monthlyPayrollAttendance.js';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const name=e=>e.employee_name || [e.first_name,e.last_name].filter(Boolean).join(' ');
 export async function assertMonthlyEditable(tx,tenantId,month){
@@ -16,15 +16,15 @@ export async function listMonthlyAttendance({tenantId,month}){
     prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month}}),
   ]);
   const byId=new Map(entries.map(r=>[r.employeeId,r]));
-  return {month,days:payrollMonth(month).days,items:employees.map(e=>({id:e.id,name:name(e),code:e.employee_code,office:e.payrollOffice,mode:e.attendanceInputMode,employeeVersion:e.version,entry:byId.get(e.id)||null}))};
+  return {month,days:payrollMonth(month).days,defaultPaidDays:Math.min(30,payrollMonth(month).days),manualOffice:tenantId===HEADEND_TENANT?HEADEND_OFFICE:null,items:employees.map(e=>({id:e.id,name:name(e),code:e.employee_code,office:e.payrollOffice,mode:isHeadendEmployee({...e,tenant_id:tenantId})?'MANUAL_MONTHLY':'DEVICE',employeeVersion:e.version,entry:byId.get(e.id)||null}))};
 }
 export async function saveMonthlyAttendance({tenantId,employeeId,month,payableDays,reason,version,actorId}){
   const days=validatePayableDays(month,payableDays);
   if(!reason?.trim()) fail(400,'A reason or attendance source is required');
   return tenantTransaction(prisma,async tx=>{
-    const employee=await tx.employee.findFirst({where:{id:employeeId,tenant_id:tenantId},select:{id:true,attendanceInputMode:true}});
+    const employee=await tx.employee.findFirst({where:{id:employeeId,tenant_id:tenantId},select:{id:true,tenant_id:true,payrollOffice:true,attendanceInputMode:true}});
     if(!employee) fail(404,'Employee not found');
-    if(employee.attendanceInputMode!=='MANUAL_MONTHLY') fail(400,'Employee does not use monthly manual attendance');
+    if(!isHeadendEmployee(employee)) fail(400,'Manual monthly attendance is only available for HomeVision Headend employees');
     await assertMonthlyEditable(tx,tenantId,month);
     const previous=await tx.monthlyPayrollAttendance.findFirst({where:{tenantId,employeeId,month}});
     if((previous?.version||0)!==version) fail(409,'Attendance changed; refresh before saving');
@@ -40,6 +40,8 @@ export async function saveMonthlyAttendance({tenantId,employeeId,month,payableDa
 }
 export async function assignPayrollOffice({tenantId,employeeId,office,mode,version,reason,actorId}){
   if(!office?.trim() || office.trim().length>100 || !['DEVICE','MANUAL_MONTHLY'].includes(mode) || !reason?.trim()) fail(400,'Office, attendance method and reason are required');
+  const requiredMode=isHeadendEmployee({tenant_id:tenantId,payrollOffice:office.trim()})?'MANUAL_MONTHLY':'DEVICE';
+  if(mode!==requiredMode) fail(400,'Headend uses monthly attendance; all other employees use system attendance');
   return tenantTransaction(prisma,async tx=>{
     const previous=await tx.employee.findFirst({where:{tenant_id:tenantId,id:employeeId},select:{id:true,version:true,payrollOffice:true,attendanceInputMode:true}});
     if(!previous) fail(404,'Employee not found');
@@ -60,9 +62,10 @@ export async function getOfficePayroll({tenantId,runId}){
 }
 export async function assertMonthlyInputsComplete({tenantId,month}){
   const {start,end}=payrollMonth(month);
-  const employees=await prisma.employee.findMany({where:{tenant_id:tenantId,attendanceInputMode:'MANUAL_MONTHLY',payroll_included:{not:false},OR:[{status:{equals:'active',mode:'insensitive'}},{employmentPeriods:{some:{startDate:{lte:end},OR:[{endDate:null},{endDate:{gte:start}}]}}}]},select:{id:true}});
+  if(tenantId!==HEADEND_TENANT) return;
+  const employees=await prisma.employee.findMany({where:{tenant_id:tenantId,payrollOffice:HEADEND_OFFICE,payroll_included:{not:false},OR:[{status:{equals:'active',mode:'insensitive'}},{employmentPeriods:{some:{startDate:{lte:end},OR:[{endDate:null},{endDate:{gte:start}}]}}}]},select:{id:true}});
   const entries=await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month},select:{employeeId:true,payableDays:true}});
   const byId=new Map(entries.map(r=>[r.employeeId,r]));
-  const missing=employees.filter(e=>!byId.has(e.id));
-  if(missing.length) fail(409,`Monthly payable days are required for ${missing.length} employees before submitting payroll`);
+  for(const employee of employees){const input=byId.get(employee.id);if(input)validatePayableDays(month,input.payableDays);}
+  // No entry uses the Headend default; an explicit zero is retained.
 }

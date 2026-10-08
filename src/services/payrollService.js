@@ -1,4 +1,5 @@
-import { manualAttendanceFactor } from '../lib/monthlyPayrollAttendance.js';
+import { calculatePayrollPaidDays } from '../lib/payrollPaidDays.js';
+import { manualAttendanceFactor, isHeadendEmployee } from '../lib/monthlyPayrollAttendance.js';
 import { combinedAttendanceDeductions, manualDeductionsByShift, isAttendanceExcused } from '../lib/anomalyPayroll.js';
 import { createHash } from "node:crypto";
 import prisma from "../lib/prisma.js";
@@ -456,10 +457,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         );
 
     prorationFactor = manualAttendanceFactor(employee, payrollRun, bridges.manualAttendance,
-        employee?.attendanceInputMode === 'MANUAL_MONTHLY'
+        isHeadendEmployee(employee)
             ? computeProrationFactor(payrollRun.periodStart, payrollRun.periodEnd, employee?.employmentPeriods?.length ? employee.employmentPeriods : (employee?.hire_date || employee?.hireDate))
             : prorationFactor);
-    if (employee?.attendanceInputMode === 'MANUAL_MONTHLY') {
+    if (isHeadendEmployee(employee)) {
         bridges = {...bridges, attendanceRows:[], anomalyRows:[], attendanceDeductionLines:[], attendanceDeductionRules:[], lwpDays:0};
     }
 
@@ -904,7 +905,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // N-13 — tax the TAXABLE base, not the full package.
     // N-21 — restore the contracted-package share of prorated fixed earnings
     // so withholding follows Section 149 (see taxPackageUplift above).
-    const taxBaseMinor = money.add(taxableMinor, employee?.attendanceInputMode === 'MANUAL_MONTHLY' && prorationFactor === 0n ? 0n : taxPackageUplift);
+    const taxBaseMinor = money.add(taxableMinor, isHeadendEmployee(employee) && prorationFactor === 0n ? 0n : taxPackageUplift);
     const taxMinor = computeProgressiveTaxMinor(taxBaseMinor, sorted, currency);
     if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
@@ -955,6 +956,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         totalDeductions: money.minorToDecimal(totalDeductionsMinorRounded, currency),
         netAmount: money.minorToDecimal(netMinorRounded, currency),
         prorationFactor: prorationFactor >= 1_000_000n ? 1.0 : Number(prorationFactor) / 1_000_000,
+        payableDays: calculatePayrollPaidDays({payrollRun, prorationFactor:Number(prorationFactor) / 1_000_000, deductions}),
         earnings,
         deductions,
     };
@@ -1341,11 +1343,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             }
         });
 
-        const monthlyInputs = employees.some(e=>e.attendanceInputMode==='MANUAL_MONTHLY') ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
+        const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
         const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // N-15 / N-16 — salary dedup + employment-scoped attendance, applied to
         // every selected employee before the payslip build (helpers above).
         for (const employee of employees) {
+            employee.attendanceInputMode = isHeadendEmployee(employee) ? 'MANUAL_MONTHLY' : 'DEVICE';
             dedupeBaseSalaryAssignments(employee);
             scopeAttendanceToEmployment(employee, payrollRun.periodEnd);
         }
@@ -1544,7 +1547,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     data: {
                         payrollOffice: employee.payrollOffice,
                         attendanceInputMode: employee.attendanceInputMode || 'DEVICE',
-                        payableDays: monthlyByEmployee.get(employee.id)?.payableDays ?? null,
+                        payableDays: built.payableDays,
                         grossAmount: built.grossAmount,
                         totalDeductions: built.totalDeductions,
                         netAmount: built.netAmount,
@@ -1612,7 +1615,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     employeeId: employee.id,
                     payrollOffice: employee.payrollOffice,
                     attendanceInputMode: employee.attendanceInputMode || 'DEVICE',
-                    payableDays: monthlyByEmployee.get(employee.id)?.payableDays ?? null,
+                    payableDays: built.payableDays,
                     grossAmount: built.grossAmount,
                     totalDeductions: built.totalDeductions,
                     netAmount: built.netAmount,

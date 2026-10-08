@@ -1,3 +1,6 @@
+export const HEADEND_TENANT = '61b7eb53-ab6e-413f-9d9a-1ecf4e071e73';
+export const HEADEND_OFFICE = 'HVC-Headend-Staff';
+export const isHeadendEmployee = employee => employee?.tenant_id === HEADEND_TENANT && employee?.payrollOffice === HEADEND_OFFICE;
 const fail = message => { throw Object.assign(new Error(message), {status:400}); };
 export function payrollMonth(month) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '')) fail('Use YYYY-MM for the payroll month');
@@ -12,11 +15,12 @@ export function validatePayableDays(month, value) {
   return Number(value);
 }
 export function manualAttendanceFactor(employee, run, input, employmentFactor) {
-  if (employee?.attendanceInputMode !== 'MANUAL_MONTHLY') return employmentFactor;
+  if (!isHeadendEmployee(employee)) return employmentFactor;
   const month=run.periodStart.toISOString().slice(0,7), calendar=payrollMonth(month);
   if (run.periodStart.getTime()!==calendar.start.getTime() || run.periodEnd.getTime()!==calendar.end.getTime()) fail('Manual monthly attendance requires a full calendar-month payroll');
-  if (!input || input.month!==month) fail(`Monthly payable days are missing for employee ${employee.id} (${month})`);
-  const days=validatePayableDays(month,input.payableDays);
+  if (input && input.month!==month) fail(`Monthly payable days are missing for employee ${employee.id} (${month})`);
+  // Default to 30 paid days, bounded by the month and the employment span.
+  const days=input ? validatePayableDays(month,input.payableDays) : Math.min(30,calendar.days,Math.round(Number(employmentFactor)*calendar.days/1000000*100)/100);
   // Allow the tiny rounding error of the engine's millionth-day proration.
   if (days > Number(employmentFactor)*calendar.days/1000000 + 0.0001) fail(`Payable days exceed employment days for employee ${employee.id}`);
   return BigInt(Math.round(days/calendar.days*1000000));
