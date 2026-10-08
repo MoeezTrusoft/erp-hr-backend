@@ -7,6 +7,10 @@ const build=(days,extra={})=>buildPayslipFromInputs({employee,employmentTerm:{ba
 describe('monthly payable days',()=>{
  it('prices 15 of 30 days once, without another absence or LWP deduction',()=>{const r=build(15);expect(Number(r.grossAmount)).toBe(15000);expect(Number(r.netAmount)).toBe(15000);});
  it('accepts zero days without reverting to full salary',()=>expect(Number(build(0).grossAmount)).toBe(0));
+ it('taxes actual additional earnings even when monthly payable days are zero',()=>{
+ const r=build(0,{taxRateRows:[{countryCode:'PK',bracketMin:'0',bracketMax:null,rate:'0.1',effectiveFrom:new Date('2026-01-01')}],bridges:{manualAttendance:{month:'2026-09',payableDays:0},benefitLines:[{employerContributionMinor:1000000,employeeContributionMinor:0,planName:'Taxable benefit'}]}});
+ expect(Number(r.grossAmount)).toBe(10000);expect(Number(r.totalDeductions)).toBe(1000);expect(Number(r.netAmount)).toBe(9000);
+ });
  it('supports half days',()=>expect(Number(build(29.5).grossAmount)).toBe(29500));
  it('fails closed if monthly input is absent',()=>expect(()=>build(30,{bridges:{}})).toThrow('missing'));
  it.each([-1,31,1.25,null,'',Infinity])('rejects invalid September days %s',v=>expect(()=>validatePayableDays('2026-09',v)).toThrow());

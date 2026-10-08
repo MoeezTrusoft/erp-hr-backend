@@ -904,7 +904,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // N-13 — tax the TAXABLE base, not the full package.
     // N-21 — restore the contracted-package share of prorated fixed earnings
     // so withholding follows Section 149 (see taxPackageUplift above).
-    const taxBaseMinor = employee?.attendanceInputMode === 'MANUAL_MONTHLY' && prorationFactor === 0n ? 0n : money.add(taxableMinor, taxPackageUplift);
+    const taxBaseMinor = money.add(taxableMinor, employee?.attendanceInputMode === 'MANUAL_MONTHLY' && prorationFactor === 0n ? 0n : taxPackageUplift);
     const taxMinor = computeProgressiveTaxMinor(taxBaseMinor, sorted, currency);
     if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
