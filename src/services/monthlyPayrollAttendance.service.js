@@ -2,7 +2,7 @@ import prisma from '../lib/prisma.js';
 import {tenantTransaction} from '../lib/rlsTenant.js';
 import {payrollMonth,validatePayableDays,groupOfficePayroll,isHeadendEmployee,HEADEND_TENANT,HEADEND_OFFICE} from '../lib/monthlyPayrollAttendance.js';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
-const name=e=>e.employee_name || [e.first_name,e.last_name].filter(Boolean).join(' ');
+const name=e=>e?.employee_name || [e?.first_name,e?.last_name].filter(Boolean).join(' ');
 export async function assertMonthlyEditable(tx,tenantId,month){
   const {start,end}=payrollMonth(month);
   const runs=await tx.payrollRun.findMany({where:{tenantId,periodStart:{lte:end},periodEnd:{gte:start},status:{notIn:['CANCELLED','FAILED']}},select:{id:true,status:true}});
@@ -58,7 +58,7 @@ export async function getOfficePayroll({tenantId,runId}){
   const run=await prisma.payrollRun.findFirst({where:{tenantId,id:runId}});
   if(!run) fail(404,'Payroll run not found');
   const rows=await prisma.payrollPayslip.findMany({where:{tenantId,payrollRunId:runId},select:{id:true,employeeId:true,payrollOffice:true,attendanceInputMode:true,payableDays:true,grossAmount:true,totalDeductions:true,netAmount:true,employee:{select:{employee_name:true,first_name:true,last_name:true,employee_code:true}}},orderBy:{employeeId:'asc'}});
-  return {runId,currencyCode:run.currencyCode,periodStart:run.periodStart,periodEnd:run.periodEnd,...groupOfficePayroll(rows.map(r=>({...r,name:name(r.employee),code:r.employee.employee_code,employee:undefined})))};
+  return {runId,currencyCode:run.currencyCode,periodStart:run.periodStart,periodEnd:run.periodEnd,...groupOfficePayroll(rows.map(r=>({...r,name:name(r.employee)||`Employee #${r.employeeId} (record unavailable)`,code:r.employee?.employee_code??null,employee:undefined})))};
 }
 export async function assertMonthlyInputsComplete({tenantId,month}){
   const {start,end}=payrollMonth(month);
