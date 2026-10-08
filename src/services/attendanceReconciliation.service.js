@@ -49,7 +49,7 @@ export async function buildMonthlyReconciliation({ tenantId, from, to }) {
     prisma.employee.findMany({
       // Anyone excluded from payroll is not being evaluated (HR-PAY-ELIG-01),
       // so listing them would invite a reconciliation of nothing.
-      where: scopedEmployeeWhere(tenantId, { NOT: { payroll_included: false } }),
+      where: scopedEmployeeWhere(tenantId, { attendanceInputMode: {not:"MANUAL_MONTHLY"}, NOT: { payroll_included: false } }),
       select: { id: true, employee_code: true, employee_name: true },
     }),
     prisma.attendance.findMany({

@@ -76,6 +76,7 @@ const RLS_MODELS = new Set([
     'PayrollDeduction',
     'PayrollAssignment',
     'PayrollAuditLog',
+    'MonthlyPayrollAttendance',
     'Timesheet',
     'TimeEntry',
     'TimeApproval',

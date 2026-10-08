@@ -73,6 +73,7 @@ async function eligibilityEmployeeIds(tenantId, windowStart) {
   const employees = await prisma.employee.findMany({
     where: scopedEmployeeWhere(tenantId, {
       payroll_included: true,
+      attendanceInputMode: {not:"MANUAL_MONTHLY"},
     }),
     select: { id: true, status: true },
   });

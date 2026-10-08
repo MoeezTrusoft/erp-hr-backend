@@ -68,6 +68,7 @@ function rowDto(row) {
     id: row.id,
     employeeId: row.employeeId,
     sourceKind: row.sourceKind,
+    approvalPolicy: row.approvalPolicy,
     workflowVersion: row.workflowVersion ?? 0,
     workflowHistory: row.workflowHistory ?? [],
     attachments: row.attachments ?? [],
@@ -357,8 +358,9 @@ export async function listAnomalies({
 
   for (const row of rows) {
     try {
-      if (!chainByEmployee.has(row.employeeId)) chainByEmployee.set(row.employeeId, await resolveApprovalChain({ tenantId, employeeId: row.employeeId }));
-      const chain = chainByEmployee.get(row.employeeId);
+      const key = `${row.employeeId}:${row.approvalPolicy || "STANDARD"}`;
+      if (!chainByEmployee.has(key)) chainByEmployee.set(key, await resolveApprovalChain({ tenantId, employeeId: row.employeeId, approvalPolicy: row.approvalPolicy }));
+      const chain = chainByEmployee.get(key);
       chainByAnomaly.set(row.id, chain);
       for (const lvl of chain) if (lvl.approverId) approverIds.add(lvl.approverId);
       for (const d of decisionsByAnomaly.get(row.id) ?? []) {
@@ -627,7 +629,7 @@ export async function decideAnomaly({
     throw Object.assign(new Error("Anomaly not found"), { status: 404 });
   }
 
-  if (existing.sourceKind === 'REGULARIZATION' || existing.sourceKind === 'DEVICE' || existing.sourceKind === 'evaluator') {
+  if (existing.sourceKind === 'PAPER_FORM' || existing.sourceKind === 'REGULARIZATION' || existing.sourceKind === 'DEVICE' || existing.sourceKind === 'evaluator') {
     throw Object.assign(new Error('Use the configured approval matrix to decide attendance requests'), {status:400});
   }
   const updated = await prisma.attendanceAnomaly.update({

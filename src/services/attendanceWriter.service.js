@@ -116,7 +116,7 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
   // later re-link.
   const aliveIds = new Set(
     (await prisma.employee.findMany({
-      where: { id: { in: [...new Set(shifts.map((s) => s.employeeId))] } },
+      where: { attendanceInputMode:{not:"MANUAL_MONTHLY"}, id: { in: [...new Set(shifts.map((s) => s.employeeId))] } },
       select: { id: true },
     })).map((e) => e.id),
   );
@@ -376,7 +376,7 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
  */
 async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun }) {
   const roster = await prisma.employee.findMany({
-    where: { tenant_id: tenantId, NOT: { payroll_included: false } },
+    where: { tenant_id: tenantId, attendanceInputMode: {not:"MANUAL_MONTHLY"}, NOT: { payroll_included: false } },
     select: { id: true },
   });
 

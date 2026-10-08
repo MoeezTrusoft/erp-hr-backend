@@ -133,6 +133,7 @@ export async function markAnomalyDeduction({
   const chain = await resolveApprovalChain({
     tenantId,
     employeeId: row.employeeId,
+    approvalPolicy: row.approvalPolicy,
   });
   if (
     !isAdmin &&
@@ -168,13 +169,14 @@ export async function returnAnomalyRequest({
 }) {
   if (!comment?.trim()) fail(400, "A return comment is required");
   const row = await load(tenantId, anomalyId);
-  if (row.sourceKind && row.sourceKind !== "REGULARIZATION")
+  if (row.sourceKind && !["REGULARIZATION", "PAPER_FORM"].includes(row.sourceKind))
     fail(400, "Only submitted requests can be returned");
   if (row.status !== "PENDING" || row.currentApprovalLevel === 0)
     fail(409, "Only a request currently in approval can be returned");
   const chain = await resolveApprovalChain({
     tenantId,
     employeeId: row.employeeId,
+    approvalPolicy: row.approvalPolicy,
   });
   const seats = chain.filter(
     (s) => s.resolved && s.approverId === actorEmployeeId,
@@ -243,6 +245,7 @@ export async function resubmitAnomalyRequest({
   const chain = await resolveApprovalChain({
     tenantId,
     employeeId: row.employeeId,
+    approvalPolicy: row.approvalPolicy,
   });
   const first = chain.find((s) => s.resolved || !s.skippable);
   if (!first?.resolved)
@@ -287,6 +290,7 @@ export async function anomalyAttachmentUrl({
   const chain = await resolveApprovalChain({
     tenantId,
     employeeId: row.employeeId,
+    approvalPolicy: row.approvalPolicy,
   });
   if (
     !isAdmin &&

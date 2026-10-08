@@ -303,3 +303,16 @@ it('does not let HR bypass the final management level',async()=>{
  await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:1,approverId:HR,decision:'APPROVED'})).rejects.toMatchObject({status:403});
  expect(approvalsWritten).toHaveLength(0);
 });
+
+describe('imported HR / management policy',()=>{
+ it('removes Manager only for requests with the explicit policy',async()=>{
+  const chain=await routing.resolveApprovalChain({tenantId:TENANT,employeeId:REQUESTER,approvalPolicy:'HR_MANAGEMENT'});
+  expect(chain.map(x=>x.level)).toEqual([2,3]);
+  expect((await routing.resolveApprovalChain({tenantId:TENANT,employeeId:REQUESTER})).map(x=>x.level)).toEqual([1,2,3]);
+ });
+ it('routes imported paper forms to HR and refuses Manager decisions',async()=>{
+  anomalies.set(10,{id:10,tenantId:TENANT,employeeId:REQUESTER,status:'PENDING',sourceKind:'PAPER_FORM',approvalPolicy:'HR_MANAGEMENT',currentApprovalLevel:2,workflowVersion:1});
+  const routed=await routing.routeAnomaly({tenantId:TENANT,anomalyId:10});expect(routed.level).toBe(2);
+  await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:10,approverId:MANAGER,decision:'APPROVED'})).rejects.toThrow();
+ });
+});

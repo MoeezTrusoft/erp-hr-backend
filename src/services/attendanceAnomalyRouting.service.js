@@ -38,7 +38,7 @@ function forbidden(message) {
  * per-requester because level 1 is usually dynamic (the requester's own
  * manager), so the same config yields different chains for different people.
  */
-export async function resolveApprovalChain({ tenantId, employeeId }) {
+export async function resolveApprovalChain({ tenantId, employeeId, approvalPolicy = "STANDARD" }) {
   const [levels, employee] = await Promise.all([
     prisma.attendanceApprovalLevel.findMany({
       where: { tenantId, rowStatus: "ACTIVE" },
@@ -54,8 +54,10 @@ export async function resolveApprovalChain({ tenantId, employeeId }) {
     throw notFound(`Employee ${employeeId} not found in this tenant`);
   }
 
+  const selectedLevels = approvalPolicy === "HR_MANAGEMENT" ? levels.filter(l => /^(HR|MANAGEMENT|MGMT)$/i.test(l.role)) : levels;
+  if (approvalPolicy === 'HR_MANAGEMENT' && (!selectedLevels.some(l=>/^HR$/i.test(l.role)) || !selectedLevels.some(l=>/^(MANAGEMENT|MGMT)$/i.test(l.role)))) throw badRequest('HR verification and management approval must both be configured');
   const out = [];
-  for (const lvl of levels) {
+  for (const lvl of selectedLevels) {
     let approverId = null;
     let reason = null;
 
@@ -78,7 +80,7 @@ export async function resolveApprovalChain({ tenantId, employeeId }) {
     if (approverId && approverId === employeeId) {
       approverId = null;
       reason = "approver is the requester";
-      const nextExplicit = levels
+      const nextExplicit = selectedLevels
         .filter((l) => l.level > lvl.level && !l.useEmployeeManager)
         .sort((a, b) => a.level - b.level)
         .find((l) => l.approverId && l.approverId !== employeeId);
@@ -123,18 +125,18 @@ function firstActionableLevel(chain) {
 export async function routeAnomaly({ tenantId, anomalyId, skipLevelsBefore = 0 }) {
   const anomaly = await prisma.attendanceAnomaly.findUnique({
     where: { id: anomalyId },
-    select: { id: true, tenantId: true, employeeId: true, status: true, workflowVersion: true, currentApprovalLevel: true, createdAt: true },
+    select: { id: true, tenantId: true, employeeId: true, status: true, workflowVersion: true, approvalPolicy: true, currentApprovalLevel: true, createdAt: true },
   });
   if (!anomaly || anomaly.tenantId !== tenantId) {
     throw notFound(`Anomaly ${anomalyId} not found in this tenant`);
   }
 
-  const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
+  const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId, approvalPolicy: anomaly.approvalPolicy });
   // HR-RAISED-STARTS-AT-HR (operator, 2026-10-07) — a form HR raised ON BEHALF
   // of an employee starts at HR (skipLevelsBefore=1): the manager step is for
   // the employee's own reporting line, and HR already holds the facts. The
   // employee-submitted path keeps skipLevelsBefore=0 (manager first).
-  const eligible = chain.filter((c) => c.level >= Number(skipLevelsBefore) || 0);
+  const eligible = chain.filter((c) => c.level >= (Number(skipLevelsBefore) || 0));
   const target = firstActionableLevel(eligible.length ? eligible : chain);
 
   if (!target || !target.resolved) {
@@ -186,17 +188,17 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
 
   const anomaly = await prisma.attendanceAnomaly.findUnique({
     where: { id: anomalyId },
-    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true, workflowVersion: true, sourceKind: true },
+    select: { id: true, tenantId: true, employeeId: true, status: true, currentApprovalLevel: true, workflowVersion: true, approvalPolicy: true, sourceKind: true },
   });
   if (!anomaly || anomaly.tenantId !== tenantId) {
     throw notFound(`Anomaly ${anomalyId} not found in this tenant`);
   }
-  if (anomaly.sourceKind && anomaly.sourceKind !== "REGULARIZATION") throw badRequest("Submit a regularization request before approving a device anomaly");
+  if (anomaly.sourceKind && !["REGULARIZATION", "PAPER_FORM"].includes(anomaly.sourceKind)) throw badRequest("Submit a regularization request before approving a device anomaly");
   if (anomaly.status !== "PENDING") {
     throw badRequest(`Anomaly ${anomalyId} is already ${anomaly.status}`);
   }
 
-  const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
+  const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId, approvalPolicy: anomaly.approvalPolicy });
   const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
   if (!current) throw badRequest("Anomaly is not pointed at a configured approval level");
 
@@ -293,10 +295,11 @@ export async function listPendingForApprover({ tenantId, approverId }) {
   const pending = await prisma.attendanceAnomaly.findMany({
     where: { tenantId, status: "PENDING" },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });    const out = [];
+  });
+  const out = [];
     const hrId = await hrApproverIdFor({ tenantId });
     for (const anomaly of pending) {
-      const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId });
+      const chain = await resolveApprovalChain({ tenantId, employeeId: anomaly.employeeId, approvalPolicy: anomaly.approvalPolicy });
       const current = chain.find((c) => c.level === anomaly.currentApprovalLevel);
       if (!current) continue;
       const hers = current.resolved && current.approverId === approverId;

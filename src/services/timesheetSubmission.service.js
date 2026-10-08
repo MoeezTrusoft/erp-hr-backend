@@ -1,3 +1,4 @@
+import { assertMonthlyInputsComplete } from './monthlyPayrollAttendance.service.js';
 // src/services/timesheetSubmission.service.js
 //
 // TS-SUBMIT-01 (operator item 3, 2026-09-17) — the Submit-Timesheet gatekeeper.
@@ -126,7 +127,7 @@ async function pendingAnomalyCount(tenantId, { from, to }) {
     where: scopedWhere(tenantId, {
       date: { gte: from, lte: to },
       status: { in: PENDING_ANOMALY_STATUSES },
-      sourceKind: "REGULARIZATION",
+      sourceKind: {in:["REGULARIZATION","PAPER_FORM"]},
     }),
   });
 }
@@ -179,6 +180,7 @@ export async function submitTimesheet({
   if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
     throw new AppError("month must be YYYY-MM", 400);
   }
+  await assertMonthlyInputsComplete({tenantId,month});
   const who =
     Number.isInteger(actorEmployeeId) && actorEmployeeId > 0
       ? { actorEmployeeId }

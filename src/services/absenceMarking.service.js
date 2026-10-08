@@ -62,6 +62,7 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
       biometric_id: { not: null },
       tenant_id: tenantId ?? undefined,
       payroll_included: true,
+      attendanceInputMode: {not:"MANUAL_MONTHLY"},
       status: { not: "Inactive" },
     },
     select: { id: true, employee_code: true, biometric_id: true },

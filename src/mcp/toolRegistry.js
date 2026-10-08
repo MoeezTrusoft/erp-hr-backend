@@ -1,3 +1,4 @@
+import { registerMonthlyPayrollAttendanceTools } from './tools/monthlyPayrollAttendanceTools.js';
 import { registerEmployeeTools } from "./tools/employeeTools.js";
 import { registerAttendanceTools } from "./tools/attendanceTools.js";
 import { registerLeaveTools } from "./tools/leaveTools.js";
@@ -291,6 +292,7 @@ export function registerAllTools(server) {
   registerSalaryComponentTools(server);
   registerPayrollRuleTools(server);
   registerPayrollConfigTools(server);
+  registerMonthlyPayrollAttendanceTools(server);
   registerPayrollSetupActionsTools(server);
   registerAttendanceSetupTools(server);
   registerAttendanceAnomalyTools(server);

@@ -275,6 +275,9 @@ model DashboardLayout {
 }
 
 model Employee {
+  payrollOffice String? @db.VarChar(100)
+  attendanceInputMode String @default("DEVICE")
+  monthlyAttendance MonthlyPayrollAttendance[]
   id                   Int       @id @default(autoincrement())
   tenant_id            String?   @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   first_name           String?
@@ -695,6 +698,7 @@ model AttendanceDevicePunch {
 // Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
 // pending-approvals list and the Leave & Anomaly screen.
 model AttendanceAnomaly {
+  approvalPolicy String @default("STANDARD")
   id         Int           @id @default(autoincrement())
   employeeId Int
   type       AnomalyType
@@ -1960,6 +1964,9 @@ model PayrollRun {
 }
 
 model PayrollPayslip {
+  payrollOffice String? @db.VarChar(100)
+  attendanceInputMode String @default("DEVICE")
+  payableDays Decimal? @db.Decimal(5, 2)
   id              Int           @id @default(autoincrement())
   tenantId        String?       @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   payrollRunId    Int
@@ -3705,3 +3712,21 @@ model SystemAccountProvisioning {
 // ==================== LEARNING PATH CATEGORY RELATION ====================
 
 // Note: LearningPath.category references TrainingCategory which already exists
+
+// Monthly payable days are a payroll input, not fabricated device punches.
+model MonthlyPayrollAttendance {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  month String @db.VarChar(7)
+  payableDays Decimal @db.Decimal(5,2)
+  reason String
+  version Int @default(1)
+  updatedById Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields:[employeeId], references:[id])
+  @@unique([tenantId, employeeId, month])
+  @@index([tenantId, month])
+  @@map("monthly_payroll_attendance")
+}

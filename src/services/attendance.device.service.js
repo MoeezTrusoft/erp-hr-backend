@@ -527,6 +527,7 @@ export async function getDailyAttendanceSummary({
       where: {
         tenant_id: tenantId ?? undefined,
         payroll_included: true,
+        attendanceInputMode: {not:"MANUAL_MONTHLY"},
         OR: [{ status: { not: "Inactive" } }, { status: null }],
       },
       select: { id: true },
