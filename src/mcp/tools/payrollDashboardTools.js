@@ -1,3 +1,4 @@
+import {exportPayrollPdf} from '../../services/payrollRegisterPdf.service.js';
 // src/mcp/tools/payrollDashboardTools.js — MCP facade for the "Payroll This
 // Month" company dashboard. Thin tool wrappers over payrollDashboard.service.js:
 // each resolves the verified tenant/user from the request ctx, gates on the
@@ -164,15 +165,16 @@ export function registerPayrollDashboardTools(server) {
   // ── export ──────────────────────────────────────────────────────────────────
   server.tool(
     "hr_payroll_export",
-    "Export the Payroll-This-Month employees table as a CSV artifact ({format,filename,content}).",
+    "Export a payroll register as a grouped template PDF or CSV artifact.",
     {
       runId: runIdArg,
-      format: z.enum(["csv"]).optional().describe("Export format (default csv)."),
+      format: z.enum(["csv", "pdf"]).optional().describe("Export format (default csv)."),
+      companyName: z.string().trim().max(120).optional(),
     },
-    withToolError(async ({ runId }) => {
+    withToolError(async ({ runId, format = "csv", companyName }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
-      const data = await exportPayrollCsv({ tenantId: user.tenantId, runId });
+      const data = format === "pdf" ? await exportPayrollPdf({ tenantId: user.tenantId, runId, companyName }) : await exportPayrollCsv({ tenantId: user.tenantId, runId });
       return jsonResult(data);
     }, "hr_payroll_export")
   );
