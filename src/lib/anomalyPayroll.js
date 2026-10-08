@@ -51,7 +51,7 @@ export function isAttendanceExcused(row, anomalies = []) {
 // from automatic credit-loss and occurrence counters.
 function automaticTotal(attendance, anomalies, rules, config) {
   const lines = computeAttendanceDeductions({
-    violations: countViolationDays({ attendance, anomalies }),
+    violations: countViolationDays({ attendance, anomalies, rules }),
     rules,
   });
   const pooled = config.deductionBasis === "POOLED_FLOOR";

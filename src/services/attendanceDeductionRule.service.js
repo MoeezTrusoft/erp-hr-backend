@@ -120,6 +120,14 @@ export async function upsertDeductionRule({ tenantId, ruleKey, ...input }) {
     }
   }
 
+  for (const field of ['durationThresholdMinutes','overThresholdDeductionDays']) {
+    if (input[field] === undefined) continue;
+    if (input[field] === null) {data[field]=null;continue;}
+    const value=Number(input[field]);
+    if (!['LATE','EARLY_CHECKOUT'].includes(ruleKey) || !Number.isFinite(value) || value<=0 || value>(field==='durationThresholdMinutes'?1440:1)) throw badRequest('Invalid timing deduction band');
+    data[field]=value;
+  }
+
   // Rules pooled into one counter must agree on how that counter is scored,
   // otherwise "3 of either kind" has two different answers depending on which
   // rule you read. Enforced here so the UI can present a group as one row.
@@ -133,6 +141,8 @@ export async function upsertDeductionRule({ tenantId, ruleKey, ...input }) {
         ["triggerCount", data.triggerCount ?? peer.triggerCount],
         ["deductionDays", data.deductionDays ?? peer.deductionDays],
         ["periodScope", data.periodScope ?? peer.periodScope],
+        ["durationThresholdMinutes", data.durationThresholdMinutes ?? peer.durationThresholdMinutes],
+        ["overThresholdDeductionDays", data.overThresholdDeductionDays ?? peer.overThresholdDeductionDays],
       ].find(([field, value]) => peer[field] !== value);
       if (mismatch) {
         throw badRequest(

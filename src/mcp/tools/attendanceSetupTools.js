@@ -115,6 +115,8 @@ export function registerAttendanceSetupTools(server) {
         .describe("X days deducted, fractional allowed (0.5 = half day)"),
       periodScope: z.enum(["PAY_PERIOD", "MONTH"]).optional()
         .describe("Window the occurrence count resets over; PAY_PERIOD follows PayrollCalendar"),
+      durationThresholdMinutes: z.coerce.number().positive().max(1440).nullable().optional(),
+      overThresholdDeductionDays: z.coerce.number().positive().max(1).nullable().optional(),
       maxDeductionDaysPerPeriod: z.coerce.number().min(0).max(31).nullable().optional()
         .describe("Cap on days deducted per employee per period; null for no cap"),
       // HR-FE-UNBLOCK-01 — the service has always validated and pooled by this,

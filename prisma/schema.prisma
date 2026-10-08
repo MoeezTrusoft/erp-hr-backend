@@ -858,6 +858,10 @@ model AttendanceDeductionRule {
   triggerCount  Int   @default(1) // N
   deductionDays Float @default(0.5) // X — fractional allowed (0.5 = half day)
 
+  // Timing bands: longer incidents are charged individually; shorter incidents share the counter.
+  durationThresholdMinutes Float?
+  overThresholdDeductionDays Float?
+
   // Counting window. PAY_PERIOD follows PayrollCalendar.
   periodScope String @default("PAY_PERIOD") // 'PAY_PERIOD' | 'MONTH'
 

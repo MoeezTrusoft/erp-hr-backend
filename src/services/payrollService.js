@@ -1,3 +1,5 @@
+import { normalizeTimingCredits, isTimingRule } from "../lib/attendanceTimingPolicy.js";
+import { enrichPayrollTiming } from "./payrollTiming.service.js";
 import { calculatePayrollPaidDays } from '../lib/payrollPaidDays.js';
 import { manualAttendanceFactor, isHeadendEmployee } from '../lib/monthlyPayrollAttendance.js';
 import { combinedAttendanceDeductions, manualDeductionsByShift, isAttendanceExcused } from '../lib/anomalyPayroll.js';
@@ -464,6 +466,12 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         bridges = {...bridges, attendanceRows:[], anomalyRows:[], attendanceDeductionLines:[], attendanceDeductionRules:[], lwpDays:0};
     }
 
+    if ((bridges.attendanceDeductionRules || []).some(isTimingRule)) {
+        const rules=bridges.attendanceDeductionRules;
+        const violations=countViolationDays({attendance:bridges.attendanceRows,anomalies:bridges.anomalyRows,rules});
+        bridges={...bridges,attendanceRows:normalizeTimingCredits(bridges.attendanceRows,rules),attendanceDeductionLines:computeAttendanceDeductions({violations,rules})};
+    }
+
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
     if (employmentTerm) {
         const fullBaseMinor = calculatePeriodSalaryMinor(employmentTerm, payrollRun);
@@ -733,7 +741,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             if (days <= 0) continue;
             const amountMinor = daysToMinor(days);
             if (amountMinor <= 0n) continue;
-            const label = line.counterGroup || line.ruleKey;
+            const label = line.label || line.counterGroup || line.ruleKey;
             deductions.push({
                 deductionTypeId: null,
                 code: 'ATTENDANCE_DEDUCTION',
@@ -1329,7 +1337,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     },
                     // N-01 — day_credit added: the absence bridge prices
                     // Σ(1 − credit). NULL credit (MISSING_*) stays held.
-                    select: { date: true, status: true, day_credit: true, manually_corrected: true }
+                    select: { date: true, status: true, day_credit: true, manually_corrected: true, check_in:true, check_out:true }
                 },
                 attendanceAnomalies: {
                     where: {
@@ -1338,7 +1346,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             lte: payrollRun.periodEnd
                         }
                     },
-                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true }
+                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true, expectedTime:true, actualTime:true }
                 }
             }
         });
@@ -1367,6 +1375,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             where: withTenant(tenantId, { enabled: true }),
             orderBy: { ruleKey: 'asc' }
         });
+
+        if (attendanceDeductionRules.some(isTimingRule)) await enrichPayrollTiming({tenantId,payrollRun,employees:employees.filter(e=>!isHeadendEmployee(e))});
 
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
@@ -1487,6 +1497,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                         violations: countViolationDays({
                             attendance: employee.attendance,
                             anomalies: employee.attendanceAnomalies,
+                            rules: attendanceDeductionRules,
                         }),
                         rules: attendanceDeductionRules,
                     })

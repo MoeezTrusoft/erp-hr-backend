@@ -1,3 +1,4 @@
+import {isTimingRule, timingViolationDays, computeTimingDeductions} from "./attendanceTimingPolicy.js";
 // src/lib/attendanceDeduction.js
 //
 // The attendance-deduction rules, as pure functions. No database, no clock of
@@ -56,7 +57,9 @@ const ANOMALY_TO_RULE = {
  * @param {object[]} anomalies   AttendanceAnomaly rows: { date, status }
  * @returns {{ruleKey: string, day: string}[]} distinct (rule, day) pairs, sorted
  */
-export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
+export function countViolationDays({ attendance = [], anomalies = [], rules = [] } = {}) {
+  const timingRules = rules.filter(isTimingRule);
+  const timingKeys = new Set(timingRules.map(r => r.ruleKey));
   // An APPROVED anomaly is HR agreeing the day was not the employee's fault.
   // It excuses the WHOLE day, whatever the day's stored status says — the
   // anomaly types (LATE_CHECKIN, MISSING_*, EARLY_CHECKOUT) do not line up with
@@ -103,7 +106,7 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
     // whoever corrected it.
     if (row?.manually_corrected) continue;
     const ruleKey = STATUS_TO_RULE[row?.status];
-    if (ruleKey) add(ruleKey, dayKey(row.date));
+    if (ruleKey && !timingKeys.has(ruleKey)) add(ruleKey, dayKey(row.date));
   }
 
   // A refused explanation only becomes DISAPPROVED_LEAVE when what was being
@@ -131,15 +134,16 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
     const ruleKey = a?.status !== "APPROVED" ? ANOMALY_TO_RULE[a?.type] : null;
     const day = dayKey(a.date);
     if (ruleKey === "EARLY_CHECKOUT" && creditLossDays.has(day)) continue;
-    if (ruleKey) add(ruleKey, day);
+    if (ruleKey && !timingKeys.has(ruleKey)) add(ruleKey, day);
   }
 
-  return [...seen]
+  const legacy = [...seen]
     .sort()
     .map((k) => {
       const [ruleKey, day] = k.split("|");
       return { ruleKey, day };
     });
+  return [...legacy, ...timingViolationDays({attendance, anomalies, rules:timingRules})];
 }
 
 /**
@@ -157,7 +161,8 @@ export function countViolationDays({ attendance = [], anomalies = [] } = {}) {
  *          something, in `rules` order — the payslip must be byte-stable.
  */
 export function computeAttendanceDeductions({ violations = [], rules = [] } = {}) {
-  const enabled = rules.filter((r) => r?.enabled);
+  const timing = computeTimingDeductions({violations, rules});
+  const enabled = rules.filter((r) => r?.enabled && !isTimingRule(r));
   const byKey = new Map(enabled.map((r) => [r.ruleKey, r]));
 
   const daysByKey = new Map();
@@ -211,5 +216,5 @@ export function computeAttendanceDeductions({ violations = [], rules = [] } = {}
       days: Math.round(deductionDays * 100) / 100,
     });
   }
-  return lines;
+  return [...lines, ...timing];
 }

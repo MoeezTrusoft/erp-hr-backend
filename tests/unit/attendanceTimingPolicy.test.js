@@ -1,0 +1,23 @@
+import {describe,it,expect} from '@jest/globals';
+import {countViolationDays,computeAttendanceDeductions} from '../../src/lib/attendanceDeduction.js';
+import {normalizeTimingCredits} from '../../src/lib/attendanceTimingPolicy.js';
+import {buildPayslipFromInputs} from '../../src/services/payrollService.js';
+const rules=['LATE','EARLY_CHECKOUT'].map(ruleKey=>({ruleKey,enabled:true,triggerCount:3,deductionDays:1,counterGroup:'LATE_EARLY',durationThresholdMinutes:30,overThresholdDeductionDays:0.5,maxDeductionDaysPerPeriod:null}));
+const row=(n,lateMinutes=0,earlyMinutes=0)=>({date:`2026-09-${String(n).padStart(2,'0')}T00:00:00Z`,status:lateMinutes?'LATE':earlyMinutes?'EARLY_CHECKOUT':'PRESENT',day_credit:lateMinutes||earlyMinutes?0.5:1,lateMinutes,earlyMinutes});
+const lines=(attendance,anomalies=[])=>computeAttendanceDeductions({violations:countViolationDays({attendance,anomalies,rules}),rules});
+const days=(a,b)=>lines(a,b).reduce((n,l)=>n+l.days,0);
+const build=(attendance,anomalies=[])=>buildPayslipFromInputs({employee:{id:1,hire_date:'2020-01-01'},employmentTerm:{baseSalary:'60000',payFrequency:'MONTHLY',currency:'PKR'},payrollRun:{periodStart:new Date('2026-09-01'),periodEnd:new Date('2026-09-30T23:59:59.999Z'),currencyCode:'PKR',countryCode:'PK'},ruleConfig:{absenceRecoveryEnabled:true,deductionBasis:'GROSS'},bridges:{attendanceRows:attendance,anomalyRows:anomalies,attendanceDeductionRules:rules}});
+describe('Thirty-minute combined attendance policy',()=>{
+ it('charges every >30 minute incident, never adding it to the short counter',()=>expect(days([row(1,31),row(2,0,90),row(3,10),row(4,20)])).toBe(1));
+ it('puts exactly 30 minutes in the short band',()=>expect(days([row(1,30),row(2,0,30),row(3,30)])).toBe(1));
+ it('treats 30 minutes and one second as over 30',()=>expect(days([row(1,30+1/60)])).toBe(0.5));
+ it('combines both incident types even in the same shift',()=>expect(days([row(1,10,20),row(2,0,15)])).toBe(1));
+ it('does not charge incomplete sets and counts six as two days',()=>{expect(days([row(1,1),row(2,2)])).toBe(0);expect(days([1,2,3,4,5,6].map(n=>row(n,n)))).toBe(2);});
+ it('excludes only the approved incident type',()=>expect(days([row(1,40,40)],[{date:row(1).date,type:'LATE_CHECKIN',status:'APPROVED'}])).toBe(0.5));
+ it('deduplicates repeated rows and ignores manually corrected days',()=>expect(days([row(1,40),row(1,40),{...row(2,50),manually_corrected:true}])).toBe(0.5));
+ it('does not charge timing credit loss again as absence recovery',()=>{const p=build([row(1,40)]);expect(Number(p.totalDeductions)).toBe(1000);expect(p.payableDays).toBe(29.5);expect(p.deductions.some(d=>d.code==='ABSENCE_RECOVERY')).toBe(false);});
+ it('still recovers a genuine unexcused absence',()=>{const p=build([{...row(1),status:'ABSENT',day_credit:0},row(2,40)]);expect(Number(p.totalDeductions)).toBe(3000);});
+ it('uses the highest manual marking per shift in place of timing',()=>{const p=build([row(1,40,40)],[{id:1,date:row(1).date,manualDeductionDays:0.5},{id:2,date:row(1).date,manualDeductionDays:0.5}]);expect(Number(p.totalDeductions)).toBe(1000);});
+ it('requires duration evidence rather than guessing from credit',()=>expect(()=>days([{date:row(1).date,status:'LATE',day_credit:0.5}])).toThrow('Timing evidence missing'));
+ it('does not mutate stored attendance facts',()=>{const a=row(1,40);expect(normalizeTimingCredits([a],rules)[0].day_credit).toBe(1);expect(a.day_credit).toBe(0.5);});
+});
