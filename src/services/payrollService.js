@@ -1,3 +1,4 @@
+import { approvedLeaveCoverage } from "../lib/approvedLeaveCoverage.js";
 import { normalizeTimingCredits, isTimingRule } from "../lib/attendanceTimingPolicy.js";
 import { enrichPayrollTiming } from "./payrollTiming.service.js";
 import { calculatePayrollPaidDays } from '../lib/payrollPaidDays.js';
@@ -466,10 +467,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         bridges = {...bridges, attendanceRows:[], anomalyRows:[], attendanceDeductionLines:[], attendanceDeductionRules:[], lwpDays:0};
     }
 
-    if ((bridges.attendanceDeductionRules || []).some(isTimingRule)) {
+    if ((bridges.attendanceDeductionRules || []).length > 0) {
         const rules=bridges.attendanceDeductionRules;
-        const violations=countViolationDays({attendance:bridges.attendanceRows,anomalies:bridges.anomalyRows,rules});
-        bridges={...bridges,attendanceRows:normalizeTimingCredits(bridges.attendanceRows,rules),attendanceDeductionLines:computeAttendanceDeductions({violations,rules})};
+        const violations=countViolationDays({attendance:bridges.attendanceRows,anomalies:bridges.anomalyRows,rules,absenceRecoveryEnabled:ruleConfig.absenceRecoveryEnabled===true});
+        bridges={...bridges,attendanceRows:normalizeTimingCredits(bridges.attendanceRows,rules,bridges.anomalyRows),attendanceDeductionLines:computeAttendanceDeductions({violations,rules})};
     }
 
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
@@ -787,7 +788,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             const dayKey = (d) => dayOf(d);
             const excusedDays = new Set(
                 (bridges.anomalyRows || [])
-                    .filter((a) => a?.status === 'APPROVED' && (!a.type || a.type === 'ABSENT'))
+                    .filter((a) => a?.status === 'APPROVED')
                     .map((a) => (a.date ? dayKey(a.date) : null))
                     .filter(Boolean),
             );
@@ -803,7 +804,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 for (const row of bridges.attendanceRows || []) {
                     if (!row || row.day_credit == null) continue; // NULL credit = held (HR-ATT-CUTOVER-01)
                     if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
-                    if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // only this anomaly type is excused
+                    if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // any approved request excuses this shift
                     const credit = Number(row.day_credit);
                     if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
                     const lost = 100n - BigInt(Math.round(credit * 100));
@@ -859,7 +860,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             const dayKey = (d) => dayOf(d);
             const excusedDays = new Set(
                 (bridges.anomalyRows || [])
-                    .filter((a) => a?.status === 'APPROVED' && (!a.type || a.type === 'ABSENT'))
+                    .filter((a) => a?.status === 'APPROVED')
                     .map((a) => (a.date ? dayKey(a.date) : null))
                     .filter(Boolean),
             );
@@ -868,7 +869,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             for (const row of bridges.attendanceRows || []) {
                 if (!row || row.day_credit == null) continue; // NULL credit = held
                 if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
-                if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // only this anomaly type is excused
+                if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // any approved request excuses this shift
                 const credit = Number(row.day_credit);
                 if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
                 const lost = 100n - BigInt(Math.round(credit * 100));
@@ -1351,6 +1352,15 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             }
         });
 
+        // Read both current and legacy leave stores. An approved leave must
+        // excuse attendance even if device roll-up has not marked ON_LEAVE yet.
+        const [approvedRequests, approvedLegacyLeaves] = await Promise.all([
+            prisma.leaveRequest.findMany({where:withTenant(tenantId,{status:'APPROVED',startDate:{lte:payrollRun.periodEnd},endDate:{gte:payrollRun.periodStart}}),select:{employeeId:true,status:true,startDate:true,endDate:true}}),
+            prisma.leave.findMany({where:withTenant(tenantId,{status:'APPROVED',start_date:{lte:payrollRun.periodEnd},end_date:{gte:payrollRun.periodStart}}),select:{employeeId:true,status:true,start_date:true,end_date:true}}),
+        ]);
+        const leaveCoverage=approvedLeaveCoverage([...approvedRequests,...approvedLegacyLeaves],payrollRun.periodStart,payrollRun.periodEnd);
+        for(const employee of employees) employee.attendanceAnomalies.push(...leaveCoverage.filter(a=>a.employeeId===employee.id));
+
         const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
         const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // N-15 / N-16 — salary dedup + employment-scoped attendance, applied to
@@ -1498,6 +1508,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             attendance: employee.attendance,
                             anomalies: employee.attendanceAnomalies,
                             rules: attendanceDeductionRules,
+                            absenceRecoveryEnabled:ruleConfig.absenceRecoveryEnabled===true,
                         }),
                         rules: attendanceDeductionRules,
                     })

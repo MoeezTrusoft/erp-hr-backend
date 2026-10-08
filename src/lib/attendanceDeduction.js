@@ -57,7 +57,7 @@ const ANOMALY_TO_RULE = {
  * @param {object[]} anomalies   AttendanceAnomaly rows: { date, status }
  * @returns {{ruleKey: string, day: string}[]} distinct (rule, day) pairs, sorted
  */
-export function countViolationDays({ attendance = [], anomalies = [], rules = [] } = {}) {
+export function countViolationDays({ attendance = [], anomalies = [], rules = [], absenceRecoveryEnabled = false } = {}) {
   const timingRules = rules.filter(isTimingRule);
   const timingKeys = new Set(timingRules.map(r => r.ruleKey));
   // An APPROVED anomaly is HR agreeing the day was not the employee's fault.
@@ -69,7 +69,7 @@ export function countViolationDays({ attendance = [], anomalies = [], rules = []
   for (const a of anomalies) {
     if (a?.status !== "APPROVED") continue;
     const key = dayKey(a.date);
-    if (key) excused.add(`${a.type || "*"}|${key}`);
+    if (key) excused.add(`*|${key}`);
   }
 
   const seen = new Set();
@@ -125,7 +125,12 @@ export function countViolationDays({ attendance = [], anomalies = [], rules = []
   // August were LATE_CHECKIN, so most of this rule's charge was that mistake.
   for (const a of anomalies) {
     if (a?.status === "REJECTED" && a?.type === "ABSENT") {
-      add("DISAPPROVED_LEAVE", dayKey(a.date));
+      // A full zero-credit absence is already recovered once by the absence
+      // bridge. A rejected explanation must not charge that same day again.
+      const recovered = absenceRecoveryEnabled && attendance.some(row =>
+        dayKey(row.date)===dayKey(a.date) && row.day_credit!=null &&
+        Number(row.day_credit)===0 && !['WEEKLY_OFF','HOLIDAY','ON_LEAVE'].includes(row.status));
+      if (!recovered) add("DISAPPROVED_LEAVE", dayKey(a.date));
       continue;
     }
     // EARLY_CHECKOUT (see ANOMALY_TO_RULE): the anomaly is the only record of

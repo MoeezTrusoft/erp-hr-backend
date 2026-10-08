@@ -2,6 +2,10 @@
 const day = value => new Date(value).toISOString().slice(0,10);
 const types = {LATE:'LATE_CHECKIN',EARLY_CHECKOUT:'EARLY_CHECKOUT'};
 const nonworking = new Set(['WEEKLY_OFF','HOLIDAY','ON_LEAVE']);
+function recordedIncident(row, anomalies, type) {
+ const matchingStatus = type==='LATE_CHECKIN' ? row.status==='LATE' : row.status==='EARLY_CHECKOUT';
+ return matchingStatus || row.status==='HALF_DAY' || anomalies.some(a=>a.date && day(a.date)===day(row.date) && a.type===type && a.status!=='APPROVED');
+}
 export const isTimingRule = r => Boolean(r?.enabled && types[r.ruleKey] && r.durationThresholdMinutes != null && r.overThresholdDeductionDays != null);
 export function timingViolationDays({attendance=[],anomalies=[],rules=[]}) {
  const result=new Map();
@@ -11,9 +15,11 @@ export function timingViolationDays({attendance=[],anomalies=[],rules=[]}) {
   if(anomalies.some(a=>day(a.date)===key && a.manualDeductionDays!=null)) continue;
   for(const rule of rules.filter(isTimingRule)) {
    const type=types[rule.ruleKey];
-   if(anomalies.some(a=>day(a.date)===key && a.status==='APPROVED' && (!a.type || a.type===type))) continue;
+   if(anomalies.some(a=>day(a.date)===key && a.status==='APPROVED')) continue;
    const minutes=row[rule.ruleKey==='LATE'?'lateMinutes':'earlyMinutes'];
-   const expected=(rule.ruleKey==='LATE' && row.status==='LATE') || (rule.ruleKey==='EARLY_CHECKOUT' && ['EARLY_CHECKOUT','HALF_DAY'].includes(row.status)) || anomalies.some(a=>day(a.date)===key && a.type===type && a.status!=='APPROVED');
+   const expected=recordedIncident(row,anomalies,type);
+   // Price recorded incidents; do not reclassify PRESENT days from raw punches.
+   if(!expected) continue;
    if(minutes==null && expected) throw new Error(`Timing evidence missing for ${type} on ${key}; check the roster and punches before payroll`);
    if(minutes!=null && Number.isFinite(Number(minutes)) && Number(minutes)>0) result.set(`${rule.ruleKey}|${key}`,{ruleKey:rule.ruleKey,day:key,minutes:Number(minutes)});
   }
@@ -42,7 +48,7 @@ export function computeTimingDeductions({violations=[],rules=[]}) {
  }
  return lines;
 }
-export function normalizeTimingCredits(attendance=[],rules=[]) {
+export function normalizeTimingCredits(attendance=[],rules=[],anomalies=[]) {
  const late=rules.some(r=>isTimingRule(r)&&r.ruleKey==='LATE'),early=rules.some(r=>isTimingRule(r)&&r.ruleKey==='EARLY_CHECKOUT');
- return attendance.map(row=>!row.manually_corrected && !nonworking.has(row.status) && row.day_credit!=null && ((late&&row.lateMinutes>0)||(early&&row.earlyMinutes>0)) ? {...row,day_credit:1} : row);
+ return attendance.map(row=>!row.manually_corrected && !nonworking.has(row.status) && row.day_credit!=null && ((late&&row.lateMinutes>0&&recordedIncident(row,anomalies,'LATE_CHECKIN'))||(early&&row.earlyMinutes>0&&recordedIncident(row,anomalies,'EARLY_CHECKOUT'))) ? {...row,day_credit:1} : row);
 }

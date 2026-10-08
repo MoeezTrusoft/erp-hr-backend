@@ -57,13 +57,13 @@ describe("management attendance deductions", () => {
     expect(
       combinedAttendanceDeductions({ anomalies: [marked(1, 0.5)] })[0].days,
     ).toBe(0.5));
-  it("does not excuse lateness when a separate early-checkout request is approved", () =>
+  it("excuses the shift when any request category is approved", () =>
     expect(
       countViolationDays({
         attendance: [{ date, status: "LATE" }],
         anomalies: [{ date, type: "EARLY_CHECKOUT", status: "APPROVED" }],
       }),
-    ).toEqual([{ ruleKey: "LATE", day: "2026-10-05" }]));
+    ).toEqual([]));
   it.each(["GROSS", "POOLED_FLOOR", "POOLED_FLOOR_DIRECT"])(
     "excludes manually marked shifts from automatic threshold counters in %s mode",
     (deductionBasis) => {

@@ -30,20 +30,10 @@ export function manualDeductionsByShift(anomalies = []) {
   return grouped;
 }
 export function isAttendanceExcused(row, anomalies = []) {
-  const types = {
-    LATE: "LATE_CHECKIN",
-    HALF_DAY: "LATE_CHECKIN",
-    MISSING_CHECKIN: "MISSING_CHECKIN",
-    MISSING_CHECKOUT: "MISSING_CHECKOUT",
-    EARLY_CHECKOUT: "EARLY_CHECKOUT",
-    ABSENT: "ABSENT",
-  };
-  return anomalies.some(
-    (a) =>
-      a.status === "APPROVED" &&
-      day(a.date) === day(row.date) &&
-      (!a.type || a.type === types[row.status]),
-  );
+  // An approved request excuses automatic attendance deductions for its shift,
+  // regardless of the request category (operator policy, 2026-10-09).
+  return Boolean(row?.date) && anomalies.some(a =>
+    a.status === "APPROVED" && a.date && day(a.date) === day(row.date));
 }
 // Match the existing attendance-policy modes. Threshold charges are attributed
 // to the shift that completes their counter, in work-date order. This preserves
@@ -51,7 +41,7 @@ export function isAttendanceExcused(row, anomalies = []) {
 // from automatic credit-loss and occurrence counters.
 function automaticTotal(attendance, anomalies, rules, config) {
   const lines = computeAttendanceDeductions({
-    violations: countViolationDays({ attendance, anomalies, rules }),
+    violations: countViolationDays({ attendance, anomalies, rules, absenceRecoveryEnabled:config.absenceRecoveryEnabled===true }),
     rules,
   });
   const pooled = config.deductionBasis === "POOLED_FLOOR";
