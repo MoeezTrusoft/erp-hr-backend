@@ -21,3 +21,5 @@ it.each([
  expect(payrollRegisterProfile(tenant).signatories.map(s=>s.label)).toEqual(['PREPARED BY','AUTHORIZED BY','APPROVED BY']);
 });
 it('does not match a company display label as a tenant identity',()=>expect(payrollRegisterProfile('HomeVision')).toBeNull());
+
+it('retains historical payroll rows when the employee is no longer accessible in this tenant',()=>{const m=buildPayrollRegister({run,payslips:[{...slip,employeeId:549,employee:null,payableDays:30}]});expect(m.count).toBe(1);expect(m.offices[0].departments[0].rows[0]).toMatchObject({name:'Employee #549 (record unavailable)',paidDays:'30'});expect(m.totals.net).toBe(10000n);});

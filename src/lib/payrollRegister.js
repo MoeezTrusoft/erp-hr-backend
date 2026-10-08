@@ -6,7 +6,7 @@ export function buildPayrollRegister({run,payslips,companyName='',signatories=[]
  const currency=run.currencyCode||'PKR',minor=v=>money.decimalToMinor(String(v??0),currency);
  const offices=new Map(),totals=empty();
  for(const slip of payslips){
-  const employee=slip.employee,amounts=empty();
+  const employee=slip.employee||{employee_name:`Employee #${slip.employeeId} (record unavailable)`},amounts=empty();
   for(const line of slip.earnings){
    const code=String(line.earningType?.code||'').toUpperCase(),desc=String(line.description||line.earningType?.name||'');
    const key=/^base salary\b/i.test(desc)?'basic':/bonus/i.test(code+' '+desc)?'bonus':/comm(ission)?\b/i.test(code+' '+desc)?'commission':/allowance|employer|overtime|benefit/i.test(desc)?'otherEarnings':['BASIC','BASE_SALARY','SALARY'].includes(code)?'basic':'otherEarnings';
