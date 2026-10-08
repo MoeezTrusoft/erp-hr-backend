@@ -55,8 +55,7 @@ export function renderPayrollRegister(model){
    });total('Department Totals',dept.totals);
   }total(`${office.name} Totals`,office.totals,'#cde7e5');y+=12;
  });
- ensure(230);band('Consolidated office summary');
- model.offices.forEach(o=>{const vals=[o.count,o.name,'Office total','-',...registerAmountKeys.map(k=>fmt(o.totals[k]))];vals.forEach((v,i)=>{box(x[i],y,widths[i],22,'#ffffff');text(v,x[i],y,widths[i],22,{align:i<3?'left':i===3?'center':'right',size:7.1,bold:true});});y+=22;});
+ ensure(190);band('Consolidated office summary');
  total('Payroll Totals - All offices',model.totals,'#cde7e5');y+=17;
  const labels=model.signatories.map((s,i)=>s.label||['PREPARED BY','VERIFIED BY','AUTHORIZED BY','APPROVED BY'][i]),gap=9,sw=(W-(labels.length-1)*gap)/labels.length;
  labels.forEach((label,i)=>{const xx=M+i*(sw+gap),s=model.signatories[i]||{};box(xx,y,sw,96,'#ffffff');box(xx,y,sw,24,pale);text(label,xx,y+3,sw,22,{bold:true,align:'center',color:teal});text(s.name||'',xx+5,y+32,sw-10,20,{bold:true,size:8});text(s.title||'',xx+5,y+52,sw-10,16,{size:7});doc.moveTo(xx+9,y+79).lineTo(xx+sw/2-6,y+79).stroke().moveTo(xx+sw/2+6,y+79).lineTo(xx+sw-9,y+79).stroke();text('DATE',xx+5,y+80,sw/2,14,{size:5});text('SIGNATURE',xx+sw/2+2,y+80,sw/2-5,14,{size:5});});y+=105;

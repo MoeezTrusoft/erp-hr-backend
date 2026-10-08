@@ -456,12 +456,12 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             payrollRun.periodEnd,
             employee?.employmentPeriods?.length
                 ? employee.employmentPeriods
-                : (employee?.hire_date || employee?.hireDate),
+                : (employee?.hire_date || employee?.joining_date || employee?.hireDate),
         );
 
     prorationFactor = manualAttendanceFactor(employee, payrollRun, bridges.manualAttendance,
         isHeadendEmployee(employee)
-            ? computeProrationFactor(payrollRun.periodStart, payrollRun.periodEnd, employee?.employmentPeriods?.length ? employee.employmentPeriods : (employee?.hire_date || employee?.hireDate))
+            ? computeProrationFactor(payrollRun.periodStart, payrollRun.periodEnd, employee?.employmentPeriods?.length ? employee.employmentPeriods : (employee?.hire_date || employee?.joining_date || employee?.hireDate))
             : prorationFactor);
     if (isHeadendEmployee(employee)) {
         bridges = {...bridges, attendanceRows:[], anomalyRows:[], attendanceDeductionLines:[], attendanceDeductionRules:[], lwpDays:0};
@@ -1168,6 +1168,16 @@ const PROCESSABLE_STATUSES = new Set(['PENDING', 'PROCESSING', 'COMPLETED', 'FAI
 export const payrollEligibleFilter = (payrollRun) => ({
     AND: [
         { payroll_included: { not: false } },
+        // Active is not evidence of employment in this pay period. Explicit
+        // spells take precedence; otherwise use hire date, then joining date.
+        { OR: [
+            { employmentPeriods: { some: { startDate: { lte: payrollRun.periodEnd }, OR: [{endDate:null},{endDate:{gte:payrollRun.periodStart}}] } } },
+            { employmentPeriods: { none: {} }, OR: [
+                { hire_date: { lte: payrollRun.periodEnd } },
+                { hire_date: null, joining_date: { lte: payrollRun.periodEnd } },
+                { hire_date: null, joining_date: null },
+            ] },
+        ] },
         {
             OR: [
                 { status: { equals: 'active', mode: 'insensitive' } },
@@ -1349,6 +1359,17 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     },
                     select: { id: true, date: true, status: true, type: true, manualDeductionDays: true, expectedTime:true, actualTime:true }
                 }
+            }
+        });
+
+        // Remove only unapproved, undistributed, zero-value leftovers for
+        // employees who no longer qualify for this period. Keep a full audit.
+        await tenantTransaction(prisma, async tx => {
+            const stale=await tx.payrollPayslip.findMany({where:withTenant(tenantId,{payrollRunId:id,employeeId:{notIn:employees.map(e=>e.id)}}),include:{earnings:true,deductions:true}});
+            for(const slip of stale) {
+                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})) throw new Error(`Ineligible employee ${slip.employeeId} has a protected or nonzero payslip; review before recalculation`);
+                await tx.payrollAuditLog.create({data:{tenantId,action:'INELIGIBLE_ZERO_PAYSLIP_REMOVED',payrollRunId:id,employeeId:slip.employeeId,details:'Employee was not employed in this payroll period. Removed only an undistributed DRAFT payslip with all totals zero.',oldValues:JSON.parse(JSON.stringify(slip))}});
+                await tx.payrollPayslip.delete({where:{id:slip.id}});
             }
         });
 

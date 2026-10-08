@@ -27,13 +27,13 @@ describe('N-10 run selection filters payroll_included', () => {
 
     it('keeps the case-insensitive active branch (the 73-of-75 "Active" bug)', () => {
         const filter = payrollEligibleFilter(RUN);
-        const or = filter.AND.find((c) => c.OR);
+        const or = filter.AND.find((c) => c.OR?.some(x=>x.status));
         expect(or.OR).toContainEqual({ status: { equals: 'active', mode: 'insensitive' } });
     });
 
     it('keeps the employment-period overlap branch (leavers keep their days)', () => {
         const filter = payrollEligibleFilter(RUN);
-        const or = filter.AND.find((c) => c.OR);
+        const or = filter.AND.find((c) => c.OR?.some(x=>x.status));
         expect(or.OR).toContainEqual({
             employmentPeriods: {
                 some: {
