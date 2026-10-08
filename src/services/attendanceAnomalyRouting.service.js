@@ -10,9 +10,8 @@
 //
 //   * auto-approving because no level resolved — the chain must never be
 //     treated as "satisfied" when it simply had nobody in it;
-//   * letting the requester approve their own request, which is possible the
-//     moment someone is their own manager or is themselves the configured HR
-//     approver.
+//   * letting a requester give final approval to their own request. HR may
+//     verify their own request only with separate management approval remaining.
 //
 // Both are handled explicitly below.
 //
@@ -69,23 +68,23 @@ export async function resolveApprovalChain({ tenantId, employeeId, approvalPolic
       if (!approverId) reason = "no approver configured";
     }
 
-    // HR-SELF-APPROVE-REPAIR (2026-10-07) — nobody may approve their own
-    // request. When the resolved approver IS the requester, her level
-    // self-resolves to the matrix's NEXT explicit approver: the workflow has
-    // effectively skipped her level, so the next matrix member verifies the
-    // request in her place. The requester gains nothing: the stand-in is by
-    // definition a DIFFERENT configured person. The level's OTHER properties
-    // (skippable) are untouched — a non-skippable level that cannot resolve
-    // through this passthrough still blocks as before.
-    if (approverId && approverId === employeeId) {
+    // HR verification may be performed by the requester only when a separate
+    // management approver remains mandatory. Verification is not final approval.
+    const selfHrVerification = approverId === employeeId && /^HR$/i.test(lvl.role)
+      && selectedLevels.some(next => next.level > lvl.level
+        && /^(MANAGEMENT|MGMT)$/i.test(next.role) && !next.useEmployeeManager
+        && next.approverId && next.approverId !== employeeId);
+    if (approverId && approverId === employeeId && !selfHrVerification) {
       approverId = null;
       reason = "approver is the requester";
-      const nextExplicit = selectedLevels
-        .filter((l) => l.level > lvl.level && !l.useEmployeeManager)
-        .sort((a, b) => a.level - b.level)
-        .find((l) => l.approverId && l.approverId !== employeeId);
-      if (nextExplicit) {
-        approverId = nextExplicit.approverId;
+      // Never relabel management as HR. An unconfigured independent final
+      // approver must block HR self-verification rather than skip the safeguard.
+      if (!/^HR$/i.test(lvl.role)) {
+        const nextExplicit = selectedLevels
+          .filter(l => l.level > lvl.level && !l.useEmployeeManager)
+          .sort((a, b) => a.level - b.level)
+          .find(l => l.approverId && l.approverId !== employeeId);
+        if (nextExplicit) approverId = nextExplicit.approverId;
       }
     }
 
@@ -94,7 +93,8 @@ export async function resolveApprovalChain({ tenantId, employeeId, approvalPolic
       role: lvl.role,
       approverId,
       resolved: Boolean(approverId),
-      skippable: lvl.skipIfUnresolved,
+      skippable: /^HR$/i.test(lvl.role) && !approverId && lvl.approverId === employeeId ? false : lvl.skipIfUnresolved,
+      selfHrVerification,
       reason,
       ...(reason === "approver is the requester" && approverId ? { standInForRole: lvl.role } : {}),
     });
@@ -234,6 +234,11 @@ export async function decideAnomaly({ tenantId, anomalyId, approverId, decision,
   const nextTarget = firstActionableLevel(
     coveredHrLevel ? remaining.filter((c) => c.level !== coveredHrLevel.level) : remaining
   );
+  if (current.selfHrVerification && verdict === "APPROVED"
+      && (!nextTarget?.resolved || !/^(MANAGEMENT|MGMT)$/i.test(nextTarget.role)
+          || nextTarget.approverId === anomaly.employeeId)) {
+    throw badRequest("HR verification of your own request requires separate management approval");
+  }
   const advances = verdict === "APPROVED" && nextTarget?.resolved;
 
   return tenantTransaction(prisma, async (tx) => {

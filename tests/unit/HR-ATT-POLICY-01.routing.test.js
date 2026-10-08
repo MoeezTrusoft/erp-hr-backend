@@ -141,9 +141,9 @@ describe('HR-ATT-POLICY-01 chain resolution', () => {
         expect(res.approverId).not.toBe(REQUESTER);
     });
 
-    it('HR-SELF-APPROVE-REPAIR: a self-referential level passes to the NEXT matrix approver', async () => {
-        // Malformed chain: L2 (HR) points at the requester herself. The request
-        // still has to complete through the matrix — but NEVER by her own hand.
+    it('keeps HR self-verification with HR while separate management remains', async () => {
+        // L2 retains HR as verifier even for her own request; management
+        // remains a distinct, mandatory final approver.
         prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([
             CHAIN[0],
             { id: 2, level: 2, role: 'HR', approverId: REQUESTER, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
@@ -153,10 +153,10 @@ describe('HR-ATT-POLICY-01 chain resolution', () => {
         const chain = await routing.resolveApprovalChain({ tenantId: TENANT, employeeId: REQUESTER });
         expect(chain[1]).toMatchObject({
             level: 2,
-            approverId: MANAGEMENT,
+            approverId: REQUESTER,
             resolved: true,
-            standInForRole: 'HR',
-            reason: 'approver is the requester',
+            selfHrVerification: true,
+            reason: null,
         });
 
         // Routing lands the request with a real matrix member — the requester
@@ -314,5 +314,25 @@ describe('imported HR / management policy',()=>{
   anomalies.set(10,{id:10,tenantId:TENANT,employeeId:REQUESTER,status:'PENDING',sourceKind:'PAPER_FORM',approvalPolicy:'HR_MANAGEMENT',currentApprovalLevel:2,workflowVersion:1});
   const routed=await routing.routeAnomaly({tenantId:TENANT,anomalyId:10});expect(routed.level).toBe(2);
   await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:10,approverId:MANAGER,decision:'APPROVED'})).rejects.toThrow();
+ });
+});
+
+describe('HR self-verification with separate management approval',()=>{
+ it('allows HR to verify her own request but leaves it pending for management',async()=>{
+  anomalies.set(20,{id:20,employeeId:HR,tenantId:TENANT,status:'PENDING',currentApprovalLevel:2,sourceKind:'REGULARIZATION',workflowVersion:0});
+  expect((await routing.listPendingForApprover({tenantId:TENANT,approverId:HR})).map(a=>a.id)).toContain(20);
+  await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:MANAGEMENT,decision:'APPROVED'})).rejects.toThrow('not the approver');
+  const r=await routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:HR,decision:'APPROVED'});
+  expect(r).toMatchObject({final:false,nextLevel:3});expect(anomalies.get(20).status).toBe('PENDING');
+  await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:HR,decision:'APPROVED'})).rejects.toThrow('not the approver');
+  const final=await routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:MANAGEMENT,decision:'APPROVED'});
+  expect(final.final).toBe(true);expect(approvalsWritten.map(a=>[a.approverRole,a.approverId])).toEqual([['HR',HR],['MANAGEMENT',MANAGEMENT]]);
+ });
+ it.each([null,HR])('blocks own HR verification without independent management (%s)',async managementId=>{
+  prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([CHAIN[1],{...CHAIN[2],approverId:managementId}]);
+  anomalies.set(20,{id:20,employeeId:HR,tenantId:TENANT,status:'PENDING',currentApprovalLevel:2,sourceKind:'PAPER_FORM',approvalPolicy:'HR_MANAGEMENT',workflowVersion:0});
+  const chain=await routing.resolveApprovalChain({tenantId:TENANT,employeeId:HR,approvalPolicy:'HR_MANAGEMENT'});
+  expect(chain[0]).toMatchObject({resolved:false,skippable:false});
+  await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:HR,decision:'APPROVED'})).rejects.toThrow();expect(approvalsWritten).toHaveLength(0);
  });
 });
