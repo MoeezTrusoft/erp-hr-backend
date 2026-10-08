@@ -32,6 +32,7 @@ import { countViolationDays, computeAttendanceDeductions } from "../lib/attendan
 // persisted, and that is on purpose (see resolveDeductionTypeId below).
 const DEDUCTION_TYPE_NAMES = {
     ATTENDANCE_DEDUCTION: 'Attendance Deduction',
+    EMPLOYMENT_PRORATION: 'Joining/leaving date deduction',
     MANAGEMENT_ATTENDANCE_DEDUCTION: 'Management Attendance Deduction',
     BENEFIT_CONTRIBUTION: 'Benefit Contribution',
     LOAN_REPAYMENT: 'Loan Repayment',
@@ -419,6 +420,7 @@ const computeStatutoryDeductions = (grossMinor, countryCode, currency = 'USD', r
  */
 export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments = [], payrollRun, taxRateRows = [], asOf, bridges = {}, ruleConfig = {} }) => {    const at = asOf || payrollRun?.periodEnd;
     const earnings = [];
+    const monthlyEarnings = new Map();
     const deductions = [];
     const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
     let grossMinor = 0n;
@@ -493,6 +495,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 ? `Base salary (prorated ${(Number(prorationFactor) / 10000).toFixed(1)}%) for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`
                 : `Base salary for ${isoDate(payrollRun.periodStart)} to ${isoDate(payrollRun.periodEnd)}`,
         });
+        monthlyEarnings.set(earnings.at(-1), fullBaseMinor);
         grossMinor = money.add(grossMinor, baseMinor);
         // HR-PAYROLL-DEDUCTION-BASIS-01 — the CONTRACTUAL monthly package, which
         // is what a deducted day is charged against. Tracked separately from
@@ -577,6 +580,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             const fullAllowanceMinor = assignment.amount != null
                 ? money.decimalToMinor(assignment.amount, currency)
                 : null;
+            if (fullAllowanceMinor != null) monthlyEarnings.set(earnings.at(-1),fullAllowanceMinor);
             // N-13 — an explicitly non-taxable earning type leaves the tax base.
             if (assignment.earningType.isTaxable !== false) {
                 taxableMinor = money.add(taxableMinor, amountMinor);
@@ -952,6 +956,25 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             roundToWholeMajor(money.decimalToMinor(line.amount, currency)),
             currency,
         );
+    }
+    // Present monthly contractual earnings in full, with employment proration
+    // shown separately. Apply after tax, loan caps and line rounding so net pay,
+    // withholding and repayment amounts remain exactly as calculated above.
+    // Headend manual attendance and zero-employment periods retain their rules.
+    if (employmentTerm?.payFrequency === 'MONTHLY' && !isHeadendEmployee(employee) && prorationFactor > 0n && prorationFactor < 1_000_000n) {
+        let adjustment = 0n;
+        for (const [line,full] of monthlyEarnings) {
+            const amount = roundToWholeMajor(full);
+            adjustment += amount - money.decimalToMinor(line.amount,currency);
+            line.amount = money.minorToDecimal(amount,currency);
+            line.description = line.description.replace(/ \(prorated [\d.]+%\)/,'');
+        }
+        if (adjustment > 0n) {
+            const utcDay=value=>{const d=new Date(value);return Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate());};
+            const periodDays=(utcDay(payrollRun.periodEnd)-utcDay(payrollRun.periodStart))/86400000+1;
+            const excludedDays=Math.round(periodDays*(1-Number(prorationFactor)/1_000_000)*100)/100;
+            deductions.push({deductionTypeId:null,code:'EMPLOYMENT_PRORATION',amount:money.minorToDecimal(adjustment,currency),description:`Joining/leaving date deduction (${excludedDays} days outside employment)`});
+        }
     }
     const grossMinorRounded = money.sum(earnings.map((e) => money.decimalToMinor(e.amount, currency)));
     const totalDeductionsMinorRounded = money.sum(deductions.map((d) => money.decimalToMinor(d.amount, currency)));

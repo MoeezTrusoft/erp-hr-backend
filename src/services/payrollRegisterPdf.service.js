@@ -48,10 +48,12 @@ export function renderPayrollRegister(model){
   for(const dept of office.departments){
    ensure(68);band(dept.name);
    dept.rows.forEach((r,index)=>{
+    const noteHeight=(r.employmentDeductions||[]).length*18;
     const rowHeight=Math.max(22,Math.ceil(doc.font('Helvetica').fontSize(7.1).heightOfString(r.name,{width:widths[1]-8}))+8,Math.ceil(doc.heightOfString(r.position,{width:widths[2]-8}))+8);
-    if(y+rowHeight+(index===dept.rows.length-1?23:0)>BOTTOM){doc.addPage();header();band(`${office.name} / ${dept.name} (continued)`);}
+    if(y+rowHeight+noteHeight+(index===dept.rows.length-1?23:0)>BOTTOM){doc.addPage();header();band(`${office.name} / ${dept.name} (continued)`);}
     const vals=[index+1,r.name,r.position,r.paidDays,...registerAmountKeys.map(k=>fmt(r[k]))];
     vals.forEach((v,i)=>{box(x[i],y,widths[i],rowHeight,'#ffffff');text(v,x[i],y,widths[i],rowHeight,{align:i<3?'left':i===3?'center':'right',size:7.1,bold:[8,13,14].includes(i)});});y+=rowHeight;
+    for(const note of r.employmentDeductions||[]){box(M,y,W,18,'#f5f8f8');text(`${r.name}: ${note.description} - ${model.currency} ${fmt(note.amount)} (included in Other deductions)`,M+4,y,W-8,18,{size:7});y+=18;}
    });total('Department Totals',dept.totals);
   }total(`${office.name} Totals`,office.totals,'#cde7e5');y+=12;
  });

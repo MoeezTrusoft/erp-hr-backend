@@ -23,3 +23,8 @@ it.each([
 it('does not match a company display label as a tenant identity',()=>expect(payrollRegisterProfile('HomeVision')).toBeNull());
 
 it('retains historical payroll rows when the employee is no longer accessible in this tenant',()=>{const m=buildPayrollRegister({run,payslips:[{...slip,employeeId:549,employee:null,payableDays:30}]});expect(m.count).toBe(1);expect(m.offices[0].departments[0].rows[0]).toMatchObject({name:'Employee #549 (record unavailable)',paidDays:'30'});expect(m.totals.net).toBe(10000n);});
+
+it('retains employment deduction explanations in the register',()=>{
+ const m=buildPayrollRegister({run,payslips:[{...slip,deductions:[{amount:'15.25',description:'Joining/leaving date deduction (20 days outside employment)',deductionType:{code:'EMPLOYMENT_PRORATION'}}]}]});
+ expect(m.offices[0].departments[0].rows[0].employmentDeductions).toEqual([{amount:1525n,description:'Joining/leaving date deduction (20 days outside employment)'}]);expect(m.totals.otherDeductions).toBe(1525n);
+});

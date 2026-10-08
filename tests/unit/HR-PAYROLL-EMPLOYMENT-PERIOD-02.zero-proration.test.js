@@ -64,7 +64,8 @@ describe('HR-PAYROLL-EMPLOYMENT-PERIOD-02 zero proration', () => {
         // The guard must not swing the other way and zero everyone.
         const slip = build([{ startDate: '2024-01-01', endDate: '2026-08-19' }]);
 
-        expect(gross(slip)).toBeCloseTo(30000 * (19 / 31), 0);
+        expect(gross(slip)).toBe(30000);
+        expect(Number(slip.netAmount)).toBeCloseTo(30000 * (19 / 31), 0);
     });
 
     it('pays a full month when employed throughout', () => {
@@ -103,7 +104,8 @@ describe('HR-PAYROLL-EMPLOYMENT-PERIOD-02 zero proration', () => {
         // (30000 base + 6000 allowance) × 19/31 → WHOLE RUPEES at persistence
         // (N-22, ruling 2026-09-17): base 18387.10 → 18387, allowance
         // 3677.42 → 3677; gross reports the sum of the ROUNDED lines = 22064.
-        expect(gross(slip)).toBe(22064);
+        expect(gross(slip)).toBe(36000);
+        expect(Number(slip.netAmount)).toBe(22064);
     });
 
     it('does not double-prorate a rate-based allowance', () => {
@@ -115,7 +117,8 @@ describe('HR-PAYROLL-EMPLOYMENT-PERIOD-02 zero proration', () => {
         );
         const prorabase = 30000 * (19 / 31);
 
-        expect(gross(slip)).toBeCloseTo(prorabase * 1.1, 0);
+        expect(Number(slip.netAmount)).toBeCloseTo(prorabase * 1.1, 0);
+        expect(Number(slip.earnings[0].amount)).toBe(30000);
     });
 
     it('describes a zero-pay line honestly rather than as a full month', () => {

@@ -4,7 +4,10 @@ const types = {LATE:'LATE_CHECKIN',EARLY_CHECKOUT:'EARLY_CHECKOUT'};
 const nonworking = new Set(['WEEKLY_OFF','HOLIDAY','ON_LEAVE']);
 function recordedIncident(row, anomalies, type) {
  const matchingStatus = type==='LATE_CHECKIN' ? row.status==='LATE' : row.status==='EARLY_CHECKOUT';
- return matchingStatus || row.status==='HALF_DAY' || anomalies.some(a=>a.date && day(a.date)===day(row.date) && a.type===type && a.status!=='APPROVED');
+ // One daily status can describe only one side of a shift. Preserve a second
+ // measured timing violation on that shift without reclassifying PRESENT days.
+ const secondIncident = ['LATE','EARLY_CHECKOUT'].includes(row.status) && Number(row[type==='LATE_CHECKIN'?'lateMinutes':'earlyMinutes'])>0;
+ return matchingStatus || secondIncident || row.status==='HALF_DAY' || anomalies.some(a=>a.date && day(a.date)===day(row.date) && a.type===type && a.status!=='APPROVED');
 }
 export const isTimingRule = r => Boolean(r?.enabled && types[r.ruleKey] && r.durationThresholdMinutes != null && r.overThresholdDeductionDays != null);
 export function timingViolationDays({attendance=[],anomalies=[],rules=[]}) {

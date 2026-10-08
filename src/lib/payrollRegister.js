@@ -24,7 +24,7 @@ export function buildPayrollRegister({run,payslips,companyName='',signatories=[]
   if(!offices.has(office))offices.set(office,{name:office,departments:new Map(),totals:empty(),count:0});
   const o=offices.get(office);if(!o.departments.has(department))o.departments.set(department,{name:department,rows:[],totals:empty()});
   const d=o.departments.get(department);
-  d.rows.push({name:name(employee),position:employee.job_title||'-',paidDays:slip.payableDays==null?'-':String(slip.payableDays),...amounts});
+  d.rows.push({name:name(employee),position:employee.job_title||'-',paidDays:slip.payableDays==null?'-':String(slip.payableDays),employmentDeductions:slip.deductions.filter(l=>(l.code||l.deductionType?.code)==='EMPLOYMENT_PRORATION').map(l=>({description:l.description,amount:minor(l.amount)})),...amounts});
   for(const k of keys){d.totals[k]+=amounts[k];o.totals[k]+=amounts[k];totals[k]+=amounts[k];}o.count++;
  }
  return {run,currency,companyName,signatories,totals,count:payslips.length,offices:[...offices.values()].map(o=>({...o,departments:[...o.departments.values()]}))};

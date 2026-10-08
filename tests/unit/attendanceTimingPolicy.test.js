@@ -67,3 +67,17 @@ it('Adnan regression: three recorded short late arrivals and one rejected absenc
  expect(Number(p.totalDeductions)).toBe(4000);expect(p.payableDays).toBe(28);
  expect(p.deductions.filter(d=>d.code==='ABSENCE_RECOVERY')).toHaveLength(1);
 });
+
+it.each(['LATE','EARLY_CHECKOUT'])('counts both measured incidents when daily status is %s',status=>{
+ expect(days([{...row(21,42.55,141.1),status}])).toBe(1);
+});
+it('Amjad regression: two September 21 incidents, rejected September 22 absence and September 29 early departure cost 2.5 days',()=>{
+ const r=[...rules,{ruleKey:'DISAPPROVED_LEAVE',enabled:true,triggerCount:1,deductionDays:1}];
+ const attendance=[{...row(21,42.55,141.1),status:'EARLY_CHECKOUT'},{...row(22),status:'ABSENT',day_credit:0},row(29,0,300.58)];
+ const p=build(attendance,[{date:row(22).date,type:'ABSENT',status:'REJECTED'}],r);
+ expect(Number(p.totalDeductions)).toBe(5000);expect(p.payableDays).toBe(27.5);
+ expect(p.deductions.filter(d=>d.code==='ABSENCE_RECOVERY')).toHaveLength(1);
+});
+it('does not infer an opposite incident when its timing evidence is absent',()=>{
+ expect(days([{...row(21,42.55),earlyMinutes:null}])).toBe(0.5);
+});
