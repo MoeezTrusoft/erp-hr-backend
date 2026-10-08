@@ -36,6 +36,7 @@ const isoDow = (date) => {
  * "10am/pm – 10am/pm" has no single start time.
  */
 export function shiftCandidates(pattern, day) {
+  if (typeof pattern === "function") pattern = pattern(day);
   const mk = (hhmm) => {
     const m = typeof hhmm === "string" ? hhmm.trim().match(/^(\d{1,2}):(\d{2})/) : null;
     if (!m) return null;
@@ -156,6 +157,7 @@ export function sessioniseByRoster(
   if (!sorted.length) return [];
 
   const hasRoster =
+    typeof pattern === "function" ||
     Boolean(pattern?.shift?.from && pattern?.shift?.to) ||
     Boolean(Array.isArray(pattern?.rotatingShifts) && pattern.rotatingShifts.length);
   const groups = new Map();
@@ -401,21 +403,21 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   const results = [];
 
   for (const [employeeId, rows] of byEmployee) {
-    const [schedule, working] = await Promise.all([
+    const [schedules, working] = await Promise.all([
       // Effective-dated: pick the schedule in force ON the window, not simply
       // the newest row. Without the date filter a mid-month shift change would
       // be applied retroactively to days it never covered.
-      prisma.workSchedule.findFirst({
+      prisma.workSchedule.findMany({
         where: {
-          employeeId,
-          effective_start_date: { lte: new Date(`${to}T23:59:59`) },
+          tenantId, employeeId,
+          effective_start_date: { lte: windowEnd },
           OR: [
             { effective_end_date: null },
-            { effective_end_date: { gte: new Date(`${from}T00:00:00`) } },
+            { effective_end_date: { gte: windowStart } },
           ],
         },
-        orderBy: { effective_start_date: "desc" },
-        select: { schedule_pattern: true, effective_start_date: true },
+        orderBy: [{ effective_start_date: "desc" }, { id: "desc" }],
+        select: { schedule_pattern: true, effective_start_date: true, effective_end_date: true },
       }),
       resolveWorkingDays({
         employeeId,
@@ -425,7 +427,12 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       }),
     ]);
 
-    for (const session of sessioniseByRoster(rows, schedule?.schedule_pattern)) {
+    const patternForDay = schedules.length ? (day) => {
+      const key = dayKey(day);
+      return schedules.find(s => dayKey(s.effective_start_date)<=key &&
+        (!s.effective_end_date || dayKey(s.effective_end_date)>=key))?.schedule_pattern;
+    } : undefined;
+    for (const session of sessioniseByRoster(rows, patternForDay)) {
       const day = session.day;
       // The padding day is for context only — never for output.
       const key = dayKey(day);
@@ -452,7 +459,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       if (dayInfo?.working === false && session.punches.length < 2) continue;
       const tomorrow = new Date(day.getTime() + DAY_MS);
       const tomorrowInfo = working.get(dayKey(tomorrow));
-      const nextShift = shiftFor(schedule?.schedule_pattern, tomorrow);
+      const nextShift = shiftFor(patternForDay, tomorrow);
 
       const verdict = evaluateShift({
         punches: session.punches,
@@ -464,7 +471,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
         // employee was scored against the DAY window (10:00–22:00) even on a
         // night shift, turning a 21:59 night arrival into "11h59 late" and a
         // half-day deduction.
-        shift: shiftFor(schedule?.schedule_pattern, day, session.punches[0]?.timestamp),
+        shift: shiftFor(patternForDay, day, session.punches[0]?.timestamp),
         policy,
         nextDay: {
           working: Boolean(tomorrowInfo?.working),
