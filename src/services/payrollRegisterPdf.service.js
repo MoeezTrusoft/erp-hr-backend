@@ -49,7 +49,7 @@ export function renderPayrollRegister(model){
    ensure(68);band(dept.name);
    dept.rows.forEach((r,index)=>{
     const rowHeight=Math.max(22,Math.ceil(doc.font('Helvetica').fontSize(7.1).heightOfString(r.name,{width:widths[1]-8}))+8,Math.ceil(doc.heightOfString(r.position,{width:widths[2]-8}))+8);
-    if(y+rowHeight>BOTTOM){doc.addPage();header();band(`${office.name} / ${dept.name} (continued)`);}
+    if(y+rowHeight+(index===dept.rows.length-1?23:0)>BOTTOM){doc.addPage();header();band(`${office.name} / ${dept.name} (continued)`);}
     const vals=[index+1,r.name,r.position,r.paidDays,...registerAmountKeys.map(k=>fmt(r[k]))];
     vals.forEach((v,i)=>{box(x[i],y,widths[i],rowHeight,'#ffffff');text(v,x[i],y,widths[i],rowHeight,{align:i<3?'left':i===3?'center':'right',size:7.1,bold:[8,13,14].includes(i)});});y+=rowHeight;
    });total('Department Totals',dept.totals);
