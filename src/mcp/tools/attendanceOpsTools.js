@@ -154,6 +154,11 @@ export function registerAttendanceOpsTools(server) {
       ),
       sourceKind: z.enum(["REGULARIZATION", "evaluator", "IMPORT", "DISAPPROVED_LEAVE"]).optional()
         .describe("Filter by origin; REGULARIZATION means an employee-submitted form."),
+      raised: z.boolean().optional()
+        .describe(
+          "When true, list only requests that were actually raised (employee-submitted or paper forms entered by HR). " +
+            "Excludes system-generated rows (evaluator-detected anomalies etc.), which are attendance evidence, not requests."
+        ),
       q: z.string().optional().describe("Search employee name or reason (case-insensitive contains)"),
       // T&A-MONTH-FILTER (operator, 2026-10-06) — the Timesheet month
       // selector. Both bound the request's OWN DAY ("For date"), inclusive,

@@ -237,6 +237,7 @@ export async function listAnomalies({
   employeeId,
   type,
   sourceKind,
+  raised,
   q,
   from,
   to,
@@ -260,6 +261,15 @@ export async function listAnomalies({
   // evidence and must not appear as employee submissions.
   if (sourceKind && ["REGULARIZATION", "evaluator", "IMPORT", "DISAPPROVED_LEAVE"].includes(sourceKind)) {
     and.push({ sourceKind });
+  }
+  // OPS-2026-10-08 — `raised: true` restricts the list to requests that were
+  // actually raised (by the employee, or by HR on their behalf from paper
+  // forms). System-generated rows — evaluator-detected anomalies, import
+  // backfill, disapproved-leave echoes — are attendance evidence, not
+  // requests, and must not appear in the requests panel. NOT (…=…) keeps
+  // legacy rows with a NULL sourceKind (manual HR entries) visible.
+  if (raised === true) {
+    and.push({ NOT: { sourceKind: "evaluator" } });
   }
   if (q && String(q).trim()) {
     const needle = String(q).trim();
