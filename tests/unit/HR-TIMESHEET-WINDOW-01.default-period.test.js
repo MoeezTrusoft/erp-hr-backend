@@ -26,6 +26,10 @@ const employmentPeriodFindMany = jest.fn().mockResolvedValue([]);
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
     default: {
         attendance: { findMany: attendanceFindMany },
+        // Timesheet now also attaches raised anomaly requests to each day.
+        // Empty fixtures keep this date-window test focused on Attendance.
+        attendanceAnomaly: { findMany: jest.fn().mockResolvedValue([]) },
+        attendanceAnomalyApproval: { findMany: jest.fn().mockResolvedValue([]) },
         employee: { count: employeeCount, findMany: employeeFindMany },
         employmentPeriod: { findMany: employmentPeriodFindMany },
     },

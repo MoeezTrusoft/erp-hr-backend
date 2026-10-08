@@ -973,8 +973,12 @@ export async function listCheckInOuts({
       anomalyByKey.set(key, an);
       continue;
     }
-    const existingIsForm = String(existing.sourceKind ?? "").toUpperCase() === "REGULARIZATION";
-    const isForm = String(an.sourceKind ?? "").toUpperCase() === "REGULARIZATION";
+    const existingIsForm = ["REGULARIZATION", "PAPER_FORM"].includes(
+      String(existing.sourceKind ?? "").toUpperCase(),
+    );
+    const isForm = ["REGULARIZATION", "PAPER_FORM"].includes(
+      String(an.sourceKind ?? "").toUpperCase(),
+    );
     if (isForm && !existingIsForm) anomalyByKey.set(key, an);
   }
   const approvalRows = anomalyByKey.size
@@ -1010,7 +1014,11 @@ export async function listCheckInOuts({
     // form renders Pending/Approved/Disapproved and IS viewable. The map is
     // ordered newest-first with forms outranking grading rows, so an employee
     // CAN still answer a machine-flagged day.
-    const anForm = an != null && String(an.sourceKind ?? "").toUpperCase() === "REGULARIZATION" ? an : null;
+    const anForm =
+      an != null &&
+      ["REGULARIZATION", "PAPER_FORM"].includes(String(an.sourceKind ?? "").toUpperCase())
+        ? an
+        : null;
     if (anForm) {
       request = {
         anomalyId: an.id,
