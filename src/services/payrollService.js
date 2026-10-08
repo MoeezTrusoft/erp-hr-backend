@@ -919,13 +919,29 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // N-21 — restore the contracted-package share of prorated fixed earnings
     // so withholding follows Section 149 (see taxPackageUplift above).
     const taxBaseMinor = money.add(taxableMinor, isHeadendEmployee(employee) && prorationFactor === 0n ? 0n : taxPackageUplift);
-    const taxMinor = computeProgressiveTaxMinor(taxBaseMinor, sorted, currency);
+    let taxMinor = computeProgressiveTaxMinor(taxBaseMinor, sorted, currency);
+    const nilEstimate = employee?.payrollNilTaxEstimate;
+    if (nilEstimate) {
+        // A documented annual estimate is scoped to one employee/run. Never
+        // turn a monthly salary amount into a blanket tax exemption.
+        const firstTaxable = sorted.find(r=>Number(r.rate)>0);
+        const annual = money.decimalToMinor(String(nilEstimate.estimatedAnnualTaxableSalary),currency);
+        if (payrollRun.countryCode!=='PK'||currency!=='PKR'||!firstTaxable||nilEstimate.otherSalaryIncomeConfirmed!==true||
+            nilEstimate.periodStart!==isoDate(payrollRun.periodStart)||nilEstimate.periodEnd!==isoDate(payrollRun.periodEnd)||
+            nilEstimate.taxYearStart>isoDate(payrollRun.periodStart)||nilEstimate.taxYearEnd<isoDate(payrollRun.periodEnd)||
+            !/^\d{4}-07-01$/.test(nilEstimate.taxYearStart||'')||!/^\d{4}-06-30$/.test(nilEstimate.taxYearEnd||'')||
+            Number(nilEstimate.taxYearEnd.slice(0,4))!==Number(nilEstimate.taxYearStart.slice(0,4))+1||
+            money.decimalToMinor(String(nilEstimate.monthlyTaxableSalary),currency)!==taxBaseMinor||
+            annual<0n||annual>money.decimalToMinor(firstTaxable.bracketMin,currency)*12n)
+            throw new Error('Annual nil-tax estimate is invalid or stale; review the payroll tax projection');
+        taxMinor=0n;
+    }
     if (taxMinor > 0n || sorted.length > 0) {
         deductions.push({
             deductionTypeId: null,
             code: 'INCOME_TAX',
             amount: money.minorToDecimal(taxMinor, currency),
-            description: 'Income Tax',
+            description: nilEstimate ? `Income Tax (nil: confirmed annual taxable salary estimate ${nilEstimate.estimatedAnnualTaxableSalary} ${currency})` : 'Income Tax',
         });
     }
 
@@ -1418,6 +1434,9 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             employee.attendanceAnomalies=restore(snapshot.anomalies);
             employee.payrollTimingFromSnapshot=true;
         }
+
+        const nilTaxEstimates=await prisma.payrollAuditLog.findMany({where:withTenant(tenantId,{payrollRunId:id,action:'PAYROLL_NIL_TAX_ESTIMATE'}),orderBy:[{created_at:'desc'},{id:'desc'}],distinct:['employeeId']});
+        for(const audit of nilTaxEstimates){const employee=employees.find(e=>e.id===audit.employeeId);if(employee)employee.payrollNilTaxEstimate=audit.newValues;}
 
         const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
         const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));

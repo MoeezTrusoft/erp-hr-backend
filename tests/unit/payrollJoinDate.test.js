@@ -11,3 +11,9 @@ it('Waqas: shows 55000 monthly gross, 36667 joining deduction, tax 50 and unchan
  expect(slip.deductions.find(d=>d.code==='EMPLOYMENT_PRORATION')).toMatchObject({amount:'36667.0000',description:'Joining/leaving date deduction (20 days outside employment)'});
  expect(Number(slip.deductions.find(d=>d.code==='INCOME_TAX').amount)).toBe(50);
 });
+
+const nilEstimate={periodStart:'2026-09-01',periodEnd:'2026-09-30',taxYearStart:'2026-07-01',taxYearEnd:'2027-06-30',estimatedAnnualTaxableSalary:'513333',monthlyTaxableSalary:'55000',otherSalaryIncomeConfirmed:true};
+const estimatedPay=(estimate,baseSalary='55000')=>buildPayslipFromInputs({employee:{id:566,joining_date:'2026-09-21',payrollNilTaxEstimate:estimate},employmentTerm:{baseSalary,payFrequency:'MONTHLY',currency:'PKR'},payrollRun:run,taxRateRows:[{countryCode:'PK',bracketMin:50000,bracketMax:null,rate:0.01,effectiveFrom:'2026-01-01'}]});
+it('uses a confirmed September annual estimate below the exemption for nil withholding',()=>{const p=estimatedPay(nilEstimate);expect(Number(p.netAmount)).toBe(18333);expect(Number(p.grossAmount)).toBe(55000);expect(p.payableDays).toBe(10);expect(Number(p.deductions.find(d=>d.code==='INCOME_TAX').amount)).toBe(0);});
+it.each([{...nilEstimate,otherSalaryIncomeConfirmed:false},{...nilEstimate,estimatedAnnualTaxableSalary:'660000'},{...nilEstimate,periodStart:'2026-10-01'},{...nilEstimate,taxYearEnd:'2026-06-30'}])('rejects an unconfirmed, taxable or out-of-period estimate',e=>expect(()=>estimatedPay(e)).toThrow('invalid or stale'));
+it('requires review after a salary change instead of silently reusing nil withholding',()=>expect(()=>estimatedPay(nilEstimate,'65000')).toThrow('invalid or stale'));
