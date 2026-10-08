@@ -1,6 +1,6 @@
 import * as money from './money.js';
 const name=e=>e.employee_name||[e.first_name,e.last_name].filter(Boolean).join(' ');
-const keys=['basic','bonus','commission','otherEarnings','gross','tax','advance','loan','otherDeductions','deductions','net'];
+const keys=['basic','otherEarnings','bonus','commission','gross','tax','advance','loan','otherDeductions','deductions','net'];
 const empty=()=>Object.fromEntries(keys.map(k=>[k,0n]));
 export function buildPayrollRegister({run,payslips,companyName='',signatories=[]}){
  const currency=run.currencyCode||'PKR',minor=v=>money.decimalToMinor(String(v??0),currency);

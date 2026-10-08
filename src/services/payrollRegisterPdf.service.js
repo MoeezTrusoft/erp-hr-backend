@@ -19,7 +19,7 @@ export function renderPayrollRegister(model){
  const doc=new PDFDocument({size:'A4',layout:'landscape',margin:24,bufferPages:true,info:{Title:`${model.companyName||'Payroll'} - Payroll register`,Author:'TruSoft ERP'}}),chunks=[];
  doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
  const M=24,W=doc.page.width-2*M,BOTTOM=doc.page.height-36,teal='#007873',pale='#e6f3f2',grid='#263b3b';
- const widths=[24,124,100,36,52,40,40,40,56,48,40,40,40,56,64].map(w=>w*W/800),x=[M];widths.forEach(w=>x.push(x.at(-1)+w));
+ const widths=[24,124,96,36,50,52,36,38,56,48,40,40,40,56,64].map(w=>w*W/800),x=[M];widths.forEach(w=>x.push(x.at(-1)+w));
  let y=0;
  const text=(s,xx,yy,w,h,{bold=false,align='left',color='#132e2f',size=7.5}={})=>{doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(size).fillColor(color).text(String(s??''),xx+4,yy+4,{width:w-8,height:h-6,align,lineBreak:true,ellipsis:true});};
  const box=(xx,yy,w,h,fill)=>{doc.rect(xx,yy,w,h).fillAndStroke(fill,grid);};
@@ -31,7 +31,7 @@ export function renderPayrollRegister(model){
   for(let i=0;i<15;i++){const span=[0,1,2,3,14].includes(i);box(x[i],y,widths[i],span?38:19,teal);if(span)text(['#','Employee Name','Position','Paid\nDays'][i]||'Net Pay',x[i],y+5,widths[i],33,{bold:true,align:'center',color:'white',size:7.5});}
   box(x[4],y,x[9]-x[4],19,teal);text('Earnings',x[4],y,x[9]-x[4],19,{bold:true,align:'center',color:'white'});
   box(x[9],y,x[14]-x[9],19,teal);text('Deductions',x[9],y,x[14]-x[9],19,{bold:true,align:'center',color:'white'});
-  ['Basic','Bonus','Comm','Other','Gross','WHT','Adv.','Loan','Other','Total'].forEach((label,j)=>{const i=j+4;box(x[i],y+19,widths[i],19,teal);text(label,x[i],y+19,widths[i],19,{bold:true,align:'center',color:'white'});});y+=38;
+  ['Basic','Allowances','Bonus','Comm','Gross','WHT','Adv.','Loan','Other','Total'].forEach((label,j)=>{const i=j+4;box(x[i],y+19,widths[i],19,teal);text(label,x[i],y+19,widths[i],19,{bold:true,align:'center',color:'white'});});y+=38;
  }
  function ensure(h){if(y+h>BOTTOM){doc.addPage();header();}}
  function band(label,fill=pale){ensure(23);box(M,y,W,23,fill);text(label,M,y,W,23,{bold:true,size:9});y+=23;}
