@@ -1382,6 +1382,20 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         const leaveCoverage=approvedLeaveCoverage([...approvedRequests,...approvedLegacyLeaves],payrollRun.periodStart,payrollRun.periodEnd);
         for(const employee of employees) employee.attendanceAnomalies.push(...leaveCoverage.filter(a=>a.employeeId===employee.id));
 
+        // An explicitly authorized, run-specific attendance snapshot can be
+        // shared by a person paid by two companies. Raw attendance is retained
+        // in its owning company; no approval decisions are manufactured.
+        const attendanceSnapshots=await prisma.payrollAuditLog.findMany({where:withTenant(tenantId,{payrollRunId:id,action:'PAYROLL_ATTENDANCE_SOURCE_SNAPSHOT'}),orderBy:[{created_at:'desc'},{id:'desc'}],distinct:['employeeId']});
+        for(const audit of attendanceSnapshots) {
+            const employee=employees.find(e=>e.id===audit.employeeId);if(!employee)continue;
+            const snapshot=audit.newValues;
+            if(snapshot?.periodStart!==payrollRun.periodStart.toISOString().slice(0,10)||snapshot?.periodEnd!==payrollRun.periodEnd.toISOString().slice(0,10)||!Array.isArray(snapshot?.attendance)||!Array.isArray(snapshot?.anomalies)) throw new Error('Attendance snapshot does not match payroll period');
+            const restore=rows=>rows.map(row=>{const date=new Date(row.date);if(!Number.isFinite(date.getTime())||date<payrollRun.periodStart||date>payrollRun.periodEnd)throw new Error('Attendance snapshot contains an out-of-period date');return {...row,date};});
+            employee.attendance=restore(snapshot.attendance);
+            employee.attendanceAnomalies=restore(snapshot.anomalies);
+            employee.payrollTimingFromSnapshot=true;
+        }
+
         const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
         const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // N-15 / N-16 — salary dedup + employment-scoped attendance, applied to
@@ -1407,7 +1421,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             orderBy: { ruleKey: 'asc' }
         });
 
-        if (attendanceDeductionRules.some(isTimingRule)) await enrichPayrollTiming({tenantId,payrollRun,employees:employees.filter(e=>!isHeadendEmployee(e))});
+        if (attendanceDeductionRules.some(isTimingRule)) await enrichPayrollTiming({tenantId,payrollRun,employees:employees.filter(e=>!isHeadendEmployee(e)&&!e.payrollTimingFromSnapshot)});
 
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
