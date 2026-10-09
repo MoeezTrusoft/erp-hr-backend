@@ -43,6 +43,16 @@ function minutesBetween(a, b) {
   return Math.round((b.getTime() - a.getTime()) / MIN_MS);
 }
 
+// Union excluded windows before subtracting them: an overlapping break and
+// partial holiday must never be subtracted twice.
+export function excludedMinutes(start, end, exclusions = []) {
+  const ranges = exclusions.map(x => [Math.max(+start,+new Date(x.start)),Math.min(+end,+new Date(x.end))])
+    .filter(([a,b])=>Number.isFinite(a)&&Number.isFinite(b)&&b>a).sort((a,b)=>a[0]-b[0]);
+  let total=0, left=null, right=null;
+  for(const [a,b] of ranges) { if(left===null){left=a;right=b;}else if(a<=right)right=Math.max(right,b);else{total+=right-left;left=a;right=b;} }
+  return (total+(left===null?0:right-left))/60000;
+}
+
 /**
  * Collapse repeated scans. The device emits bursts — one real enrolment
  * produced 23:05:15, :16 and :17 — and without this they inflate the punch
@@ -139,7 +149,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   const anomalies = [];
 
   const scheduledMinutes =
-    shift.start && shift.end ? Math.max(minutesBetween(shift.start, shift.end), 0) : null;
+    shift.start && shift.end ? Math.max(minutesBetween(shift.start, shift.end) - excludedMinutes(shift.start, shift.end, shift.exclusions), 0) : null;
 
   // Half-day threshold: a percentage of the employee's OWN shift when the tenant
   // is configured that way ("half the shift" for four of five tenants), else the
@@ -328,7 +338,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   }
 
   // ── Duration ──────────────────────────────────────────────────────────────
-  const workedMinutes = Math.max(minutesBetween(checkIn, checkOut), 0);
+  const workedMinutes = Math.max(minutesBetween(checkIn, checkOut) - excludedMinutes(checkIn, checkOut, shift.exclusions), 0);
   let workedPercent = null;
   let durationCredit = DAY_CREDIT.FULL;
   // T&A-RULE-06 — the label the CHECKOUT earns; null when duration does not

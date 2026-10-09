@@ -31,6 +31,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock
 jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
     tenantTransaction: jest.fn(async (_c, fn) => fn(prismaMock)),
 }));
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({employeeIds:employees.map(e=>e.id)})}));
 jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
     resolveWorkingDays: jest.fn(async () => workingMap),
 }));
@@ -52,12 +53,12 @@ beforeEach(() => {
 });
 
 describe('HR-ATT-ABSENCE-01 guards', () => {
-    it('only considers employees enrolled on the device', async () => {
+    it('only considers employees included in published setup', async () => {
         const s = await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-11' });
 
         // 8 people have no biometric_id and generate no punches whatever they
         // do — marking them absent daily would dock them for not being enrolled.
-        expect(prismaMock.employee.findMany.mock.calls[0][0].where.biometric_id).toEqual({ not: null });
+        expect(prismaMock.employee.findMany.mock.calls[0][0].where.id).toEqual({in:[ENROLLED.id]});
         expect(s.skippedNotEnrolled).toBe(8);
     });
 

@@ -430,6 +430,7 @@ export function registerAttendanceTools(server) {
       offDays: z.array(z.number().int().min(1).max(7)).max(6).optional().describe("Rest days as ISO weekdays (Mon=1 .. Sun=7), e.g. [6,7] for Sat-Sun"),
       rotatingShifts: z.array(SHIFT_WINDOW).min(1).optional().describe("Rotation windows; required for rotating rosters instead of shift"),
       cycle: z.object({
+        sequence: z.array(z.number().int().min(0).nullable()).optional(),
         days: z.number().int().positive(),
         anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "cycle.anchor must be YYYY-MM-DD"),
         offIndex: z.union([
@@ -438,6 +439,10 @@ export function registerAttendanceTools(server) {
         ]),
       }).optional().describe("Rotation phase { days, anchor, offIndex }: offIndex is the 0-based rest-day position(s) within the cycle — a number, or an array for multi-day rests (e.g. 4-day 'day, night, off, off' -> [2,3])"),
       crossesMidnight: z.boolean().optional().describe("True when the shift ends the next calendar day"),
+      breaks: z.array(SHIFT_WINDOW.extend({paid:z.boolean()})).optional(),
+      minRestHours: z.number().min(0).max(24).optional(),
+      maxConsecutiveDays: z.number().int().min(0).max(31).optional(),
+      maxHoursPerWeek: z.number().min(0).max(168).optional(),
       shiftHours: z.number().positive().optional().describe("Contracted shift length in hours"),
       source: z.string().optional().describe("Provenance label, e.g. 'Employees Workbook 2026-08'"),
     })
@@ -464,7 +469,7 @@ export function registerAttendanceTools(server) {
       schedule_name: z.string().min(1).describe("Human-readable schedule name"),
       effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
       total_hours_per_week: z.number().positive().describe("Contracted hours per week"),
-      effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted"),
+      effective_end_date: z.string().nullable().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted or null"),
       schedule_pattern: SCHEDULE_PATTERN.describe("Roster: shift {from,to} HH:MM + offDays [1..7] (Mon=1); use rotatingShifts+cycle for rotating rosters"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
@@ -481,9 +486,10 @@ export function registerAttendanceTools(server) {
     "Update a work schedule (partial). Only the fields you send are changed.",
     {
       id: z.string().min(1).describe("Work schedule id (references WorkSchedule)"),
+      correctionReason: z.string().min(1).optional(),
       schedule_name: z.string().optional().describe("Human-readable schedule name"),
       effective_start_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD"),
-      effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; null-out by omitting"),
+      effective_end_date: z.string().nullable().optional().describe("ISO date; send null to clear"),
       total_hours_per_week: z.number().positive().optional().describe("Contracted hours per week"),
       schedule_pattern: SCHEDULE_PATTERN.optional().describe("Roster (same shape as create): shift {from,to} HH:MM + offDays [1..7] (Mon=1); rotatingShifts+cycle for rotations"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),

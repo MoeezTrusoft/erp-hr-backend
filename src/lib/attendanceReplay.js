@@ -13,19 +13,22 @@
 // HR-ATT-POLICY-01.
 import prisma from "./prisma.js";
 import { evaluateShift } from "./attendanceEvaluator.js";
-import { resolveWorkingDays } from "../services/workingDay.service.js";
+import { loadAttendanceRuntime } from "../services/attendanceSetup.service.js";
+
+import { shiftFor, shiftCandidates } from './attendanceShift.js';
+export { shiftFor, shiftCandidates };
 
 const MIN_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MIN_MS;
 
-export const startOfDay = (v) => { const d = new Date(v); d.setHours(0, 0, 0, 0); return d; };
+export const startOfDay = (v) => { const d = new Date(v); d.setUTCHours(0, 0, 0, 0); return d; };
 export const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
 
 /** ISO weekday: Monday = 1 … Sunday = 7. Same definition workingDay.service
  *  uses, and local like startOfDay above, so the two agree on which day a
  *  timestamp falls in. */
 const isoDow = (date) => {
-  const js = new Date(date).getDay();
+  const js = new Date(date).getUTCDay();
   return js === 0 ? 7 : js;
 };
 
@@ -35,69 +38,6 @@ const isoDow = (date) => {
  * roster; for a rotating one (HR-ATT-ROTATING-01) every alternative, because
  * "10am/pm – 10am/pm" has no single start time.
  */
-export function shiftCandidates(pattern, day) {
-  if (typeof pattern === "function") pattern = pattern(day);
-  const mk = (hhmm) => {
-    const m = typeof hhmm === "string" ? hhmm.trim().match(/^(\d{1,2}):(\d{2})/) : null;
-    if (!m) return null;
-    const d = new Date(day);
-    d.setHours(Number(m[1]), Number(m[2]), 0, 0);
-    return d;
-  };
-  const build = (raw) => {
-    const start = mk(raw?.from);
-    let end = mk(raw?.to);
-    if (start && end && end <= start) end = new Date(end.getTime() + DAY_MS);
-    return { start, end };
-  };
-
-  const rotating = Array.isArray(pattern?.rotatingShifts) ? pattern.rotatingShifts : null;
-  if (rotating?.length) return rotating.map(build).filter((s) => s.start);
-
-  // HR-ROSTER-04 — this weekday may work different hours.
-  //
-  // `shift` holds one {from,to}, so a roster could not say "Saturday is a short
-  // day". Akash works 07:30-15:00 on weekdays and 10:18-13:42 on Saturdays;
-  // judged against the single window every Saturday came out as a 2-3 hour day,
-  // under the half-day threshold, stored ABSENT — five unpaid days for work he
-  // actually did.
-  //
-  // Keyed by ISO weekday (Monday=1 .. Sunday=7) and read as a string, because
-  // schedule_pattern round-trips through JSONB and numeric keys come back as
-  // strings. A malformed entry falls through to `shift` rather than erasing the
-  // roster: losing the window entirely would make every scan unrostered, which
-  // is worse than the wrong hours.
-  const byDay = pattern?.shiftByDay?.[String(isoDow(day))];
-  const perDay = byDay ? build(byDay) : null;
-  if (perDay?.start && perDay?.end) return [perDay];
-
-  const single = build(pattern?.shift);
-  return single.start ? [single] : [];
-}
-
-/**
- * The shift window for a day. `anchor` is the arrival that day, and for a
- * rotating roster it decides WHICH window applies: a 22:03 punch is an on-time
- * night start, not a twelve-hour-late day start. Without an anchor the first
- * window is used — that path only feeds tomorrow's check-out cutoff, where no
- * arrival exists yet.
- */
-export function shiftFor(pattern, day, anchor) {
-  const options = shiftCandidates(pattern, day);
-  if (!options.length) return { start: null, end: null };
-  if (options.length === 1 || !anchor) return options[0];
-
-  const t = new Date(anchor).getTime();
-  let best = null;
-  for (const opt of options) {
-    // Compare across midnight: a 23:50 punch is 10 minutes from a 00:00 start.
-    let d = Math.abs(t - opt.start.getTime());
-    d = Math.min(d, Math.abs(d - DAY_MS));
-    if (!best || d < best.d) best = { d, opt };
-  }
-  return best.opt;
-}
-
 /**
  * Group punches into shifts by ANCHORING THEM TO THE ROSTER.
  *
@@ -295,7 +235,7 @@ export function sessioniseByRoster(
     // arrival, as before.
     const loneDirection = () => {
       if (list.length !== 1) return null;
-      const day = startOfDay(new Date(`${key}T00:00:00`));
+      const day = startOfDay(new Date(`${key}T00:00:00Z`));
       const t = list[0].punchedAt.getTime();
       let nearest = null;
       for (const { start, end } of shiftCandidates(pattern, day)) {
@@ -332,7 +272,7 @@ export function sessioniseByRoster(
     // Attendance.primary_sn / Attendance.secondary_punches: primary punches
     // are the normal case, punches on any other device are recorded
     // explicitly rather than silently merged.
-    out.push({ day: startOfDay(new Date(`${key}T00:00:00`)), punches: shaped, corrections, punchSn: list.map((p) => p.sn ?? null) });
+    out.push({ day: startOfDay(new Date(`${key}T00:00:00Z`)), punches: shaped, corrections, punchSn: list.map((p) => p.sn ?? null) });
   }
 
   return out;
@@ -362,9 +302,10 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   // The extra day exists only to COMPLETE shifts belonging to the window;
   // sessions are filtered back to [from, to] below so no row is written outside
   // the range the caller asked for.
-  const windowStart = new Date(new Date(`${from}T00:00:00`).getTime() - DAY_MS);
-  const windowEnd = new Date(new Date(`${to}T23:59:59`).getTime() + DAY_MS);
+  const windowStart = new Date(new Date(`${from}T00:00:00Z`).getTime() - DAY_MS);
+  const windowEnd = new Date(new Date(`${to}T23:59:59Z`).getTime() + DAY_MS);
 
+  const runtime = await loadAttendanceRuntime({tenantId,from:windowStart,to:windowEnd});
   const punches = await prisma.attendanceDevicePunch.findMany({
     where: {
       tenantId,
@@ -403,35 +344,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   const results = [];
 
   for (const [employeeId, rows] of byEmployee) {
-    const [schedules, working] = await Promise.all([
-      // Effective-dated: pick the schedule in force ON the window, not simply
-      // the newest row. Without the date filter a mid-month shift change would
-      // be applied retroactively to days it never covered.
-      prisma.workSchedule.findMany({
-        where: {
-          tenantId, employeeId,
-          effective_start_date: { lte: windowEnd },
-          OR: [
-            { effective_end_date: null },
-            { effective_end_date: { gte: windowStart } },
-          ],
-        },
-        orderBy: [{ effective_start_date: "desc" }, { id: "desc" }],
-        select: { schedule_pattern: true, effective_start_date: true, effective_end_date: true },
-      }),
-      resolveWorkingDays({
-        employeeId,
-        tenantId,
-        from,
-        to: new Date(new Date(to).getTime() + DAY_MS),
-      }),
-    ]);
-
-    const patternForDay = schedules.length ? (day) => {
-      const key = dayKey(day);
-      return schedules.find(s => dayKey(s.effective_start_date)<=key &&
-        (!s.effective_end_date || dayKey(s.effective_end_date)>=key))?.schedule_pattern;
-    } : undefined;
+    const patternForDay = day => runtime.resolve(employeeId,day).pattern;
     for (const session of sessioniseByRoster(rows, patternForDay)) {
       const day = session.day;
       // The padding day is for context only — never for output.
@@ -455,10 +368,15 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       // visible and payable. And an absent verdict from the resolver is not
       // permission to drop anything — only an explicit `working === false`
       // suppresses, so an employee with no roster keeps every day they scan on.
-      const dayInfo = working.get(key);
+      const dayInfo = runtime.resolve(employeeId,day,session.punches[0]?.timestamp);
+      if(['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(dayInfo.reason))continue;
+      if(dayInfo.working == null) {
+        results.push({employeeId,day,setupVersion:dayInfo.setupVersion,setupSnapshot:dayInfo,verdict:{status:"SETUP_REQUIRED",dayCredit:null,requiresRegularization:true,anomalies:[],workedMinutes:0,checkIn:session.punches.find(p=>p.type==='IN')?.timestamp??null,checkOut:session.punches.findLast(p=>p.type==='OUT')?.timestamp??null},corrections:[]});
+        continue;
+      }
       if (dayInfo?.working === false && session.punches.length < 2) continue;
       const tomorrow = new Date(day.getTime() + DAY_MS);
-      const tomorrowInfo = working.get(dayKey(tomorrow));
+      const tomorrowInfo = runtime.resolve(employeeId,tomorrow);
       const nextShift = shiftFor(patternForDay, tomorrow);
 
       const verdict = evaluateShift({
@@ -471,16 +389,17 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
         // employee was scored against the DAY window (10:00–22:00) even on a
         // night shift, turning a 21:59 night arrival into "11h59 late" and a
         // half-day deduction.
-        shift: shiftFor(patternForDay, day, session.punches[0]?.timestamp),
-        policy,
+        shift: dayInfo.shift,
+        policy: policy ?? dayInfo.policy,
         nextDay: {
           working: Boolean(tomorrowInfo?.working),
           nextShiftStart: tomorrowInfo?.working ? nextShift.start : null,
         },
         now,
       });
+      if(dayInfo.reason==='PAID_NO_PUNCH')Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,anomalies:[]});
 
-      results.push({ employeeId, day, verdict, corrections: session.corrections });
+      results.push({ employeeId, day, verdict, setupVersion:dayInfo.setupVersion, setupSnapshot:dayInfo, corrections: session.corrections, punchSn:session.punchSn });
     }
   }
 

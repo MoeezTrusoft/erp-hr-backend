@@ -13,6 +13,7 @@
 //
 // HR-ATT-POLICY-01.
 import { z } from "zod";
+import { registerAttendanceReadinessTools } from './attendanceReadinessTools.js';
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -41,6 +42,7 @@ function getCtx() {
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 
 export function registerAttendanceSetupTools(server) {
+  registerAttendanceReadinessTools(server);
   // ── ATTENDANCE POLICY ──────────────────────────────────────────────────────
   server.tool(
     "hr_attendance_policy_get",
@@ -57,6 +59,7 @@ export function registerAttendanceSetupTools(server) {
     "hr_attendance_policy_update",
     "Update the tenant's attendance policy thresholds (returns config to DRAFT)",
     {
+      expectedVersion: z.number().int().min(0).optional(),
       graceMinutes: z.coerce.number().int().min(0).optional()
         .describe("Minutes after shift start still counted PRESENT (AttendancePolicyConfig.graceMinutes)"),
       halfDayAfterMinutes: z.coerce.number().int().min(0).optional()

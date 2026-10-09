@@ -28,6 +28,7 @@ enum LeaveAccrualPeriod {
 }
 
 enum StatusAttendance {
+  SETUP_REQUIRED
   PRESENT
   ABSENT
   LATE // late arrival at any lateness past grace; when lateness ≥ the half-day
@@ -589,6 +590,8 @@ model Log {
 }
 
 model Attendance {
+  setupVersion Int?
+  setupSnapshot Json?
   id          Int              @id @default(autoincrement())
   employeeId  Int
   date        DateTime         @default(now())
@@ -698,6 +701,8 @@ model AttendanceDevicePunch {
 // Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
 // pending-approvals list and the Leave & Anomaly screen.
 model AttendanceAnomaly {
+  routingSnapshot Json?
+  approvalEnteredAt DateTime @default(now())
   approvalPolicy String @default("STANDARD")
   id         Int           @id @default(autoincrement())
   employeeId Int
@@ -1154,6 +1159,8 @@ model HolidayCalendar {
 }
 
 model Holiday {
+  startTime         String?
+  endTime           String?
   id                Int      @id @default(autoincrement())
   holidayCalendarId Int
   date              DateTime
@@ -1430,6 +1437,30 @@ model WorkSchedule {
   @@index([employeeId, effective_start_date])
   @@index([tenantId])
   @@map("work_schedules")
+}
+
+// Draft settings are editable; published releases are immutable snapshots.
+model AttendanceSetupDraft {
+  tenantId String @id @db.Uuid
+  version Int @default(1)
+  settings Json @default("{}")
+  updatedAt DateTime @updatedAt
+  @@map("attendance_setup_drafts")
+}
+
+model AttendanceSetupRelease {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  version Int
+  effectiveFrom DateTime @db.Date
+  coverageThrough DateTime @db.Date
+  config Json
+  reason String
+  publishedById Int?
+  publishedAt DateTime @default(now())
+  @@unique([tenantId, version])
+  @@index([tenantId, effectiveFrom, version])
+  @@map("attendance_setup_releases")
 }
 
 model Source {

@@ -1,6 +1,8 @@
 export const HEADEND_TENANT = '61b7eb53-ab6e-413f-9d9a-1ecf4e071e73';
 export const HEADEND_OFFICE = 'HVC-Headend-Staff';
-export const isHeadendEmployee = employee => employee?.tenant_id === HEADEND_TENANT && employee?.payrollOffice === HEADEND_OFFICE;
+// Kept as an export alias for callers; eligibility is now explicit configuration.
+export const isManualMonthlyEmployee = employee => employee?.attendanceInputMode === 'MANUAL_MONTHLY';
+export const isHeadendEmployee = isManualMonthlyEmployee;
 const fail = message => { throw Object.assign(new Error(message), {status:400}); };
 export function payrollMonth(month) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '')) fail('Use YYYY-MM for the payroll month');

@@ -19,54 +19,10 @@ const scopedWhere = (tenantId, where) =>
   tenantId === undefined ? where : withTenant(tenantId, where);
 
 // Helper Functions
-const calculateWorkingDays = async (employeeId, startDate, endDate) => {
-  let count = 0;
-  const current = new Date(startDate);
-  const end = new Date(endDate);
-
-  // Get employee's holiday calendar
-  const employeeCalendar = await prisma.employeeHolidayCalendar.findFirst({
-    where: {
-      employeeId,
-      OR: [
-        { effectiveTo: null },
-        { effectiveTo: { gte: current } }
-      ]
-    },
-    include: {
-      holidayCalendar: {
-        include: {
-          holidays: {
-            where: {
-              date: {
-                gte: current,
-                lte: end
-              }
-            }
-          }
-        }
-      }
-    }
-  });
-
-  const holidays = employeeCalendar?.holidayCalendar?.holidays || [];
-
-  while (current <= end) {
-    const dayOfWeek = current.getDay();
-    // Skip weekends (Sunday = 0, Saturday = 6)
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      // Check if it's a holiday
-      const isHoliday = holidays.some(holiday =>
-        holiday.date.toDateString() === current.toDateString()
-      );
-      if (!isHoliday) {
-        count++;
-      }
-    }
-    current.setDate(current.getDate() + 1);
-  }
-
-  return count;
+const calculateWorkingDays = async (employeeId, startDate, endDate, tenantId) => {
+  const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true});
+  if([...days.values()].some(d=>d.working==null))throw Object.assign(new Error('Complete attendance setup before calculating leave'),{status:409});
+  return [...days.values()].reduce((count,d)=>count+(d.working?1:0),0);
 };
 
 const calculateAccrualAmount = async (policy, employee, date) => {
@@ -585,7 +541,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
   }
 
   // Calculate duration (excluding weekends and holidays)
-  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end);
+  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end, tenantId);
 
   if (durationDays <= 0) {
     throw new Error('No working days in the selected date range');
@@ -1497,7 +1453,7 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
   // Derive the leave window day-by-day on the employee's actual roster.
   let workingDays;
   try {
-    const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end });
+    const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end, ignoreLeaves: true });
     workingDays = [...derived.values()].filter((d) => d.working);
   } catch {
     // Derivation needs the employee to exist; a defunct employee must not

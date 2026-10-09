@@ -18,6 +18,7 @@ let createdSchedules;
 let updatedSchedules;
 
 const prismaMock = {
+    $executeRaw:jest.fn(),payrollRun:{findFirst:jest.fn(async()=>null)},
     employee: {
         findMany: jest.fn(async () => employeeRows),
         findFirst: jest.fn(async ({ where }) =>
@@ -45,7 +46,7 @@ const prismaMock = {
                         (s.effective_end_date == null || s.effective_end_date.getTime() >= asOf.getTime())
                 );
             }
-            return scheduleRows;
+            return where?.employeeId ? scheduleRows.filter(s=>s.employeeId===where.employeeId) : scheduleRows;
         }),
         findFirst: jest.fn(async ({ where }) => {
             // createWorkSchedule overlap probe: open-ended previous schedule.
@@ -79,6 +80,7 @@ const prismaMock = {
     overtimeRule: { findFirst: jest.fn(async () => null) },
 };
 
+jest.unstable_mockModule('../../src/lib/rlsTenant.js',()=>({tenantTransaction:async(_,fn)=>fn(prismaMock)}));
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/lib/tenancy.js', () => ({
     scopedWhere: (_t, where) => where,
@@ -134,7 +136,7 @@ describe('getRosterCoverage', () => {
         expect(out.missingCount).toBe(1);
     });
 
-    it('counts a future rehire active as-at a date after the prior end', async () => {
+    it('excludes the terminated gap before a future rehire starts', async () => {
         // Meesam-style: period ended 20 Aug, new open period started 7 Sep.
         // Affan stays terminated throughout (their period from beforeEach).
         periodRows = [
@@ -147,11 +149,8 @@ describe('getRosterCoverage', () => {
 
         expect(outSep.activeEmployees).toBe(1); // rehired → Huzaifa active in Sep
         expect(outSep.missingCount).toBe(0); // and his open 2025 roster covers Sep
-        // Aug 25: Huzaifa's LATEST period is the open rehire (start 7 Sep) — the
-        // service intentionally reads only the latest, so he still counts as
-        // active inside the terminated gap. Affan stays terminated (latest
-        // period closed 31 Jul).
-        expect(outAug.activeEmployees).toBe(1);
+        // August 25 falls between the closed period and the future rehire.
+        expect(outAug.activeEmployees).toBe(0);
         expect(outAug.missingCount).toBe(0); // his 2025 open roster covers Aug
         expect(outAug.missing.some((m) => m.id === 490)).toBe(false);
     });
@@ -161,7 +160,7 @@ describe('createWorkSchedule auto-close', () => {
     it('closes the previous open schedule the day before the new start', async () => {
         await svc.createWorkSchedule({
             employeeId: 481,
-            schedule_name: 'Night shift',
+            schedule_name: 'Night shift',total_hours_per_week:54,
             effective_start_date: '2026-09-11',
             schedule_pattern: { offDays: [7], shift: { from: '22:00', to: '07:00' }, crossesMidnight: true },
             tenantId: TENANT,
@@ -183,12 +182,12 @@ describe('createWorkSchedule auto-close', () => {
         await expect(
             svc.createWorkSchedule({
                 employeeId: 481,
-                schedule_name: 'Overlap',
+                schedule_name: 'Overlap',total_hours_per_week:48,
                 effective_start_date: '2026-09-15',
                 effective_end_date: '2026-10-15',
                 schedule_pattern: { offDays: [7], shift: { from: '09:00', to: '17:00' } },
                 tenantId: TENANT,
             })
-        ).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('overlaps') });
+        ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('overlaps') });
     });
 });

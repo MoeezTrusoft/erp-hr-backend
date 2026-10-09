@@ -1,311 +1,306 @@
-import prisma from "../lib/prisma.js";
-import { logAction } from "../utils/logs.js";
-import { AppError } from '../utils/AppError.js';
-import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
-import { assertSchedulePattern } from "../lib/schedulePattern.js";
+import prisma from '../lib/prisma.js';
+import { tenantTransaction } from '../lib/rlsTenant.js';
+import { assertSchedulePattern } from '../lib/schedulePattern.js';
+import {
+  addDays,
+  badSetup,
+  covers,
+  dateKey,
+  dateOnly,
+  dateRange,
+  employedOn,
+  overlaps,
+} from '../lib/attendanceDates.js';
 
-// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args object /
-// trailing param; folded into work-schedule reads and stamped on creates,
-// fail-closed when present.
-
-export const getWorkSchedules = async ({ employeeId, tenantId }) => {
-    // T-FIX: parseInt(undefined) is NaN — a tenant-wide list call (no
-    // employeeId filter) used to hand Prisma an invalid Int and crash instead
-    // of listing. Filter only when a real id arrives.
-    const parsedEmployeeId = parseInt(employeeId, 10);
-    return await prisma.workSchedule.findMany({
-        where: scopedWhere(tenantId, {
-            ...(Number.isFinite(parsedEmployeeId) ? { employeeId: parsedEmployeeId } : {}),
-        }),
-        include: {
-            employee: {
-                select: {
-                    first_name: true,
-                    last_name: true
-                }
-            },
-            overtimeRule: true
-        },
-        orderBy: { effective_start_date: 'desc' }
-    });
+const include = {
+  employee: { select: { first_name: true, last_name: true } },
+  overtimeRule: true,
 };
+const scope = (tenantId) => {
+  if (!tenantId) throw badSetup('Tenant is required', 403);
+  return tenantId;
+};
+const scheduleCovers = (r, d) =>
+  covers(r, d, 'effective_start_date', 'effective_end_date');
+const scheduleOverlaps = (a, b) =>
+  overlaps(a, b, 'effective_start_date', 'effective_end_date');
 
-export const createWorkSchedule = async (data) => {
-    const { employeeId, effective_start_date, effective_end_date, overtimeRuleId, tenantId } = data;
+export const getWorkSchedules = ({ employeeId, tenantId }) =>
+  prisma.workSchedule.findMany({
+    where: {
+      tenantId: scope(tenantId),
+      ...(employeeId ? { employeeId: Number(employeeId) } : {}),
+    },
+    include,
+    orderBy: [{ effective_start_date: 'desc' }, { id: 'desc' }],
+  });
 
-    // HR-ROSTER-01 auto-close — the previous OPEN schedule is closed the day
-    // before the new one starts instead of hard-blocking with a 400. Effective
-    // dating means closing the old row IS the historical record: the UI tells
-    // HR this will happen (A2), the new pattern takes over from its start date,
-    // and no window is left where the employee has NO roster in force (which
-    // day-derivation would read as working-every-day). Overlaps with an already
-    // CLOSED schedule (bad dates) still fail closed below.
-    const overlappingSchedule = await prisma.workSchedule.findFirst({
-        where: scopedWhere(tenantId, {
-            employeeId: parseInt(employeeId),
-            OR: [
-                {
-                    effective_start_date: { lte: new Date(effective_end_date || '2100-01-01') },
-                    effective_end_date: { gte: new Date(effective_start_date) }
-                },
-                {
-                    effective_start_date: { lte: new Date(effective_start_date) },
-                    effective_end_date: null
-                }
-            ]
-        })
-    });
+export async function assertRosterPeriodEditable(tx, tenantId, from, to) {
+  const run = await tx.payrollRun.findFirst({
+    where: {
+      tenantId,
+      periodEnd: { gte: dateOnly(from) },
+      ...(to ? { periodStart: { lte: dateOnly(to) } } : {}),
+      status: { notIn: ['CANCELLED', 'FAILED'] },
+    },
+    select: { id: true },
+  });
+  if (run)
+    throw badSetup(
+      'Recall or cancel the affected payroll run before changing its roster',
+      409,
+    );
+}
 
-    if (overlappingSchedule) {
-        const newStart = new Date(effective_start_date);
-        const prevOpen = overlappingSchedule.effective_end_date == null
-            && overlappingSchedule.effective_start_date.getTime() <= newStart.getTime();
-        if (prevOpen && !effective_end_date) {
-            // Auto-close path: the previous roster runs up to the day BEFORE the
-            // new one. Day-before is computed on UTC midnights — schedules are
-            // day-granular (HR-ROSTER-01), never sub-day.
-            const dayBefore = new Date(newStart.getTime() - 24 * 60 * 60 * 1000);
-            await prisma.workSchedule.update({
-                where: { id: overlappingSchedule.id },
-                data: { effective_end_date: dayBefore },
-            });
-            await logAction({
-                employeeId: Number(employeeId),
-                type: "Update",
-                module: "Attanace - Work Schedule",
-                result: "SUCCESS",
-                notes: `Auto-closed schedule "${overlappingSchedule.id}" on ${dayBefore.toISOString().slice(0, 10)} (superseded by a new roster from ${newStart.toISOString().slice(0, 10)})`,
-                tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-            });
-        } else {
-            // A dated overlap that auto-close cannot express (e.g. a bounded
-            // schedule overlapping a NEW bounded one) stays a hard error.
-            throw new AppError('Work schedule overlaps with existing schedule', 400);
-        }
-    }
+function validated(data, previous = {}) {
+  const end =
+    data.effective_end_date === null
+      ? null
+      : (data.effective_end_date ?? previous.effective_end_date);
+  const overtime =
+    data.overtimeRuleId === null
+      ? null
+      : (data.overtimeRuleId ?? previous.overtimeRuleId);
+  const row = {
+    schedule_name: String(
+      data.schedule_name ?? previous.schedule_name ?? '',
+    ).trim(),
+    effective_start_date: dateOnly(
+      data.effective_start_date ?? previous.effective_start_date,
+    ),
+    effective_end_date: end ? dateOnly(end) : null,
+    total_hours_per_week: Number(
+      data.total_hours_per_week ?? previous.total_hours_per_week,
+    ),
+    schedule_pattern:
+      data.schedule_pattern === undefined
+        ? previous.schedule_pattern
+        : data.schedule_pattern,
+    overtimeRuleId: overtime ? Number(overtime) : null,
+  };
+  if (!row.schedule_name) throw badSetup('Schedule name is required');
+  if (
+    !Number.isFinite(row.total_hours_per_week) ||
+    row.total_hours_per_week <= 0 ||
+    row.total_hours_per_week > 168
+  )
+    throw badSetup('Weekly hours must be greater than zero and at most 168');
+  if (
+    row.effective_end_date &&
+    row.effective_end_date < row.effective_start_date
+  )
+    throw badSetup('Schedule end must be on or after its start');
+  assertSchedulePattern(row.schedule_pattern);
+  return row;
+}
 
-    // Validate overtime rule if provided — tenant-scoped, so a rule from another
-    // tenant cannot be attached (matches update).
-    if (overtimeRuleId) {
-        const overtimeRule = await prisma.overtimeRule.findFirst({
-            where: scopedWhere(tenantId, { id: parseInt(overtimeRuleId) })
-        });
-
-        if (!overtimeRule) {
-            throw new AppError('Overtime rule not found', 404);
-        }
-    }
-
-    // HR-ROSTER-03 — validate the pattern at the write boundary. Every consumer
-    // degrades quietly on nonsense (offDays [8] = never off, bad HH:MM = every
-    // scan unrostered); a wrong roster written today is a wrong payslip on
-    // payday. Collects ALL problems in one shot rather than the first.
-    if (data.schedule_pattern !== undefined && data.schedule_pattern !== null) {
-        assertSchedulePattern(data.schedule_pattern);
-    }
-    const targetEmployee = await prisma.employee.findFirst({
-        where: scopedEmployeeWhere(tenantId, { id: parseInt(employeeId, 10) }),
+// All roster writers share this lock and transaction. Validate the entire
+// replacement before closing the old version; failed inserts roll back both.
+export async function writeRoster({
+  tenantId,
+  employeeId,
+  id,
+  data,
+  action = 'create',
+  dryRun = false,
+}) {
+  scope(tenantId);
+  return tenantTransaction(
+    prisma,
+    async (tx) => {
+      const previous = id
+        ? await tx.workSchedule.findFirst({
+            where: { id: Number(id), tenantId },
+          })
+        : null;
+      if (id && !previous) throw badSetup('Work schedule not found', 404);
+      const eid = previous?.employeeId ?? Number(employeeId);
+      if (!Number.isInteger(eid) || eid < 1)
+        throw badSetup('Valid employee is required');
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:roster:${eid}`}))`;
+      const employee = await tx.employee.findFirst({
+        where: { id: eid, tenant_id: tenantId },
         select: { id: true },
-    });
-    if (!targetEmployee) {
-        throw new AppError('Employee not found in tenant', 404);
-    }
-
-    const create = await prisma.workSchedule.create({
-        data: scopedData(tenantId, {
-            employeeId: parseInt(employeeId),
-            schedule_name: data.schedule_name,
-            effective_start_date: new Date(effective_start_date),
-            effective_end_date: effective_end_date ? new Date(effective_end_date) : null,
-            total_hours_per_week: data.total_hours_per_week,
-            schedule_pattern: data.schedule_pattern,
-            overtimeRuleId: overtimeRuleId ? parseInt(overtimeRuleId) : null
-        }),
-        include: {
-            employee: {
-                select: {
-                    first_name: true,
-                    last_name: true
-                }
-            },
-            overtimeRule: true
-        }
-    });
-
-        await logAction({
-    employeeId: Number(employeeId),
-    type: "Create", // 👈 changed from CREATE to UPDATE
-    module: "Attanace - Work Schedule",
-    result: "SUCCESS",
-    notes: `Work Schedule "${create.id}" Created successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-
-    return create;
-};
-
-export const updateWorkSchedule = async (id, data, updatedBy, tenantId) => {
-    // T-FIX (tenant fail-open): resolve the row WITH the verified tenant scope —
-    // scopedWhere(undefined) applied no tenant filter, so a bare-id lookup could
-    // hit another tenant's schedule. (Controllers now always thread tenantId;
-    // the undefined branch stays for legacy migration callers.)
-    const schedule = await prisma.workSchedule.findFirst({
-        where: scopedWhere(tenantId, { id: parseInt(id) })
-    });
-
-    if (!schedule) {
-        throw new AppError('Work schedule not found', 404);
-    }
-
-    // Validate overtime rule if provided — tenant-scoped, so a rule from another
-    // tenant cannot be attached.
-    if (data.overtimeRuleId) {
-        const overtimeRule = await prisma.overtimeRule.findFirst({
-            where: scopedWhere(tenantId, { id: parseInt(data.overtimeRuleId) })
+      });
+      if (!employee) throw badSetup('Employee not found in tenant', 404);
+      const rows = await tx.workSchedule.findMany({
+        where: { tenantId, employeeId: eid },
+        orderBy: { effective_start_date: 'asc' },
+      });
+      if (action === 'delete') {
+        if (dateKey(previous.effective_start_date) <= dateKey(new Date()))
+          throw badSetup(
+            'Historical rosters must be retired or corrected, not deleted',
+            409,
+          );
+        await assertRosterPeriodEditable(
+          tx,
+          tenantId,
+          previous.effective_start_date,
+          previous.effective_end_date,
+        );
+        return tx.workSchedule.delete({ where: { id: previous.id } });
+      }
+      const row = validated(data, previous || {});
+      if (
+        row.overtimeRuleId &&
+        !(await tx.overtimeRule.findFirst({
+          where: { id: row.overtimeRuleId, tenantId, is_active: true },
+        }))
+      )
+        throw badSetup('Active overtime rule not found in tenant', 404);
+      const from = row.effective_start_date;
+      const other = rows.filter((r) => r.id !== previous?.id);
+      let close = null;
+      if (action === 'create') {
+        const hits = other.filter((r) => scheduleOverlaps(r, row));
+        if (
+          hits.length === 1 &&
+          !hits[0].effective_end_date &&
+          hits[0].effective_start_date < from &&
+          !row.effective_end_date
+        )
+          close = hits[0];
+        else if (hits.length)
+          throw badSetup('Work schedule overlaps an existing version', 409);
+      } else {
+        if (other.some((r) => scheduleOverlaps(r, row)))
+          throw badSetup('Work schedule overlaps an existing version', 409);
+        if (
+          dateKey(previous.effective_start_date) <= dateKey(new Date()) &&
+          !data.correctionReason?.trim()
+        )
+          throw badSetup(
+            'Provide a reason for a historical correction; otherwise create a change from a new date',
+          );
+        if (dateKey(previous.effective_start_date) !== dateKey(from))
+          throw badSetup(
+            'Keep the original start when correcting; create a new version to change dates',
+          );
+        row.schedule_pattern = {
+          ...row.schedule_pattern,
+          changeReason: data.correctionReason || data.reason || null,
+          supersedes: previous.schedule_pattern,
+          correctedAt: new Date().toISOString(),
+        };
+      }
+      await assertRosterPeriodEditable(
+        tx,
+        tenantId,
+        from,
+        previous && (!previous.effective_end_date || !row.effective_end_date)
+          ? null
+          : previous?.effective_end_date > row.effective_end_date
+            ? previous.effective_end_date
+            : row.effective_end_date,
+      );
+      if (dryRun)
+        return {
+          action,
+          employeeId: eid,
+          closes: close?.id ?? null,
+          proposed: row,
+        };
+      if (close)
+        await tx.workSchedule.update({
+          where: { id: close.id },
+          data: { effective_end_date: addDays(from, -1) },
         });
+      return previous
+        ? tx.workSchedule.update({
+            where: { id: previous.id },
+            data: row,
+            include,
+          })
+        : tx.workSchedule.create({
+            data: { ...row, tenantId, employeeId: eid },
+            include,
+          });
+    },
+    { tenantId, txOptions: { isolationLevel: 'Serializable' } },
+  );
+}
 
-        if (!overtimeRule) {
-            throw new AppError('Overtime rule not found', 404);
-        }
+export const createWorkSchedule = (data) =>
+  writeRoster({ tenantId: data.tenantId, employeeId: data.employeeId, data });
+export const updateWorkSchedule = (id, data, updatedBy, tenantId) =>
+  writeRoster({ tenantId, id, data, action: 'update' });
+export const deleteWorkSchedule = (id, deletedBy, tenantId) =>
+  writeRoster({ tenantId, id, data: {}, action: 'delete' });
+
+export async function getRosterCoverage({
+  tenantId,
+  date,
+  from = date || dateKey(new Date()),
+  to = from,
+}) {
+  scope(tenantId);
+  const days = dateRange(from, to);
+  const [employees, periods, schedules] = await Promise.all([
+    prisma.employee.findMany({
+      where: {
+        tenant_id: tenantId,
+        payroll_included: true,
+        attendanceInputMode: { not: 'MANUAL_MONTHLY' },
+      },
+      select: {
+        id: true,
+        employee_code: true,
+        employee_name: true,
+        first_name: true,
+        last_name: true,
+        hire_date: true,
+        joining_date: true,
+        employement_status: true,
+        status: true,
+      },
+    }),
+    prisma.employmentPeriod.findMany({ where: { tenantId } }),
+    prisma.workSchedule.findMany({
+      where: {
+        tenantId,
+        effective_start_date: { lte: dateOnly(to) },
+        OR: [
+          { effective_end_date: null },
+          { effective_end_date: { gte: dateOnly(from) } },
+        ],
+      },
+    }),
+  ]);
+  const active = employees.filter((e) =>
+    days.some((d) => employedOn(e, periods, d)),
+  );
+  const missing = [],
+    conflicts = [];
+  for (const e of active) {
+    const roster = schedules.filter((s) => s.employeeId === e.id),
+      absent = [],
+      overlapping = [];
+    for (const day of days) {
+      if (!employedOn(e, periods, day)) continue;
+      const hits = roster.filter((r) => scheduleCovers(r, day));
+      if (!hits.length) absent.push(day);
+      if (hits.length > 1) overlapping.push(day);
     }
-
-    // HR-ROSTER-03 — same write-boundary validation as create (see above).
-    if (data.schedule_pattern !== undefined && data.schedule_pattern !== null) {
-        assertSchedulePattern(data.schedule_pattern);
-    }
-
-    // T-FIX: field allowlist instead of `...data` spread — a caller-supplied
-    // employeeId (cross-tenant move) or tenantId (scope escape) in the body
-    // used to overwrite the protected columns verbatim.
-    const update =  await prisma.workSchedule.update({
-        where: { id: schedule.id },
-        data: {
-            schedule_name: data.schedule_name !== undefined ? data.schedule_name : undefined,
-            effective_start_date: data.effective_start_date ? new Date(data.effective_start_date) : undefined,
-            effective_end_date: data.effective_end_date ? new Date(data.effective_end_date) : undefined,
-            total_hours_per_week: data.total_hours_per_week !== undefined ? data.total_hours_per_week : undefined,
-            schedule_pattern: data.schedule_pattern !== undefined ? data.schedule_pattern : undefined,
-            overtimeRuleId: data.overtimeRuleId ? parseInt(data.overtimeRuleId) : undefined
-        },
-        include: {
-            employee: {
-                select: {
-                    first_name: true,
-                    last_name: true
-                }
-            },
-            overtimeRule: true
-        }
-    });
-
-    await logAction({
-    employeeId: Number(updatedBy),
-    type: "Update", // 👈 changed from CREATE to UPDATE
-    module: "Attanace - Work Scheduler ",
-    result: "SUCCESS",
-    notes: `Work Schedule "${id}" Updated successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-
-    return update;
-};
-
-export const deleteWorkSchedule = async (id,deletedBy,tenantId) => {
-    const schedule = await prisma.workSchedule.findFirst({
-        where: scopedWhere(tenantId, { id: parseInt(id) })
-    });
-
-    if (!schedule) {
-        throw new AppError('Work schedule not found', 404);
-    }
-
-    const deleted = await prisma.workSchedule.delete({
-        where: { id: parseInt(id) }
-    });
-  await logAction({
-    employeeId: Number(deletedBy),
-    type: "Deleted", // 👈 changed from CREATE to UPDATE
-    module: "Attanace - Work Scheduler ",
-    result: "SUCCESS",
-    notes: `Work Schedule "${id}" Deleted successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-
-    return deleted;
-};
-
-// ROSTER-COVERAGE-01 — active employees with NO schedule in force as at a date.
-//
-// An employee with no schedule reads as working EVERY day (the safe direction
-// for cutoff leniency, the dangerous direction for absence marking), so the
-// gaps this reports are exactly the silent-absence risk. "Active" mirrors the
-// employment-period truth (open period = active; closed period = terminated —
-// never rely on employement_status alone; the sync script closes that loop).
-// AS-AT semantics: a schedule effective from tomorrow does NOT cover today.
-export const getRosterCoverage = async ({ tenantId, date }) => {
-    const asOf = date ? new Date(`${date}T00:00:00.000Z`) : new Date();
-    if (Number.isNaN(asOf.getTime())) {
-        throw new AppError('Invalid date — use YYYY-MM-DD', 400);
-    }
-
-    // Employee rows are tenant-scoped by tenant_id; periods carry tenantId too.
-    const employees = await prisma.employee.findMany({
-        where: { tenant_id: tenantId },
-        select: {
-            id: true,
-            employee_code: true,
-            employee_name: true,
-            first_name: true,
-            last_name: true,
-            employement_status: true,
-            hire_date: true,
-        },
-        orderBy: { id: 'asc' },
-    });
-
-    const periods = await prisma.employmentPeriod.findMany({
-        where: { tenantId, employeeId: { in: employees.map((e) => e.id) } },
-        orderBy: [{ employeeId: 'asc' }, { startDate: 'asc' }],
-        select: { employeeId: true, startDate: true, endDate: true },
-    });
-    const latestPeriod = new Map();
-    for (const p of periods) latestPeriod.set(p.employeeId, p);
-
-    // Schedules overlapping the AS-OF day (start ≤ day AND (open OR end ≥ day)).
-    const inForce = await prisma.workSchedule.findMany({
-        where: scopedWhere(tenantId, {
-            effective_start_date: { lte: asOf },
-            OR: [{ effective_end_date: null }, { effective_end_date: { gte: asOf } }],
-        }),
-        select: { employeeId: true, schedule_name: true, effective_start_date: true },
-    });
-    const covered = new Set(inForce.map((s) => s.employeeId));
-
-    const active = [];
-    const missing = [];
-    for (const e of employees) {
-        const period = latestPeriod.get(e.id);
-        const isActive = period
-            ? period.endDate == null || period.endDate.getTime() > asOf.getTime()
-            : String(e.employement_status || 'Active').toLowerCase() === 'active';
-        if (!isActive) continue;
-        const name = e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(' ') || `#${e.id}`;
-        active.push({ id: e.id, name, code: e.employee_code });
-        if (!covered.has(e.id)) {
-            missing.push({
-                id: e.id,
-                name,
-                code: e.employee_code,
-                hireDate: e.hire_date ? e.hire_date.toISOString().slice(0, 10) : null,
-            });
-        }
-    }
-
-    return {
-        date: asOf.toISOString().slice(0, 10),
-        activeEmployees: active.length,
-        withScheduleInForce: active.length - missing.length,
-        missingCount: missing.length,
-        missing,
+    const identity = {
+      id: e.id,
+      code: e.employee_code,
+      name:
+        e.employee_name ||
+        [e.first_name, e.last_name].filter(Boolean).join(' '),
+      hireDate: e.hire_date,
     };
-};
+    if (absent.length) missing.push({ ...identity, dates: absent });
+    if (overlapping.length) conflicts.push({ ...identity, dates: overlapping });
+  }
+  return {
+    date: days[0],
+    from: days[0],
+    to: days.at(-1),
+    activeEmployees: active.length,
+    withScheduleInForce: active.length - missing.length,
+    missingCount: missing.length,
+    missing,
+    conflicts,
+  };
+}

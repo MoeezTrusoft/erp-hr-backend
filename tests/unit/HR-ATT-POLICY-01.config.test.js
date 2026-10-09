@@ -6,6 +6,7 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
 const prismaMock = {
+    $executeRaw:jest.fn(),
     attendancePolicyConfig: { findUnique: jest.fn(), upsert: jest.fn(async ({ create, update }) => ({ id: 1, ...create, ...update })) },
     attendanceDeductionRule: { findMany: jest.fn(async () => []), upsert: jest.fn(async ({ create }) => ({ id: 1, ...create })) },
     attendanceApprovalLevel: { findMany: jest.fn(async () => []), findUnique: jest.fn(async () => null), upsert: jest.fn(async ({ create }) => ({ id: 1, ...create })), delete: jest.fn() },
@@ -48,7 +49,7 @@ describe('HR-ATT-POLICY-01 attendance policy config', () => {
         // Inverted bands would make a half day harder to earn than a full day.
         await expect(
             policy.updateAttendancePolicy({ tenantId: TENANT, halfDayMinPercent: 95, fullDayMinPercent: 90 }),
-        ).rejects.toThrow('halfDayMinPercent must be <= fullDayMinPercent');
+        ).rejects.toThrow('Half-day minimum cannot exceed full-day minimum');
     });
 
     it('catches inversion against the STORED row, not just the payload', async () => {
@@ -59,7 +60,7 @@ describe('HR-ATT-POLICY-01 attendance policy config', () => {
         // Payload alone looks fine; only the stored full-day value reveals it.
         await expect(
             policy.updateAttendancePolicy({ tenantId: TENANT, halfDayMinPercent: 80 }),
-        ).rejects.toThrow('halfDayMinPercent must be <= fullDayMinPercent');
+        ).rejects.toThrow('Half-day minimum cannot exceed full-day minimum');
     });
 
     it('rejects a session gap that would split or swallow a shift', async () => {
@@ -136,7 +137,7 @@ describe('HR-ATT-POLICY-01 deduction rules', () => {
         // Otherwise "3 of either kind" has two answers depending which rule you
         // read. The UI can then present a group as a single row.
         prismaMock.attendanceDeductionRule.findMany.mockResolvedValueOnce([
-            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSING_PUNCH',
+            { ruleKey: 'MISSING_CHECKIN', enabled:true, counterGroup: 'MISSING_PUNCH',
               triggerCount: 5, deductionDays: 1, periodScope: 'MONTH' },
         ]);
 
@@ -145,7 +146,7 @@ describe('HR-ATT-POLICY-01 deduction rules', () => {
                 tenantId: TENANT, ruleKey: 'MISSING_CHECKOUT',
                 counterGroup: 'MISSING_PUNCH', triggerCount: 3,
             }),
-        ).rejects.toThrow('must share the same triggerCount');
+        ).rejects.toThrow('inconsistent thresholds or caps');
     });
 
     it('rejects a malformed group name', async () => {
