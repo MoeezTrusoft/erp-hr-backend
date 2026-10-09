@@ -1,3 +1,4 @@
+import { startOutboxWake } from './outbox-wake.job.js';
 // src/jobs/outbox.loop.js — A.4 boot loop (WBS worker-wiring / T-P3.x).
 //
 // WHY THIS EXISTS
@@ -89,6 +90,7 @@ export function startOutboxDispatchLoop({
     const interval = clampInterval(intervalMs);
 
     let running = true;
+    let busy=false,wakePending=false;
     let timer = null;
     // The promise of the in-flight tick, so stop()/tests can await quiescence.
     let inflight = Promise.resolve();
@@ -103,12 +105,14 @@ export function startOutboxDispatchLoop({
     };
 
     function tick() {
-        timer = null;
         if (!running) return;
+        if (busy) {wakePending=true;return;}
+        busy=true;
+        if(timer)clearTimeoutFn(timer);timer=null;
         inflight = (async () => {
             let nextDelay = interval;
             try {
-                await run();
+                const result=await run();if(result?.published>0)wakePending=true;
             } catch (err) {
                 nextDelay = errorBackoffMs;
                 logger.warn?.(
@@ -116,7 +120,8 @@ export function startOutboxDispatchLoop({
                     'hr outbox loop: drain failed — backing off'
                 );
             }
-            schedule(nextDelay);
+            busy=false;
+            schedule(wakePending?0:nextDelay);wakePending=false;
         })();
     }
 
@@ -125,6 +130,7 @@ export function startOutboxDispatchLoop({
     tick();
 
     return {
+        wake:tick,
         async stop() {
             if (!running) {
                 // Idempotent: still await any tail tick already in flight.
@@ -217,6 +223,7 @@ export function startHrOutboxDispatcher({
             }),
         });
 
+        const stopWake=startOutboxWake(loop.wake);
         logger.info?.(
             { stream: 'hr:events', workerId, intervalMs },
             'hr outbox loop: dispatcher started'
@@ -226,6 +233,7 @@ export function startHrOutboxDispatcher({
             enabled: true,
             workerId,
             async stop() {
+                await stopWake();
                 await loop.stop();
                 try { await redis.quit(); } catch { /* best effort */ }
             },
@@ -241,3 +249,4 @@ export function startHrOutboxDispatcher({
 }
 
 export default startHrOutboxDispatcher;
+

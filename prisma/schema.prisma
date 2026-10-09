@@ -3734,3 +3734,12 @@ model MonthlyPayrollAttendance {
   @@index([tenantId, month])
   @@map("monthly_payroll_attendance")
 }
+
+
+model HrPmAvailabilityVersion {
+ tenantId String @db.Uuid
+ employeeId Int
+ version BigInt @default(1)
+ @@id([tenantId,employeeId])
+ @@map("hr_pm_availability_versions")
+}
