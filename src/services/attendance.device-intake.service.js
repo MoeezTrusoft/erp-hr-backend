@@ -31,7 +31,7 @@ export function parseAttlogRow(line) {
     const deviceUserId = (c[0] || "").trim();
     const timeStr = (c[1] || "").trim();
     if (!deviceUserId || !timeStr) return null;
-    const punchedAt = new Date(timeStr.replace(" ", "T"));
+    const punchedAt = new Date(timeStr.replace(" ", "T") + (/Z$|[+-]\d{2}:?\d{2}$/.test(timeStr) ? "" : "Z"));
     if (Number.isNaN(punchedAt.getTime())) return null;
     const num = (v, d = 0) => {
         const n = Number((v ?? "").toString().trim());

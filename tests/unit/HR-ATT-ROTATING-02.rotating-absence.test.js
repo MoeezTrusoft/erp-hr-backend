@@ -47,6 +47,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock
 jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
     tenantTransaction: jest.fn(async (_c, fn) => fn(prismaMock)),
 }));
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({employeeIds:employees.map(e=>e.id)})}));
 jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
     resolveWorkingDays: jest.fn(async ({ employeeId }) =>
         employeeId === ROTATOR.id ? workingMap.rotator : workingMap.fixed,

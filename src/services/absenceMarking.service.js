@@ -38,10 +38,11 @@
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { resolveWorkingDays } from "./workingDay.service.js";
+import { loadAttendanceRuntime } from "./attendanceSetup.service.js";
 import logger from "../lib/logger.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const startOfDay = (v) => { const d = new Date(v); d.setHours(0, 0, 0, 0); return d; };
+const startOfDay = (v) => { const d = new Date(v); d.setUTCHours(0, 0, 0, 0); return d; };
 const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
 
 /**
@@ -53,16 +54,17 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
   const last = startOfDay(to);
   if (last < first) throw Object.assign(new Error("`to` is before `from`"), { status: 400 });
 
-  // Guard 1: enrolled employees only — and (HR-ATT-ABSENCE-ELIG-01) only the
+  const runtime=await loadAttendanceRuntime({tenantId,from:first,to:last});
+
+  // Guard 1: published employees only — and (HR-ATT-ABSENCE-ELIG-01) only the
   // caller's own tenant, only attendance/payroll-eligible people, and never
   // the separated. Before this the query was a whole-DB, status-blind scan and
   // the tenant argument was decoration.
   const employees = await prisma.employee.findMany({
     where: {
-      biometric_id: { not: null },
+      id: {in:runtime.employeeIds},
       tenant_id: tenantId ?? undefined,
       payroll_included: true,
-      attendanceInputMode: {not:"MANUAL_MONTHLY"},
       status: { not: "Inactive" },
     },
     select: { id: true, employee_code: true, biometric_id: true },
@@ -95,14 +97,14 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
     employeesConsidered: employees.length,
     skippedNotEnrolled: await prisma.employee.count({ where: { biometric_id: null } }),
     marked: 0, alreadyPresent: 0, notWorking: 0, manuallyCorrected: 0,
-    skippedRotating: 0,
+    skippedRotating: 0, setupRequired: 0,
     skippedNotEmployed: 0,
     details: [],
   };
 
   for (const emp of employees) {
     const [working, existing] = await Promise.all([
-      resolveWorkingDays({ tenantId, employeeId: emp.id, from: first, to: last }),
+      resolveWorkingDays({ tenantId, employeeId: emp.id, from: first, to: last, runtime }),
       prisma.attendance.findMany({
         where: { tenantId, employeeId: emp.id, date: { gte: first, lte: last } },
         select: { id: true, date: true, status: true, manually_corrected: true },
@@ -120,6 +122,8 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
 
       // Guard 2: only days the employee was scheduled to work.
       const info = working.get(key);
+      if(info?.working==null){summary.setupRequired+=1;continue;}
+      const setup={setupVersion:info.setupVersion??null,setupSnapshot:JSON.parse(JSON.stringify(info))};
       if (!info?.working) { summary.notWorking += 1; continue; }
 
       // HR-ATT-PAID-NOPUNCH-01 — a standing paid-without-punches roster
@@ -165,7 +169,7 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
               where: { id: row.id },
               data: paidNoPunch
                 ? {
-                    status: "PRESENT",
+                    ...setup,status: "PRESENT",
                     day_credit: 1,
                     check_in: null,
                     check_out: null,
@@ -173,7 +177,7 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
                     remarks: "Full-time on-call (roster flag): paid day, no punch recorded",
                   }
                 : {
-                    status: "ABSENT",
+                    ...setup,status: "ABSENT",
                     day_credit: 0,
                     check_in: null,
                     check_out: null,
@@ -196,13 +200,13 @@ export async function markAbsences({ tenantId, from, to, dryRun = true }) {
           tx.attendance.create({
             data: paidNoPunch
               ? {
-                  tenantId, employeeId: emp.id, date: day,
+                  ...setup,tenantId, employeeId: emp.id, date: day,
                   status: "PRESENT", day_credit: 1,
                   requires_regularization: false,
                   remarks: "Full-time on-call (roster flag): paid day, no punch recorded",
                 }
               : {
-                  tenantId, employeeId: emp.id, date: day,
+                  ...setup,tenantId, employeeId: emp.id, date: day,
                   status: "ABSENT", day_credit: 0,
                   // Raised for regularization, not treated as settled: the employee
                   // can file an anomaly request and have the day put right.

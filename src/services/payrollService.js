@@ -1,3 +1,5 @@
+import { loadAttendanceRuntime } from './attendanceSetup.service.js';
+import { dateRange, employedOn, badSetup } from '../lib/attendanceDates.js';
 import { approvedLeaveCoverage } from "../lib/approvedLeaveCoverage.js";
 import { normalizeTimingCredits, isTimingRule } from "../lib/attendanceTimingPolicy.js";
 import { enrichPayrollTiming } from "./payrollTiming.service.js";
@@ -1458,12 +1460,29 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         // same thing for the monthly runs this fleet actually executes. Widening it
         // needs a second attendance read — add that when a non-monthly calendar
         // appears.
-        const attendanceDeductionRules = await prisma.attendanceDeductionRule.findMany({
-            where: withTenant(tenantId, { enabled: true }),
-            orderBy: { ruleKey: 'asc' }
-        });
+        const attendanceRuntime=await loadAttendanceRuntime({tenantId,from:payrollRun.periodStart,to:payrollRun.periodEnd});
+        const periodDays=dateRange(payrollRun.periodStart,payrollRun.periodEnd);
+        const initialConfig=attendanceRuntime.configOn(payrollRun.periodStart);
+        if(!initialConfig)throw badSetup('Publish attendance setup covering this payroll period',409);
+        const attendanceDeductionRules=(initialConfig.deductionRules||[]).filter(r=>r.enabled);
+        const ruleSignature=rules=>JSON.stringify((rules||[]).filter(r=>r.enabled).map(({id,tenantId,status,version,createdAt,updatedAt,created_at,updated_at,...rule})=>rule));
+        for(const day of periodDays){
+            const config=attendanceRuntime.configOn(day);
+            if(!config || ruleSignature(config.deductionRules)!==ruleSignature(attendanceDeductionRules))throw badSetup('Publish complete coverage with consistent deduction rules throughout this payroll period',409);
+        }
+        for(const employee of employees) {
+            const modes=new Set();
+            for(const day of periodDays) {
+                if(!employedOn(employee,employee.employmentPeriods||[],day))continue;
+                const info=attendanceRuntime.resolve(employee.id,day);
+                if(info.working==null)throw badSetup('Complete attendance setup for employee '+employee.id+' on '+day,409);
+                modes.add(info.profile?.mode);
+            }
+            if(modes.size>1)throw badSetup('Attendance input mode changes inside the payroll period for employee '+employee.id,409);
+            if(modes.size)employee.attendanceInputMode=[...modes][0];
+        }
 
-        if (attendanceDeductionRules.some(isTimingRule)) await enrichPayrollTiming({tenantId,payrollRun,employees:employees.filter(e=>!isHeadendEmployee(e)&&!e.payrollTimingFromSnapshot)});
+        if (attendanceDeductionRules.some(isTimingRule)) await enrichPayrollTiming({tenantId,payrollRun,runtime:attendanceRuntime,employees:employees.filter(e=>!isHeadendEmployee(e)&&!e.payrollTimingFromSnapshot)});
 
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which

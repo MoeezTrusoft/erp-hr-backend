@@ -73,6 +73,7 @@ export function validateSchedulePattern(pattern) {
       if (offDays.length >= 7) {
         errors.push("offDays: off every day is not a roster");
       }
+      if (new Set(offDays).size !== offDays.length) errors.push('offDays: remove duplicate weekdays');
     }
   }
 
@@ -114,17 +115,22 @@ export function validateSchedulePattern(pattern) {
     } else {
       const days = Number(c.days);
       const daysOk = Number.isInteger(days) && days > 0;
+      if(c.sequence !== undefined && (!Array.isArray(c.sequence) || c.sequence.length !== days || c.sequence.some(i=>i!==null&&(!Number.isInteger(i)||i<0||i>=(rotating?.length||0))))) errors.push('cycle.sequence: choose one shift index or null per cycle day');
       if (!daysOk) {
         errors.push(`cycle.days: expected a positive integer, got ${JSON.stringify(c.days)}`);
       }
       if (!ISO_DATE.test(String(c.anchor ?? ""))) {
         errors.push(`cycle.anchor: expected YYYY-MM-DD, got ${JSON.stringify(c.anchor)}`);
       }
+      else {
+        const anchor = new Date(`${c.anchor}T00:00:00Z`);
+        if (!Number.isFinite(+anchor) || anchor.toISOString().slice(0,10) !== c.anchor) errors.push('cycle.anchor: invalid calendar date');
+      }
       // A rest position may be a single index (3-day "work, work, off") or a
       // list of them (4-day "day, night, off, off"). Both spellings are read by
       // workingDay.service, which normalises to a Set.
       const offs = Array.isArray(c.offIndex) ? c.offIndex : [c.offIndex];
-      if (!offs.length) {
+      if (!offs.length && !Array.isArray(c.sequence)) {
         errors.push("cycle.offIndex: an off-index array must not be empty");
       }
       for (const raw of offs) {
@@ -137,6 +143,19 @@ export function validateSchedulePattern(pattern) {
         }
       }
     }
+  }
+
+  if (pattern.breaks !== undefined) {
+    if (!Array.isArray(pattern.breaks)) errors.push('breaks: expected an array');
+    else pattern.breaks.forEach((b,i)=>{
+      checkWindow(b,`breaks[${i}]`,errors);
+      if(typeof b.paid !== 'boolean')errors.push(`breaks[${i}].paid: choose paid or unpaid`);
+    });
+  }
+  if(pattern.cycle?.sequence?.every(i=>i==null))errors.push('cycle.sequence: at least one day must work');
+  if(pattern.maxConsecutiveDays!=null && !Number.isInteger(pattern.maxConsecutiveDays))errors.push('maxConsecutiveDays: use whole days');
+  for(const [key,max] of [['minRestHours',24],['maxConsecutiveDays',31],['maxHoursPerWeek',168]]) {
+    if(pattern[key] != null && (!Number.isFinite(pattern[key]) || pattern[key]<0 || pattern[key]>max))errors.push(`${key}: must be between 0 and ${max}`);
   }
 
   return { valid: errors.length === 0, errors };

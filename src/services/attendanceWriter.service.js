@@ -20,8 +20,6 @@ import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { replayTenant, dayKey } from "../lib/attendanceReplay.js";
 import { resolveWorkingDays } from "./workingDay.service.js";
-import { getAttendancePolicy } from "./attendancePolicyConfig.service.js";
-import { resolvePrimarySnAt } from "./deviceEnrolment.service.js";
 import { normalizeWorkMode } from "../lib/attendanceStatus.js";
 import logger from "../lib/logger.js";
 
@@ -98,8 +96,7 @@ async function persistEvaluatorAnomalies({ tenantId, employeeId, day, anomalies,
 }
 
 export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, now = new Date() }) {
-  const policy = await getAttendancePolicy({ tenantId });
-  const shifts = await replayTenant({ tenantId, from, to, policy, now });
+  const shifts = await replayTenant({ tenantId, from, to, now });
 
   const summary = {
     tenantId, from, to, dryRun,
@@ -116,28 +113,13 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
   // later re-link.
   const aliveIds = new Set(
     (await prisma.employee.findMany({
-      where: { attendanceInputMode:{not:"MANUAL_MONTHLY"}, id: { in: [...new Set(shifts.map((s) => s.employeeId))] } },
+      where: { id: { in: [...new Set(shifts.map((s) => s.employeeId))] } },
       select: { id: true },
     })).map((e) => e.id),
   );
 
-  // HR-ATT-PRIMARY-DEVICE-01 — the primary device serial per employee, resolved
-  // once per run at the window's midday (a mid-month re-enrolment yields the
-  // late-window primary for a whole-month sweep; the live per-day path
-  // re-evaluates each touched day individually, so the drift window is small
-  // and the next sweep corrects it). Employees with no SN-scoped primary stay
-  // absent from the map — their day rows keep primary_sn NULL (unmarked).
-  const dayBounds = { from: new Date(`${from}T00:00:00`), to: new Date(`${to}T23:59:59.999Z`) };
-  const primarySnByEmployee = new Map();
-  {
-    const mid = new Date((dayBounds.from.getTime() + dayBounds.to.getTime()) / 2);
-    for (const eid of aliveIds) {
-      const sn = await resolvePrimarySnAt(eid, mid);
-      if (sn) primarySnByEmployee.set(eid, sn);
-    }
-  }
-
-  for (const { employeeId, day, verdict, corrections, punchSn } of shifts) {
+  // Primary enrolment is resolved for the attendance day from its published configuration.
+  for (const { employeeId, day, verdict, corrections, punchSn, setupVersion, setupSnapshot } of shifts) {
     if (!aliveIds.has(employeeId)) { summary.vanishedEmployee += 1; continue; }
     summary.byStatus[verdict.status] = (summary.byStatus[verdict.status] ?? 0) + 1;
     if (verdict.dayCredit == null) summary.held += 1;
@@ -165,6 +147,8 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     const workMode = normalizeWorkMode(assignment?.workMode) ?? normalizeWorkMode(employee?.work_mode);
 
     const data = {
+      setupVersion: setupVersion ?? null,
+      setupSnapshot: JSON.parse(JSON.stringify(setupSnapshot ?? {})),
       check_in: verdict.checkIn,
       check_out: verdict.checkOut,
       total_hours: verdict.workedMinutes ? Number((verdict.workedMinutes / 60).toFixed(2)) : null,
@@ -172,7 +156,7 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
       day_credit: verdict.dayCredit,
       requires_regularization: verdict.requiresRegularization,
       ...(workMode ? { work_mode: workMode } : {}),
-      remarks: (corrections || []).length
+      remarks: verdict.status === 'SETUP_REQUIRED' ? `Attendance setup required: ${setupSnapshot?.reason}` : (corrections || []).length
         ? `device (${corrections.length} punch direction${corrections.length > 1 ? "s" : ""} auto-resolved)`
         : "device",
     };
@@ -183,11 +167,12 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     // per-punch trace). No primary ⇒ the row stays unmarked (NULL/0), which is
     // not the same as "all primary".
     Object.assign(data, computePrimaryProvenance({
-      primarySn: primarySnByEmployee.get(employeeId) ?? null,
+      primarySn: setupSnapshot?.primarySn ?? null,
       punchSn,
     }));
 
     const same = existing
+      && existing.setupVersion === data.setupVersion
       && existing.status === data.status
       && existing.day_credit === data.day_credit
       && Number(existing.total_hours ?? 0) === Number(data.total_hours ?? 0)
@@ -318,6 +303,7 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
     for (const r of list) {
       const info = working.get(dayKey(r.date));
       if (info?.working !== false) continue;
+      if (['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(info.reason)) continue;
       if (r.manually_corrected) { summary.skippedManuallyCorrected += 1; continue; }
       const status = statusFor(info.reason);
       if (r.status === status) continue; // already says so
@@ -376,7 +362,7 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
  */
 async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun }) {
   const roster = await prisma.employee.findMany({
-    where: { tenant_id: tenantId, attendanceInputMode: {not:"MANUAL_MONTHLY"}, NOT: { payroll_included: false } },
+    where: { tenant_id: tenantId, NOT: { payroll_included: false } },
     select: { id: true },
   });
 
@@ -408,6 +394,7 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
     const working = await resolveWorkingDays({ employeeId, tenantId, from, to });
     for (const [key, info] of working) {
       if (info?.working !== false) continue;
+      if (['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(info.reason)) continue;
       if (days.has(key)) continue; // already has a row, or a shift was evaluated
       toWrite.push({ employeeId, key, status: statusFor(info.reason), reason: info.reason });
     }
@@ -488,7 +475,7 @@ export async function applyEvaluatedShiftsForDays({ tenantId, days, now = new Da
   // replayTenant reads a day either side anyway — this window just has to
   // INCLUDE the previous day so the checkout lands in a re-evaluated day.
   const withPrev = [...unique];
-  const first = new Date(`${unique[0]}T00:00:00`);
+  const first = new Date(`${unique[0]}T00:00:00Z`);
   withPrev.unshift(new Date(first.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const uniqAll = [...new Set(withPrev)].sort();
 

@@ -61,6 +61,7 @@ jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>{const levels=await prismaMock.attendanceApprovalLevel.findMany();return {configOn:()=>({approvalLevels:levels,employees:[...employees.values()],periods:[]})};}}));
 const routing = await import('../../src/services/attendanceAnomalyRouting.service.js');
 
 beforeEach(() => {
@@ -179,7 +180,8 @@ describe('HR-ATT-POLICY-01 unroutable requests', () => {
         // Still PENDING: approving would release a held day, rejecting would
         // trigger a deduction. Neither may happen by accident.
         expect(anomalies.get(1).status).toBe('PENDING');
-        expect(prismaMock.attendanceAnomaly.update).not.toHaveBeenCalled();
+        expect(anomalies.get(1).routingSnapshot).toEqual([]);
+        expect(approvalsWritten).toHaveLength(0);
     });
 
     it('blocks on a non-skippable level rather than stepping over it', async () => {
@@ -334,5 +336,14 @@ describe('HR self-verification with separate management approval',()=>{
   const chain=await routing.resolveApprovalChain({tenantId:TENANT,employeeId:HR,approvalPolicy:'HR_MANAGEMENT'});
   expect(chain[0]).toMatchObject({resolved:false,skippable:false});
   await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:HR,decision:'APPROVED'})).rejects.toThrow();expect(approvalsWritten).toHaveLength(0);
+ });
+});
+
+describe('pinned approval routes',()=>{
+ it('keeps the original HR verifier inbox after policy reassignment',async()=>{
+  anomalies.set(1,{...anomalies.get(1),routingSnapshot:[{level:1,role:'MANAGER',approverId:MANAGER,resolved:true},{level:2,role:'HR',approverId:HR,resolved:true}]});
+  prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([{...CHAIN[1],approverId:MANAGEMENT}]);
+  expect((await routing.listPendingForApprover({tenantId:TENANT,approverId:HR})).map(a=>a.id)).toContain(1);
+  expect(await routing.listPendingForApprover({tenantId:TENANT,approverId:MANAGEMENT})).toHaveLength(0);
  });
 });

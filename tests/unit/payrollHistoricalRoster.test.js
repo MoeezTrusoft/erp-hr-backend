@@ -3,7 +3,7 @@ import {enrichPayrollTiming} from '../../src/services/payrollTiming.service.js';
 import {shiftFor,sessioniseByRoster} from '../../src/lib/attendanceReplay.js';
 const tenantId='test';
 const schedules=[{id:136,employeeId:487,effective_start_date:'2026-09-11',effective_end_date:null,schedule_pattern:{shift:{from:'22:00',to:'07:00'}}},{id:85,employeeId:487,effective_start_date:'2026-08-01',effective_end_date:'2026-09-10',schedule_pattern:{shift:{from:'15:00',to:'00:00'}}}];
-const db={workSchedule:{findMany:async()=>schedules},shiftAssignment:{findMany:async()=>[]},attendancePolicyConfig:{findUnique:async()=>({graceMinutes:0,earlyLeaveGraceMin:0})}};
+const db={attendanceSetupRelease:{findMany:async()=>[{version:1,effectiveFrom:'2026-08-01',coverageThrough:'2026-09-30',config:{version:1,settings:{defaultCalendarId:1},policy:{graceMinutes:0,earlyLeaveGraceMin:0},employees:[{id:487,hire_date:'2026-08-01'}],periods:[],schedules,calendars:[{id:1}],holidays:[],calendarAssignments:[]}}]},leave:{findMany:async()=>[]},leaveRequest:{findMany:async()=>[]},attendanceCallIn:{findMany:async()=>[]},workSchedule:{findMany:async()=>schedules},shiftAssignment:{findMany:async()=>[]},attendancePolicyConfig:{findUnique:async()=>({graceMinutes:0,earlyLeaveGraceMin:0})}};
 describe('Historical payroll shift evidence',()=>{
  it('does not treat after-midnight departures as early under stale 7AM anomaly snapshots',async()=>{
   const attendance=[{date:'2026-09-07',check_in:'2026-09-07T14:50:27Z',check_out:'2026-09-08T02:34:53Z'},{date:'2026-09-08',check_in:'2026-09-08T15:02:07Z',check_out:'2026-09-09T01:32:40Z'}];
