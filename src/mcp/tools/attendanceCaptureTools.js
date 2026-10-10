@@ -12,6 +12,16 @@ import {
 } from "../../services/attendanceCapture.service.js";
 import { reEnrol } from "../../services/deviceEnrolment.service.js";
 import { getAttendanceImport } from "../../services/attendanceImport.service.js";
+import {
+  configureBiometricDevice,
+  requestBiometricEnrolment,
+  listBiometricProfiles,
+  revokeBiometricProfile,
+} from "../../services/attendanceBiometric.service.js";
+import {
+  biometricModality,
+  biometricSlot,
+} from "../../lib/attendanceBiometric.js";
 
 export function registerAttendanceCaptureTools(server) {
   const tool = (name, description, schema, method, fn) =>
@@ -79,7 +89,7 @@ export function registerAttendanceCaptureTools(server) {
         )
         .min(1)
         .max(100),
-      action: z.enum(["RESOLVE", "RETRY", "DISMISS"]),
+      action: z.enum(["RESOLVE", "RETRY", "DISMISS", "APPROVE_BIOMETRIC"]),
       reason: z.string().trim().min(1).max(2000),
     },
     "PUT",
@@ -129,5 +139,51 @@ export function registerAttendanceCaptureTools(server) {
     { batchId: z.string().uuid() },
     "POST",
     getAttendanceImport,
+  );
+  tool(
+    "hr_attendance_biometric_device_configure",
+    "Bind a kiosk signing key and site; record validation of its fingerprint PAD configuration",
+    {
+      id: z.string().uuid(),
+      publicKey: z.string().max(2048),
+      site: z.string().trim().min(1).max(120),
+      fingerprintPadLevel: z.number().int().min(0).max(100),
+      fingerprintPadValidated: z.boolean(),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    configureBiometricDevice,
+  );
+  tool(
+    "hr_attendance_biometric_enrol_request",
+    "Authorize a supervised biometric enrolment at a registered kiosk; returns a short-lived capture ticket",
+    {
+      deviceId: z.string().uuid(),
+      employeeId: z.number().int().positive(),
+      modality: biometricModality,
+      slot: biometricSlot,
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    requestBiometricEnrolment,
+  );
+  tool(
+    "hr_attendance_biometric_profiles",
+    "List biometric enrolment metadata without exposing templates or images",
+    {
+      employeeId: z.number().int().positive(),
+    },
+    "PUT",
+    listBiometricProfiles,
+  );
+  tool(
+    "hr_attendance_biometric_revoke",
+    "Revoke a biometric enrolment and erase its encrypted template while retaining the audit record",
+    {
+      id: z.string().uuid(),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    revokeBiometricProfile,
   );
 }

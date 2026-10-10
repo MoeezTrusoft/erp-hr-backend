@@ -76,6 +76,8 @@ export function captureDb(seed = {}, hooks = {}) {
     attendanceCaptureReceipt: [],
     attendanceCaptureEvent: [],
     attendanceCaptureAudit: [],
+    attendanceBiometricProfile: [],
+    attendanceBiometricChallenge: [],
     attendanceDevicePunch: [],
     attendance: [],
     payrollRun: [],

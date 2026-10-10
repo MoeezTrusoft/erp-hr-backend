@@ -276,6 +276,8 @@ model DashboardLayout {
 }
 
 model Employee {
+  biometricProfiles AttendanceBiometricProfile[]
+  biometricChallenges AttendanceBiometricChallenge[]
   payrollOffice String? @db.VarChar(100)
   attendanceInputMode String @default("DEVICE")
   monthlyAttendance MonthlyPayrollAttendance[]
@@ -676,6 +678,7 @@ model AttendanceCallIn {
 }
 
 model AttendanceDevicePunch {
+  directionVerified Boolean @default(false)
   captureEventId String? @unique @db.Uuid
   occurredAt DateTime?
   localTime String?
@@ -3774,6 +3777,8 @@ model MonthlyPayrollAttendance {
 
 // Stage 2: original evidence is immutable; attribution and processing are audited.
 model AttendanceCaptureDevice {
+  biometricProfiles AttendanceBiometricProfile[]
+  biometricChallenges AttendanceBiometricChallenge[]
   id String @id @default(uuid()) @db.Uuid
   tenantId String @db.Uuid
   sn String @unique @db.VarChar(64)
@@ -3783,6 +3788,10 @@ model AttendanceCaptureDevice {
   allowedTenantIds String[] @db.Uuid
   credentialHash String?
   legacyKeyAllowed Boolean @default(false)
+  biometricPublicKey String?
+  biometricSite String?
+  fingerprintPadLevel Int @default(0)
+  fingerprintPadValidated Boolean @default(false)
   lastSeenAt DateTime?
   clockOffsetSeconds Int?
   clockSampledAt DateTime?
@@ -3828,12 +3837,60 @@ model AttendanceCaptureEvent {
   version Int @default(1)
   result Json?
   processedAt DateTime?
+  biometricApprovedBy String?
+  biometricApprovedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@index([state, nextAttemptAt, createdAt])
   @@index([tenantId, state, id])
   @@index([tenantId, employeeId, createdAt])
   @@map("attendance_capture_events")
+}
+
+// Templates never leave the recognition boundary through HR list/trace APIs.
+model AttendanceBiometricProfile {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  modality String
+  slot String
+  engine String
+  engineVersion String
+  encryptedTemplate String?
+  active Boolean @default(true)
+  enrolledBy String
+  enrolledDeviceId String @db.Uuid
+  enrolledDevice AttendanceCaptureDevice @relation(fields: [enrolledDeviceId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  @@index([tenantId, employeeId, modality, active], map: "attendance_biometric_profiles_lookup")
+  @@map("attendance_biometric_profiles")
+}
+
+model AttendanceBiometricChallenge {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  deviceId String @db.Uuid
+  device AttendanceCaptureDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  expectedProfileId String? @db.Uuid
+  deviceConfigHash String
+  modality String
+  purpose String
+  slot String
+  direction Int?
+  actorId String?
+  reason String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  consumedAt DateTime?
+  payloadHash String?
+  result Json?
+  @@index([tenantId, deviceId, createdAt], map: "attendance_biometric_challenges_device")
+  @@index([expiresAt], map: "attendance_biometric_challenges_expiry")
+  @@map("attendance_biometric_challenges")
 }
 model AttendanceCaptureAudit {
   id String @id @default(uuid()) @db.Uuid
