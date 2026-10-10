@@ -1,3 +1,5 @@
+import { attendanceTransaction,lockAttendancePeriod } from './attendancePeriod.service.js';
+import { assertAttendanceComplete,attendanceCompleteness } from './attendanceEvaluation.service.js';
 import { assertMonthlyInputsComplete } from './monthlyPayrollAttendance.service.js';
 // src/services/timesheetSubmission.service.js
 //
@@ -44,9 +46,9 @@ function submissionWindow(month) {
 }
 
 /** Find the active Payroll Vault run covering exactly this calendar month. */
-async function findSubmissionRun(tenantId, month) {
+async function findSubmissionRun(tenantId, month, db = prisma) {
   const { from, to } = submissionWindow(month);
-  return prisma.payrollRun.findFirst({
+  return db.payrollRun.findFirst({
     where: scopedWhere(tenantId, {
       periodStart: { gte: from, lte: to },
       periodEnd: { gte: from, lte: to },
@@ -106,7 +108,9 @@ export async function getTimesheetSubmissionState(tenantId, month) {
   const attendanceLocked = cutoff != null && new Date(cutoff).getTime() <= Date.now();
   const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to });
 
+  const completeness=await attendanceCompleteness({tenantId,from:from.toISOString().slice(0,10),to:to.toISOString().slice(0,10)});
   return {
+    completeness,
     ...submittedState,
     attendanceLocked,
     attendanceCutoff: cutoff ? new Date(cutoff).toISOString() : null,
@@ -115,7 +119,7 @@ export async function getTimesheetSubmissionState(tenantId, month) {
 }
 
 /** Count unresolved anomaly requests inside the month window. */
-async function pendingAnomalyCount(tenantId, { from, to }) {
+async function pendingAnomalyCount(tenantId, { from, to }, db = prisma) {
   // TS-SUBMIT-GATE-02 (2026-09-22) — only EMPLOYEE-SUBMITTED requests block
   // the submission. The evaluator stamps machine-raised anomalies with its own
   // sourceKind; those are grading records an employee hasn't answered yet —
@@ -123,7 +127,7 @@ async function pendingAnomalyCount(tenantId, { from, to }) {
   // not open requests HR must resolve. Without the filter a month with 46
   // un-answered evaluator rows showed "46 anomaly requests still awaiting
   // resolution" although no employee had submitted anything.
-  return prisma.attendanceAnomaly.count({
+  return db.attendanceAnomaly.count({
     where: scopedWhere(tenantId, {
       date: { gte: from, lte: to },
       status: { in: PENDING_ANOMALY_STATUSES },
@@ -149,7 +153,9 @@ export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = nul
     throw new AppError("month must be YYYY-MM", 400);
   }
   const { from, to } = submissionWindow(month);
-  const run = await prisma.payrollRun.findFirst({
+  return attendanceTransaction(prisma,tenantId,async db=>{
+    await lockAttendancePeriod(db,tenantId,true);
+  const run = await db.payrollRun.findFirst({
     where: scopedWhere(tenantId, { periodStart: { gte: from, lte: to }, periodEnd: { gte: from, lte: to }, status: { notIn: ["CANCELLED", "FAILED"] } }),
     orderBy: { id: "desc" },
     select: { id: true, status: true, periodStart: true, periodEnd: true },
@@ -158,8 +164,8 @@ export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = nul
   if (run.status !== "PENDING") {
     throw new AppError(`HR-TP-04 run #${run.id} is ${run.status}; only an unprocessed PENDING run may be unsubmitted`, 409);
   }
-  await prisma.payrollRun.update({ where: { id: run.id }, data: { status: "CANCELLED" } });
-  await prisma.payrollAuditLog.create({
+  await db.payrollRun.update({ where: { id: run.id, status: "PENDING" }, data: { status: "CANCELLED" } });
+  await db.payrollAuditLog.create({
     data: {
       tenantId: tenantId ?? null,
       action: "TIMESHEET_UNSUBMITTED",
@@ -167,16 +173,25 @@ export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = nul
       details: `Timesheet for ${month} unsubmitted by ${actorEmployeeId != null ? `employee ${actorEmployeeId}` : actorNote ?? "unknown actor"}; pending vault run #${run.id} cancelled`,
     },
   });
+  await db.attendanceEvaluationJob.updateMany({where:{tenantId,date:{gte:from,lte:to},state:"PROTECTED"},
+    data:{state:"PENDING",nextAttemptAt:new Date(),lastError:null}});
   return { unsubmitted: true, cancelledRunId: run.id, month };
+  });
 }
 
-export async function submitTimesheet({
+export async function submitTimesheet(args) {
+  return attendanceTransaction(prisma,args.tenantId,async db=>{
+    await lockAttendancePeriod(db,args.tenantId,true);
+    return submitTimesheetTransaction(args,db);
+  });
+}
+async function submitTimesheetTransaction({
   tenantId,
   month,
   actorEmployeeId = null,
   actorNote = null,
   force = false,
-}) {
+}, db) {
   if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
     throw new AppError("month must be YYYY-MM", 400);
   }
@@ -194,7 +209,7 @@ export async function submitTimesheet({
   const now = new Date();
 
   // ── Gate 1: attendance cycle locked (PayrollCalendar.attendanceCutoff) ────
-  const calendar = await prisma.payrollCalendar.findFirst({
+  const calendar = await db.payrollCalendar.findFirst({
     where: scopedWhere(tenantId, {}),
     select: { attendanceCutoff: true },
   });
@@ -210,7 +225,7 @@ export async function submitTimesheet({
   }
 
   // ── Gate 2: zero unresolved anomaly requests for the month ────────────────
-  const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to });
+  const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to }, db);
   if (pendingAnomalies > 0) {
     throw new AppError(
       `HR-TP-02 ${pendingAnomalies} unresolved anomaly request(s) for ${month} — `
@@ -224,7 +239,8 @@ export async function submitTimesheet({
   // exactly what the operator's gatekeeper exists to prevent.
 
   // ── Effect: activate the Payroll Vault run request (PENDING) ──────────────
-  const existingRun = await findSubmissionRun(tenantId, month);
+  await assertAttendanceComplete({tenantId,from:from.toISOString().slice(0,10),to:to.toISOString().slice(0,10)},db);
+  const existingRun = await findSubmissionRun(tenantId, month, db);
   if (existingRun) {
     if (existingRun.status !== "PENDING") {
       throw new AppError(
@@ -237,7 +253,7 @@ export async function submitTimesheet({
     // payroll blocker (HR-TP-03) reads it, and runs created out-of-band
     // (e.g. before this gatekeeper existed) only become processable once HR
     // submits their month through here. Write it when missing.
-    const audit = await prisma.payrollAuditLog.findFirst({
+    const audit = await db.payrollAuditLog.findFirst({
       where: scopedWhere(tenantId, {
         action: "TIMESHEET_SUBMITTED",
         payrollRunId: existingRun.id,
@@ -245,7 +261,7 @@ export async function submitTimesheet({
       select: { id: true },
     });
     if (!audit) {
-      await prisma.payrollAuditLog.create({
+      await db.payrollAuditLog.create({
         data: {
           tenantId: tenantId ?? null,
           action: "TIMESHEET_SUBMITTED",
@@ -265,7 +281,7 @@ export async function submitTimesheet({
     };
   }
 
-  const run = await prisma.payrollRun.create({
+  const run = await db.payrollRun.create({
     data: {
       tenantId: tenantId ?? null,
       periodStart: from,
@@ -277,7 +293,7 @@ export async function submitTimesheet({
     },
   });
 
-  await prisma.payrollAuditLog.create({
+  await db.payrollAuditLog.create({
     data: {
       tenantId: tenantId ?? null,
       action: "TIMESHEET_SUBMITTED",

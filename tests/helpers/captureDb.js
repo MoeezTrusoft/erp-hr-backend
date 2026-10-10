@@ -80,7 +80,13 @@ export function captureDb(seed = {}, hooks = {}) {
     attendanceBiometricChallenge: [],
     attendanceDevicePunch: [],
     attendance: [],
+    attendanceSession: [],
+    attendanceEvaluation: [],
+    attendanceEvaluationJob: [],
+    attendanceEvaluationCursor: [],
+    attendanceTimeCredit: [],
     payrollRun: [],
+    overtimeRequest: [],
     outboxEvent: [],
     attendanceImportBatch: [],
     leave: [],
@@ -118,11 +124,13 @@ export function captureDb(seed = {}, hooks = {}) {
     const row = {
       id: randomUUID(),
       manually_corrected: false,
+      currentApprovalLevel: 1,
+      workflowVersion: 0,
       active: true,
       attempts: 0,
       version: 1,
       cursor: 0,
-      state: model === "attendanceImportBatch" ? "PREVIEW" : "PENDING",
+      state: model === "attendanceImportBatch" ? "PREVIEW" : model === "attendanceTimeCredit" ? "APPROVED" : "PENDING",
       nextAttemptAt: now,
       createdAt: now,
       updatedAt: now,
@@ -180,6 +188,11 @@ export function captureDb(seed = {}, hooks = {}) {
         rows.forEach((r) => update(r, data));
         return { count: rows.length };
       },
+      deleteMany: ({where}) => {
+        const rows=find(model,{where});
+        state[model]=state[model].filter(r=>!rows.includes(r));
+        return {count:rows.length};
+      },
     };
     db[model] = Object.fromEntries(
       Object.entries(methods).map(([method, fn]) => [
@@ -194,8 +207,11 @@ export function captureDb(seed = {}, hooks = {}) {
   }
   db.$executeRaw = async () => 1;
   db.$queryRaw = async (strings, ...values) => {
-    if (strings.join("").includes("pg_try_advisory"))
+    if (String(strings.sql || strings.join?.("") || "").includes("pg_try_advisory"))
       return [{ acquired: true }];
+    if (String(strings?.sql || strings.join?.('') || '').includes('attendance_evaluation_jobs'))
+      return copy(state.attendanceEvaluationJob.filter(e=>['PENDING','FAILED'].includes(e.state)&&
+        new Date(e.nextAttemptAt)<=new Date(values[0]||strings.values?.[0])).slice(0,1));
     return copy(
       state.attendanceCaptureEvent
         .filter(

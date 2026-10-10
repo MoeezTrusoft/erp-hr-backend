@@ -23,6 +23,7 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
+import {attendanceCompleteness} from './attendanceEvaluation.service.js';
 
 // Incomplete days: payroll HOLDS these rather than paying or docking, so they
 // are what actually blocks a month from closing.
@@ -42,6 +43,7 @@ const EMPTY = () => ({
  * @returns {Promise<{period: object, employees: object[], totals: object}>}
  */
 export async function buildMonthlyReconciliation({ tenantId, from, to }) {
+  const completeness=await attendanceCompleteness({tenantId,from,to});
   const start = new Date(`${from}T00:00:00.000Z`);
   const end = new Date(`${to}T23:59:59.999Z`);
 
@@ -92,14 +94,18 @@ export async function buildMonthlyReconciliation({ tenantId, from, to }) {
     const attended = a.present + a.late + a.halfDay + a.earlyCheckout;
     // Expected = the days they were rostered in. WEEKLY_OFF, HOLIDAY and
     // ON_LEAVE are excluded by construction rather than by a weekday guess.
-    const expectedDays = attended + a.absent + a.missingCheckin + a.missingCheckout;
-    const rowsForEmployee = expectedDays + a.weeklyOff + a.holiday + a.onLeave;
+    const coverage=completeness.coverage.filter(c=>c.employeeId===e.id);
+    const expectedDays = coverage.filter(c=>c.working===true).length;
+    const missingDays = coverage.filter(c=>c.state==='MISSING').length;
+    const rowsForEmployee = rows.filter(r=>r.employeeId===e.id).length;
     return {
       employeeId: e.id,
       employeeCode: e.employee_code,
       employeeName: e.employee_name,
       ...a,
       expectedDays,
+      missingDays,
+      unsettledDays:completeness.issues.filter(i=>i.employeeId===e.id).length,
       attendedDays: attended,
       attendancePct: expectedDays ? Math.round((attended / expectedDays) * 100) : 0,
       // A blank month is the most important line in a reconciliation: it is how
@@ -127,5 +133,5 @@ export async function buildMonthlyReconciliation({ tenantId, from, to }) {
     "attendance reconciliation built",
   );
 
-  return { period: { from, to }, employees, totals };
+  return { period: { from, to }, employees, totals, completeness };
 }

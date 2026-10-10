@@ -31,6 +31,9 @@ jest.unstable_mockModule('../../../src/lib/logger.js', () => ({
   },
 }));
 
+const planner=jest.fn(),drain=jest.fn();
+jest.unstable_mockModule('../../../src/services/attendanceFinalization.service.js',()=>({planAttendanceFinalization:planner,drainAttendanceFinalization:drain}));
+
 const { JOB_ABSENCE_MARKING, repeatableJobs, buildReminderProcessor } = await import(
   '../../../src/jobs/reminder.queue.js'
 );
@@ -52,63 +55,14 @@ describe('absence marking repeatable (HR-ATT-ABSENCE-02)', () => {
   });
 });
 
-describe('runAbsenceMarkingJob', () => {
-  beforeEach(() => {
-    markAbsencesMock.mockReset();
-    tenantFindManyMock.mockReset();
-    // The tenant universe is derived from Employee rows ({ tenant_id }).
-    tenantFindManyMock.mockResolvedValue([
-      { tenant_id: 'tenant-a' },
-      { tenant_id: 'tenant-b' },
-    ]);
-    markAbsencesMock.mockResolvedValue({ marked: 0 });
-  });
-
-  it('runs dry-run then write for yesterday in Asia/Karachi, per tenant', async () => {
-    const { marked } = await runAbsenceMarkingJob();
-
-    // Two calls per tenant: the dry-run plan, then the explicit write run.
-    expect(markAbsencesMock).toHaveBeenCalledTimes(4);
-    for (const call of markAbsencesMock.mock.calls) {
-      const [{ from, to }] = call;
-      expect(from).toBe(to);
-      expect(from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      // The window is YESTERDAY in Karachi: when this test runs, today's key
-      // in Karachi is never the window (the 24h shift guarantees it).
-      const todayKey = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Karachi',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(new Date());
-      expect(from).not.toBe(todayKey);
-    }
-
-    // Dry run before write, per tenant.
-    expect(markAbsencesMock.mock.calls.filter((c) => c[0].dryRun === true).length).toBe(2);
-    expect(markAbsencesMock.mock.calls.filter((c) => c[0].dryRun === false).length).toBe(2);
-    expect(marked).toBe(0);
-  });
-
-  it('sums marked rows across tenants', async () => {
-    markAbsencesMock.mockImplementation(async ({ tenantId, dryRun }) => {
-      if (dryRun) return { marked: 0 };
-      return { marked: tenantId === 'tenant-a' ? 3 : 1 };
-    });
-
-    const { marked } = await runAbsenceMarkingJob();
-    expect(marked).toBe(4);
-  });
-
-  it('one failing tenant does not stop the others', async () => {
-    markAbsencesMock.mockImplementation(async ({ tenantId, dryRun }) => {
-      if (tenantId === 'tenant-a') throw new Error('db blip');
-      if (dryRun) return { marked: 0 };
-      return { marked: 2 };
-    });
-
-    const summary = await runAbsenceMarkingJob();
-    expect(summary.tenants).toBe(2);
-    expect(summary.marked).toBe(2); // only tenant-b contributed
-  });
+describe('durable absence finalization scheduler',()=>{
+ it('plans missed work dates and drains due jobs',async()=>{
+  planner.mockResolvedValue({failures:[]});drain.mockResolvedValue({completed:7,failed:0});
+  expect(await runAbsenceMarkingJob()).toEqual({completed:7,failed:0});
+  expect(planner).toHaveBeenCalled();expect(drain).toHaveBeenCalledWith({limit:100});
+ });
+ it('surfaces failed windows so the existing scheduler retries',async()=>{
+  planner.mockResolvedValue({failures:[{tenantId:'tenant-a'}]});drain.mockResolvedValue({completed:1,failed:0});
+  await expect(runAbsenceMarkingJob()).rejects.toThrow('durable jobs retain their work dates');
+ });
 });

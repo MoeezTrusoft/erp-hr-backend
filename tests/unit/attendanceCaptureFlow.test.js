@@ -107,3 +107,22 @@ describe("capture through the real published evaluator and writer", () => {
     );
   });
 });
+
+describe('capture at a protected month boundary',()=>{
+  it('does not block a new shift just because the prior month is protected',async()=>{
+    const db=database();
+    await db.payrollRun.create({data:{tenantId:TENANT,periodStart:new Date('2026-09-01'),periodEnd:new Date('2026-09-30T23:59:59Z'),status:'PENDING'}});
+    await receiveCapture({sn:'DEVICE-1',rows:['101\t2026-10-01 22:00:00\t0','101\t2026-10-02 06:00:00\t1']},db);
+    expect((await drainCapture({now},db)).failed).toBe(0);
+    expect(db.snapshot().attendance.find(r=>r.date.toISOString().startsWith('2026-10-01'))).toMatchObject({status:'PRESENT'});
+  });
+  it('keeps a late checkout for a protected overnight shift in review',async()=>{
+    const db=database();
+    await db.attendanceDevicePunch.create({data:{tenantId:TENANT,employeeId:1,sn:'DEVICE-1',status:0,punchedAt:new Date('2026-09-30T22:00:00Z')}});
+    await db.payrollRun.create({data:{tenantId:TENANT,periodStart:new Date('2026-09-01'),periodEnd:new Date('2026-09-30T23:59:59Z'),status:'PENDING'}});
+    await receiveCapture({sn:'DEVICE-1',rows:['101\t2026-10-01 06:00:00\t1']},db);
+    expect((await drainCapture({now},db)).failed).toBe(1);
+    expect(db.snapshot().attendance).toHaveLength(0);
+    expect(db.snapshot().attendanceCaptureEvent[0]).toMatchObject({state:'NEEDS_REVIEW',reason:expect.stringContaining('PERIOD_PROTECTED')});
+  });
+});

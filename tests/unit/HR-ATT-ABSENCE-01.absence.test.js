@@ -1,118 +1,34 @@
-// HR-ATT-ABSENCE-01 — marking a no-show as absent.
-//
-// This creates UNPAID days, so the guards matter more than the happy path:
-// 8 of 75 employees have no device enrolment and would otherwise be marked
-// absent every single day, and a day HR corrected by hand must never be
-// overwritten by a batch job.
-import { describe, it, expect, jest, beforeEach } from '@jest/globals';
-
-const TENANT = '40314ef4-0a81-4390-b631-b3ad3f21f523';
-const ENROLLED = { id: 1, employee_code: 'EMP001', biometric_id: '3001' };
-
-let employees, unenrolledCount, attendanceRows, workingMap, created;
-
-const prismaMock = {
-    employee: {
-        findMany: jest.fn(async () => employees),
-        count: jest.fn(async () => unenrolledCount),
-    },
-    employmentPeriod: {
-        // HR-ATT-ABSENCE-ELIG-01 — no period rows in these fixtures → the
-        // grandfathering branch ("no periods on file") applies.
-        findMany: jest.fn(async () => []),
-    },
-    attendance: {
-        findMany: jest.fn(async () => attendanceRows),
-        create: jest.fn(async ({ data }) => { created.push(data); return { id: created.length, ...data }; }),
-    },
-};
-
-jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
-jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
-    tenantTransaction: jest.fn(async (_c, fn) => fn(prismaMock)),
-}));
-jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({employeeIds:employees.map(e=>e.id)})}));
-jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
-    resolveWorkingDays: jest.fn(async () => workingMap),
-}));
-jest.unstable_mockModule('../../src/lib/logger.js', () => ({
-    default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-}));
-
-const svc = await import('../../src/services/absenceMarking.service.js');
-const day = (s) => { const d = new Date(s); d.setHours(0, 0, 0, 0); return d; };
-const working = (...days) => new Map(days.map((k) => [k, { working: true }]));
-
-beforeEach(() => {
-    jest.clearAllMocks();
-    employees = [ENROLLED];
-    unenrolledCount = 8;
-    attendanceRows = [];
-    created = [];
-    workingMap = working('2026-08-10', '2026-08-11');
-});
-
-describe('HR-ATT-ABSENCE-01 guards', () => {
-    it('only considers employees included in published setup', async () => {
-        const s = await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-11' });
-
-        // 8 people have no biometric_id and generate no punches whatever they
-        // do — marking them absent daily would dock them for not being enrolled.
-        expect(prismaMock.employee.findMany.mock.calls[0][0].where.id).toEqual({in:[ENROLLED.id]});
-        expect(s.skippedNotEnrolled).toBe(8);
-    });
-
-    it('skips days the employee was not scheduled to work', async () => {
-        workingMap = new Map([
-            ['2026-08-10', { working: false, reason: 'OFF_DAY' }],
-            ['2026-08-11', { working: false, reason: 'HOLIDAY' }],
-        ]);
-
-        const s = await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-11' });
-
-        expect(s.marked).toBe(0);
-        expect(s.notWorking).toBe(2);
-    });
-
-    it('never overwrites a day that already has attendance', async () => {
-        attendanceRows = [{ id: 5, date: day('2026-08-10'), manually_corrected: false }];
-
-        const s = await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-11' });
-
-        expect(s.alreadyPresent).toBe(1);
-        expect(s.marked).toBe(1);      // only the 11th
-    });
-
-    it('never overwrites a day HR corrected by hand', async () => {
-        attendanceRows = [{ id: 5, date: day('2026-08-10'), manually_corrected: true }];
-
-        const s = await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-11' });
-
-        expect(s.manuallyCorrected).toBe(1);
-    });
-});
-
-describe('HR-ATT-ABSENCE-01 writing', () => {
-    it('defaults to a DRY RUN and writes nothing', async () => {
-        const s = await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-11' });
-
-        expect(s.dryRun).toBe(true);
-        expect(s.marked).toBe(2);
-        expect(created).toHaveLength(0);   // reported, not written
-    });
-
-    it('writes absences as regularizable, not final', async () => {
-        await svc.markAbsences({ tenantId: TENANT, from: '2026-08-10', to: '2026-08-10', dryRun: false });
-
-        expect(created).toHaveLength(1);
-        expect(created[0]).toMatchObject({
-            status: 'ABSENT', day_credit: 0, requires_regularization: true,
-        });
-    });
-
-    it('rejects a reversed range', async () => {
-        await expect(
-            svc.markAbsences({ tenantId: TENANT, from: '2026-08-11', to: '2026-08-10' }),
-        ).rejects.toThrow('before');
-    });
+// Behavioural regression against published configuration and the real interval writer.
+import {describe,it,expect} from '@jest/globals';
+import {evaluationDb,evaluate,TENANT,DATE,day,fixed,rotation} from '../helpers/evaluationDb.js';
+import {markAbsences} from '../../src/services/absenceMarking.service.js';
+const mark=(db,opts={})=>markAbsences({tenantId:TENANT,from:DATE,to:DATE,now:new Date('2026-08-05'),db,...opts});
+describe('absence guards through the published evaluator',()=>{
+ it('holds employees without published setup rather than charging absence',async()=>{
+  const db=evaluationDb({configure:c=>{c.employees=[];}});await mark(db,{dryRun:false});
+  expect(db.snapshot().attendance[0]).toMatchObject({status:'SETUP_REQUIRED',day_credit:null});
+ });
+ it('records an off day without an absence deduction',async()=>{
+  const db=evaluationDb({pattern:{...fixed,offDays:[7]}});expect((await mark(db)).marked).toBe(0);
+ });
+ it('uses actual punch evidence rather than overwriting attendance with absence',async()=>{
+  const db=evaluationDb({punches:[['09:00',0],['17:00',1]]});await mark(db,{dryRun:false});
+  expect(db.snapshot().attendance[0].status).toBe('PRESENT');
+ });
+ it('preserves a human correction',async()=>{
+  const db=evaluationDb({rows:[{status:'PRESENT',day_credit:1,manually_corrected:true}]});
+  expect((await mark(db,{dryRun:false})).manuallyCorrected).toBe(1);
+  expect(db.snapshot().attendance[0].status).toBe('PRESENT');
+ });
+ it('defaults to preview and writes no attendance or jobs',async()=>{
+  const db=evaluationDb();expect((await mark(db)).marked).toBe(1);
+  expect(db.snapshot().attendance).toHaveLength(0);expect(db.snapshot().attendanceEvaluationJob).toHaveLength(0);
+ });
+ it('finalizes evidenced no-shows after their own deadline under the published deduction policy',async()=>{
+  const db=evaluationDb();await mark(db,{dryRun:false});
+  expect(db.snapshot().attendance[0]).toMatchObject({status:'ABSENT',day_credit:0,processingState:'FINALIZED',requires_regularization:false});
+ });
+ it('rejects reversed ranges',async()=>{
+  await expect(mark(evaluationDb(),{from:'2026-08-03'})).rejects.toThrow();
+ });
 });

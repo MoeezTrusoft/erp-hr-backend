@@ -143,6 +143,6 @@ describe('HR-RECON-02 denominators derived from the roster', () => {
 
         const { weeks } = await getAttendanceSummaryWeekly({ tenantId: 't', month: '2026-08' });
 
-        expect(weeks.every((w) => w.attendancePct === 0)).toBe(true);
+        expect(weeks.every((w) => w.attendancePct === null)).toBe(true);
     });
 });

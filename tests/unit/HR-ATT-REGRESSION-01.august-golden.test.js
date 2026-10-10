@@ -32,7 +32,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { sessioniseByRoster } from '../../src/lib/attendanceReplay.js';
+import { sessioniseByRoster as sessioniseStrict } from '../../src/lib/attendanceReplay.js';
+
+// This fixture characterizes explicitly opted-in historical device inference.
+const sessioniseByRoster=(p,pattern,options)=>sessioniseStrict(p,pattern,{...options,legacyDirectionInference:true});
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = JSON.parse(
