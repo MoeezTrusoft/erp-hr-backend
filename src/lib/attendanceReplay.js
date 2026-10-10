@@ -24,14 +24,6 @@ const DAY_MS = 24 * 60 * MIN_MS;
 export const startOfDay = (v) => { const d = new Date(v); d.setUTCHours(0, 0, 0, 0); return d; };
 export const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
 
-/** ISO weekday: Monday = 1 … Sunday = 7. Same definition workingDay.service
- *  uses, and local like startOfDay above, so the two agree on which day a
- *  timestamp falls in. */
-const isoDow = (date) => {
-  const js = new Date(date).getUTCDay();
-  return js === 0 ? 7 : js;
-};
-
 /** "HH:MM" anchored to a day; a night shift rolls its end into the next one. */
 /**
  * Every shift window a roster can put on this day. One entry for a fixed
@@ -284,7 +276,7 @@ export function sessioniseByRoster(
  * Assumes the caller has already established the tenant context; it issues
  * ordinary model queries so RLS scopes them.
  */
-export async function replayTenant({ tenantId, from, to, policy, now = new Date() }) {
+export async function replayTenant({ tenantId, from, to, policy, now = new Date(), employeeIds, db = prisma }) {
   // HR-ATT-WINDOW-01 — reach a day either side so a shift that straddles the
   // boundary keeps both ends.
   //
@@ -305,11 +297,11 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   const windowStart = new Date(new Date(`${from}T00:00:00Z`).getTime() - DAY_MS);
   const windowEnd = new Date(new Date(`${to}T23:59:59Z`).getTime() + DAY_MS);
 
-  const runtime = await loadAttendanceRuntime({tenantId,from:windowStart,to:windowEnd});
-  const punches = await prisma.attendanceDevicePunch.findMany({
+  const runtime = await loadAttendanceRuntime({tenantId,from:windowStart,to:windowEnd,db});
+  const punches = await db.attendanceDevicePunch.findMany({
     where: {
       tenantId,
-      employeeId: { not: null },
+      employeeId: employeeIds ? { in: employeeIds } : { not: null },
       punchedAt: { gte: windowStart, lte: windowEnd },
     },
     select: { employeeId: true, punchedAt: true, status: true, sn: true },
@@ -328,7 +320,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   // `false` drops somebody. A missing flag, or a row predating the column,
   // stays included — nobody stops being paid because a backfill missed them.
   const excluded = new Set(
-    (await prisma.employee.findMany({
+    (await db.employee.findMany({
       where: { tenant_id: tenantId, payroll_included: false },
       select: { id: true },
     })).map((e) => e.id),

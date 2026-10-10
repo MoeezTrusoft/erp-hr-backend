@@ -7,11 +7,12 @@ export async function resolveWorkingDays({
   to,
   tenantId,
   runtime,
+  db,
   ignoreLeaves = false,
 }) {
   const context =
     runtime ||
-    (await loadAttendanceRuntime({ tenantId, from, to, ignoreLeaves }));
+    (await loadAttendanceRuntime({ tenantId, from, to, ignoreLeaves, db }));
   return new Map(
     dateRange(from, to, 370).map((day) => [
       day,

@@ -43,6 +43,10 @@ jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js', () => ({
+    loadAttendanceRuntime: jest.fn(async () => ({ employeeIds: employees.map(e => e.id), resolve: (_id, day) => workingMap.get(day.toISOString().slice(0, 10)) })),
+}));
+
 const svc = await import('../../src/services/absenceMarking.service.js');
 const day = (s) => { const d = new Date(s); d.setHours(0, 0, 0, 0); return d; };
 

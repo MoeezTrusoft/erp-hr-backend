@@ -36,10 +36,8 @@ describe('HR-ATT-DEVICE-INTAKE-01 parseAttlogRow', () => {
         expect(parseAttlogRow(42)).toBeNull();
     });
 
-    it('defaults missing numeric columns to 0 rather than NaN', () => {
+    it('rejects missing direction rather than manufacturing a check-in', () => {
         const p = parseAttlogRow('3111\t2026-08-20 14:20:35');
-        expect(p.status).toBe(0);
-        expect(p.verifyMode).toBe(0);
-        expect(p.workCode).toBe(0);
+        expect(p).toBeNull();
     });
 });

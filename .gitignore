@@ -6,3 +6,6 @@ node_modules
 
 # Production credentials (CONFIDENTIAL)
 .env.local
+
+# Durable device adapter spool (operational data, never source).
+data/attendance-spool/

@@ -14,17 +14,22 @@
 // halves are proven against each other rather than in isolation.
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
+import { publishedSetup } from '../helpers/publishedSetup.js';
+
 const TENANT = '40314ef4-0a81-4390-b631-b3ad3f21f523';
 const ENROLLED = { id: 1, employee_code: 'EMP001', biometric_id: '3001' };
 
 let schedules, leaves, callIns, attendanceRows, created, updated;
 
 const prismaMock = {
+    attendanceSetupRelease: { findMany: jest.fn(async () => publishedSetup({ tenantId: TENANT, schedules })) },
+    shiftAssignment: { findMany: jest.fn(async () => []) },
+    leaveRequest: { findMany: jest.fn(async () => []) },
     workSchedule: { findMany: jest.fn(async () => schedules) },
     employeeHolidayCalendar: { findMany: jest.fn(async () => []) },
     holiday: { findMany: jest.fn(async () => []) },
-    leave: { findMany: jest.fn(async () => leaves) },
-    attendanceCallIn: { findMany: jest.fn(async () => callIns) },
+    leave: { findMany: jest.fn(async () => leaves.map(r => ({ employeeId: 1, status: 'APPROVED', ...r }))) },
+    attendanceCallIn: { findMany: jest.fn(async () => callIns.map(r => ({ employeeId: 1, ...r }))) },
     employee: {
         findMany: jest.fn(async () => [ENROLLED]),
         count: jest.fn(async () => 0),

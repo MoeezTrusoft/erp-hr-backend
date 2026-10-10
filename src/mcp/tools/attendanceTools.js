@@ -103,11 +103,12 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_attendance_checkin",
-    "Record employee check-in (creates/updates the day's attendance row; auto-computes PRESENT/LATE). notes is persisted to Attendance.remarks.",
+    "Store a durable manual check-in receipt for asynchronous evaluation against published configuration. Notes remain with original evidence.",
     {
       employeeId: z.string().min(1).describe("Employee id (numeric string); must resolve to an existing tenant-scoped Employee"),
-      timestamp: z.string().optional().describe("ISO 8601 datetime; defaults to now"),
-      notes: z.string().optional().describe("Free-text note, persisted to Attendance.remarks"),
+      timestamp: z.string().optional().describe("ISO datetime including seconds; defaults to now"),
+      requestKey: z.string().max(128).optional(),
+      notes: z.string().optional().describe("Free-text note retained with original capture evidence"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -122,7 +123,8 @@ export function registerAttendanceTools(server) {
     "Record employee check-out",
     {
       employeeId: z.string().min(1),
-      timestamp: z.string().optional().describe("ISO 8601 datetime; defaults to now"),
+      timestamp: z.string().optional().describe("ISO datetime including seconds; defaults to now"),
+      requestKey: z.string().max(128).optional(),
       notes: z.string().optional(),
     },
     withToolError(async (args) => {
@@ -151,8 +153,10 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_attendance_device_sync",
-    "Sync biometric punches into attendance with auto late calculation",
+    "Capture biometric punches for evaluation against published configuration",
     {
+      sn: z.string().min(1).max(64),
+      requestKey: z.string().max(128).optional(),
       punches: z.array(z.object({
         employeeId: z.union([z.number(), z.string()]).optional().describe("Employee id (references Employee)"),
         employeeCode: z.string().optional().describe("Employee code (device/HR code) — alternate identity"),
@@ -283,7 +287,8 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listDevicePunches({ tenantId: user.tenantId, ...args });
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await listDevicePunches({ ...args, tenantId: user.tenantId, ...(scope.canViewOthers ? {} : { employeeId: scope.employeeId ?? -1 }) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_device_punches_list")
   );
@@ -300,7 +305,8 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listEnrolments({ tenantId: user.tenantId, employeeId: args.employeeId });
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await listEnrolments({ tenantId: user.tenantId, employeeId: scope.canViewOthers ? args.employeeId : scope.employeeId ?? -1 });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_enrolment_list")
   );
@@ -313,25 +319,29 @@ export function registerAttendanceTools(server) {
     "Mark a device enrolment as the employee's PRIMARY biometric device (clears the flag on their other enrolments)",
     {
       enrolmentId: z.coerce.number().int().positive().describe("Enrolment id (employee_device_enrolments.id)"),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      reason: z.string().trim().min(1).max(2000).optional(),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const data = await setPrimaryEnrolment({ enrolmentId: args.enrolmentId, tenantId: user.tenantId });
+      const data = await setPrimaryEnrolment({ ...args, tenantId: user.tenantId, actorId: user.id || user.userId || user.employeeId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_enrolment_set_primary")
   );
 
   server.tool(
     "hr_attendance_enrolment_clear_primary",
-    "Clear the PRIMARY device flag on all of an employee's enrolments",
+    "Clear the primary device from a chosen date, preserving earlier history",
     {
       employeeId: z.coerce.number().int().positive(),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      reason: z.string().trim().min(1).max(2000).optional(),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const data = await clearPrimaryEnrolment({ employeeId: args.employeeId });
+      const data = await clearPrimaryEnrolment({ ...args, tenantId: user.tenantId, actorId: user.id || user.userId || user.employeeId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_enrolment_clear_primary")
   );
