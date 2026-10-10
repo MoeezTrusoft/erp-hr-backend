@@ -21,12 +21,14 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { replayTenant, dayKey } from "../lib/attendanceReplay.js";
 import { resolveWorkingDays } from "./workingDay.service.js";
 import { normalizeWorkMode } from "../lib/attendanceStatus.js";
+import { affectedDays } from '../lib/attendanceCapture.js';
 import logger from "../lib/logger.js";
 
 // An interactive transaction has a 5 second budget. A month of off-days is
 // hundreds of rows per tenant, so the bulk writes below are chunked rather than
 // opening one transaction and hoping.
 const WRITE_CHUNK = 200;
+const writeTx = (db, fn) => db.$transaction ? tenantTransaction(db, fn) : fn(db);
 
 const chunk = (arr, size) => {
   const out = [];
@@ -53,9 +55,9 @@ const chunk = (arr, size) => {
  * never saw them. The (sourceKind, sourceRef) upsert makes the extra call a
  * no-op for days already covered.
  */
-async function persistEvaluatorAnomalies({ tenantId, employeeId, day, anomalies, rowId, summary, dryRun }) {
+async function persistEvaluatorAnomalies({ tenantId, employeeId, day, anomalies, rowId, summary, dryRun, db = prisma }) {
   if (dryRun || !rowId || !Array.isArray(anomalies) || !anomalies.length) return;
-  await tenantTransaction(prisma, async (tx) => {
+  await writeTx(db, async (tx) => {
     for (const a of anomalies) {
       if (!a?.type) continue;
       const sourceRef = `${rowId}:${a.type}`;
@@ -95,8 +97,8 @@ async function persistEvaluatorAnomalies({ tenantId, employeeId, day, anomalies,
     + (anomalies?.length ?? 0);
 }
 
-export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, now = new Date() }) {
-  const shifts = await replayTenant({ tenantId, from, to, now });
+export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, now = new Date(), db = prisma, employeeIds }) {
+  const shifts = await replayTenant({ tenantId, from, to, now, db, employeeIds });
 
   const summary = {
     tenantId, from, to, dryRun,
@@ -112,7 +114,7 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
   // counter instead of crashing — the underlying punch keeps its id for a
   // later re-link.
   const aliveIds = new Set(
-    (await prisma.employee.findMany({
+    (await db.employee.findMany({
       where: { id: { in: [...new Set(shifts.map((s) => s.employeeId))] } },
       select: { id: true },
     })).map((e) => e.id),
@@ -125,8 +127,8 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     if (verdict.dayCredit == null) summary.held += 1;
     summary.corrections += (corrections || []).length;
 
-    const existing = await prisma.attendance.findFirst({
-      where: { employeeId, date: day },
+    const existing = await db.attendance.findFirst({
+      where: { tenantId, employeeId, date: day },
       orderBy: { id: "desc" },
     });
     // eslint-disable-next-line no-await-in-loop -- sequential by design: each day's write depends on the previous verdict
@@ -135,12 +137,12 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
     if (existing?.manually_corrected) { summary.skippedManuallyCorrected += 1; continue; }
 
     // A per-day work-mode override beats the employee default.
-    const assignment = await prisma.shiftAssignment.findFirst({
-      where: { employeeId, date: day },
+    const assignment = await db.shiftAssignment.findFirst({
+      where: { tenantId, employeeId, date: day },
       orderBy: { id: "desc" },
       select: { workMode: true },
     });
-    const employee = await prisma.employee.findUnique({
+    const employee = await db.employee.findUnique({
       where: { id: employeeId },
       select: { work_mode: true, tenant_id: true },
     });
@@ -173,6 +175,9 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
 
     const same = existing
       && existing.setupVersion === data.setupVersion
+      && Number(existing.check_in) === Number(data.check_in)
+      && Number(existing.check_out) === Number(data.check_out)
+      && existing.requires_regularization === data.requires_regularization
       && existing.status === data.status
       && existing.day_credit === data.day_credit
       && Number(existing.total_hours ?? 0) === Number(data.total_hours ?? 0)
@@ -188,16 +193,16 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
       await persistEvaluatorAnomalies({
         tenantId: employee?.tenant_id ?? tenantId,
         employeeId, day, anomalies: verdict.anomalies,
-        rowId: existing?.id ?? null, summary, dryRun,
+        rowId: existing?.id ?? null, summary, dryRun, db,
       });
       continue;
     }
 
     let rowId = existing?.id ?? null;
     if (!dryRun) {
-      await tenantTransaction(prisma, async (tx) => {
+      await writeTx(db, async (tx) => {
         if (existing) {
-          const row = await tx.attendance.update({ where: { id: existing.id }, data });
+          const row = await tx.attendance.update({ where: { id: existing.id, tenantId, manually_corrected: false, updated_at: existing.updated_at }, data });
           rowId = row.id;
         } else {
           const row = await tx.attendance.create({
@@ -211,12 +216,12 @@ export async function applyEvaluatedShifts({ tenantId, from, to, dryRun = true, 
 
     await persistEvaluatorAnomalies({
       tenantId: employee?.tenant_id ?? tenantId,
-      employeeId, day, anomalies: verdict.anomalies, rowId, summary, dryRun,
+      employeeId, day, anomalies: verdict.anomalies, rowId, summary, dryRun, db,
     });
   }
 
-  await retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun });
-  await assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun });
+  await retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun, db, employeeIds });
+  await assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun, db, employeeIds });
 
   logger[dryRun ? "info" : "warn"](
     {
@@ -268,12 +273,13 @@ export function computePrimaryProvenance({ primarySn, punchSn }) {
  * Punches are untouched — they still belong to their own shift and are re-read
  * on the next evaluation.
  */
-async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun }) {
+async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dryRun, db = prisma, employeeIds }) {
   const evaluated = new Set(shifts.map((s) => `${s.employeeId}|${dayKey(s.day)}`));
 
-  const rows = await prisma.attendance.findMany({
+  const rows = await db.attendance.findMany({
     where: {
       tenantId,
+      ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
       date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T23:59:59.999Z`) },
     },
     select: { id: true, employeeId: true, date: true, status: true, manually_corrected: true },
@@ -299,7 +305,7 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
 
   const restate = [];
   for (const [employeeId, list] of candidates) {
-    const working = await resolveWorkingDays({ employeeId, tenantId, from, to });
+    const working = await resolveWorkingDays({ employeeId, tenantId, from, to, db });
     for (const r of list) {
       const info = working.get(dayKey(r.date));
       if (info?.working !== false) continue;
@@ -327,9 +333,9 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
 
   for (const g of groups.values()) {
     for (const ids of chunk(g.ids, WRITE_CHUNK)) {
-      await tenantTransaction(prisma, async (tx) => {
+      await writeTx(db, async (tx) => {
         await tx.attendance.updateMany({
-          where: { id: { in: ids } },
+          where: { tenantId, id: { in: ids }, manually_corrected: false },
           data: {
             status: g.status,
             check_in: null,
@@ -360,9 +366,9 @@ async function retractInvalidatedRows({ tenantId, from, to, shifts, summary, dry
  * People excluded from payroll (HR-PAY-ELIG-01) are left out: nothing about
  * their attendance is being derived.
  */
-async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun }) {
-  const roster = await prisma.employee.findMany({
-    where: { tenant_id: tenantId, NOT: { payroll_included: false } },
+async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRun, db = prisma, employeeIds }) {
+  const roster = await db.employee.findMany({
+    where: { tenant_id: tenantId, ...(employeeIds ? { id: { in: employeeIds } } : {}), NOT: { payroll_included: false } },
     select: { id: true },
   });
 
@@ -374,9 +380,10 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
   };
   for (const s of shifts) note(s.employeeId, dayKey(s.day));
 
-  const rows = await prisma.attendance.findMany({
+  const rows = await db.attendance.findMany({
     where: {
       tenantId,
+      ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
       date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T23:59:59.999Z`) },
     },
     select: { employeeId: true, date: true },
@@ -391,7 +398,7 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
 
   const toWrite = [];
   for (const [employeeId, days] of seen) {
-    const working = await resolveWorkingDays({ employeeId, tenantId, from, to });
+    const working = await resolveWorkingDays({ employeeId, tenantId, from, to, db });
     for (const [key, info] of working) {
       if (info?.working !== false) continue;
       if (['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(info.reason)) continue;
@@ -408,14 +415,14 @@ async function assertNonWorkingDays({ tenantId, from, to, shifts, summary, dryRu
   // ~300 rows per tenant, and the per-row round trips alone exhausted the 5s
   // interactive-transaction budget and rolled the whole pass back (P2028).
   const tenantOf = new Map(
-    (await prisma.employee.findMany({
+    (await db.employee.findMany({
       where: { id: { in: [...new Set(toWrite.map((w) => w.employeeId))] } },
       select: { id: true, tenant_id: true },
     })).map((e) => [e.id, e.tenant_id]),
   );
 
   for (const batch of chunk(toWrite, WRITE_CHUNK)) {
-    await tenantTransaction(prisma, async (tx) => {
+    await writeTx(db, async (tx) => {
       await tx.attendance.createMany({
         data: batch.map((w) => ({
           employeeId: w.employeeId,
@@ -463,23 +470,10 @@ export async function refreshStaleAttendance({ tenantId, days = 35, now = new Da
  * Narrow on purpose — an ingest must not rewrite a month because one punch
  * arrived. dayKey is used to collapse a batch to its distinct days.
  */
-export async function applyEvaluatedShiftsForDays({ tenantId, days, now = new Date() }) {
-  const unique = [...new Set(days.map((d) => dayKey(d)))].sort();
-  if (!unique.length) return { shifts: 0, created: 0, updated: 0 };
-
-  // ATT-LIVE-NIGHTFINAL-01 (2026-09-14) — a punch on day N must also re-evaluate
-  // day N−1. A checkout recorded after midnight (night shifts end 00:00–07:00)
-  // used to update only TODAY'S row, so YESTERDAY stayed frozen as its
-  // in-progress open state forever: Sep 9–13 accumulated MISSING_CHECKOUT rows
-  // that the backfilled Sep 1–8 (written whole-month after the fact) never had.
-  // replayTenant reads a day either side anyway — this window just has to
-  // INCLUDE the previous day so the checkout lands in a re-evaluated day.
-  const withPrev = [...unique];
-  const first = new Date(`${unique[0]}T00:00:00Z`);
-  withPrev.unshift(new Date(first.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
-  const uniqAll = [...new Set(withPrev)].sort();
-
-  return applyEvaluatedShifts({
-    tenantId, from: uniqAll[0], to: uniqAll[uniqAll.length - 1], dryRun: false, now,
-  });
+export async function applyEvaluatedShiftsForDays({ tenantId, days, employeeIds, now = new Date(), db = prisma }) {
+  const summaries = [];
+  for (const day of affectedDays(days)) {
+    summaries.push(await applyEvaluatedShifts({ tenantId, from: day, to: day, employeeIds, dryRun: false, now, db }));
+  }
+  return { windows: summaries };
 }

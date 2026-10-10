@@ -358,7 +358,7 @@ export function resolveEmployeeDay(
     reason = 'HOLIDAY';
   } else if (assignment?.status === 'off' || off) {
     working = false;
-    reason = 'OFF_DAY';
+    reason = cycleOff && assignment?.status !== 'off' ? 'ROTATION_OFF' : 'OFF_DAY';
   } else if (profile.mode === 'PAID_NO_PUNCH' || pattern.paidWithoutPunches)
     reason = 'PAID_NO_PUNCH';
   const excused = calledIn

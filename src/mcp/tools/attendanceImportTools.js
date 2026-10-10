@@ -10,7 +10,7 @@
 // has already loaded employees knows how to drive this without new docs.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   generateAttendanceImportTemplate,
@@ -19,7 +19,8 @@ import {
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
-  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  if (!ctx?.user)
+    throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
 }
 
@@ -33,49 +34,37 @@ export function registerAttendanceImportTools(server) {
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
       const data = await generateAttendanceImportTemplate();
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_attendance_import_template")
+    }, "hr_attendance_import_template"),
   );
 
   server.tool(
     "hr_attendance_import",
-    "Bulk-import historical attendance from an uploaded .csv/.xlsx (base64) — one row per employee per day. Validates and AUTO-FIXES every row (enum synonyms like WFH→Remote, day-first and ISO dates, 12/24-hour times, derived status, overnight shifts); anything unfixable is FLAGGED on a returned annotated .xlsx (colour-coded __row_status + plain-English __issues). PREVIEW by default (dryRun=true, nothing saved) — set dryRun=false to commit OK/auto-fixed rows. Rows UPSERT on employee+date, so re-running a file or resending a chunk corrects instead of duplicating. Consecutive same-type leave days collapse into one leave request; anomalies import already-decided so they never flood the HR review queue. Send at most ~5000 rows per call; chunks are independent.",
+    "Preview historical attendance or commit the reviewed batch in resumable chunks. Never silently approves anomalies or overwrites protected corrections.",
     {
-      fileBase64: z
-        .string()
-        .min(1)
-        .describe("The spreadsheet as base64. Use the template from hr_attendance_import_template."),
-      format: z
-        .enum(["xlsx", "csv"])
-        .optional()
-        .describe("Uploaded file format. Defaults to xlsx."),
-      dryRun: z
-        .boolean()
-        .optional()
-        .describe("TRUE (default) validates and returns the annotated report without saving anything. Set false to commit."),
-      importLeaves: z
-        .boolean()
-        .optional()
-        .describe("Also create Leave records from day_type=LEAVE rows, merging consecutive same-type days. Default true."),
-      importAnomalies: z
-        .boolean()
-        .optional()
-        .describe("Also create AttendanceAnomaly records from anomaly_type rows, already decided. Default true."),
+      fileBase64: z.string().max(16000000).optional(),
+      format: z.enum(["xlsx", "csv"]).optional(),
+      dryRun: z.boolean().optional(),
+      importLeaves: z.boolean().optional(),
+      importAnomalies: z.boolean().optional(),
+      replaceCorrected: z.boolean().optional(),
+      approvalReference: z.string().max(1000).optional(),
+      batchId: z.string().uuid().optional(),
+      previewToken: z.string().optional(),
+      reason: z.string().max(2000).optional(),
     },
-    withToolError(async ({ fileBase64, format, dryRun, importLeaves, importAnomalies }) => {
+    withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      // Writing six years of history is a CREATE on attendance, not a read — and
-      // the dryRun preview is gated the same way, because its validation
-      // messages enumerate the tenant's employee codes.
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      if (args.replaceCorrected)
+        assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await runAttendanceImport({
+        ...args,
+        mayReplaceCorrected:
+          user.isAdmin || hasPermission(permissions, "hr:attendance", "EDIT"),
         tenantId: user.tenantId,
-        fileBase64: String(fileBase64).replace(/^data:[^,]+,/, ""),
-        format: format ?? "xlsx",
-        dryRun: dryRun ?? true,
-        importLeaves: importLeaves ?? true,
-        importAnomalies: importAnomalies ?? true,
+        actorId: user.id || user.userId || user.employeeId,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_attendance_import")
+    }, "hr_attendance_import"),
   );
 }

@@ -53,6 +53,7 @@ export function tenantTransaction(client, fn, opts = {}) {
 // see across tenants. Physical tables: bank_details, employment_terms,
 // EmergencyContacts (see hr_rls_pilot_extend migration).
 const RLS_MODELS = new Set([
+    'AttendanceCaptureDevice', 'AttendanceCaptureReceipt', 'AttendanceCaptureEvent', 'AttendanceCaptureAudit', 'AttendanceImportBatch',
     'AttendanceSetupDraft', 'AttendanceSetupRelease',
     'Attendance',
     'LeaveRequest',

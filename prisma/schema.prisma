@@ -676,6 +676,11 @@ model AttendanceCallIn {
 }
 
 model AttendanceDevicePunch {
+  captureEventId String? @unique @db.Uuid
+  occurredAt DateTime?
+  localTime String?
+  timeZone String?
+  enrolmentId Int?
   id           Int      @id @default(autoincrement())
   sn           String   @db.VarChar(64) // device serial number (iclock SN=)
   deviceUserId String   @db.VarChar(64) // enrolment id on the device
@@ -3764,4 +3769,100 @@ model MonthlyPayrollAttendance {
   @@unique([tenantId, employeeId, month])
   @@index([tenantId, month])
   @@map("monthly_payroll_attendance")
+}
+
+
+// Stage 2: original evidence is immutable; attribution and processing are audited.
+model AttendanceCaptureDevice {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  sn String @unique @db.VarChar(64)
+  name String
+  timeZone String
+  active Boolean @default(true)
+  allowedTenantIds String[] @db.Uuid
+  credentialHash String?
+  legacyKeyAllowed Boolean @default(false)
+  lastSeenAt DateTime?
+  clockOffsetSeconds Int?
+  clockSampledAt DateTime?
+  lastHealthState String?
+  staleAfterMinutes Int @default(30)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, active])
+  @@map("attendance_capture_devices")
+}
+model AttendanceCaptureReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  source String
+  sn String?
+  requestKey String
+  payloadHash String
+  actorId String?
+  summary Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, source, requestKey])
+  @@index([tenantId, createdAt])
+  @@map("attendance_capture_receipts")
+}
+model AttendanceCaptureEvent {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  receiptId String @db.Uuid
+  fingerprint String @unique
+  source String
+  sn String
+  deviceUserId String?
+  raw Json
+  parsed Json?
+  employeeId Int?
+  enrolmentId Int?
+  state String @default("PENDING")
+  reason String?
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  leaseUntil DateTime?
+  leaseToken String? @db.Uuid
+  version Int @default(1)
+  result Json?
+  processedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([state, nextAttemptAt, createdAt])
+  @@index([tenantId, state, id])
+  @@index([tenantId, employeeId, createdAt])
+  @@map("attendance_capture_events")
+}
+model AttendanceCaptureAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  eventId String? @db.Uuid
+  receiptId String? @db.Uuid
+  actorId String
+  action String
+  reason String
+  detail Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, eventId, createdAt])
+  @@map("attendance_capture_audit")
+}
+model AttendanceImportBatch {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  actorId String
+  fileHash String
+  previewToken String
+  options Json
+  rows Json
+  results Json
+  state String @default("PREVIEW")
+  cursor Int @default(0)
+  summary Json
+  reason String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, createdAt])
+  @@map("attendance_import_batches")
 }

@@ -76,12 +76,15 @@ describe("validateRow", () => {
   it("reads an overnight shift as +1 day instead of negative hours", () => {
     const r = run({ employee_code: "E-1042", date: "2021-03-01", check_in: "22:00", check_out: "06:00" });
     expect(r.value.totalHours).toBe(8);
+    expect(r.value.checkOut.toISOString()).toBe("2021-03-02T06:00:00.000Z");
+    expect(r.value.checkOut > r.value.checkIn).toBe(true);
     expect(r.fixes.join(" ")).toMatch(/overnight/);
   });
 
-  it("defaults a historical anomaly to APPROVED so it never lands in the review queue", () => {
+  it("requires an explicit historical anomaly decision", () => {
     const r = run({ employee_code: "E-1042", date: "2021-03-02", check_in: "10:47", anomaly_type: "LATE_CHECKIN" });
-    expect(r.value.resolution).toBe("APPROVED");
+    expect(r.ok).toBe(false);
+    expect(r.issues.join(" ")).toMatch(/explicit APPROVED or REJECTED/);
   });
 
   it("infers day_type LEAVE when only leave_type is filled", () => {

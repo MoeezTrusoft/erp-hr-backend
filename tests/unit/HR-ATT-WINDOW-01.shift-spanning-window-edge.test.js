@@ -62,6 +62,13 @@ jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
     resolveWorkingDays: jest.fn(async () => new Map()),
 }));
 
+const { shiftFor } = await import('../../src/lib/attendanceShift.js');
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js', () => ({
+    loadAttendanceRuntime: jest.fn(async () => ({ resolve: (_employeeId, day, anchor) => {
+        const pattern = { type: 'weekly', shift: { from: '22:00', to: '10:00' }, offDays: [] };
+        return { pattern, shift: shiftFor(pattern, day, anchor), policy: {}, working: true, reason: null };
+    } })),
+}));
 const { replayTenant } = await import('../../src/lib/attendanceReplay.js');
 
 const run = () =>
