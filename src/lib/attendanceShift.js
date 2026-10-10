@@ -20,6 +20,8 @@ export function shiftCandidates(pattern, day) {
   const rotating = Array.isArray(pattern?.rotatingShifts)
     ? pattern.rotatingShifts
     : null;
+  if (Array.isArray(pattern?.shifts) && pattern.shifts.length)
+    return pattern.shifts.map(build).filter(s=>s.start&&s.end).sort((a,b)=>a.start-b.start);
   if (rotating?.length && Array.isArray(pattern?.cycle?.sequence)) {
     const cycle = pattern.cycle;
     const offset = Math.round(

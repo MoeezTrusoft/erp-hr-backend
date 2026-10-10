@@ -18,7 +18,10 @@
 // it an arrival, nearer the end a departure. Sessions with two or more punches
 // keep the positional rule, which is well tested and right.
 import { describe, it, expect } from '@jest/globals';
-import { sessioniseByRoster } from '../../src/lib/attendanceReplay.js';
+import { sessioniseByRoster as sessioniseStrict } from '../../src/lib/attendanceReplay.js';
+
+// This fixture characterizes explicitly opted-in historical device inference.
+const sessioniseByRoster=(p,pattern,options)=>sessioniseStrict(p,pattern,{...options,legacyDirectionInference:true});
 
 const DAY = { type: 'weekly', offDays: [], shift: { from: '10:00', to: '22:00' } };
 const NIGHT = { type: 'weekly', offDays: [], shift: { from: '22:00', to: '08:00' } };

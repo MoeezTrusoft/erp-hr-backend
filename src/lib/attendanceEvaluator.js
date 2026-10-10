@@ -34,6 +34,8 @@
 //
 // HR-ATT-POLICY-01.
 
+import { pairAttendance, accountAttendance } from './attendanceIntervals.js';
+import { shiftDeadline } from './attendanceClock.js';
 export const DAY_CREDIT = { FULL: 1.0, HALF: 0.5, NONE: 0.0 };
 
 const MIN_MS = 60 * 1000;
@@ -66,7 +68,8 @@ function dedupePunches(punches, windowMin) {
   const out = [];
   for (const p of sorted) {
     const prev = out[out.length - 1];
-    const sameDirection = prev && (prev.type ?? "") === (p.type ?? "");
+    const sameDirection = prev && (prev.type ?? "") === (p.type ?? "") &&
+      prev.sn === p.sn && prev.siteId === p.siteId;
     if (prev && sameDirection && minutesBetween(prev.timestamp, p.timestamp) <= windowMin) {
       continue; // a repeat of the scan we already have
     }
@@ -117,7 +120,17 @@ function creditToStatus(credit, arrivalStatus, durationStatus) {
  * @returns {{status, dayCredit, requiresRegularization, anomalies, workedMinutes,
  *            scheduledMinutes, workedPercent, latenessMinutes, checkIn, checkOut}}
  */
-export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay = {}, now = null } = {}) {
+export function evaluateShift(args = {}) {
+  const result = evaluateShiftCore(args);
+  const cutoff = shiftDeadline(args.shift, args.policy);
+  return {
+    ...result,
+    processingState: result.processingState || (result.inProgress ? 'OPEN' :
+      result.dayCredit == null ? 'NEEDS_REVIEW' : 'FINALIZED'),
+    deadline: cutoff,
+  };
+}
+function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, credits = [] } = {}) {
   const p = {
     graceMinutes: policy.graceMinutes ?? 0,
     halfDayAfterMinutes: policy.halfDayAfterMinutes ?? 30,
@@ -143,9 +156,16 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   // trustDeviceDirection:false falls back to positional inference for hardware
   // that genuinely does not record direction.
   const trust = policy.trustDeviceDirection !== false;
-  const raw = trust ? punches : punches.map((x) => ({ ...x, type: "" }));
+  const raw = trust ? punches : punches.map((x) => x.directionVerified ? x : ({ ...x, type: "" }));
 
-  const clean = dedupePunches(raw, p.duplicatePunchWindowMin);
+  let clean = dedupePunches(raw, p.duplicatePunchWindowMin);
+  // Only a wholly untyped legacy stream permits positional inference.
+  // Mixed or authenticated streams must never have direction invented.
+  if (clean.length && clean.every(x=>!x.type)) clean = clean.map((x,i)=>({
+    ...x, type:i===0?'IN':i===clean.length-1?'OUT':'',
+  }));
+  const pairing = pairAttendance(clean);
+  const accounting = accountAttendance(pairing.intervals, shift, policy, credits);
   const anomalies = [];
 
   const scheduledMinutes =
@@ -164,6 +184,12 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
 
   // ── No scan at all ────────────────────────────────────────────────────────
   if (!clean.length) {
+    const due = shiftDeadline(shift, policy);
+    if (!due || evalTime < due) return {
+      status:'PENDING_ATTENDANCE',dayCredit:null,requiresRegularization:false,
+      anomalies:[],...accounting,scheduledMinutes,workedPercent:null,
+      checkIn:null,checkOut:null,inProgress:true,intervals:[],issues:[],
+    };
     return {
       status: "ABSENT",
       dayCredit: DAY_CREDIT.NONE,
@@ -175,6 +201,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
       latenessMinutes: null,
       checkIn: null,
       checkOut: null,
+      intervals: [], issues: [], ...accounting,
     };
   }
 
@@ -191,11 +218,16 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
     if (clean.length > 1) checkOut = clean[clean.length - 1].timestamp;
   } else if (!checkIn && checkOut) {
     // OUT with no IN — genuinely a missing check-in, handled below.
-  } else if (checkIn && !checkOut && clean.length > 1) {
-    const last = clean[clean.length - 1].timestamp;
-    if (last > checkIn) checkOut = last;
   }
   if (checkIn && checkOut && checkOut <= checkIn) checkOut = null;
+  if (pairing.issues.length && !(pairing.issues.every(i=>i.code==='UNMATCHED_OUT') && !checkIn)) {
+    return {status:'PUNCH_CONFLICT',dayCredit:null,requiresRegularization:true,
+      anomalies:[{type:'OTHER',detail:pairing.issues.map(i=>i.code).join(', ')}],
+      ...accounting,scheduledMinutes,workedPercent:null,latenessMinutes:null,
+      checkIn,checkOut,intervals:pairing.intervals,issues:pairing.issues};
+  }
+  // A completed interval followed by another arrival still has a missing OUT.
+  if (pairing.open) checkOut = null;
 
   // ── Missing check-in ──────────────────────────────────────────────────────
   // A departure with no arrival. Blocking: the day cannot be scored, so it is
@@ -212,6 +244,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
       latenessMinutes: null,
       checkIn: null,
       checkOut,
+      ...accounting, intervals:pairing.intervals, issues:pairing.issues,
     };
   }
 
@@ -226,11 +259,8 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
     // credit indefinitely, neither flagged nor paid. 252 August shifts were
     // stuck that way. A shift that began more than a day ago is over, whatever
     // the roster does or does not say.
-    const cutoff = nextDay.working && nextDay.nextShiftStart
-      ? nextDay.nextShiftStart
-      : shift.end
-        ? new Date(shift.end.getTime() + p.checkoutLeniencyMin * MIN_MS)
-        : new Date(checkIn.getTime() + 24 * 60 * MIN_MS);
+    const cutoff = shiftDeadline(shift, policy) ??
+      new Date(checkIn.getTime() + 24 * 60 * MIN_MS);
 
     const closed = evalTime >= cutoff;
     if (closed) {
@@ -245,6 +275,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
         latenessMinutes: latenessMinutes(checkIn, shift.start),
         checkIn,
         checkOut: null,
+        ...accounting, intervals:pairing.intervals, issues:pairing.issues,
       };
     }
     // Window still open: the shift is in progress, not an exception yet.
@@ -283,6 +314,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
       checkIn,
       checkOut: null,
       inProgress: true,
+      ...accounting, intervals:pairing.intervals, issues:pairing.issues,
     };
   }
 
@@ -338,7 +370,7 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
   }
 
   // ── Duration ──────────────────────────────────────────────────────────────
-  const workedMinutes = Math.max(minutesBetween(checkIn, checkOut) - excludedMinutes(checkIn, checkOut, shift.exclusions), 0);
+  const workedMinutes = accounting.creditedMinutes;
   let workedPercent = null;
   let durationCredit = DAY_CREDIT.FULL;
   // T&A-RULE-06 — the label the CHECKOUT earns; null when duration does not
@@ -383,5 +415,6 @@ export function evaluateShift({ punches = [], shift = {}, policy = {}, nextDay =
     latenessMinutes: late,
     checkIn,
     checkOut,
+    ...accounting, intervals:pairing.intervals, issues:pairing.issues,
   };
 }

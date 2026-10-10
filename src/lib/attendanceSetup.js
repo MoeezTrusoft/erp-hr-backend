@@ -10,7 +10,7 @@ import {
   addDays,
 } from './attendanceDates.js';
 import { validateSchedulePattern } from './schedulePattern.js';
-import { shiftFor } from './attendanceShift.js';
+import { shiftFor, shiftCandidates } from './attendanceShift.js';
 import { excludedMinutes } from './attendanceEvaluator.js';
 
 export const DEFAULT_SETTINGS = {
@@ -19,6 +19,10 @@ export const DEFAULT_SETTINGS = {
   profiles: [],
   assignments: [],
   staffingTargets: [],
+  sites: [],
+  siteAssignments: [],
+  deviceSites: [],
+  siteRoutes: [],
 };
 const list = (v) => (Array.isArray(v) ? v : []);
 export function validateHolidayWindow(holiday) {
@@ -125,10 +129,30 @@ export function validateSettings(input) {
       settings.defaultCalendarId < 1)
   )
     throw badSetup('Choose a valid default calendar');
-  for (const key of ['profiles', 'assignments', 'staffingTargets'])
+  for (const key of ['profiles', 'assignments', 'staffingTargets', 'sites', 'siteAssignments', 'deviceSites', 'siteRoutes'])
     if (!Array.isArray(settings[key]) || settings[key].length > 10000)
       throw badSetup(`Invalid ${key}`);
   const ids = new Set();
+  const siteIds = new Set();
+  for (const site of settings.sites) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(site.id||'') || !site.name?.trim() || siteIds.has(site.id))
+      throw badSetup('Sites require unique stable IDs and names');
+    siteIds.add(site.id);
+  }
+  for (const a of [...settings.siteAssignments, ...settings.deviceSites]) {
+    const assigned = a.siteIds || [a.siteId];
+    if (!Array.isArray(assigned)||!assigned.length || assigned.some(id=>!siteIds.has(id))) throw badSetup('Choose existing attendance sites');
+    if (a.siteIds && (!Number.isInteger(a.employeeId) || a.employeeId<1)) throw badSetup('Site assignment requires an employee');
+    if (!a.siteIds && (!a.sn || typeof a.sn!=='string')) throw badSetup('Device site assignment requires a serial number');
+    dateKey(a.effectiveFrom);
+    if (a.effectiveTo && dateKey(a.effectiveTo)<dateKey(a.effectiveFrom)) throw badSetup('Site assignment end precedes start');
+  }
+  for (const rows of [settings.siteAssignments,settings.deviceSites])
+    rows.forEach((a,i)=>{if(rows.slice(i+1).some(b=>(a.employeeId ? a.employeeId===b.employeeId : a.sn===b.sn)&&overlaps(a,b))) throw badSetup('Site assignments must not overlap');});
+  for (const route of settings.siteRoutes)
+    if (!siteIds.has(route.fromSiteId)||!siteIds.has(route.toSiteId)||route.fromSiteId===route.toSiteId||
+      !Number.isInteger(route.minimumMinutes)||route.minimumMinutes<0||route.minimumMinutes>1440)
+      throw badSetup('Site routes require distinct sites and 0–1440 minimum travel minutes');
   for (const p of settings.profiles) {
     if (!p.id || !p.name?.trim() || ids.has(p.id))
       throw badSetup('Profiles require unique IDs and names');
@@ -273,6 +297,11 @@ export function resolveEmployeeDay(
     setupVersion: config.version ?? null,
     working: null,
     reason: null,
+    timeZone: config.settings?.timeZone || 'Asia/Karachi',
+    sites: list(config.settings?.sites),
+    siteAssignment: list(config.settings?.siteAssignments).find(a=>a.employeeId===employee.id&&covers(a,key)) ?? null,
+    deviceSites: list(config.settings?.deviceSites).filter(a=>covers(a,key)),
+    siteRoutes: list(config.settings?.siteRoutes),
   };
   if (
     !employedOn(employee, list(config.periods), key) ||
@@ -305,6 +334,7 @@ export function resolveEmployeeDay(
           ...original,
           shift: { from: assignment.fromTime, to: assignment.toTime },
           rotatingShifts: undefined,
+          shifts: undefined,
           shiftByDay: undefined,
         }
       : original;
@@ -371,9 +401,7 @@ export function resolveEmployeeDay(
             dateOnly(key),
           ),
         );
-  const breaks = list(pattern.breaks)
-    .filter((b) => !b.paid)
-    .map((b) => {
+  const breakWindow = (b) => {
       const window = shiftFor({ shift: b }, dateOnly(key));
       // A 02:00 break belongs to tomorrow in a shift starting at 20:00.
       if (shift.end && dateKey(shift.end) > key && window.end <= shift.start)
@@ -382,7 +410,9 @@ export function resolveEmployeeDay(
           end: new Date(+window.end + DAY_MS),
         };
       return window;
-    });
+    };
+  const breaks = list(pattern.breaks).filter(b=>!b.paid).map(breakWindow);
+  const paidBreaks = list(pattern.breaks).filter(b=>b.paid).map(breakWindow);
   // Trim holiday time at the edges; interior windows are excluded from duration.
   const exclusions = [...excused, ...breaks].filter((x) => x.start && x.end);
   let start = shift.start,
@@ -400,17 +430,21 @@ export function resolveEmployeeDay(
   return {
     ...base,
     pattern,
-    shift: { start, end, exclusions },
+    shift: { start, end, exclusions, paidBreaks },
     working,
     reason,
     holidayName: holiday?.name,
     calendarIds: ids,
-    rotating: Boolean(pattern.rotatingShifts?.length && !cycle),
+    rotating: Boolean(pattern.rotatingShifts?.length>1 && !cycle?.sequence),
     rosterId: rosters[0].id,
   };
 }
 
 export function readiness(config, from, to) {
+  const windows=(employee,day,info)=>info.pattern?.shifts?.length
+    ? shiftCandidates(info.pattern,dateOnly(day)).map(w=>resolveEmployeeDay(config,employee,day,{anchor:w.start}).shift)
+    : [info.shift];
+
   const days = dateRange(from, to),
     issues = [],
     employees = [];
@@ -448,7 +482,7 @@ export function readiness(config, from, to) {
       try {
         const info = resolveEmployeeDay(config, employee, day);
         if (info.working && info.shift?.end) {
-          previousEnd = info.shift.end;
+          previousEnd = new Date(Math.max(...windows(employee,day,info).map(w=>+w.end)));
           consecutive++;
         } else consecutive = 0;
       } catch {
@@ -483,20 +517,14 @@ export function readiness(config, from, to) {
             ...(errors.get('CONSECUTIVE_DAYS') || []),
             day,
           ]);
-        previousEnd = info.shift.end;
+        previousEnd = new Date(Math.max(...windows(employee,day,info).map(w=>+w.end)));
         if (info.pattern.maxHoursPerWeek) {
           const hours = dateRange(addDays(day, -6), day).reduce((sum, d) => {
             const r = resolveEmployeeDay(config, employee, d);
             return (
               sum +
               (r.working && r.shift?.start && r.shift?.end
-                ? ((r.shift.end - r.shift.start) / 60000 -
-                    excludedMinutes(
-                      r.shift.start,
-                      r.shift.end,
-                      r.shift.exclusions,
-                    )) /
-                  60
+                ? windows(employee,d,r).reduce((n,w)=>n+((w.end-w.start)/60000-excludedMinutes(w.start,w.end,w.exclusions))/60,0)
                 : 0)
             );
           }, 0);
@@ -522,6 +550,8 @@ export function readiness(config, from, to) {
           day,
         ]);
       if (info.profile.mode === 'DEVICE') {
+        if(info.sites.length && !info.siteAssignment?.siteIds?.length)
+          errors.set('SITE_ASSIGNMENT',[...(errors.get('SITE_ASSIGNMENT')||[]),day]);
         const enrolments = list(config.enrolments).filter(
           (e) => e.employeeId === employee.id && covers(e, day),
         );
@@ -530,6 +560,8 @@ export function readiness(config, from, to) {
             ...(errors.get('DEVICE_ENROLMENT') || []),
             day,
           ]);
+        if(info.sites.length && enrolments.some(e=>!info.deviceSites.some(d=>d.sn===e.sn)))
+          errors.set('DEVICE_SITE_MAPPING',[...(errors.get('DEVICE_SITE_MAPPING')||[]),day]);
         if (
           enrolments.some((en) =>
             list(config.enrolments).some(

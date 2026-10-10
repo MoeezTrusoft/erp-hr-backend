@@ -260,6 +260,9 @@ export async function correctAttendanceDay({
       // A missing-punch correction is HR's final word — the hold clears. A
       // brand-new manual ENTRY stays held until management approves it.
       requires_regularization: manualEntryPendingApproval,
+      processingState: manualEntryPendingApproval ? 'NEEDS_REVIEW' : 'FINALIZED',
+      finalizedAt: manualEntryPendingApproval ? null : new Date(),
+      nextEvaluationAt: null,
       manually_corrected: true,
       corrected_by_id: actorEmployeeId,
       corrected_at: new Date(),

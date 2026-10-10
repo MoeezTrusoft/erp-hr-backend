@@ -9,7 +9,6 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
-import { markAbsences } from "./absenceMarking.service.js";
 
 const reminderLog = logger.child({ component: "reminder-jobs" });
 
@@ -98,69 +97,11 @@ export const startReviewReminderScheduler = () => {
   );
 };
 
-// HR-ATT-ABSENCE-02 (2026-09-28) — the scheduled absence-marking body. Before
-// this, `markAbsences` had NO recurring caller: HR ran the MCP tool by hand and
-// the September table stopped gaining ABSENT rows after Sep 15. Runs fleet-wide
-// (every tenant) for YESTERDAY in Asia/Karachi — the same day-key convention as
-// the self-service regularization deadline — at 03:00 PKT (22:00 UTC), when the
-// previous day is complete. markAbsences' six guards (enrolled, scheduled
-// working day, never overwrite, tenant-scoped, payroll-eligible, active period)
-// apply unchanged; never-overwrite makes re-running a window safe, so the
-// retry ladder and even a manual re-run cannot double-charge a day.
-const ABSENCE_MARKING_TZ = "Asia/Karachi";
-
-const dayKeyInMarkingTz = (when = new Date()) =>
-  // en-CA formats as ISO-8601 calendar dates (YYYY-MM-DD) deterministically.
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone: ABSENCE_MARKING_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(when);
-
-/**
- * @returns {Promise<{ from: string, to: string, tenants: number, marked: number }>}
- */
+// Compatibility scheduler entry point; the durable planner owns work dates and deadlines.
 export async function runAbsenceMarkingJob() {
-  // Yesterday in the marking timezone: step back 24h from NOW and take that
-  // instant's calendar date in the same tz (a 03:00 PKT run lands on the full
-  // previous day; a late-firing retry stays on the same window).
-  const day = dayKeyInMarkingTz(new Date(Date.now() - 24 * 60 * 60 * 1000));
-
-  // There is NO Tenant model in this schema — the tenant universe is derived
-  // from the Employee table (the same table markAbsences scans).
-  const tenants = (
-    await prisma.employee.findMany({
-      where: { tenant_id: { not: null } },
-      select: { tenant_id: true },
-      distinct: ["tenant_id"],
-      orderBy: { tenant_id: "asc" },
-    })
-  ).map((e) => e.tenant_id);
-
-  let marked = 0;
-  for (const tenantId of tenants) {
-    try {
-      // Dry run first — its summary is the audit trail of what was about to
-      // be written. The write run is explicit (markAbsences defaults to
-      // dryRun:true — this creates unpaid days, so writing must be asked for).
-      const plan = await markAbsences({ tenantId, from: day, to: day, dryRun: true });
-      const write = await markAbsences({ tenantId, from: day, to: day, dryRun: false });
-      marked += write.marked;
-      reminderLog.info(
-        { tenantId, day, planned: plan.marked, marked: write.marked },
-        "absence marking: tenant day processed"
-      );
-    } catch (err) {
-      // One tenant failing must not stop the others; a job-level failure
-      // (e.g. the tenant list itself) rides BullMQ's retry ladder.
-      reminderLog.error(
-        { err: { message: err?.message }, tenantId, day },
-        "absence marking: tenant day failed"
-      );
-    }
-  }
-
-  reminderLog.info({ from: day, to: day, tenants: tenants.length, marked }, "absence marking: daily sweep done");
-  return { from: day, to: day, tenants: tenants.length, marked };
+  const {planAttendanceFinalization,drainAttendanceFinalization}=await import('./attendanceFinalization.service.js');
+  const plan=await planAttendanceFinalization();
+  const result=await drainAttendanceFinalization({limit:100});
+  if(plan.failures.length||result.failed)throw new Error('Attendance finalization has failed windows; durable jobs retain their work dates');
+  return result;
 }

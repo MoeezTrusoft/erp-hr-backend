@@ -28,6 +28,8 @@ enum LeaveAccrualPeriod {
 }
 
 enum StatusAttendance {
+  PENDING_ATTENDANCE
+  PUNCH_CONFLICT
   SETUP_REQUIRED
   PRESENT
   ABSENT
@@ -69,6 +71,7 @@ enum AnomalyType {
 }
 
 enum AnomalyStatus {
+  RESOLVED
   PENDING
   APPROVED
   REJECTED
@@ -592,6 +595,14 @@ model Log {
 }
 
 model Attendance {
+  processingState String @default("AWAITING_DATA")
+  evaluationVersion Int @default(0)
+  evaluationHash String?
+  calculation Json?
+  finalizedAt DateTime?
+  nextEvaluationAt DateTime?
+  sessions AttendanceSession[]
+  evaluations AttendanceEvaluation[]
   setupVersion Int?
   setupSnapshot Json?
   id          Int              @id @default(autoincrement())
@@ -677,7 +688,90 @@ model AttendanceCallIn {
   @@map("attendance_call_ins")
 }
 
+model AttendanceSession {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  attendanceId Int
+  attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  sessionKey String
+  shiftStart DateTime?
+  shiftEnd DateTime?
+  processingState String
+  intervals Json
+  calculation Json
+  @@unique([tenantId, attendanceId, sessionKey])
+  @@map("attendance_sessions")
+}
+
+// Immutable calculation revisions; raw biometric images/templates are never included.
+model AttendanceEvaluation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  attendanceId Int
+  attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  version Int
+  algorithmVersion String
+  inputHash String
+  trigger String
+  snapshot Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, attendanceId, version])
+  @@index([tenantId, createdAt])
+  @@map("attendance_evaluations")
+}
+
+model AttendanceEvaluationJob {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime
+  state String @default("PENDING")
+  nextAttemptAt DateTime @default(now())
+  attempts Int @default(0)
+  lastError String?
+  completedAt DateTime?
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, employeeId, date])
+  @@index([state, nextAttemptAt])
+  @@map("attendance_evaluation_jobs")
+}
+
+model AttendanceEvaluationCursor {
+  tenantId String @id @db.Uuid
+  plannedThrough DateTime
+  updatedAt DateTime @updatedAt
+  @@map("attendance_evaluation_cursors")
+}
+
+// Approved, attributed time adjustments do not edit the underlying punches.
+model AttendanceTimeCredit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime
+  kind String
+  start DateTime
+  end DateTime
+  fromSiteId String?
+  toSiteId String?
+  paid Boolean @default(false)
+  state String @default("APPROVED")
+  reason String
+  approvedBy String
+  revokedBy String?
+  revokedReason String?
+  createdAt DateTime @default(now())
+  @@index([tenantId, employeeId, date, state])
+  @@map("attendance_time_credits")
+}
+
 model AttendanceDevicePunch {
+  excludedAt DateTime?
+  excludedBy String?
+  exclusionReason String?
+  exclusionVersion Int @default(0)
+  siteId String?
+  assurance Json?
   directionVerified Boolean @default(false)
   captureEventId String? @unique @db.Uuid
   occurredAt DateTime?
@@ -709,6 +803,8 @@ model AttendanceDevicePunch {
 // Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
 // pending-approvals list and the Leave & Anomaly screen.
 model AttendanceAnomaly {
+  evidenceState String @default("ACTIVE")
+  resolvedAt DateTime?
   routingSnapshot Json?
   approvalEnteredAt DateTime @default(now())
   approvalPolicy String @default("STANDARD")
@@ -3777,6 +3873,7 @@ model MonthlyPayrollAttendance {
 
 // Stage 2: original evidence is immutable; attribution and processing are audited.
 model AttendanceCaptureDevice {
+  siteId String?
   biometricProfiles AttendanceBiometricProfile[]
   biometricChallenges AttendanceBiometricChallenge[]
   id String @id @default(uuid()) @db.Uuid

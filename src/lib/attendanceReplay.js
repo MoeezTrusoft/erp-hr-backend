@@ -1,3 +1,4 @@
+import {capDailyOvertime} from './attendanceOvertime.js';
 // src/lib/attendanceReplay.js
 //
 // Shared replay core for the two analysis reports: the status shadow-diff and
@@ -14,6 +15,9 @@
 import prisma from "./prisma.js";
 import { evaluateShift } from "./attendanceEvaluator.js";
 import { loadAttendanceRuntime } from "../services/attendanceSetup.service.js";
+import { civilNow, civilInstant } from './attendanceClock.js';
+import { dateRange } from './attendanceDates.js';
+import { evaluateSiteEvidence } from './attendanceSiteRules.js';
 
 import { shiftFor, shiftCandidates } from './attendanceShift.js';
 export { shiftFor, shiftCandidates };
@@ -62,7 +66,7 @@ export function sessioniseByRoster(
   // ends, never more than nine hours after. The nearest-next-start guard
   // still protects day-shift crews whose 08:30 punch is minutes from a
   // 09:00 rostered arrival.
-  { windowHours = 5, dedupeSeconds = 120, closeHours = 9 } = {},
+  { windowHours = 5, dedupeSeconds = 120, closeHours = 9, legacyDirectionInference = false } = {},
 ) {
   const ordered = [...punches].sort((a, b) => a.punchedAt - b.punchedAt);
 
@@ -84,7 +88,7 @@ export function sessioniseByRoster(
   for (const p of ordered) {
     const prev = sorted[sorted.length - 1];
     if (prev && p.punchedAt - prev.punchedAt <= dedupeMs &&
-      (!(prev.directionVerified || p.directionVerified) || prev.status === p.status)) continue;
+      prev.sn === p.sn && (prev.status === p.status || (legacyDirectionInference && !p.directionVerified && !prev.directionVerified))) continue;
     sorted.push(p);
   }
   if (!sorted.length) return [];
@@ -92,7 +96,8 @@ export function sessioniseByRoster(
   const hasRoster =
     typeof pattern === "function" ||
     Boolean(pattern?.shift?.from && pattern?.shift?.to) ||
-    Boolean(Array.isArray(pattern?.rotatingShifts) && pattern.rotatingShifts.length);
+    Boolean(Array.isArray(pattern?.rotatingShifts) && pattern.rotatingShifts.length) ||
+    Boolean(pattern?.shifts?.length);
   const groups = new Map();
 
   // HR-ATT-SESSION-01 — a shift that is OPEN claims the punch that closes it.
@@ -181,7 +186,7 @@ export function sessioniseByRoster(
           for (const { start, end } of shiftCandidates(pattern, startOfDay(anchor))) {
             if (!start || !end) continue;
             if (t < start.getTime() - tol || t > end.getTime() + tol) continue;
-            const distance = Math.abs(t - start.getTime());
+            const distance = Math.abs(t - ((!legacyDirectionInference && (p.status===1||p.status===5)) ? end.getTime():start.getTime()));
             if (!best || distance < best.distance) {
               best = {
                 distance,
@@ -199,17 +204,29 @@ export function sessioniseByRoster(
       }
     }
 
+    const dayPattern = typeof pattern === 'function' ? pattern(new Date(key+'T00:00:00Z')) : pattern;
+    if (dayPattern?.shifts?.length) {
+      const candidates = [-1,0,1].flatMap(offset=>{
+        const day = startOfDay(new Date(+p.punchedAt+offset*DAY_MS));
+        return shiftCandidates(pattern,day).map(s=>({...s,day}));
+      });
+      const direction = p.status===1||p.status===5 ? 'OUT':'IN';
+      const nearest = candidates.filter(s=>t>=+s.start-tol&&t<=+s.end+closeTol)
+        .sort((a,b)=>Math.abs(t-+(direction==='OUT'?a.end:a.start))-Math.abs(t-+(direction==='OUT'?b.end:b.start)))[0];
+      if(nearest) key=dayKey(nearest.day)+'|'+nearest.start.toISOString();
+    }
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(p);
   }
 
   const out = [];
-  for (const [key, raw] of [...groups.entries()].sort()) {
+  for (const [groupKey, raw] of [...groups.entries()].sort()) {
+    const key = groupKey.split('|')[0];
     const list = raw.sort((a, b) => a.punchedAt - b.punchedAt);
     const corrections = [];
 
-    // Position decides direction; the device code only raises a warning when it
-    // disagrees, so HR can see what was changed and why.
+    // Explicit directions are authoritative by default. Legacy inference must
+    // be selected by the published policy and never overrides verified direction.
     const deviceDir = (st) => (st === 0 || st === 4 ? "IN" : st === 1 || st === 5 ? "OUT" : null);
 
     // HR-ATT-DIRECTION-01 — with ONE scan, position cannot tell you anything.
@@ -243,7 +260,9 @@ export function sessioniseByRoster(
     const lone = loneDirection();
 
     const shaped = list.map((p, i) => {
-      if (p.directionVerified) return { timestamp: p.punchedAt, type: deviceDir(p.status) || '' };
+      const evidence = {timestamp:p.punchedAt, occurredAt:p.occurredAt, directionVerified:p.directionVerified,
+        eventId:p.captureEventId || (p.id!=null?'legacy:'+p.id:null), siteId:p.siteId, sn:p.sn, assurance:p.assurance,clockIssue:p.clockIssue};
+      if (p.directionVerified || (p.trustDirection ?? !legacyDirectionInference)) return { ...evidence, type: deviceDir(p.status) || '' };
       const positional = lone ?? (i === 0 ? "IN" : i === list.length - 1 ? "OUT" : "");
       const device = deviceDir(p.status);
       if (positional && device && device !== positional) {
@@ -257,7 +276,7 @@ export function sessioniseByRoster(
               : "last scan of the shift, recorded as a check-in",
         });
       }
-      return { timestamp: p.punchedAt, type: positional || device || "" };
+      return { ...evidence, inferred:true, type: positional || device || "" };
     });
 
     // HR-ATT-PRIMARY-DEVICE-01 — `punchSn` is the raw device serial per
@@ -278,126 +297,87 @@ export function sessioniseByRoster(
  * Assumes the caller has already established the tenant context; it issues
  * ordinary model queries so RLS scopes them.
  */
-export async function replayTenant({ tenantId, from, to, policy, now = new Date(), employeeIds, db = prisma }) {
-  // HR-ATT-WINDOW-01 — reach a day either side so a shift that straddles the
-  // boundary keeps both ends.
-  //
-  // A night shift beginning 31 July 22:00 and ending 1 August 10:00 has its
-  // arrival outside an August window. Querying [from, to] exactly drops it, and
-  // the lone morning OUT then opens a session of its own that evaluates to
-  // MISSING_CHECKOUT — a shift nobody failed to close, manufactured by the
-  // range. On production August data that was 8 of the 37 rows on 08-01, where
-  // every other day of the month sits at 0-5%.
-  //
-  // MISSING_* writes day_credit NULL and requires_regularization, so payroll
-  // HOLDS the day: left alone, a month boundary parks a day's pay for everyone
-  // on nights.
-  //
-  // The extra day exists only to COMPLETE shifts belonging to the window;
-  // sessions are filtered back to [from, to] below so no row is written outside
-  // the range the caller asked for.
-  const windowStart = new Date(new Date(`${from}T00:00:00Z`).getTime() - DAY_MS);
-  const windowEnd = new Date(new Date(`${to}T23:59:59Z`).getTime() + DAY_MS);
-
-  const runtime = await loadAttendanceRuntime({tenantId,from:windowStart,to:windowEnd,db});
-  const punches = await db.attendanceDevicePunch.findMany({
-    where: {
-      tenantId,
-      employeeId: employeeIds ? { in: employeeIds } : { not: null },
-      punchedAt: { gte: windowStart, lte: windowEnd },
-    },
-    select: { employeeId: true, punchedAt: true, status: true, sn: true, directionVerified: true },
-    orderBy: [{ employeeId: "asc" }, { punchedAt: "asc" }],
-  });
-
-  // HR-PAY-ELIG-01 — people who are not on payroll are not evaluated.
-  //
-  // Everyone scans on the same device, so without this the evaluator derives
-  // attendance, absences and deduction forecasts for contractors, FOC staff and
-  // anyone else HR excludes. That output is meaningless and has been mistaken
-  // for signal — those rows were the largest block left in August's
-  // reconciliation gap, against people HR's workbook has no column for.
-  //
-  // Asked as an EXCLUSION list rather than an inclusion one: only an explicit
-  // `false` drops somebody. A missing flag, or a row predating the column,
-  // stays included — nobody stops being paid because a backfill missed them.
-  const excluded = new Set(
-    (await db.employee.findMany({
-      where: { tenant_id: tenantId, payroll_included: false },
-      select: { id: true },
-    })).map((e) => e.id),
-  );
-
-  const byEmployee = new Map();
-  for (const p of punches) {
-    if (excluded.has(p.employeeId)) continue;
-    if (!byEmployee.has(p.employeeId)) byEmployee.set(p.employeeId, []);
+export async function replayTenant({ tenantId, from, to, policy, now = new Date(), db = prisma,
+  employeeIds, includeEmpty = false, runtime: suppliedRuntime, credits = [] }) {
+  const windowStart = new Date(+new Date(from+'T00:00:00Z')-DAY_MS);
+  const windowEnd = new Date(+new Date(to+'T23:59:59.999Z')+DAY_MS);
+  const runtime = suppliedRuntime || await loadAttendanceRuntime({tenantId,from:windowStart,to:windowEnd,db});
+  const [punches, excludedRows] = await Promise.all([
+    db.attendanceDevicePunch.findMany({
+      where:{tenantId,excludedAt:null,employeeId:employeeIds?{in:employeeIds}:{not:null},punchedAt:{gte:windowStart,lte:windowEnd}},
+      orderBy:[{employeeId:'asc'},{punchedAt:'asc'}],
+    }),
+    db.employee.findMany({where:{tenant_id:tenantId,payroll_included:false},select:{id:true}}),
+  ]);
+  const excluded = new Set(excludedRows.map(e=>e.id)), byEmployee = new Map();
+  if(includeEmpty) for(const id of employeeIds || runtime.employeeIds) if(!excluded.has(id))byEmployee.set(id,[]);
+  for(const raw of punches) {
+    if(excluded.has(raw.employeeId))continue;
+    const info=runtime.resolve(raw.employeeId,startOfDay(raw.punchedAt));
+    const zone=info.timeZone || 'Asia/Karachi';
+    const punchedAt=raw.occurredAt ? civilNow(raw.occurredAt,zone):raw.punchedAt;
+    let occurredAt=raw.occurredAt, clockIssue=false;
+    try { occurredAt ||= civilInstant(raw.punchedAt,raw.timeZone||zone); }
+    catch { clockIssue=true; }
+    const p={...raw,punchedAt,occurredAt,clockIssue,trustDirection:(policy||info.policy)?.trustDeviceDirection!==false,
+      siteId:raw.siteId || info.deviceSites?.find(d=>d.sn===raw.sn)?.siteId};
+    if(!byEmployee.has(p.employeeId))byEmployee.set(p.employeeId,[]);
     byEmployee.get(p.employeeId).push(p);
   }
-
-  const results = [];
-
-  for (const [employeeId, rows] of byEmployee) {
-    const patternForDay = day => runtime.resolve(employeeId,day).pattern;
-    for (const session of sessioniseByRoster(rows, patternForDay)) {
-      const day = session.day;
-      // The padding day is for context only — never for output.
-      const key = dayKey(day);
-      if (key < from || key > to) continue;
-
-      // HR-ATT-OFFDAY-01 — a lone scan on a rostered off day is not a shift.
-      //
-      // Without this, one punch on somebody's weekend opens a session, holds a
-      // single punch and lands as MISSING_CHECKOUT: a chargeable,
-      // payroll-blocking row on a day nobody was rostered. It was deleted by
-      // hand eleven times and rebuilt itself on the next re-derivation, because
-      // the punches were still there and nothing asked whether the day was a
-      // working one.
-      //
-      // Per HR these scans are either the tail of the previous evening's shift
-      // — people do not always leave on time — or habit ("muscle memory") on a
-      // day off. Neither is a shift.
-      //
-      // A complete PAIR is kept: working a rest day is real, and must stay
-      // visible and payable. And an absent verdict from the resolver is not
-      // permission to drop anything — only an explicit `working === false`
-      // suppresses, so an employee with no roster keeps every day they scan on.
-      const dayInfo = runtime.resolve(employeeId,day,session.punches[0]?.timestamp);
-      if(['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(dayInfo.reason))continue;
-      if(dayInfo.working == null) {
-        results.push({employeeId,day,setupVersion:dayInfo.setupVersion,setupSnapshot:dayInfo,verdict:{status:"SETUP_REQUIRED",dayCredit:null,requiresRegularization:true,anomalies:[],workedMinutes:0,checkIn:session.punches.find(p=>p.type==='IN')?.timestamp??null,checkOut:session.punches.findLast(p=>p.type==='OUT')?.timestamp??null},corrections:[]});
-        continue;
+  const results=[];
+  for(const [employeeId,rows] of byEmployee) {
+    const patternForDay=day=>runtime.resolve(employeeId,day).pattern;
+    const sessions=sessioniseByRoster(rows,patternForDay);
+    if(includeEmpty) for(const key of dateRange(from,to)) {
+      const day=new Date(key+'T00:00:00Z'), info=runtime.resolve(employeeId,day);
+      const windows=info.pattern?.shifts?.length ? shiftCandidates(info.pattern,day):[info.shift||{}];
+      for(const window of windows) {
+        const found=sessions.some(s=>dayKey(s.day)===key && (!info.pattern?.shifts?.length ||
+          +shiftFor(info.pattern,day,s.punches[0]?.timestamp).start===+window.start));
+        if(!found)sessions.push({day,punches:[],corrections:[],punchSn:[],anchor:window.start});
       }
-      if (dayInfo?.working === false && session.punches.length < 2) continue;
-      const tomorrow = new Date(day.getTime() + DAY_MS);
-      const tomorrowInfo = runtime.resolve(employeeId,tomorrow);
-      const nextShift = shiftFor(patternForDay, tomorrow);
-
-      const verdict = evaluateShift({
-        punches: session.punches,
-        // The arrival anchors WHICH rotating window applies (HR-ATT-ROTATING-01).
-        // ATT-ROT-ANCHOR-01 — session punches are the SHAPED view
-        // ({ timestamp, type }), so the anchor is `timestamp`, not `punchedAt`.
-        // Reading `punchedAt` off a shaped punch is always undefined, which made
-        // shiftFor fall back to the FIRST rotating window — so every rotating
-        // employee was scored against the DAY window (10:00–22:00) even on a
-        // night shift, turning a 21:59 night arrival into "11h59 late" and a
-        // half-day deduction.
-        shift: dayInfo.shift,
-        policy: policy ?? dayInfo.policy,
-        nextDay: {
-          working: Boolean(tomorrowInfo?.working),
-          nextShiftStart: tomorrowInfo?.working ? nextShift.start : null,
-        },
-        now,
-      });
-      if(dayInfo.reason==='PAID_NO_PUNCH')Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,anomalies:[]});
-
-      results.push({ employeeId, day, verdict, setupVersion:dayInfo.setupVersion, setupSnapshot:dayInfo, corrections: session.corrections, punchSn:session.punchSn });
+    }
+    for(const session of sessions) {
+      const {day}=session,key=dayKey(day);
+      if(key<from||key>to)continue;
+      const info=runtime.resolve(employeeId,day,session.anchor||session.punches[0]?.timestamp);
+      if(['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(info.reason))continue;
+      const ownCredits=credits.filter(c=>c.employeeId===employeeId&&dayKey(c.date)===key).map(c=>({
+        ...c,start:new Date(Math.max(+c.start,+(info.shift?.start||c.start))),
+        end:new Date(Math.min(+c.end,+(info.shift?.end||c.end))),
+        // Overtime lies outside scheduled hours.
+        ...(c.kind==='OVERTIME'?{start:c.start,end:c.end}:{}),
+      }));
+      let verdict;
+      if(info.working && (!info.shift?.start||!info.shift?.end)) {info.working=null;info.reason='MISSING_SHIFT_WINDOW';}
+      if(info.working && info.rotating && !session.punches.length) {info.working=null;info.reason='ROTATION_ASSIGNMENT_REQUIRED';}
+      if(info.working==null) verdict={status:'SETUP_REQUIRED',dayCredit:null,processingState:'NEEDS_REVIEW',
+        requiresRegularization:true,anomalies:[],workedMinutes:0,issues:[{code:info.reason}],intervals:[]};
+      else if(!info.working && session.punches.length<2) verdict={
+        status:info.reason==='HOLIDAY'?'HOLIDAY':info.reason==='APPROVED_LEAVE'?'ON_LEAVE':'WEEKLY_OFF',
+        dayCredit:0,processingState:'FINALIZED',requiresRegularization:false,anomalies:[],workedMinutes:0,intervals:[],issues:[]};
+      else {
+        verdict=evaluateShift({punches:session.punches,shift:info.shift,policy:policy||info.policy,
+          now:civilNow(now,info.timeZone),credits:ownCredits});
+        if(info.reason==='PAID_NO_PUNCH')Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,
+          anomalies:[],processingState:'FINALIZED',issues:[]});
+      }
+      const siteIssues=evaluateSiteEvidence(session.punches,info,ownCredits);
+      if(session.punches.some(p=>p.clockIssue))siteIssues.push({code:"AMBIGUOUS_LEGACY_TIMESTAMP"});
+      if(siteIssues.length) Object.assign(verdict,{dayCredit:null,requiresRegularization:true,processingState:'NEEDS_REVIEW',
+        issues:[...(verdict.issues||[]),...siteIssues]});
+      let deadline=null;
+      try { deadline=civilInstant(verdict.deadline,info.timeZone); }
+      catch { Object.assign(verdict,{dayCredit:null,processingState:'NEEDS_REVIEW',requiresRegularization:true,
+        issues:[...(verdict.issues||[]),{code:'AMBIGUOUS_SHIFT_DEADLINE'}]}); }
+      results.push({employeeId,day,sessionKey:info.shift?.start?.toISOString()||key,shift:info.shift,
+        deadline,verdict,setupVersion:info.setupVersion,setupSnapshot:info,corrections:session.corrections,
+        punchSn:session.punchSn,evidence:session.punches.map(p=>({eventId:p.eventId,sn:p.sn,siteId:p.siteId,
+          direction:p.type,inferred:p.inferred===true,at:p.timestamp,occurredAt:p.occurredAt,assurance:p.assurance})),
+        credits:ownCredits.map(c=>({id:c.id,kind:c.kind,start:c.start,end:c.end,paid:c.paid,maxMinutes:c.maxMinutes,approvedBy:c.approvedBy}))});
     }
   }
-
-  return results;
+  return capDailyOvertime(results);
 }
 
 /** Distinct tenants that have punches. See the note in the scripts: this MUST be

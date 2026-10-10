@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { registerAttendanceEvaluationTools } from './attendanceEvaluationTools.js';
 import { mcpCtx } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -24,6 +25,7 @@ import {
 } from "../../lib/attendanceBiometric.js";
 
 export function registerAttendanceCaptureTools(server) {
+  registerAttendanceEvaluationTools(server);
   const tool = (name, description, schema, method, fn) =>
     server.tool(
       name,
