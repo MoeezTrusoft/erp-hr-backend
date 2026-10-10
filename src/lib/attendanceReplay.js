@@ -83,7 +83,8 @@ export function sessioniseByRoster(
   const dedupeMs = dedupeSeconds * 1000;
   for (const p of ordered) {
     const prev = sorted[sorted.length - 1];
-    if (prev && p.punchedAt - prev.punchedAt <= dedupeMs) continue;
+    if (prev && p.punchedAt - prev.punchedAt <= dedupeMs &&
+      (!(prev.directionVerified || p.directionVerified) || prev.status === p.status)) continue;
     sorted.push(p);
   }
   if (!sorted.length) return [];
@@ -242,6 +243,7 @@ export function sessioniseByRoster(
     const lone = loneDirection();
 
     const shaped = list.map((p, i) => {
+      if (p.directionVerified) return { timestamp: p.punchedAt, type: deviceDir(p.status) || '' };
       const positional = lone ?? (i === 0 ? "IN" : i === list.length - 1 ? "OUT" : "");
       const device = deviceDir(p.status);
       if (positional && device && device !== positional) {
@@ -304,7 +306,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       employeeId: employeeIds ? { in: employeeIds } : { not: null },
       punchedAt: { gte: windowStart, lte: windowEnd },
     },
-    select: { employeeId: true, punchedAt: true, status: true, sn: true },
+    select: { employeeId: true, punchedAt: true, status: true, sn: true, directionVerified: true },
     orderBy: [{ employeeId: "asc" }, { punchedAt: "asc" }],
   });
 

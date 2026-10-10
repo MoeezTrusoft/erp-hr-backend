@@ -80,6 +80,19 @@ export async function drainCapture(
                 tenant_id: candidate.tenantId,
               },
             });
+            for (const event of batch) {
+              if (
+                event.source === "BIOMETRIC" &&
+                (!event.raw?.biometric?.matched ||
+                  ((event.raw.biometric.pad !== "PASSED" ||
+                    event.raw.biometric.delayedUpload) &&
+                    !event.biometricApprovedBy))
+              )
+                throw captureError(
+                  "BIOMETRIC_PAD_UNVERIFIED: explicit exception approval is required",
+                  409,
+                );
+            }
             if (!employee)
               throw captureError(
                 "IDENTITY_REMOVED: employee no longer exists",
@@ -151,6 +164,7 @@ export async function drainCapture(
                     occurredAt: new Date(p.occurredAt),
                     localTime: p.localTime,
                     timeZone: p.timeZone,
+                    directionVerified: event.source === "BIOMETRIC",
                   },
                 });
               } else {
@@ -170,6 +184,7 @@ export async function drainCapture(
                     verifyMode: p.verifyMode,
                     workCode: p.workCode,
                     rawLine: p.rawLine,
+                    directionVerified: event.source === "BIOMETRIC",
                   },
                 });
               }
