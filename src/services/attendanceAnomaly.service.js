@@ -33,6 +33,8 @@ const EMPLOYEE_SELECT = {
   first_name: true,
   last_name: true,
   photo_url: true,
+  job_title: true,
+  Position: { select: { title: true } },      businessUnit: { select: { name: true } },
 };
 
 function fullName(emp) {
@@ -86,8 +88,8 @@ function rowDto(row) {
     // raise-time snapshots the approval card renders.
     raisedById: row.raisedById ?? null,
     raisedByName: row.raisedByName ?? null,
-    position: row.positionSnapshot ?? null,
-    department: row.departmentSnapshot ?? null,
+    position: row.positionSnapshot ?? row.employee?.Position?.title ?? row.employee?.job_title ?? null,
+    department: row.departmentSnapshot ?? row.employee?.businessUnit?.name ?? null,
     currentApprovalLevel: row.currentApprovalLevel ?? null,
     // T&A-RULE-03 — the request's own time facts (rostered vs punched) shown
     // beside the check-in/check-out on the approval card and request modal.
@@ -107,7 +109,6 @@ function rowDto(row) {
 export async function informAbnormality({
   tenantId,
   employeeId,
-  type,
   reason,
   detail,
   date,
@@ -350,10 +351,8 @@ export async function listAnomalies({
 export async function updateAnomaly({
   tenantId,
   id,
-  type,
   reason,
   detail,
-  date,
   fromTime,
   toTime,
 }) {
@@ -376,11 +375,19 @@ export async function updateAnomaly({
  * orphaned chain steps.
  *
  * Returns the deleted row's identifying fields for the UI toast/audit log.
+ *
+ * TS-ANOM-DELETE-01/2 (2026-10-09 operator ruling) — HR/admin may withdraw
+ * ANY PENDING request. Callers that already asserted DELETE hr:attendance at
+ * the edge (only the Admin and HR Manager roles hold it; RBAC data verified
+ * 2026-10-09, no user-level overrides) pass requesterCanDeleteAny=true and
+ * skip the subject/filer check. Callers without that edge keep the original
+ * subject/filer rule.
  */
 export async function deleteAnomaly({
   tenantId,
   id,
   requesterEmployeeId,
+  requesterCanDeleteAny,
 }) {
   throw Object.assign(new Error('Use Attendance anomaly review: system-generated per-shift cases, HR missing-time entries, and Management-only decisions'), {status:410});
 }
