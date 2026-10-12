@@ -29,18 +29,26 @@ import { mcpCtx } from '../mcp/context.js';
 // (SYSTEM ctx) as the FIRST statement inside the tx. Pass an explicit tenantId
 // when the caller has the verified tenant in hand (e.g. createEmployee); else it
 // falls back to the ambient mcpCtx tenant.
+const activeTenantTransactions = new WeakSet();
+export const isTenantTransaction = (client) => activeTenantTransactions.has(client);
+
 export function tenantTransaction(client, fn, opts = {}) {
     return client.$transaction(async (tx) => {
-        const store = mcpCtx.getStore();
-        if (opts.system || store?.system) {
-            await tx.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`;
-        } else {
-            const t = opts.tenantId ?? store?.user?.tenantId;
-            if (t) {
-                await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t)}, true)`;
+        activeTenantTransactions.add(tx);
+        try {
+            const store = mcpCtx.getStore();
+            if (opts.system || store?.system) {
+                await tx.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`;
+            } else {
+                const t = opts.tenantId ?? store?.user?.tenantId;
+                if (t) {
+                    await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t)}, true)`;
+                }
             }
+            return await fn(tx);
+        } finally {
+            activeTenantTransactions.delete(tx);
         }
-        return fn(tx);
     }, opts.txOptions);
 }
 

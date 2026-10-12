@@ -15,6 +15,7 @@ import {
   dateRange,
 } from '../lib/attendanceDates.js';
 import { evaluateShift } from '../lib/attendanceEvaluator.js';
+import { civilNow } from '../lib/attendanceClock.js';
 
 const json = (value) => JSON.parse(JSON.stringify(value));
 const digest = (value) =>
@@ -324,7 +325,7 @@ export async function publishAttendanceSetup({
         ),
       );
       const {enqueueEvaluationRange}=await import('./attendanceFinalization.service.js');
-      const operatingTo=[dateKey(to),new Date().toISOString().slice(0,10)].sort()[0];
+      const operatingTo=[dateKey(to),dateKey(civilNow(new Date(),config.settings.timeZone))].sort()[0];
       if(dateKey(from)<=operatingTo) {
         await enqueueEvaluationRange({tenantId,from:dateKey(from),to:operatingTo,employeeIds:config.employees.map(e=>e.id)},tx);
         await tx.attendanceEvaluationJob.updateMany({where:{tenantId,date:{gte:dateOnly(from),lte:dateOnly(operatingTo)}},

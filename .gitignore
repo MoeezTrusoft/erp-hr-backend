@@ -9,6 +9,7 @@ node_modules
 
 # Durable device adapter spool (operational data, never source).
 data/attendance-spool/
+scripts/__pycache__/
 
 # Biometric runtime material must never be committed.
 biometrics/**/bin/
