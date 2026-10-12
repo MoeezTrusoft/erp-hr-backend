@@ -25,7 +25,7 @@ export async function attendanceCompleteness(
   db = prisma,
 ) {
   const days = dateRange(from, to, 370);
-  const [employees, runtime, rows, events, decisions, jobs] = await Promise.all(
+  const [employees, runtime, rows, events, jobs] = await Promise.all(
     [
       db.employee.findMany({
         where: {
@@ -54,14 +54,6 @@ export async function attendanceCompleteness(
           state: { in: ["PENDING", "FAILED", "NEEDS_REVIEW"] },
         },
         select: { id: true, employeeId: true, parsed: true, state: true },
-      }),
-      db.attendanceAnomaly.findMany({
-        where: {
-          tenantId,
-          date: { gte: dateOnly(from), lte: dateOnly(to) },
-          sourceKind: { in: ["REGULARIZATION", "PAPER_FORM"] },
-          status: { in: ["APPROVED", "REJECTED"] },
-        },
       }),
       db.attendanceEvaluationJob.findMany({
         where: {
@@ -119,35 +111,8 @@ export async function attendanceCompleteness(
         issues.push({ ...entry, code: "MISSING_ATTENDANCE_ROW" });
         continue;
       }
-      const humanFinal =
-        row.manually_corrected &&
-        row.day_credit != null &&
-        !row.requires_regularization;
-      // A final human request decision already determines the published payroll
-      // treatment of missing punches. It cannot waive a site, clock or capture hold.
-      const dayDecisions = decisions.filter(
-        (d) => d.employeeId === employee.id && dateKey(d.date) === date,
-      );
-      const missingOnly =
-        ["MISSING_CHECKIN", "MISSING_CHECKOUT"].includes(row.status) &&
-        (row.calculation?.verdict?.issues || []).every(
-          (i) => i.code === "UNMATCHED_OUT",
-        );
-      const reviewed =
-        (missingOnly && dayDecisions.length > 0) ||
-        (row.manually_corrected &&
-          dayDecisions.some((d) => d.status === "APPROVED"));
-      const settled =
-        humanFinal ||
-        reviewed ||
-        (row.processingState === "FINALIZED" &&
-          row.day_credit != null &&
-          row.calculation?.algorithmVersion === EVALUATION_ALGORITHM);
+      const settled = row.processingState === "FINALIZED" && row.day_credit != null && row.calculation?.algorithmVersion === EVALUATION_ALGORITHM;
       entry.settled = Boolean(settled);
-      if (reviewed) {
-        entry.state = "REVIEWED";
-        entry.decisionIds = dayDecisions.map((d) => d.id);
-      }
       if (!settled) {
         totals.unsettledDays++;
         issues.push({ ...entry, code: "ATTENDANCE_" + entry.state });

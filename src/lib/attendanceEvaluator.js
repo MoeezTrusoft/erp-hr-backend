@@ -35,6 +35,7 @@
 // HR-ATT-POLICY-01.
 
 import { pairAttendance, accountAttendance } from './attendanceIntervals.js';
+import { applyAnomalyRules } from './attendanceAnomalyRules.js';
 import { shiftDeadline } from './attendanceClock.js';
 export const DAY_CREDIT = { FULL: 1.0, HALF: 0.5, NONE: 0.0 };
 
@@ -121,7 +122,7 @@ function creditToStatus(credit, arrivalStatus, durationStatus) {
  *            scheduledMinutes, workedPercent, latenessMinutes, checkIn, checkOut}}
  */
 export function evaluateShift(args = {}) {
-  const result = evaluateShiftCore(args);
+  const result = applyAnomalyRules(evaluateShiftCore(args), args);
   const cutoff = shiftDeadline(args.shift, args.policy);
   return {
     ...result,

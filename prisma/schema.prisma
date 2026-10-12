@@ -721,6 +721,7 @@ model AttendanceEvaluation {
 }
 
 model AttendanceEvaluationJob {
+  rulesReconciliation Boolean @default(false)
   id String @id @default(uuid()) @db.Uuid
   tenantId String @db.Uuid
   employeeId Int
@@ -803,6 +804,11 @@ model AttendanceDevicePunch {
 // Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
 // pending-approvals list and the Leave & Anomaly screen.
 model AttendanceAnomaly {
+  rulesVersion Int @default(1)
+  sessionKey String?
+  measuredMinutes Float?
+  decisionRole String?
+  factHash String?
   evidenceState String @default("ACTIVE")
   resolvedAt DateTime?
   routingSnapshot Json?
@@ -876,6 +882,80 @@ model AttendanceAnomaly {
 
 // HR-ATT-POLICY-01 — one decision per approval level, mirroring
 // LeaveRequestApproval. The chain is defined by AttendanceApprovalLevel.
+model AttendanceGraceRule {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  scope String
+  scopeKey String
+  effectiveFrom DateTime @db.Date
+  checkInMinutes Int?
+  checkOutMinutes Int?
+  version Int @default(0)
+  actorId String
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, scope, scopeKey, effectiveFrom])
+  @@map("attendance_grace_rules")
+}
+
+model AttendanceGraceMembership {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  effectiveFrom DateTime @db.Date
+  teamKey String?
+  departmentKey String?
+  version Int @default(0)
+  @@unique([tenantId, employeeId, effectiveFrom])
+  @@map("attendance_grace_memberships")
+}
+
+model AttendanceManualTime {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime @db.Date
+  sessionKey String
+  direction String
+  timestamp DateTime
+  actorId String
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, employeeId, date, sessionKey, direction])
+  @@map("attendance_manual_times")
+}
+
+model AttendanceRuleAudit {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int?
+  anomalyId Int?
+  action String
+  actorId String
+  data Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, anomalyId, id])
+  @@map("attendance_rule_audit")
+}
+
+model AttendancePayrollAdjustment {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  sourcePayslipId Int
+  sourcePeriodEnd DateTime
+  currencyCode String
+  amountMinor String
+  appliedPayslipId Int?
+  revision Int
+  createdAt DateTime @default(now())
+  sourcePayslip PayrollPayslip @relation("AttendanceAdjustmentSource",fields:[sourcePayslipId],references:[id],onDelete:Restrict)
+  appliedPayslip PayrollPayslip? @relation("AttendanceAdjustmentTarget",fields:[appliedPayslipId],references:[id],onDelete:SetNull)
+  @@unique([tenantId, sourcePayslipId, revision])
+  @@index([tenantId, employeeId, appliedPayslipId])
+  @@map("attendance_payroll_adjustments")
+}
+
 model AttendanceAnomalyApproval {
   id           Int              @id @default(autoincrement())
   anomalyId    Int
@@ -2103,6 +2183,8 @@ model PayrollRun {
 }
 
 model PayrollPayslip {
+  attendanceBasisMinor String?
+  attendancePeriodDays Int?
   payrollOffice String? @db.VarChar(100)
   attendanceInputMode String @default("DEVICE")
   payableDays Decimal? @db.Decimal(5, 2)
@@ -2133,6 +2215,8 @@ model PayrollPayslip {
   questions       PayslipQuestion[]
   logs            Log[]
   PayrollAuditLog PayrollAuditLog[]
+  attendanceAdjustmentsFrom AttendancePayrollAdjustment[] @relation("AttendanceAdjustmentSource")
+  attendanceAdjustmentsApplied AttendancePayrollAdjustment[] @relation("AttendanceAdjustmentTarget")
 
   @@unique([payrollRunId, employeeId])
   // F-DB-08: employee payroll history is the dominant list/read path.

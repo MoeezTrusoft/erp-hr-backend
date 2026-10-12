@@ -1,4 +1,5 @@
 import {capDailyOvertime} from './attendanceOvertime.js';
+import { resolveGrace, shiftRuleKey, legacyGraceDefaults } from './attendanceAnomalyRules.js';
 // src/lib/attendanceReplay.js
 //
 // Shared replay core for the two analysis reports: the status shadow-diff and
@@ -302,12 +303,16 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   const windowStart = new Date(+new Date(from+'T00:00:00Z')-DAY_MS);
   const windowEnd = new Date(+new Date(to+'T23:59:59.999Z')+DAY_MS);
   const runtime = suppliedRuntime || await loadAttendanceRuntime({tenantId,from:windowStart,to:windowEnd,db});
-  const [punches, excludedRows] = await Promise.all([
+  const [punches, excludedRows, graceRules, memberships, manualTimes, legacyManualRows] = await Promise.all([
     db.attendanceDevicePunch.findMany({
       where:{tenantId,excludedAt:null,employeeId:employeeIds?{in:employeeIds}:{not:null},punchedAt:{gte:windowStart,lte:windowEnd}},
       orderBy:[{employeeId:'asc'},{punchedAt:'asc'}],
     }),
     db.employee.findMany({where:{tenant_id:tenantId,payroll_included:false},select:{id:true}}),
+    db.attendanceGraceRule.findMany({where:{tenantId,effectiveFrom:{lte:windowEnd}}}),
+    db.attendanceGraceMembership.findMany({where:{tenantId,effectiveFrom:{lte:windowEnd}},orderBy:{effectiveFrom:'desc'}}),
+    db.attendanceManualTime.findMany({where:{tenantId,date:{gte:windowStart,lte:windowEnd},...(employeeIds?{employeeId:{in:employeeIds}}:{})}}),
+    db.attendance.findMany({where:{tenantId,manually_corrected:true,date:{gte:windowStart,lte:windowEnd},...(employeeIds?{employeeId:{in:employeeIds}}:{})}}),
   ]);
   const excluded = new Set(excludedRows.map(e=>e.id)), byEmployee = new Map();
   if(includeEmpty) for(const id of employeeIds || runtime.employeeIds) if(!excluded.has(id))byEmployee.set(id,[]);
@@ -342,6 +347,32 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       if(key<from||key>to)continue;
       const info=runtime.resolve(employeeId,day,session.anchor||session.punches[0]?.timestamp);
       if(['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(info.reason))continue;
+      const sessionKey=info.shift?.start?.toISOString()||key;
+      const membership=memberships.find(m=>m.employeeId===employeeId&&dayKey(m.effectiveFrom)<=key);
+      const grace=resolveGrace([...legacyGraceDefaults(runtime.configOn?.(day),info,employeeId),...graceRules],{employeeId,date:day,shiftKey:shiftRuleKey(info),...membership});
+      info.policy={...(policy||info.policy),graceMinutes:grace.checkInMinutes,earlyLeaveGraceMin:grace.checkOutMinutes,resolvedGrace:grace};
+      info.grace=grace; info.graceShiftKey=shiftRuleKey(info);
+      const overlays=manualTimes.filter(m=>m.employeeId===employeeId&&dayKey(m.date)===key&&m.sessionKey===sessionKey);
+      const legacy=legacyManualRows.find(r=>r.employeeId===employeeId&&dayKey(r.date)===key&&r.calculation?.algorithmVersion!=='anomaly-rules-v2');
+      if(legacy) {
+        if(sessions.filter(s=>dayKey(s.day)===key).length!==1) throw Object.assign(new Error(`LEGACY_MANUAL_REVIEW: employee ${employeeId}, ${key} has a day-level correction across multiple shifts; map its original evidence to shifts before replay`),{status:409});
+        for(const [direction,value] of [['IN',legacy.check_in],['OUT',legacy.check_out]]) {
+          if(!value)continue;
+          const recorded=session.punches.filter(p=>p.type===direction).map(p=>+p.timestamp).sort((a,b)=>a-b);
+          const boundary=direction==='IN'?recorded[0]:recorded.at(-1);
+          if(boundary!=null&&boundary!==+new Date(value))throw Object.assign(new Error(`LEGACY_MANUAL_REVIEW: employee ${employeeId}, ${key} has a correction that differs from device evidence; preserve and reconcile both sources before replay`),{status:409});
+          if(boundary==null&&!overlays.some(m=>m.direction===direction))overlays.push({id:`legacy:${legacy.id}:${direction}`,legacyManual:true,timestamp:new Date(value),direction,actorId:String(legacy.corrected_by_id||'legacy-hr'),reason:legacy.correction_reason||'Preserved historical manual attendance',createdAt:legacy.corrected_at});
+        }
+      }
+      for(const manual of overlays) {
+        // Overlay supplies only missing boundaries; original device evidence remains intact.
+        if(!session.punches.some(p=>p.type===manual.direction)) session.punches.push({
+          timestamp:new Date(manual.timestamp),type:manual.direction,directionVerified:true,
+          manualId:manual.id,actorId:manual.actorId,reason:manual.reason,manual:true,
+          legacyManual:manual.legacyManual,enteredAt:manual.createdAt,
+        });
+      }
+      session.punches.sort((a,b)=>a.timestamp-b.timestamp);
       const ownCredits=credits.filter(c=>c.employeeId===employeeId&&dayKey(c.date)===key).map(c=>({
         ...c,start:new Date(Math.max(+c.start,+(info.shift?.start||c.start))),
         end:new Date(Math.min(+c.end,+(info.shift?.end||c.end))),
@@ -357,12 +388,12 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
         status:info.reason==='HOLIDAY'?'HOLIDAY':info.reason==='APPROVED_LEAVE'?'ON_LEAVE':'WEEKLY_OFF',
         dayCredit:0,processingState:'FINALIZED',requiresRegularization:false,anomalies:[],workedMinutes:0,intervals:[],issues:[]};
       else {
-        verdict=evaluateShift({punches:session.punches,shift:info.shift,policy:policy||info.policy,
+        verdict=evaluateShift({punches:session.punches,shift:info.shift,policy:info.policy,
           now:civilNow(now,info.timeZone),credits:ownCredits});
         if(info.reason==='PAID_NO_PUNCH')Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,
           anomalies:[],processingState:'FINALIZED',issues:[]});
       }
-      const siteIssues=evaluateSiteEvidence(session.punches,info,ownCredits);
+      const siteIssues=evaluateSiteEvidence(session.punches.filter(p=>!p.manual),info,ownCredits);
       if(session.punches.some(p=>p.clockIssue))siteIssues.push({code:"AMBIGUOUS_LEGACY_TIMESTAMP"});
       if(siteIssues.length) Object.assign(verdict,{dayCredit:null,requiresRegularization:true,processingState:'NEEDS_REVIEW',
         issues:[...(verdict.issues||[]),...siteIssues]});
@@ -373,7 +404,8 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       results.push({employeeId,day,sessionKey:info.shift?.start?.toISOString()||key,shift:info.shift,
         deadline,verdict,setupVersion:info.setupVersion,setupSnapshot:info,corrections:session.corrections,
         punchSn:session.punchSn,evidence:session.punches.map(p=>({eventId:p.eventId,sn:p.sn,siteId:p.siteId,
-          direction:p.type,inferred:p.inferred===true,at:p.timestamp,occurredAt:p.occurredAt,assurance:p.assurance})),
+          direction:p.type,inferred:p.inferred===true,at:p.timestamp,occurredAt:p.occurredAt,assurance:p.assurance,
+          manualId:p.manualId,actorId:p.actorId,reason:p.reason,legacyManual:p.legacyManual,enteredAt:p.enteredAt})),
         credits:ownCredits.map(c=>({id:c.id,kind:c.kind,start:c.start,end:c.end,paid:c.paid,maxMinutes:c.maxMinutes,approvedBy:c.approvedBy}))});
     }
   }

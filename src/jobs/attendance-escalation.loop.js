@@ -12,7 +12,9 @@ export async function escalateAttendanceRequests({
     where: {
       id: { gt: afterId },
       status: 'PENDING',
-      sourceKind: { in: ['REGULARIZATION', 'PAPER_FORM'] },
+      // New anomaly cases have optional recommendations, not approval levels.
+      // Never turn a timeout into a skipped HR verification or final decision.
+      sourceKind: { in: ['PAPER_FORM'] },
     },
     take: 1000,
     orderBy: { id: 'asc' },

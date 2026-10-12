@@ -33,6 +33,7 @@ function matches(row, where = {}) {
     )
       return matches(row, value);
     const actual = row[key];
+    if(value?.path) return equal(value.path.reduce((v,k)=>v?.[k],actual),value.equals);
     if (value && typeof value === "object" && !(value instanceof Date))
       return Object.entries(value).every(([op, v]) => {
         if (op === "in") return v.some((x) => equal(actual, x));
@@ -85,6 +86,15 @@ export function captureDb(seed = {}, hooks = {}) {
     attendanceEvaluationJob: [],
     attendanceEvaluationCursor: [],
     attendanceTimeCredit: [],
+    attendanceGraceRule: [],
+    attendanceGraceMembership: [],
+    attendanceManualTime: [],
+    attendanceRuleAudit: [],
+    attendancePayrollAdjustment: [],
+    payrollPayslip: [],
+    payrollDeduction: [],
+    payrollDeductionType: [],
+    payrollAuditLog: [],
     payrollRun: [],
     overtimeRequest: [],
     outboxEvent: [],
@@ -114,6 +124,7 @@ export function captureDb(seed = {}, hooks = {}) {
       }
       return 0;
     });
+    rows=rows.map(row=>model==='payrollPayslip'&&args.include?.deductions?{...row,deductions:state.payrollDeduction.filter(d=>d.payslipId===row.id).map(d=>({...d,deductionType:state.payrollDeductionType.find(t=>t.id===d.deductionTypeId)}))}:row);
     return rows.slice(
       args.skip || 0,
       args.take == null ? undefined : (args.skip || 0) + args.take,
@@ -157,6 +168,7 @@ export function captureDb(seed = {}, hooks = {}) {
       findFirst: (args = {}) => copy(find(model, args)[0] || null),
       findUnique: (args = {}) => copy(find(model, args)[0] || null),
       count: (args = {}) => find(model, args).length,
+      groupBy: ({where,by}) => [...new Set(find(model,{where}).map(r=>r[by[0]]))].map(value=>({[by[0]]:value,_count:find(model,{where}).filter(r=>r[by[0]]===value).length})),
       create: ({ data }) => create(model, data),
       createMany: ({ data, skipDuplicates }) => {
         let count = 0;

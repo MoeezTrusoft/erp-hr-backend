@@ -1,4 +1,5 @@
 import { approvedOvertimeCredits } from "../lib/attendanceOvertime.js";
+import { syncRuleCases } from './attendanceRuleCases.service.js';
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
 import { replayTenant, dayKey } from "../lib/attendanceReplay.js";
@@ -20,7 +21,7 @@ import {
   evidenceHolds,
 } from "./attendanceEvidence.service.js";
 
-export const EVALUATION_ALGORITHM = "intervals-v1";
+export const EVALUATION_ALGORITHM = "anomaly-rules-v2";
 const numerical = [
   "presenceMinutes",
   "workedMinutes",
@@ -105,89 +106,6 @@ export function aggregateSessions(sessions) {
   };
 }
 
-async function reconcileAnomalies(
-  db,
-  { tenantId, employeeId, day, rowId, anomalies, now },
-) {
-  const previous = await db.attendanceAnomaly.findMany({
-    where: { tenantId, employeeId, date: day, sourceKind: "evaluator" },
-  });
-  const desired = new Map(anomalies.map((a) => [rowId + ":" + a.type, a]));
-  for (const old of previous) {
-    const current = desired.get(old.sourceRef);
-    if (!current) {
-      if (old.evidenceState !== "RESOLVED")
-        await db.attendanceAnomaly.update({
-          where: { id: old.id, tenantId },
-          data: {
-            evidenceState: "RESOLVED",
-            resolvedAt: now,
-            ...(old.status === "PENDING" &&
-            !old.reviewerId &&
-            !(old.currentApprovalLevel > 1) &&
-            !(old.workflowVersion > 0)
-              ? { status: "RESOLVED" }
-              : {}),
-          },
-        });
-      continue;
-    }
-    // Human decisions are immutable. Evidence lifecycle is recorded separately.
-    if (
-      !old.reviewerId &&
-      !(old.currentApprovalLevel > 1) &&
-      !(old.workflowVersion > 0) &&
-      ["PENDING", "RESOLVED"].includes(old.status)
-    )
-      await db.attendanceAnomaly.update({
-        where: { id: old.id, tenantId },
-        data: {
-          status: "PENDING",
-          evidenceState: "ACTIVE",
-          resolvedAt: null,
-          fromTime: current.fromTime ?? null,
-          toTime: current.toTime ?? null,
-          expectedTime: current.expectedTime ?? null,
-          actualTime: current.actualTime ?? null,
-          detail:
-            current.detail ||
-            (current.minutesLate != null
-              ? String(current.minutesLate) + " min late"
-              : "Auto-detected by attendance evaluation"),
-        },
-      });
-    else if (old.evidenceState !== "ACTIVE")
-      await db.attendanceAnomaly.update({
-        where: { id: old.id, tenantId },
-        data: { evidenceState: "ACTIVE", resolvedAt: null },
-      });
-    desired.delete(old.sourceRef);
-  }
-  for (const [sourceRef, a] of desired)
-    await db.attendanceAnomaly.create({
-      data: {
-        tenantId,
-        employeeId,
-        date: day,
-        applicationDate: day,
-        sourceKind: "evaluator",
-        sourceRef,
-        type: a.type,
-        status: "PENDING",
-        evidenceState: "ACTIVE",
-        fromTime: a.fromTime ?? null,
-        toTime: a.toTime ?? null,
-        expectedTime: a.expectedTime ?? null,
-        actualTime: a.actualTime ?? null,
-        detail:
-          a.detail ||
-          (a.minutesLate != null
-            ? String(a.minutesLate) + " min late"
-            : "Auto-detected by attendance evaluation"),
-      },
-    });
-}
-
 export async function applyEvaluatedShifts(args) {
   const {
     tenantId,
@@ -208,7 +126,13 @@ export async function applyEvaluatedShifts(args) {
     );
   dateRange(from, to, 370);
   if (!dryRun) {
-    if (evidenceIds) await lockAttendancePeriod(db, tenantId);
+    // Rule decisions can revise payroll; take the common exclusive lock before
+    // any employee lock to avoid shared-to-exclusive upgrades during replay.
+    await lockAttendancePeriod(db, tenantId, true);
+    if (args.rulesReconciliation) {
+      await lockAttendancePeriod(db, tenantId, true);
+      if(db.$executeRaw) await db.$executeRaw`SELECT set_config('app.attendance_rules_reconciliation', 'on', true)`;
+    } else if (evidenceIds) await lockAttendancePeriod(db, tenantId);
     else await assertAttendancePeriodOpen(db, tenantId, from, to);
   }
   // Acquire in stable order; independent employees may evaluate concurrently.
@@ -329,9 +253,27 @@ export async function applyEvaluatedShifts(args) {
       if (!touched) continue;
       if (!dryRun) await assertAttendancePeriodOpen(db, tenantId, day, day);
     }
-    if (old?.manually_corrected) {
-      summary.skippedManuallyCorrected++;
-      continue;
+    // Manual times are attributed overlays and are evaluated by the same rules.
+    if(!dryRun&&old?.manually_corrected&&old.calculation?.algorithmVersion!==EVALUATION_ALGORITHM) {
+      await db.attendanceRuleAudit.create({data:{tenantId,employeeId,action:'LEGACY_MANUAL_PRESERVED',actorId:'attendance-rules',data:jsonValue({before:old})}});
+      for(const session of sessions)for(const p of session.evidence.filter(e=>e.legacyManual)) {
+        const manual=await db.attendanceManualTime.create({data:{tenantId,employeeId,date:day,sessionKey:session.sessionKey,direction:p.direction,timestamp:new Date(p.at),actorId:p.actorId,reason:p.reason,...(p.enteredAt?{createdAt:new Date(p.enteredAt)}:{})}});
+        p.manualId=manual.id;delete p.legacyManual;
+      }
+    }
+    {
+      const cases=dryRun
+        ? await db.attendanceAnomaly.findMany({where:{tenantId,employeeId,date:day,rulesVersion:2,evidenceState:'ACTIVE'}})
+        : await syncRuleCases(db,{tenantId,employeeId,day,sessions,now});
+      for(const session of sessions) {
+        const own=cases.filter(a=>a.sessionKey===session.sessionKey);
+        const facts=session.verdict.anomalies || [];
+        const sameFacts=own.length===facts.length && facts.every(f=>own.some(a=>a.type===f.type && Number(a.measuredMinutes)===Number(f.minutes) && +new Date(a.actualTime)===+new Date(f.actualTime) && +new Date(a.expectedTime)===+new Date(f.expectedTime)));
+        const blockingIssues=(session.verdict.issues||[]).filter(i=>i.code!=='UNMATCHED_OUT');
+        if(session.verdict.processingState==='NEEDS_REVIEW'&&!blockingIssues.length&&sameFacts&&own.length&&own.every(a=>['APPROVED','REJECTED'].includes(a.status))) {
+          Object.assign(session.verdict,{processingState:'FINALIZED',dayCredit:1,requiresRegularization:false});
+        }
+      }
     }
     const verdict = aggregateSessions(sessions);
     summary.byStatus[verdict.status] =
@@ -430,7 +372,6 @@ export async function applyEvaluatedShifts(args) {
         where: {
           id: old.id,
           tenantId,
-          manually_corrected: false,
           updated_at: old.updated_at,
         },
         data,
@@ -462,14 +403,7 @@ export async function applyEvaluatedShifts(args) {
           snapshot,
         },
       });
-      await reconcileAnomalies(db, {
-        tenantId,
-        employeeId,
-        day,
-        rowId: row.id,
-        anomalies: verdict.anomalies,
-        now,
-      });
+      // Per-shift cases are synchronized above; day-level legacy evidence is retained.
       summary.anomaliesPersisted += verdict.anomalies.length;
     }
     const job = await db.attendanceEvaluationJob.findFirst({

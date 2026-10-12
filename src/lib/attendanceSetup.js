@@ -71,11 +71,8 @@ export function validatePolicy(policy) {
   }
   if (policy.halfDayMinPercent > policy.fullDayMinPercent)
     errors.push('Half-day minimum cannot exceed full-day minimum');
-  if (
-    policy.halfDayAfterPercentOfShift == null &&
-    policy.graceMinutes > policy.halfDayAfterMinutes
-  )
-    errors.push('Late grace cannot exceed the half-day lateness threshold');
+  // Grace determines whether an anomaly exists; the independent 30-minute
+  // threshold measures severity from the shift boundary, even for larger grace.
   if (
     policy.shiftGapHours != null &&
     (!Number.isInteger(policy.shiftGapHours) ||

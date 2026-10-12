@@ -18,8 +18,8 @@ describe('paid days from recorded payroll',()=>{
   expect(resolvePayrollPaidDays({payrollRun:run,payslip:{...payslip,netAmount:'99'},audit})).toBeNull();
   expect(resolvePayrollPaidDays({payrollRun:run,payslip:{...payslip,payableDays:0}})).toBe(0);
  });
- it('calculates device paid days with the same absence decision that sets salary deductions',()=>{
+ it('does not deduct an undecided device absence from paid days',()=>{
   const r=buildPayslipFromInputs({employee:{id:1,tenant_id:'other',attendanceInputMode:'MANUAL_MONTHLY'},employmentTerm:{baseSalary:'30000',currency:'PKR',payFrequency:'MONTHLY'},payrollRun:run,bridges:{manualAttendance:{month:'2026-09',payableDays:30},attendanceRows:[{date:run.periodStart,status:'ABSENT',day_credit:0}]},ruleConfig:{absenceRecoveryEnabled:true}});
-  expect(r.payableDays).toBe(29);expect(Number(r.netAmount)).toBe(29000);
+  expect(r.payableDays).toBe(30);expect(Number(r.netAmount)).toBe(30000);
  });
 });
