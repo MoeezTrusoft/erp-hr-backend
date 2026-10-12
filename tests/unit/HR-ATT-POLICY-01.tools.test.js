@@ -38,6 +38,8 @@ jest.unstable_mockModule('../../src/services/attendanceApprovalLevel.service.js'
     deleteApprovalLevel: jest.fn(async (a) => ({ deleted: true, ...a })),
 }));
 
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({getAttendanceSetup:jest.fn(async args=>args),saveAttendanceSettings:jest.fn(async args=>args),previewAttendanceSetup:jest.fn(async args=>args),publishAttendanceSetup:jest.fn(async args=>args),simulateAttendance:jest.fn(async args=>args),restoreAttendanceDraft:jest.fn(async args=>args)}));
+jest.unstable_mockModule('../../src/services/attendanceSetupOperations.service.js',()=>({bulkAssignRosters:jest.fn(async args=>args),previewDeviceMapping:jest.fn(async args=>args),rolloverHolidayCalendar:jest.fn(async args=>args),importSetupHolidays:jest.fn(async args=>args),assignSetupCalendar:jest.fn(async args=>args),createSetupCalendar:jest.fn(async args=>args)}));
 const { registerAttendanceSetupTools } = await import('../../src/mcp/tools/attendanceSetupTools.js');
 const approvals = await import('../../src/services/attendanceApprovalLevel.service.js');
 
@@ -57,6 +59,8 @@ beforeEach(() => {
 });
 
 const EXPECTED = [
+ 'hr_attendance_setup_get','hr_attendance_setup_save','hr_attendance_setup_preview','hr_attendance_setup_publish','hr_attendance_setup_restore','hr_attendance_setup_simulate',
+ 'hr_attendance_rosters_bulk','hr_attendance_device_mapping_preview','hr_attendance_calendar_rollover','hr_attendance_calendar_create','hr_attendance_holidays_import','hr_attendance_calendar_assign',
     'hr_attendance_policy_get',
     'hr_attendance_policy_update',
     'hr_attendance_deduction_rules_list',

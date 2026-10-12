@@ -30,6 +30,8 @@ import {
 } from "./services/attendanceRealtime.publisher.js";
 import { startHrOutboxDispatcher } from "./jobs/outbox.loop.js";
 import { startSystemAccountProvisioningWorker } from "./jobs/system-account-provisioning.loop.js";
+import { startAttendanceCaptureWorker } from './jobs/attendance-capture.loop.js';
+import { startAttendanceEscalationWorker } from './jobs/attendance-escalation.loop.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -86,6 +88,8 @@ logger.info({
 const outboxDispatcher = startHrOutboxDispatcher();
 // F-03: reconcile durable account intents independently of request success.
 const accountProvisioningWorker = startSystemAccountProvisioningWorker();
+const attendanceEscalationWorker = startAttendanceEscalationWorker();
+const attendanceCaptureWorker = startAttendanceCaptureWorker();
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
@@ -98,6 +102,8 @@ let shuttingDown = false;
 async function gracefulShutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  attendanceEscalationWorker.stop();
+  await attendanceCaptureWorker.stop();
   stopAttendanceListener();
   // Stop the realtime health beat + release the attendance Redis client.
   try { realtimeHealth?.stop?.(); } catch { /* best effort */ }

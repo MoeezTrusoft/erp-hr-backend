@@ -17,6 +17,7 @@ import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { routeAnomaly } from "./attendanceAnomalyRouting.service.js";
 import { resolveWorkingDays } from "./workingDay.service.js";
+import { loadAttendanceRuntime } from "./attendanceSetup.service.js";
 import logger from "../lib/logger.js";
 
 function badRequest(message) {
@@ -29,40 +30,14 @@ function notFound(message) {
 function startOfDay(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) throw badRequest(`Invalid date: ${value}`);
-  d.setHours(0, 0, 0, 0);
+  d.setUTCHours(0, 0, 0, 0);
   return d;
 }
 
-/** "HH:MM" on a given day. Returns null when the clock string is unusable. */
-function atClock(day, hhmm) {
-  if (typeof hhmm !== "string") return null;
-  const m = hhmm.trim().match(/^(\d{1,2}):(\d{2})/);
-  if (!m) return null;
-  const d = new Date(day);
-  d.setHours(Number(m[1]), Number(m[2]), 0, 0);
-  return d;
-}
-
-async function loadShift(employeeId, day, tenantId) {
-  // Effective-dated: the form must describe the shift in force on the DAY being
-  // regularised, not whatever the employee's schedule is today.
-  const ws = await prisma.workSchedule.findFirst({
-    where: {
-      employeeId,
-      tenantId,
-      effective_start_date: { lte: day },
-      OR: [{ effective_end_date: null }, { effective_end_date: { gte: day } }],
-    },
-    orderBy: { effective_start_date: "desc" },
-    select: { schedule_pattern: true },
-  });
-  const shift = ws?.schedule_pattern?.shift ?? null;
-  const from = atClock(day, shift?.from);
-  let to = atClock(day, shift?.to);
-  // A night shift ends on the following day; without this the window would be
-  // negative and every night worker's request would look malformed.
-  if (from && to && to <= from) to = new Date(to.getTime() + 24 * 60 * 60 * 1000);
-  return { from, to, raw: shift };
+async function loadShift(employeeId, day, tenantId, recorded) {
+  const info=recorded?.shift?recorded:(await loadAttendanceRuntime({tenantId,from:day,to:day})).resolve(employeeId,day);
+  if(info.working==null)throw Object.assign(new Error('Complete attendance setup before deriving the anomaly window'),{status:409});
+  return {from:info.shift?.start?new Date(info.shift.start):null,to:info.shift?.end?new Date(info.shift.end):null,raw:info.pattern?.shift||null};
 }
 
 /**
@@ -193,15 +168,15 @@ async function loadRequester(employeeId, tenantId) {
  */
 export async function getAnomalyFormDefaults({ tenantId, employeeId, date, type }) {
   const day = startOfDay(date);
-  const [requester, shift, attendance] = await Promise.all([
+  const [requester, attendance] = await Promise.all([
     loadRequester(employeeId, tenantId),
-    loadShift(employeeId, day, tenantId),
     prisma.attendance.findFirst({
       where: { tenantId, employeeId, date: day },
       orderBy: { id: "desc" },
     }),
   ]);
 
+  const shift=await loadShift(employeeId,day,tenantId,attendance?.setupSnapshot);
   const detected = await prisma.attendanceAnomaly.findMany({where:{tenantId,employeeId,date:day,sourceKind:{in:['evaluator','DEVICE']}},select:{type:true,fromTime:true,toTime:true,expectedTime:true,actualTime:true}});
   const primary = deriveCategory({attendance,shift});
   const categories = [...new Set([primary.type,...detected.map(a=>a.type)])];
@@ -282,70 +257,5 @@ export async function computeAnomalyDeadline({ tenantId, employeeId, anomalyDate
  * own anomaly to a cheaper one.
  */
 export async function createAnomalyRequest({ tenantId, employeeId, date, reason, type, attachments = [] }) {
-  const text = typeof reason === "string" ? reason.trim() : "";
-  if (!text) throw badRequest("reason is required");
-
-  const day = startOfDay(date);
-  const defaults = await getAnomalyFormDefaults({ tenantId, employeeId, date: day, type });
-
-  // HR-ANOM-DEADLINE-01 — the 2-working-day window, enforced BEFORE any write.
-  const { deadline } = await computeAnomalyDeadline({ tenantId, employeeId, anomalyDate: day, type: defaults.category });
-  if (new Date() > deadline) {
-    throw badRequest(
-      `The request window closed on ${deadline.toISOString().slice(0, 10)} — anomaly requests must be submitted within 2 working days`,
-    );
-  }
-
-  const sourceRef = `regularization:${employeeId}:${day.toISOString().slice(0, 10)}:${defaults.category}`;
-
-  const uploadedAttachments = await uploadAnomalyAttachments(attachments);
-  const anomaly = await tenantTransaction(prisma, async (tx) => {
-    const existing = await tx.attendanceAnomaly.findFirst({
-      where: { tenantId, sourceKind: "REGULARIZATION", employeeId, date: day, type: defaults.category },
-    });
-    // One open request per employee-day. Re-filing while a decision is pending
-    // would give the same day two outcomes and, downstream, two deductions.
-    if (existing && existing.status === "PENDING") {
-      throw badRequest(`A regularization request for ${sourceRef} is already pending`);
-    }
-    if (existing) {
-      throw badRequest(`${sourceRef} was already ${existing.status}`);
-    }
-
-    return tx.attendanceAnomaly.create({
-      data: {
-        tenantId,
-        employeeId,
-        type: defaults.category,
-        reason: text,
-        attachments: uploadedAttachments,
-        date: day,
-        fromTime: defaults.fromTime,
-        toTime: defaults.toTime,
-        expectedTime: defaults.expectedTime,
-        actualTime: defaults.actualTime,
-        applicationDate: new Date(),
-        positionSnapshot: defaults.position,
-        departmentSnapshot: defaults.department,
-        sourceKind: "REGULARIZATION",
-        sourceRef,
-        status: "PENDING",
-        currentApprovalLevel: 1,
-        // TS-ONBEHALF-01 — the employee filed this themselves (raisedById ===
-        // employeeId); the ops path stamps the HR filler instead.
-        raisedById: employeeId,
-        raisedByName: null,
-        requestDeadline: deadline,
-      },
-    });
-  });
-
-  const routing = await routeAnomaly({ tenantId, anomalyId: anomaly.id });
-
-  logger.info(
-    { anomalyId: anomaly.id, type: anomaly.type, routed: routing.routed },
-    "attendance regularization request created",
-  );
-
-  return { anomaly, routing };
+  throw Object.assign(new Error('Use Attendance anomaly review: system-generated per-shift cases, HR missing-time entries, and Management-only decisions'), {status:410});
 }

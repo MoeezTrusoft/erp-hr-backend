@@ -1,156 +1,52 @@
-// src/services/rosterChange.service.js
-//
-// Changing a roster, safely (HR-ROSTER-02).
-//
-// Rosters used to be changed by rewriting schedule_pattern in place. Since
-// HR-ROSTER-01 resolves the roster PER DAY, an in-place edit now reaches
-// backwards over every day the row ever covered: correcting somebody's weekend
-// in September silently re-derives August, turning reconciled attendance into
-// absences and absences into pay. A month that has been closed must stay
-// closed.
-//
-// So a change FROM a date closes the version covering that date on the day
-// before, and opens a new one on it. Ranges stay contiguous and non-overlapping,
-// which is what lets "the schedule in force on this day" be a single row.
-//
-// One exception, and it is not a special case so much as the same rule applied
-// honestly: if the change starts on the very day the current version starts,
-// closing it would leave a version covering nothing. The stored value was wrong
-// for that row's entire life — a correction, not a change — so the row is
-// updated and what it held is preserved under `supersedes`.
-import prisma from "../lib/prisma.js";
-import { tenantTransaction } from "../lib/rlsTenant.js";
-import { assertSchedulePattern } from "../lib/schedulePattern.js";
-import logger from "../lib/logger.js";
+import { getWorkSchedules, writeRoster } from './workScheduleService.js';
+import { covers, dateKey, badSetup } from '../lib/attendanceDates.js';
 
-const DAY_MS = 86_400_000;
-
-const startOfDay = (v) => {
-  const d = new Date(v);
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-};
-
-/**
- * Move an employee onto a new roster from a date.
- *
- * @param {object}  args
- * @param {number}  args.employeeId
- * @param {string}  args.tenantId
- * @param {string|Date} args.effectiveFrom  first day the new pattern applies
- * @param {object}  args.pattern            the new schedule_pattern
- * @param {string}  args.reason             why — stored on the version
- * @param {string} [args.changedBy]
- * @param {boolean} [args.dryRun]           report the plan, write nothing
- * @returns {Promise<{action: string, closed: ?number, created: ?number}>}
- */
 export async function changeRoster({
-  employeeId, tenantId, effectiveFrom, pattern, reason, changedBy = null, dryRun = false,
-  scheduleName = null, totalHoursPerWeek = null,
+  employeeId,
+  tenantId,
+  effectiveFrom,
+  pattern,
+  reason,
+  changedBy = null,
+  dryRun = false,
+  scheduleName = null,
+  totalHoursPerWeek = null,
 }) {
-  // HR-ROSTER-03 — refuse a pattern nothing can read. Every consumer degrades
-  // silently on a bad one (offDays [8] means never off; a malformed shift
-  // leaves the day with no window), so the write boundary is the last place a
-  // wrong roster is still cheap.
-  assertSchedulePattern(pattern);
-
-  const from = startOfDay(effectiveFrom);
-
-  const existing = await prisma.workSchedule.findMany({
-    where: { employeeId },
-    orderBy: { effective_start_date: "desc" },
-    select: {
-      id: true, schedule_pattern: true,
-      // Carried onto a new version — both are NOT NULL with no default.
-      schedule_name: true, total_hours_per_week: true,
-      effective_start_date: true, effective_end_date: true,
+  if (!reason?.trim())
+    throw badSetup('A reason is required for roster changes');
+  const rows = await getWorkSchedules({ employeeId, tenantId });
+  const earliest = rows.map((r) => dateKey(r.effective_start_date)).sort()[0];
+  if (earliest && dateKey(effectiveFrom) < earliest)
+    throw badSetup('Roster change is before the earliest version on file');
+  const covering = rows.find((r) =>
+    covers(r, effectiveFrom, 'effective_start_date', 'effective_end_date'),
+  );
+  const correction =
+    covering &&
+    dateKey(covering.effective_start_date) === dateKey(effectiveFrom);
+  if (!covering && (!scheduleName || totalHoursPerWeek == null))
+    throw badSetup(
+      'Provide schedule_name and total_hours_per_week for a first version',
+    );
+  const result = await writeRoster({
+    tenantId,
+    employeeId,
+    id: correction ? covering.id : undefined,
+    action: correction ? 'update' : 'create',
+    dryRun,
+    data: {
+      effective_start_date: effectiveFrom,
+      schedule_name: scheduleName ?? covering?.schedule_name,
+      total_hours_per_week: totalHoursPerWeek ?? covering?.total_hours_per_week,
+      overtimeRuleId: covering?.overtimeRuleId ?? null,
+      correctionReason: reason,
+      schedule_pattern: { ...pattern, changeReason: reason, changedBy },
     },
   });
-
-  // Backdating before everything on file would leave days governed by a roster
-  // that never existed. Refuse rather than invent history.
-  const earliest = existing.length
-    ? startOfDay(existing[existing.length - 1].effective_start_date)
-    : null;
-  if (earliest && from < earliest) {
-    throw new Error(
-      `roster change effective ${from.toISOString().slice(0, 10)} is before the earliest `
-      + `version on file (${earliest.toISOString().slice(0, 10)})`,
-    );
-  }
-
-  const covering = existing.find(
-    (s) => startOfDay(s.effective_start_date) <= from
-      && (s.effective_end_date == null || startOfDay(s.effective_end_date) >= from),
-  );
-
-  const stamped = { ...pattern, changeReason: reason, changedBy };
-
-  // Correction: the version starts on the same day, so it covered nothing else.
-  if (covering && startOfDay(covering.effective_start_date).getTime() === from.getTime()) {
-    const data = {
-      schedule_pattern: { ...stamped, supersedes: covering.schedule_pattern ?? null },
-    };
-    if (!dryRun) {
-      await tenantTransaction(prisma, async (tx) => {
-        await tx.workSchedule.update({ where: { id: covering.id }, data });
-      });
-    }
-    logger.warn(
-      { employeeId, effectiveFrom: from, reason, dryRun },
-      "roster corrected in place (version started on the same day)",
-    );
-    return { action: "corrected", closed: null, created: covering.id };
-  }
-
-  // schedule_name and total_hours_per_week are NOT NULL with no default, and a
-  // new version has to carry them. Inheriting from the version being closed is
-  // the only honest source — defaulting the weekly hours would put an invented
-  // number where payroll reads one. With nothing to inherit and nothing given,
-  // refuse.
-  //
-  // This path had never run in production: every roster change so far started
-  // on the same day as its existing row and took the correction branch above,
-  // so the first genuine version (Meesam's re-hire) was the first create, and
-  // Postgres rejected it with "Argument `schedule_name` is missing".
-  const name = scheduleName ?? covering?.schedule_name ?? null;
-  const hours = totalHoursPerWeek ?? covering?.total_hours_per_week ?? null;
-  if (name == null || hours == null) {
-    throw Object.assign(
-      new Error(
-        "roster change needs schedule_name and total_hours_per_week: nothing to inherit "
-        + "from a previous version and none supplied",
-      ),
-      { status: 400 },
-    );
-  }
-
-  let created = null;
-  if (!dryRun) {
-    await tenantTransaction(prisma, async (tx) => {
-      if (covering) {
-        await tx.workSchedule.update({
-          where: { id: covering.id },
-          data: { effective_end_date: new Date(from.getTime() - DAY_MS) },
-        });
-      }
-      const row = await tx.workSchedule.create({
-        data: {
-          employeeId,
-          tenantId,
-          schedule_name: name,
-          total_hours_per_week: hours,
-          schedule_pattern: stamped,
-          effective_start_date: from,
-          effective_end_date: null,
-        },
-      });
-      created = row?.id ?? null;
-    });
-  }
-
-  logger.warn(
-    { employeeId, effectiveFrom: from, closed: covering?.id ?? null, reason, dryRun },
-    "roster version added",
-  );
-  return { action: covering ? "versioned" : "created", closed: covering?.id ?? null, created };
+  return {
+    action: correction ? 'corrected' : covering ? 'versioned' : 'created',
+    closed: correction ? null : (covering?.id ?? null),
+    created: result.id ?? null,
+    plan: dryRun ? result : undefined,
+  };
 }

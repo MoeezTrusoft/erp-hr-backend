@@ -49,8 +49,14 @@ const prismaMock = {
     loanRepayment: mk(),
     taxRate: mk(),
     employee: mk(),
+    leave: mk(),
+    attendancePayrollAdjustment: mk(),
+    attendanceRuleAudit: mk(),
 };
 
+prismaMock.$transaction=async fn=>fn(prismaMock);
+prismaMock.$executeRaw=async()=>0;
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({configOn:()=>({}),resolve:()=>({working:true,profile:{mode:'DEVICE'}})})}));
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/utils/logs.js', () => ({ logAction: jest.fn().mockResolvedValue(undefined) }));
 
@@ -107,6 +113,12 @@ const setup = ({
     };
 
     prismaMock.payrollRun.findFirst.mockResolvedValue(payrollRun);
+    prismaMock.payrollRun.findMany.mockResolvedValue([]);
+    prismaMock.payrollPayslip.findMany.mockResolvedValue([]);
+    prismaMock.payrollAuditLog.findMany.mockResolvedValue([]);
+    prismaMock.leave.findMany.mockResolvedValue([]);
+    prismaMock.attendancePayrollAdjustment.findMany.mockResolvedValue([]);
+    prismaMock.attendancePayrollAdjustment.updateMany.mockResolvedValue({count:0});
     prismaMock.payrollRun.updateMany.mockResolvedValue({ count: 1 });
 
     prismaMock.employee.findMany.mockResolvedValue([
@@ -144,6 +156,7 @@ const setup = ({
     prismaMock.loan.findMany.mockResolvedValue(loans);
     prismaMock.loan.update.mockResolvedValue({});
     prismaMock.loanRepayment.create.mockResolvedValue({ id: 1 });
+    prismaMock.loanRepayment.count.mockResolvedValue(0);
 
     prismaMock.payrollPayslip.findFirst.mockResolvedValue(null);
     prismaMock.payrollPayslip.create.mockImplementation(async ({ data }) => ({ id: 7001, ...data }));
@@ -181,6 +194,7 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
             loans: [{ id: 12, monthlyInstallmentMinor: 25000, outstandingMinor: 500000 }],
             unpaidLeaves: [{ totalDays: 2, leavePolicy: { leaveTypeCode: 'UNPAID' } }],
             attendanceRules: [ATT_RULE],
+            anomalies:[{id:1,employeeId:4242,date:new Date('2026-06-10'),sessionKey:'s1',rulesVersion:2,evidenceState:'ACTIVE',decisionRole:'Management',status:'REJECTED',type:'ABSENT'}],
             attendance: [{ date: new Date('2026-06-10T00:00:00.000Z'), status: 'LATE', manually_corrected: false }],
         });
 
@@ -190,7 +204,7 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
             'Benefit: Health': 'BENEFIT_CONTRIBUTION',
             'Loan Repayment (ID:12)': 'LOAN_REPAYMENT',
             'LWP Recovery (2 days)': 'LWP_RECOVERY',
-            'Attendance: LATE (1 occurrence = 1 day)': 'ATTENDANCE_DEDUCTION',
+            'Management-disapproved attendance: 1 day(s)': 'ATTENDANCE_RULES_V2',
             'Social Security (FICA)': 'FICA_SOCIAL_SECURITY',
             'Medicare (FICA)': 'FICA_MEDICARE',
             'Income Tax': 'INCOME_TAX',
@@ -297,8 +311,8 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
 });
 
 it('persists management deductions under their own type with a dated calculation',async()=>{
- setup({countryCode:'PK',currencyCode:'PKR',taxRateRows:[],anomalies:[{id:9,date:new Date('2026-06-10'),type:'LATE_CHECKIN',status:'REJECTED',manualDeductionDays:.5}]});
+ setup({countryCode:'PK',currencyCode:'PKR',taxRateRows:[],anomalies:[{id:9,employeeId:4242,date:new Date('2026-06-10'),type:'LATE_CHECKIN',status:'REJECTED',sessionKey:'s1',rulesVersion:2,evidenceState:'ACTIVE',decisionRole:'Management',measuredMinutes:45}]});
  await payroll.processPayrollRun(RUN_ID,PROCESSOR,TENANT);
- const rows=persistedDeductions().filter(row=>codeOf(row)==='MANAGEMENT_ATTENDANCE_DEDUCTION');
- expect(rows).toHaveLength(1);expect(rows[0].description).toContain('2026-06-10');
+ const rows=persistedDeductions().filter(row=>codeOf(row)==='ATTENDANCE_RULES_V2');
+ expect(rows).toHaveLength(1);expect(rows[0].description).toContain('0.5 day(s)');
 });

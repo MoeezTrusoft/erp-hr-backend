@@ -58,6 +58,7 @@ describe('HR-ATT-PRIMARY-DEVICE-01 resolvePrimarySnAt', () => {
   it('resolves the primary in force ON the day (period-scoped, not "flagged today")', async () => {
     // Aug 10: the Johar period is current — Dalmia is not yet in force.
     expect(await resolvePrimarySnAt(557, at('2026-08-10'))).toBe(JOHAR);
+    expect(await resolvePrimarySnAt(557, at('2026-08-21'))).toBe(JOHAR);
     // Aug 25: the Dalmia period is current.
     expect(await resolvePrimarySnAt(557, at('2026-08-25'))).toBe(DALMIA);
   });
@@ -76,12 +77,12 @@ describe('HR-ATT-PRIMARY-DEVICE-01 resolvePrimarySnAt', () => {
     expect(await resolvePrimarySnAt(557, at('2026-07-15'))).toBeNull();
   });
 
-  it('prefers the NEWEST in-force period when primaries overlap (bad data)', async () => {
+  it('returns no primary when in-force periods overlap', async () => {
     const overlapping = [
       { id: 1, employeeId: 9, sn: 'OLD', effectiveFrom: new Date('2026-01-01'), effectiveTo: null, isPrimary: true },
       { id: 2, employeeId: 9, sn: 'NEW', effectiveFrom: new Date('2026-06-01'), effectiveTo: null, isPrimary: true },
     ];
     prismaMock.employeeDeviceEnrolment.findMany.mockResolvedValue(overlapping);
-    expect(await resolvePrimarySnAt(9, at('2026-09-10'))).toBe('NEW');
+    expect(await resolvePrimarySnAt(9, at('2026-09-10'))).toBeNull();
   });
 });

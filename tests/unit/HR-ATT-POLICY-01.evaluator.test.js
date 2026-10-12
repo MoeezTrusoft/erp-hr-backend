@@ -138,7 +138,7 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
         expect(r.inProgress).toBe(true);
     });
 
-    it('closes the window at the next shift when tomorrow is a working day', () => {
+    it('closes at its own deadline even when tomorrow has a later working shift', () => {
         const nextShiftStart = at('2026-08-15T10:00:00Z');
         const beforeNextShift = at('2026-08-15T09:00:00Z');
 
@@ -151,7 +151,7 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
             nextDay: { working: true, nextShiftStart }, now: nextShiftStart,
         });
 
-        expect(open.status).not.toBe('MISSING_CHECKOUT');
+        expect(open.status).toBe('MISSING_CHECKOUT');
         expect(closed.status).toBe('MISSING_CHECKOUT');
     });
 

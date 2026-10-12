@@ -103,11 +103,12 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_attendance_checkin",
-    "Record employee check-in (creates/updates the day's attendance row; auto-computes PRESENT/LATE). notes is persisted to Attendance.remarks.",
+    "Store a durable manual check-in receipt for asynchronous evaluation against published configuration. Notes remain with original evidence.",
     {
       employeeId: z.string().min(1).describe("Employee id (numeric string); must resolve to an existing tenant-scoped Employee"),
-      timestamp: z.string().optional().describe("ISO 8601 datetime; defaults to now"),
-      notes: z.string().optional().describe("Free-text note, persisted to Attendance.remarks"),
+      timestamp: z.string().optional().describe("ISO datetime including seconds; defaults to now"),
+      requestKey: z.string().max(128).optional(),
+      notes: z.string().optional().describe("Free-text note retained with original capture evidence"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -122,7 +123,8 @@ export function registerAttendanceTools(server) {
     "Record employee check-out",
     {
       employeeId: z.string().min(1),
-      timestamp: z.string().optional().describe("ISO 8601 datetime; defaults to now"),
+      timestamp: z.string().optional().describe("ISO datetime including seconds; defaults to now"),
+      requestKey: z.string().max(128).optional(),
       notes: z.string().optional(),
     },
     withToolError(async (args) => {
@@ -151,8 +153,10 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_attendance_device_sync",
-    "Sync biometric punches into attendance with auto late calculation",
+    "Capture biometric punches for evaluation against published configuration",
     {
+      sn: z.string().min(1).max(64),
+      requestKey: z.string().max(128).optional(),
       punches: z.array(z.object({
         employeeId: z.union([z.number(), z.string()]).optional().describe("Employee id (references Employee)"),
         employeeCode: z.string().optional().describe("Employee code (device/HR code) — alternate identity"),
@@ -283,7 +287,8 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listDevicePunches({ tenantId: user.tenantId, ...args });
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await listDevicePunches({ ...args, tenantId: user.tenantId, ...(scope.canViewOthers ? {} : { employeeId: scope.employeeId ?? -1 }) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_device_punches_list")
   );
@@ -300,7 +305,8 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listEnrolments({ tenantId: user.tenantId, employeeId: args.employeeId });
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await listEnrolments({ tenantId: user.tenantId, employeeId: scope.canViewOthers ? args.employeeId : scope.employeeId ?? -1 });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_enrolment_list")
   );
@@ -313,25 +319,29 @@ export function registerAttendanceTools(server) {
     "Mark a device enrolment as the employee's PRIMARY biometric device (clears the flag on their other enrolments)",
     {
       enrolmentId: z.coerce.number().int().positive().describe("Enrolment id (employee_device_enrolments.id)"),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      reason: z.string().trim().min(1).max(2000).optional(),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const data = await setPrimaryEnrolment({ enrolmentId: args.enrolmentId, tenantId: user.tenantId });
+      const data = await setPrimaryEnrolment({ ...args, tenantId: user.tenantId, actorId: user.id || user.userId || user.employeeId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_enrolment_set_primary")
   );
 
   server.tool(
     "hr_attendance_enrolment_clear_primary",
-    "Clear the PRIMARY device flag on all of an employee's enrolments",
+    "Clear the primary device from a chosen date, preserving earlier history",
     {
       employeeId: z.coerce.number().int().positive(),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      reason: z.string().trim().min(1).max(2000).optional(),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
-      const data = await clearPrimaryEnrolment({ employeeId: args.employeeId });
+      const data = await clearPrimaryEnrolment({ ...args, tenantId: user.tenantId, actorId: user.id || user.userId || user.employeeId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_enrolment_clear_primary")
   );
@@ -430,6 +440,7 @@ export function registerAttendanceTools(server) {
       offDays: z.array(z.number().int().min(1).max(7)).max(6).optional().describe("Rest days as ISO weekdays (Mon=1 .. Sun=7), e.g. [6,7] for Sat-Sun"),
       rotatingShifts: z.array(SHIFT_WINDOW).min(1).optional().describe("Rotation windows; required for rotating rosters instead of shift"),
       cycle: z.object({
+        sequence: z.array(z.number().int().min(0).nullable()).optional(),
         days: z.number().int().positive(),
         anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "cycle.anchor must be YYYY-MM-DD"),
         offIndex: z.union([
@@ -438,6 +449,10 @@ export function registerAttendanceTools(server) {
         ]),
       }).optional().describe("Rotation phase { days, anchor, offIndex }: offIndex is the 0-based rest-day position(s) within the cycle — a number, or an array for multi-day rests (e.g. 4-day 'day, night, off, off' -> [2,3])"),
       crossesMidnight: z.boolean().optional().describe("True when the shift ends the next calendar day"),
+      breaks: z.array(SHIFT_WINDOW.extend({paid:z.boolean()})).optional(),
+      minRestHours: z.number().min(0).max(24).optional(),
+      maxConsecutiveDays: z.number().int().min(0).max(31).optional(),
+      maxHoursPerWeek: z.number().min(0).max(168).optional(),
       shiftHours: z.number().positive().optional().describe("Contracted shift length in hours"),
       source: z.string().optional().describe("Provenance label, e.g. 'Employees Workbook 2026-08'"),
     })
@@ -464,7 +479,7 @@ export function registerAttendanceTools(server) {
       schedule_name: z.string().min(1).describe("Human-readable schedule name"),
       effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
       total_hours_per_week: z.number().positive().describe("Contracted hours per week"),
-      effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted"),
+      effective_end_date: z.string().nullable().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted or null"),
       schedule_pattern: SCHEDULE_PATTERN.describe("Roster: shift {from,to} HH:MM + offDays [1..7] (Mon=1); use rotatingShifts+cycle for rotating rosters"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
@@ -481,9 +496,10 @@ export function registerAttendanceTools(server) {
     "Update a work schedule (partial). Only the fields you send are changed.",
     {
       id: z.string().min(1).describe("Work schedule id (references WorkSchedule)"),
+      correctionReason: z.string().min(1).optional(),
       schedule_name: z.string().optional().describe("Human-readable schedule name"),
       effective_start_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD"),
-      effective_end_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; null-out by omitting"),
+      effective_end_date: z.string().nullable().optional().describe("ISO date; send null to clear"),
       total_hours_per_week: z.number().positive().optional().describe("Contracted hours per week"),
       schedule_pattern: SCHEDULE_PATTERN.optional().describe("Roster (same shape as create): shift {from,to} HH:MM + offDays [1..7] (Mon=1); rotatingShifts+cycle for rotations"),
       overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),

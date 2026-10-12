@@ -45,6 +45,7 @@ const prismaMock = {
     attendanceCallIn: { findMany: jest.fn(async () => []) },
     attendance: { findFirst: jest.fn(async () => attendanceRow) },
     attendanceAnomaly: {
+        findMany:jest.fn(async()=>[]),
         findFirst: jest.fn(async () => anomalyRows[0] ?? null),
         create: jest.fn(async ({ data }) => { created = { id: 1, ...data }; return created; }),
     },
@@ -55,12 +56,14 @@ jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
     tenantTransaction: jest.fn(async (_c, fn) => fn(prismaMock)),
 }));
 jest.unstable_mockModule('../../src/services/attendanceAnomalyRouting.service.js', () => ({
-    routeAnomaly: routeAnomalyMock,
+    routeAnomaly: routeAnomalyMock,resolveApprovalChain:jest.fn(async()=>[]),
 }));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({resolve:(_id,day)=>({working:true,pattern:schedule?.schedule_pattern,shift:shiftFor(schedule?.schedule_pattern,day)})})}));
+const {shiftFor}=await import('../../src/lib/attendanceShift.js');
 const form = await import('../../src/services/attendanceAnomalyRequest.service.js');
 
 beforeEach(() => {
@@ -158,7 +161,7 @@ describe('HR-ATT-POLICY-01 submission', () => {
         expect(created.departmentSnapshot).toBe('Operations');
         expect(created.reason).toBe('forgot to scan out');
         expect(created.sourceKind).toBe('REGULARIZATION');
-        expect(created.sourceRef).toBe(`regularization:${EMP}:2026-08-14`);
+        expect(created.sourceRef).toBe(`regularization:${EMP}:2026-08-14:MISSING_CHECKOUT`);
     });
 
     it('routes the request after creating it', async () => {

@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 import time
+import random
 
 
 # ── stdout helpers ────────────────────────────────────────────────────────────
@@ -52,11 +53,9 @@ def _make_zk(host: str, port: int, password: int, timeout: int, udp: bool) -> ZK
 # ── serialise a raw ZK attendance/log record ─────────────────────────────────
 def _serialise(log, users_by_id: dict, users_by_uid: dict) -> dict | None:
     ts = getattr(log, "timestamp", None)
-    if not ts:
-        return None
     device_user_id = str(getattr(log, "user_id", "")).strip()
     uid            = str(getattr(log, "uid",     "")).strip()
-    punch          = getattr(log, "punch",  0)
+    punch          = getattr(log, "punch", None)
     status         = getattr(log, "status", 0)
 
     user      = users_by_id.get(device_user_id) or users_by_uid.get(uid)
@@ -65,7 +64,7 @@ def _serialise(log, users_by_id: dict, users_by_uid: dict) -> dict | None:
     return {
         "device_user_id": device_user_id,
         "uid":            uid,
-        "timestamp":      ts.isoformat(),
+        "timestamp":      ts.isoformat() if ts else None,
         "punch":          punch,
         "status":         status,
         "user_name":      user_name,
@@ -93,6 +92,7 @@ def _run_once(host: str, port: int, password: int, timeout: int) -> None:
     _status("connected", f"Connected to {host}:{port}")
 
     try:
+        _emit({"type": "heartbeat", "deviceTime": conn.get_time().isoformat()})
         conn.disable_device()
 
         # ── bootstrap: dump all existing records ──────────────────────────
@@ -108,14 +108,19 @@ def _run_once(host: str, port: int, password: int, timeout: int) -> None:
             if record:
                 events.append(record)
 
-        _emit({"type": "bootstrap", "events": events})
+        for offset in range(0, len(events), 500):
+            _emit({"type": "bootstrap", "events": events[offset:offset + 500]})
 
         conn.enable_device()
 
         # ── live capture: stream new punches ──────────────────────────────
+        last_heartbeat = time.monotonic()
         for live_log in conn.live_capture():
             if live_log is None:
-                # keepalive tick — device is idle
+                # Measure the device clock; an idle local loop is not proof of device health.
+                if time.monotonic() - last_heartbeat >= 60:
+                    _emit({"type": "heartbeat", "deviceTime": conn.get_time().isoformat()})
+                    last_heartbeat = time.monotonic()
                 continue
 
             record = _serialise(live_log, users_by_id, users_by_uid)
@@ -160,7 +165,9 @@ def main() -> None:
 
     _status("warning", f"Listener starting → {args.host}:{args.port}")
 
+    failures = 0
     while True:
+        started = time.monotonic()
         try:
             _run_once(args.host, args.port, args.password, args.timeout)
             # live_capture returned (device disconnected gracefully)
@@ -173,7 +180,8 @@ def main() -> None:
         except Exception as e:
             _status("error", f"Unexpected error: {e}")
 
-        time.sleep(args.reconnect_delay)
+        failures = 0 if time.monotonic() - started > 60 else min(failures + 1, 5)
+        time.sleep(min(60, args.reconnect_delay * (2 ** failures)) + random.random())
 
 
 if __name__ == "__main__":

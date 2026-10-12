@@ -10,6 +10,7 @@
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { validatePolicy } from '../lib/attendanceSetup.js';
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -118,6 +119,8 @@ export async function updateAttendancePolicy({ tenantId, ...input }) {
   // Validate against the effective row, not just the payload, so changing one
   // side alone cannot produce an inverted pair.
   const current = await getAttendancePolicy({ tenantId });
+  const errors = validatePolicy({ ...current, ...data });
+  if (errors.length) throw badRequest(errors.join('; '));
   const full = data.fullDayMinPercent ?? current.fullDayMinPercent;
   const half = data.halfDayMinPercent ?? current.halfDayMinPercent;
   if (half > full) {
@@ -125,6 +128,11 @@ export async function updateAttendancePolicy({ tenantId, ...input }) {
   }
 
   const row = await tenantTransaction(prisma, async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:attendance-policy`}))`;
+    const latest = await tx.attendancePolicyConfig.findUnique({ where: { tenantId } });
+    if (input.expectedVersion !== undefined && input.expectedVersion !== (latest?.version ?? 0)) throw Object.assign(new Error('Attendance policy changed; refresh before saving'), {status:409});
+    const currentErrors = validatePolicy({ ...(latest ?? defaultAttendancePolicy()), ...data });
+    if (currentErrors.length) throw badRequest(currentErrors.join('; '));
     return tx.attendancePolicyConfig.upsert({
       where: { tenantId },
       create: { tenantId, ...data, status: "DRAFT", version: 1 },

@@ -13,6 +13,7 @@ const TENANT = 't-submit';
 const MONTH = '2026-09';
 
 const state = {
+  complete: true,
   calendar: { attendanceCutoff: null },
   anomalies: 0,
   runs: [], // existing PayrollRun rows
@@ -23,6 +24,7 @@ const state = {
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
   default: {
+    attendanceEvaluationJob: {updateMany: jest.fn(async()=>({count:1}))},
     payrollCalendar: { findFirst: jest.fn(async () => state.calendar) },
     attendanceAnomaly: { count: jest.fn(async () => state.anomalies) },
     payrollRun: {
@@ -55,11 +57,18 @@ jest.unstable_mockModule('../../src/utils/logs.js', () => ({
   logAction: jest.fn(async ({ notes }) => { state.logs.push(notes); }),
 }));
 
+jest.unstable_mockModule('../../src/services/monthlyPayrollAttendance.service.js',()=>({assertMonthlyInputsComplete:jest.fn(async()=>{})}));
+jest.unstable_mockModule('../../src/services/attendanceEvaluation.service.js',()=>({
+  attendanceCompleteness:jest.fn(async()=>({ready:state.complete})),
+  assertAttendanceComplete:jest.fn(async()=>{if(!state.complete)throw new Error('Attendance is incomplete');}),
+}));
+
 const { submitTimesheet, isTimesheetSubmitted, unsubmitTimesheet } = await import('../../src/services/timesheetSubmission.service.js');
 
 beforeEach(() => {
   state.calendar = { attendanceCutoff: null };
   state.anomalies = 0;
+  state.complete = true;
   state.runs = [];
   state.createdRuns = [];
   state.auditRows = [];
@@ -169,4 +178,10 @@ describe('TS-SUBMIT-01 — HR-TP-03: payroll cannot run an unsubmitted month', (
       submitTimesheet({ tenantId: TENANT, month: '2026-9', actorEmployeeId: 558 }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
+});
+
+it('blocks an incomplete employee/date even with a timing override and no pending forms',async()=>{
+  state.complete=false;
+  await expect(submitTimesheet({tenantId:TENANT,month:MONTH,actorEmployeeId:558,force:true})).rejects.toThrow('Attendance is incomplete');
+  expect(state.createdRuns).toHaveLength(0);
 });

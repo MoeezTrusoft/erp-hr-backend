@@ -12,6 +12,7 @@
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { validateDeductionGroups } from "../lib/attendanceSetup.js";
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -128,32 +129,12 @@ export async function upsertDeductionRule({ tenantId, ruleKey, ...input }) {
     data[field]=value;
   }
 
-  // Rules pooled into one counter must agree on how that counter is scored,
-  // otherwise "3 of either kind" has two different answers depending on which
-  // rule you read. Enforced here so the UI can present a group as one row.
-  const effectiveGroup = data.counterGroup !== undefined ? data.counterGroup : undefined;
-  if (effectiveGroup) {
-    const peers = await prisma.attendanceDeductionRule.findMany({
-      where: { tenantId, counterGroup: effectiveGroup, ruleKey: { not: ruleKey } },
-    });
-    for (const peer of peers) {
-      const mismatch = [
-        ["triggerCount", data.triggerCount ?? peer.triggerCount],
-        ["deductionDays", data.deductionDays ?? peer.deductionDays],
-        ["periodScope", data.periodScope ?? peer.periodScope],
-        ["durationThresholdMinutes", data.durationThresholdMinutes ?? peer.durationThresholdMinutes],
-        ["overThresholdDeductionDays", data.overThresholdDeductionDays ?? peer.overThresholdDeductionDays],
-      ].find(([field, value]) => peer[field] !== value);
-      if (mismatch) {
-        throw badRequest(
-          `Rules in counterGroup "${effectiveGroup}" must share the same ${mismatch[0]}; ` +
-          `${peer.ruleKey} has ${peer[mismatch[0]]}`,
-        );
-      }
-    }
-  }
-
   const row = await tenantTransaction(prisma, async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:deduction-rules`}))`;
+    const rows=await tx.attendanceDeductionRule.findMany({where:{tenantId}});
+    const current=rows.find(r=>r.ruleKey===ruleKey)||defaultRule(ruleKey);
+    const errors=validateDeductionGroups([...rows.filter(r=>r.ruleKey!==ruleKey),{...current,...data}]);
+    if(errors.length)throw badRequest(errors.join("; "));
     return tx.attendanceDeductionRule.upsert({
       where: { tenantId_ruleKey: { tenantId, ruleKey } },
       create: { tenantId, ruleKey, ...data, status: "DRAFT", version: 1 },

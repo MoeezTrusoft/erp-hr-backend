@@ -27,7 +27,11 @@ let rows;
 let nextId;
 
 const prismaMock = {
+    $executeRaw: jest.fn(),
+    employee: {findFirst:jest.fn(async()=>({id:EMPLOYEE}))},
+    payrollRun: {findFirst:jest.fn(async()=>null)},
     workSchedule: {
+        findFirst:jest.fn(async({where})=>rows.find(r=>r.id===where.id)),
         findMany: jest.fn(async () => [...rows].sort(
             (a, b) => b.effective_start_date - a.effective_start_date,
         )),

@@ -92,7 +92,7 @@ describe('HR-ATT-DEVICE-ENROLMENT-01 point-in-time resolution', () => {
         expect(map.get('306')).toMatchObject({ employeeId: 159 });
     });
 
-    it('picks the LATEST enrolment when two overlap, rather than guessing', async () => {
+    it('holds overlapping enrolments for review', async () => {
         // Overlapping rows are bad data. Silently picking one at random moves
         // attendance between people; the newest is at least deterministic.
         prismaMock.employeeDeviceEnrolment.findMany.mockResolvedValue([
@@ -101,7 +101,7 @@ describe('HR-ATT-DEVICE-ENROLMENT-01 point-in-time resolution', () => {
         ]);
         const map = await resolveEnrolmentAt(['7'], at('2026-09-01'));
 
-        expect(map.get('7').employeeId).toBe(2);
+        expect(map.get('7')).toBeUndefined();
     });
 
     it('runs under SYSTEM context — one device serves every tenant', async () => {

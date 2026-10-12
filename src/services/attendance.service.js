@@ -1,203 +1,65 @@
 import prisma from "../lib/prisma.js";
-import { tenantTransaction } from "../lib/rlsTenant.js";
-import { logAction } from "../utils/logs.js";
-import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
-import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { attendanceRecordedEvent } from "./hrEvents.js";
-import {
-  deriveAttendanceStatus,
-  resolveShiftStartMin,
-  normalizeWorkMode,
-} from "../lib/attendanceStatus.js";
+import { scopedWhere } from "../lib/tenancy.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field (on the data
 // object) / trailing param; folded into attendance reads and stamped on the
 // check-in create, fail-closed so tenant B can never read/mutate tenant A's
 // attendance records. Employee carries snake_case `tenant_id` (REQ-007).
 
-function parseCheckInInput({ date, check_in, timestamp }) {
-  if (timestamp) {
-    const ts = new Date(timestamp);
-    if (Number.isNaN(ts.getTime())) throw new Error("Invalid timestamp");
-    return ts;
-  }
-
-  // A check-in defaults to "now": omitting date/check_in stamps the punch at the
-  // server's current date + time (the common self-service case). Callers may
-  // still pass an explicit date/check_in to backfill a specific moment.
-  const now = new Date();
-  const day = date || now.toISOString().slice(0, 10); // YYYY-MM-DD
-  const time = check_in || now.toTimeString().slice(0, 8); // HH:MM:SS
-
-  const parsed = new Date(`${day} ${time}`);
-  if (Number.isNaN(parsed.getTime())) throw new Error("Invalid check_in/date value");
-  return parsed;
-}
-
-function getDayRange(dt) {
-  const start = new Date(dt);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(dt);
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
-}
-
-// Status is derived by the shared attendanceStatus helper so check-in, the
-// biometric device sync and the dev seed all agree — and so HALF_DAY (≥30min
-// late) is produced, not just PRESENT/LATE. An explicit caller-provided status
-// still overrides (manual correction). The helper reads its shift-start/grace
-// from the HR_* env family (HR_DEFAULT_SHIFT_START / HR_LATE_GRACE_MIN /
-// HR_HALF_DAY_MIN); we pass the resolved shift-start explicitly for the date so
-// the window is date-anchored rather than reading the legacy
-// ATTENDANCE_LATE_GRACE_MINUTES / ATTENDANCE_SHIFT_START pair.
-function resolveStatus(checkInTs, providedStatus) {
-  if (providedStatus) return String(providedStatus).toUpperCase();
-  return deriveAttendanceStatus(checkInTs, resolveShiftStartMin({ date: checkInTs }));
-}
-
+// Direct/manual punches are evidence, evaluated by the same published policy
+// as device punches. HR day corrections remain the separate audited workflow.
 export const createAttendanceService = async (data) => {
-  const { employeeId, date, check_in, status, timestamp, notes, tenantId, work_mode } = data;
-
-  if (!employeeId) throw new Error("employeeId is required");
-
-  const empId = Number(employeeId);
-  if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
-
-  // ✅ Ensure employee exists (tenant-scoped on snake_case tenant_id when present)
-  // Also loads the employee's default work_mode for the day's work-mode fallback.
-  const employee = await prisma.employee.findFirst({
-    where: scopedEmployeeWhere(tenantId, { id: empId }),
+  const { receiveCapture } = await import("./attendanceCapture.service.js");
+  const timestamp =
+    data.timestamp ??
+    (data.date && data.check_in
+      ? `${data.date}T${data.check_in.length === 5 ? data.check_in + ":00" : data.check_in}`
+      : new Date().toISOString());
+  return receiveCapture({
+    source: "MANUAL",
+    notes: data.notes,
+    tenantId: data.tenantId,
+    actorId: data.actorId,
+    manualEmployeeId: Number(data.employeeId),
+    requestKey: data.requestKey,
+    rows: [`${data.employeeId}\t${timestamp}\t0\t0\t0`],
   });
-  if (!employee) throw new Error("Employee not found");
-
-  const parsedCheckIn = parseCheckInInput({ date, check_in, timestamp });
-  const { start, end } = getDayRange(parsedCheckIn);
-  const computedStatus = resolveStatus(parsedCheckIn, status);
-
-  // The day's work_mode: prefer an explicitly-provided work_mode on the check-in
-  // input, else fall back to the employee's default work_mode (Employee is
-  // snake_case). Normalized to canonical Remote|Onsite|Hybrid (null if unknown).
-  const computedWorkMode =
-    normalizeWorkMode(work_mode) ?? normalizeWorkMode(employee.work_mode);
-
-  const existing = await prisma.attendance.findFirst({
-    where: scopedWhere(tenantId, {
-      employeeId: empId,
-      date: {
-        gte: start,
-        lte: end,
-      },
-    }),
-    orderBy: { id: "desc" },
-  });
-
-  // M1-HR: the attendance write + hr.attendance.recorded.v1 outbox event are
-  // atomic (outbox-on-write, validate-before-write). The event is ids-only +
-  // tenant-scoped; when the row carries no tenant the builder fails-closed and
-  // the write still succeeds (no event).
-  const attendanceIn = await tenantTransaction(prisma, async (tx) => {
-    const row = existing
-      ? await tx.attendance.update({
-        where: { id: existing.id },
-        data: {
-          check_in: existing.check_in
-            ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
-            : parsedCheckIn,
-          status: computedStatus,
-          ...(computedWorkMode ? { work_mode: computedWorkMode } : {}),
-          ...(notes !== undefined ? { remarks: notes } : {}),
-        },
-      })
-      : await tx.attendance.create({
-        data: scopedData(tenantId, {
-          employeeId: empId,
-          date: start,
-          check_in: parsedCheckIn,
-          status: computedStatus,
-          ...(computedWorkMode ? { work_mode: computedWorkMode } : {}),
-          ...(notes !== undefined ? { remarks: notes } : {}),
-        }),
-      });
-
-    const event = attendanceRecordedEvent(
-      { id: row.id, employeeId: empId, action: 'checkin', at: parsedCheckIn.toISOString(), tenantId: row.tenantId ?? tenantId },
-      { actorId: data?.ctx?.actorId ?? empId, correlationId: data?.ctx?.correlationId }
-    );
-    if (event) await enqueueHrDomainEvent(tx, event);
-
-    return row;
-  });
-
-   // Log the update action
-    await logAction({
-      employeeId: 1,
-      type: "Check In", // 👈 changed from CREATE to UPDATE
-      module: "Attandance",
-      result: "SUCCESS",
-      notes: `Attandance check In "${empId}" successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-  return attendanceIn;
 };
-export const checkOutService = async (employeeId, tenantId) => {
-  return checkOutServiceWithTimestamp(employeeId, undefined, tenantId);
-};
-
-export const checkOutServiceWithTimestamp = async (employeeId, timestamp, tenantId) => {
-  const empId = Number(employeeId);
-  if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
-
-  const attendance = await prisma.attendance.findFirst({
-    where: scopedWhere(tenantId, { employeeId: empId }),
-    orderBy: [{ date: "desc" }, { id: "desc" }]
+export const checkOutService = (employeeId, tenantId) =>
+  checkOutServiceWithTimestamp(employeeId, undefined, tenantId);
+export const checkOutServiceWithTimestamp = async (
+  employeeId,
+  timestamp,
+  tenantId,
+  actorId,
+  requestKey,
+  notes,
+) => {
+  const { receiveCapture } = await import("./attendanceCapture.service.js");
+  return receiveCapture({
+    source: "MANUAL",
+    tenantId,
+    actorId,
+    requestKey,
+    notes,
+    manualEmployeeId: Number(employeeId),
+    rows: [`${employeeId}\t${timestamp ?? new Date().toISOString()}\t1\t0\t0`],
   });
-
-  if (!attendance || attendance.check_out)
-    throw new Error("No active check-in found");
-
-  const checkOutTime = timestamp ? new Date(timestamp) : new Date();
-  if (Number.isNaN(checkOutTime.getTime())) throw new Error("Invalid checkout timestamp");
-
-  const totalHours =
-    (checkOutTime - attendance.check_in) / (1000 * 60 * 60);
-
-  // M1-HR: the check-out write + hr.attendance.recorded.v1 (action=checkout)
-  // outbox event are atomic.
-  const checkOut = await tenantTransaction(prisma, async (tx) => {
-    const row = await tx.attendance.update({
-      where: { id: attendance.id },
-      data: { check_out: checkOutTime, total_hours: totalHours }
-    });
-
-    const event = attendanceRecordedEvent(
-      { id: row.id, employeeId: empId, action: 'checkout', at: checkOutTime.toISOString(), tenantId: row.tenantId ?? tenantId },
-      { actorId: empId }
-    );
-    if (event) await enqueueHrDomainEvent(tx, event);
-
-    return row;
-  });
-
-  // Log the update action
-  await logAction({
-    employeeId: 1,
-    type: "Check Out", // 👈 changed from CREATE to UPDATE
-    module: "Attandance",
-    result: "SUCCESS",
-    notes: `CHeck Out "${1}" updated successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-  return checkOut;
 };
 
 export const getAttendanceByEmployee = async (employeeId, tenantId) => {
   return prisma.attendance.findMany({
     where: scopedWhere(tenantId, { employeeId }),
-    orderBy: [{ date: "desc" }, { id: "desc" }]
+    orderBy: [{ date: "desc" }, { id: "desc" }],
   });
 };
 
-export const listAttendanceRecords = async ({ date, limit = 100, tenantId, employeeId } = {}) => {
+export const listAttendanceRecords = async ({
+  date,
+  limit = 100,
+  tenantId,
+  employeeId,
+} = {}) => {
   const target = date ? new Date(date) : new Date();
   const start = new Date(target);
   start.setHours(0, 0, 0, 0);

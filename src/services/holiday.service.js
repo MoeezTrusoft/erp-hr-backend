@@ -1,5 +1,7 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { dateOnly } from '../lib/attendanceDates.js';
+import { validateHolidayWindow } from '../lib/attendanceSetup.js';
 
 
 // Region Services
@@ -570,6 +572,7 @@ export const getHolidaysByCalendar = async (calendarId, filters = {}) => {
 };
 
 export const createHoliday = async (data,createdById) => {
+  validateHolidayWindow(data);
   const {
     holidayCalendarId,
     name,
@@ -580,7 +583,7 @@ export const createHoliday = async (data,createdById) => {
     endTime,
   } = data;
 
-  const holidayDate = new Date(date);
+  const holidayDate = dateOnly(date);
 
   // Validate date is not in the past
   const today = new Date();
@@ -645,7 +648,7 @@ return create;
 };
 
 export const updateHoliday = async (calendarId, date, data,updatedById) => {
-  const holidayDate = new Date(date);
+  const holidayDate = dateOnly(date);
 
   const existingHoliday = await prisma.holiday.findUnique({
     where: {
@@ -659,6 +662,8 @@ export const updateHoliday = async (calendarId, date, data,updatedById) => {
   if (!existingHoliday) {
     throw new Error('Holiday not found');
   }
+  validateHolidayWindow({...existingHoliday,...data});
+  if(data.fullDay===true)data={...data,startTime:null,endTime:null};
 
   // Check for duplicate if date is being changed
   if (data.date && new Date(data.date).getTime() !== holidayDate.getTime()) {

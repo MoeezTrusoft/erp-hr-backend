@@ -29,6 +29,9 @@ import { listDepartments, listRoles } from "./rbac.client.js";
 import { mcpCreateEmployee, mcpUpdateEmployee } from "../mcp/controllers/employeeMcpController.js";
 import { createSalaryComponent } from "./salaryComponent.service.js";
 import { createEmploymentTerms } from "./payrollService.js";
+import { buildAttendanceSetup } from './attendanceSetup.service.js';
+import { readiness } from '../lib/attendanceSetup.js';
+import { dateKey } from '../lib/attendanceDates.js';
 import {
   IMPORT_COLUMNS,
   IMPORT_HEADERS,
@@ -608,6 +611,20 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
   }
 
   const committed = { created: 0, updated: 0, failed: 0, logins: 0, emergencyContacts: 0, salaries: 0, managersLinked: 0 };
+  // Preview attendance gaps alongside identity validation, before any employee
+  // is committed. New staff remain incomplete until dated assignments exist.
+  const setup=await buildAttendanceSetup(tenantId);
+  const proposed=results.filter(r=>r.status!=='ERROR').map((r,i)=>({
+    ...(setup.employees.find(e=>e.id===r.createArgs.__updateId)||{}),
+    id:r.createArgs.__updateId??-(i+1),employee_name:[r.rec.first_name,r.rec.last_name].filter(Boolean).join(' '),
+    employee_code:r.rec.employee_code,managerId:r.createArgs.managerId??null,
+    hire_date:r.createArgs.hireDate||r.createArgs.joiningDate||dateKey(new Date()),
+    attendanceInputMode:r.directColumns.attendanceInputMode||'DEVICE',payroll_included:true,
+  }));
+  const attendanceReadiness=proposed.map(employee=>{
+    const date=dateKey(employee.hire_date);
+    return readiness({...setup,employees:[...setup.employees.filter(e=>!proposed.some(p=>p.id===e.id)),...proposed]},date,date).employees.find(e=>e.id===employee.id);
+  }).filter(Boolean);
   if (!dryRun) {
     // Create the standard salary components once, up-front, if any row has salary.
     if (results.some((r) => r.status !== "ERROR" && r.salary)) await ensureSalaryComponents(tenantId);
@@ -734,6 +751,7 @@ export async function runEmployeeImport({ user, tenantId, fileBase64, format, dr
 
   return {
     summary,
+    attendanceReadiness,
     fileName: `employee-import-${dryRun ? "preview" : "result"}.xlsx`,
     mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     annotatedBase64,

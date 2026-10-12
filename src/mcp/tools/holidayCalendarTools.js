@@ -133,6 +133,8 @@ export function registerHolidayCalendarTools(server) {
       date: z.string().describe("ISO 8601 date (YYYY-MM-DD)"),
       description: z.string().optional().describe("Optional description"),
       fullDay: z.boolean().optional().describe("Full-day holiday (default true)"),
+      startTime: z.string().nullable().optional().describe('Partial holiday start HH:MM'),
+      endTime: z.string().nullable().optional().describe('Partial holiday end HH:MM'),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -151,6 +153,8 @@ export function registerHolidayCalendarTools(server) {
       name: z.string().optional().describe("New holiday name"),
       description: z.string().optional().describe("New description"),
       fullDay: z.boolean().optional().describe("Full-day flag"),
+      startTime: z.string().nullable().optional().describe('Partial holiday start HH:MM'),
+      endTime: z.string().nullable().optional().describe('Partial holiday end HH:MM'),
     },
     withToolError(async ({ calendarId, date, ...data }) => {
       const { user, permissions } = getCtx();

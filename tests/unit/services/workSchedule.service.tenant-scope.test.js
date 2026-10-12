@@ -11,7 +11,10 @@
 // runs real.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
+const VALID={employeeId:7,schedule_name:'Original',total_hours_per_week:40,effective_start_date:new Date('2099-01-01'),effective_end_date:null,schedule_pattern:{shift:{from:'09:00',to:'17:00'},offDays:[6,7]}};
 const prisma = {
+  $executeRaw:jest.fn(),
+  payrollRun:{findFirst:jest.fn(async()=>null)},
   workSchedule: {
     findFirst: jest.fn(),
     findMany: jest.fn(),
@@ -23,18 +26,22 @@ const prisma = {
   employee: { findFirst: jest.fn() },
 };
 
+jest.unstable_mockModule('../../../src/lib/rlsTenant.js',()=>({tenantTransaction:async(_db,fn)=>fn(prisma)}));
 jest.unstable_mockModule('../../../src/lib/prisma.js', () => ({ default: prisma }));
 jest.unstable_mockModule('../../../src/utils/logs.js', () => ({ logAction: jest.fn(async () => {}) }));
 
 const service = await import('../../../src/services/workScheduleService.js');
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
+  prisma.employee.findFirst.mockResolvedValue({id:7});
+  prisma.workSchedule.findMany.mockResolvedValue([]);
+  prisma.payrollRun.findFirst.mockResolvedValue(null);
 });
 
 describe('workScheduleService.updateWorkSchedule — tenant scoping', () => {
   it('resolves the row WITH the verified tenant scope', async () => {
-    prisma.workSchedule.findFirst.mockResolvedValueOnce({ id: 1, employeeId: 7 });
+    prisma.workSchedule.findFirst.mockResolvedValueOnce({ ...VALID, id: 1, employeeId: 7 });
     prisma.workSchedule.update.mockResolvedValueOnce({ id: 1, schedule_name: 'X' });
 
     await service.updateWorkSchedule(1, { schedule_name: 'X' }, 7, 'tenant-A');
@@ -56,7 +63,7 @@ describe('workScheduleService.updateWorkSchedule — tenant scoping', () => {
   });
 
   it('ignores caller-supplied employeeId/tenantId (field allowlist)', async () => {
-    prisma.workSchedule.findFirst.mockResolvedValueOnce({ id: 1, employeeId: 7 });
+    prisma.workSchedule.findFirst.mockResolvedValueOnce({ ...VALID, id: 1, employeeId: 7 });
     prisma.workSchedule.update.mockResolvedValueOnce({ id: 1 });
 
     await service.updateWorkSchedule(
@@ -73,7 +80,7 @@ describe('workScheduleService.updateWorkSchedule — tenant scoping', () => {
   });
 
   it('validates a nonsense pattern instead of storing it', async () => {
-    prisma.workSchedule.findFirst.mockResolvedValueOnce({ id: 1, employeeId: 7 });
+    prisma.workSchedule.findFirst.mockResolvedValueOnce({ ...VALID, id: 1, employeeId: 7 });
 
     await expect(
       service.updateWorkSchedule(1, { schedule_pattern: { offDays: [8], shift: { from: '9', to: '17' } } }, 7, 'tenant-A'),
@@ -84,7 +91,7 @@ describe('workScheduleService.updateWorkSchedule — tenant scoping', () => {
 
 describe('workScheduleService.deleteWorkSchedule — tenant scoping', () => {
   it('resolves the row WITH the verified tenant scope', async () => {
-    prisma.workSchedule.findFirst.mockResolvedValueOnce({ id: 2 });
+    prisma.workSchedule.findFirst.mockResolvedValueOnce({ ...VALID, id: 2 });
     prisma.workSchedule.delete.mockResolvedValueOnce({ id: 2 });
 
     await service.deleteWorkSchedule(2, 7, 'tenant-A');
@@ -106,6 +113,7 @@ describe('workScheduleService.deleteWorkSchedule — tenant scoping', () => {
 
 describe('workScheduleService.createWorkSchedule — scoping + pattern gate', () => {
   const BASE = {
+    tenantId: 'tenant-A',
     employeeId: 9,
     schedule_name: 'General',
     effective_start_date: '2026-09-01',
@@ -123,7 +131,7 @@ describe('workScheduleService.createWorkSchedule — scoping + pattern gate', ()
 
     await service.createWorkSchedule({ ...BASE, tenantId: 'tenant-A' });
 
-    expect(prisma.workSchedule.findFirst).toHaveBeenCalledWith(
+    expect(prisma.workSchedule.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ employeeId: 9, tenantId: 'tenant-A' }),
       }),
@@ -136,7 +144,7 @@ describe('workScheduleService.createWorkSchedule — scoping + pattern gate', ()
     prisma.workSchedule.findFirst.mockResolvedValueOnce(null);
     prisma.employee.findFirst.mockResolvedValueOnce(null);
 
-    await expect(service.createWorkSchedule({ ...BASE, employeeId: 424242 })).rejects.toMatchObject({
+    await expect(service.createWorkSchedule({ ...BASE, tenantId: 'tenant-A', employeeId: 424242 })).rejects.toMatchObject({
       statusCode: 404,
     });
     expect(prisma.workSchedule.create).not.toHaveBeenCalled();
@@ -146,7 +154,7 @@ describe('workScheduleService.createWorkSchedule — scoping + pattern gate', ()
     prisma.workSchedule.findFirst.mockResolvedValueOnce(null);
 
     await expect(
-      service.createWorkSchedule({ ...BASE, schedule_pattern: { offDays: [6, 7] } }),
+      service.createWorkSchedule({ ...BASE, tenantId: 'tenant-A', schedule_pattern: { offDays: [6, 7] } }),
     ).rejects.toMatchObject({ status: 400 });
     expect(prisma.workSchedule.create).not.toHaveBeenCalled();
   });
