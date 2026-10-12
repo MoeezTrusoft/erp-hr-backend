@@ -40,7 +40,7 @@ export function registerAttendanceOpsTools(server) {
   // ── ANOMALY: inform / raise (POST → hr:attendance CREATE) ──────────────────
   server.tool(
     "hr_anomaly_inform",
-    "Raise an attendance anomaly / time-correction request (status PENDING). employeeId defaults to the calling employee. detail is the free-text specifier and should be supplied when type=OTHER.",
+    "Raise an attendance anomaly request (status PENDING). The anomaly type is assigned from the stored attendance day; only the reason is supplied.",
     {
       employeeId: z.coerce
         .number()
@@ -48,11 +48,8 @@ export function registerAttendanceOpsTools(server) {
         .optional()
         .describe("Employee the anomaly is for (references Employee); defaults to the caller's employeeId when omitted (400 if neither)"),
       attachments: anomalyAttachmentsSchema,
-      type: ANOMALY_TYPE.describe(
-        "enum AnomalyType (required): one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
-      ),
       reason: z.string().optional().describe("Free-text reason for the anomaly"),
-      detail: z.string().optional().describe("Free-text detail; required-ish when type=OTHER (the 'specify' text)"),
+      detail: z.string().optional().describe("Optional additional detail"),
       date: z.string().optional().describe("Affected work date, ISO 8601 (parsed; invalid → null)"),
       fromTime: z.string().optional().describe("Time-range start, ISO 8601 datetime (parsed; invalid → null)"),
       toTime: z.string().optional().describe("Time-range end, ISO 8601 datetime (parsed; invalid → null)"),
@@ -71,7 +68,6 @@ export function registerAttendanceOpsTools(server) {
       const data = await informAbnormality({
         tenantId: user.tenantId,
         employeeId,
-        type: args.type,
         attachments: args.attachments,
         reason: args.reason,
         detail: args.detail,
@@ -92,10 +88,10 @@ export function registerAttendanceOpsTools(server) {
   // tool was registered — a manifest write was a guaranteed tool-not-found at
   // the gateway. Registered with the same semantics as hr_anomaly_inform (the
   // mock's contract): generic raise, PENDING, employeeId defaults to caller.
-  // The derived/times-aware self-service flow remains hr_attendance_anomaly_create.
+  // The times-aware self-service flow remains hr_attendance_anomaly_create.
   server.tool(
     "hr_anomaly_create",
-    "Raise an attendance anomaly / time-correction request (status PENDING). employeeId defaults to the calling employee. The self-service regularization flow with derived category/times is hr_attendance_anomaly_create.",
+    "Raise an attendance anomaly request (status PENDING). The anomaly type and times are derived from the stored attendance day.",
     {
       employeeId: z.coerce
         .number()
@@ -103,11 +99,8 @@ export function registerAttendanceOpsTools(server) {
         .optional()
         .describe("Employee the anomaly is for (references Employee); defaults to the caller's employeeId when omitted (400 if neither)"),
       attachments: anomalyAttachmentsSchema,
-      type: ANOMALY_TYPE.describe(
-        "enum AnomalyType (required): one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
-      ),
       reason: z.string().optional().describe("Free-text reason for the anomaly"),
-      detail: z.string().optional().describe("Free-text detail; required-ish when type=OTHER (the 'specify' text)"),
+      detail: z.string().optional().describe("Optional additional detail"),
       date: z.string().optional().describe("Affected work date, ISO 8601 (parsed; invalid → null)"),
       fromTime: z.string().optional().describe("Time-range start, ISO 8601 datetime (parsed; invalid → null)"),
       toTime: z.string().optional().describe("Time-range end, ISO 8601 datetime (parsed; invalid → null)"),
@@ -126,7 +119,6 @@ export function registerAttendanceOpsTools(server) {
       const data = await informAbnormality({
         tenantId: user.tenantId,
         employeeId,
-        type: args.type,
         attachments: args.attachments,
         reason: args.reason,
         detail: args.detail,
@@ -150,7 +142,7 @@ export function registerAttendanceOpsTools(server) {
         .describe("enum AnomalyStatus filter: one of PENDING | APPROVED | REJECTED"),
       employeeId: z.coerce.number().int().optional().describe("Filter by employee id (references Employee)"),
       type: ANOMALY_TYPE.optional().describe(
-        "enum AnomalyType filter: one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
+        "Filter by system-assigned anomaly type"
       ),
       sourceKind: z.enum(["REGULARIZATION", "evaluator", "IMPORT", "DISAPPROVED_LEAVE"]).optional()
         .describe("Filter by origin; REGULARIZATION means an employee-submitted form."),
@@ -213,23 +205,16 @@ export function registerAttendanceOpsTools(server) {
   );
 
   // ── ANOMALY: edit (PUT → hr:attendance EDIT) ────────────────────────────────
-  // HR edit of a PENDING anomaly request. Only type/reason/detail/date/times are
-  // editable; status/decisions/raise-info are frozen. Re-derives nothing — the
-  // server stores exactly what HR supplies (unlike create, which re-derives category).
+  // HR edit of a PENDING anomaly request. Category, date, status, decisions and
+  // raise-info remain system-controlled; only explanation and time detail change.
   server.tool(
     "hr_anomaly_update",
-    "Edit a PENDING attendance anomaly request (type, reason, detail, date, times). Decisions and raise metadata are not editable.",
+    "Edit the explanation and time details on a PENDING attendance anomaly request. Category, date, decisions and raise metadata are not editable.",
     {
       id: z.coerce.number().int().describe("Anomaly id to edit (required; references AttendanceAnomaly)"),
-      // TS-ANOM-EDIT-02 — the edit modal sends explicit JSON nulls for cleared
-      // fields (e.g. an ABSENT-type request carries no time range), and the
-      // service contract is null = leave unchanged. `.optional()` alone rejects
-      // null with -32602, which is what the live UI hit on 2026-10-07, so every
-      // client-supplied optional field is nullable too.
-      type: ANOMALY_TYPE.nullable().optional().describe("New anomaly type (optional; one of the enum values)"),
+      // Explicit JSON nulls from the editor mean leave unchanged.
       reason: z.string().nullable().optional().describe("New reason text (optional)"),
       detail: z.string().nullable().optional().describe("New detail text (optional; use for OTHER specify)"),
-      date: z.string().nullable().optional().describe("New affected work date, ISO 8601 (optional)"),
       fromTime: z.string().nullable().optional().describe("New time-range start, ISO 8601 datetime (optional)"),
       toTime: z.string().nullable().optional().describe("New time-range end, ISO 8601 datetime (optional)"),
     },
@@ -239,10 +224,8 @@ export function registerAttendanceOpsTools(server) {
       const data = await updateAnomaly({
         tenantId: user.tenantId,
         id: args.id,
-        type: args.type,
         reason: args.reason,
         detail: args.detail,
-        date: args.date,
         fromTime: args.fromTime,
         toTime: args.toTime,
       });
@@ -250,15 +233,17 @@ export function registerAttendanceOpsTools(server) {
     }, "hr_anomaly_update")
   );
 
-  // ── ANOMALY: delete (DELETE → hr:attendance EDIT) ──────────────────────────
-  // TS-ANOM-DELETE-01 — withdraw a PENDING request. The SERVICE enforces who:
-  // the subject employee, or the HR user who raised it on their behalf (the
-  // filler). The tool only passes the session's employee id through; the
-  // DELETE-permission gate at the edge is on the same EDIT class HR's
-  // decide already uses — deletion is a withdrawal, not a data-admin action.
+  // ── ANOMALY: delete (DELETE → hr:attendance) ───────────────────────────────
+  // TS-ANOM-DELETE-01/2 — withdraw a PENDING request. The edge gate below IS
+  // the whole rule: DELETE hr:attendance is held only by the Admin and HR
+  // Manager roles (RBAC data verified 2026-10-09; no user-level overrides),
+  // so once assertPermission passes, HR/admin may withdraw ANY pending
+  // request — the service is told via requesterCanDeleteAny. The
+  // subject/filer rule remains for service callers without this edge.
+  // Decided requests stay immutable: that guard lives in the service.
   server.tool(
     "hr_anomaly_delete",
-    "Withdraw a PENDING attendance anomaly request. Allowed for the employee the request is about, or the HR user who raised it on their behalf. Decided (APPROVED/REJECTED) requests cannot be deleted.",
+    "Withdraw a PENDING attendance anomaly request. Allowed for the employee the request is about, the HR user who raised it on their behalf, or any HR/admin user holding DELETE hr:attendance (Admin / HR Manager). Decided (APPROVED/REJECTED) requests cannot be deleted.",
     {
       id: z.coerce.number().int().describe("Anomaly id to delete (required; references AttendanceAnomaly)"),
     },
@@ -269,6 +254,7 @@ export function registerAttendanceOpsTools(server) {
         tenantId: user.tenantId,
         id: args.id,
         requesterEmployeeId: user.employeeId,
+        requesterCanDeleteAny: true, // DELETE hr:attendance asserted above (Admin/HR Manager)
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_anomaly_delete")

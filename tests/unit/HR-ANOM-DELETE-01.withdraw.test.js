@@ -5,6 +5,12 @@
 // Decided (APPROVED/REJECTED) requests are part of the payroll record and
 // cannot be withdrawn. Deletion also removes the request's approval-chain
 // rows so a re-raise for the same employee-day is not blocked.
+//
+// Operator ruling (2026-10-09, TS-ANOM-DELETE-01/2): HR/admin may withdraw
+// ANY pending request. The MCP tool edge asserts DELETE hr:attendance — a
+// grant only the Admin and HR Manager roles hold — and passes
+// requesterCanDeleteAny=true; the service honours it while keeping every
+// other guard (tenant scope, PENDING-only, recorded-actions 409).
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
 const TENANT = 'tenant-A';
@@ -88,6 +94,45 @@ describe('TS-ANOM-DELETE-01 — who may delete', () => {
         await expect(
             svc.deleteAnomaly({ tenantId: TENANT, id: 55, requesterEmployeeId: 999 })
         ).rejects.toMatchObject({ status: 403 });
+    });
+});
+
+describe('TS-ANOM-DELETE-01/2 — HR/admin withdraws any pending request', () => {
+    it('lets an unrelated HR user delete when the edge passed DELETE hr:attendance', async () => {
+        // requester 999 is neither subject nor filer — allowed only because
+        // the tool edge asserted the permission and set the flag.
+        const out = await svc.deleteAnomaly({
+            tenantId: TENANT,
+            id: 55,
+            requesterEmployeeId: 999,
+            requesterCanDeleteAny: true,
+        });
+        expect(deletedAnomalyIds).toEqual([55]);
+        expect(out.status).toBe('DELETED');
+        expect(out.deletedBy).toBe(999);
+    });
+
+    it('still refuses without the flag (service callers without the edge keep the old rule)', async () => {
+        await expect(
+            svc.deleteAnomaly({ tenantId: TENANT, id: 55, requesterEmployeeId: 999 })
+        ).rejects.toMatchObject({ status: 403 });
+        expect(deletedAnomalyIds).toHaveLength(0);
+    });
+
+    it('the flag never bypasses the PENDING-only guard (decided requests stay immutable)', async () => {
+        existingAnomaly.status = 'APPROVED';
+        await expect(
+            svc.deleteAnomaly({ tenantId: TENANT, id: 55, requesterEmployeeId: 999, requesterCanDeleteAny: true })
+        ).rejects.toMatchObject({ status: 400 });
+        expect(deletedAnomalyIds).toHaveLength(0);
+    });
+
+    it('the flag never bypasses the recorded-actions 409 guard', async () => {
+        existingAnomaly.workflowHistory = [{ step: 'mgmt-return', at: '2026-10-01' }];
+        await expect(
+            svc.deleteAnomaly({ tenantId: TENANT, id: 55, requesterEmployeeId: 999, requesterCanDeleteAny: true })
+        ).rejects.toMatchObject({ status: 409 });
+        expect(deletedAnomalyIds).toHaveLength(0);
     });
 });
 

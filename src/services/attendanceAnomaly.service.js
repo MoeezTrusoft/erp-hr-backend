@@ -15,6 +15,7 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 import { routeAnomaly, resolveApprovalChain } from "./attendanceAnomalyRouting.service.js";
+import { getAnomalyFormDefaults } from "./attendanceAnomalyRequest.service.js";
 
 const ANOMALY_TYPES = new Set([
   "LATE_CHECKIN",
@@ -33,6 +34,8 @@ const EMPLOYEE_SELECT = {
   first_name: true,
   last_name: true,
   photo_url: true,
+  job_title: true,
+  Position: { select: { title: true } },      businessUnit: { select: { name: true } },
 };
 
 function fullName(emp) {
@@ -86,8 +89,8 @@ function rowDto(row) {
     // raise-time snapshots the approval card renders.
     raisedById: row.raisedById ?? null,
     raisedByName: row.raisedByName ?? null,
-    position: row.positionSnapshot ?? null,
-    department: row.departmentSnapshot ?? null,
+    position: row.positionSnapshot ?? row.employee?.Position?.title ?? row.employee?.job_title ?? null,
+    department: row.departmentSnapshot ?? row.employee?.businessUnit?.name ?? null,
     currentApprovalLevel: row.currentApprovalLevel ?? null,
     // T&A-RULE-03 — the request's own time facts (rostered vs punched) shown
     // beside the check-in/check-out on the approval card and request modal.
@@ -107,7 +110,6 @@ function rowDto(row) {
 export async function informAbnormality({
   tenantId,
   employeeId,
-  type,
   reason,
   detail,
   date,
@@ -120,15 +122,6 @@ export async function informAbnormality({
   if (empId == null) {
     throw Object.assign(new Error("employeeId is required"), { status: 400 });
   }
-  if (!type || !ANOMALY_TYPES.has(type)) {
-    throw Object.assign(
-      new Error(
-        "type must be one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"
-      ),
-      { status: 400 }
-    );
-  }
-
   // TS-ONBEHALF-01 — the filler is the CALLING employee (HR when raised on
   // behalf, the employee themselves when self-raised through this path). The
   // name is snapshotted so the approval card keeps saying who filed it even
@@ -156,7 +149,17 @@ export async function informAbnormality({
   // through the configured chain (level 1 manager → 2 HR → 3 management).
   const anomalyDate = toDateOrNull(date);
   const dayRef = anomalyDate ? anomalyDate.toISOString().slice(0, 10) : null;
-  const sourceRef = dayRef ? `regularization:${empId}:${dayRef}:${type}` : null;
+  const dayDefaults = anomalyDate
+    ? await getAnomalyFormDefaults({ tenantId, employeeId: empId, date: anomalyDate })
+    : null;
+  const category = dayDefaults?.category ?? 'OTHER';
+  const anomalyFromTime = dayDefaults?.fromTime ?? toDateOrNull(fromTime);
+  const anomalyToTime = dayDefaults?.toTime ?? toDateOrNull(toTime);
+  const expectedTime = dayDefaults?.expectedTime ?? null;
+  const actualTime = dayDefaults?.actualTime ?? null;
+  const positionSnapshot = dayDefaults?.position ?? null;
+  const departmentSnapshot = dayDefaults?.department ?? null;
+  const sourceRef = dayRef ? `regularization:${empId}:${dayRef}:${category}` : null;
 
   // One OPEN request per employee-day. The self-service path enforces the same
   // invariant from its side; without it here an HR raise beside a pending
@@ -164,7 +167,7 @@ export async function informAbnormality({
   // A dateless raise keeps the legacy behaviour and is not deduped.
   if (sourceRef) {
     const open = await prisma.attendanceAnomaly.findFirst({
-      where: scopedWhere(tenantId, { sourceKind: "REGULARIZATION", employeeId: empId, date: anomalyDate, type }),
+      where: scopedWhere(tenantId, { sourceKind: "REGULARIZATION", employeeId: empId, date: anomalyDate, type: category }),
       select: { id: true },
     });
     if (open) {
@@ -180,12 +183,16 @@ export async function informAbnormality({
     data: {
       tenantId,
       employeeId: empId,
-      type,
+      type: category,
       reason: reason ?? null,
       detail: detail ?? null,
       date: anomalyDate,
-      fromTime: toDateOrNull(fromTime),
-      toTime: toDateOrNull(toTime),
+      fromTime: anomalyFromTime,
+      toTime: anomalyToTime,
+      expectedTime,
+      actualTime,
+      positionSnapshot,
+      departmentSnapshot,
       applicationDate: new Date(),
       sourceKind: "REGULARIZATION",
       sourceRef,
@@ -202,9 +209,8 @@ export async function informAbnormality({
   });
 
   const routing = await routeAnomaly({ tenantId, anomalyId: created.id });
-
   logger.info(
-    { anomalyId: created.id, employeeId: empId, type, routed: routing.routed, raisedById: fillerId },
+    { anomalyId: created.id, employeeId: empId, type: category, routed: routing.routed, raisedById: fillerId },
     "attendance anomaly raised"
   );
   return { ...rowDto(created), routing };
@@ -441,10 +447,8 @@ export async function listAnomalies({
 export async function updateAnomaly({
   tenantId,
   id,
-  type,
   reason,
   detail,
-  date,
   fromTime,
   toTime,
 }) {
@@ -455,7 +459,7 @@ export async function updateAnomaly({
 
   const existing = await prisma.attendanceAnomaly.findFirst({
     where: scopedWhere(tenantId, { id: anomalyId }),
-    select: { id: true, status: true, type: true, date: true, sourceKind: true, workflowVersion: true, workflowHistory: true, manualDeductionDays: true },
+    select: { id: true, employeeId: true, status: true, type: true, date: true, sourceKind: true, workflowVersion: true, workflowHistory: true, manualDeductionDays: true },
   });
   if (!existing) {
     throw Object.assign(new Error("Anomaly not found"), { status: 404 });
@@ -470,33 +474,19 @@ export async function updateAnomaly({
     );
   }
 
-  if (existing.sourceKind === 'REGULARIZATION' && ((type && type !== existing.type) || (date && new Date(date).getTime() !== new Date(existing.date).getTime()))) {
-    throw Object.assign(new Error('The anomaly type and work date are fixed; submit a separate request for another anomaly'), {status:400});
-  }
-  // Validate type if provided.
-  if (type && !ANOMALY_TYPES.has(type)) {
-    throw Object.assign(
-      new Error("type must be one of LATE_CHECKIN | MISSING_CHECKIN | MISSING_CHECKOUT | EARLY_CHECKOUT | ABSENT | OTHER"),
-      { status: 400 },
-    );
-  }
-
   const updated = await prisma.attendanceAnomaly.update({
     where: { id: anomalyId, workflowVersion: existing.workflowVersion, status: "PENDING" },
     data: {
       workflowVersion: {increment:1},
-      ...(type ? { type } : {}),
       ...(reason != null ? { reason: reason ?? null } : {}),
       ...(detail != null ? { detail: detail ?? null } : {}),
-      ...(date != null ? { date: toDateOrNull(date) } : {}),
       ...(fromTime != null ? { fromTime: toDateOrNull(fromTime) } : {}),
       ...(toTime != null ? { toTime: toDateOrNull(toTime) } : {}),
     },
     include: { employee: { select: EMPLOYEE_SELECT } },
   });
-
   logger.info(
-    { anomalyId, editedFields: { type: type != null, reason: reason != null, detail: detail != null, date: date != null, fromTime: fromTime != null, toTime: toTime != null } },
+    { anomalyId, editedFields: { reason: reason != null, detail: detail != null, fromTime: fromTime != null, toTime: toTime != null } },
     "attendance anomaly edited by HR",
   );
   return rowDto(updated);
@@ -518,11 +508,19 @@ export async function updateAnomaly({
  * orphaned chain steps.
  *
  * Returns the deleted row's identifying fields for the UI toast/audit log.
+ *
+ * TS-ANOM-DELETE-01/2 (2026-10-09 operator ruling) — HR/admin may withdraw
+ * ANY PENDING request. Callers that already asserted DELETE hr:attendance at
+ * the edge (only the Admin and HR Manager roles hold it; RBAC data verified
+ * 2026-10-09, no user-level overrides) pass requesterCanDeleteAny=true and
+ * skip the subject/filer check. Callers without that edge keep the original
+ * subject/filer rule.
  */
 export async function deleteAnomaly({
   tenantId,
   id,
   requesterEmployeeId,
+  requesterCanDeleteAny,
 }) {
   const anomalyId = toIntOrNull(id);
   if (anomalyId == null) {
@@ -559,12 +557,16 @@ export async function deleteAnomaly({
   // Permission, dual-keyed: the caller passes the employee id their session
   // carries. The subject employee may always withdraw their own request; HR's
   // on-behalf raise keeps the filler's id in raisedById, so HR deleting their
-  // own raise is requester == raisedById. An admin escape hatch is NOT added
-  // deliberately — decided anomalies are immutable and PENDING ones belong to
-  // their filer.
+  // own raise is requester == raisedById.
+  //
+  // TS-ANOM-DELETE-01/2 — since 2026-10-09 HR/admin may withdraw any PENDING
+  // request. The MCP tool edge asserts DELETE hr:attendance (Admin/HR Manager
+  // only) and passes requesterCanDeleteAny=true. Immutability of DECIDED
+  // requests is unaffected: that guard lives above and always applies.
   const isSubject = requesterId != null && requesterId === existing.employeeId;
   const isFiller = requesterId != null && existing.raisedById != null && requesterId === existing.raisedById;
-  if (!isSubject && !isFiller) {
+  const isPrivilegedHr = requesterCanDeleteAny === true;
+  if (!isSubject && !isFiller && !isPrivilegedHr) {
     throw Object.assign(
       new Error(
         existing.raisedById == null
@@ -587,6 +589,7 @@ export async function deleteAnomaly({
       type: existing.type,
       raisedById: existing.raisedById,
       deletedBy: requesterId,
+      deletedVia: isPrivilegedHr ? "hr-admin" : "self-or-filer",
     },
     "attendance anomaly withdrawn",
   );
@@ -641,9 +644,9 @@ export async function decideAnomaly({
       reviewNote: reviewNote ?? null,
     },
     include: { employee: { select: EMPLOYEE_SELECT } },
-  });
-
+   });
   logger.info(
+
     { anomalyId, decision, reviewerId: reviewerId ? Number(reviewerId) : null },
     "attendance anomaly decided"
   );
