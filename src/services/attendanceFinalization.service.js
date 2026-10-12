@@ -122,7 +122,7 @@ export async function drainAttendanceFinalization(
           db,
           candidate.tenantId,
           async (tx) => {
-            await lockAttendancePeriod(tx, candidate.tenantId);
+            await lockAttendancePeriod(tx, candidate.tenantId, true);
             if (tx.$queryRaw) {
               const [lock] = await tx.$queryRaw(
                 Prisma.sql(
@@ -156,7 +156,8 @@ export async function drainAttendanceFinalization(
               now,
               db: tx,
               dryRun: false,
-              trigger: "DEADLINE",
+              trigger: job.rulesReconciliation ? 'RULES_RECONCILIATION' : 'DEADLINE',
+              rulesReconciliation: job.rulesReconciliation === true,
             });
             // Manual corrections and excluded employees intentionally have no automatic rewrite.
             const remaining = await tx.attendanceEvaluationJob.findFirst({

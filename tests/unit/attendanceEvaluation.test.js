@@ -217,7 +217,7 @@ describe("persisted evaluation and finalization", () => {
     await apply(db);
     expect(db.snapshot().attendanceEvaluation).toHaveLength(2);
   });
-  it("does not overwrite a human anomaly decision when evidence changes", async () => {
+  it("closes obsolete evidence while retaining the original decision in the rule audit", async () => {
     const db = database([["09:00", 0]]);
     await apply(db);
     await db.attendanceAnomaly.update({
@@ -236,7 +236,7 @@ describe("persisted evaluation and finalization", () => {
     });
     await apply(db);
     expect(db.snapshot().attendanceAnomaly[0]).toMatchObject({
-      status: "APPROVED",
+      status: "RESOLVED",
       reviewerId: 9,
       evidenceState: "RESOLVED",
     });
@@ -513,7 +513,7 @@ describe("site evidence, review and recovery safeguards", () => {
       "Punch changed",
     );
   });
-  it("respects a final request decision for a missing punch without waiving a capture hold", async () => {
+  it("does not let a legacy day-level request settle new per-shift rules", async () => {
     const db = database([["09:00", 0]]);
     await apply(db);
     await db.attendanceAnomaly.create({
@@ -532,7 +532,7 @@ describe("site evidence, review and recovery safeguards", () => {
           db,
         )
       ).ready,
-    ).toBe(true);
+    ).toBe(false);
     await db.attendanceCaptureEvent.create({
       data: {
         tenantId: TENANT,

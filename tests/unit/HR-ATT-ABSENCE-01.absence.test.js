@@ -16,17 +16,18 @@ describe('absence guards through the published evaluator',()=>{
   expect(db.snapshot().attendance[0].status).toBe('PRESENT');
  });
  it('preserves a human correction',async()=>{
-  const db=evaluationDb({rows:[{status:'PRESENT',day_credit:1,manually_corrected:true}]});
-  expect((await mark(db,{dryRun:false})).manuallyCorrected).toBe(1);
+  const db=evaluationDb({rows:[{status:'PRESENT',day_credit:1,manually_corrected:true,check_in:new Date(DATE+'T09:00:00Z'),check_out:new Date(DATE+'T17:00:00Z')}]});
+  await mark(db,{dryRun:false});
+  expect(db.snapshot().attendanceManualTime).toHaveLength(2);
   expect(db.snapshot().attendance[0].status).toBe('PRESENT');
  });
  it('defaults to preview and writes no attendance or jobs',async()=>{
   const db=evaluationDb();expect((await mark(db)).marked).toBe(1);
   expect(db.snapshot().attendance).toHaveLength(0);expect(db.snapshot().attendanceEvaluationJob).toHaveLength(0);
  });
- it('finalizes evidenced no-shows after their own deadline under the published deduction policy',async()=>{
+ it('opens no-shows for review after their deadline without automatic deductions',async()=>{
   const db=evaluationDb();await mark(db,{dryRun:false});
-  expect(db.snapshot().attendance[0]).toMatchObject({status:'ABSENT',day_credit:0,processingState:'FINALIZED',requires_regularization:false});
+  expect(db.snapshot().attendance[0]).toMatchObject({status:'ABSENT',day_credit:null,processingState:'NEEDS_REVIEW',requires_regularization:true});
  });
  it('rejects reversed ranges',async()=>{
   await expect(mark(evaluationDb(),{from:'2026-08-03'})).rejects.toThrow();

@@ -50,7 +50,7 @@ const absenceLine = (slip) =>
     slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY' || String(d.description).startsWith('Absence recovery'));
 
 describe('N-09 ABSENCE_RECOVERY skips rest days', () => {
-    it('prices only HALF_DAY/ABSENT credit loss — WEEKLY_OFF and HOLIDAY rows are ignored', () => {
+    it('does not charge undecided HALF_DAY/ABSENT credit loss — WEEKLY_OFF and HOLIDAY rows are ignored', () => {
         // 4 weekly offs (credit 0) + 2 holidays (credit 0) + 1 ABSENT + 2 HALF_DAY
         // → real credit loss = 1×1.0 + 2×0.5 = 2.0 days → 100000 × 2 / 31 = 6451.61,
         // rounded to WHOLE RUPEES at persistence (N-22, operator ruling 2026-09-17).
@@ -63,8 +63,8 @@ describe('N-09 ABSENCE_RECOVERY skips rest days', () => {
             day(9, 'ABSENT', 0),
             day(10, 'HALF_DAY', 0.5), day(11, 'HALF_DAY', 0.5),
         ]);
-        expect(absenceLine(slip)).toBeTruthy();
-        expect(Number(absenceLine(slip).amount)).toBe(6452);
+        expect(absenceLine(slip)).toBeUndefined();
+        expect(slip.deductions.some(d=>d.code==='ATTENDANCE_RULES_V2')).toBe(false);
     });
 
     it('a month of only rest days and full-credit days prices nothing', () => {
@@ -83,6 +83,6 @@ describe('N-09 ABSENCE_RECOVERY skips rest days', () => {
     it('NULL credit (MISSING_*) stays held — neither paid nor docked', () => {
         const slip = build([day(1, 'MISSING_CHECKIN', null), day(2, 'ABSENT', 0)]);
         // only the ABSENT day prices: 100000 × 1 / 31 = 3225.81 → 3226 whole rupees (N-22)
-        expect(Number(absenceLine(slip).amount)).toBe(3226);
+        expect(absenceLine(slip)).toBeUndefined();
     });
 });

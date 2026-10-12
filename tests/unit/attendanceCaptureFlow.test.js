@@ -64,7 +64,7 @@ describe("capture through the real published evaluator and writer", () => {
     expect(rows[0].check_in.toISOString()).toBe("2026-10-01T22:00:00.000Z");
     expect(rows[0].check_out.toISOString()).toBe("2026-10-02T06:00:00.000Z");
   });
-  it("a manual correction survives capture while original punch evidence remains available", async () => {
+  it("holds conflicting historical manual corrections while retaining both original sources", async () => {
     const db = database();
     const protectedDay = await db.attendance.create({
       data: {
@@ -85,11 +85,12 @@ describe("capture through the real published evaluator and writer", () => {
       },
       db,
     );
-    expect((await drainCapture({ now }, db)).failed).toBe(0);
+    expect((await drainCapture({ now }, db)).failed).toBeGreaterThan(0);
     expect(
       db.snapshot().attendance.find((r) => r.id === protectedDay.id),
     ).toEqual(protectedDay);
-    expect(db.snapshot().attendanceDevicePunch).toHaveLength(2);
+    expect(db.snapshot().attendanceCaptureEvent).toHaveLength(2);
+    expect(db.snapshot().attendanceCaptureEvent.every(e=>e.state==='NEEDS_REVIEW')).toBe(true);
   });
   it("holds missing published setup for review without inventing absence", async () => {
     const db = captureDb();

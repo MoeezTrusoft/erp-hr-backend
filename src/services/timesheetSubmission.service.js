@@ -131,7 +131,8 @@ async function pendingAnomalyCount(tenantId, { from, to }, db = prisma) {
     where: scopedWhere(tenantId, {
       date: { gte: from, lte: to },
       status: { in: PENDING_ANOMALY_STATUSES },
-      sourceKind: {in:["REGULARIZATION","PAPER_FORM"]},
+      sourceKind: {in:["PAPER_FORM","RULES_V2"]},
+      evidenceState: 'ACTIVE',
     }),
   });
 }

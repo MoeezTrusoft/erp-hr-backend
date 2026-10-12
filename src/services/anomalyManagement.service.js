@@ -124,40 +124,7 @@ export async function markAnomalyDeduction({
   comment,
   version,
 }) {
-  if (![null, 0.5, 1].includes(days))
-    fail(400, "Choose half day, full day, or clear the marking");
-  if (!comment?.trim()) fail(400, "A deduction reason is required");
-  const row = await load(tenantId, anomalyId);
-  if (row.employeeId === actorEmployeeId)
-    fail(403, "You cannot mark your own deduction");
-  const chain = await resolveApprovalChain({
-    tenantId,
-    employeeId: row.employeeId,
-    approvalPolicy: row.approvalPolicy,
-  });
-  if (
-    !isAdmin &&
-    !chain.some(
-      (s) =>
-        s.resolved && isManagementLevel(s) && s.approverId === actorEmployeeId,
-    )
-  )
-    fail(403, "Only the configured management approver may mark deductions");
-  return save(
-    row,
-    tenantId,
-    version,
-    { manualDeductionDays: days },
-    {
-      action: "DEDUCTION",
-      actorEmployeeId,
-      actorUserId,
-      at: new Date().toISOString(),
-      comment: comment.trim(),
-      fromDays: row.manualDeductionDays ?? null,
-      toDays: days,
-    },
-  );
+  throw Object.assign(new Error('Use Attendance anomaly review: system-generated per-shift cases, HR missing-time entries, and Management-only decisions'), {status:410});
 }
 export async function returnAnomalyRequest({
   tenantId,
@@ -167,61 +134,7 @@ export async function returnAnomalyRequest({
   comment,
   version,
 }) {
-  if (!comment?.trim()) fail(400, "A return comment is required");
-  const row = await load(tenantId, anomalyId);
-  if (row.sourceKind && !["REGULARIZATION", "PAPER_FORM"].includes(row.sourceKind))
-    fail(400, "Only submitted requests can be returned");
-  if (row.status !== "PENDING" || row.currentApprovalLevel === 0)
-    fail(409, "Only a request currently in approval can be returned");
-  const chain = await resolveApprovalChain({
-    tenantId,
-    employeeId: row.employeeId,
-    approvalPolicy: row.approvalPolicy,
-  });
-  const seats = chain.filter(
-    (s) => s.resolved && s.approverId === actorEmployeeId,
-  );
-  if (!seats.length || row.employeeId === actorEmployeeId)
-    fail(403, "Only an approval-matrix participant may return the request");
-  const limit = Math.min(
-    row.currentApprovalLevel,
-    Math.max(...seats.map((s) => s.level)),
-  );
-  const target =
-    targetLevel === 0
-      ? null
-      : chain.find((s) => s.level === targetLevel && s.resolved);
-  if (
-    !Number.isInteger(targetLevel) ||
-    targetLevel < 0 ||
-    targetLevel >= limit ||
-    (targetLevel !== 0 && !target)
-  )
-    fail(400, "Choose the applicant or an earlier approval participant");
-  const approvals = await prisma.attendanceAnomalyApproval.findMany({
-    where: { tenantId, anomalyId },
-    orderBy: { level: "asc" },
-  });
-  return save(
-    row,
-    tenantId,
-    version,
-    { currentApprovalLevel: targetLevel },
-    {
-      action: "RETURN",
-      actorEmployeeId,
-      at: new Date().toISOString(),
-      comment: comment.trim(),
-      targetLevel,
-      targetRole: target?.role || "Applicant",
-      targetEmployeeId: target?.approverId || row.employeeId,
-      approvals,
-    },
-    (tx) =>
-      tx.attendanceAnomalyApproval.deleteMany({
-        where: { tenantId, anomalyId, level: { gte: targetLevel } },
-      }),
-  );
+  throw Object.assign(new Error('Use Attendance anomaly review: system-generated per-shift cases, HR missing-time entries, and Management-only decisions'), {status:410});
 }
 export async function resubmitAnomalyRequest({
   tenantId,
@@ -231,53 +144,7 @@ export async function resubmitAnomalyRequest({
   attachments = [],
   version,
 }) {
-  const row = await load(tenantId, anomalyId);
-  if (row.employeeId !== actorEmployeeId)
-    fail(403, "Only the applicant may resubmit this request");
-  if (row.status !== "PENDING" || row.currentApprovalLevel !== 0)
-    fail(409, "This request has not been returned to the applicant");
-  if (!reason?.trim()) fail(400, "An updated explanation is required");
-  if (attached(row).length + attachments.length > 5)
-    fail(400, "A request may contain at most 5 attachments");
-  await assertAnomalyPeriodEditable(prisma, row, tenantId);
-  if (row.workflowVersion !== version)
-    fail(409, "Request changed; refresh before trying again");
-  const chain = await resolveApprovalChain({
-    tenantId,
-    employeeId: row.employeeId,
-    approvalPolicy: row.approvalPolicy,
-  });
-  const first = chain.find((s) => s.resolved || !s.skippable);
-  if (!first?.resolved)
-    fail(409, "The approval matrix must resolve before resubmission");
-  const newBytes = attachments.reduce(
-    (sum, file) => sum + Buffer.byteLength(file.fileBase64 || "", "base64"),
-    0,
-  );
-  if (
-    attached(row).reduce((sum, file) => sum + (file.size || 0), 0) + newBytes >
-    5 * 1024 * 1024
-  )
-    fail(400, "Attachments must total at most 5 MB");
-  const uploads = await uploadAnomalyAttachments(attachments);
-  return save(
-    row,
-    tenantId,
-    version,
-    {
-      reason: reason.trim(),
-      attachments: [...attached(row), ...uploads],
-      currentApprovalLevel: first.level,
-    },
-    {
-      action: "RESUBMIT",
-      actorEmployeeId,
-      at: new Date().toISOString(),
-      comment: reason.trim(),
-      previousReason: row.reason,
-      addedAttachments: uploads,
-    },
-  );
+  throw Object.assign(new Error('Use Attendance anomaly review: system-generated per-shift cases, HR missing-time entries, and Management-only decisions'), {status:410});
 }
 export async function anomalyAttachmentUrl({
   tenantId,
