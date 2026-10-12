@@ -56,10 +56,21 @@ export async function planAttendanceFinalization(
                 tenantId + ":attendance-planner",
               ),
             );
-          const latest = await tx.attendanceSetupRelease.findFirst({
-            where: { tenantId, effectiveFrom: { lte: now } },
-            orderBy: { effectiveFrom: "desc" },
+          // Effective dates are civil dates, not UTC instants. A Karachi
+          // release starts at local midnight, five hours before its stored
+          // YYYY-MM-DDT00:00Z value. Check each candidate in its own timezone.
+          const releases = await tx.attendanceSetupRelease.findMany({
+            where: {
+              tenantId,
+              effectiveFrom: { lte: new Date(+now + 86400000) },
+            },
+            orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
           });
+          const latest = releases.find(
+            (release) =>
+              dateKey(release.effectiveFrom) <=
+              dateKey(civilNow(now, release.config.settings?.timeZone || "Asia/Karachi")),
+          );
           if (!latest) return;
           const today = dateKey(
             civilNow(now, latest.config.settings?.timeZone || "Asia/Karachi"),

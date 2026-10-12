@@ -327,6 +327,33 @@ describe("persisted evaluation and finalization", () => {
     await planAttendanceFinalization({ now }, db);
     expect(db.snapshot().attendanceEvaluationJob).toHaveLength(2);
   });
+  it("starts a new Karachi release at local midnight before the UTC date changes", async () => {
+    const db = database([], config(), {
+      attendanceSetupRelease: [{
+        id: 4, tenantId: TENANT, version: 4,
+        effectiveFrom: new Date("2026-10-01"),
+        coverageThrough: new Date("2026-12-31"), config: config(),
+      }],
+    });
+    const now = new Date("2026-10-01T00:30:00+05:00");
+    expect((await planAttendanceFinalization({ now }, db)).failures).toEqual([]);
+    const jobs = db.snapshot().attendanceEvaluationJob;
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].date).toEqual(new Date("2026-10-01"));
+  });
+  it("does not activate a western-timezone release before its local effective date", async () => {
+    const configuration = config();
+    configuration.settings.timeZone = "America/Los_Angeles";
+    const db = database([], configuration, {
+      attendanceSetupRelease: [{
+        id: 4, tenantId: TENANT, version: 4,
+        effectiveFrom: new Date("2026-10-01"),
+        coverageThrough: new Date("2026-12-31"), config: configuration,
+      }],
+    });
+    expect((await planAttendanceFinalization({ now: new Date("2026-10-01T03:30:00Z") }, db)).failures).toEqual([]);
+    expect(db.snapshot().attendanceEvaluationJob).toHaveLength(0);
+  });
   it("detects a single missing day in an otherwise complete period", async () => {
     const db = database([
       ["09:00", 0],
