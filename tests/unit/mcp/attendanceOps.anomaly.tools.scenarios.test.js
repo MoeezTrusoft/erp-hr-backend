@@ -15,9 +15,10 @@ jest.unstable_mockModule('../../../src/services/attendanceAnomaly.service.js', (
   // TS-ANOM-EDIT-01 — the edit tool must be pinned by the same registration /
   // dispatch / permission-gate matrix as the rest of the anomaly surface.
   updateAnomaly: jest.fn(async () => ({ id: 1, status: 'PENDING' })),
-  // TS-ANOM-DELETE-01 — the withdraw tool joins the same matrix. Who may
-  // delete is a SERVICE rule (subject employee / HR on-behalf filer); the
-  // tool gate is DELETE hr:attendance.
+  // TS-ANOM-DELETE-01/2 — the withdraw tool joins the same matrix. The tool
+  // gate is DELETE hr:attendance (Admin/HR Manager only); passing it tells
+  // the service requesterCanDeleteAny=true, so HR/admin may withdraw any
+  // pending request (2026-10-09 operator ruling).
   deleteAnomaly: jest.fn(async () => ({ id: 1, status: 'DELETED' })),
 }));
 jest.unstable_mockModule('../../../src/services/pendingApprovals.service.js', () => ({
@@ -57,14 +58,14 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  { name: 'hr_anomaly_inform', svc: () => anomalySvc.informAbnormality, gate: 'hr:attendance', action: 'CREATE', args: { type: 'LATE_CHECKIN' } },
-  { name: 'hr_anomaly_create', svc: () => anomalySvc.informAbnormality, gate: 'hr:attendance', action: 'CREATE', args: { type: 'MISSING_CHECKIN', reason: 'forgot badge' } },
+  { name: 'hr_anomaly_inform', svc: () => anomalySvc.informAbnormality, gate: 'hr:attendance', action: 'CREATE', args: { reason: 'late arrival', date: '2026-09-17' } },
+  { name: 'hr_anomaly_create', svc: () => anomalySvc.informAbnormality, gate: 'hr:attendance', action: 'CREATE', args: { reason: 'forgot badge', date: '2026-09-17' } },
   { name: 'hr_anomaly_list', svc: () => anomalySvc.listAnomalies, gate: 'hr:attendance', action: 'VIEW', args: {} },
   { name: 'hr_anomaly_decide', svc: () => anomalySvc.decideAnomaly, gate: 'hr:attendance', action: 'EDIT', args: { id: 1, decision: 'approve' } },
   // TS-ANOM-EDIT-01 — PUT hr:attendance, same gate class as decide.
   { name: 'hr_anomaly_update', svc: () => anomalySvc.updateAnomaly, gate: 'hr:attendance', action: 'EDIT', args: { id: 1, reason: 'edited' } },
-  // TS-ANOM-DELETE-01 — DELETE hr:attendance (withdraw; who-may-delete lives
-  // in the service via requesterEmployeeId).
+  // TS-ANOM-DELETE-01/2 — DELETE hr:attendance (withdraw). The gate pass is
+  // the whole who-may-delete rule for this edge; see specifics below.
   { name: 'hr_anomaly_delete', svc: () => anomalySvc.deleteAnomaly, gate: 'hr:attendance', action: 'DELETE', args: { id: 1 } },
 ];
 
@@ -74,34 +75,18 @@ describe('ATTENDANCE-OPS-ANOMALY — registration', () => {
   });
 });
 
-// TS-ANOM-EDIT-02 (2026-10-07) — the edit modal sends explicit JSON nulls for
-// cleared fields (an ABSENT-type request carries no time range) and the live
-// server answered -32602 because z.string().optional() rejects null. The
-// service contract is null = leave unchanged, so the argument schema must
-// accept null on every optional client-supplied field.
+// Type and affected date are intentionally absent from the backend edit
+// schema; callers may change explanatory text and time details only.
 describe('hr_anomaly_update argument contract', () => {
-  it('accepts explicit nulls on the optional edit fields', () => {
-    // The SDK registers a RAW SHAPE (plain object of validators) and builds the
-    // ZodObject itself — wrap before probing.
+  it('accepts nullable editable fields but exposes no type/date inputs', () => {
     const shape = schemas.get('hr_anomaly_update');
     expect(shape).toBeDefined();
+    expect(shape).not.toHaveProperty('type');
+    expect(shape).not.toHaveProperty('date');
     const schema = z.object(shape);
-    const probe = schema.safeParse({
-      id: 1260,
-      type: null,
-      reason: null,
-      detail: null,
-      date: null,
-      fromTime: null,
-      toTime: null,
-    });
+    const probe = schema.safeParse({ id: 1260, reason: null, detail: null, fromTime: null, toTime: null });
     expect(probe.success).toBe(true);
-  });
-
-  it('still rejects a missing id and a bad type', () => {
-    const schema = z.object(schemas.get('hr_anomaly_update'));
     expect(schema.safeParse({}).success).toBe(false);
-    expect(schema.safeParse({ id: 1, type: 'NOT_A_TYPE' }).success).toBe(false);
   });
 });
 
@@ -136,16 +121,17 @@ describe.each(TOOLS)('$name scenarios', ({ name, svc: svcOf, gate, action, args 
 describe('hr_anomaly_create specifics', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('defaults employeeId to the caller', async () => {
-    await call('hr_anomaly_create', { type: 'OTHER', detail: 'traffic' }, {
+  it('defaults employeeId to the caller and does not forward a client type', async () => {
+    await call('hr_anomaly_create', { type: 'OTHER', date: '2026-09-17', reason: 'traffic' }, {
       permissions: { 'hr:attendance': ['CREATE'] },
     });
     expect(anomalySvc.informAbnormality.mock.calls[0][0]).toMatchObject({
       tenantId: 'tenant-A',
       employeeId: '7',
-      type: 'OTHER',
-      detail: 'traffic',
+      date: '2026-09-17',
+      reason: 'traffic',
     });
+    expect(anomalySvc.informAbnormality.mock.calls[0][0]).not.toHaveProperty('type');
   });
 
   it('400 when no employeeId anywhere (no session employee either)', async () => {
@@ -157,14 +143,35 @@ describe('hr_anomaly_create specifics', () => {
     expect(parse(res).status).toBe(400);
   });
 
-  it('honors an explicit employeeId (HR raising on behalf of an employee)', async () => {
-    await call('hr_anomaly_create', { employeeId: 42, type: 'ABSENT' }, {
+  it('honors an explicit employeeId without accepting its requested type', async () => {
+    await call('hr_anomaly_create', { employeeId: 42, type: 'ABSENT', date: '2026-09-17' }, {
       permissions: { 'hr:attendance': ['CREATE'] },
     });
     expect(anomalySvc.informAbnormality.mock.calls[0][0]).toMatchObject({
       tenantId: 'tenant-A',
       employeeId: 42,
-      type: 'ABSENT',
+      date: '2026-09-17',
     });
+    expect(anomalySvc.informAbnormality.mock.calls[0][0]).not.toHaveProperty('type');
+  });
+});
+
+describe('hr_anomaly_delete specifics (TS-ANOM-DELETE-01/2)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('tells the service requesterCanDeleteAny after the edge gate passes — HR/admin withdraws any pending request', async () => {
+    await call('hr_anomaly_delete', { id: 1 }, { permissions: { 'hr:attendance': ['DELETE'] } });
+    expect(anomalySvc.deleteAnomaly.mock.calls[0][0]).toMatchObject({
+      tenantId: 'tenant-A',
+      id: 1,
+      requesterEmployeeId: '7',
+      requesterCanDeleteAny: true,
+    });
+  });
+
+  it('without the DELETE grant the service is never called (so no privileged bypass can leak)', async () => {
+    const res = await call('hr_anomaly_delete', { id: 1 }, { permissions: { 'hr:attendance': ['EDIT'] } });
+    expect(res.isError).toBe(true);
+    expect(anomalySvc.deleteAnomaly).not.toHaveBeenCalled();
   });
 });

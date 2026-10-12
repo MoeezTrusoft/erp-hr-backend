@@ -263,6 +263,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
         currencyCode: 'PKR',
         countryCode: 'PK',
     };
+    const decided=type=>({id:1,employeeId:1,date:'2026-08-02',sessionKey:'s1',type,rulesVersion:2,status:'REJECTED',decisionRole:'Management',evidenceState:'ACTIVE'});
     const build = (bridges) =>
         buildPayslipFromInputs({
             employee: { id: 1 },
@@ -279,35 +280,31 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
     // loosened to make a failure go away.
     it('converts deduction DAYS to money with the LWP daily rate (calendar days)', () => {
         const slip = build({
-            attendanceDeductionLines: [
-                { ruleKey: 'LATE', counterGroup: null, occurrences: 3, days: 1 },
-            ],
+            anomalyRows:[decided('ABSENT')],
         });
-        const line = slip.deductions.find((d) => d.description.startsWith('Attendance:'));
+        const line = slip.deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
         expect(line).toBeDefined();
         // 260,000 over a 31-day August ⇒ 8387.09/day → WHOLE RUPEES (N-22,
         // ruling 2026-09-17). Previously 260,000/26.
         expect(line.amount).toBe('8387.0000');
-        expect(line.description).toBe('Attendance: LATE (3 occurrences = 1 day)');
+        expect(line.description).toBe('Management-disapproved attendance: 1 day(s)');
     });
 
     it('handles fractional deduction days', () => {
         const slip = build({
-            attendanceDeductionLines: [
-                { ruleKey: 'MISSING_CHECKOUT', counterGroup: 'MISSED_PUNCH', occurrences: 3, days: 0.5 },
-            ],
+            anomalyRows:[decided('MISSING_CHECKOUT')],
         });
-        const line = slip.deductions.find((d) => d.description.startsWith('Attendance:'));
+        const line = slip.deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
         // half of 8387.09 → 4193.54 → 4194 whole rupees (N-22)
         expect(line.amount).toBe('4194.0000');
-        expect(line.description).toBe('Attendance: MISSED_PUNCH (3 occurrences = 0.5 days)');
+        expect(line.description).toBe('Management-disapproved attendance: 0.5 day(s)');
     });
 
     it('uses the SAME daily rate as LWP — one day of LWP costs one day of attendance deduction', () => {
         const lwp = build({ lwpDays: 1 }).deductions.find((d) => d.description.startsWith('LWP'));
         const ded = build({
-            attendanceDeductionLines: [{ ruleKey: 'LATE', counterGroup: null, occurrences: 1, days: 1 }],
-        }).deductions.find((d) => d.description.startsWith('Attendance:'));
+            anomalyRows:[decided('ABSENT')],
+        }).deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
         expect(ded.amount).toBe(lwp.amount);
     });
 
@@ -318,13 +315,13 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
 
     it('adds nothing when there are no deduction lines', () => {
         const slip = build({});
-        expect(slip.deductions.some((d) => d.description.startsWith('Attendance:'))).toBe(false);
+        expect(slip.deductions.some((d) => d.code==='ATTENDANCE_RULES_V2')).toBe(false);
     });
 
     it('skips zero-day lines rather than emitting a 0.00 deduction', () => {
         const slip = build({
             attendanceDeductionLines: [{ ruleKey: 'LATE', counterGroup: null, occurrences: 1, days: 0 }],
         });
-        expect(slip.deductions.some((d) => d.description.startsWith('Attendance:'))).toBe(false);
+        expect(slip.deductions.some((d) => d.code==='ATTENDANCE_RULES_V2')).toBe(false);
     });
 });

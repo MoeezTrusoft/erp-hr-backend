@@ -221,6 +221,11 @@ export async function receiveCapture(
         );
       if (tenantId && !device.allowedTenantIds.includes(tenantId))
         throw captureError("Device is not permitted for this tenant", 403);
+      if (device.biometricPublicKey)
+        throw captureError(
+          "Biometric kiosks must use the signed biometric capture endpoint",
+          403,
+        );
     }
     const owner = tenantId || device.tenantId;
     const payloadHash = fingerprint({ sn, source, rows, notes });
@@ -700,7 +705,7 @@ export async function reviewCaptureEvents(
     !reason?.trim() ||
     !items?.length ||
     items.length > 100 ||
-    !["RETRY", "RESOLVE", "DISMISS"].includes(action)
+    !["RETRY", "RESOLVE", "DISMISS", "APPROVE_BIOMETRIC"].includes(action)
   )
     throw captureError("Provide an action, reason and 1–100 events");
   return tenantTransaction(
@@ -717,6 +722,51 @@ export async function reviewCaptureEvents(
             409,
           );
         let hit = {};
+        if (event.source === "BIOMETRIC") {
+          if (action === "RESOLVE")
+            throw captureError(
+              "Biometric identity cannot be reassigned; dismiss incorrect evidence",
+              409,
+            );
+          if (action !== "DISMISS" && !event.raw?.biometric?.matched)
+            throw captureError(
+              "A failed biometric match cannot be approved",
+              409,
+            );
+          if (
+            action === "RETRY" &&
+            (event.raw.biometric.pad !== "PASSED" ||
+              event.raw.biometric.delayedUpload) &&
+            !event.biometricApprovedBy
+          )
+            throw captureError(
+              "Unverified liveness or delayed upload requires explicit biometric exception approval",
+              409,
+            );
+        }
+        if (action === "APPROVE_BIOMETRIC") {
+          if (
+            event.source !== "BIOMETRIC" ||
+            !["UNKNOWN", "PASSED"].includes(event.raw?.biometric?.pad) ||
+            (event.raw.biometric.pad === "PASSED" &&
+              !event.raw.biometric.delayedUpload) ||
+            !event.raw.biometric.matched ||
+            !actorId
+          )
+            throw captureError(
+              "Only a matched biometric with unverified liveness or delayed upload can receive exception approval",
+              409,
+            );
+          if (String(actorId) === String(event.raw.biometric.enrolledBy))
+            throw captureError(
+              "A different HR operator must approve this enrolment's biometric exception",
+              403,
+            );
+          hit = {
+            biometricApprovedBy: String(actorId),
+            biometricApprovedAt: new Date(),
+          };
+        }
         if (action === "RESOLVE") {
           if (!event.parsed)
             throw captureError(

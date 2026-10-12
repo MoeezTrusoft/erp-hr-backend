@@ -5,7 +5,9 @@ import {
   captureHeartbeat,
 } from "../services/attendanceCapture.service.js";
 import logger from "../lib/logger.js";
+import biometricRoutes from './attendanceBiometric.routes.js';
 const router = express.Router();
+router.use('/biometric', biometricRoutes);
 router.post("/iclock-ingest", async (req, res) => {
   try {
     const { sn, rows } = req.body || {};

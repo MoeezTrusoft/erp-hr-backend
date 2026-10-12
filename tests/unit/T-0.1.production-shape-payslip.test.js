@@ -120,19 +120,17 @@ describe('T-0.1 production-shaped payslip (absence pricing N-01)', () => {
         expect(fromMajor(slip.grossAmount)).toBe(fromMajor('25000'));
     });
 
-    it('FLAG ON: absence + half-day credit loss becomes ONE ABSENCE_RECOVERY line on the shared daily rate', () => {
+    it('legacy recovery flag cannot charge undecided absence or half-day credit loss', () => {
         const slip = build({ absenceRecoveryEnabled: true, deductionBasis: 'GROSS' });
         const lines = slip.deductions.filter((d) => d.code === 'ABSENCE_RECOVERY');
-        expect(lines).toHaveLength(1);
-        expect(Number(lines[0].amount)).toBe(EXPECTED_ABSENCE_AMOUNT);
-        expect(lines[0].description).toContain('3.5');
+        expect(lines).toHaveLength(0);
     });
 
     it('FLAG ON: MISSING_* (NULL credit) days are HELD, not deducted', () => {
         // 3.5 not 4.5 — the MISSING_CHECKIN day contributed nothing.
         const slip = build({ absenceRecoveryEnabled: true, deductionBasis: 'GROSS' });
         const line = slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY');
-        expect(line.description).not.toContain('4.5');
+        expect(line).toBeUndefined();
     });
 
     it('FLAG ON: days excused by an APPROVED anomaly are skipped', () => {
@@ -158,14 +156,15 @@ describe('T-0.1 production-shaped payslip (absence pricing N-01)', () => {
         });
         const line = slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY');
         // 2.0 absents + 1.0 (two un-excused half days) = 3.0 — the excused 0.5 gone
-        expect(line.description).toContain('3');
+        expect(line).toBeUndefined();
     });
 
-    it('FLAG ON: deductionBasis BASIC charges against base salary only', () => {
+    it('BASIC still freezes historical base salary without automatic attendance deductions', () => {
         const slip = build({ absenceRecoveryEnabled: true, deductionBasis: 'BASIC' });
         const line = slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY');
         const expected = roundToWholeMajorHalfUp(BigInt(Math.round((11250 * EXPECTED_ABSENCE_DAYS * 100) / 30)));
-        expect(Number(line.amount)).toBe(Number(expected) / 100);
+        expect(line).toBeUndefined();
+        expect(slip.attendanceBasisMinor).toBe('1125000');
     });
 
     it('FLAG ON: net reconciles and the absence line lands in totalDeductions', () => {

@@ -263,10 +263,10 @@ describe('readiness and profiles', () => {
       ),
     ).toBe(true);
   });
-  it('rejects contradictory policy thresholds', () =>
+  it('allows grace above the obsolete automatic half-day threshold', () =>
     expect(
       validatePolicy({ graceMinutes: 60, halfDayAfterMinutes: 30 }),
-    ).not.toHaveLength(0));
+    ).toHaveLength(0));
 });
 
 describe('setup calculation edge cases', () => {

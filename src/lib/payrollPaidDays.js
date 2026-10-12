@@ -1,6 +1,7 @@
 import * as money from './money.js';
 
 const DAY_DEDUCTIONS = new Set([
+  'ATTENDANCE_RULES_V2',
   'LWP_RECOVERY', 'ABSENCE_RECOVERY', 'ATTENDANCE_DEDUCTION',
   'MANAGEMENT_ATTENDANCE_DEDUCTION',
 ]);

@@ -693,6 +693,9 @@ export async function getAbsenteeismTrend({ tenantId, month }) {
 
 // Map STORED enum status → FE display token.
 const STATUS_DISPLAY = {
+  PENDING_ATTENDANCE:'pending-attendance',
+  PUNCH_CONFLICT:'punch-conflict',
+  SETUP_REQUIRED:'setup-required',
   PRESENT: "on-time",
   LATE: "late",
   HALF_DAY: "half-day",
@@ -718,6 +721,9 @@ function toEnumStatus(raw) {
   if (!raw) return null;
   const s = String(raw).trim().toLowerCase();
   switch (s) {
+    case 'pending-attendance': return 'PENDING_ATTENDANCE';
+    case 'punch-conflict': return 'PUNCH_CONFLICT';
+    case 'setup-required': return 'SETUP_REQUIRED';
     case "on-time":
     case "present":
       return "PRESENT";
@@ -1049,6 +1055,9 @@ export async function listCheckInOuts({
     }
     return {
       attendanceId: a.id,
+      processingState:a.processingState,
+      dayCredit:a.day_credit,
+      evaluationVersion:a.evaluationVersion,
       date: a.date,
       employee: emp
         ? { id: emp.id, name: fullName(emp), avatar: emp.photo_url ?? null }

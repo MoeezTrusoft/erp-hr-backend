@@ -20,6 +20,7 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 const TENANT = 'tenant-1';
 let rows;
 let employees;
+let extraCoverage;
 
 const prismaMock = {
     attendance: { findMany: jest.fn(async () => rows) },
@@ -33,6 +34,11 @@ jest.unstable_mockModule('../../src/lib/tenancy.js', () => ({
 }));
 jest.unstable_mockModule('../../src/lib/logger.js', () => ({
     default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+}));
+
+jest.unstable_mockModule('../../src/services/attendanceEvaluation.service.js',()=>({
+ attendanceCompleteness:async()=>({issues:[],coverage:[...rows.map(r=>({employeeId:r.employeeId,date:r.date,
+ working:!['WEEKLY_OFF','HOLIDAY','ON_LEAVE'].includes(r.status),state:'FINALIZED'})),...extraCoverage]})
 }));
 
 const { buildMonthlyReconciliation } = await import(
@@ -51,6 +57,7 @@ beforeEach(() => {
         { id: 2, employee_code: 'EMP002', employee_name: 'Sara' },
     ];
     rows = [];
+    extraCoverage=[];
 });
 
 const run = () => buildMonthlyReconciliation({
@@ -168,4 +175,13 @@ describe('HR-RECON-01 monthly reconciliation', () => {
         expect(ali.expectedDays).toBe(0);
         expect(ali.attendancePct).toBe(0);
     });
+});
+
+it('includes expected dates with no row in the denominator and flags a blank month',async()=>{
+ rows=[row(1,'2026-08-03','PRESENT')];
+ extraCoverage=[{employeeId:1,date:'2026-08-04',working:true,state:'MISSING'},
+ {employeeId:2,date:'2026-08-03',working:true,state:'MISSING'}];
+ const out=(await run()).employees;
+ expect(out[0]).toMatchObject({expectedDays:2,attendancePct:50,missingDays:1});
+ expect(out[1]).toMatchObject({expectedDays:1,noData:true,missingDays:1});
 });
