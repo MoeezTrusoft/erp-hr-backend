@@ -33,6 +33,7 @@ function matches(row, where = {}) {
     )
       return matches(row, value);
     const actual = row[key];
+    if(value?.path) return equal(value.path.reduce((v,k)=>v?.[k],actual),value.equals);
     if (value && typeof value === "object" && !(value instanceof Date))
       return Object.entries(value).every(([op, v]) => {
         if (op === "in") return v.some((x) => equal(actual, x));
@@ -80,7 +81,22 @@ export function captureDb(seed = {}, hooks = {}) {
     attendanceBiometricChallenge: [],
     attendanceDevicePunch: [],
     attendance: [],
+    attendanceSession: [],
+    attendanceEvaluation: [],
+    attendanceEvaluationJob: [],
+    attendanceEvaluationCursor: [],
+    attendanceTimeCredit: [],
+    attendanceGraceRule: [],
+    attendanceGraceMembership: [],
+    attendanceManualTime: [],
+    attendanceRuleAudit: [],
+    attendancePayrollAdjustment: [],
+    payrollPayslip: [],
+    payrollDeduction: [],
+    payrollDeductionType: [],
+    payrollAuditLog: [],
     payrollRun: [],
+    overtimeRequest: [],
     outboxEvent: [],
     attendanceImportBatch: [],
     leave: [],
@@ -108,6 +124,7 @@ export function captureDb(seed = {}, hooks = {}) {
       }
       return 0;
     });
+    rows=rows.map(row=>model==='payrollPayslip'&&args.include?.deductions?{...row,deductions:state.payrollDeduction.filter(d=>d.payslipId===row.id).map(d=>({...d,deductionType:state.payrollDeductionType.find(t=>t.id===d.deductionTypeId)}))}:row);
     return rows.slice(
       args.skip || 0,
       args.take == null ? undefined : (args.skip || 0) + args.take,
@@ -118,11 +135,13 @@ export function captureDb(seed = {}, hooks = {}) {
     const row = {
       id: randomUUID(),
       manually_corrected: false,
+      currentApprovalLevel: 1,
+      workflowVersion: 0,
       active: true,
       attempts: 0,
       version: 1,
       cursor: 0,
-      state: model === "attendanceImportBatch" ? "PREVIEW" : "PENDING",
+      state: model === "attendanceImportBatch" ? "PREVIEW" : model === "attendanceTimeCredit" ? "APPROVED" : "PENDING",
       nextAttemptAt: now,
       createdAt: now,
       updatedAt: now,
@@ -149,6 +168,7 @@ export function captureDb(seed = {}, hooks = {}) {
       findFirst: (args = {}) => copy(find(model, args)[0] || null),
       findUnique: (args = {}) => copy(find(model, args)[0] || null),
       count: (args = {}) => find(model, args).length,
+      groupBy: ({where,by}) => [...new Set(find(model,{where}).map(r=>r[by[0]]))].map(value=>({[by[0]]:value,_count:find(model,{where}).filter(r=>r[by[0]]===value).length})),
       create: ({ data }) => create(model, data),
       createMany: ({ data, skipDuplicates }) => {
         let count = 0;
@@ -180,6 +200,11 @@ export function captureDb(seed = {}, hooks = {}) {
         rows.forEach((r) => update(r, data));
         return { count: rows.length };
       },
+      deleteMany: ({where}) => {
+        const rows=find(model,{where});
+        state[model]=state[model].filter(r=>!rows.includes(r));
+        return {count:rows.length};
+      },
     };
     db[model] = Object.fromEntries(
       Object.entries(methods).map(([method, fn]) => [
@@ -194,8 +219,11 @@ export function captureDb(seed = {}, hooks = {}) {
   }
   db.$executeRaw = async () => 1;
   db.$queryRaw = async (strings, ...values) => {
-    if (strings.join("").includes("pg_try_advisory"))
+    if (String(strings.sql || strings.join?.("") || "").includes("pg_try_advisory"))
       return [{ acquired: true }];
+    if (String(strings?.sql || strings.join?.('') || '').includes('attendance_evaluation_jobs'))
+      return copy(state.attendanceEvaluationJob.filter(e=>['PENDING','FAILED'].includes(e.state)&&
+        new Date(e.nextAttemptAt)<=new Date(values[0]||strings.values?.[0])).slice(0,1));
     return copy(
       state.attendanceCaptureEvent
         .filter(

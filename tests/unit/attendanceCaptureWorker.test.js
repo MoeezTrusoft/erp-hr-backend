@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import { receiveCapture } from "../../src/services/attendanceCapture.service.js";
+import {assertAttendancePeriodOpen} from "../../src/services/attendancePeriod.service.js";
 import { drainCapture } from "../../src/services/attendanceCaptureWorker.service.js";
 import { captureDb, TENANT, OTHER_TENANT } from "../helpers/captureDb.js";
 
@@ -16,6 +17,7 @@ const submit = (db) =>
   );
 const now = new Date("2027-01-01");
 const evaluate = async ({ db, tenantId, employeeIds }) => {
+  await assertAttendancePeriodOpen(db,tenantId,"2026-10-01","2026-10-01");
   await db.attendance.create({
     data: {
       tenantId,

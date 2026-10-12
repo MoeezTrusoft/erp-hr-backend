@@ -1,3 +1,4 @@
+import { assertAttendancePeriodOpen, lockAttendancePeriod } from './attendancePeriod.service.js';
 import logger from "../lib/logger.js";
 import prisma from "../lib/prisma.js";
 import { mcpCtx } from "../mcp/context.js";
@@ -13,20 +14,8 @@ import { captureAudit } from "./attendanceCapture.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
 export async function assertCapturePeriodOpen(db, tenantId, days) {
-  const ranges = days.map((d) => ({
-    periodStart: { lte: new Date(`${d}T23:59:59.999Z`) },
-    periodEnd: { gte: new Date(`${d}T00:00:00Z`) },
-  }));
-  if (!ranges.length) return;
-  const locked = await db.payrollRun.findFirst({
-    where: { tenantId, status: { notIn: ["CANCELLED", "FAILED"] }, OR: ranges },
-    select: { id: true },
-  });
-  if (locked)
-    throw captureError(
-      "PERIOD_PROTECTED: recall or cancel payroll before changing attendance",
-      409,
-    );
+  const ordered=[...days].sort();
+  if(ordered.length)await assertAttendancePeriodOpen(db,tenantId,ordered[0],ordered.at(-1));
 }
 
 // PostgreSQL row locks recover automatically if a process dies. All evidence
@@ -48,6 +37,7 @@ export async function drainCapture(
               await tx.$queryRaw`SELECT * FROM attendance_capture_events WHERE state IN ('PENDING','FAILED') AND attempts < 8 AND "nextAttemptAt" <= ${now} ORDER BY "nextAttemptAt", "createdAt" FOR UPDATE SKIP LOCKED LIMIT 1`;
             candidate = rows[0];
             if (!candidate) return false;
+            await lockAttendancePeriod(tx,candidate.tenantId);
             const [{ acquired }] =
               await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(hashtext(${`attendance:${candidate.tenantId}:${candidate.employeeId}`})) AS acquired`;
             if (!acquired) {
@@ -99,11 +89,6 @@ export async function drainCapture(
                 409,
               );
             const days = batch.map((e) => new Date(e.parsed.punchedAt));
-            await assertCapturePeriodOpen(
-              tx,
-              candidate.tenantId,
-              affectedDays(days),
-            );
             for (const event of batch) {
               const p = event.parsed;
               const existing = await tx.attendanceDevicePunch.findMany({
@@ -165,6 +150,9 @@ export async function drainCapture(
                     localTime: p.localTime,
                     timeZone: p.timeZone,
                     directionVerified: event.source === "BIOMETRIC",
+                    assurance: jsonValue({source:event.source,modality:event.raw?.biometric?.modality,
+                      pad:event.raw?.biometric?.pad,matched:event.raw?.biometric?.matched,
+                      approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
                   },
                 });
               } else {
@@ -185,6 +173,9 @@ export async function drainCapture(
                     workCode: p.workCode,
                     rawLine: p.rawLine,
                     directionVerified: event.source === "BIOMETRIC",
+                    assurance: jsonValue({source:event.source,modality:event.raw?.biometric?.modality,
+                      pad:event.raw?.biometric?.pad,matched:event.raw?.biometric?.matched,
+                      approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
                   },
                 });
               }
@@ -193,6 +184,7 @@ export async function drainCapture(
               tenantId: candidate.tenantId,
               employeeIds: [candidate.employeeId],
               days,
+              evidenceIds:batch.map(e=>e.id),
               now,
               db: tx,
             });

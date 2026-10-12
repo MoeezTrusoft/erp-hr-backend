@@ -1,11 +1,11 @@
+import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
+import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
+import { lockAttendancePeriod } from './attendancePeriod.service.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
 import { dateRange, employedOn, badSetup } from '../lib/attendanceDates.js';
 import { approvedLeaveCoverage } from "../lib/approvedLeaveCoverage.js";
-import { normalizeTimingCredits, isTimingRule } from "../lib/attendanceTimingPolicy.js";
-import { enrichPayrollTiming } from "./payrollTiming.service.js";
 import { calculatePayrollPaidDays } from '../lib/payrollPaidDays.js';
 import { manualAttendanceFactor, isHeadendEmployee } from '../lib/monthlyPayrollAttendance.js';
-import { combinedAttendanceDeductions, manualDeductionsByShift, isAttendanceExcused } from '../lib/anomalyPayroll.js';
 import { createHash } from "node:crypto";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -16,7 +16,6 @@ import { withTenant } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { payrollRunFinalizedEvent } from "./hrEvents.js";
 import { assertIfMatch } from "../lib/optimisticConcurrency.js";
-import { countViolationDays, computeAttendanceDeductions } from "../lib/attendanceDeduction.js";
 
 // HR-ATT-PAYROLL-BRIDGE-01 / HR-PAYROLL-DEDUCTION-TYPE-01 — EVERY deduction the
 // engine emits without a tenant-configured type carries a stable CODE, and the
@@ -33,6 +32,8 @@ import { countViolationDays, computeAttendanceDeductions } from "../lib/attendan
 // The map is the whole registry: a line whose code is not in here cannot be
 // persisted, and that is on purpose (see resolveDeductionTypeId below).
 const DEDUCTION_TYPE_NAMES = {
+    ATTENDANCE_RULES_V2: 'Management-disapproved attendance',
+    ATTENDANCE_RULES_ADJUSTMENT: 'Prior-period attendance adjustment',
     ATTENDANCE_DEDUCTION: 'Attendance Deduction',
     EMPLOYMENT_PRORATION: 'Joining/leaving date deduction',
     MANAGEMENT_ATTENDANCE_DEDUCTION: 'Management Attendance Deduction',
@@ -471,11 +472,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         bridges = {...bridges, attendanceRows:[], anomalyRows:[], attendanceDeductionLines:[], attendanceDeductionRules:[], lwpDays:0};
     }
 
-    if ((bridges.attendanceDeductionRules || []).length > 0) {
-        const rules=bridges.attendanceDeductionRules;
-        const violations=countViolationDays({attendance:bridges.attendanceRows,anomalies:bridges.anomalyRows,rules,absenceRecoveryEnabled:ruleConfig.absenceRecoveryEnabled===true});
-        bridges={...bridges,attendanceRows:normalizeTimingCredits(bridges.attendanceRows,rules,bridges.anomalyRows),attendanceDeductionLines:computeAttendanceDeductions({violations,rules})};
-    }
+
 
     // 1) Base salary (if the employee has employment terms), prorated if mid-month start/end.
     if (employmentTerm) {
@@ -659,13 +656,9 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // Days may be fractional (a half-day attendance deduction, a half-day LWP),
     // so the multiplier is scaled by 100 before the BigInt. `BigInt(0.5)` threw
     // a RangeError and took the whole payslip build down with it.
-    const manualShiftDeductions = manualDeductionsByShift(bridges.anomalyRows || []);
-    if (
-        employmentTerm &&
-        (manualShiftDeductions.size > 0 || bridges.lwpDays > 0 ||
-            bridges.attendanceDeductionLines?.length > 0 ||
-            ruleConfig.absenceRecoveryEnabled === true)
-    ) {
+    let attendanceBasisMinor = '0', attendancePeriodDays = 1;
+    const assessment = ruleDeductions(bridges.anomalyRows || [], {from:payrollRun.periodStart,to:payrollRun.periodEnd});
+    if (employmentTerm) {
         const baseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
 
         // HR-PAYROLL-DEDUCTION-BASIS-01. Operator spec: a deducted day is the
@@ -709,200 +702,19 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             }
         }
 
-        if (manualShiftDeductions.size > 0) {
-            const lines=combinedAttendanceDeductions({attendance:bridges.attendanceRows,anomalies:bridges.anomalyRows,rules:bridges.attendanceDeductionRules||[],config:ruleConfig});
-            for(const line of lines) {
-                const amountMinor=daysToMinor(line.days);
-                if(amountMinor>0n) deductions.push({deductionTypeId:null,code:line.manualDays?'MANAGEMENT_ATTENDANCE_DEDUCTION':'ATTENDANCE_DEDUCTION',amount:money.minorToDecimal(amountMinor,currency),description:line.manualDays ? `Attendance ${line.date}: management override ${line.days} day(s); replaces automatic attendance deductions` : `Attendance ${line.date}: ${line.days} day(s)`});
-            }
-        } else {
-        // 7a) BRIDGE: counted attendance violations → Deduction. The engine that
-        //     produced these lines (src/lib/attendanceDeduction.js) has already
-        //     applied triggerCount, counterGroup pooling and the per-period cap;
-        //     all that is left here is days → money.
-        //     N-17 — D1 POOLED_FLOOR mode: HR pools LATE/EARLY/MISSING_* into ONE
-        //     3:1 counter and floors the GRAND total once ("2 days late = 0, 5
-        //     days late = 1"). Lines from poolable rules are summed raw here and
-        //     priced once in the pooled emit below; every other line prices as
-        //     before. Legacy tenants keep the per-rule floors (byte-stable).
-        const POOLED_FLOOR = ruleConfig.deductionBasis === 'POOLED_FLOOR';
-        // N-20 — Trusoft refinement (operator law 2026-09-11): "more than 30
-        // minutes late is called half day". Half-days and disapproved-leave
-        // days charge DIRECTLY (0.5 / 1.0 of the day) and ONLY late occurrences
-        // pool 3:1 ("3 days late = 1 day"). The grand-floor mode cannot express
-        // a 0.5-day verdict (0.5 + 0.33 floors to 0), so POOLED_FLOOR_DIRECT:
-        //   - LATE lines pool and floor to WHOLE days (2 lates → 0, 6 → 2),
-        //   - EARLY_CHECKOUT / MISSING_* lines are skipped here — those days
-        //     price through absence credit-loss instead (credit 0 = full day),
-        //   - absence recovery (Σ(1 − day_credit)) charges unrounded.
-        const POOLED_FLOOR_DIRECT = ruleConfig.deductionBasis === 'POOLED_FLOOR_DIRECT';
-        const POOLABLE_RULE_KEYS = new Set(['LATE', 'EARLY_CHECKOUT', 'MISSING_CHECKIN', 'MISSING_CHECKOUT', 'MISSING_PUNCH']);
-        let pooledRawHundredths = 0n;
-        for (const line of bridges.attendanceDeductionLines || []) {
-            const poolThisLine = POOLED_FLOOR || (POOLED_FLOOR_DIRECT && line?.ruleKey === 'LATE');
-            if (poolThisLine && POOLABLE_RULE_KEYS.has(line?.ruleKey)) {
-                pooledRawHundredths += BigInt(Math.round((Number(line?.rawDays) || 0) * 100));
-                continue; // priced once, after the pool is complete
-            }
-            const days = Number(line?.days) || 0;
-            if (days <= 0) continue;
-            const amountMinor = daysToMinor(days);
-            if (amountMinor <= 0n) continue;
-            const label = line.label || line.counterGroup || line.ruleKey;
-            deductions.push({
-                deductionTypeId: null,
-                code: 'ATTENDANCE_DEDUCTION',
-                amount: money.minorToDecimal(amountMinor, currency),
-                description:
-                    `Attendance: ${label} (${line.occurrences} occurrence${line.occurrences === 1 ? '' : 's'}` +
-                    ` = ${days} day${days === 1 ? '' : 's'})`,
-            });
-        }
-
-        // 7c) BRIDGE: unexcused absence + half-day day-credit loss → Deduction
-        //     (N-01). ABSENT (credit 0) and HALF_DAY (credit 0.5) mean part of
-        //     the contracted month was not worked and nothing priced it —
-        //     production August data paid full salaries over recorded absences
-        //     (report 19, CHECK16/17/19). The deduction engine deliberately
-        //     excludes these statuses from the RULES because they are priced
-        //     HERE, by credit, on the SAME daily rate as LWP above.
-        //
-        //     Gated on ruleConfig.absenceRecoveryEnabled (ships false): until HR
-        //     signs off the HALF_DAY × LATE stacking policy (plan 20, T-2.1),
-        //     the output must stay byte-identical to pre-N-01.
-        //
-        //     Held days are NOT here: MISSING_* rows carry day_credit NULL and
-        //     requires_regularization — payroll HOLDS them rather than paying or
-        //     docking (HR-ATT-CUTOVER-01). Excused days (an APPROVED anomaly on
-        //     the date) are skipped — HR agreed the day was not the employee's
-        //     fault. Manually-corrected rows keep their stored credit — HR's
-        //     ruling outranks the device (HR-ATT-CORRECTION-01).
-        // N-17 — D1 pooled-floor emit (operator law 2026-09-11). When
-        // ruleConfig.deductionBasis is 'POOLED_FLOOR', every pricing signal in
-        // section 7 pools into ONE counter and the grand total is floored ONCE:
-        //   - violation occurrences contribute their raw fractional days
-        //     (occurrences ÷ trigger × deductionDays, the counting engine's
-        //     rawDays — pooling by counterGroup alone still floors per group);
-        //   - absence recovery contributes Σ(1 − day_credit);
-        //   - grand = pool + absence, floored to whole days (BigInt ÷ 100),
-        //     priced at the same daily rate. HR's August register: "2 lates +
-        //     1 early = 1 day", "half-day + 1 late = 0 days",
-        //     "2 absences + 1 late = 2".
-        if (POOLED_FLOOR || POOLED_FLOOR_DIRECT) {
-            let unpaidHundredths = 0n; // Σ(1 − day_credit) in hundredths of a day
-            const chargedDays = new Set(); // N-20: days already priced via credit
-            const dayKey = (d) => dayOf(d);
-            const excusedDays = new Set(
-                (bridges.anomalyRows || [])
-                    .filter((a) => a?.status === 'APPROVED')
-                    .map((a) => (a.date ? dayKey(a.date) : null))
-                    .filter(Boolean),
-            );
-            if (ruleConfig.absenceRecoveryEnabled === true) {
-                // N-09 — rest days are not credit loss. WEEKLY_OFF/HOLIDAY rows
-                // are stored with day_credit 0 (the writer's rest-day
-                // convention) and ON_LEAVE is priced by the leave bridge, so
-                // summing (1 − credit) over EVERY row docked people for
-                // Sundays: HomeVision's August carried ~140 phantom rest-days
-                // ≈ PKR 246k. A weekly off is not a violation.
-                const NON_WORKING_DAY_STATUSES = new Set(['WEEKLY_OFF', 'HOLIDAY', 'ON_LEAVE']);
-
-                for (const row of bridges.attendanceRows || []) {
-                    if (!row || row.day_credit == null) continue; // NULL credit = held (HR-ATT-CUTOVER-01)
-                    if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
-                    if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // any approved request excuses this shift
-                    const credit = Number(row.day_credit);
-                    if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
-                    const lost = 100n - BigInt(Math.round(credit * 100));
-                    if (lost > 0n) { unpaidHundredths += lost; chargedDays.add(dayKey(row.date)); }
-                }
-            }
-
-            // N-20 (POOLED_FLOOR_DIRECT): a DISAPPROVED leave whose day carries
-            // no credit-loss row (e.g. an ON_LEAVE day) still costs the day.
-            let dlHundredths = 0n;
-            if (POOLED_FLOOR_DIRECT) {
-                for (const a of bridges.anomalyRows || []) {
-                    if (a?.status !== 'REJECTED' || a?.type !== 'ABSENT') continue;
-                    const key = a.date ? dayKey(a.date) : null;
-                    if (!key || excusedDays.has(key) || chargedDays.has(key)) continue;
-                    dlHundredths += 100n;
-                }
-            }
-
-            // N-20: in DIRECT mode the late pool floors to WHOLE days (3:1),
-            // while credit-loss and disapproved-leave days stay unrounded.
-            const grandHundredths = POOLED_FLOOR_DIRECT
-                ? (pooledRawHundredths / 100n) * 100n + unpaidHundredths + dlHundredths
-                : pooledRawHundredths + unpaidHundredths;
-            const flooredDays = POOLED_FLOOR_DIRECT ? grandHundredths : grandHundredths / 100n; // N-20: DIRECT charges unrounded hundredths
-            if (flooredDays > 0n) {
-                // Same daily-rate path as every other day-based deduction:
-                // basis ÷ calendar days of the period × days.
-                const amountMinor = (basisMinor * (flooredDays * (POOLED_FLOOR_DIRECT ? 1n : 100n))) / (100n * BigInt(periodDays));
-                if (amountMinor > 0n) {
-                    const daysLabel = POOLED_FLOOR_DIRECT
-                        ? String(Number(grandHundredths) / 100)
-                        : `${flooredDays} day${flooredDays === 1n ? '' : 's'} pooled & floored`;
-                    deductions.push({
-                        deductionTypeId: null,
-                        code: pooledRawHundredths > 0n ? 'ATTENDANCE_DEDUCTION' : 'ABSENCE_RECOVERY',
-                        amount: money.minorToDecimal(amountMinor, currency),
-                        description:
-                            (pooledRawHundredths > 0n ? 'Attendance deductions' : 'Absence recovery') +
-                            ` (${daysLabel})`,
-                    });
-                }
-            }
-        } else if (ruleConfig.absenceRecoveryEnabled === true) {
-            // N-09 — rest days are not credit loss. WEEKLY_OFF/HOLIDAY rows are
-            // stored with day_credit 0 (the writer's rest-day convention) and
-            // ON_LEAVE is priced by the leave bridge, so summing (1 − credit)
-            // over EVERY row docked people for Sundays: HomeVision's August
-            // carried ~140 phantom rest-days ≈ PKR 246k. Operator law
-            // (2026-09-11): one deducted day = salary ÷ calendar days, "if any
-            // violation" — a weekly off is not a violation.
-            const NON_WORKING_DAY_STATUSES = new Set(['WEEKLY_OFF', 'HOLIDAY', 'ON_LEAVE']);
-            const dayKey = (d) => dayOf(d);
-            const excusedDays = new Set(
-                (bridges.anomalyRows || [])
-                    .filter((a) => a?.status === 'APPROVED')
-                    .map((a) => (a.date ? dayKey(a.date) : null))
-                    .filter(Boolean),
-            );
-
-            let unpaidHundredths = 0n; // Σ(1 − day_credit) in hundredths of a day
-            for (const row of bridges.attendanceRows || []) {
-                if (!row || row.day_credit == null) continue; // NULL credit = held
-                if (NON_WORKING_DAY_STATUSES.has(row.status)) continue; // N-09 rest day
-                if (isAttendanceExcused(row, bridges.anomalyRows)) continue; // any approved request excuses this shift
-                const credit = Number(row.day_credit);
-                if (!Number.isFinite(credit) || credit < 0 || credit > 1) continue;
-                const lost = 100n - BigInt(Math.round(credit * 100));
-                if (lost > 0n) unpaidHundredths += lost;
-            }
-
-            if (unpaidHundredths > 0n) {
-                // Same daily-rate path as LWP: basis ÷ calendar days of the
-                // period, × the unpaid fraction. unpaidHundredths already IS
-                // (days × 100), matching the 100n scale daysToMinor uses.
-                const amountMinor = (basisMinor * unpaidHundredths) / (100n * BigInt(periodDays));
-                if (amountMinor > 0n) {
-                    const daysLabel = (Number(unpaidHundredths) / 100)
-                        .toFixed(2)
-                        .replace(/\.?0+$/, '');
-                    deductions.push({
-                        deductionTypeId: null,
-                        code: 'ABSENCE_RECOVERY',
-                        amount: money.minorToDecimal(amountMinor, currency),
-                        description: `Absence recovery (${daysLabel} day${unpaidHundredths === 100n ? '' : 's'} unexcused)`,
-                    });
-                }
-            }
-        }
+        attendanceBasisMinor = String(basisMinor);
+        attendancePeriodDays = periodDays;
+        const ruleAmount = priceRuleDays(assessment.days,basisMinor,periodDays,currency);
+        // The frozen basis above makes later revisions reproducible. Emit a line
+        // only for disapproved day quantities (even if the salary basis is zero).
+        if(assessment.days>0)deductions.push({deductionTypeId:null,code:RULE_DEDUCTION_CODE,
+            amount:money.minorToDecimal(ruleAmount,currency),description:`Management-disapproved attendance: ${assessment.days} day(s)`});
     }
-
-        } // no manual markings: retain the existing policy pricing path
+    for(const adjustment of bridges.attendanceAdjustments || []) {
+        deductions.push({deductionTypeId:null,code:ADJUSTMENT_CODE,
+            amount:money.minorToDecimal(BigInt(adjustment.amountMinor),currency),
+            description:`Prior-period attendance adjustment #${adjustment.id} from payslip ${adjustment.sourcePayslipId}`});
+    }
 
     // 7b) STATUTORY DEDUCTIONS: Country-specific mandatory contributions.
     //     Applied AFTER voluntary deductions but BEFORE income tax so the
@@ -1000,6 +812,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
 
     return {
         employeeId: employee?.id ?? null,
+        attendanceBasisMinor, attendancePeriodDays,
         ruleVersion,
         ratesEffectiveAt: new Date(at).toISOString(),
         grossAmount: money.minorToDecimal(grossMinorRounded, currency),
@@ -1398,7 +1211,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                             lte: payrollRun.periodEnd
                         }
                     },
-                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true, expectedTime:true, actualTime:true }
+                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true, expectedTime:true, actualTime:true, rulesVersion:true, sessionKey:true, measuredMinutes:true, decisionRole:true, evidenceState:true, employeeId:true }
                 }
             }
         });
@@ -1433,7 +1246,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             if(snapshot?.periodStart!==payrollRun.periodStart.toISOString().slice(0,10)||snapshot?.periodEnd!==payrollRun.periodEnd.toISOString().slice(0,10)||!Array.isArray(snapshot?.attendance)||!Array.isArray(snapshot?.anomalies)) throw new Error('Attendance snapshot does not match payroll period');
             const restore=rows=>rows.map(row=>{const date=new Date(row.date);if(!Number.isFinite(date.getTime())||date<payrollRun.periodStart||date>payrollRun.periodEnd)throw new Error('Attendance snapshot contains an out-of-period date');return {...row,date};});
             employee.attendance=restore(snapshot.attendance);
-            employee.attendanceAnomalies=restore(snapshot.anomalies);
+            // Decisions always come from current, tenant-scoped cases; legacy
+            // day-level snapshots cannot waive or introduce rule deductions.
             employee.payrollTimingFromSnapshot=true;
         }
 
@@ -1450,25 +1264,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             scopeAttendanceToEmployment(employee, payrollRun.periodEnd);
         }
 
-        // HR-ATT-PAYROLL-BRIDGE-01 — the deduction rules are per TENANT, not per
-        // employee, so they are read once for the whole run. Ordered by ruleKey so
-        // the deduction lines they generate land in a stable order (the golden-file
-        // determinism contract).
-        //
-        // ponytail: the counting window is the RUN's period. A rule configured
-        // periodScope 'MONTH' therefore counts over the run period, which is the
-        // same thing for the monthly runs this fleet actually executes. Widening it
-        // needs a second attendance read — add that when a non-monthly calendar
-        // appears.
+        // Published setup supplies employee calendars and shift coverage;
+        // Management decisions supply the fixed anomaly deduction rules.
         const attendanceRuntime=await loadAttendanceRuntime({tenantId,from:payrollRun.periodStart,to:payrollRun.periodEnd});
         const periodDays=dateRange(payrollRun.periodStart,payrollRun.periodEnd);
-        const initialConfig=attendanceRuntime.configOn(payrollRun.periodStart);
-        if(!initialConfig)throw badSetup('Publish attendance setup covering this payroll period',409);
-        const attendanceDeductionRules=(initialConfig.deductionRules||[]).filter(r=>r.enabled);
-        const ruleSignature=rules=>JSON.stringify((rules||[]).filter(r=>r.enabled).map(({id,tenantId,status,version,createdAt,updatedAt,created_at,updated_at,...rule})=>rule));
-        for(const day of periodDays){
-            const config=attendanceRuntime.configOn(day);
-            if(!config || ruleSignature(config.deductionRules)!==ruleSignature(attendanceDeductionRules))throw badSetup('Publish complete coverage with consistent deduction rules throughout this payroll period',409);
+        for(const day of periodDays) {
+            if(!attendanceRuntime.configOn(day)) throw badSetup('Publish attendance setup covering this payroll period',409);
         }
         for(const employee of employees) {
             const modes=new Set();
@@ -1482,7 +1283,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             if(modes.size)employee.attendanceInputMode=[...modes][0];
         }
 
-        if (attendanceDeductionRules.some(isTimingRule)) await enrichPayrollTiming({tenantId,payrollRun,runtime:attendanceRuntime,employees:employees.filter(e=>!isHeadendEmployee(e)&&!e.payrollTimingFromSnapshot)});
 
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
@@ -1524,7 +1324,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             return deductionTypeIds.get(code);
         };
 
-        const payslipPromises = employees.map(async (employee) => {
+        // One tenant-wide financial lock serializes these writes. Do not fill the
+        // connection pool with waiting transactions while type lookups need a connection.
+        const payslips = [];
+        for (const employee of employees) payslips.push(await tenantTransaction(prisma, async (tx) => {
+            const prisma = tx;
+            await lockAttendancePeriod(tx, tenantId, true);
             const employmentTerm = employee.employmentTerms[0]
                 ? { ...employee.employmentTerms[0], baseSalaryEarningTypeId }
                 : null;
@@ -1575,7 +1380,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             ]);
 
             // Build bridge data
+            const previousSlip=await prisma.payrollPayslip.findFirst({where:{tenantId,payrollRunId:id,employeeId:employee.id}});
+            await releaseFailedCarry(prisma,{tenantId,employeeId:employee.id});
+            const attendanceAdjustments=await prisma.attendancePayrollAdjustment.findMany({where:{tenantId,employeeId:employee.id,currencyCode:currency,sourcePeriodEnd:{lt:payrollRun.periodStart},OR:[{appliedPayslipId:null},...(previousSlip?[{appliedPayslipId:previousSlip.id}]:[])]}});
             const bridges = {
+                attendanceAdjustments,
                 manualAttendance: monthlyByEmployee.get(employee.id),
                 overtimeLines: overtimeRequests.map(ot => ({
                     date: ot.date?.toISOString().split('T')[0],
@@ -1595,24 +1404,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     name: `Loan Repayment (ID:${loan.id})`,
                     amountMinor: loan.monthlyInstallmentMinor,
                 })),
-                // HR-ATT-PAYROLL-BRIDGE-01 — counted violations priced into DAYS by
-                // the pure engine. Empty when no rule is enabled, which is the
-                // shipped state for every tenant until a dry run has been read.
-                attendanceDeductionLines: attendanceDeductionRules.length
-                    ? computeAttendanceDeductions({
-                        violations: countViolationDays({
-                            attendance: employee.attendance,
-                            anomalies: employee.attendanceAnomalies,
-                            rules: attendanceDeductionRules,
-                            absenceRecoveryEnabled:ruleConfig.absenceRecoveryEnabled===true,
-                        }),
-                        rules: attendanceDeductionRules,
-                    })
-                    : [],
-                // N-01 — the daily verdicts + anomaly decisions feed the absence
-                // bridge. Anomaly rows carry {date, status}; APPROVED ones excuse
-                // their day. Both ride the bridges object the engine already takes.
-                attendanceDeductionRules,
                 attendanceRows: employee.attendance || [],
                 anomalyRows: employee.attendanceAnomalies || [],
             };
@@ -1666,6 +1457,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                         payrollOffice: employee.payrollOffice,
                         attendanceInputMode: employee.attendanceInputMode || 'DEVICE',
                         payableDays: built.payableDays,
+                        attendanceBasisMinor:built.attendanceBasisMinor,attendancePeriodDays:built.attendancePeriodDays,
                         grossAmount: built.grossAmount,
                         totalDeductions: built.totalDeductions,
                         netAmount: built.netAmount,
@@ -1723,6 +1515,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                         newValues: { grossAmount: built.grossAmount, totalDeductions: built.totalDeductions, netAmount: built.netAmount, prorationFactor: built.prorationFactor },
                     },
                 });
+                await prisma.attendancePayrollAdjustment.updateMany({where:{tenantId,id:{in:attendanceAdjustments.map(a=>a.id)}},data:{appliedPayslipId:updated.id}});
                 return updated;
             }
 
@@ -1734,6 +1527,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     payrollOffice: employee.payrollOffice,
                     attendanceInputMode: employee.attendanceInputMode || 'DEVICE',
                     payableDays: built.payableDays,
+                    attendanceBasisMinor:built.attendanceBasisMinor,attendancePeriodDays:built.attendancePeriodDays,
                     grossAmount: built.grossAmount,
                     totalDeductions: built.totalDeductions,
                     netAmount: built.netAmount,
@@ -1801,10 +1595,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                     },
                 },
             });
+            await prisma.attendancePayrollAdjustment.updateMany({where:{tenantId,id:{in:attendanceAdjustments.map(a=>a.id)}},data:{appliedPayslipId:created.id}});
             return created;
-        });
+        }, {tenantId,txOptions:{timeout:60000,maxWait:120000}}));
 
-        const payslips = await Promise.all(payslipPromises);
+
 
         // Totals in integer minor units, then converted back once — exact, no
         // float drift across the per-payslip sum.
