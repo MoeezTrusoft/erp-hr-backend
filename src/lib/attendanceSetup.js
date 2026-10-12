@@ -495,6 +495,10 @@ export function readiness(config, from, to) {
         continue;
       }
       modeSet.add(info.profile.mode);
+      if (info.working && info.rotating)
+        errors.set('ROTATION_ASSIGNMENT_REQUIRED', [
+          ...(errors.get('ROTATION_ASSIGNMENT_REQUIRED') || []), day,
+        ]);
       if (info.working && info.shift?.start && info.shift?.end) {
         consecutive++;
         if (
