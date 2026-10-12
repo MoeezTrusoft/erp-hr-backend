@@ -194,22 +194,23 @@ and losing punches silently. The smoke asserts, in order:
 
 1. `GET /healthz` and `GET /readyz` both return 200.
 2. Attendance intake with **no** key returns 403.
-3. Attendance intake with a **wrong** key returns 403.
-4. Attendance intake with the **real** key returns 200 and reports
-   `summary.rawStored === 1`.
-5. A tenant-scoped read of the attendance policy returns a stored row, not the
-   in-code defaults — an RLS-model omission reads back as "unconfigured" with no
-   error, and once shipped a grace period written as 15 and read back as 0.
+3. Attendance intake with a **wrong** registered-device key returns 403.
+4. A temporary registered device receives 202 and `summary.stored === 1`;
+   an identical retry returns the same receipt without another event.
+5. The synthetic identity remains unassigned and held for review.
+6. Tenant policy and the setup, biometric, evaluation and anomaly models read
+   successfully through the generated Prisma client.
 
 The negative cases run before the positive one on purpose: a route that 200s
 without a key is worse than one that 403s with a good key, because it means
 anyone inside the cluster can inject attendance.
 
-It needs `HR_ATTENDANCE_INTAKE_KEY` and `HR_ATTENDANCE_INTAKE_TENANT_ID` in the
-environment and will fail immediately without them. It writes one punch for
-device id `SMOKE0` — which matches no employee, so no `Attendance` row is
-created and no real person is touched — and deletes it again in a `finally`
-block.
+It needs `HR_ATTENDANCE_INTAKE_TENANT_ID`. It creates a temporary registered
+device with a random credential kept only in process memory, then submits one
+unassigned synthetic capture. No employee attendance is created. In a `finally`
+block it dismisses the synthetic event with a reason and deactivates the device.
+The original receipt, evidence and audit remain available; the smoke never
+deletes historical capture records. A cleanup failure fails the smoke.
 
 **Verify:** exit code 0, and the final line reads `N passed, 0 failed`.
 
