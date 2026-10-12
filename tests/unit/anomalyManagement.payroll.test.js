@@ -95,7 +95,7 @@ describe("management attendance deductions", () => {
       ),
     ).toBe(1.5);
   });
-  it("prices capped days through the real payroll engine and the configured daily salary rate", () => {
+  it("does not feed historical arbitrary marks into current payroll", () => {
     const slip = buildPayslipFromInputs({
       employee: { id: 1 },
       employmentTerm: {
@@ -123,7 +123,7 @@ describe("management attendance deductions", () => {
       slip.deductions
         .filter((d) => d.code === "MANAGEMENT_ATTENDANCE_DEDUCTION")
         .map((d) => Number(d.amount)),
-    ).toEqual([1000]);
+    ).toEqual([]);
     expect(slip.deductions.some((d) => d.code === "ABSENCE_RECOVERY")).toBe(
       false,
     );
@@ -156,7 +156,7 @@ it("two half-day markings still deduct only half a day", () => {
     manualDeductionsByShift([marked(1, 0.5), marked(2, 0.5)]).get("2026-10-05"),
   ).toBe(0.5);
 });
-it("prices only the manual half day even when automatic absence was a full day", () => {
+it("ignores legacy manual half-day markings and automatic absence", () => {
   const slip = buildPayslipFromInputs({
     employee: { id: 1 },
     employmentTerm: {
@@ -184,7 +184,7 @@ it("prices only the manual half day even when automatic absence was a full day",
     slip.deductions
       .filter((d) => d.code === "MANAGEMENT_ATTENDANCE_DEDUCTION")
       .map((d) => Number(d.amount)),
-  ).toEqual([500]);
+  ).toEqual([]);
   expect(slip.deductions.some((d) => d.code === "ABSENCE_RECOVERY")).toBe(
     false,
   );

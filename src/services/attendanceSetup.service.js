@@ -1,3 +1,4 @@
+import {lockAttendancePeriod} from './attendancePeriod.service.js';
 import { createHash } from 'node:crypto';
 import prisma from '../lib/prisma.js';
 import { tenantTransaction } from '../lib/rlsTenant.js';
@@ -231,6 +232,7 @@ export async function publishAttendanceSetup({
   return tenantTransaction(
     prisma,
     async (tx) => {
+      await lockAttendancePeriod(tx,tenantId);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${scope(tenantId)}:attendance-setup`}))`;
       const config = await buildAttendanceSetup(tenantId, tx);
       if (
@@ -321,6 +323,13 @@ export async function publishAttendanceSetup({
           }),
         ),
       );
+      const {enqueueEvaluationRange}=await import('./attendanceFinalization.service.js');
+      const operatingTo=[dateKey(to),new Date().toISOString().slice(0,10)].sort()[0];
+      if(dateKey(from)<=operatingTo) {
+        await enqueueEvaluationRange({tenantId,from:dateKey(from),to:operatingTo,employeeIds:config.employees.map(e=>e.id)},tx);
+        await tx.attendanceEvaluationJob.updateMany({where:{tenantId,date:{gte:dateOnly(from),lte:dateOnly(operatingTo)}},
+          data:{state:'PENDING',attempts:0,nextAttemptAt:new Date(),lastError:null}});
+      }
       return {
         version: release.version,
         effectiveFrom: release.effectiveFrom,

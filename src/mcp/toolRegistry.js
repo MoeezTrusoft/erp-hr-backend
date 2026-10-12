@@ -1,3 +1,4 @@
+import { registerAttendanceCaptureTools } from './tools/attendanceCaptureTools.js';
 import { registerMonthlyPayrollAttendanceTools } from './tools/monthlyPayrollAttendanceTools.js';
 import { registerEmployeeTools } from "./tools/employeeTools.js";
 import { registerAttendanceTools } from "./tools/attendanceTools.js";
@@ -303,6 +304,7 @@ export function registerAllTools(server) {
   registerOnboardingPortalScreenTools(server);
   registerEmployeeImportTools(server);
   registerAttendanceImportTools(server);
+  registerAttendanceCaptureTools(server);
   registerRegionTools(server);
   registerHolidayCalendarTools(server);
   registerPerformanceConfigTools(server);

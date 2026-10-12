@@ -86,6 +86,19 @@ export function validateSchedulePattern(pattern) {
     rotating.forEach((w, i) => checkWindow(w, `rotatingShifts[${i}]`, errors));
   }
   if (pattern.shift !== undefined) checkWindow(pattern.shift, "shift", errors);
+  if (pattern.shifts !== undefined) {
+    if (!Array.isArray(pattern.shifts)||!pattern.shifts.length||pattern.shifts.length>4)
+      errors.push('shifts: choose 1–4 non-overlapping windows');
+    else {
+      pattern.shifts.forEach((w,i)=>checkWindow(w,'shifts['+i+']',errors));
+      if (!errors.length) {
+        const mins=t=>Number(t.slice(0,2))*60+Number(t.slice(3));
+        const windows=pattern.shifts.map(w=>[mins(w.from),mins(w.to)+(mins(w.to)<=mins(w.from)?1440:0)]).sort((a,b)=>a[0]-b[0]);
+        if(windows.some((w,i)=>i&&w[0]<windows[i-1][1])||windows.at(-1)[1]>windows[0][0]+1440)errors.push('shifts: windows overlap');
+      }
+    }
+    if(pattern.rotatingShifts||pattern.shiftByDay)errors.push('shifts cannot be combined with rotatingShifts or shiftByDay');
+  }
 
   if (pattern.shiftByDay !== undefined) {
     if (!pattern.shiftByDay || typeof pattern.shiftByDay !== "object") {
@@ -103,7 +116,7 @@ export function validateSchedulePattern(pattern) {
   // Without one of these, nothing knows when the person works: every scan is
   // unrostered and grouping falls back to the calendar day, which is the exact
   // defect the sessionisation rewrite existed to remove.
-  if (pattern.shift === undefined && !rotating?.length) {
+  if (pattern.shift === undefined && !rotating?.length && !pattern.shifts?.length) {
     errors.push("pattern: needs a shift or rotatingShifts — otherwise no day has a window");
   }
 
@@ -129,7 +142,7 @@ export function validateSchedulePattern(pattern) {
       // A rest position may be a single index (3-day "work, work, off") or a
       // list of them (4-day "day, night, off, off"). Both spellings are read by
       // workingDay.service, which normalises to a Set.
-      const offs = Array.isArray(c.offIndex) ? c.offIndex : [c.offIndex];
+      const offs = c.offIndex===undefined && Array.isArray(c.sequence) ? [] : Array.isArray(c.offIndex) ? c.offIndex : [c.offIndex];
       if (!offs.length && !Array.isArray(c.sequence)) {
         errors.push("cycle.offIndex: an off-index array must not be empty");
       }

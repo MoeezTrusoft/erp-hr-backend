@@ -8,9 +8,9 @@ import logger from "../lib/logger.js";
 
 export const checkIn = async (req, res) => {
   try {
-    const result = await attandanceService.createAttendanceService(req.body);
-    res.status(200).json({
-      message: "Attendance marked successfully",
+    const result = await attandanceService.createAttendanceService({ ...req.body, requestKey: req.body?.requestKey || req.headers?.['idempotency-key'], tenantId: req.user?.tenantId, actorId: req.user?.id || req.user?.userId || req.user?.employeeId });
+    res.status(202).json({
+      message: "Attendance received for processing",
       attendance: result,
     });
   } catch (error) {
@@ -22,8 +22,8 @@ export const checkIn = async (req, res) => {
 export const checkOut = async (req, res) => {
   try {
     const { employeeId, timestamp } = req.body;
-    const result = await attandanceService.checkOutServiceWithTimestamp(employeeId, timestamp);
-    res.status(200).json(result);
+    const result = await attandanceService.checkOutServiceWithTimestamp(employeeId, timestamp, req.user?.tenantId, req.user?.id || req.user?.userId || req.user?.employeeId, req.body?.requestKey || req.headers?.['idempotency-key'], req.body?.notes);
+    res.status(202).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -74,10 +74,10 @@ export const testDeviceConnectivity = async (req, res) => {
 
 export const syncDeviceAttendance = async (req, res) => {
   try {
-    const result = await syncAttendanceFromPunches(req.body || {});
-    return res.status(200).json(result);
+    const result = await syncAttendanceFromPunches({ ...req.body, tenantId: req.user?.tenantId, actorId: req.user?.id || req.user?.userId || req.user?.employeeId });
+    return res.status(req.body?.dryRun === false ? 202 : 200).json(result);
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(error.status || 400).json({ error: error.message });
   }
 };
 

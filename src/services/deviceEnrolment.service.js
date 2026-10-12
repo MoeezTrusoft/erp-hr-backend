@@ -9,6 +9,14 @@
 //
 // Enrolments are period-scoped, so a punch is matched against the id that was
 // current when it happened rather than the id that is current now.
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import {
+  chooseEnrolment,
+  captureError,
+  enrolmentEnd,
+} from "../lib/attendanceCapture.js";
+import { dateOnly } from "../lib/attendanceDates.js";
+import { captureAudit } from "./attendanceCapture.service.js";
 import prisma from "../lib/prisma.js";
 import { mcpCtx } from "../mcp/context.js";
 
@@ -26,60 +34,11 @@ import { mcpCtx } from "../mcp/context.js";
  *                               matches any device
  * @returns {Promise<Map<string, {employeeId:number, tenantId:string|null, enrolmentId:number}>>}
  */
-export async function resolveEnrolmentAt(deviceUserIds, at, sn) {
-    const ids = [...new Set(deviceUserIds)].filter(Boolean).map(String);
-    const map = new Map();
-    if (!ids.length) return map;
-
-    const when = at instanceof Date ? at : new Date(at);
-
-    const rows = await mcpCtx.run({ system: true }, async () => {
-        return await prisma.employeeDeviceEnrolment.findMany({
-            where: {
-                deviceUserId: { in: ids },
-                effectiveFrom: { lte: when },
-                // Two independent conditions, so they are AND-ed explicitly
-                // rather than both written as `OR` (the second would overwrite
-                // the first in the same object literal).
-                AND: [
-                    { OR: [{ effectiveTo: null }, { effectiveTo: { gte: when } }] },
-                    ...(sn ? [{ OR: [{ sn: null }, { sn }] }] : []),
-                ],
-            },
-            select: {
-                id: true, employeeId: true, tenantId: true,
-                deviceUserId: true, effectiveFrom: true, sn: true,
-            },
-            orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
-        });
-    });
-
-    // The window is re-checked here rather than left to the query alone. It is
-    // the whole rule — "the id that was current WHEN THE PUNCH HAPPENED" — and a
-    // rule that lives only in a where-clause cannot be tested, only trusted. The
-    // query still narrows the read; this decides.
-    const covers = (r) =>
-        r.effectiveFrom <= when && (r.effectiveTo == null || r.effectiveTo >= when);
-
-    for (const r of rows) {
-        if (!covers(r)) continue;
-        if (sn && r.sn && r.sn !== sn) continue;
-
-        // Overlapping enrolments for one id are bad data. Ordered ascending, the
-        // last write wins, so the NEWEST period is chosen — deterministic rather
-        // than whichever the database happened to return first. A device-specific
-        // enrolment also outranks a null-`sn` catch-all.
-        const held = map.get(r.deviceUserId);
-        if (held && held.sn && !r.sn) continue;
-        map.set(r.deviceUserId, {
-            employeeId: r.employeeId,
-            tenantId: r.tenantId,
-            enrolmentId: r.id,
-            sn: r.sn,
-        });
-    }
-
-    return map;
+export async function resolveEnrolmentAt(ids, at, sn) {
+  const resolver = await buildEnrolmentResolver(ids, sn);
+  return new Map(
+    ids.map((id) => [String(id), resolver(id, at)]).filter(([, hit]) => hit),
+  );
 }
 
 /**
@@ -106,26 +65,24 @@ export async function resolveEnrolmentAt(deviceUserIds, at, sn) {
  * midday never straddles a re-enrolment close (the close is day-before).
  */
 export async function resolvePrimarySnAt(employeeId, at) {
-    const when = at instanceof Date ? at : new Date(at);
-    const rows = await mcpCtx.run({ system: true }, async () => {
-        return await prisma.employeeDeviceEnrolment.findMany({
-            where: { employeeId, isPrimary: true },
-            select: {
-                id: true, sn: true, effectiveFrom: true, effectiveTo: true,
-            },
-            orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
-        });
+  const when = at instanceof Date ? at : new Date(at);
+  const rows = await mcpCtx.run({ system: true }, async () => {
+    return await prisma.employeeDeviceEnrolment.findMany({
+      where: { employeeId, isPrimary: true },
+      select: {
+        id: true,
+        sn: true,
+        effectiveFrom: true,
+        effectiveTo: true,
+      },
+      orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
     });
-    // Newest in-force SN-scoped period wins (overlapping primaries are bad
-    // data; deterministic rather than whichever row the DB returned first).
-    let best = null;
-    for (const r of rows) {
-        if (!r.sn) continue; // null-`sn` catch-alls are never a specific device
-        if (r.effectiveFrom > when) continue;
-        if (r.effectiveTo != null && r.effectiveTo < when) continue;
-        if (!best || r.effectiveFrom >= best.effectiveFrom) best = r;
-    }
-    return best?.sn ?? null;
+  });
+  const active = rows.filter(
+    (r) =>
+      r.sn && +new Date(r.effectiveFrom) <= +when && enrolmentEnd(r) >= +when,
+  );
+  return active.length === 1 ? active[0].sn : null;
 }
 
 /**
@@ -142,100 +99,165 @@ export async function resolvePrimarySnAt(employeeId, at) {
  * and/or employee) for the admin tooling.
  */
 export async function listEnrolments({ tenantId, employeeId } = {}) {
-    return mcpCtx.run({ system: true }, async () => {
-        return await prisma.employeeDeviceEnrolment.findMany({
-            where: {
-                ...(tenantId ? { tenantId } : {}),
-                ...(employeeId != null ? { employeeId: Number(employeeId) } : {}),
-            },
-            select: {
-                id: true, tenantId: true, employeeId: true, deviceUserId: true,
-                sn: true, isPrimary: true, effectiveFrom: true, effectiveTo: true, note: true,
-            },
-            orderBy: [{ employeeId: "asc" }, { effectiveFrom: "desc" }],
-        });
+  if (!tenantId) throw captureError("Verified tenant is required", 403);
+  return mcpCtx.run({ system: true }, async () => {
+    return await prisma.employeeDeviceEnrolment.findMany({
+      where: {
+        ...(tenantId ? { tenantId } : {}),
+        ...(employeeId != null ? { employeeId: Number(employeeId) } : {}),
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        employeeId: true,
+        deviceUserId: true,
+        sn: true,
+        isPrimary: true,
+        effectiveFrom: true,
+        effectiveTo: true,
+        note: true,
+      },
+      orderBy: [{ employeeId: "asc" }, { effectiveFrom: "desc" }],
     });
+  });
 }
 
-export async function setPrimaryEnrolment({ enrolmentId, tenantId }) {
-    return mcpCtx.run({ system: true }, async () => {
-        const target = await prisma.employeeDeviceEnrolment.findUnique({
-            where: { id: enrolmentId },
-        });
-        if (!target) throw Object.assign(new Error("enrolment not found"), { status: 404 });
-        // Tenant guard: an HR admin acts inside their own tenant only.
-        if (tenantId && target.tenantId && target.tenantId !== tenantId) {
-            throw Object.assign(new Error("enrolment belongs to another tenant"), { status: 403 });
-        }
-        if (!target.sn) {
-            throw Object.assign(
-                new Error("a null-sn enrolment matches every device and cannot be primary"),
-                { status: 400 },
-            );
-        }
-        await prisma.employeeDeviceEnrolment.updateMany({
-            where: { employeeId: target.employeeId, id: { not: enrolmentId } },
-            data: { isPrimary: false },
-        });
-        return await prisma.employeeDeviceEnrolment.update({
-            where: { id: enrolmentId },
-            data: { isPrimary: true },
-        });
-    });
+async function verifyEmployee(tx, tenantId, employeeId) {
+  if (!tenantId || !Number.isInteger(employeeId))
+    throw captureError("Verified tenant and employee are required", 403);
+  const employee = await tx.employee.findFirst({
+    where: { id: employeeId, tenant_id: tenantId },
+  });
+  if (!employee) throw captureError("Employee not found", 404);
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`enrolment:${tenantId}:${employeeId}`}))`;
 }
-
-/**
- * HR-ATT-PRIMARY-DEVICE-01 — clear the primary flag on ALL of an employee's
- * enrolments (unmarked state: day rows stop recording provenance).
- */
-export async function clearPrimaryEnrolment({ employeeId }) {
-    return mcpCtx.run({ system: true }, async () => {
-        const res = await prisma.employeeDeviceEnrolment.updateMany({
-            where: { employeeId },
-            data: { isPrimary: false },
-        });
-        return { employeeId, cleared: res.count };
-    });
+async function changePrimary({
+  tenantId,
+  employeeId,
+  enrolmentId,
+  effectiveFrom,
+  actorId,
+  reason = "Primary device changed",
+}) {
+  const at = dateOnly(effectiveFrom || new Date().toISOString().slice(0, 10));
+  return tenantTransaction(
+    prisma,
+    async (tx) => {
+      await verifyEmployee(tx, tenantId, employeeId);
+      const rows = await tx.employeeDeviceEnrolment.findMany({
+        where: { tenantId, employeeId },
+      });
+      const active = rows.filter(
+        (r) => +new Date(r.effectiveFrom) <= +at && enrolmentEnd(r) >= +at,
+      );
+      if (enrolmentId && !active.some((r) => r.id === enrolmentId && r.sn))
+        throw captureError(
+          "Choose a device-specific enrolment effective on this date",
+          409,
+        );
+      let selected;
+      for (const row of active) {
+        const isPrimary = row.id === enrolmentId;
+        if (row.isPrimary === isPrimary) {
+          if (isPrimary) selected = row;
+          continue;
+        }
+        let updated;
+        if (+new Date(row.effectiveFrom) === +at)
+          updated = await tx.employeeDeviceEnrolment.update({
+            where: { id: row.id, tenantId },
+            data: { isPrimary },
+          });
+        else {
+          await tx.employeeDeviceEnrolment.update({
+            where: { id: row.id, tenantId },
+            data: { effectiveTo: new Date(+at - 1) },
+          });
+          updated = await tx.employeeDeviceEnrolment.create({
+            data: {
+              tenantId,
+              employeeId,
+              deviceUserId: row.deviceUserId,
+              sn: row.sn,
+              isPrimary,
+              effectiveFrom: at,
+              effectiveTo: row.effectiveTo,
+              note: reason,
+            },
+          });
+        }
+        if (isPrimary) selected = updated;
+      }
+      await captureAudit(tx, {
+        tenantId,
+        actorId,
+        action: "PRIMARY_DEVICE_CHANGED",
+        reason,
+        detail: {
+          employeeId,
+          enrolmentId: selected?.id ?? null,
+          effectiveFrom: at,
+        },
+      });
+      return (
+        selected || {
+          employeeId,
+          cleared: active.filter((r) => r.isPrimary).length,
+        }
+      );
+    },
+    { tenantId },
+  );
+}
+export async function setPrimaryEnrolment(args) {
+  if (!args.tenantId) throw captureError("Verified tenant is required", 403);
+  const target = await prisma.employeeDeviceEnrolment.findFirst({
+    where: { id: args.enrolmentId, tenantId: args.tenantId },
+  });
+  if (!target) throw captureError("Enrolment not found", 404);
+  return changePrimary({ ...args, employeeId: target.employeeId });
+}
+export async function clearPrimaryEnrolment(args) {
+  return changePrimary(args);
 }
 
 export async function buildEnrolmentResolver(deviceUserIds, sn) {
-    const ids = [...new Set(deviceUserIds)].filter(Boolean).map(String);
-    if (!ids.length) return () => undefined;
+  const ids = [...new Set(deviceUserIds)].filter(Boolean).map(String);
+  if (!ids.length) return () => undefined;
 
-    const rows = await mcpCtx.run({ system: true }, async () => {
-        return await prisma.employeeDeviceEnrolment.findMany({
-            where: { deviceUserId: { in: ids } },
-            select: {
-                id: true, employeeId: true, tenantId: true,
-                deviceUserId: true, effectiveFrom: true, effectiveTo: true, sn: true,
-            },
-            orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
-        });
+  const rows = await mcpCtx.run({ system: true }, async () => {
+    return await prisma.employeeDeviceEnrolment.findMany({
+      where: { deviceUserId: { in: ids } },
+      select: {
+        id: true,
+        employeeId: true,
+        tenantId: true,
+        deviceUserId: true,
+        effectiveFrom: true,
+        effectiveTo: true,
+        sn: true,
+      },
+      orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
     });
+  });
 
-    const byId = new Map();
-    for (const r of rows) {
-        if (!byId.has(r.deviceUserId)) byId.set(r.deviceUserId, []);
-        byId.get(r.deviceUserId).push(r);
-    }
+  const byId = new Map();
+  for (const r of rows) {
+    if (!byId.has(r.deviceUserId)) byId.set(r.deviceUserId, []);
+    byId.get(r.deviceUserId).push(r);
+  }
 
-    return (deviceUserId, at) => {
-        const when = at instanceof Date ? at : new Date(at);
-        const candidates = byId.get(String(deviceUserId)) ?? [];
-        let best;
-        for (const r of candidates) {
-            if (r.effectiveFrom > when) continue;
-            if (r.effectiveTo != null && r.effectiveTo < when) continue;
-            if (sn && r.sn && r.sn !== sn) continue;
-            // Ascending order, so a later row wins; a device-specific enrolment
-            // outranks a null-`sn` catch-all.
-            if (best && best.sn && !r.sn) continue;
-            best = r;
-        }
-        return best
-            ? { employeeId: best.employeeId, tenantId: best.tenantId, enrolmentId: best.id }
-            : undefined;
-    };
+  const resolve = (deviceUserId, at) => {
+    const hit = chooseEnrolment(
+      byId.get(String(deviceUserId)) || [],
+      deviceUserId,
+      sn,
+      new Date(at),
+    );
+    return hit.reason ? undefined : hit;
+  };
+  resolve.hasHistory = (id) => byId.has(String(id));
+  return resolve;
 }
 
 /**
@@ -244,24 +266,92 @@ export async function buildEnrolmentResolver(deviceUserIds, sn) {
  * The close date is the day BEFORE the new id takes effect, so the two never
  * overlap: an overlap is exactly the ambiguity this model exists to remove.
  */
-export async function reEnrol({ employeeId, tenantId, newDeviceUserId, effectiveFrom, note }) {
-    const from = effectiveFrom instanceof Date ? effectiveFrom : new Date(effectiveFrom);
-    const closeAt = new Date(from.getTime() - 86_400_000);
-
-    return mcpCtx.run({ system: true }, async () => {
-        await prisma.employeeDeviceEnrolment.updateMany({
-            where: { employeeId, effectiveTo: null },
-            data: { effectiveTo: closeAt },
+export async function reEnrol({
+  employeeId,
+  tenantId,
+  newDeviceUserId,
+  sn,
+  effectiveFrom,
+  note,
+  actorId,
+  isPrimary = false,
+}) {
+  const from = dateOnly(effectiveFrom);
+  if (!sn || !newDeviceUserId || newDeviceUserId.length > 64 || !note?.trim())
+    throw captureError(
+      "Device serial, user ID, effective date and reason are required",
+    );
+  const device = await mcpCtx.run(
+    { system: true },
+    async () =>
+      await prisma.attendanceCaptureDevice.findUnique({ where: { sn } }),
+  );
+  if (!device?.active || !device.allowedTenantIds.includes(tenantId))
+    throw captureError("Device is not permitted for this tenant", 403);
+  // Cross-tenant collision lookup requires SYSTEM at the transaction boundary
+  // so the RLS bypass GUC is set; every mutation below is explicitly scoped.
+  return mcpCtx.run({ system: true }, () =>
+    tenantTransaction(
+      prisma,
+      async (tx) => {
+        await verifyEmployee(tx, tenantId, employeeId);
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`device-id:${sn}:${newDeviceUserId}`}))`;
+        const conflicts = await tx.employeeDeviceEnrolment.findMany({
+          where: { deviceUserId: newDeviceUserId, OR: [{ sn }, { sn: null }] },
         });
-        return await prisma.employeeDeviceEnrolment.create({
-            data: {
-                tenantId,
-                employeeId,
-                deviceUserId: String(newDeviceUserId),
-                effectiveFrom: from,
-                effectiveTo: null,
-                note: note ?? null,
-            },
+        if (
+          conflicts.some(
+            (r) => r.employeeId !== employeeId && enrolmentEnd(r) >= +from,
+          )
+        )
+          throw captureError(
+            "Device ID overlaps another employee enrolment",
+            409,
+          );
+        const rows = await tx.employeeDeviceEnrolment.findMany({
+          where: { tenantId, employeeId, sn },
         });
-    });
+        if (rows.some((r) => +new Date(r.effectiveFrom) >= +from))
+          throw captureError(
+            "An enrolment already starts on or after this date",
+            409,
+          );
+        for (const row of rows.filter((r) => enrolmentEnd(r) >= +from))
+          await tx.employeeDeviceEnrolment.update({
+            where: { id: row.id, tenantId },
+            data: { effectiveTo: new Date(+from - 1) },
+          });
+        if (isPrimary) {
+          const primary = await tx.employeeDeviceEnrolment.findMany({
+            where: { tenantId, employeeId, isPrimary: true, NOT: { sn } },
+          });
+          if (primary.some((r) => enrolmentEnd(r) >= +from))
+            throw captureError(
+              "Clear the existing primary from this date before assigning another device",
+              409,
+            );
+        }
+        const created = await tx.employeeDeviceEnrolment.create({
+          data: {
+            tenantId,
+            employeeId,
+            sn,
+            deviceUserId: newDeviceUserId,
+            effectiveFrom: from,
+            isPrimary,
+            note,
+          },
+        });
+        await captureAudit(tx, {
+          tenantId,
+          actorId,
+          action: "ENROLMENT_CREATED",
+          reason: note,
+          detail: created,
+        });
+        return created;
+      },
+      { system: true },
+    ),
+  );
 }

@@ -25,8 +25,13 @@
 // roster stays cycle-less and ROTATING-02's suppression still applies.
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
+import { publishedSetup } from '../helpers/publishedSetup.js';
+const TENANT = '10000000-0000-4000-8000-000000000001';
 const SCHEDULE = { schedule_pattern: null };
 const prismaMock = {
+    attendanceSetupRelease: { findMany: jest.fn(async () => publishedSetup({ tenantId: TENANT, schedules: [{ ...SCHEDULE, effective_start_date: '2020-01-01' }] })) },
+    shiftAssignment: { findMany: jest.fn(async () => []) },
+    leaveRequest: { findMany: jest.fn(async () => []) },
     // HR-ROSTER-01 resolves the roster per day, so the service now reads every
     // schedule covering the window. One open-ended row is this employee's whole
     // history.
@@ -69,7 +74,7 @@ const NO_PHASE = {
 
 const resolve = async (pattern) => {
     SCHEDULE.schedule_pattern = pattern;
-    return resolveWorkingDays({ employeeId: 1, from: '2026-08-01', to: '2026-08-10' });
+    return resolveWorkingDays({ tenantId: TENANT, employeeId: 1, from: '2026-08-01', to: '2026-08-10' });
 };
 const offDaysIn = (map) =>
     [...map.entries()].filter(([, v]) => !v.working).map(([k]) => Number(k.slice(8)));
@@ -117,7 +122,7 @@ describe('HR-ATT-ROTATING-03 rotation phase', () => {
         // HomeVision asked for 2 on, 2 off from 2026-10-06. offIndex is a list
         // here — a single position could only ever express 3-on-1-off.
         SCHEDULE.schedule_pattern = ROTATING_4DAY([2, 3]);
-        const map = await resolveWorkingDays({ employeeId: 1, from: '2026-10-06', to: '2026-10-17' });
+        const map = await resolveWorkingDays({ tenantId: TENANT, employeeId: 1, from: '2026-10-06', to: '2026-10-17' });
         const off = [...map.entries()].filter(([, v]) => !v.working).map(([k]) => k);
         expect(off).toEqual([
             '2026-10-08', '2026-10-09',
@@ -129,21 +134,21 @@ describe('HR-ATT-ROTATING-03 rotation phase', () => {
         expect(map.get('2026-10-11').working).toBe(true);
     });
 
-    it('still flags `rotating` (unknown phase) when the off-index list is empty', async () => {
+    it('holds invalid published rotation instead of inventing work days', async () => {
         // An empty list is refused at the write boundary; if one ever lands in
         // storage it must degrade the way a missing phase does, not mark every
         // rest day as worked.
         SCHEDULE.schedule_pattern = ROTATING_4DAY([]);
-        const map = await resolveWorkingDays({ employeeId: 1, from: '2026-10-06', to: '2026-10-10' });
-        expect(offDaysIn(map)).toEqual([]);
-        expect(map.get('2026-10-06').rotating).toBe(true);
+        const map = await resolveWorkingDays({ tenantId: TENANT, employeeId: 1, from: '2026-10-06', to: '2026-10-10' });
+        expect(map.get('2026-10-06').working).toBeNull();
+        expect(map.get('2026-10-06').reason).toBeTruthy();
     });
 
     it('handles a day before the anchor without drifting the phase', async () => {
         // A negative day difference must not make the modulo negative — 29 July
         // is a rest day on phase 0 and 30/31 July are not.
         SCHEDULE.schedule_pattern = ROTATING(0);
-        const map = await resolveWorkingDays({ employeeId: 1, from: '2026-07-29', to: '2026-07-31' });
+        const map = await resolveWorkingDays({ tenantId: TENANT, employeeId: 1, from: '2026-07-29', to: '2026-07-31' });
         expect([...map.entries()].filter(([, v]) => !v.working).map(([k]) => k))
             .toEqual(['2026-07-29']);
     });
