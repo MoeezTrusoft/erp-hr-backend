@@ -13,6 +13,11 @@ reconciles identities and monitors device health. Missing data and protected
 payroll periods remain held. Published configuration expires at its reviewed
 coverage date; prepare the next calendar period before that date.
 
+The attendance writer explicitly recognizes transactions opened by the tenant
+helper. Some extended Prisma transaction clients still expose `$transaction`;
+testing that property alone recursively opens transactions until they expire.
+Worker evaluation must reuse the transaction already holding its locks.
+
 ## Existing device collectors
 
 The CSV collector remains responsible for read-only ZKTeco hardware polling and

@@ -327,6 +327,22 @@ describe("persisted evaluation and finalization", () => {
     await planAttendanceFinalization({ now }, db);
     expect(db.snapshot().attendanceEvaluationJob).toHaveLength(2);
   });
+  it("reuses an extended transaction client that still exposes $transaction", async () => {
+    const db = database([["09:00", 0], ["17:00", 1]]);
+    const transaction = db.$transaction;
+    let starts = 0;
+    db.$transaction = async (fn, options) => {
+      starts++;
+      if (starts > 1) throw new Error("Nested transaction attempted");
+      return transaction(async (tx) => {
+        tx.$transaction = db.$transaction;
+        return fn(tx);
+      }, options);
+    };
+    await apply(db);
+    expect(starts).toBe(1);
+    expect(db.snapshot().attendance).toHaveLength(1);
+  });
   it("starts a new Karachi release at local midnight before the UTC date changes", async () => {
     const db = database([], config(), {
       attendanceSetupRelease: [{

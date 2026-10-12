@@ -2,6 +2,7 @@ import { approvedOvertimeCredits } from "../lib/attendanceOvertime.js";
 import { syncRuleCases } from './attendanceRuleCases.service.js';
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
+import { isTenantTransaction } from "../lib/rlsTenant.js";
 import { replayTenant, dayKey } from "../lib/attendanceReplay.js";
 import { dateRange, dateKey, addDays } from "../lib/attendanceDates.js";
 import {
@@ -120,7 +121,9 @@ export async function applyEvaluatedShifts(args) {
   } = args;
   const from = dateKey(fromInput),
     to = dateKey(toInput);
-  if (!dryRun && db.$transaction)
+  // Extended Prisma transaction clients may still expose $transaction. Reuse
+  // the transaction holding the worker's locks instead of recursively opening it.
+  if (!dryRun && db.$transaction && !isTenantTransaction(db))
     return attendanceTransaction(db, tenantId, (tx) =>
       applyEvaluatedShifts({ ...args, db: tx }),
     );
