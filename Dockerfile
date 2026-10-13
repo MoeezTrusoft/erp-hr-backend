@@ -5,6 +5,7 @@ WORKDIR /app
 RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global npm@12.2.0 --ignore-scripts \
+  && npm --prefix /usr/local/lib/node_modules/npm install --no-save --package-lock=false --omit=dev --ignore-scripts brace-expansion@5.0.11 undici@6.28.1 \
   && npm cache clean --force
 COPY --from=contracts package.json /contracts/package.json
 COPY --from=contracts src /contracts/src
@@ -20,6 +21,7 @@ ENV NODE_ENV=production
 RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global npm@12.2.0 --ignore-scripts \
+  && npm --prefix /usr/local/lib/node_modules/npm install --no-save --package-lock=false --omit=dev --ignore-scripts brace-expansion@5.0.11 undici@6.28.1 \
   && npm cache clean --force \
   && groupadd --system --gid 10001 nodeapp \
   && useradd --system --uid 10001 --gid nodeapp --home-dir /app --shell /usr/sbin/nologin nodeapp
