@@ -12,9 +12,11 @@
 //
 // Auth: every handler runs getCtx() → assertPermission(GET, "hr:employee") →
 // service(query, user.tenantId), matching the existing hr_positions_list tool.
+// hr_positions_export is elevated: VIEW + EXPORT (same rule as
+// hr_employees_export / hr_employee_login_password_get).
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   listManagedPositions,
@@ -68,7 +70,7 @@ export function registerPositionMgmtTools(server) {
 
   server.tool(
     "hr_positions_export",
-    "Export the position-management view (all rows matching the filters) as CSV or PDF. Columns: Title, Department, Band, Filled/Openings, Status, Created. Returns { format, fileName, mimeType, count, base64 }.",
+    "Export the position-management view (all rows matching the filters) as CSV or PDF. SENSITIVE — gated on hr:employee VIEW + EXPORT. Columns: Title, Department, Band, Filled/Openings, Status, Created. Returns { format, fileName, mimeType, count, base64 }.",
     {
       format: z.enum(["csv", "pdf"]).default("csv"),
       q: z.string().optional(),
@@ -80,6 +82,11 @@ export function registerPositionMgmtTools(server) {
     withToolError(async ({ format, ...query }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Same elevation as the roster export: VIEW lists the screen, EXPORT is
+      // what authorises taking the copy out of the platform.
+      if (!hasPermission(permissions, "hr:employee", "EXPORT")) {
+        throw Object.assign(new Error("Insufficient permissions: hr:employee:EXPORT"), { status: 403 });
+      }
       const data = await exportManagedPositions(query, user.tenantId, format);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_positions_export")

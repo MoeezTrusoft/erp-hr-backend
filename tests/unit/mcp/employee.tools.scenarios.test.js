@@ -67,9 +67,12 @@ const parse = (res) => JSON.parse(res.content[0].text);
 // All employee/position tools gate on "hr:employee" (not "hr:position").
 // Exception: hr_employee_emergency_contact_create uses route path "/hr/api/emergency-contacts"
 // which is a bug — it will ALWAYS 403. Tested separately below.
+//
+// `grants` overrides the single-action grant when a tool needs MORE than one
+// atom: hr_employees_export requires VIEW + EXPORT (bulk roster download).
 const TOOLS = [
   { name: 'hr_employees_list', gate: 'hr:employee', action: 'VIEW', args: { page: 1, pageSize: 10 } },
-  { name: 'hr_employees_export', gate: 'hr:employee', action: 'VIEW', args: {} },
+  { name: 'hr_employees_export', gate: 'hr:employee', action: 'VIEW', grants: ['VIEW', 'EXPORT'], args: {} },
   { name: 'hr_positions_list', gate: 'hr:employee', action: 'VIEW', args: {} },
   { name: 'hr_employee_get', gate: 'hr:employee', action: 'VIEW', args: { id: 7 } },
   { name: 'hr_employee_profile_get', gate: 'hr:employee', action: 'VIEW', args: { id: 7, tab: 'personal' } },
@@ -106,8 +109,8 @@ describe('EMPLOYEE-SCENARIOS — registration', () => {
   });
 });
 
-describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
-  const grant = { [gate]: [action] };
+describe.each(TOOLS)('$name scenarios', ({ name, gate, action, grants, args }) => {
+  const grant = { [gate]: grants || [action] };
 
   beforeEach(() => jest.clearAllMocks());
 
@@ -131,6 +134,27 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
     const res = await call(name, args, { user: { ...USER, isAdmin: true }, permissions: {} });
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
+  });
+});
+
+// ELEVATED EXPORT (2026-10-13) — bulk download needs the EXPORT atom on top of
+// VIEW. A VIEW-only grant must not be able to take a copy of the roster out of
+// the platform, even though VIEW is what opens the directory screen.
+describe('hr_employees_export — EXPORT elevation', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('VIEW alone is not enough -> 403', async () => {
+    const res = await call('hr_employees_export', {}, { permissions: { 'hr:employee': ['VIEW'] } });
+    expect(res.isError).toBe(true);
+    expect(parse(res).status).toBe(403);
+  });
+
+  it('VIEW + EXPORT dispatches to the export controller', async () => {
+    const res = await call('hr_employees_export', {}, {
+      permissions: { 'hr:employee': ['VIEW', 'EXPORT'] },
+    });
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).success).toBe(true);
   });
 });
 

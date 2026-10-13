@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { assertDirectoryAccess } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
@@ -124,7 +124,7 @@ export function registerEmployeeTools(server) {
 
   server.tool(
     "hr_employees_export",
-    "Export the employee directory (all rows matching the filters) as CSV or PDF. Returns { format, fileName, mimeType, count, base64 }.",
+    "Export the employee directory (all rows matching the filters) as CSV or PDF. SENSITIVE — gated on hr:employee VIEW + EXPORT. Returns { format, fileName, mimeType, count, base64 }.",
     {
       format: z.enum(["csv", "pdf"]).default("csv"),
       q: z.string().optional(),
@@ -140,6 +140,13 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ format, ...query }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      // Bulk roster export is elevated: require EXPORT on top of VIEW, exactly
+      // like hr_employee_login_password_get. VIEW alone reads the directory
+      // screen-by-screen; EXPORT is the atom that authorises taking a copy of
+      // the whole tenant's employee data out of the platform.
+      if (!hasPermission(permissions, "hr:employee", "EXPORT")) {
+        throw Object.assign(new Error("Insufficient permissions: hr:employee:EXPORT"), { status: 403 });
+      }
       const data = await mcpExportEmployees(query, user.tenantId, format);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employees_export")
