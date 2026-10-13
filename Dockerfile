@@ -2,8 +2,10 @@
 
 FROM node:24-bookworm-slim AS deps
 WORKDIR /app
-RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install --global npm@12.2.0 --ignore-scripts \
+  && npm cache clean --force
 COPY --from=contracts package.json /contracts/package.json
 COPY --from=contracts src /contracts/src
 COPY package.json package-lock.json .npmrc ./
@@ -15,8 +17,10 @@ RUN npm ci --omit=dev --ignore-scripts \
 FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates \
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
   && rm -rf /var/lib/apt/lists/* \
+  && npm install --global npm@12.2.0 --ignore-scripts \
+  && npm cache clean --force \
   && groupadd --system --gid 10001 nodeapp \
   && useradd --system --uid 10001 --gid nodeapp --home-dir /app --shell /usr/sbin/nologin nodeapp
 COPY --from=deps /app/node_modules ./node_modules
