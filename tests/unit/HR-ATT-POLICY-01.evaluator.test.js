@@ -41,14 +41,14 @@ describe('HR-ATT-POLICY-01 arrival', () => {
         expect(r.dayCredit).toBe(DAY_CREDIT.FULL);
     });
 
-    it('is LATE past grace but still a FULL day credit', () => {
+    it('holds credit for late arrivals pending Management review', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:20:00Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.status).toBe('LATE');
-        expect(r.dayCredit).toBe(DAY_CREDIT.FULL);   // the flag is the penalty
+        expect(r.dayCredit).toBeNull(); // Pending review is not an automatic deduction.
         expect(r.anomalies.map((a) => a.type)).toContain('LATE_CHECKIN');
     });
 
@@ -56,14 +56,14 @@ describe('HR-ATT-POLICY-01 arrival', () => {
     // An 8:05:47 arrival against an 8:00 PM shift is 5 minutes late (ON TIME
     // under a 5-minute grace), not 5.78 seconds-rounded to 6. Real case:
     // Huzaifa/Asad 20:05:47/20:05:50 with a 5-min grace were flagged LATE.
-    it('counts elapsed whole minutes: an arrival inside grace+59s is PRESENT, not LATE', () => {
+    it('keeps seconds when comparing arrival with the exact grace boundary', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:05:47Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.latenessMinutes).toBe(5);          // 5 elapsed minutes, not 6
-        expect(r.status).toBe('PRESENT');           // 5 <= 5 grace
+        expect(r.status).toBe('LATE'); // 5m47s is beyond an exact 5-minute grace.
     });
 
     it('still flags LATE once elapsed minutes EXCEED grace', () => {
@@ -78,14 +78,14 @@ describe('HR-ATT-POLICY-01 arrival', () => {
 
     // T&A-RULE-07 — past the half-day mark the day is still docked HALF a day,
     // but the table says LATE: display ≠ deduction.
-    it('deducts half a day but still shows LATE once lateness reaches the half-day threshold', () => {
+    it('shows LATE and holds credit when arrival exceeds thirty minutes', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:35:00Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.status).toBe('LATE');
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
     });
 
     it('reads an after-midnight arrival on a night shift as LATE, not early', () => {
@@ -98,7 +98,7 @@ describe('HR-ATT-POLICY-01 arrival', () => {
         expect(r.latenessMinutes).toBe(150);
         // T&A-RULE-07 — arrival verdicts never say HALF_DAY any more.
         expect(r.status).toBe('LATE');
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
     });
 
     it('reads a pre-midnight arrival for a 00:00 shift as early', () => {
@@ -108,7 +108,7 @@ describe('HR-ATT-POLICY-01 arrival', () => {
             shift: midnightShift, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.latenessMinutes).toBe(-55);   // 55 minutes EARLY
+        expect(r.latenessMinutes).toBe(-55); // Signed arrival offset, not a lateness anomaly.
         expect(r.status).toBe('PRESENT');
     });
 });
@@ -189,8 +189,8 @@ describe('HR-ATT-POLICY-01 missing punches', () => {
         });
 
         expect(r.status).toBe('ABSENT');
-        expect(r.dayCredit).toBe(DAY_CREDIT.NONE);
-        expect(r.requiresRegularization).toBe(false);   // nothing to regularize yet
+        expect(r.dayCredit).toBeNull();
+        expect(r.requiresRegularization).toBe(true); // Absence needs review.
     });
 });
 
@@ -198,19 +198,19 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
     // T&A-RULE-06 — a checkout before the half-day mark is a HALF DAY (half
     // credit), not ABSENT: the person showed up and worked a real, if short,
     // slice of the day.
-    it('classifies a checkout before the half-day mark as HALF_DAY', () => {
+    it('classifies early checkout independently of worked-duration bands', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T12:00:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.workedPercent).toBeCloseTo(25, 0);
-        expect(r.status).toBe('HALF_DAY');   // arrival said PRESENT; the CHECKOUT decides
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.status).toBe('EARLY_CHECKOUT');   // arrival said PRESENT; the CHECKOUT decides
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
         expect(r.anomalies.map((a) => a.type)).toContain('EARLY_CHECKOUT');
     });
 
-    it('gives half credit in the middle band, labelled EARLY_CHECKOUT', () => {
+    it('holds credit in the middle band, labelled EARLY_CHECKOUT', () => {
         // 10:00 -> 15:00 = 5h of 8h = 62.5% — after the half-day mark.
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T15:00:00Z')],
@@ -218,17 +218,17 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
         });
 
         expect(r.status).toBe('EARLY_CHECKOUT');
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
     });
 
-    it('takes the WORSE of arrival and duration, never the kinder one', () => {
+    it('holds a late arrival even when the full duration was worked', () => {
         // Late (half-day by arrival) but a long shift worked (full by duration).
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:40:00Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
     });
 
     it('measures a 3-hour shift on its own scale, not an absolute hours band', () => {
@@ -260,14 +260,14 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
     // T&A-RULE-06 — both early-checkout bands cost half a day and BOTH count
     // as early checkout. Before the mark the day reads HALF_DAY; after it,
     // EARLY_CHECKOUT.
-    it('classifies checkout before half the shift as HALF_DAY (both bands cost half a day)', () => {
+    it('holds an early checkout before half the shift for review', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T13:59:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.status).toBe('HALF_DAY');
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.status).toBe('EARLY_CHECKOUT');
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
     });
 
     it('classifies checkout after half the shift but before the end as EARLY_CHECKOUT', () => {
@@ -277,7 +277,7 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
         });
 
         expect(r.status).toBe('EARLY_CHECKOUT');
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
     });
 
     it('raises EARLY_CHECKOUT past the grace', () => {
@@ -287,7 +287,7 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
         });
 
         const early = r.anomalies.find((a) => a.type === 'EARLY_CHECKOUT');
-        expect(early?.minutesEarly).toBe(60);
+        expect(early?.minutes).toBe(60);
     });
 });
 
@@ -381,7 +381,7 @@ describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
         });
 
         expect(r.latenessMinutes).toBe(270);        // > 240
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
         expect(r.status).toBe('LATE');
     });
 
@@ -395,7 +395,7 @@ describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
         });
 
         expect(r.latenessMinutes).toBe(95);         // > 90
-        expect(r.dayCredit).toBe(DAY_CREDIT.HALF);
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
         expect(r.status).toBe('LATE');
     });
 

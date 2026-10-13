@@ -39,7 +39,7 @@ describe('HR-FE-UNBLOCK-01 counterGroup is writable, not just readable', () => {
     test('the service still validates it, so the tool is not the only guard', () => {
         const service = read('src/services/attendanceDeductionRule.service.js');
         expect(service).toContain('counterGroup must be');
-        expect(service).toContain('must share the same');
+        expect(service).toContain('validateDeductionGroups');
     });
 });
 

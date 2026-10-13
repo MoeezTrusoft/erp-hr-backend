@@ -8,8 +8,8 @@
 // HERMETIC: every EdDSA case generates an EPHEMERAL Ed25519 keypair in the
 // test, injects its public key into the registry under a test kid, signs a
 // service-JWT with the private key (alg=EdDSA, kid header), and asserts the
-// verify path ACCEPTS it. No real private key is ever needed; the two REAL
-// signer *public* keys are only asserted to be PRESENT in the registry/.env.
+// verify path ACCEPTS it. Both service issuers use generated keys, so this
+// suite never depends on deployment keys or a private environment file.
 //
 // jsonwebtoken@9 cannot SIGN EdDSA, so the test mints EdDSA JWTs with
 // node:crypto directly (sign(null, input, ed25519PrivateKey)) — the exact
@@ -18,9 +18,6 @@ import {
     describe, test, expect, beforeEach, afterAll,
 } from '@jest/globals';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import jwt from 'jsonwebtoken';
 
 import {
@@ -31,8 +28,6 @@ import {
     loadPublicKeyRegistry,
 } from '../../../src/lib/serviceJwtKeys.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '../../..');
 
 const FIXED_SECRET = 'test-service-secret-do-not-use-in-prod';
 
@@ -251,37 +246,15 @@ describe('serviceJwt EdDSA verification (X-02)', () => {
         });
     });
 
-    describe('real signer kids are present in .env', () => {
-        test('.env registers BOTH real signer kids in SERVICE_JWT_PUBLIC_KEYS_JSON', () => {
-            const envText = fs.readFileSync(path.join(REPO_ROOT, '.env'), 'utf8');
-            const line = envText
-                .split('\n')
-                .find((l) => l.startsWith('SERVICE_JWT_PUBLIC_KEYS_JSON='));
-            expect(line).toBeDefined();
-            const json = line.slice('SERVICE_JWT_PUBLIC_KEYS_JSON='.length);
-            const reg = JSON.parse(json);
-            expect(Object.keys(reg)).toEqual(
-                expect.arrayContaining([
-                    'rbac-svc-9057db2a',
-                    'gw-ed25519-9d4f042d2332f689',
-                ]),
-            );
-        });
-
-        test('each real signer entry resolves to a usable Ed25519 public key', () => {
-            const envText = fs.readFileSync(path.join(REPO_ROOT, '.env'), 'utf8');
-            const line = envText
-                .split('\n')
-                .find((l) => l.startsWith('SERVICE_JWT_PUBLIC_KEYS_JSON='));
-            const reg = JSON.parse(line.slice('SERVICE_JWT_PUBLIC_KEYS_JSON='.length));
-            for (const kid of ['rbac-svc-9057db2a', 'gw-ed25519-9d4f042d2332f689']) {
-                process.env.SERVICE_JWT_PUBLIC_KEYS_JSON = JSON.stringify(reg);
-                loadPublicKeyRegistry({ reload: true });
-                const pem = resolvePublicKeyPem(kid);
-                expect(pem).toBeTruthy();
-                const keyObj = crypto.createPublicKey(pem);
-                expect(keyObj.asymmetricKeyType).toBe('ed25519');
-            }
+    describe('independent service signer keys', () => {
+        test.each(['erp-rbac', 'erp-gateway'])('verifies %s using a separately registered key', (issuer) => {
+            const keys = { 'erp-rbac': registerEphemeralKey('test-rbac'), 'erp-gateway': registerEphemeralKey('test-gateway') };
+            const kid = issuer === 'erp-rbac' ? 'test-rbac' : 'test-gateway';
+            const pem = resolvePublicKeyPem(kid);
+            expect(crypto.createPublicKey(pem).asymmetricKeyType).toBe('ed25519');
+            expect(verifyServiceToken(mintEdToken(keys[issuer], { kid, iss: issuer })).ok).toBe(true);
+            const other = issuer === 'erp-rbac' ? 'erp-gateway' : 'erp-rbac';
+            expect(verifyServiceToken(mintEdToken(keys[other], { kid, iss: issuer })).ok).toBe(false);
         });
     });
 });

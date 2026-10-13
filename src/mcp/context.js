@@ -1,6 +1,5 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-
-export const mcpCtx = new AsyncLocalStorage();
+import { mcpCtx } from "../lib/requestContext.js";
+export { mcpCtx };
 
 export function getCtx() {
   const ctx = mcpCtx.getStore();

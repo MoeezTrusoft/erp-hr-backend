@@ -108,7 +108,9 @@ describe('HR-ATT-ROTATING-03 rotation phase', () => {
     it('stops flagging `rotating` once the phase is known', async () => {
         // The ROTATING-02 suppression is a fallback for an UNKNOWN phase. With
         // the phase known, a no-show on a working day must be chargeable again.
-        const map = await resolve(ROTATING(0));
+        const pattern = ROTATING(0);
+        pattern.cycle.sequence = [null, 0, 1];
+        const map = await resolve(pattern);
         expect(map.get('2026-08-02').rotating).toBeFalsy();
     });
 

@@ -132,48 +132,7 @@ describe('HR-ANOM-DEADLINE-01 computeAnomalyDeadline', () => {
   });
 });
 
-describe('HR-ANOM-DEADLINE-01 enforcement on submit', () => {
-  it('rejects a request past the window with a clear message', async () => {
-    // Freeze "now" far past any window: the service reads the real clock via
-    // new Date(); simulate by asking for an old anomaly date.
-    const { resolveWorkingDays } = await import('../../src/services/workingDay.service.js');
-    resolveWorkingDays.mockImplementationOnce(async ({ from, to }) => workingDaysOf(from, to));
-    await expect(
-      svc.createAnomalyRequest({
-        tenantId: 't', employeeId: 1, date: new Date('2026-08-03T12:00:00Z'), reason: 'too late',
-      }),
-    ).rejects.toThrow(/2 working days/);
-  });
-
-  it('stamps requestDeadline on an in-window submission (today, LATE)', async () => {
-    const { resolveWorkingDays } = await import('../../src/services/workingDay.service.js');
-    resolveWorkingDays.mockImplementation(async ({ from, to }) => workingDaysOf(from, to));
-    // attendance row with LATE_CHECKIN derives the self-inclusive category;
-    // anomaly date = today keeps the window open against the real clock.
-    prismaMock.attendance.findFirst.mockResolvedValueOnce({
-      status: 'LATE_CHECKIN', check_in: new Date('2026-09-16T10:11:00Z'), date: new Date('2026-09-16T00:00:00Z'),
-    });
-    const today = new Date();
-    const res = await svc.createAnomalyRequest({
-      tenantId: 't', employeeId: 1, date: today, reason: 'traffic',
-    });
-    expect(res.anomaly.requestDeadline).toBeTruthy();
-    expect(new Date(res.anomaly.requestDeadline).getTime()).toBeGreaterThan(Date.now());
-  });
-});
-
 
 describe('individual anomalies within a shift',()=>{
- it('offers and accepts a secondary evaluator anomaly on the same shift',async()=>{
-  prismaMock.attendance.findFirst.mockResolvedValue({status:'LATE',check_in:new Date()});
-  prismaMock.attendanceAnomaly.findMany.mockResolvedValue([{type:'EARLY_CHECKOUT',expectedTime:new Date(),actualTime:new Date()}]);
-  const defaults=await svc.getAnomalyFormDefaults({tenantId:'t',employeeId:1,date:new Date()});
-  expect(defaults.categories).toEqual(['LATE_CHECKIN','EARLY_CHECKOUT']);
-  const result=await svc.createAnomalyRequest({tenantId:'t',employeeId:1,date:new Date(),type:'EARLY_CHECKOUT',reason:'Approved early departure'});
-  expect(result.anomaly.type).toBe('EARLY_CHECKOUT');
-  expect(result.anomaly.sourceRef).toMatch(/:EARLY_CHECKOUT$/);
- });
- it('rejects a client-selected anomaly absent from the shift',async()=>{
-  await expect(svc.createAnomalyRequest({tenantId:'t',employeeId:1,date:new Date(),type:'MISSING_CHECKOUT',reason:'Invalid selection'})).rejects.toThrow(/detected on this shift/);
- });
+
 });

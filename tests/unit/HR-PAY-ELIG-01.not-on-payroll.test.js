@@ -24,6 +24,10 @@ let punches;
 let employees;
 
 const prismaMock = {
+    attendanceGraceRule: { findMany: jest.fn(async () => []) },
+    attendanceGraceMembership: { findMany: jest.fn(async () => []) },
+    attendanceManualTime: { findMany: jest.fn(async () => []) },
+    attendance: { findMany: jest.fn(async () => []) },
     attendanceDevicePunch: { findMany: jest.fn(async () => punches) },
     employee: {
         // Mirrors the real client: it filters on the ACTUAL column names, so a
@@ -54,6 +58,13 @@ jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
     resolveWorkingDays: jest.fn(async () => new Map()),
 }));
 
+const { shiftFor } = await import('../../src/lib/attendanceShift.js');
+jest.unstable_mockModule('../../src/lib/attendanceRuntime.js', () => ({
+    loadAttendanceRuntime: jest.fn(async () => ({ resolve: (_id, day, anchor) => {
+        const pattern = { shift: { from: '09:00', to: '18:00' }, offDays: [] };
+        return { pattern, shift: shiftFor(pattern, day, anchor), policy: {}, working: true };
+    } })),
+}));
 const { replayTenant } = await import('../../src/lib/attendanceReplay.js');
 
 const at = (employeeId, hhmm) => ({

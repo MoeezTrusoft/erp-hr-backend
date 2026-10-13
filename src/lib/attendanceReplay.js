@@ -15,7 +15,7 @@ import { resolveGrace, shiftRuleKey, legacyGraceDefaults } from './attendanceAno
 // HR-ATT-POLICY-01.
 import prisma from "./prisma.js";
 import { evaluateShift } from "./attendanceEvaluator.js";
-import { loadAttendanceRuntime } from "../services/attendanceSetup.service.js";
+import { loadAttendanceRuntime } from "./attendanceRuntime.js";
 import { civilNow, civilInstant } from './attendanceClock.js';
 import { dateRange } from './attendanceDates.js';
 import { evaluateSiteEvidence } from './attendanceSiteRules.js';

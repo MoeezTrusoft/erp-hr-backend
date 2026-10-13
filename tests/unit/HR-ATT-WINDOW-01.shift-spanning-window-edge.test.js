@@ -34,6 +34,10 @@ const ALL_PUNCHES = [
 let queriedRange;
 
 const prismaMock = {
+    attendanceGraceRule: { findMany: jest.fn(async () => []) },
+    attendanceGraceMembership: { findMany: jest.fn(async () => []) },
+    attendanceManualTime: { findMany: jest.fn(async () => []) },
+    attendance: { findMany: jest.fn(async () => []) },
     // Honours the where-clause, so a query that fails to widen its range simply
     // does not see the 31 July arrival — exactly as production behaves.
     attendanceDevicePunch: {
@@ -63,7 +67,7 @@ jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
 }));
 
 const { shiftFor } = await import('../../src/lib/attendanceShift.js');
-jest.unstable_mockModule('../../src/services/attendanceSetup.service.js', () => ({
+jest.unstable_mockModule('../../src/lib/attendanceRuntime.js', () => ({
     loadAttendanceRuntime: jest.fn(async () => ({ resolve: (_employeeId, day, anchor) => {
         const pattern = { type: 'weekly', shift: { from: '22:00', to: '10:00' }, offDays: [] };
         return { pattern, shift: shiftFor(pattern, day, anchor), policy: {}, working: true, reason: null };

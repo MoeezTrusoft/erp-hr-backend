@@ -18,7 +18,7 @@ describe('published on-call and roster correction rules',()=>{
  });
  it('restates a stale weekly-off row when the called-in employee is a no-show',async()=>{
   const db=evaluationDb({pattern:off,rows:[{status:'WEEKLY_OFF'}],extra:{attendanceCallIn:[call]}});await evaluate(db);
-  expect(db.snapshot().attendance[0]).toMatchObject({id:5,status:'ABSENT',day_credit:0,processingState:'FINALIZED'});
+  expect(db.snapshot().attendance[0]).toMatchObject({id:5,status:'ABSENT',day_credit:null,processingState:'NEEDS_REVIEW'});
  });
  it('uses real work evidence on the called-in date',async()=>{
   const db=evaluationDb({pattern:off,punches:[['09:00',0],['17:00',1]],extra:{attendanceCallIn:[call]}});await evaluate(db);

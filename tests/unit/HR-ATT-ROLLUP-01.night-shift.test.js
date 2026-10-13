@@ -39,9 +39,11 @@ describe('sync capture uses published shift evaluation', () => {
   });
   it('retains manual correction while retaining new raw evidence', async () => {
     const corrected = await db.attendance.create({ data: { tenantId: TENANT, employeeId: 1, date: new Date('2026-08-14'), check_in: new Date('2026-08-14T22:00:00Z'), total_hours: 10, status: 'PRESENT', manually_corrected: true } });
-    await sync([punch('2026-08-14T23:30:00','IN')]);
+    await syncAttendanceFromPunches({ sn:'DEVICE-1',tenantId:TENANT,punches:[punch('2026-08-14T23:30:00','IN')],dryRun:false });
+    expect((await drainCapture({now},db)).failed).toBe(1); // Conflicting manual/device evidence requires review.
     expect(records()[0]).toEqual(corrected);
-    expect(db.snapshot().attendanceDevicePunch).toHaveLength(1);
+    expect(db.snapshot().attendanceDevicePunch).toHaveLength(0); // Promotion rolls back atomically.
+    expect(db.snapshot().attendanceCaptureEvent).toHaveLength(1); // Original receipt remains for review.
   });
   it('judges lateness against the published night shift', async () => {
     await sync([punch('2026-08-14T22:15:00','IN'),punch('2026-08-15T08:00:00','OUT')]);

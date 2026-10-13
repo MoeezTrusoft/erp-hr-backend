@@ -106,7 +106,7 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
       });
     }
   } finally {
-    await transport.close().catch(() => {});
+    await transport?.close().catch(() => {});
     logger.info({ method: body?.method }, "hr: transport closed");
   }
 });

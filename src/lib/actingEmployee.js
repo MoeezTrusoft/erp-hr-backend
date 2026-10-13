@@ -22,7 +22,7 @@
 
 import prisma from "./prisma.js";
 import { scopedEmployeeWhere } from "./tenancy.js";
-export { hasPermission as canManage } from "../mcp/utils/assertPermission.js";
+export { hasPermission as canManage } from "./assertPermission.js";
 
 const toIntOrNull = (v) => {
   if (v == null || v === "") return null;

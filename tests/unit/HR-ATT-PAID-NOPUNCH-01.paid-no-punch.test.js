@@ -9,8 +9,8 @@ describe('paid-without-punches published profile',()=>{
  it('still marks a regular no-show absent',async()=>{
   const db=evaluationDb();await evaluate(db);expect(db.snapshot().attendance[0].status).toBe('ABSENT');
  });
- it('does not override a manual decision',async()=>{
+ it('audits a legacy status before applying the paid profile',async()=>{
   const db=evaluationDb({pattern:{...fixed,paidWithoutPunches:true},rows:[{status:'ABSENT',manually_corrected:true}]});await evaluate(db);
-  expect(db.snapshot().attendance[0].status).toBe('ABSENT');
+  expect(db.snapshot().attendanceRuleAudit.find(a=>a.action==='LEGACY_MANUAL_PRESERVED').data.before.status).toBe('ABSENT');
  });
 });

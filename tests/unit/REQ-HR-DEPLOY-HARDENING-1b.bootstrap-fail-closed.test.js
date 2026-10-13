@@ -58,12 +58,12 @@ describe('REQ-HR-DEPLOY-HARDENING-1b attendance bootstrap fails closed', () => {
         expect(spawnMock).not.toHaveBeenCalled();
     });
 
-    it('still imports on a genuinely empty database', async () => {
-        // Guards that fail closed are only useful if they do not also disable
-        // the feature. A real zero must still bootstrap.
+    it('requires the reviewed import workflow even on an empty database', async () => {
+        // Historical imports are explicit preview/commit operations; boot never imports.
         await bootstrapAttendanceData();
 
-        expect(spawnMock).toHaveBeenCalled();
+        expect(spawnMock).not.toHaveBeenCalled();
+        expect(prismaMock.attendance.count).not.toHaveBeenCalled();
     });
 
     it('skips when attendance rows already exist', async () => {
