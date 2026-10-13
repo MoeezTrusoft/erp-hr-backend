@@ -48,7 +48,7 @@
     "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
-    "nodemailer": "^7.0.4",
+    "nodemailer": "^10.1.0",
     "pdfkit": "^0.15.2",
     "pino": "^10.3.1",
     "prisma": "^7.8.0",
@@ -74,6 +74,15 @@
     "eslint": "^10.5.0",
     "jest": "^30.2.0",
     "nodemon": "^3.1.10",
+    "pg": "^8.16.3",
     "supertest": "^7.1.4"
+  },
+  "overrides": {
+    "@prisma/config": {
+      "deepmerge-ts": "^8.0.0"
+    },
+    "prisma": {
+      "mysql2": "^3.23.1"
+    }
   }
 }

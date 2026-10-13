@@ -14,7 +14,7 @@
 // contexts via mcpCtx.run({ system:true }).
 import { Prisma } from '@prisma/client';
 import { NIL as NIL_UUID, validate as isUuid } from 'uuid';
-import { mcpCtx } from '../mcp/context.js';
+import { mcpCtx } from './requestContext.js';
 
 // model -> tenant column ('tenantId' | 'tenant_id'), derived from the schema.
 const TENANT_COLUMN = new Map();

@@ -34,7 +34,7 @@ app.use(attachHrContext);
 app.use('/api/gdpr', gdprRoutes);
 
 // Helper: a request carrying a gateway-resolved identity + entitlement blob.
-const asUser = (req, { permissions = {}, tenant = 'tenant-a' } = {}) =>
+const asUser = (req, { permissions = {}, tenant: _tenant = 'tenant-a' } = {}) =>
     req
         .set('x-user-id', '7')
         .set('x-user-roles', JSON.stringify(['DPO']))

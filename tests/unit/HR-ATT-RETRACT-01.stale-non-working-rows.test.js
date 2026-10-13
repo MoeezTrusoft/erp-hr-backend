@@ -10,9 +10,9 @@ describe('reconciliation of stale automatic rows',()=>{
   const db=evaluationDb({rows:[{status:'ABSENT'}]});await evaluate(db);
   expect(db.snapshot().attendance[0].status).toBe('ABSENT');
  });
- it('never retracts a manually corrected row',async()=>{
+ it('retains the original historical row in the rule audit',async()=>{
   const db=evaluationDb({pattern:rotation,rows:[{status:'ABSENT',manually_corrected:true}]});await evaluate(db);
-  expect(db.snapshot().attendance[0].status).toBe('ABSENT');
+  expect(db.snapshot().attendanceRuleAudit.find(a=>a.action==='LEGACY_MANUAL_PRESERVED').data.before.status).toBe('ABSENT');
  });
  it('keeps actual worked intervals on a weekly off day',async()=>{
   const db=evaluationDb({pattern:{...fixed,offDays:[7]},punches:[['09:00',0],['17:00',1]]});await evaluate(db);

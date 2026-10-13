@@ -19,7 +19,7 @@
 // Controllers call `guardAndAuditC4Read(req, { resource, action, target })`
 // once, then perform the decrypted read through the normal (transparent)
 // service path.
-import { hasPermission } from '../mcp/utils/assertPermission.js';
+import { hasPermission } from './assertPermission.js';
 import { logAction } from '../utils/logs.js';
 import logger from './logger.js';
 

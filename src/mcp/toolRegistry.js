@@ -132,6 +132,9 @@ function withSafeToolCallbacks(server) {
   if (server.__hrSafeWrapped) return server;
   const originalTool = server.tool.bind(server);
   server.tool = function wrappedTool(name, ...rest) {
+    // The SDK's legacy overload cannot identify an empty ZodObject. Normalize
+    // only that empty shape; retain every populated schema and its refinements.
+    rest = rest.map(arg => arg?.shape && Object.keys(arg.shape).length === 0 ? {} : arg);
     try {
       if (typeof name !== "string" || rest.length === 0) {
         return originalTool(name, ...rest);
@@ -204,6 +207,9 @@ function withAnnotationInjection(server) {
   const originalTool = server.tool.bind(server);
 
   server.tool = function wrappedTool(name, ...rest) {
+    // The SDK's legacy overload cannot identify an empty ZodObject. Normalize
+    // only that empty shape; retain every populated schema and its refinements.
+    rest = rest.map(arg => arg?.shape && Object.keys(arg.shape).length === 0 ? {} : arg);
     // Never let annotation injection break registration — fall back to the
     // original call if anything about the arg shape is unexpected.
     try {

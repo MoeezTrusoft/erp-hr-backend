@@ -45,7 +45,7 @@ const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
   { name: 'hr_leave_requests_list', ctrl: () => leaveCtl.mcpListLeaveRequests, gate: 'hr:leave', action: 'VIEW', args: { page: 1, pageSize: 10 } },
-  { name: 'hr_leave_request_create', ctrl: () => leaveCtl.mcpCreateLeaveRequest, gate: 'hr:leave', action: 'CREATE', args: { employeeId: 7, leaveType: 'annual' } },
+  { name: 'hr_leave_request_create', ctrl: () => leaveCtl.mcpCreateLeaveRequest, gate: 'hr:leave', action: 'CREATE', args: { employeeId: 8, leaveType: 'annual' } },
   { name: 'hr_leave_request_approve', ctrl: () => leaveCtl.mcpApproveLeaveRequest, gate: 'hr:leave', action: 'CREATE', args: { id: '1' } },
   { name: 'hr_leave_request_reject', ctrl: () => leaveCtl.mcpRejectLeaveRequest, gate: 'hr:leave', action: 'CREATE', args: { id: '1', reason: 'Not enough coverage' } },
   { name: 'hr_leave_request_cancel', ctrl: () => leaveCtl.mcpCancelLeaveRequest, gate: 'hr:leave', action: 'EDIT', args: { id: 1 } },

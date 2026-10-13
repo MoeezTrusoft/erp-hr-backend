@@ -2,24 +2,83 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
-  pull-requests: write
 jobs:
   ci:
-    uses: MoeezTrusoft/erp-trusoft-k8s/.github/workflows/reusable-node-ci.yml@main
-    with:
-      gate-cmd: "gate:p1"
-      build-contracts: true
-    secrets: inherit
+    name: lint, test, image and security
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout shared contracts (read-only deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: MoeezTrusoft/erp-contracts
+          path: _contracts
+          ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Place contracts beside the service for file dependency
+        run: mv _contracts ../contracts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Foundation and architecture gate
+        run: npm run gate:p1
+      - name: Production image
+        run: docker build --build-context contracts=../contracts -t ci-validate:${{ github.sha }} .
+      - name: Runtime dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ci-validate:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+  secrets:
+    name: Gitleaks secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan changed commits with the open-source CLI
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          range="$HEAD_SHA"
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            range="$BASE_SHA..$HEAD_SHA"
+          fi
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-opts="$range" .
   ai-review:
+    if: github.event_name == 'pull_request'
     name: AI review (DeepSeek)
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: MoeezTrusoft/erp-trusoft-k8s/.github/actions/ai-review@main
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ai-review
         with:
           api-key: ${{ secrets.AI_REVIEW_API_KEY }}
           base-url: ${{ vars.AI_REVIEW_BASE_URL || 'https://api.deepseek.com/v1' }}

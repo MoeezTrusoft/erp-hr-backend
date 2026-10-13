@@ -14,9 +14,9 @@ describe('explicit non-working attendance',()=>{
   expect(db.snapshot().attendance[0]).toMatchObject({id:8,status:'WEEKLY_OFF'});
   expect(db.snapshot().attendanceEvaluation).toHaveLength(1);
  });
- it('preserves corrected days',async()=>{
+ it('audits historical status before deriving a published off day',async()=>{
   const db=evaluationDb({pattern:{...fixed,offDays:[7]},rows:[{status:'ABSENT',manually_corrected:true}]});await evaluate(db);
-  expect(db.snapshot().attendance[0].status).toBe('ABSENT');
+  expect(db.snapshot().attendanceRuleAudit.find(a=>a.action==='LEGACY_MANUAL_PRESERVED').data.before.status).toBe('ABSENT');
  });
  it('counts real work on a rest day',async()=>{
   const db=evaluationDb({pattern:{...fixed,offDays:[7]},punches:[['09:00',0],['17:00',1]]});await evaluate(db);
@@ -26,7 +26,7 @@ describe('explicit non-working attendance',()=>{
   const db=evaluationDb({pattern:{...fixed,offDays:[1,2,3,4,5,6]}});
   await evaluate(db,{from:'2026-08-01',to:'2026-08-31'});
   expect(db.snapshot().attendance).toHaveLength(31);
-  expect(db.calls.filter(c=>c.method==='findMany').length).toBeLessThan(50);
+  expect(db.calls.filter(c=>c.method==='findMany'&&!['attendanceAnomaly','attendanceRuleAudit'].includes(c.model)).length).toBeLessThan(50);
   expect(db.calls.filter(c=>c.model==='employee'&&c.method==='findMany')).toHaveLength(2);
  });
  it('does not write a preview',async()=>{

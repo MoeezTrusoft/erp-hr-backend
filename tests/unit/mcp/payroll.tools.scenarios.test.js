@@ -11,6 +11,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/payrollMcpController.js',
   mcpCreateEarningType: jest.fn(async () => ({ success: true })),
   mcpCreateEmploymentTerms: jest.fn(async () => ({ success: true })),
   mcpCreatePayrollAssignment: jest.fn(async () => ({ success: true })),
+  mcpRejectPayrollRun: jest.fn(async () => ({ success: true })),
   mcpCreatePayrollRun: jest.fn(async () => ({ success: true })),
   mcpDistributePayslip: jest.fn(async () => ({ success: true })),
   mcpFinalizePayrollRun: jest.fn(async () => ({ success: true })),
@@ -73,7 +74,7 @@ describe('PAYROLL-SCENARIOS — registration', () => {
 });
 
 describe.each(TOOLS)('$name scenarios', ({ name, ctrl: ctrlOf, gate, action, args }) => {
-  const grant = { [gate]: [action] };
+  const grant = { [gate]: name === 'hr_payslips_list' ? ['EDIT'] : [action] };
 
   beforeEach(() => jest.clearAllMocks());
 

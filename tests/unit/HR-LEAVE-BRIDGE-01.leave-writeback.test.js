@@ -50,7 +50,7 @@ const prismaMock = {
     },
     attendance: {
         findUnique: jest.fn(async ({ where }) =>
-            attendanceRows.get(where.employeeId_date.date.toISOString().slice(0, 10)) || null),
+            attendanceRows.get(where.tenantId_employeeId_date.date.toISOString().slice(0, 10)) || null),
         update: jest.fn(async ({ where, data }) => {
             updatedAttendance.push({ id: where.id, data });
             return { id: where.id };

@@ -66,7 +66,7 @@ jest.unstable_mockModule('../../../src/mcp/controllers/recruitmentMcpController.
 jest.unstable_mockModule('../../../src/mcp/controllers/payrollMcpController.js', () =>
   stub(
     ['mcpCancelPayrollRun', 'mcpCreateDeductionType', 'mcpCreateEarningType', 'mcpCreateEmploymentTerms',
-     'mcpCreatePayrollAssignment', 'mcpCreatePayrollRun', 'mcpDistributePayslip', 'mcpFinalizePayrollRun',
+     'mcpCreatePayrollAssignment', 'mcpCreatePayrollRun', 'mcpRejectPayrollRun', 'mcpDistributePayslip', 'mcpFinalizePayrollRun',
      'mcpApprovePayrollRun',
      'mcpListDeductionTypes', 'mcpListEarningTypes', 'mcpListPayrollAuditLogs', 'mcpListPayrollRuns',
      'mcpProcessPayrollRun', 'mcpExportBankDisbursementFile'],
@@ -145,7 +145,7 @@ describe('IC-1 — hr_*_list MCP tools (FE list-screen binding)', () => {
   });
 
   describe.each(CASES)('%s', (name, args, ctlOf, gateKey, sentinelId) => {
-    const grant = { [gateKey]: ['VIEW'] };
+    const grant = { [gateKey]: name === 'hr_payslips_list' ? ['EDIT'] : ['VIEW'] };
 
     it('returns the FE paginated envelope { items, total, page, pageSize }', async () => {
       const res = await call(name, args, { permissions: grant });
@@ -178,7 +178,7 @@ describe('IC-1 — hr_*_list MCP tools (FE list-screen binding)', () => {
     });
 
     it(`requires ${gateKey}:VIEW specifically (wrong action → 403)`, async () => {
-      const res = await call(name, args, { permissions: { [gateKey]: ['CREATE', 'EDIT', 'DELETE'] } });
+      const res = await call(name, args, { permissions: { [gateKey]: name === 'hr_payslips_list' ? ['VIEW'] : ['CREATE', 'EDIT', 'DELETE'] } });
       expect(res.isError).toBe(true);
       expect(parse(res).status).toBe(403);
       expect(ctlOf()).not.toHaveBeenCalled();

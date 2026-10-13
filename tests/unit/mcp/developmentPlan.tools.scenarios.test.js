@@ -18,6 +18,7 @@ const devPlanMock = {
   delete: jest.fn(async () => ({})),
 };
 const payslipQuestionMock = {
+  findFirst: jest.fn(async () => ({ id: 1 })),
   findMany: jest.fn(async () => []),
   findUnique: jest.fn(async () => ({ id: 1 })),
   update: jest.fn(async () => ({ id: 1 })),
@@ -88,8 +89,8 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
     expect(parse(res).status).toBe(403);
   });
 
-  it('forged isAdmin grants nothing (still 403)', async () => {
-    const res = await call(name, args, { user: { ...USER, isAdmin: true }, permissions: {} });
+  it('unverified admin headers grant nothing (still 403)', async () => {
+    const res = await call(name, args, { user: { ...USER, headers: { 'x-is-admin': 'true' } }, permissions: {} });
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
   });

@@ -84,7 +84,7 @@ export const componentPctOfBasic = (pctOfTotal) => (pctOfTotal / BASIC_PCT_OF_TO
 export function parseMoney(raw) {
   const c = cleanCell(raw);
   if (c === "") return { value: null, valid: true, blank: true };
-  const n = Number(String(c).replace(/[^0-9.\-]/g, ""));
+  const n = Number(String(c).replace(/[^0-9.-]/g, ""));
   if (!Number.isFinite(n) || n < 0) return { value: null, valid: false };
   return { value: Math.round(n * 100) / 100, valid: true, blank: false };
 }

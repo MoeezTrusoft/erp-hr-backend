@@ -38,7 +38,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 import { resolvePublicKeyPem } from './serviceJwtKeys.js';
-import { mcpCtx } from '../mcp/context.js';
+import { mcpCtx } from './requestContext.js';
 
 // Source the caller's VERIFIED tenant from the ambient request context (set by
 // establishTenantContext for REST and the MCP router) so peer service tokens

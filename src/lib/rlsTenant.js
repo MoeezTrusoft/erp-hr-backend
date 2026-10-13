@@ -18,7 +18,7 @@
 // transaction (a batch $transaction shares one connection). Non-RLS models and
 // no-context queries are passed straight through (the tenantScope extension
 // denies genuinely context-less callers before they reach here).
-import { mcpCtx } from '../mcp/context.js';
+import { mcpCtx } from './requestContext.js';
 
 // INTERACTIVE-TRANSACTION helper. The $allOperations extension below sets the
 // GUC in its OWN batch $transaction, which does NOT apply to the connection of
