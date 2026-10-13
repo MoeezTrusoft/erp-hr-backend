@@ -16,7 +16,8 @@ run_check() {
   fi
   printf '::endgroup::\n'
 }
-run_check tests npm test -- --runInBand --silent --colors=false
+# Recycle Jest workers between suites to bound ESM module-cache growth.
+run_check tests npm test -- --maxWorkers=2 --workerIdleMemoryLimit=512MB --silent --colors=false
 run_check lint npx --no-install eslint --max-warnings 0
 run_check boundaries npx --no-install depcruise src/lib --config .dependency-cruiser.cjs
 # The workflow separately runs Gitleaks on the checkout and its history.
