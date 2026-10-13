@@ -800,16 +800,28 @@ const buildEmployeeListWhere = (query, tenantId, q) => {
   const where = {
     AND: [
       scopedEmployeeWhere(tenantId, {}),
+      // Global search spans every column the directory shows — name (all parts),
+      // code, department (business-unit name), role/position, email, phone,
+      // manager and status — not just the name/email/job-title trio it used to.
       q
         ? {
             OR: [
               { employee_name: { contains: q, mode: "insensitive" } },
               { first_name: { contains: q, mode: "insensitive" } },
               { last_name: { contains: q, mode: "insensitive" } },
+              { preferred_name: { contains: q, mode: "insensitive" } },
+              { middle_name: { contains: q, mode: "insensitive" } },
               { employee_code: { contains: q, mode: "insensitive" } },
               { email: { contains: q, mode: "insensitive" } },
               { work_email: { contains: q, mode: "insensitive" } },
+              { work_phone: { contains: q, mode: "insensitive" } },
+              { personal_contact: { contains: q, mode: "insensitive" } },
               { job_title: { contains: q, mode: "insensitive" } },
+              { status: { contains: q, mode: "insensitive" } },
+              { employement_status: { contains: q, mode: "insensitive" } },
+              { businessUnit: { is: { name: { contains: q, mode: "insensitive" } } } },
+              { Position: { is: { title: { contains: q, mode: "insensitive" } } } },
+              { manager: { is: { employee_name: { contains: q, mode: "insensitive" } } } },
             ],
           }
         : {},
@@ -876,8 +888,14 @@ const EMPLOYEE_ORDER_BY = {
   manager: (o) => ({ manager: { employee_name: o } }),
 };
 const EMPLOYEE_SORTS = Object.keys(EMPLOYEE_ORDER_BY);
-const buildEmployeeOrderBy = (sort, order, fallback = "created_at") =>
-  (EMPLOYEE_ORDER_BY[sort] || EMPLOYEE_ORDER_BY[fallback])(order);
+// Inactive/disabled employees are pinned to the bottom of the directory: the
+// status grouping leads every sort (Active < Disabled < Inactive), and the
+// requested sort applies inside each group. Skipped only when the caller is
+// already sorting by status, so that sort isn't fought by the grouping.
+const buildEmployeeOrderBy = (sort, order, fallback = "created_at") => {
+  const primary = (EMPLOYEE_ORDER_BY[sort] || EMPLOYEE_ORDER_BY[fallback])(order);
+  return sort === "status" ? primary : [{ status: "asc" }, primary];
+};
 
 // A directory row is tagged a "new hire" when the employee has an OPEN
 // onboarding checklist (status != COMPLETED) OR joined within this many days.
