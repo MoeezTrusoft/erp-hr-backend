@@ -1,0 +1,37 @@
+name: "ERP AI Review"
+description: "Model-agnostic (DeepSeek by default) ERP-grade PR diff review — catches what lint/tests/build can't."
+inputs:
+  api-key:
+    description: "API key for the model provider (DeepSeek / OpenAI-compatible)."
+    required: true
+  base-url:
+    description: "OpenAI-compatible base URL."
+    required: false
+    default: "https://api.deepseek.com/v1"
+  model:
+    description: "Model id."
+    required: false
+    default: "deepseek-chat"
+  blocking:
+    description: "If 'true', fail the check when a critical/high finding exists."
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Run ERP AI review
+      shell: bash
+      env:
+        AI_REVIEW_API_KEY: ${{ inputs.api-key }}
+        AI_REVIEW_BASE_URL: ${{ inputs.base-url }}
+        AI_REVIEW_MODEL: ${{ inputs.model }}
+        AI_REVIEW_BLOCKING: ${{ inputs.blocking }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        RUBRIC_PATH: ${{ github.action_path }}/ai-review-rubric.md
+      run: python "${{ github.action_path }}/ai_review.py"
