@@ -1437,6 +1437,69 @@ export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
   };
 };
 
+// ── Photo slot removal (profile / cover) ─────────────────────────────────
+//
+// WHY A DEDICATED REMOVE instead of `hr_employee_update` with an empty photo:
+// the update contract carries a media id / URL, not "clear this slot" — an
+// absent field means "leave it", so a null can never express removal. Clearing
+// the slot also has to report WHICH asset was detached, because the DAM copy and
+// the employee's reference to it are two different things owned by two different
+// grants: unlinking is hr:employee EDIT, while moving the library asset to the
+// DAM trash is dam:asset DELETE. This service therefore NEVER touches DAM — it
+// only detaches, and the caller decides what to do with the returned mediaId.
+const EMPLOYEE_PHOTO_SLOTS = {
+  profile: {
+    mediaIdField: "employee_media_id",
+    urlField: "photo_url",
+  },
+  cover: {
+    mediaIdField: "cover_photo_media_id",
+    urlField: "cover_photo_url",
+  },
+};
+
+const removeEmployeePhotoSlot = async (id, slot, actorId) => {
+  const fields = EMPLOYEE_PHOTO_SLOTS[slot];
+  const employee = await prisma.employee.findUnique({
+    where: { id: Number(id) },
+    select: { id: true, [fields.mediaIdField]: true, [fields.urlField]: true },
+  });
+
+  if (!employee) {
+    throw Object.assign(new Error("Employee not found"), { status: 404 });
+  }
+
+  const mediaId = employee[fields.mediaIdField] ?? null;
+  const url = employee[fields.urlField] ?? null;
+  const removed = Boolean(mediaId || url);
+
+  if (removed) {
+    await prisma.employee.update({
+      where: { id: Number(id) },
+      data: {
+        [fields.mediaIdField]: null,
+        [fields.urlField]: null,
+        updatedById: actorId ? Number(actorId) : undefined,
+      },
+    });
+  }
+
+  return { removed, mediaId, url };
+};
+
+/**
+ * Detach the employee's profile photo.
+ * @returns {Promise<{ removed: boolean, mediaId: number|null, url: string|null }>}
+ *   `mediaId` identifies the DAM asset that was attached (null when the slot was
+ *   already empty or held a non-DAM URL) so the caller can offer to trash it.
+ */
+export const removeEmployeeProfilePhoto = async (id, actorId) =>
+  removeEmployeePhotoSlot(id, "profile", actorId);
+
+/** Detach the employee's cover (banner) photo. Same contract as the profile slot. */
+export const removeEmployeeCoverPhoto = async (id, actorId) =>
+  removeEmployeePhotoSlot(id, "cover", actorId);
+
 export const createEmployeeDocument = async (employeeId, payload, file, actorId) => {
   await requireRecord("employee", employeeId, "Employee");
   const data = createEmployeeDocumentSchema.parse(payload || {});

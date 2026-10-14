@@ -159,6 +159,17 @@ export async function mcpUploadEmployeeCoverPhoto(user, id, data) {
   return hrContractService.uploadEmployeeCoverPhoto(id, data, null, await requireEmployeeActor(user));
 }
 
+// Photo removal detaches only the employee's reference — the DAM asset itself is
+// left for the caller to deal with (trash it under dam:asset DELETE, or keep it
+// in the library). See removeEmployeePhotoSlot in hrContract.service.js.
+export async function mcpRemoveEmployeeProfilePhoto(user, id) {
+  return hrContractService.removeEmployeeProfilePhoto(id, await requireEmployeeActor(user));
+}
+
+export async function mcpRemoveEmployeeCoverPhoto(user, id) {
+  return hrContractService.removeEmployeeCoverPhoto(id, await requireEmployeeActor(user));
+}
+
 export async function mcpCreateEmployeeDocument(user, employeeId, data) {
   return hrContractService.createEmployeeDocument(employeeId, data, null, await requireEmployeeActor(user));
 }

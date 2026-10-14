@@ -36,6 +36,8 @@ import {
   mcpUpdatePosition,
   mcpGetPositionByPositionId,
   mcpUpdatePositionStatus,
+  mcpRemoveEmployeeCoverPhoto,
+  mcpRemoveEmployeeProfilePhoto,
   mcpUploadEmployeeCoverPhoto,
   mcpUploadEmployeeProfilePhoto,
 } from "../controllers/employeeMcpController.js";
@@ -577,6 +579,32 @@ export function registerEmployeeTools(server) {
       const data = await mcpUploadEmployeeCoverPhoto(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_employee_cover_photo_attach")
+  );
+
+  server.tool(
+    "hr_employee_profile_photo_remove",
+    "Remove the employee's profile photo from their record",
+    { id: z.string().min(1) },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      // EDIT, not DELETE: this detaches a reference on the employee record. The
+      // DAM copy is untouched — trashing that is the DAM's own dam:asset DELETE.
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      const data = await mcpRemoveEmployeeProfilePhoto(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_profile_photo_remove")
+  );
+
+  server.tool(
+    "hr_employee_cover_photo_remove",
+    "Remove the employee's cover (banner) photo from their record",
+    { id: z.string().min(1) },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
+      const data = await mcpRemoveEmployeeCoverPhoto(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_employee_cover_photo_remove")
   );
 
   server.tool(

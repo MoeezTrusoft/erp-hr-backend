@@ -1,6 +1,6 @@
 // tests/unit/mcp/employee.tools.scenarios.test.js
 //
-// Per-tool scenario matrix for HR employee & position tools (27 tools).
+// Per-tool scenario matrix for HR employee & position tools (29 tools).
 // DB-free: controller is mocked; tool→controller dispatch + gate is asserted.
 //
 // NOTE: we verify happy-path dispatch via return value (not mock call counts)
@@ -41,6 +41,8 @@ jest.unstable_mockModule('../../../src/mcp/controllers/employeeMcpController.js'
   mcpUpdatePositionStatus: jest.fn(async () => ({ success: true })),
   mcpUploadEmployeeCoverPhoto: jest.fn(async () => ({ success: true })),
   mcpUploadEmployeeProfilePhoto: jest.fn(async () => ({ success: true })),
+  mcpRemoveEmployeeCoverPhoto: jest.fn(async () => ({ success: true })),
+  mcpRemoveEmployeeProfilePhoto: jest.fn(async () => ({ success: true })),
 }));
 
 const employeeCtl = await import('../../../src/mcp/controllers/employeeMcpController.js');
@@ -85,6 +87,10 @@ const TOOLS = [
   { name: 'hr_employee_delete', gate: 'hr:employee', action: 'DELETE', args: { id: 7 } },
   { name: 'hr_employee_profile_photo_attach', gate: 'hr:employee', action: 'EDIT', args: { id: 7, mediaId: 'm1' } },
   { name: 'hr_employee_cover_photo_attach', gate: 'hr:employee', action: 'EDIT', args: { id: 7, mediaId: 'm1' } },
+  // Removal detaches the reference on the employee record — EDIT, like attach.
+  // (Trashing the DAM asset is the DAM's own dam:asset DELETE, asserted there.)
+  { name: 'hr_employee_profile_photo_remove', gate: 'hr:employee', action: 'EDIT', args: { id: 7 } },
+  { name: 'hr_employee_cover_photo_remove', gate: 'hr:employee', action: 'EDIT', args: { id: 7 } },
   { name: 'hr_employee_document_create', gate: 'hr:employee', action: 'CREATE', args: { employeeId: 7, mediaId: 'm1' } },
   { name: 'hr_position_create', gate: 'hr:employee', action: 'CREATE', args: { title: 'Engineer' } },
   { name: 'hr_position_update', gate: 'hr:employee', action: 'EDIT', args: { id: 1, title: 'Senior' } },
