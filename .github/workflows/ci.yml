@@ -7,23 +7,29 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   ci:
     name: lint, test, image and security
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      NPM_CONFIG_FETCH_RETRIES: '4'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Checkout shared contracts (read-only deploy key)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: MoeezTrusoft/erp-contracts
+          ref: ff1a16cd969a78d9acc438c91f171f83c331dca6
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
       - name: Place contracts beside the service for file dependency
         run: mv _contracts ../contracts
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           cache: npm
@@ -32,6 +38,8 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Foundation and architecture gate
+        env:
+          GATE_LOG_DIR: ${{ runner.temp }}/gate-logs
         run: npm run gate:p1
       - name: Production image
         run: docker build --build-context contracts=../contracts -t ci-validate:${{ github.sha }} .
@@ -44,12 +52,19 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
+      - name: Retain gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gate-diagnostics
+          path: ${{ runner.temp }}/gate-logs
+          retention-days: 7
   secrets:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Scan changed commits with the open-source CLI
@@ -73,11 +88,12 @@ jobs:
     if: github.event_name == 'pull_request'
     name: AI review (DeepSeek)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/ai-review
         with:
           api-key: ${{ secrets.AI_REVIEW_API_KEY }}

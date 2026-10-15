@@ -39,6 +39,8 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "")
 PR = os.environ.get("PR_NUMBER", "")
 RUBRIC_PATH = os.environ.get("RUBRIC_PATH", "ci-cd/ai-review-rubric.md")
 MAX_DIFF = int(os.environ.get("MAX_DIFF_CHARS", "180000"))
+HEAD_SHA = os.environ.get("PR_HEAD_SHA", "")
+MARKER = "<!-- erp-ai-review -->"
 BLOCKING_SEVERITIES = {"critical", "high"}
 
 
@@ -80,6 +82,8 @@ def call_model(system, user):
                    payload)
     except urllib.error.HTTPError as e:
         # Retry once without response_format for providers that reject it.
+        if e.code != 400:
+            raise
         payload.pop("response_format", None)
         out = http("POST", f"{BASE_URL}/chat/completions",
                    {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
@@ -95,7 +99,17 @@ def parse_findings(text):
         obj = json.loads(text)
     except Exception:
         return None, text  # non-JSON: post raw
-    return obj.get("findings", []), obj.get("summary", "")
+    if not isinstance(obj, dict) or not isinstance(obj.get("findings"), list) or not isinstance(obj.get("summary"), str):
+        return None, "Provider response did not match the review schema."
+    for finding in obj["findings"]:
+        if not isinstance(finding, dict) or finding.get("severity") not in {"critical", "high", "medium", "low", "info"}:
+            return None, "Provider response contained an invalid finding."
+        if not all(isinstance(finding.get(field), str) for field in ("file", "title", "detail")):
+            return None, "Provider response contained an invalid finding."
+        line = finding.get("line")
+        if line is not None and (type(line) is not int or line < 1):
+            return None, "Provider response contained an invalid line number."
+    return obj["findings"], obj["summary"]
 
 
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
@@ -110,7 +124,7 @@ def render(findings, summary):
     if summary:
         lines += [f"**Summary:** {summary}", ""]
     if not findings:
-        lines += ["✅ No tenant-isolation, authz, contract, secret, or architecture issues found in this diff."]
+        lines += ["No findings returned for the supplied diff. This advisory does not replace tests or human review."]
         return "\n".join(lines), False
     by_sev = {s: [] for s in SEV_ORDER}
     for f in findings:
@@ -139,10 +153,32 @@ def render(findings, summary):
     return "\n".join(lines), has_block
 
 
+def publish(body):
+    """Update only this bot's marked comment, and never post a stale review."""
+    if HEAD_SHA:
+        current = json.loads(gh("GET", f"/repos/{REPO}/pulls/{PR}"))
+        if current["head"]["sha"] != HEAD_SHA:
+            print("PR head changed; discarded the stale review.")
+            return False
+    body = MARKER + "\n" + body + f"\n\nReviewed commit: `{HEAD_SHA or 'unspecified'}`"
+    page = 1
+    while True:
+        comments = json.loads(gh("GET", f"/repos/{REPO}/issues/{PR}/comments?per_page=100&page={page}"))
+        for comment in comments:
+            if comment.get("user", {}).get("login") == "github-actions[bot]" and comment.get("body", "").startswith(MARKER):
+                gh("PATCH", f"/repos/{REPO}/issues/comments/{comment['id']}", {"body": body})
+                return True
+        if len(comments) < 100:
+            break
+        page += 1
+    gh("POST", f"/repos/{REPO}/issues/{PR}/comments", {"body": body})
+    return True
+
+
 def main():
     if not API_KEY:
-        print("AI_REVIEW_API_KEY not set — skipping AI review (add the secret to enable).")
-        return 0
+        print("::warning::AI review unavailable: AI_REVIEW_API_KEY is not configured.")
+        return 1 if BLOCKING else 0
     diff = get_diff()
     truncated = ""
     if len(diff) > MAX_DIFF:
@@ -162,11 +198,14 @@ def main():
     content = parse_findings(call_model(system, "PR unified diff:\n\n" + diff + truncated))
     findings, summary = content
     if findings is None:
-        body = "## 🤖 ERP AI review\n\n" + summary
-        block = False
+        body = "## 🤖 ERP AI review incomplete\n\nThe provider returned an invalid response. No clean review verdict is available."
+        block = True
     else:
         body, block = render(findings, summary)
-    gh("POST", f"/repos/{REPO}/issues/{PR}/comments", {"body": body})
+    if truncated:
+        body += "\n\n**Incomplete coverage:** the diff exceeded the review limit. Review omitted changes manually."
+        block = True
+    publish(body)
     print(f"Posted AI review ({len(findings or [])} findings). blocking={block and BLOCKING}")
     return 1 if (block and BLOCKING) else 0
 
