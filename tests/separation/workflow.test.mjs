@@ -10,7 +10,7 @@ if (
   throw new Error("Use the isolated local HR test database");
 process.env.DATABASE_URL = url;
 process.env.NODE_ENV = "test";
-const {completeBusinessApproval}=await import("../approval/complete.mjs");
+const { completeBusinessApproval } = await import("../approval/complete.mjs");
 const { default: prisma } = await import("../../src/lib/prisma.js");
 const { mcpCtx } = await import("../../src/mcp/context.js");
 const { tenantTransaction } = await import("../../src/lib/rlsTenant.js");
@@ -171,10 +171,36 @@ test(
       },
       reminderDays: 5,
     };
-    await call("HR", "hr_separation_configure", {
-      employeeCode: codes.HR,
-      expectedVersion: 0,
-      policy,
+    // Existing separation scenarios start with an already approved policy.
+    // Company setup's dedicated integration suite tests the full review path.
+    await db(async (tx) => {
+      const review = await tx.hrSetupReview.create({
+        data: {
+          tenantId: company,
+          kind: "POLICY",
+          subjectKey: "POLICY",
+          state: "APPROVED",
+          payload: { fixture: true },
+          source: { fixture: true },
+          contentHash: "fixture-policy",
+          preparedByCode: people.HR.employee_code,
+          preparedByUserId: people.HR.userId,
+          editorUserIds: [people.HR.userId],
+          approvedByCode: people.CEO.employee_code,
+          approvedByUserId: people.CEO.userId,
+          approvedHash: "fixture-policy",
+          approvedAt: new Date(),
+        },
+      });
+      await tx.$executeRaw`SELECT set_config('app.hr_setup_review',${review.id},true)`;
+      await tx.separationPolicy.create({
+        data: {
+          tenantId: company,
+          policy,
+          actorCode: people.HR.employee_code,
+          approvalReviewRef: review.id,
+        },
+      });
     });
     await t.test(
       "concurrent hires allocate unique codes before insert and DB rejects blanks",
@@ -275,7 +301,12 @@ test(
             },
           }),
         );
-        await completeBusinessApproval(prisma,company,"CATEGORY_CONVERSION",requested.record.ref);
+        await completeBusinessApproval(
+          prisma,
+          company,
+          "CATEGORY_CONVERSION",
+          requested.record.ref,
+        );
         const done = await call("CEO", "hr_employee_category_convert", {
           employeeCode: codes.OTHER,
           expectedVersion: requested.record.version,
@@ -435,7 +466,12 @@ test(
           noticeVersion: n.version,
         });
         n = (await taskRows(s, "noticePeriodRecord"))[0];
-        await completeBusinessApproval(prisma,company,"NOTICE_CHANGE",`${n.id}@${n.version}`);
+        await completeBusinessApproval(
+          prisma,
+          company,
+          "NOTICE_CHANGE",
+          `${n.id}@${n.version}`,
+        );
         await command("CEO", "hr_separation_notice", s, {
           action: "APPROVE",
           reason: "Independent early release",
@@ -448,7 +484,12 @@ test(
           noticeVersion: n.version,
         });
         n = (await taskRows(s, "noticePeriodRecord"))[0];
-        await completeBusinessApproval(prisma,company,"NOTICE_CHANGE",`${n.id}@${n.version}`);
+        await completeBusinessApproval(
+          prisma,
+          company,
+          "NOTICE_CHANGE",
+          `${n.id}@${n.version}`,
+        );
         await command("CEO", "hr_separation_notice", s, {
           action: "APPROVE",
           reason: "Independent garden leave",
@@ -463,8 +504,15 @@ test(
           reason: "Request withdrawal",
         });
         assert.equal(pending.record.state, "NOTICE_PERIOD");
-        const withdrawal=await db(tx=>tx.separation.findUnique({where:{id:s.ref}}));
-        await completeBusinessApproval(prisma,company,"SEPARATION_WITHDRAWAL",`${s.ref}@${new Date(withdrawal.withdrawalRequestedAt).getTime()}`);
+        const withdrawal = await db((tx) =>
+          tx.separation.findUnique({ where: { id: s.ref } }),
+        );
+        await completeBusinessApproval(
+          prisma,
+          company,
+          "SEPARATION_WITHDRAWAL",
+          `${s.ref}@${new Date(withdrawal.withdrawalRequestedAt).getTime()}`,
+        );
         const done = await command("CEO", "hr_separation_decide", s, {
           decision: "APPROVE_WITHDRAWAL",
           reason: "Independent approval",
@@ -586,7 +634,12 @@ test(
           effectiveAt: new Date().toISOString(),
           reason: "Fictional approved promotion",
         });
-        await completeBusinessApproval(prisma,company,"CATEGORY_CONVERSION",requested.record.ref);
+        await completeBusinessApproval(
+          prisma,
+          company,
+          "CATEGORY_CONVERSION",
+          requested.record.ref,
+        );
         const converted = await call("CEO", "hr_employee_category_convert", {
           employeeCode: original,
           expectedVersion: requested.record.version,
@@ -637,7 +690,12 @@ test(
           effectiveAt: new Date().toISOString(),
           reason: "Fictional category correction",
         });
-        await completeBusinessApproval(prisma,company,"CATEGORY_CONVERSION",requested.record.ref);
+        await completeBusinessApproval(
+          prisma,
+          company,
+          "CATEGORY_CONVERSION",
+          requested.record.ref,
+        );
         const done = await call("MANAGER", "hr_employee_category_convert", {
           employeeCode: e.employee_code,
           expectedVersion: requested.record.version,
@@ -808,7 +866,12 @@ test(
               noticeVersion: n.version,
             });
             n = (await taskRows(s, "noticePeriodRecord"))[0];
-            await completeBusinessApproval(prisma,company,"NOTICE_CHANGE",`${n.id}@${n.version}`);
+            await completeBusinessApproval(
+              prisma,
+              company,
+              "NOTICE_CHANGE",
+              `${n.id}@${n.version}`,
+            );
             await command("CEO", "hr_separation_notice", s, {
               action: "APPROVE",
               reason: "Approve buyout",
@@ -998,7 +1061,12 @@ test(
             sourceVersion: 1,
           });
           sheet = (await taskRows(s, "finalSettlementSheet"))[0];
-          await completeBusinessApproval(prisma,company,"SETTLEMENT",`${sheet.id}@${sheet.version}`);
+          await completeBusinessApproval(
+            prisma,
+            company,
+            "SETTLEMENT",
+            `${sheet.id}@${sheet.version}`,
+          );
           await command("HR", "hr_separation_settlement", s, {
             taskVersion: sheet.version,
             action: "HANDOFF",

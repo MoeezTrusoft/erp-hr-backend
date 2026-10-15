@@ -4682,11 +4682,66 @@ model EmployeeCategoryConversion {
 }
 model SeparationPolicy {
   tenantId String @id @db.Uuid
+  approvalReviewRef String? @db.Uuid
   policy Json
   actorCode String
   version Int @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model HrSetupReview {
+  reservedEmployeeId Int?
+  reservedUserId Int?
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  kind String
+  subjectKey String
+  employeeCode String?
+  state String @default("DRAFT")
+  version Int @default(1)
+  payload Json
+  source Json
+  contentHash String
+  preparedByCode String
+  preparedByUserId Int
+  editorUserIds Json
+  approvedByCode String?
+  approvedByUserId Int?
+  approvedHash String?
+  approvedAt DateTime?
+  activatedAt DateTime?
+  activationPlan Json?
+  failure String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, kind, state, createdAt])
+  @@index([tenantId, subjectKey])
+}
+
+model HrSetupAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewRef String @db.Uuid
+  version Int
+  action String
+  actorCode String
+  actorUserId Int
+  reason String
+  contentHash String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewRef, version])
+}
+
+model HrSetupReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  requestKey String @db.Uuid
+  actorUserId Int
+  digest String
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, requestKey])
 }
 model Separation {
   id String @id @default(uuid()) @db.Uuid

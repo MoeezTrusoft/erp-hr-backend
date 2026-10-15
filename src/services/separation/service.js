@@ -4,7 +4,6 @@ import {
   CreateSeparation,
   EditSeparation,
   RevertSeparation,
-  PolicyCommand,
   SeparationAction,
   ManagerRecommendation,
   HrVerification,
@@ -43,47 +42,8 @@ import {
 } from "./workstreams.js";
 import { separationView } from "./read.js";
 
-export const configureSeparation = (raw) => {
-  const input = PolicyCommand.parse(raw);
-  return run(
-    input,
-    "hr.separation.manage",
-    async (tx, env) => {
-      if (input.employeeCode !== env.who.employee_code)
-        fail("Configuration actor must be your employee code", 403);
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${env.tenantId + ":separation-policy"},0))`;
-      const old = await tx.separationPolicy.findUnique({
-        where: { tenantId: env.tenantId },
-      });
-      checkVersion(old || { version: 0 }, input.expectedVersion);
-      const codes = new Set([
-        ...input.policy.hrCodes,
-        input.policy.itOwnerCode,
-        input.policy.payrollOwnerCode,
-        ...input.policy.authority.flatMap((a) => a.approverCodes),
-        ...input.policy.clearanceDepartments.flatMap((d) => [
-          d.ownerCode,
-          ...d.signerCodes,
-        ]),
-      ]);
-      for (const code of codes) await employee(tx, env.tenantId, code);
-      const row = await tx.separationPolicy.upsert({
-        where: { tenantId: env.tenantId },
-        create: {
-          tenantId: env.tenantId,
-          policy: input.policy,
-          actorCode: env.who.employee_code,
-        },
-        update: {
-          policy: input.policy,
-          actorCode: env.who.employee_code,
-          version: { increment: 1 },
-        },
-      });
-      return result(env, view(row, "POLICY", row.policy));
-    },
-    "CONFIGURE",
-  );
+export const configureSeparation = () => {
+  fail('Use HR Company Setup: prepare a policy review, obtain Management approval, then activate it.', 409);
 };
 
 export const createSeparation = (raw) => {
