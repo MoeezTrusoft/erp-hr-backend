@@ -33,6 +33,11 @@ import {
   applyCompanySetupIdentity,
 } from "../rbac.client.js";
 const editable = ["DRAFT", "RETURNED", "REJECTED"];
+import {
+  buildTracker,
+  completionSnapshot,
+  verifyCompletion,
+} from "./tracker.js";
 
 export async function saveSetup(raw) {
   const input = SetupSave.parse(raw);
@@ -78,6 +83,9 @@ export async function saveSetup(raw) {
         data,
       ),
       payload = { data, evidenceRefs: input.evidenceRefs };
+    const tracker =
+      input.kind === "POLICY" ? await buildTracker(tx, env) : null;
+    if (tracker) payload.completionSnapshot = completionSnapshot(tracker);
     const values = {
       payload: seal(payload),
       source: seal(snapshot),
@@ -88,7 +96,11 @@ export async function saveSetup(raw) {
       approvedAt: null,
       failure: null,
       editorUserIds: [
-        ...new Set([...(old?.editorUserIds || []), env.who.userId]),
+        ...new Set([
+          ...(old?.editorUserIds || []),
+          ...(tracker?.editorUserIds || []),
+          env.who.userId,
+        ]),
       ],
     };
     const row = old
@@ -126,6 +138,13 @@ async function validate(tx, env, row) {
     const rows = await employees(tx, env, true),
       e = rows.find((e) => e.employee_code === row.employeeCode);
     validateEmployee(data, e, rows);
+  }
+  if (row.kind === "POLICY") {
+    const remote = await companySetupSnapshot();
+    const blockers = await readiness(tx, env, row, remote);
+    if (blockers.length)
+      fail("Company setup incomplete: " + blockers.join("; "), 409);
+    await verifyCompletion(tx, env, payload.completionSnapshot, remote);
   }
   if (row.kind === "IDENTITY") {
     if (
@@ -452,6 +471,15 @@ export async function readSetup(raw) {
     if (row.kind === "POLICY" && ["MANAGEMENT", "APPROVED"].includes(row.state))
       try {
         blockers = await readiness(tx, env, row, await companySetupSnapshot());
+        try {
+          await verifyCompletion(
+            tx,
+            env,
+            unseal(row.payload).completionSnapshot,
+          );
+        } catch (e) {
+          blockers.push(e.message);
+        }
       } catch {
         blockers = [
           "Account service unavailable; activation readiness cannot be verified",
@@ -492,7 +520,7 @@ export async function overviewSetup(raw) {
     const next = rows.length > input.limit ? rows[input.limit - 1].id : null;
     return result(env, {
       items: await Promise.all(
-        rows.slice(0, input.limit).map((r) => view(tx, env, r)),
+        rows.slice(0, input.limit).map((r) => view(tx, env, r, [], false)),
       ),
       nextCursor: next,
       overview: await overview(tx, env, remote),

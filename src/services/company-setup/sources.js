@@ -198,6 +198,19 @@ export async function readiness(tx, env, row, remote) {
     if (!e.employeeCategory)
       blockers.push(`${label}: employment category missing`);
     if (!grade) blockers.push(`${label}: grade missing`);
+    if (
+      !String(e.status || "").trim() ||
+      !String(e.employement_status || "").trim()
+    )
+      blockers.push(
+        `${label}: verify and complete blank employment-status fields`,
+      );
+    if (
+      !remote.accounts.some(
+        (a) => a.userId === e.userId && a.member && a.enabled,
+      )
+    )
+      blockers.push(`${label}: enabled linked company account required`);
     const managementAuthority =
       e.employeeCategory === "MANAGEMENT" &&
       p.authority?.some((a) => a.approverCodes.includes(e.employee_code));
@@ -229,6 +242,16 @@ export async function readiness(tx, env, row, remote) {
       )
     )
       blockers.push(`${label}: Management authority rule missing`);
+  }
+  for (const e of rows.filter((e) => !active(e))) {
+    if (
+      remote.accounts.some(
+        (a) => a.userId === e.userId && a.member && a.enabled,
+      )
+    )
+      blockers.push(
+        `${e.employee_code}: resolve enabled company access for inactive/disabled employee`,
+      );
   }
   const roles = [
     ...(p.hrCodes || []).map((code) => [code, "hr.separation.verify"]),
