@@ -65,7 +65,7 @@ CREATE FUNCTION hr_setup_identity_reservation() RETURNS trigger LANGUAGE plpgsql
   IF EXISTS(SELECT 1 FROM "HrSetupReview" r WHERE r."tenantId"=NEW.tenant_id AND r.state='ACTIVATING' AND r."reservedUserId"=NEW."userId") THEN RAISE EXCEPTION 'Identity correction pending; employee account link is reserved'; END IF;
   RETURN NEW;
  END IF;
- IF TG_OP = 'UPDATE' AND NEW."userId" IS NOT DISTINCT FROM OLD."userId" AND NEW.employee_code IS NOT DISTINCT FROM OLD.employee_code AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id THEN RETURN NEW; END IF;
+ IF TG_OP = 'UPDATE' AND NEW."userId" IS NOT DISTINCT FROM OLD."userId" AND NEW.employee_code IS NOT DISTINCT FROM OLD.employee_code AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id AND NEW.status IS NOT DISTINCT FROM OLD.status AND NEW.employement_status IS NOT DISTINCT FROM OLD.employement_status THEN RETURN NEW; END IF;
  IF EXISTS (SELECT 1 FROM "HrSetupReview" r WHERE r."tenantId"=OLD.tenant_id AND r.state='ACTIVATING' AND (r."reservedEmployeeId"=OLD.id OR r."reservedUserId"=OLD."userId" OR (TG_OP='UPDATE' AND r."reservedUserId"=NEW."userId")) AND current_setting('app.hr_setup_review',true) IS DISTINCT FROM r.id::text) THEN RAISE EXCEPTION 'Identity correction pending; retry its approved activation first'; END IF;
  IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
 END $$;

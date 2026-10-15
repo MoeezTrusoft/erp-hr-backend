@@ -21,6 +21,7 @@ import {
   fail,
 } from "./base.js";
 import {
+  active,
   source,
   employees,
   validateEmployee,
@@ -374,6 +375,7 @@ async function finishIdentity(ref) {
           const e = rows.find((e) => e.id === plan.hrEmployeeId);
           if (
             !e ||
+            !active(e) ||
             e.employee_code !== plan.employeeCode ||
             (e.userId && e.userId !== plan.userId)
           )

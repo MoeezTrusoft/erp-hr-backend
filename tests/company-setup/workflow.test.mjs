@@ -373,6 +373,15 @@ test(
             /pending/,
           );
           failApply = false;
+          await assert.rejects(
+            db((tx) =>
+              tx.employee.update({
+                where: { id: people.EMP.id },
+                data: { status: "Inactive" },
+              }),
+            ),
+            /pending/,
+          );
           r = await act("HR2", r, "RETRY");
           assert.equal(r.state, "ACTIVE");
           assert.equal(
