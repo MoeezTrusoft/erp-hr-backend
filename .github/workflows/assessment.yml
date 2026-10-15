@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 4bca29b4701eef2c49e8147010ccb201e7dcf7d3
+          ref: ff1a16cd969a78d9acc438c91f171f83c331dca6
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
