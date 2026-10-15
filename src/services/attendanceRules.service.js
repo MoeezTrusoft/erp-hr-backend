@@ -1,3 +1,5 @@
+import { legacyDecision } from './approval/legacy.js';
+import { requireApproval } from './approval/adapters.js';
 import prisma from "../lib/prisma.js";
 import {
   dateKey,
@@ -264,11 +266,13 @@ export async function commentRuleCase(
     db,
   );
 }
-export async function decideRuleCase(
+export async function finalizeRuleCase(
   { user, anomalyId, version, decision, comment },
   db = prisma,
 ) {
-  requireManagement(user);
+  const current=await db.attendanceAnomaly.findFirst({where:{tenantId:user.tenantId,id:anomalyId}});
+  if(!current) fail(404,'Anomaly not found');
+  await requireApproval(db,user.tenantId,'ATTENDANCE',`${anomalyId}@${current.factHash}`,decision==='APPROVED');
   if (!["APPROVED", "REJECTED"].includes(decision) || !comment?.trim())
     fail(400, "A decision and reason are required");
   return command(
@@ -758,3 +762,5 @@ export async function saveGraceMembership(
     db,
   );
 }
+
+export async function decideRuleCase({anomalyId}) { return legacyDecision("ATTENDANCE",anomalyId); }

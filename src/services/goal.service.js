@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -114,37 +115,7 @@ export const updateGoalService = async (id, data,updatedBy,tenantId) => {
 
 // ✅ Approve or reject goal
 export const approveGoalService = async (id, status, approvedBy, tenantId) => {
-  if (!["APPROVED", "REJECTED"].includes(status))
-    throw new Error("Invalid status. Use APPROVED or REJECTED.");
-const existing = await prisma.goal.findFirst({where: scopedWhere(tenantId, {id: Number(id)})})
-if (!existing) throw new Error("Goal Not found");
-
-
-  const approve =  await prisma.goal.update({
-    where: { id: Number(id) },
-    data: {
-      status,
-      approvedById: Number(approvedBy),
-    },
-     approvedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-  });
-
- await logAction({
-    employeeId: Number(approvedBy),
-    type: "Approved Goal", // 👈 changed from CREATE to UPDATE
-    module: "Goal",
-    result: "SUCCESS",
-    notes: `Goal "${id}" Approved successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-
-  return approve
+  return legacyDecision('GOAL',id);
 };
 
 // ✅ Add a progress update

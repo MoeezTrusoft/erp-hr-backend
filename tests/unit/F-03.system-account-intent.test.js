@@ -15,7 +15,10 @@ const mockLogAction = jest.fn();
 const mockCreateRbacSystemAccount = jest.fn();
 
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, update: mockEmployeeUpdate, findUnique: mockEmployeeFindUnique },
+  employeeCodeConfiguration:{findUnique:jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence:{upsert:jest.fn().mockResolvedValue({lastValue:0n}),update:jest.fn()},
+  employeeCodeReservation:{findMany:jest.fn().mockResolvedValue([]),findFirst:jest.fn().mockResolvedValue(null)},
+  employee: {findMany:jest.fn().mockResolvedValue([]),findFirst:jest.fn().mockResolvedValue(null), create: mockEmployeeCreate, update: mockEmployeeUpdate, findUnique: mockEmployeeFindUnique },
   position: { findUnique: mockPositionFindUnique },
   region: { findUnique: mockRegionFindUnique },
   emergencyContacts: { createMany: mockEmergencyCreateMany },
@@ -57,7 +60,7 @@ describe("F-03 system-account provisioning intent", () => {
 
   it("atomically persists a tenant-scoped intent and returns pending without calling RBAC", async () => {
     const result = await hrContractService.createEmployee({
-      firstName: "Ada",
+      employeeCategory: "EMPLOYEE", firstName: "Ada",
       lastName: "Lovelace",
       workEmail: "ada@corp.example",
       createSystemAccount: true,
@@ -99,7 +102,7 @@ describe("F-03 system-account provisioning intent", () => {
 
   it("rejects an untenantable provisioning request before creating the employee", async () => {
     await expect(hrContractService.createEmployee({
-      firstName: "Ada",
+      employeeCategory: "EMPLOYEE", firstName: "Ada",
       lastName: "Lovelace",
       createSystemAccount: true,
       roleId: 7,

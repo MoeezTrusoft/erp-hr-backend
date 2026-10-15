@@ -1,3 +1,5 @@
+import { startSeparationWorker } from "./services/separation/automation.js";
+import { startAssessmentWorker } from './services/assessment/automation.js';
 // src/server.js
 //
 // Runtime entrypoint. This file is intentionally thin: it loads env,
@@ -86,6 +88,8 @@ logger.info({
 // unset). Mirrors how comms wires startRealtimeBridge / the gateway wires
 // startNotifyConsumer.
 const outboxDispatcher = startHrOutboxDispatcher();
+const assessmentWorker = startAssessmentWorker();
+const separationWorker = startSeparationWorker();
 // F-03: reconcile durable account intents independently of request success.
 const accountProvisioningWorker = startSystemAccountProvisioningWorker();
 const attendanceEscalationWorker = startAttendanceEscalationWorker();
@@ -102,6 +106,8 @@ let shuttingDown = false;
 async function gracefulShutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  await separationWorker.stop();
+  await assessmentWorker.stop();
   attendanceEscalationWorker.stop();
   await attendanceCaptureWorker.stop();
   stopAttendanceListener();

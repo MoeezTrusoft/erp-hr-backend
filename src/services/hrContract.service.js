@@ -1,3 +1,5 @@
+import { legacyDecision, legacySubmit } from './approval/legacy.js';
+import { prepareEmployeeInsert, guardIdentityEdit } from "./employee-code.service.js";
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
@@ -73,6 +75,8 @@ const buildPositionDescription = (data, existingDescription = null) => {
 const compactEmployeeSelect = {
   id: true,
   employee_code: true,
+  employeeCategory: true,
+  contractNoticeDays: true,
   employee_name: true,
   first_name: true,
   middle_name: true,
@@ -294,6 +298,8 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
     country: data.country,
     postal_code: data.postalCode,
     employee_code: data.employeeCode,
+    employeeCategory: data.employeeCategory,
+    contractNoticeDays: data.contractNoticeDays,
     job_title: data.jobTitle,
     positionId: data.positionId,
     businessUnitId: data.businessUnitId,
@@ -498,6 +504,8 @@ const employeeContractProfile = (employee) => {
   },
   employment: {
     employeeCode: employee.employee_code,
+    employeeCategory: employee.employeeCategory,
+    contractNoticeDays: employee.contractNoticeDays,
     jobTitle: employee.job_title,
     positionId: employee.positionId,
     departmentId: summary.departmentId || employee.businessUnitId,
@@ -1062,6 +1070,8 @@ const lifecycleSourceSelect = {
   id: true,
   tenant_id: true,
   employee_code: true,
+  employeeCategory: true,
+  contractNoticeDays: true,
   employee_name: true,
   first_name: true,
   last_name: true,
@@ -1081,6 +1091,7 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     if (!tenantId) throw new Error("HR-0301: verified tenant is required for system-account provisioning");
     if (!data.roleId) throw new Error("HR-0302: roleId is required for system-account provisioning");
   }
+  if(!ctx.tenantId)throw Object.assign(new Error("Verified company is required"),{status:403});
   await assertEmployeeReferences(data);
   // Photos: accept an inline base64/data-URI upload OR a pre-existing mediaId.
   const profilePhoto = await resolveEmployeeMedia(
@@ -1135,21 +1146,14 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
   };
 
   const createdResult = await tenantTransaction(prisma, async (tx) => {
-    const createData = employeeDataFromContract(employeeData, actorId);
+    const createData = await prepareEmployeeInsert(tx, employeeDataFromContract(employeeData, actorId), { tenantId: verifiedTenantId, category: data.employeeCategory });
     createData.tenant_id = verifiedTenantId;
     const created = await tx.employee.create({
       data: createData,
       select: lifecycleSourceSelect,
     });
 
-    // Auto-generate a stable employee code when the caller didn't supply one.
-    // Uses the freshly-minted row id so it is unique + monotonic (EMP-00001).
-    if (!createData.employee_code) {
-      await tx.employee.update({
-        where: { id: created.id },
-        data: { employee_code: `EMP-${String(created.id).padStart(5, "0")}` },
-      });
-    }
+
 
     // A.4 / Phase 3: enqueue hr.employee.lifecycle.v1 (phase=hired) in the SAME
     // tx as the employee write, via the shared validate-before-write helper.
@@ -1256,6 +1260,7 @@ export const updateEmployee = async (id, payload, actorId, ctx = {}) => {
   const expectedVersion = normalizeExpectedVersion(ctx.expectedVersion);
 
   const data = updateEmployeeContractSchema.parse(normalizeContractPayload(payload));
+  guardIdentityEdit(existing, data);
   await assertEmployeeReferences(data, employeeId);
   const profilePhoto = await resolveEmployeeMedia(
     { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
@@ -1363,6 +1368,9 @@ export const getEmployeeDocuments = async (id, tenantId) => {
 
 export const updateEmployeeStatus = async (id, status, actorId) => {
   const parsed = employeeStatusSchema.parse({ status });
+  const current = await prisma.employee.findUnique({ where: { id: Number(id) } });
+  if (!current) throw Object.assign(new Error("Employee not found"), { status: 404 });
+  guardIdentityEdit(current, {});
 
   const employee = await prisma.employee.update({
     where: { id: Number(id) },
@@ -1902,6 +1910,8 @@ export const updateRequisition = async (id, data) => {
 };
 
 const transitionRequisition = async ({ id, status, actorId, comments }) => {
+  if (["APPROVED","REJECTED"].includes(status)) return legacyDecision("REQUISITION",id);
+  if (status === "PENDING_APPROVAL") return legacySubmit("REQUISITION",id,comments);
   if (!actorId) throw new Error("Employee context is required");
 
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });

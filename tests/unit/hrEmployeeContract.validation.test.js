@@ -13,7 +13,7 @@ describe("HR employee contract validation", () => {
   // agree: a minimal {firstName, lastName} create has to pass validation.
   it("accepts a minimal {firstName, lastName} employee create payload", () => {
     const result = createEmployeeContractSchema.safeParse({
-      firstName: "Ada",
+      employeeCategory: "EMPLOYEE", firstName: "Ada",
       lastName: "Lovelace",
     });
 
@@ -27,9 +27,12 @@ describe("HR employee contract validation", () => {
     expect(result.data.hireDate).toBeUndefined();
   });
 
+  it("requires an explicit category, separate from employment status",()=>{
+    expect(createEmployeeContractSchema.safeParse({firstName:"Fictional",lastName:"Hire",employmentStatus:"Active"}).success).toBe(false);
+  });
   it("accepts explicit null for the nullable employee create fields", () => {
     const result = createEmployeeContractSchema.safeParse({
-      firstName: "Ada",
+      employeeCategory: "EMPLOYEE", firstName: "Ada",
       lastName: "Lovelace",
       jobTitle: null,
       positionId: null,
@@ -42,13 +45,13 @@ describe("HR employee contract validation", () => {
 
   it("still rejects a create missing the DB-required firstName / lastName", () => {
     expect(createEmployeeContractSchema.safeParse({ lastName: "Lovelace" }).success).toBe(false);
-    expect(createEmployeeContractSchema.safeParse({ firstName: "Ada" }).success).toBe(false);
+    expect(createEmployeeContractSchema.safeParse({ employeeCategory: "EMPLOYEE", firstName: "Ada" }).success).toBe(false);
     expect(createEmployeeContractSchema.safeParse({}).success).toBe(false);
   });
 
   it("accepts the minimum frontend employee create payload", () => {
     const result = createEmployeeContractSchema.safeParse({
-      firstName: "Ayesha",
+      employeeCategory: "EMPLOYEE", firstName: "Ayesha",
       lastName: "Khan",
       jobTitle: "Frontend Developer",
       hireDate: "2026-01-15",
@@ -63,7 +66,7 @@ describe("HR employee contract validation", () => {
 
   it("rejects duplicate primary emergency contacts", () => {
     const result = createEmployeeContractSchema.safeParse({
-      firstName: "Ayesha",
+      employeeCategory: "EMPLOYEE", firstName: "Ayesha",
       lastName: "Khan",
       jobTitle: "Frontend Developer",
       hireDate: "2026-01-15",

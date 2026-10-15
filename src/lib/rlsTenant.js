@@ -45,7 +45,7 @@ export function tenantTransaction(client, fn, opts = {}) {
                     await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t)}, true)`;
                 }
             }
-            return await fn(tx);
+            return await mcpCtx.run({...store, tenantTransactionActive:true},async()=>await fn(tx));
         } finally {
             activeTenantTransactions.delete(tx);
         }
@@ -61,6 +61,9 @@ export function tenantTransaction(client, fn, opts = {}) {
 // see across tenants. Physical tables: bank_details, employment_terms,
 // EmergencyContacts (see hr_rls_pilot_extend migration).
 const RLS_MODELS = new Set([
+    'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt',
+    'EmployeeCodeConfiguration', 'EmployeeCodeSequence', 'EmployeeCodeReservation', 'EmployeeCodeAlias', 'EmployeeCategoryConversion', 'SeparationPolicy', 'Separation', 'EmploymentCommandReceipt', 'EmploymentDelivery', 'SeparationTransition', 'NoticePeriodRecord', 'ReplacementPlan', 'ReplacementSession', 'KnowledgeTransferItem', 'AssetHandoverItem', 'AccessRevocationTask', 'ClearanceItem', 'ExitInterview', 'FinalSettlementSheet', 'SeparationDocument', 'SeparationSourceSnapshot',
+    'AssessmentIdentity', 'AssessmentCategory', 'AssessmentTaskVersion', 'AssessmentProfileVersion', 'AssessmentProfileTask', 'AssessmentGuideVersion', 'EmployeeAssessmentProfile', 'AssessmentQualification', 'AssessmentConfiguration', 'AssessmentTriggerPolicy', 'AssessmentAssignment', 'AssessmentRevision', 'AssessmentObservation', 'AssessmentDimension', 'AssessmentCase', 'AssessmentEvidence', 'AssessmentEvidenceLink', 'AssessmentTimingSample', 'AssessmentBenchmark', 'AssessmentSignOff', 'AssessmentRestriction', 'AssessmentCapability', 'AssessmentAudit', 'AssessmentAutomationRun', 'AssessmentException', 'AssessmentInboxEvent', 'AssessmentIntegration', 'AssessmentAppraisalInput', 'AssessmentCodeChange', 'AssessmentNotification',
     'AttendanceGraceRule', 'AttendanceGraceMembership', 'AttendanceManualTime',
     'AttendanceRuleAudit', 'AttendancePayrollAdjustment',
     'AttendanceSession', 'AttendanceEvaluation', 'AttendanceEvaluationJob',
@@ -164,9 +167,12 @@ export const rlsTenantExtension = (client) =>
         name: 'rls-tenant-guc',
         query: {
             $allModels: {
-                async $allOperations({ model, args, query }) {
+                async $allOperations({ model, args, query, __internalParams }) {
                     if (!RLS_MODELS.has(model)) return query(args);
+                    // The interactive transaction helper already set this connection's GUC.
+                    // Preserve its atomicity; never open a second connection for its queries.
                     const store = mcpCtx.getStore();
+                    if (store?.tenantTransactionActive && __internalParams?.transaction?.kind === 'itx') return query(args);
 
                     // HR-P2028-GUC-TXN (2026-09-14) — the GUC wrapper is itself a
                     // batch $transaction, which inherits Prisma's 5s default

@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 // src/services/leaveReport.service.js
 //
 // Screen-shaped backend for the LEAVE half of the "Leave & Anomaly Management"
@@ -300,84 +301,5 @@ export async function decideLeave({
   approverId,
   comments,
 } = {}) {
-  const reqId = toIntOrNull(id);
-  if (reqId == null) {
-    throw Object.assign(new Error("id is required"), { status: 400 });
-  }
-  if (decision !== "approve" && decision !== "reject") {
-    throw Object.assign(new Error("decision must be one of approve | reject"), { status: 400 });
-  }
-  if (decision === "approve" && !leaveType) {
-    throw Object.assign(
-      new Error("leaveType is required when approving (HR assigns the type at approval)"),
-      { status: 400 }
-    );
-  }
-
-  // LeaveRequestApproval.approverId / createdById are NOT NULL in the schema, so
-  // a reviewer identity is required to record the decision row.
-  const approver = toIntOrNull(approverId);
-  if (approver == null) {
-    throw Object.assign(new Error("approverId is required to record a decision"), { status: 400 });
-  }
-
-  return tenantTransaction(
-    prisma,
-    async (tx) => {
-      const existing = await tx.leaveRequest.findFirst({
-        where: scopedWhere(tenantId, { id: reqId }),
-        select: { id: true },
-      });
-      if (!existing) {
-        throw Object.assign(new Error("Leave request not found"), { status: 404 });
-      }
-
-      const data = {
-        status: decision === "approve" ? "APPROVED" : "REJECTED",
-        updatedById: approver,
-      };
-
-      if (decision === "approve") {
-        const policy = await tx.leavePolicy.findFirst({
-          where: scopedWhere(tenantId, { leaveTypeCode: leaveType }),
-          select: { id: true },
-        });
-        if (!policy) {
-          throw Object.assign(
-            new Error(`No LeavePolicy found for leaveType "${leaveType}"`),
-            { status: 400 }
-          );
-        }
-        data.leavePolicyId = policy.id;
-      }
-
-      const updated = await tx.leaveRequest.update({
-        where: { id: reqId },
-        data,
-        include: {
-          employee: { select: EMPLOYEE_SELECT },
-          leavePolicy: { select: LEAVE_POLICY_SELECT },
-        },
-      });
-
-      await tx.leaveRequestApproval.create({
-        data: {
-          leaveRequestId: reqId,
-          approverId: approver,
-          approverRole: "HR",
-          decision: decision === "approve" ? "APPROVED" : "REJECTED",
-          comments: comments ?? null,
-          decision_date: new Date(),
-          createdById: approver,
-        },
-      });
-
-      logger.info(
-        { leaveRequestId: reqId, decision, leaveType: leaveType ?? null, approverId: approver },
-        "leave request decided"
-      );
-      return updated;
-    },
-    { tenantId }
-  );
+  return legacyDecision('LEAVE',id);
 }

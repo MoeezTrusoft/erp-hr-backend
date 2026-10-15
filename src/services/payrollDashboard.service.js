@@ -649,6 +649,13 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
   }
 
   const result = await tenantTransaction(prisma, async (tx) => {
+    const targets=await tx.payrollPayslip.findMany({where:scopedWhere(tenantId,{id:{in:ids}}),select:{id:true,payrollRunId:true,status:true}});
+    if(targets.length!==ids.length)throw Object.assign(new Error('One or more payslips are outside this company'),{status:404});
+    if(action!=='hold')for(const runId of new Set(targets.map(p=>p.payrollRunId))){
+      const run=await tx.payrollRun.findFirst({where:scopedWhere(tenantId,{id:runId})});
+      if(!run || !['APPROVED','FINALIZED'].includes(run.status)||!run.approvedBy)throw Object.assign(new Error('Complete HR Approval Centre review of the payroll run first'),{status:409});
+    }
+    if(action==='disburse'&&targets.some(p=>!['APPROVED','FINALIZED'].includes(p.status)))throw Object.assign(new Error('Only approved payslips can be disbursed'),{status:409});
     const res = await tx.payrollPayslip.updateMany({
       where: scopedWhere(tenantId, { id: { in: ids } }),
       data,

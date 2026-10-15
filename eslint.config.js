@@ -25,12 +25,18 @@ export default [
         // codebase is brought up to the same bar.
         files: [
             'src/lib/**/*.js',
+            'src/services/assessment/**/*.js',
+            'src/services/approval/**/*.js',
+            'src/mcp/tools/approvalTools.js',
+            'src/controllers/approval.controller.js',
+            'src/routes/approval.routes.js',
+            'src/mcp/tools/assessmentTools.js',
             'src/routes/health.routes.js',
             'tests/unit/lib/**/*.js',
             'tests/unit/routes/**/*.js',
         ],
         languageOptions: {
-            ecmaVersion: 2024,
+            ecmaVersion: 2025,
             sourceType: 'module',
             globals: {
                 console: 'readonly',
@@ -49,7 +55,7 @@ export default [
             // Tests reference jest globals through @jest/globals imports,
             // but unused locals are still common in scaffolding — keep
             // them as warnings so they don't block the gate.
-            'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+            'no-unused-vars': ['warn', { argsIgnorePattern: '^_', ignoreRestSiblings: true }],
             // Logger output uses pino; nothing in the foundation layer
             // should call console.* directly.
             'no-console': ['error'],

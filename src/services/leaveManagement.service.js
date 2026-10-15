@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 // src/services/leaveManagement.service.js — Leave Management dashboard.
 //
 // Read/aggregate surface behind the HR Leave Management dashboard: balances
@@ -216,75 +217,7 @@ export const getLeaveRequestsDashboard = async (query, tenantId) => {
 // LeaveRequestApproval row, flips the request status, and (on approve) deducts
 // the leave balance. Kept self-contained so it needs no shared-file edits.
 export const decideLeaveRequest = async ({ id, decision, reason, leavePolicyId }, user, tenantId) => {
-  const leaveRequestId = Number(id);
-  const norm = String(decision || "").toLowerCase();
-  if (norm !== "approve" && norm !== "reject") {
-    throw Object.assign(new Error('decision must be "approve" or "reject"'), { status: 400 });
-  }
-  if (norm === "reject" && !String(reason || "").trim()) {
-    throw Object.assign(new Error("reason is required when rejecting"), { status: 400 });
-  }
-
-  const approverId =
-    user?.employeeId != null && user.employeeId !== ""
-      ? Number(user.employeeId)
-      : null;
-  if (approverId == null || Number.isNaN(approverId)) {
-    throw Object.assign(new Error("Acting employee context is required to decide"), { status: 400 });
-  }
-
-  const request = await prisma.leaveRequest.findUnique({ where: { id: leaveRequestId } });
-  if (!request) throw Object.assign(new Error("Leave request not found"), { status: 404 });
-  if (request.status !== "PENDING") {
-    throw Object.assign(new Error("Leave request is not pending"), { status: 409 });
-  }
-
-  // HR-LEAVE-TYPELESS-01 (2026-09-22) — the employee files WITHOUT a leave
-  // type; HR selects it in the approve modal. Accept an explicit
-  // leavePolicyId, else fall back to the policy already on the request.
-  // Rejecting a typeless request stays legal (no type is ever needed).
-  let policyId = request.leavePolicyId;
-  if (norm === "approve") {
-    const explicitPolicy = leavePolicyId != null && leavePolicyId !== "" ? Number(leavePolicyId) : null;
-    if (explicitPolicy != null && !Number.isNaN(explicitPolicy)) {
-      const policy = await prisma.leavePolicy.findUnique({ where: { id: explicitPolicy } });
-      if (!policy || policy.active === false) {
-        throw Object.assign(new Error(`Leave policy ${explicitPolicy} not found or inactive`), { status: 400 });
-      }
-      policyId = explicitPolicy;
-    }
-    if (policyId == null) {
-      throw Object.assign(
-        new Error("Leave type must be selected to approve this request. Pick a leave type, then approve."),
-        { status: 400 },
-      );
-    }
-    if (policyId !== request.leavePolicyId) {
-      await prisma.leaveRequest.update({
-        where: { id: leaveRequestId },
-        data: { leavePolicyId: policyId, updatedById: approverId },
-      });
-    }
-  }
-
-  // Dispatch through the canonical services — balance decrement, attendance
-  // write-back (createLeaveAttendanceRecords) and the outbox event all run.
-  if (norm === "approve") {
-    const updated = await canonicalApproveLeaveRequest(leaveRequestId, {
-      approverId,
-      approverRole: Array.isArray(user?.roles) && user.roles.length ? String(user.roles[0]) : "APPROVER",
-      comments: reason ?? null,
-      createdById: approverId,
-    });
-    return { id: leaveRequestId, status: "APPROVED", decision: norm, updated };
-  }
-  const updated = await canonicalRejectLeaveRequest(leaveRequestId, {
-    approverId,
-    approverRole: Array.isArray(user?.roles) && user.roles.length ? String(user.roles[0]) : "APPROVER",
-    comments: String(reason || "").trim(),
-    createdById: approverId,
-  });
-  return { id: leaveRequestId, status: "REJECTED", decision: norm, updated };
+  return legacyDecision('LEAVE',id);
 };
 
 // ────────────────────────────────────────────────────────────────────────────

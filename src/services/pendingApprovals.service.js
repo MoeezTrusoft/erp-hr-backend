@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 // src/services/pendingApprovals.service.js
 //
 // Unified "pending approvals" feed for the HR Timesheet screen. It fuses two
@@ -182,53 +183,5 @@ export async function decidePendingApproval({
   reason,
   reviewerId,
 }) {
-  if (decision !== "approve" && decision !== "reject") {
-    throw Object.assign(
-      new Error("decision must be one of approve | reject"),
-      { status: 400 }
-    );
-  }
-
-  if (source === "anomaly") {
-    const updated = await decideAnomaly({
-      tenantId,
-      id,
-      decision,
-      reviewNote: reason ?? null,
-      reviewerId,
-    });
-    return { source: "anomaly", id: updated.id, decision, ...updated };
-  }
-
-  if (source === "overtime") {
-    const otId = toIntOrNull(id);
-    if (otId == null) {
-      throw Object.assign(new Error("id is required"), { status: 400 });
-    }
-    const existing = await prisma.overtimeRequest.findFirst({
-      where: scopedWhere(tenantId, { id: otId }),
-      select: { id: true },
-    });
-    if (!existing) {
-      throw Object.assign(new Error("Overtime request not found"), { status: 404 });
-    }
-    const updated = await prisma.overtimeRequest.update({
-      where: { id: otId },
-      data: {
-        status: decision === "approve" ? "APPROVED" : "REJECTED",
-        decidedAt: new Date(),
-        approverId: reviewerId ? Number(reviewerId) : null,
-      },
-    });
-    logger.info(
-      { overtimeId: otId, decision, approverId: reviewerId ? Number(reviewerId) : null },
-      "overtime request decided"
-    );
-    return { source: "overtime", id: otId, decision, ...updated };
-  }
-
-  throw Object.assign(
-    new Error("source must be one of anomaly | overtime"),
-    { status: 400 }
-  );
+  if(!['anomaly','overtime'].includes(source)) throw Object.assign(new Error('Invalid request source'),{status:400}); return legacyDecision(source==='anomaly'?'ATTENDANCE':'OVERTIME',id);
 }

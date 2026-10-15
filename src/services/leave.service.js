@@ -1,3 +1,4 @@
+import { legacyWithdraw, legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
@@ -605,48 +606,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
 };
 
 export const cancelLeaveRequest = async (id, employeeId, reason) => {
-  const existingRequest = await prisma.leaveRequest.findUnique({
-    where: { id }
-  });
-
-  if (!existingRequest) {
-    throw new Error('Leave request not found');
-  }
-
-  if (existingRequest.employeeId !== employeeId) {
-    throw new Error('You can only cancel your own leave requests');
-  }
-
-  if (existingRequest.status !== 'PENDING') {
-    throw new Error('Cannot cancel non-pending leave requests');
-  }
-
-  const update = await prisma.leaveRequest.update({
-    where: { id },
-    // Persist the optional cancellation reason (LeaveRequest.reason) so a caller-
-    // supplied note is not silently dropped.
-    data: { status: 'CANCELLED', ...(reason != null && reason !== '' ? { reason } : {}) },
-    include: {
-      updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true
-    }
-  });
-
-    await logAction({
-    employeeId: Number(employeeId),
-    type: "Updated", // 👈 changed from CREATE to UPDATE
-    module: "Leave Request",
-    result: "SUCCESS",
-    notes: `Leave Request "${id}" Cancelled successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-  return update;
+  return legacyWithdraw('LEAVE',id,reason);
 };
 
 export const updateLeaveRequest = async (id, data) => {
@@ -755,266 +715,11 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
 };
 
 export const approveLeaveRequest = async (leaveRequestId, data,) => {
-  const { approverId, approverRole, comments, createdById } = data;
-  // M1-HR fan-out: the acting context for the outbox event (A.5 correlation +
-  // acting principal). Threaded from the controller via `data.ctx`; absent in
-  // legacy/test callers (the builder/enqueue then fail-soft).
-  const ctx = data?.ctx || { actorId: createdById, correlationId: data?.correlationId };
-
-  const leaveRequest = await prisma.leaveRequest.findUnique({
-    where: { id: leaveRequestId },
-    include: {
-      leavePolicy: {
-        include: {
-          approvalWorkflow: {
-            include: {
-              steps: {
-                orderBy: { stepOrder: 'asc' }
-              }
-            }
-          }
-        }
-      },
-      approvals: true
-    }
-  });
-
-  if (!leaveRequest) {
-    throw new Error('Leave request not found');
-  }
-
-  // C5 — a pending request may legitimately carry NO leave type (the employee
-  // is not asked to pick a policy; HR assigns the type at approval). But the
-  // balance decrement, the approval workflow lookup and the attendance/Leave
-  // mirror all key off the policy, so approving WITHOUT one would either crash
-  // with an opaque Prisma P2025 (no LeaveBalance row keyed employeeId+null) or
-  // silently skip the workflow. Fail with a clear, actionable 400 instead.
-  if (leaveRequest.leavePolicyId == null) {
-    throw Object.assign(
-      new Error('Leave type must be assigned before approval. Assign a leave type to this request, then approve.'),
-      { status: 400 }
-    );
-  }
-
-  // X-07 — If-Match / 412 optimistic concurrency (opt-in via data.ifMatch).
-  assertIfMatch(data?.ifMatch, leaveRequest);
-
-  if (leaveRequest.status !== 'PENDING') {
-    throw new Error('Leave request is not pending approval');
-  }
-
-  // Check if approver has already approved this request
-  const existingApproval = await prisma.leaveRequestApproval.findFirst({
-    where: {
-      leaveRequestId,
-      approverId: parseInt(approverId)
-    }
-  });
-
-  if (existingApproval) {
-    throw new Error('You have already acted on this leave request');
-  }
-
-  // Record approval
-  await prisma.leaveRequestApproval.create({
-    data: {
-      leaveRequestId,
-      approverId: parseInt(approverId),
-      approverRole,
-      decision: 'APPROVED',
-      comments,
-      decision_date: new Date(),
-      createdById: parseInt(createdById)
-    }
-  });
-
-  // Check if this was the final approval
-  const workflow = leaveRequest.leavePolicy.approvalWorkflow;
-  const totalSteps = workflow ? workflow.steps.length : 1;
-  const approvalsCount = await prisma.leaveRequestApproval.count({
-    where: { leaveRequestId, decision: 'APPROVED' }
-  });
-
-  let newStatus = leaveRequest.status;
-
-  if (approvalsCount >= totalSteps || !workflow) {
-    // Final approval - update status and deduct leave balance
-    newStatus = 'APPROVED';
-
-    // C5 — never P2025 on a missing balance row: an employee whose LeaveBalance
-    // was never seeded must not make the whole approval explode AFTER the
-    // approval row was written. Missing row → create it at 0 (the decrement
-    // floors there); present row → decrement as before.
-    const existingBalance = await prisma.leaveBalance.findUnique({
-      where: {
-        employeeId_leavePolicyId: {
-          employeeId: leaveRequest.employeeId,
-          leavePolicyId: leaveRequest.leavePolicyId
-        }
-      }
-    });
-    if (existingBalance) {
-      await prisma.leaveBalance.update({
-        where: {
-          employeeId_leavePolicyId: {
-            employeeId: leaveRequest.employeeId,
-            leavePolicyId: leaveRequest.leavePolicyId
-          }
-        },
-        data: {
-          balance: {
-            decrement: leaveRequest.totalDays
-          },
-          lastUpdated: new Date()
-        }
-      });
-    } else {
-      await prisma.leaveBalance.create({
-        data: tenantData(leaveRequest.tenantId, {
-          employeeId: leaveRequest.employeeId,
-          leavePolicyId: leaveRequest.leavePolicyId,
-          balance: -leaveRequest.totalDays,
-          carryOverBalance: 0,
-          lastUpdated: new Date()
-        })
-      });
-    }
-
-    // Create attendance records for the leave period + the legacy Leave mirror
-    // (C4) that day-derivation reads.
-    await createLeaveAttendanceRecords(leaveRequest);
-    await upsertLegacyLeaveMirror(leaveRequest);
-  }
-
-  // M1-HR: the status flip and — on FINAL approval — the
-  // hr.leave.approved.v1 outbox event commit or roll back together (outbox-on-
-  // write, validate-before-write). The event is ids-only + tenant-scoped from
-  // the leave request's verified tenant; a non-conformant event throws and
-  // rolls back the status update (a bad event never escapes).
-  const update = await tenantTransaction(prisma, async (tx) => {
-    const row = await tx.leaveRequest.update({
-      where: { id: leaveRequestId },
-      data: { status: newStatus },
-      include: {
-        employee: {
-          select: {
-            id: true,
-            first_name: true,
-            last_name: true
-          }
-        },
-        leavePolicy: true,
-        approvals: {
-          include: {
-            approver: {
-              select: {
-                id: true,
-                first_name: true,
-                last_name: true
-              }
-            }
-          }
-        }
-      }
-    });
-
-    if (newStatus === 'APPROVED') {
-      const event = leaveApprovedEvent(
-        { id: row.id, employeeId: row.employeeId, leavePolicyId: row.leavePolicyId, totalDays: leaveRequest.totalDays, tenantId: row.tenantId },
-        ctx
-      );
-      if (event) await enqueueHrDomainEvent(tx, event);
-    }
-
-    return row;
-  });
-    await logAction({
-      employeeId: Number(createdById),
-      type: 'Update',
-      module: 'Leave Request',
-      result: 'SUCCESS',
-      notes: `Leave request ID ${leaveRequestId} approved successfully by employee ID ${createdById}.`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-
-  return update;
+  return legacyDecision('LEAVE',leaveRequestId);
 };
 
 export const rejectLeaveRequest = async (leaveRequestId, data) => {
-  const { approverId, approverRole, comments, createdById } = data;
-  const ctx = data?.ctx || { actorId: createdById, correlationId: data?.correlationId };
-
-  const leaveRequest = await prisma.leaveRequest.findUnique({
-    where: { id: leaveRequestId }
-  });
-
-  if (!leaveRequest) {
-    throw new Error('Leave request not found');
-  }
-
-  if (leaveRequest.status !== 'PENDING') {
-    throw new Error('Leave request is not pending approval');
-  }
-
-  // Record rejection
-  await prisma.leaveRequestApproval.create({
-    data: {
-      leaveRequestId,
-      approverId: parseInt(approverId),
-      approverRole,
-      decision: 'REJECTED',
-      comments,
-      decision_date: new Date(),
-      createdById: parseInt(createdById)
-    }
-  });
-
-  // M1-HR: the status flip + hr.leave.rejected.v1 outbox event are atomic.
-  const update = await tenantTransaction(prisma, async (tx) => {
-    const row = await tx.leaveRequest.update({
-      where: { id: leaveRequestId },
-      data: { status: 'REJECTED' },
-      include: {
-        employee: {
-          select: {
-            id: true,
-            first_name: true,
-            last_name: true
-          }
-        },
-        leavePolicy: true,
-        approvals: {
-          include: {
-            approver: {
-              select: {
-                id: true,
-                first_name: true,
-                last_name: true
-              }
-            }
-          }
-        }
-      }
-    });
-
-    const event = leaveRejectedEvent(
-      { id: row.id, employeeId: row.employeeId, tenantId: row.tenantId },
-      ctx,
-      { reason: comments ?? null }
-    );
-    if (event) await enqueueHrDomainEvent(tx, event);
-
-    return row;
-  });
-  await logAction({
-    employeeId: Number(createdById),
-    type: "Update", // 👈 changed from CREATE to UPDATE
-    module: "Leave Request",
-    result: "SUCCESS",
-    notes: `Leave Request "${leaveRequestId}" Rejected successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-  return update;
+  return legacyDecision('LEAVE',leaveRequestId);
 };
 
 // Leave Balance Services
@@ -1442,18 +1147,18 @@ export const createHoliday = async (data) => {
 // that already has an attendance row — punch integrity beats the leave mark
 // (HR-ATT-CORRECTION-01 precedence). Employees with no schedule in force keep
 // the old conservative reading: every non-holiday weekday is a working day.
-const createLeaveAttendanceRecords = async (leaveRequest) => {
+export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma) => {
   const { tenantId, employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
   const start = new Date(startDate);
   const end = new Date(endDate);
 
   const policyName =
-    (await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave';
+    (await db.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave';
 
   // Derive the leave window day-by-day on the employee's actual roster.
   let workingDays;
   try {
-    const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end, ignoreLeaves: true });
+    const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end, ignoreLeaves: true, db });
     workingDays = [...derived.values()].filter((d) => d.working);
   } catch {
     // Derivation needs the employee to exist; a defunct employee must not
@@ -1468,7 +1173,7 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
     // upsert), NOT the legacy bare employeeId_date. The stale selector made
     // EVERY approval with an in-window working day throw
     // PrismaClientValidationError → HR-5000 at the decide tool.
-    const existing = await prisma.attendance.findUnique({
+    const existing = await db.attendance.findUnique({
       where: { tenantId_employeeId_date: { tenantId, employeeId, date: dayDate } },
       select: { id: true, check_in: true, check_out: true, status: true },
     });
@@ -1478,7 +1183,7 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
     if (existing && (existing.check_in || existing.check_out)) continue;
 
     if (existing) {
-      await prisma.attendance.update({
+      await db.attendance.update({
         where: { id: existing.id },
         data: {
           status: 'ON_LEAVE',
@@ -1488,7 +1193,7 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
         }
       });
     } else {
-      await prisma.attendance.create({
+      await db.attendance.create({
         data: tenantData(leaveRequest.tenantId, {
           employeeId,
           date: dayDate,
@@ -1507,12 +1212,12 @@ const createLeaveAttendanceRecords = async (leaveRequest) => {
 // never became ON_LEAVE and attendance/payroll kept treating those days as
 // expected-working. One mirror row per approved request closes that join.
 // Idempotent: re-approval paths reuse the row instead of duplicating.
-const upsertLegacyLeaveMirror = async (leaveRequest) => {
+export const upsertLegacyLeaveMirror = async (leaveRequest, db = prisma) => {
   const { employeeId, startDate, endDate, leavePolicyId, tenantId } = leaveRequest;
   const typeCode =
-    (await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.leaveTypeCode || 'LEAVE';
+    (await db.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.leaveTypeCode || 'LEAVE';
 
-  const existing = await prisma.leave.findFirst({
+  const existing = await db.leave.findFirst({
     where: {
       employeeId,
       start_date: new Date(startDate),
@@ -1522,7 +1227,7 @@ const upsertLegacyLeaveMirror = async (leaveRequest) => {
   });
 
   if (existing) {
-    await prisma.leave.update({
+    await db.leave.update({
       where: { id: existing.id },
       data: {
         type: typeCode,
@@ -1534,7 +1239,7 @@ const upsertLegacyLeaveMirror = async (leaveRequest) => {
     return existing.id;
   }
 
-  const created = await prisma.leave.create({
+  const created = await db.leave.create({
     data: tenantData(tenantId, {
       employeeId,
       type: typeCode,

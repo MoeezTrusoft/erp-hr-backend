@@ -179,7 +179,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
   writeHeader(ex, false);
   const rowFrom = (o) => IMPORT_HEADERS.map((h) => (o[h] !== undefined ? o[h] : ""));
   ex.addRow(rowFrom({
-    first_name: "Ayesha", last_name: "Khan", employee_code: "EMP-1042", biometric_id: "1042",
+    first_name: "Ayesha", last_name: "Khan", employee_code: "", employee_category: "EMPLOYEE", biometric_id: "1042",
     gender: "Female", date_of_birth: "1996-04-12", marital_status: "Single", nationality: "Pakistani",
     national_id_type: "CNIC", national_id_number: "35202-1234567-8",
     personal_email: "ayesha.khan@gmail.com", work_email: "ayesha.khan@bookcraft.pk",
@@ -194,7 +194,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
     create_login: "yes", login_email: "ayesha.khan@bookcraft.pk",
   }));
   ex.addRow(rowFrom({
-    first_name: "Bilal", last_name: "Ahmed", employee_code: "EMP-1043", biometric_id: "1043",
+    first_name: "Bilal", last_name: "Ahmed", employee_code: "", employee_category: "EMPLOYEE", biometric_id: "1043",
     gender: "Male", work_email: "bilal.ahmed@bookcraft.pk", mobile_phone: "03011234567",
     job_title: "Accountant", department: "Finance", employment_type: "Full-time",
     manager: "EMP-1042", // reports to Ayesha (row above) — an in-sheet manager
@@ -207,7 +207,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
   [
     ["", "HR EMPLOYEE BULK IMPORT — how to fill this sheet"], ["", ""],
     ["1", "Fill one employee per row in the 'Employees' tab. The 'Example' tab is only a guide and is IGNORED on import."],
-    ["2", "Columns marked * are REQUIRED (First Name, Last Name). Everything else is optional but recommended."],
+    ["2", "Columns marked * are REQUIRED (Employee Category, First Name, Last Name). Everything else is optional but recommended."],
     ["3", "Wherever you see a small arrow in a cell, click it and PICK from the dropdown (Gender, Marital Status, Department, Grade, Manager, Employment Type/Status, Work Mode, Currency, Create Login, Emergency Contact Relationship). Dates open a simple date entry — type them as YYYY-MM-DD (e.g. 2026-07-01)."],
     ["4", "Employee Code (ERP) is your internal code. The Biometric / Device ID (★) is SEPARATE — set it to the exact user-ID enrolled on the attendance device so punches auto-map. Keep both UNIQUE."],
     ["5", "Manager: pick from the dropdown, which lists the Employee Codes you enter in THIS sheet — so a manager and their reports can all be added together (the manager just needs to be a row here too, or already exist by their Employee Code). Department / Position / Grade are matched to existing records — unknown values are flagged with the closest suggestion."],
@@ -439,7 +439,9 @@ function validateRow(rec, lk, { dayFirst, upsert }, seen) {
   }
 
   // ── employee_code: uniqueness (within sheet) + existing → update ────────────
-  const code = cleanCell(rec.employee_code).toLowerCase();
+  const rawCode = cleanCell(rec.employee_code);
+  if (rawCode && !/^[A-Z0-9]+(?:[-_][A-Z0-9]+)*$/.test(rawCode)) issues.push({ key: "employee_code", msg: "Use the exact uppercase employee code; variants are not accepted.", severity: "error" });
+  const code = rawCode.toLowerCase();
   let action = "create";
   if (code) {
     if (seen.codes.has(code)) issues.push({ key: "employee_code", msg: `Duplicate Employee Code '${cleanCell(rec.employee_code)}' also on row ${seen.codes.get(code)}.`, severity: "error" });
@@ -451,6 +453,8 @@ function validateRow(rec, lk, { dayFirst, upsert }, seen) {
   } else {
     issues.push({ key: "employee_code", msg: `No Employee Code — one will be auto-generated.`, severity: "warn" });
   }
+
+  if (action === "create" && code) issues.push({ key: "employee_code", msg: "Leave new employee codes blank for server allocation.", severity: "error" });
 
   // ── work_email uniqueness (within sheet + vs existing) ──────────────────────
   const we = cleanCell(rec.work_email).toLowerCase();

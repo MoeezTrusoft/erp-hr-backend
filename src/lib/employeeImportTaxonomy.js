@@ -20,11 +20,12 @@
 // direct   an Employee column the create contract can't set → post-write patch
 // note     hover help shown in the template (plain English, for HR)
 export const IMPORT_COLUMNS = [
+  { key: "employee_category", kind: "req", required: true, label: "Employee Category", enum: ["MANAGEMENT", "EMPLOYEE", "INTERNEE"], create: "employeeCategory", note: "Required explicit category. Distinct from employment type. Changes require approved conversion." },
   { key: "first_name", kind: "req", required: true, label: "First Name", create: "firstName", note: "REQUIRED. Given name. Auto-fixed: trimmed + Title-Cased." },
   { key: "last_name", kind: "req", required: true, label: "Last Name", create: "lastName", note: "REQUIRED. Family name. Auto-fixed: trimmed + Title-Cased." },
   { key: "middle_name", kind: "opt", label: "Middle Name", create: "middleName", note: "Optional." },
   { key: "preferred_name", kind: "opt", label: "Preferred / Nick Name", create: "preferredName", note: "Optional. Display / nickname." },
-  { key: "employee_code", kind: "key", label: "Employee Code (ERP)", create: "employeeCode", note: "The internal ERP code for this employee. Must be UNIQUE. Blank → auto-generated. (This is NOT the biometric device ID — that's the next column.)" },
+  { key: "employee_code", kind: "key", label: "Employee Code (ERP)", create: "employeeCode", note: "Leave blank for a new hire: the server allocates the category-prefixed code. Use an existing code only to match an update. This is not the biometric device ID." },
   { key: "biometric_id", kind: "key", label: "Biometric / Device ID", direct: "biometric_id", note: "★ BIOMETRIC KEY. The exact user-ID enrolled on the ZKTeco attendance device so punches auto-map to this employee. Must be UNIQUE. Optional (attendance won't auto-map until set)." },
   { key: "gender", kind: "opt", label: "Gender", enum: ["Male", "Female", "Other"], create: "gender", note: "Pick from the dropdown. Synonyms auto-fixed (M/F → Male/Female)." },
   { key: "date_of_birth", kind: "opt", label: "Date of Birth", date: true, create: "dateOfBirth", note: "Pick a date. YYYY-MM-DD preferred; other formats auto-parsed." },

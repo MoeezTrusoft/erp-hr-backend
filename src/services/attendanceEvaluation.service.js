@@ -1,3 +1,5 @@
+import {legacyDecision} from './approval/legacy.js';
+import {requireApproval} from './approval/adapters.js';
 import prisma from "../lib/prisma.js";
 import { Prisma } from "@prisma/client";
 import {
@@ -264,7 +266,8 @@ export async function reviewAttendancePunch(
     return { id, excluded: exclude };
   });
 }
-export async function saveAttendanceTimeCredit(
+export const saveAttendanceTimeCredit=(input,db=prisma)=>writeTimeCredit(input,db);
+async function writeTimeCredit(
   {
     tenantId,
     employeeId,
@@ -280,6 +283,7 @@ export async function saveAttendanceTimeCredit(
     actorEmployeeId,
   },
   db = prisma,
+  approvedRef = null,
 ) {
   if (kind === "OVERTIME")
     throw Object.assign(
@@ -408,8 +412,8 @@ export async function saveAttendanceTimeCredit(
         new Error("An approved credit already covers this interval"),
         { status: 409 },
       );
-    const credit = await tx.attendanceTimeCredit.create({
-      data: {
+    if(approvedRef)await requireApproval(tx,tenantId,"TIME_CREDIT",approvedRef);
+    const data={
         tenantId,
         employeeId,
         date: day,
@@ -420,10 +424,11 @@ export async function saveAttendanceTimeCredit(
         toSiteId: toSiteId || null,
         paid,
         reason: reason.trim(),
-        approvedBy: String(actorId),
-        state: "APPROVED",
-      },
-    });
+        approvedBy: approvedRef?String(actorId):"",
+        state: approvedRef?"APPROVED":"PENDING",
+    };
+    const credit=approvedRef?await tx.attendanceTimeCredit.update({where:{id:approvedRef},data}):await tx.attendanceTimeCredit.create({data});
+    if(!approvedRef)return credit;
     await applyEvaluatedShifts({
       tenantId,
       from: date,
@@ -436,7 +441,12 @@ export async function saveAttendanceTimeCredit(
     return credit;
   });
 }
-export async function revokeAttendanceTimeCredit(
+export const revokeAttendanceTimeCredit=({id})=>legacyDecision("TIME_CREDIT_REVOCATION",id);
+export async function finalizeTimeCredit(tx,env,row,approved){
+ if(!approved)return tx.attendanceTimeCredit.update({where:{id:row.id},data:{state:"REJECTED"}});
+ return writeTimeCredit({...row,date:dateKey(row.date),actorId:env.who.employee_code,actorEmployeeId:env.who.id},tx,row.id);
+}
+export async function finalizeTimeCreditRevocation(
   { tenantId, id, reason, actorId },
   db = prisma,
 ) {
@@ -452,6 +462,7 @@ export async function revokeAttendanceTimeCredit(
       throw Object.assign(new Error("Active time credit not found"), {
         status: 404,
       });
+    await requireApproval(tx,tenantId,"TIME_CREDIT_REVOCATION",id);
     const date = dateKey(credit.date);
     await assertAttendancePeriodOpen(tx, tenantId, date, date);
     if (tx.$executeRaw)

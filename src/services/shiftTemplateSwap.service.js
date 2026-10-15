@@ -1,3 +1,4 @@
+import { legacyWithdraw, legacyDecision } from "./approval/legacy.js";
 // src/services/shiftTemplateSwap.service.js — Shift Templates, Shift Swap
 // requests, and Overtime withdraw.
 //
@@ -410,37 +411,7 @@ export const decideShiftSwap = async (
   { id, decision, approverEmployeeId } = {},
   tenantId
 ) => {
-  const swapId = toId(id);
-  if (swapId == null) throw badRequest("Valid swap id is required");
-
-  const normalized = String(decision || "").toLowerCase();
-  const statusByDecision = {
-    approve: "APPROVED",
-    reject: "REJECTED",
-    withdraw: "WITHDRAWN",
-  };
-  const status = statusByDecision[normalized] || null;
-  if (!status) {
-    throw badRequest("decision must be 'approve', 'reject', or 'withdraw'");
-  }
-
-  const data = { status, decidedAt: new Date() };
-  // withdraw is requester-initiated — no approver is stamped.
-  if (status !== "WITHDRAWN") {
-    data.approverId = toId(approverEmployeeId);
-  }
-
-  const result = await prisma.shiftSwapRequest.updateMany({
-    where: scopedWhere(tenantId, { id: swapId }),
-    data,
-  });
-  if (result.count === 0) throw notFound("Shift swap request not found");
-
-  const updated = await prisma.shiftSwapRequest.findFirst({
-    where: scopedWhere(tenantId, { id: swapId }),
-  });
-  const nameMap = await buildNameMap([updated], tenantId);
-  return shapeSwap(updated, nameMap);
+  if(['WITHDRAW','WITHDRAWN'].includes(decision))return legacyWithdraw('SHIFT_SWAP',id);return legacyDecision('SHIFT_SWAP',id);
 };
 
 // ---------------------------------------------------------------------------
@@ -453,23 +424,5 @@ export const decideShiftSwap = async (
  * remain on the existing decideOvertimeRequest / hr_overtime_request_decide.
  */
 export const withdrawOvertimeRequest = async ({ id } = {}, tenantId) => {
-  const reqId = toId(id);
-  if (reqId == null) throw badRequest("Valid request id is required");
-
-  const result = await prisma.overtimeRequest.updateMany({
-    where: scopedWhere(tenantId, { id: reqId }),
-    data: { status: "WITHDRAWN", decidedAt: new Date() },
-  });
-  if (result.count === 0) throw notFound("Overtime request not found");
-
-  const updated = await prisma.overtimeRequest.findFirst({
-    where: scopedWhere(tenantId, { id: reqId }),
-  });
-
-  return {
-    reqId: updated.id,
-    employeeId: updated.employeeId,
-    status: updated.status,
-    decidedAt: updated.decidedAt ?? null,
-  };
+  return legacyWithdraw('OVERTIME',id);
 };

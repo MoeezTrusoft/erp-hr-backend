@@ -32,6 +32,7 @@ describe('TOOL-REGISTRY — no duplicate registrations (SDK throws on them)', ()
     };
     const recorder = {
       tool: record(seenTool, 'tool'),
+      registerTool: record(seenTool, 'tool'),
       resource: record(seenResource, 'resource'),
     };
 

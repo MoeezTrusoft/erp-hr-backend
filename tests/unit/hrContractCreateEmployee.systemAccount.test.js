@@ -15,7 +15,12 @@ const mockLogAction = jest.fn();
 const mockCreateRbacSystemAccount = jest.fn();
 
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, update: mockEmployeeUpdate, findUnique: mockEmployeeFindUnique },
+  employeeCodeConfiguration: {findUnique: jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence: {upsert: jest.fn().mockResolvedValue({lastValue:0n}), update: jest.fn().mockResolvedValue({})},
+  employeeCodeReservation: {findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null)},
+  $executeRaw: jest.fn().mockResolvedValue([]),
+
+  employee: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null), create: mockEmployeeCreate, update: mockEmployeeUpdate, findUnique: mockEmployeeFindUnique },
   position: { findUnique: mockPositionFindUnique },
   region: { findUnique: mockRegionFindUnique },
   emergencyContacts: { createMany: mockEmergencyCreateMany },
@@ -45,7 +50,7 @@ const CREATED_PROFILE = {
   employee_media_id: 555,
 };
 const baseInput = {
-  firstName: "Ada",
+  employeeCategory: "EMPLOYEE", firstName: "Ada",
   lastName: "Lovelace",
   jobTitle: "Engineer",
   gender: "female",
@@ -109,8 +114,8 @@ describe("F-03 hrContract.createEmployee system-account workflow", () => {
   });
 
   it("does not create an intent when createSystemAccount is absent or false", async () => {
-    await hrContractService.createEmployee(baseInput, 42);
-    await hrContractService.createEmployee({ ...baseInput, createSystemAccount: false }, 42);
+    await hrContractService.createEmployee(baseInput, 42, ctx);
+    await hrContractService.createEmployee({ ...baseInput, createSystemAccount: false }, 42, ctx);
     expect(mockProvisioningCreate).not.toHaveBeenCalled();
     expect(mockCreateRbacSystemAccount).not.toHaveBeenCalled();
   });

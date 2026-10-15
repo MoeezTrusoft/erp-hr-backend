@@ -627,7 +627,7 @@ describe("site evidence, review and recovery safeguards", () => {
   });
 });
 
-it("approves evidence-backed site travel and credits only the gap", async () => {
+it("saves evidence-backed site travel pending staged approval without crediting time", async () => {
   const c = config();
   c.settings.sites = [{ id: "HO" }, { id: "SITE" }];
   c.settings.siteAssignments = [
@@ -672,15 +672,8 @@ it("approves evidence-backed site travel and credits only the gap", async () => 
     },
     db,
   );
-  expect(db.snapshot().attendance[0]).toMatchObject({
-    status: "PRESENT",
-    total_hours: 7,
-    day_credit: 1,
-  });
-  expect(db.snapshot().attendance[0].calculation.verdict).toMatchObject({
-    travelMinutes: 60,
-    payableMinutes: 480,
-  });
+  expect(db.snapshot().attendanceTimeCredit[0].state).toBe('PENDING');
+  expect(db.snapshot().attendance[0].day_credit).toBeNull();
 });
 
 it("uses approved overtime requests and limits payment time to actual recorded work", async () => {

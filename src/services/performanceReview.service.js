@@ -1,3 +1,6 @@
+import { getCtx } from '../mcp/context.js';
+import { actor } from './separation/base.js';
+import { legacySubmit } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
@@ -45,52 +48,17 @@ export const initiateReviewsService = async (cycleId, employeeIds, reviewedBy, t
 
 // 2️⃣ Submit self/manager/peer review
 export const submitReviewService = async (id, body, submittedBy, tenantId) => {
-  const { comments, overall_rating } = body;
-
-  const review = await prisma.performanceReview.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!review) throw new Error("Review not found");
-
-  // M1-HR: the review FINALIZED flip + hr.performance.review_finalized.v1
-  // outbox event are atomic (outbox-on-write, validate-before-write). Ids-only,
-  // tenant-scoped from the review's verified tenant.
-  const submitted = await tenantTransaction(prisma, async (tx) => {
-    const row = await tx.performanceReview.update({
-      where: { id: Number(id) },
-      data: {
-        comments,
-        overall_rating,
-        status: "FINALIZED",
-        submittedById: Number(submittedBy)
-        //  submittedAt: new Date(),
-      },
-      submittedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-    });
-
-    const event = performanceReviewFinalizedEvent(
-      { id: Number(id), employeeId: review.employeeId, cycleId: review.cycleId, rating: overall_rating ?? null, tenantId: review.tenantId ?? tenantId },
-      { actorId: submittedBy }
-    );
-    if (event) await enqueueHrDomainEvent(tx, event);
-
-    return row;
-  });
-
-  await logAction({
-    employeeId: Number(submittedBy),
-    type: "Update", // 👈 changed from CREATE to UPDATE
-    module: "Performance Review",
-    result: "SUCCESS",
-    notes: `Performance Review "${id}" Updated successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-
-  return submitted
+  const ctx=getCtx();
+  if(!ctx.actorVerified)throw Object.assign(new Error('Verified employee identity required'),{status:401});
+  await tenantTransaction(prisma,async tx=>{
+    const who=await actor(tx,ctx);
+    const review=await tx.performanceReview.findFirst({where:{id:Number(id),tenantId:ctx.user.tenantId}});
+    if(!review || review.employeeId!==who.id)throw Object.assign(new Error('Only the employee initiator can submit this appraisal'),{status:403});
+    const request=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId:ctx.user.tenantId,kind:'PERFORMANCE',sourceRef:String(id)}}});
+    if(request&&request.stage!=='INITIATOR')throw Object.assign(new Error('The appraisal is already in review'),{status:409});
+    await tx.performanceReview.update({where:{id:review.id},data:{comments:body.comments,overall_rating:body.overall_rating}});
+  },{tenantId:ctx.user.tenantId});
+  return legacySubmit('PERFORMANCE',id);
 };
 
 // 3️⃣ Get all reviews for a cycle

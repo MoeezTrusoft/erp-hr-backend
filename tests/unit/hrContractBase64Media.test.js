@@ -12,7 +12,12 @@ const mockTransaction = jest.fn();
 const mockLogAction = jest.fn();
 
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique },
+  employeeCodeConfiguration: {findUnique: jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence: {upsert: jest.fn().mockResolvedValue({lastValue:0n}), update: jest.fn().mockResolvedValue({})},
+  employeeCodeReservation: {findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null)},
+  $executeRaw: jest.fn().mockResolvedValue([]),
+
+  employee: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null), create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique },
   position: { findUnique: jest.fn() },
   region: { findUnique: jest.fn() },
   emergencyContacts: { createMany: mockEmergencyCreateMany },
@@ -41,8 +46,13 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockTransaction.mockImplementation(async (fn) => {
     const tx = {
+      employeeCodeConfiguration: {findUnique: jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence: {upsert: jest.fn().mockResolvedValue({lastValue:0n}), update: jest.fn().mockResolvedValue({})},
+  employeeCodeReservation: {findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null)},
+  $executeRaw: jest.fn().mockResolvedValue([]),
+
       $executeRaw: jest.fn().mockResolvedValue([]),
-      employee: { create: mockEmployeeCreate.mockResolvedValue(CREATED), findUnique: mockEmployeeFindUnique, update: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null), create: mockEmployeeCreate.mockResolvedValue(CREATED), findUnique: mockEmployeeFindUnique, update: jest.fn() },
       emergencyContacts: { createMany: mockEmergencyCreateMany },
       employeeMedia: { createMany: mockMediaCreateMany },
     };
@@ -82,7 +92,7 @@ describe("createEmployee — inline base64 documents & photos", () => {
   it("uploads a base64 document to DAM and stores the derived media (no mediaId needed)", async () => {
     await svc.createEmployee(
       {
-        firstName: "Ada",
+        employeeCategory: "EMPLOYEE", firstName: "Ada",
         lastName: "Lovelace",
         documents: [{ title: "Offer", category: "CONTRACT", fileBase64: B64, fileName: "offer.pdf" }],
       },
@@ -104,7 +114,7 @@ describe("createEmployee — inline base64 documents & photos", () => {
 
   it("uploads a base64 profile photo to DAM", async () => {
     await svc.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace", profilePhotoBase64: B64, profilePhotoFileName: "me.png" },
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace", profilePhotoBase64: B64, profilePhotoFileName: "me.png" },
       1,
       { tenantId: "t-1" }
     );

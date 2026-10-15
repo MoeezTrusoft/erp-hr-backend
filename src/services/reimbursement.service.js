@@ -1,3 +1,4 @@
+import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 import prisma from "../config/prisma.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -45,19 +46,9 @@ export const uploadReceipt = async (id, file, tenantId) => {
 };
 
 export const submitClaim = async (id, tenantId) => {
-  const existing = await prisma.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!existing) throw new Error("Reimbursement claim not found");
-  return prisma.reimbursementClaim.update({
-    where: { id: Number(id) },
-    data: { status: "SUBMITTED", submittedAt: new Date() },
-  });
+  return legacySubmit('CLAIM',id);
 };
 
 export const approveClaim = async (id, approverId, tenantId) => {
-  const existing = await prisma.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!existing) throw new Error("Reimbursement claim not found");
-  return prisma.reimbursementClaim.update({
-    where: { id: Number(id) },
-    data: { status: "APPROVED", approvedById: Number(approverId), approvedAt: new Date() },
-  });
+  return legacyDecision('CLAIM',id);
 };

@@ -49,7 +49,13 @@ const { createEmployeeService, updateEmployeeService, deleteEmployeeService } =
 
 // The tx client handed to the $transaction callback.
 const txClient = {
+    $executeRaw: jest.fn().mockResolvedValue([]),
+    employeeCodeConfiguration: { findUnique: jest.fn().mockResolvedValue(null) },
+    employeeCodeSequence: { upsert: jest.fn().mockResolvedValue({ lastValue: 0n }), update: jest.fn().mockResolvedValue({}) },
+    employeeCodeReservation: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     employee: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
         create: txEmployeeCreate,
         update: txEmployeeUpdate,
         delete: txEmployeeDelete,
@@ -77,7 +83,7 @@ const sampleEmployee = {
     tenant_id: TENANT,
     first_name: 'Ada',
     last_name: 'Lovelace',
-    employee_code: 'E-100',
+    employee_code: 'EMP-0001',
     businessUnitId: 7,
     positionId: 3,
     hire_date: new Date('2026-06-24T00:00:00.000Z'),
@@ -95,16 +101,18 @@ describe('createEmployeeService emits hr.employee.lifecycle.v1 in-tx', () => {
             tenant_id: TENANT,
             first_name: 'Ada',
             last_name: 'Lovelace',
-            employee_code: 'E-100',
+            employeeCategory: 'EMPLOYEE',
         };
 
         await createEmployeeService(data, null, null, 1, {
             correlationId: 'corr-create',
+            tenantId: TENANT,
             actorId: 1,
         });
 
         expect(mockTransaction).toHaveBeenCalledTimes(1);
         expect(txEmployeeCreate).toHaveBeenCalledTimes(1);
+        expect(txEmployeeCreate.mock.calls[0][0].data.employee_code).toBe('EMP-0001');
         expect(txOutboxCreate).toHaveBeenCalledTimes(1);
 
         const row = txOutboxCreate.mock.calls[0][0].data;
