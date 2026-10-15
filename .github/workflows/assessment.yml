@@ -33,6 +33,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Install shared contract runtime dependencies for native rule tests
+        run: npm ci --prefix ../contracts --omit=dev --ignore-scripts
       - run: npx prisma generate
       - name: Prepare isolated schema with non-owner FORCE RLS role
         run: node tests/separation/prepare.mjs --reset
