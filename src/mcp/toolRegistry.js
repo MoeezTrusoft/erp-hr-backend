@@ -1,3 +1,6 @@
+import { registerApprovalTools } from './tools/approvalTools.js';
+import { registerSeparationTools } from "./tools/separationTools.js";
+import { registerAssessmentTools } from './tools/assessmentTools.js';
 import { registerAttendanceCaptureTools } from './tools/attendanceCaptureTools.js';
 import { registerMonthlyPayrollAttendanceTools } from './tools/monthlyPayrollAttendanceTools.js';
 import { registerEmployeeTools } from "./tools/employeeTools.js";
@@ -328,4 +331,7 @@ export function registerAllTools(server) {
   registerLoanTools(server);
   registerDeductionTools(server);
   registerCrossTenantTools(server);
+  registerSeparationTools(server);
+  registerApprovalTools(server);
+  registerAssessmentTools(server);
 }

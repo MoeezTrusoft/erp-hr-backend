@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
 import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
 import { lockAttendancePeriod } from './attendancePeriod.service.js';
@@ -1711,38 +1712,7 @@ const getOrCreateDeductionType = async (code, name, tenantId) => {
 // state transition. It must not delete the run or silently turn it into a
 // cancellation: HR needs the rejected batch and reason for correction/review.
 export const rejectPayrollRun = async (id, rejectedBy, reason, tenantId) => {
-  const payrollRun = await prisma.payrollRun.findFirst({ where: withTenant(tenantId, { id }) });
-  if (!payrollRun) throw new Error('Payroll run not found');
-  if (!['COMPLETED', 'APPROVED'].includes(payrollRun.status)) {
-    throw new Error(`Only COMPLETED or APPROVED payroll runs can be rejected (current: ${payrollRun.status})`);
-  }
-
-  const actor = toInt(rejectedBy);
-  if (actor === null) throw new Error('HR-2014 rejecting employee id is required');
-  const note = String(reason ?? '').trim();
-  if (!note) throw new Error('HR-2015 rejection reason is required');
-
-  await prisma.payrollRun.updateMany({
-    where: withTenant(tenantId, { id }),
-    data: { status: 'REJECTED', approvedBy: null, approvedAt: null },
-  });
-  await prisma.payrollAuditLog.create({
-    data: {
-      tenantId: tenantId ?? null,
-      action: 'PAYROLL_REJECTED',
-      details: `Payroll run rejected by employee ${actor}: ${note}`,
-      payrollRunId: id,
-    },
-  });
-  await logAction({
-    employeeId: actor,
-    type: 'Update',
-    module: 'Payroll Run',
-    result: 'SUCCESS',
-    notes: `Payroll run "${id}" rejected`,
-    tenantId: tenantId ?? null,
-  });
-  return getPayrollRunById(id, tenantId);
+  return legacyDecision('PAYROLL',id);
 };
 
 // HR-02 / T-P4.1 — APPROVAL GATE with separation of duties.
@@ -1753,74 +1723,7 @@ export const rejectPayrollRun = async (id, rejectedBy, reason, tenantId) => {
 // to APPROVED. finalizePayrollRun then requires status===APPROVED with a
 // recorded approver. The check compares integer employee ids.
 export const approvePayrollRun = async (id, approverId, tenantId) => {
-  const payrollRun = await prisma.payrollRun.findFirst({ where: withTenant(tenantId, { id }) });
-  if (!payrollRun) throw new Error('Payroll run not found');
-
-  if (payrollRun.status !== 'COMPLETED') {
-    throw new Error('Only COMPLETED payroll runs can be approved');
-  }
-
-  const approver = toInt(approverId);
-  if (approver === null) {
-    throw new Error('HR-2010 approver id is required to approve a payroll run');
-  }
-
-  // Separation of duties: the approver MUST differ from the processor.
-  if (payrollRun.processedBy != null && approver === payrollRun.processedBy) {
-    throw new Error('HR-2011 self-approval forbidden: the approver must be distinct from the processor (same employee)');
-  }
-
-  // TS-APPROVAL-MATRIX-01 (operator item 3.3, 2026-09-17) — the batch routes
-  // down the approval MATRIX: the approving employee must be the resolved
-  // approver of SOME ACTIVE level (lowest level first is the natural chain,
-  // but the operator's gate is "a designated approver", so any level match
-  // passes here; level-ordered multi-signature remains a future extension
-  // once HR populates multiple levels). No matrix rows configured → approval
-  // stays possible (legacy tenants must not be bricked), which the audit row
-  // records explicitly.
-  const matrix = await prisma.payrollApprovalMatrix.findMany({
-    where: withTenant(tenantId, { status: 'ACTIVE' }),
-    select: { level: true, approverId: true, role: true },
-    orderBy: { level: 'asc' },
-  });
-  if (matrix.length > 0) {
-    const designated = matrix.filter((lvl) => lvl.approverId != null);
-    const isDesignated = designated.some((lvl) => lvl.approverId === approver);
-    if (!isDesignated) {
-      throw new Error(
-        'HR-2013 approver is not a designated approver in the approval matrix '
-        + `(${designated.length} of ${matrix.length} levels have a resolved approver)`,
-      );
-    }
-  }
-
-  await prisma.payrollRun.updateMany({
-    where: withTenant(tenantId, { id }),
-    data: { status: 'APPROVED', approvedBy: approver, approvedAt: new Date() }
-  });
-
-  await prisma.payrollAuditLog.create({
-    data: {
-      tenantId: tenantId ?? null,
-      action: 'PAYROLL_APPROVED',
-      // The approver id is recorded in approvedBy on the run; we keep it out of
-      // the audit row's employeeId FK column (which references Employee) so the
-      // audit write never couples to whether the actor is a payroll Employee.
-      details: `Payroll run approved by employee ${approver} (processor was ${payrollRun.processedBy ?? 'unknown'})${matrix.length > 0 ? '; approval-matrix enforced' : '; no approval matrix configured'}`,
-      payrollRunId: id
-    }
-  });
-
-  await logAction({
-    employeeId: approver,
-    type: 'Update',
-    module: 'Payroll Run',
-    result: 'SUCCESS',
-    notes: `Payroll run "${id}" approved`,
-    tenantId: tenantId ?? null,
-  });
-
-  return getPayrollRunById(id, tenantId);
+  return legacyDecision('PAYROLL',id);
 };
 
 export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {

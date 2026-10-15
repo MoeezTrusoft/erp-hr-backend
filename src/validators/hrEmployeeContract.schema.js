@@ -1,3 +1,4 @@
+import { EmploymentCategory, EmploymentCode } from "@trusoft/contracts/employment";
 import { z } from "zod";
 
 const emptyToUndefined = (value) => (value === "" || value === null ? undefined : value);
@@ -76,7 +77,9 @@ const employeeBase = {
   stateProvince: optionalString,
   country: optionalString,
   postalCode: optionalString,
-  employeeCode: optionalString,
+  employeeCode: z.preprocess(emptyToUndefined, EmploymentCode.optional()),
+  employeeCategory: EmploymentCategory.optional(),
+  contractNoticeDays: z.number().int().nonnegative().max(730).optional(),
   jobTitle: optionalString,
   companyId: optionalInt,
   // FE-compat alias: some callers send `company` (int) instead of `companyId`.
@@ -150,6 +153,7 @@ const employeeBase = {
 export const createEmployeeContractSchema = z
   .object({
     ...employeeBase,
+    employeeCategory: EmploymentCategory,
     firstName: requiredString,
     lastName: requiredString,
   })

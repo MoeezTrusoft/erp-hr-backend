@@ -68,7 +68,7 @@ export function registerAttendanceEvaluationTools(server) {
   );
   register(
     "hr_attendance_time_credit",
-    "Approve attributed site travel without editing punches",
+    "Save attributed site travel for employee submission and staged approval",
     {
       employeeId,
       date,
@@ -85,7 +85,7 @@ export function registerAttendanceEvaluationTools(server) {
   );
   register(
     "hr_attendance_time_credit_revoke",
-    "Revoke an approved time credit with retained history",
+    "Open staged review of a time-credit revocation",
     { id: z.string().uuid(), reason: z.string().trim().min(1).max(2000) },
     revokeAttendanceTimeCredit,
     true,

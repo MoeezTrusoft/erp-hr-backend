@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 // src/services/overtimeShift.service.js — Overtime & Shift Management.
 //
 // Backs the HR "Overtime & Shift" screens: current shift/overtime overview,
@@ -254,43 +255,5 @@ export const decideOvertimeRequest = async (
   { id, decision, approverEmployeeId } = {},
   tenantId
 ) => {
-  const reqId = toEmployeeId(id);
-  if (reqId == null) {
-    throw Object.assign(new Error("Valid request id is required"), { status: 400 });
-  }
-  const normalized = String(decision || "").toLowerCase();
-  const status =
-    normalized === "approve"
-      ? "APPROVED"
-      : normalized === "reject"
-      ? "REJECTED"
-      : null;
-  if (!status) {
-    throw Object.assign(new Error("decision must be 'approve' or 'reject'"), {
-      status: 400,
-    });
-  }
-
-  const approverId = toEmployeeId(approverEmployeeId);
-
-  const result = await prisma.overtimeRequest.updateMany({
-    where: scopedWhere(tenantId, { id: reqId }),
-    data: { status, decidedAt: new Date(), approverId },
-  });
-
-  if (result.count === 0) {
-    throw Object.assign(new Error("Overtime request not found"), { status: 404 });
-  }
-
-  const updated = await prisma.overtimeRequest.findFirst({
-    where: scopedWhere(tenantId, { id: reqId }),
-  });
-
-  return {
-    reqId: updated.id,
-    employeeId: updated.employeeId,
-    status: updated.status,
-    decidedAt: updated.decidedAt ?? null,
-    approverId: updated.approverId ?? null,
-  };
+  return legacyDecision('OVERTIME',id);
 };

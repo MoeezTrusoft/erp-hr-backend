@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -101,44 +102,7 @@ export const deleteRequisitions = async (id, deletedBy, tenantId) => {
 
 // ✅ Approve or reject requisition
 export const approveRequisition = async (id, status, comments, approvedBy, tenantId) => {
-  if (!["APPROVED", "REJECTED"].includes(status)) throw new Error("Invalid status");
-
-  const requisition = await prisma.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!requisition) throw new Error("Requisition not found");
-
-  await prisma.requisitionApproval.create({
-    data: scopedData(tenantId, {
-      requisitionId: Number(id),
-      approverId: Number(approvedBy),
-      status,
-      comments,
-      decidedAt: new Date(),
-    }),
-  });
-
-  const update = await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: {
-      status,
-      approvedById: Number(approvedBy),
-    },
-    approvedBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    }
-  });
-  await logAction({
-    employeeId: approvedBy,
-    type: "UPDATE",
-    module: "Requisition Approve",
-    result: "SUCCESS",
-    notes: `Requisition approve "${id}" updated successfully`,
-    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-  });
-  return update;
+  return legacyDecision('REQUISITION',id);
 };
 
 // ✅ Post approved job externally

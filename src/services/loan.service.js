@@ -1,3 +1,4 @@
+import { legacyDecision } from "./approval/legacy.js";
 // src/services/loan.service.js — Loan & salary advance management
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -36,7 +37,7 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
             reason: reason || null,
             createdById: createdById ? Number(createdById) : null,
             kind,
-            status: "ACTIVE",
+            status: "PENDING",
         }),
     });
 
@@ -141,31 +142,14 @@ export const getActiveLoanDeductions = async (employeeId, tenantId) => {
  * Approve a loan.
  */
 export const approveLoan = async (id, approvedById, tenantId) => {
-    const loan = await prisma.loan.findFirst({
-        where: scopedWhere(tenantId, { id: Number(id) }),
-    });
-    if (!loan) throw Object.assign(new Error("Loan not found"), { status: 404 });
-    if (loan.status !== "ACTIVE") throw Object.assign(new Error("Loan is not active"), { status: 400 });
-
-    return prisma.loan.update({
-        where: { id: Number(id) },
-        data: { approvedById: Number(approvedById) },
-    });
+  return legacyDecision('LOAN',id);
 };
 
 /**
  * Write off a loan (mark as forgiven).
  */
 export const writeOffLoan = async (id, tenantId) => {
-    const loan = await prisma.loan.findFirst({
-        where: scopedWhere(tenantId, { id: Number(id), status: "ACTIVE" }),
-    });
-    if (!loan) throw Object.assign(new Error("Active loan not found"), { status: 404 });
-
-    return prisma.loan.update({
-        where: { id: Number(id) },
-        data: { status: "WRITTEN_OFF", outstandingMinor: 0 },
-    });
+    return legacyDecision('LOAN_WRITEOFF',id);
 };
 
 /**

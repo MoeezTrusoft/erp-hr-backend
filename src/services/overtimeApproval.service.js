@@ -1,7 +1,8 @@
+import { legacyDecision } from "./approval/legacy.js";
 // src/services/overtimeApproval.service.js
 //
-// Overtime, routed through the SAME ordered chain as payroll
-// (PayrollApprovalMatrix), and reflected in payroll once approved.
+// Overtime uses the shared employee, manager, HR and Management workflow.
+// Legacy payroll matrices remain readable for historical configuration only.
 //
 // Two ways overtime arrives:
 //   * the employee punches overtime in/out on the device — ZKTeco status 4 and
@@ -51,7 +52,6 @@ export async function resolveOvertimeChain({ tenantId, employeeId }) {
   });
 }
 
-const firstActionable = (chain) => chain.find((c) => c.resolved) ?? null;
 
 /** Raise overtime for a day. `source` records whether the device saw it. */
 export async function createOvertimeRequest({
@@ -75,8 +75,7 @@ export async function createOvertimeRequest({
     throw badRequest(`Overtime for ${day.toISOString().slice(0, 10)} is already ${existing.status}`);
   }
 
-  const chain = await resolveOvertimeChain({ tenantId, employeeId });
-  const target = firstActionable(chain);
+  // Capture creates a candidate. Only the employee can submit it for review.
 
   const request = await tenantTransaction(prisma, async (tx) =>
     tx.overtimeRequest.create({
@@ -85,20 +84,13 @@ export async function createOvertimeRequest({
         fromTime: fromTime ?? null, toTime: toTime ?? null,
         project: project ?? null, source,
         status: "PENDING",
-        currentApprovalLevel: target?.level ?? 1,
-        approverId: target?.approverId ?? null,
+        currentApprovalLevel: 1,
+        approverId: null,
       },
     }),
   );
 
-  if (!target) {
-    // Never auto-approve an unroutable request: that would pay hours nobody
-    // agreed to. It stays PENDING and is logged loudly for a human.
-    logger.error({ requestId: request.id, employeeId, chain },
-      "overtime request has no resolvable approver — left PENDING");
-  }
-
-  return { request, routed: Boolean(target), level: target?.level ?? null, chain };
+  return {request,routed:false,level:null,chain:[],stage:'INITIATOR',workflowUrl:'/hr/approvals'};
 }
 
 /**
@@ -106,72 +98,7 @@ export async function createOvertimeRequest({
  * final approval writes hours to payroll.
  */
 export async function decideOvertimeRequest({ tenantId, requestId, approverId, decision, comments }) {
-  const verdict = String(decision || "").trim().toUpperCase();
-  if (!["APPROVED", "REJECTED"].includes(verdict)) {
-    throw badRequest("decision must be APPROVED or REJECTED");
-  }
-
-  const request = await prisma.overtimeRequest.findUnique({ where: { id: requestId } });
-  if (!request) throw notFound(`Overtime request ${requestId} not found`);
-  if (request.status !== "PENDING") throw badRequest(`Request ${requestId} is already ${request.status}`);
-
-  const chain = await resolveOvertimeChain({ tenantId, employeeId: request.employeeId });
-  const current = chain.find((c) => c.level === request.currentApprovalLevel);
-  if (!current) throw badRequest("Request is not pointed at a configured approval level");
-  if (!current.resolved || current.approverId !== approverId) {
-    throw forbidden("You are not the approver for this level");
-  }
-
-  const next = firstActionable(chain.filter((c) => c.level > current.level));
-  const advances = verdict === "APPROVED" && Boolean(next);
-
-  return tenantTransaction(prisma, async (tx) => {
-    await tx.overtimeRequestApproval.create({
-      data: {
-        tenantId, overtimeRequestId: requestId, level: current.level,
-        approverId, approverRole: current.role, decision: verdict, comments: comments ?? null,
-      },
-    });
-
-    const updated = await tx.overtimeRequest.update({
-      where: { id: requestId },
-      data: advances
-        ? { currentApprovalLevel: next.level, approverId: next.approverId }
-        : { status: verdict, decidedAt: new Date(), approverId },
-    });
-
-    let payrollHours = null;
-    if (!advances && verdict === "APPROVED") {
-      // ONLY now does payroll see it. shift_assignments.overtimeHours is what
-      // the payroll run reads, so pending or rejected hours never reach pay.
-      const day = startOfDay(request.date);
-      const assignment = await tx.shiftAssignment.findFirst({
-        where: { employeeId: request.employeeId, date: day },
-        orderBy: { id: "desc" },
-      });
-      if (assignment) {
-        await tx.shiftAssignment.update({
-          where: { id: assignment.id },
-          data: { overtimeHours: request.hours, updatedAt: new Date() },
-        });
-      } else {
-        await tx.shiftAssignment.create({
-          data: {
-            tenantId, employeeId: request.employeeId, date: day,
-            shiftType: "morning", workMode: "onsite", status: "on_shift",
-            overtimeHours: request.hours,
-          },
-        });
-      }
-      payrollHours = request.hours;
-    }
-
-    logger.info(
-      { requestId, level: current.level, decision: verdict, final: !advances, payrollHours },
-      "overtime decision recorded",
-    );
-    return { request: updated, final: !advances, nextLevel: advances ? next.level : null, payrollHours };
-  });
+  return legacyDecision('OVERTIME',requestId);
 }
 
 /** Overtime requests waiting on this approver right now. */

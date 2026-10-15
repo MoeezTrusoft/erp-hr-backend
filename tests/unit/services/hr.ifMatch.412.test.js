@@ -38,7 +38,7 @@ beforeEach(() => {
     mockLogAction.mockResolvedValue(undefined);
     mockTransaction.mockImplementation(async (arg) => (typeof arg === 'function' ? arg(txClient) : Promise.all(arg)));
     employeeFindUnique.mockResolvedValue({
-        id: 1,
+        id: 1, employee_code: "EMP-0001", employeeCategory:"EMPLOYEE",
         tenant_id: '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007',
         updated_at: UPDATED_AT,
         hire_date: new Date('2020-01-01'),

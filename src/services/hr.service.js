@@ -1,3 +1,4 @@
+import { prepareEmployeeInsert, guardIdentityEdit } from "./employee-code.service.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
@@ -290,7 +291,8 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl, c
   // are untouched — we still write through the same singleton client, just
   // wrapped in an interactive transaction so the outbox row is atomic with it.
   const employee = await tenantTransaction(prisma, async (tx) => {
-    const created = await tx.employee.create({ data: parsedData });
+    const prepared = await prepareEmployeeInsert(tx, parsedData, { tenantId: ctx.tenantId, category: data.employeeCategory });
+    const created = await tx.employee.create({ data: prepared });
     await emitEmployeeLifecycle(tx, created, "hired", ctx);
     return created;
   });
@@ -455,6 +457,7 @@ export const updateEmployeeService = async (id, data, updatedBy, ctx = {}) => {
   });
 
   if (!exists) throw new Error("Employee not found");
+  guardIdentityEdit(exists, data);
 
   // X-07 / ARCH-01 §3.4 — If-Match / 412 optimistic concurrency. Opt-in: when
   // the caller supplies ctx.ifMatch (the request If-Match header), reject the

@@ -10,7 +10,7 @@
 //
 // These tests pin the corrected behavior: ON_LEAVE + day_credit 1 only on
 // rostered working days, punch rows never overwritten, a Leave mirror row
-// upserted on final approval, and a clear 400 when a request without a leave
+// upserted on final approval, and a clear 409 when a request without a leave
 // type reaches the approval path.
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
@@ -29,6 +29,8 @@ let createdLegacyLeave;
 let updatedLegacyLeave;
 
 const prismaMock = {
+    $executeRaw: jest.fn(),
+    payrollRun: { findFirst: jest.fn(async () => null) },
     leavePolicy: { findUnique: jest.fn(async () => leavePolicyRow) },
     // The approval path re-fetches the request; the C5 suite swaps this stub.
     // `update` runs inside the tenant transaction (status flip).
@@ -44,6 +46,7 @@ const prismaMock = {
     },
     // C5 — balance exists → decrement path; assert via update.
     leaveBalance: {
+        upsert: jest.fn(async ({ data }) => data),
         findUnique: jest.fn(async () => ({ employeeId: 481, leavePolicyId: 73, balance: 14 })),
         update: jest.fn(async ({ data }) => data),
         create: jest.fn(async ({ data }) => data),
@@ -96,7 +99,8 @@ jest.unstable_mockModule('../../src/services/workingDay.service.js', () => ({
     resolveWorkingDays: jest.fn(async () => workingDaysMap),
 }));
 
-const svc = await import('../../src/services/leave.service.js');
+const {applyDecision} = await import('../../src/services/approval/adapters.js');
+const svc = {approveLeaveRequest: async () => {const row=await prismaMock.leaveRequest.findUnique(); return applyDecision(prismaMock,{tenantId:row.tenantId,now:new Date(),who:{id:558,employee_code:'MGMT-558'}},{kind:'LEAVE'},{row,who:{employee_code:'EMP-481'}},true,'Management approved after staged review');}};
 
 const wd = (iso, working) => [iso, { date: midnight(iso), working }];
 
@@ -129,13 +133,12 @@ beforeEach(() => {
 describe('C3 — createLeaveAttendanceRecords (via approveLeaveRequest final path)', () => {
     const finalApprove = () =>
         svc.approveLeaveRequest(1, {
-            approverId: 558, approverRole: 'HR', comments: null, createdById: 558,
+            approverId: 558, approverRole: 'MANAGEMENT', comments: null, createdById: 558,
             ctx: {},
         });
 
     beforeEach(() => {
-        // A FINAL-approval fetch: PENDING request with a policy and no workflow
-        // steps → newStatus = APPROVED on the first approval.
+        // A FINAL-approval fetch: PENDING request with a policy and completed staged review; tests here exercise final financial effects.
         prismaMock.leaveRequest.findUnique.mockImplementation(async () => ({
             id: 1,
             employeeId: 481,
@@ -206,7 +209,7 @@ describe('C4 — legacy Leave mirror', () => {
 
     it('creates the Leave row day-derivation reads on final approval', async () => {
         await svc.approveLeaveRequest(1, {
-            approverId: 558, approverRole: 'HR', comments: null, createdById: 558,
+            approverId: 558, approverRole: 'MANAGEMENT', comments: null, createdById: 558,
             ctx: {},
         });
 
@@ -223,7 +226,7 @@ describe('C4 — legacy Leave mirror', () => {
         legacyLeaveRows = { id: 321, employeeId: 481, status: 'PENDING' };
 
         await svc.approveLeaveRequest(1, {
-            approverId: 558, approverRole: 'HR', comments: null, createdById: 558,
+            approverId: 558, approverRole: 'MANAGEMENT', comments: null, createdById: 558,
             ctx: {},
         });
 
@@ -237,7 +240,7 @@ describe('C4 — legacy Leave mirror', () => {
 });
 
 describe('C5 — approval guards', () => {
-    it('refuses approval of a null-policy request with a clear 400', async () => {
+    it('refuses approval of a null-policy request with a clear 409', async () => {
         prismaMock.leaveRequest.findUnique.mockImplementationOnce(async () => ({
             id: 2, employeeId: 481, status: 'PENDING', leavePolicyId: null,
             approvals: [], leavePolicy: null,
@@ -245,8 +248,8 @@ describe('C5 — approval guards', () => {
 
         await expect(
             svc.approveLeaveRequest(2, {
-                approverId: 558, approverRole: 'HR', comments: null, createdById: 558,
+                approverId: 558, approverRole: 'MANAGEMENT', comments: null, createdById: 558,
             })
-        ).rejects.toMatchObject({ status: 400, message: expect.stringContaining('Leave type must be assigned') });
+        ).rejects.toMatchObject({ status: 409, message: expect.stringContaining('HR must assign the leave policy') });
     });
 });

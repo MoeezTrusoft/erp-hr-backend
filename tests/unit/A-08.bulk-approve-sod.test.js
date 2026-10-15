@@ -12,13 +12,13 @@
 import { jest, describe, it, expect, beforeAll } from '@jest/globals';
 
 const payslipRows = [
-  { id: 11, payrollRunId: 3 },
-  { id: 12, payrollRunId: 3 },
-  { id: 13, payrollRunId: 4 },
+  { id: 11, payrollRunId: 3, status: 'APPROVED' },
+  { id: 12, payrollRunId: 3, status: 'APPROVED' },
+  { id: 13, payrollRunId: 4, status: 'APPROVED' },
 ];
 const runRows = [
-  { id: 3, processedBy: 501 }, // processed by the offending actor
-  { id: 4, processedBy: null }, // legacy: no processor recorded
+  { id: 3, processedBy: 501, status: 'APPROVED', approvedBy: 777 }, // processed by the offending actor
+  { id: 4, processedBy: null, status: 'APPROVED', approvedBy: 777 }, // legacy: no processor recorded
 ];
 const updates = [];
 
@@ -29,6 +29,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
       updateMany: jest.fn(async ({ where, data }) => { updates.push(data); return { count: where.id.in.length }; }),
     },
     payrollRun: {
+      findFirst: jest.fn(async ({where})=>runRows.find(r=>r.id===where.id)),
       findMany: jest.fn(async ({ where }) => runRows.filter((r) => where.id.in.includes(r.id))),
     },
   },
@@ -93,3 +94,5 @@ describe('[A-08] bulk-approve separation of duties', () => {
     expect(res.updated).toBe(1);
   });
 });
+
+it('refuses payment and approval before the run has Management approval',async()=>{runRows[0].status='COMPLETED';updates.length=0;try {for(const action of ['approve','disburse'])await expect(bulkPayslipAction({tenantId:'40314ef4-0a81-4390-b631-b3ad3f21f523',payslipIds:[11],action,actorId:777})).rejects.toMatchObject({status:409});expect(updates).toHaveLength(0);}finally{runRows[0].status='APPROVED';}});

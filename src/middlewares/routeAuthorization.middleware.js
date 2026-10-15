@@ -1,3 +1,5 @@
+import { HR_APPROVAL_TOOLS } from '@trusoft/contracts/hr-approval';
+import { EMPLOYMENT_TOOLS } from "@trusoft/contracts/employment";
 // F-02 / ARCH-00 P-02 / ARCH-01 §4.3 / ARCH-06 §6
 // Authoritative REST authorization lives at one boundary. The service JWT
 // proves which service called HR; its signed scope and actor claims determine
@@ -141,6 +143,16 @@ export function resolveHrRoutePolicy(req) {
   if (!req.route) return null;
   const method = String(req.method || "").toUpperCase();
   const path = normalizePath(req);
+  if (path.startsWith('/api/hr/approvals/')) {
+    const definition=Object.values(HR_APPROVAL_TOOLS).find(d=>path==='/api/hr/approvals/'+d.route);
+    if(!definition) return null;
+    return {permission:null,anyOf:['hr.approvals.self','hr.approvals.manager','hr.approvals.verify','hr.approvals.approve','hr.approvals.read'],resource:'hr.approvals',action:'command',self:false,ownership:null,servicePrincipals:[]};
+  }
+  if (path.startsWith('/api/hr/separations/')) {
+    const definition = Object.values(EMPLOYMENT_TOOLS).find(d => path === '/api/hr/separations/'+d.route);
+    if (!definition || !['GET','POST'].includes(method)) return null;
+    return { permission: definition.permission, anyOf: definition.permission ? [definition.permission] : ['hr.separation.self','hr.separation.manager','hr.separation.read','hr.separation.verify','hr.separation.manage','hr.separation.approve','hr.separation.task','hr.separation.settle'], resource:'hr.separation', action:'command', self:false, ownership:null, servicePrincipals:[] };
+  }
   const resource = resourceFor(path);
   const action = actionFor(method, path);
   if (!resource || !action) return null;
@@ -215,7 +227,7 @@ export function authorizeHrRoute(req, res, next) {
     return next();
   }
 
-  let granted = actor.permissions.has(policy.permission);
+  let granted = policy.anyOf ? policy.anyOf.some(p => actor.permissions.has(p)) : actor.permissions.has(policy.permission);
   const ownsInline = ownsSelfObject(req, normalizePath(req), actor) ||
     (normalizePath(req) === "/api/leaves/requests" &&
       sameId(req.body?.employeeId ?? req.body?.createdById, actor.employeeId));

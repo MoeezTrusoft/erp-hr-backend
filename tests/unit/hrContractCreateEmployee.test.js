@@ -24,7 +24,12 @@ const mockLogAction = jest.fn();
 const mockEmployeeUpdate = jest.fn();
 
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: mockEmployeeUpdate },
+  employeeCodeConfiguration: {findUnique: jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence: {upsert: jest.fn().mockResolvedValue({lastValue:0n}), update: jest.fn().mockResolvedValue({})},
+  employeeCodeReservation: {findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null)},
+  $executeRaw: jest.fn().mockResolvedValue([]),
+
+  employee: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null), create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: mockEmployeeUpdate },
   position: { findUnique: mockPositionFindUnique },
   region: { findUnique: mockRegionFindUnique },
   emergencyContacts: { createMany: mockEmergencyCreateMany },
@@ -50,12 +55,13 @@ describe("hrContract.createEmployee — minimal create", () => {
 
   it("persists a minimal { firstName, lastName } employee and never touches the position FK", async () => {
     const result = await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace" },
-      42
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace" },
+      42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"}
     );
 
     expect(mockEmployeeCreate).toHaveBeenCalledTimes(1);
     const writtenData = mockEmployeeCreate.mock.calls[0][0].data;
+    expect(writtenData.employee_code).toBe("EMP-0001");
     expect(writtenData.first_name).toBe("Ada");
     expect(writtenData.last_name).toBe("Lovelace");
     // nullable columns: no value supplied → not forced
@@ -79,8 +85,8 @@ describe("hrContract.createEmployee — minimal create", () => {
     mockPositionFindUnique.mockResolvedValue({ id: 7, isActive: true, title: "Engineer" });
 
     await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace", positionId: 7 },
-      42
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace", positionId: 7 },
+      42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"}
     );
 
     expect(mockPositionFindUnique).toHaveBeenCalledTimes(1);
@@ -93,8 +99,8 @@ describe("hrContract.createEmployee — minimal create", () => {
 
     await expect(
       hrContractService.createEmployee(
-        { firstName: "Ada", lastName: "Lovelace", positionId: 999 },
-        42
+        { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace", positionId: 999 },
+        42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"}
       )
     ).rejects.toThrow(/Position ID 999 does not exist/);
 
@@ -103,7 +109,7 @@ describe("hrContract.createEmployee — minimal create", () => {
 
   it("still rejects a create missing the DB-required firstName", async () => {
     await expect(
-      hrContractService.createEmployee({ lastName: "Lovelace" }, 42)
+      hrContractService.createEmployee({ lastName: "Lovelace" }, 42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"})
     ).rejects.toThrow();
     expect(mockEmployeeCreate).not.toHaveBeenCalled();
   });

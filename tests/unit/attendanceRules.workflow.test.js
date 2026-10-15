@@ -1,13 +1,15 @@
 import {describe,it,expect} from '@jest/globals';
 import {captureDb,TENANT,OTHER_TENANT} from '../helpers/captureDb.js';
 import {applyEvaluatedShifts} from '../../src/services/attendanceWriter.service.js';
-import {enterRuleTime,commentRuleCase,decideRuleCase,saveGraceRule,listRuleCases} from '../../src/services/attendanceRules.service.js';
+import {enterRuleTime,commentRuleCase,finalizeRuleCase,saveGraceRule,listRuleCases} from '../../src/services/attendanceRules.service.js';
 import {ruleDeductions} from '../../src/lib/attendanceAnomalyRules.js';
+import {loadSource} from '../../src/services/approval/adapters.js';
+const prove=async(db,row)=>{const source=await loadSource(db,{tenantId:TENANT},'ATTENDANCE',`${row.id}@${row.factHash}`);await db.hrApprovalRequest.create({data:{tenantId:TENANT,kind:'ATTENDANCE',sourceRef:`${row.id}@${row.factHash}`,stage:'REJECTED',sourceHash:source.digest}});};
 const date='2026-10-01',at=t=>new Date(`${date}T${t}:00Z`);
 const hr={tenantId:TENANT,userId:'hr-user',employeeId:2,roles:['HR']};
 const management={tenantId:TENANT,userId:'management-user',employeeId:3,roles:['Management']};
 function fixture(items=[],pattern={shift:{from:'09:00',to:'17:00'},offDays:[]}) {
- return captureDb({employee:[{id:1,tenant_id:TENANT,managerId:4,employee_name:'Employee One'}],attendanceSetupRelease:[{tenantId:TENANT,version:1,effectiveFrom:new Date(date),coverageThrough:new Date('2026-12-31'),config:{version:1,settings:{timeZone:'Asia/Karachi',defaultCalendarId:1,profiles:[],assignments:[]},policy:{checkoutLeniencyMin:240},employees:[{id:1,payroll_included:true,hire_date:'2026-01-01'}],periods:[],schedules:[{employeeId:1,effective_start_date:'2026-01-01',schedule_pattern:pattern}],calendars:[{id:1,year:2026}],holidays:[],calendarAssignments:[]}}],attendanceDevicePunch:items.map(([time,status],i)=>({id:i+1,employeeId:1,tenantId:TENANT,sn:'DEVICE-1',punchedAt:at(time),status,directionVerified:true}))});
+ const db=captureDb({hrApprovalRequest:[],employee:[{id:1,tenant_id:TENANT,managerId:4,employee_code:'EMP-1',employee_name:'Employee One'}],attendanceSetupRelease:[{tenantId:TENANT,version:1,effectiveFrom:new Date(date),coverageThrough:new Date('2026-12-31'),config:{version:1,settings:{timeZone:'Asia/Karachi',defaultCalendarId:1,profiles:[],assignments:[]},policy:{checkoutLeniencyMin:240},employees:[{id:1,payroll_included:true,hire_date:'2026-01-01'}],periods:[],schedules:[{employeeId:1,effective_start_date:'2026-01-01',schedule_pattern:pattern}],calendars:[{id:1,year:2026}],holidays:[],calendarAssignments:[]}}],attendanceDevicePunch:items.map(([time,status],i)=>({id:i+1,employeeId:1,tenantId:TENANT,sn:'DEVICE-1',punchedAt:at(time),status,directionVerified:true}))});db.$queryRawUnsafe=async()=>[];return db;
 }
 const evaluate=db=>applyEvaluatedShifts({tenantId:TENANT,from:date,to:date,employeeIds:[1],db,dryRun:false,now:new Date('2026-10-03')});
 const current=db=>db.snapshot().attendanceAnomaly.filter(a=>a.evidenceState==='ACTIVE');
@@ -36,7 +38,7 @@ describe('per-shift anomaly review',()=>{
  it('preserves an already decided outcome while capture evidence is conflicting',async()=>{
   const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);let row=current(db)[0];
   await commentRuleCase({user:hr,anomalyId:row.id,version:0,kind:'HR',comment:'Verified'},db);row=current(db)[0];
-  await decideRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Disapproved'},db);
+  await prove(db,row);await finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Disapproved'},db);
   await db.attendanceDevicePunch.create({data:{tenantId:TENANT,employeeId:1,punchedAt:at('12:00'),status:0,directionVerified:true,sn:'DEVICE-1'}});
   await evaluate(db);
   expect(current(db)[0].status).toBe('REJECTED');
@@ -59,13 +61,14 @@ describe('per-shift anomaly review',()=>{
   expect(db.snapshot().attendance[0]).toMatchObject({total_hours:1,day_credit:null});
   await expect(enterRuleTime({user:hr,employeeId:1,date,checkIn:'09:00',version:db.snapshot().attendance[0].evaluationVersion,reason:'Try replacement'},db)).rejects.toThrow('already recorded');
  });
- it('allows only Management to decide and requires current HR verification and the displayed version',async()=>{
+ it('requires staged approval, current HR verification and the displayed version',async()=>{
   const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);let row=current(db)[0];
-  for(const user of [hr,{...hr,isAdmin:true,roles:['Admin']},{...hr,employeeId:4,roles:['Manager']}])await expect(decideRuleCase({user,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Disapprove'},db)).rejects.toThrow('Only the Management role');
-  await expect(decideRuleCase({user:management,anomalyId:row.id,version:0,decision:'REJECTED',comment:'Disapprove'},db)).rejects.toThrow('HR must record verification');
+  for(const user of [hr,{...hr,isAdmin:true,roles:['Admin']},{...hr,employeeId:4,roles:['Manager']},management])await expect(finalizeRuleCase({user,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Disapprove'},db)).rejects.toThrow('Complete the employee, manager, HR and Management approval workflow');
+  await prove(db,row);
+  await expect(finalizeRuleCase({user:management,anomalyId:row.id,version:0,decision:'REJECTED',comment:'Disapprove'},db)).rejects.toThrow('HR must record verification');
   await commentRuleCase({user:hr,anomalyId:row.id,version:row.workflowVersion,kind:'HR',comment:'CCTV reviewed'},db);
-  await expect(decideRuleCase({user:management,anomalyId:row.id,version:0,decision:'REJECTED',comment:'Disapprove'},db)).rejects.toThrow('Anomaly changed');
-  row=current(db)[0];await decideRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Unexcused late arrival'},db);
+  await expect(finalizeRuleCase({user:management,anomalyId:row.id,version:0,decision:'REJECTED',comment:'Disapprove'},db)).rejects.toThrow('Anomaly changed');
+  row=current(db)[0];await finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Unexcused late arrival'},db);
   expect(ruleDeductions(current(db)).days).toBe(.5);expect(db.snapshot().attendance[0].processingState).toBe('FINALIZED');
   expect(db.snapshot().attendanceRuleAudit.some(e=>e.action==='MANAGEMENT_DECISION')).toBe(true);
  });
@@ -77,7 +80,7 @@ describe('per-shift anomaly review',()=>{
  it('reverses a disapproved late anomaly after retroactive grace and retains the decision audit',async()=>{
   const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);let row=current(db)[0];
   await commentRuleCase({user:hr,anomalyId:row.id,version:0,kind:'HR',comment:'Verified'},db);row=current(db)[0];
-  await decideRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Not excused'},db);
+  await prove(db,row);await finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Not excused'},db);
   await saveGraceRule({user:hr,scope:'COMPANY',scopeKey:'*',effectiveFrom:date,checkInMinutes:45,checkOutMinutes:null,reason:'Revised company grace',version:-1},db);
   await evaluate(db);
   expect(current(db)).toHaveLength(0);expect(ruleDeductions(db.snapshot().attendanceAnomaly).days).toBe(0);

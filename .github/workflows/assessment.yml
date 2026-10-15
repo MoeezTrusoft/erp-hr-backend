@@ -1,0 +1,45 @@
+name: Task assessment database contracts
+on: [pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  assessment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://assessment_test_user:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: assessment-local-test
+          POSTGRES_DB: hr_task_assessment_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: MoeezTrusoft/erp-contracts
+          ref: ${{ vars.ASSESSMENT_CONTRACTS_REF || 'main' }}
+          path: _contracts
+          ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
+          persist-credentials: false
+      - run: mv _contracts ../contracts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - name: Prepare isolated schema with non-owner FORCE RLS role
+        run: node tests/separation/prepare.mjs --reset
+        env:
+          ASSESSMENT_TEST_ADMIN_URL: postgresql://postgres:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
+      - name: Exercise workflow and database invariants
+        run: node --test tests/assessment/*.test.mjs tests/separation/*.test.mjs tests/approval/*.test.mjs
+        env:
+          ASSESSMENT_TEST_ADMIN_URL: postgresql://postgres:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
+          ASSESSMENT_TEST_DATABASE_URL: postgresql://assessment_test_user:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test

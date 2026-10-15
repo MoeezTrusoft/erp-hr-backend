@@ -1,3 +1,4 @@
+import { legacyWithdraw, legacyDecision, legacySubmit } from "./approval/legacy.js";
 // src/services/claims.service.js — Claims & Reimbursements domain service.
 //
 // A NEW service (distinct from the legacy src/services/reimbursement.service.js
@@ -322,130 +323,23 @@ export async function updateClaim({ tenantId, id, items, ...fields }) {
 // ── submit (create the ordered approval chain) ───────────────────────────────
 
 export async function submitClaim({ tenantId, id, approvalChain }) {
-  const steps = Array.isArray(approvalChain) && approvalChain.length
-    ? approvalChain
-    : [{ level: 1 }];
-
-  return tenantTransaction(prisma, async (tx) => {
-    const existing = await tx.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw Object.assign(new Error("Claim not found"), { status: 404 });
-
-    await tx.reimbursementClaim.update({
-      where: { id: Number(id) },
-      data: { status: "SUBMITTED", submittedAt: new Date() },
-    });
-
-    // Fresh chain each submit — clear any prior steps then re-create ordered.
-    await tx.claimApproval.deleteMany({ where: scopedWhere(tenantId, { claimId: Number(id) }) });
-
-    const ordered = steps
-      .map((s, i) => ({ ...s, level: s.level != null ? Number(s.level) : i + 1 }))
-      .sort((a, b) => a.level - b.level);
-
-    for (const s of ordered) {
-      await tx.claimApproval.create({
-        data: {
-          claimId: Number(id),
-          level: s.level,
-          role: s.role ?? null,
-          approverId: s.approverId != null ? Number(s.approverId) : null,
-          status: "PENDING",
-          tenantId: tenantId ?? null,
-        },
-      });
-    }
-
-    logger.info({ claimId: Number(id), steps: ordered.length, tenantId }, "claim submitted");
-    return readDrawer(tx, tenantId, id);
-  });
+  return legacySubmit('CLAIM',id);
 }
 
 // ── approval-chain decision (advance / finalize) ─────────────────────────────
 
 export async function decideClaimApproval({ tenantId, claimId, approvalId, decision, comments, approverId }) {
-  const isApprove = decision === "approve";
-  const isReject = decision === "reject";
-  if (!isApprove && !isReject) {
-    throw Object.assign(new Error("decision must be 'approve' or 'reject'"), { status: 400 });
-  }
-
-  return tenantTransaction(prisma, async (tx) => {
-    const claim = await tx.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(claimId) }) });
-    if (!claim) throw Object.assign(new Error("Claim not found"), { status: 404 });
-
-    const step = await tx.claimApproval.findFirst({
-      where: scopedWhere(tenantId, { id: Number(approvalId), claimId: Number(claimId) }),
-    });
-    if (!step) throw Object.assign(new Error("Approval step not found"), { status: 404 });
-
-    await tx.claimApproval.update({
-      where: { id: step.id },
-      data: {
-        status: isApprove ? "APPROVED" : "REJECTED",
-        comments: comments ?? step.comments ?? null,
-        decidedAt: new Date(),
-        ...(approverId != null && step.approverId == null ? { approverId: Number(approverId) } : {}),
-      },
-    });
-
-    if (isReject) {
-      // Any rejection kills the whole chain → the claim is REJECTED.
-      await tx.reimbursementClaim.update({
-        where: { id: Number(claimId) },
-        data: { status: "REJECTED" },
-      });
-    } else {
-      // Approved this step. If no PENDING steps remain, this was the highest
-      // (final) step → the claim is fully APPROVED. Otherwise leave it SUBMITTED
-      // so the next-level approver can act.
-      const remaining = await tx.claimApproval.count({
-        where: scopedWhere(tenantId, { claimId: Number(claimId), status: "PENDING" }),
-      });
-      if (remaining === 0) {
-        await tx.reimbursementClaim.update({
-          where: { id: Number(claimId) },
-          data: {
-            status: "APPROVED",
-            approvedById: approverId != null ? Number(approverId) : null,
-            approvedAt: new Date(),
-          },
-        });
-      }
-    }
-
-    logger.info({ claimId: Number(claimId), approvalId: step.id, decision, tenantId }, "claim approval decided");
-    return readDrawer(tx, tenantId, claimId);
-  });
+  return legacyDecision('CLAIM',claimId);
 }
 
 // ── terminal transitions ─────────────────────────────────────────────────────
 
 export async function rejectClaim({ tenantId, id, reason, approverId }) {
-  return tenantTransaction(prisma, async (tx) => {
-    const existing = await tx.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw Object.assign(new Error("Claim not found"), { status: 404 });
-    await tx.reimbursementClaim.update({
-      where: { id: Number(id) },
-      data: {
-        status: "REJECTED",
-        rejectedReason: reason ?? null,
-        approvedById: approverId != null ? Number(approverId) : existing.approvedById,
-      },
-    });
-    return readDrawer(tx, tenantId, id);
-  });
+  return legacyDecision('CLAIM',id);
 }
 
 export async function withdrawClaim({ tenantId, id }) {
-  return tenantTransaction(prisma, async (tx) => {
-    const existing = await tx.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw Object.assign(new Error("Claim not found"), { status: 404 });
-    if (!["DRAFT", "SUBMITTED", "NEEDS_INFO"].includes(existing.status)) {
-      throw Object.assign(new Error(`Claim cannot be withdrawn from ${existing.status}`), { status: 409 });
-    }
-    await tx.reimbursementClaim.update({ where: { id: Number(id) }, data: { status: "WITHDRAWN" } });
-    return readDrawer(tx, tenantId, id);
-  });
+  return legacyWithdraw('CLAIM',id);
 }
 
 export async function markPaid({ tenantId, id }) {
@@ -465,59 +359,11 @@ export async function markPaid({ tenantId, id }) {
 // ── request-info Q&A ─────────────────────────────────────────────────────────
 
 export async function requestClaimInfo({ tenantId, claimId, question, requestedById }) {
-  return tenantTransaction(prisma, async (tx) => {
-    const claim = await tx.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(claimId) }) });
-    if (!claim) throw Object.assign(new Error("Claim not found"), { status: 404 });
-
-    const info = await tx.claimInformation.create({
-      data: {
-        claimId: Number(claimId),
-        requestedById: requestedById != null ? Number(requestedById) : null,
-        question,
-        status: "PENDING",
-        tenantId: tenantId ?? null,
-      },
-    });
-
-    await tx.reimbursementClaim.update({ where: { id: Number(claimId) }, data: { status: "NEEDS_INFO" } });
-
-    logger.info({ claimId: Number(claimId), infoId: info.id, tenantId }, "claim info requested");
-    return {
-      id: info.id,
-      claimId: info.claimId,
-      question: info.question,
-      response: info.response || null,
-      status: info.status,
-      requestedAt: info.requestedAt,
-      respondedAt: info.respondedAt,
-    };
-  });
+  return legacyDecision('CLAIM',claimId);
 }
 
 export async function respondClaimInfo({ tenantId, infoId, response }) {
-  return tenantTransaction(prisma, async (tx) => {
-    const info = await tx.claimInformation.findFirst({ where: scopedWhere(tenantId, { id: Number(infoId) }) });
-    if (!info) throw Object.assign(new Error("Info request not found"), { status: 404 });
-
-    const updated = await tx.claimInformation.update({
-      where: { id: Number(infoId) },
-      data: { response: response ?? null, status: "RESPONDED", respondedAt: new Date() },
-    });
-
-    // A response moves the claim back into the review queue.
-    await tx.reimbursementClaim.update({ where: { id: info.claimId }, data: { status: "SUBMITTED" } });
-
-    logger.info({ claimId: info.claimId, infoId: Number(infoId), tenantId }, "claim info responded");
-    return {
-      id: updated.id,
-      claimId: updated.claimId,
-      question: updated.question,
-      response: updated.response || null,
-      status: updated.status,
-      requestedAt: updated.requestedAt,
-      respondedAt: updated.respondedAt,
-    };
-  });
+  const info=await prisma.claimInformation.findFirst({where:scopedWhere(tenantId,{id:Number(infoId)})}); if(!info)throw Object.assign(new Error('Request not found'),{status:404}); return legacyDecision('CLAIM',info.claimId);
 }
 
 // ── CSV export ───────────────────────────────────────────────────────────────

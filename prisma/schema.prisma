@@ -279,6 +279,10 @@ model DashboardLayout {
 }
 
 model Employee {
+  employeeCategory EmploymentCategory?
+  contractNoticeDays Int?
+  separatedAt DateTime?
+  rehireEligible Boolean?
   biometricProfiles AttendanceBiometricProfile[]
   biometricChallenges AttendanceBiometricChallenge[]
   payrollOffice String? @db.VarChar(100)
@@ -291,7 +295,7 @@ model Employee {
   last_name            String?
   preferred_name       String?
   nationality_id_type  String?
-  employee_code        String?   @db.VarChar(50)
+  employee_code        String    @db.VarChar(50)
   biometric_id         String?   @db.VarChar(64) // ZKTeco device enrollment user-ID; attendance punches join on this (falls back to employee_code). Bulk-import "Biometric / Device ID".
   personId             String?   @db.Uuid // Phase A: cross-tenant identity anchor → RBAC Person.id (enforced at app layer, not DB FK — cross-database)
   login_password       String? // C4-encrypted (AES-256-GCM envelope) copy of the auto-generated login password, for HR read-back via hr_employee_login_password_get. RBAC holds the real hash.
@@ -478,6 +482,7 @@ model Employee {
   // HR-BENEFITS-04 — benefit enrollments for this employee.
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 
+  @@unique([tenant_id, employee_code])
   @@index([biometric_id])
   @@index([personId])
   @@index([positionId])
@@ -756,7 +761,7 @@ model AttendanceTimeCredit {
   fromSiteId String?
   toSiteId String?
   paid Boolean @default(false)
-  state String @default("APPROVED")
+  state String @default("PENDING")
   reason String
   approvedBy String
   revokedBy String?
@@ -2443,7 +2448,7 @@ model Loan {
   // interestRatePct 0); the discriminator lets the two report separately while
   // sharing the payroll bridge, garnishment cap and repayment ledger.
   kind                    LoanKind   @default(LOAN)
-  status                  LoanStatus @default(ACTIVE)
+  status                  LoanStatus @default(PENDING)
   outstandingMinor        Int // Remaining balance in minor units
   monthlyInstallmentMinor Int // Fixed monthly deduction in minor units
   reason                  String?
@@ -2487,6 +2492,8 @@ enum LoanKind {
 }
 
 enum LoanStatus {
+  PENDING
+  REJECTED
   ACTIVE
   PAID_OFF
   WRITTEN_OFF
@@ -4103,4 +4110,948 @@ model AttendanceImportBatch {
   updatedAt DateTime @updatedAt
   @@index([tenantId, createdAt])
   @@map("attendance_import_batches")
+}
+// HR Task Assessment v2.1. Company-scoped employee codes are the business keys.
+model AssessmentIdentity {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  employeeRowId Int
+  managerCode String?
+  departmentRef String?
+  positionRef String?
+  categoryCode String?
+  active Boolean @default(true)
+  verifiedAt DateTime @default(now())
+  @@unique([tenantId, employeeCode])
+  @@unique([tenantId, employeeRowId])
+}
+model AssessmentCategory {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  categoryCode String
+  label String
+  active Boolean @default(true)
+  version Int @default(1)
+  @@unique([tenantId, categoryCode])
+}
+model AssessmentTaskVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskCode String
+  taskVersion Int
+  familyCode String
+  sectionCode String
+  status String @default("DRAFT")
+  definition Json
+  ownerCode String
+  createdByCode String
+  approvedByCode String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  publishedAt DateTime?
+  @@unique([tenantId, taskCode, taskVersion])
+  @@index([tenantId, familyCode, status])
+}
+model AssessmentProfileVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  profileCode String
+  profileVersion Int
+  departmentRef String
+  categoryCode String
+  positionRef String
+  status String @default("DRAFT")
+  definition Json
+  guideRef String?
+  impactComparison Json?
+  ownerCode String
+  createdByCode String
+  subjectReviewedByCode String?
+  approvedByCode String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  publishedAt DateTime?
+  @@unique([tenantId, profileCode, profileVersion])
+  @@index([tenantId, departmentRef, categoryCode, positionRef, status])
+}
+model AssessmentProfileTask {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  profileRef String @db.Uuid
+  taskRef String @db.Uuid
+  taskCode String
+  requirement Json
+  ordinal Int
+  @@unique([tenantId, profileRef, taskCode])
+}
+model AssessmentGuideVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  profileRef String @db.Uuid
+  locale String @default("en")
+  version Int
+  content Json
+  digest String
+  publishedAt DateTime @default(now())
+  @@unique([tenantId, profileRef, locale, version])
+}
+model EmployeeAssessmentProfile {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  profileRef String @db.Uuid
+  effectiveFrom DateTime
+  effectiveUntil DateTime?
+  approvedByCode String
+  sourceEventRef String?
+  version Int @default(1)
+  @@index([tenantId, employeeCode, effectiveFrom])
+}
+model AssessmentQualification {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  familyCode String
+  scopes Json
+  calibration Json
+  flags Json @default("[]")
+  authorizedByCode String
+  expiresAt DateTime
+  completedAssessments Int @default(0)
+  version Int @default(1)
+  @@unique([tenantId, employeeCode, familyCode])
+}
+model AssessmentConfiguration {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @unique @db.Uuid
+  policy Json
+  sourceRegister Json @default("[]")
+  departments Json @default("[]")
+  learningMappings Json @default("[]")
+  translations Json @default("{}")
+  rolloutEvidence Json @default("{}")
+  version Int @default(1)
+  updatedByCode String
+  updatedAt DateTime @updatedAt
+}
+model AssessmentTriggerPolicy {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  triggerType String
+  scopeFilter Json
+  policy Json
+  enabled Boolean @default(false)
+  version Int @default(1)
+  @@unique([tenantId, triggerType])
+}
+model AssessmentAssignment {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  profileRef String @db.Uuid
+  profileSnapshot Json
+  policySnapshot Json
+  purpose String
+  period String
+  raterCode String
+  reviewerCode String
+  taskCodes Json
+  state String @default("ASSIGNED")
+  revisionNo Int @default(1)
+  version Int @default(1)
+  triggerRef String?
+  idempotencyKey String
+  inputDigest String
+  dueAt DateTime
+  holdUntil DateTime?
+  notifiedAt DateTime?
+  stageStartedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, raterCode, state, dueAt])
+  @@index([tenantId, employeeCode, state])
+}
+model AssessmentRevision {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  snapshot Json
+  digest String
+  checksDigest String
+  reviewTier String
+  sampled Boolean
+  state String @default("SUBMITTED")
+  submittedAt DateTime @default(now())
+  approvedAt DateTime?
+  publishedAt DateTime?
+  sequence Int?
+  @@unique([tenantId, assessmentRef, revisionNo])
+}
+model AssessmentObservation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  taskCode String
+  taskVersion Int
+  employeeCode String @db.VarChar(50)
+  qualityStatus String
+  criticalFailure Boolean @default(false)
+  criticalExceptionReason String?
+  observationNote String
+  evidenceBriefDigest String
+  draftedNote Json?
+  timingRefs Json @default("[]")
+  velocityInput Json?
+  durationSeconds Int?
+  observedAt DateTime @default(now())
+  assessorCode String
+  @@unique([tenantId, assessmentRef, revisionNo, taskCode])
+}
+model AssessmentDimension {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  observationRef String @db.Uuid
+  dimension String
+  status String @default("PENDING")
+  score Int?
+  reasonCode String?
+  rationale String?
+  evidenceRefs Json @default("[]")
+  behaviorCheck Json?
+  calculation Json?
+  expiresAt DateTime?
+  @@unique([tenantId, observationRef, dimension])
+}
+model AssessmentCase {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  origin String
+  title String
+  taskCodes Json
+  context Json
+  createdByCode String?
+  observedAt DateTime
+  idempotencyKey String
+  inputDigest String
+  @@unique([tenantId, idempotencyKey])
+}
+model AssessmentEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  caseRef String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  source String
+  sourceRecordId String
+  sourceVersion Int
+  origin String
+  method String
+  taskCodes Json
+  dimensions Json
+  attribution Json
+  sourceRef String
+  contentHash String
+  classification String
+  accepted Boolean
+  executionVerified Boolean
+  substantive Boolean
+  nonroutine Boolean
+  qualityStatus String
+  integrityFlags Json @default("[]")
+  scanState String
+  captureAt DateTime
+  expiresAt DateTime
+  withdrawnAt DateTime?
+  retentionUntil DateTime
+  legalHold Boolean @default(false)
+  @@unique([tenantId, source, sourceRecordId, sourceVersion, employeeCode])
+  @@index([tenantId, employeeCode, captureAt])
+}
+model AssessmentEvidenceLink {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  taskCode String
+  evidenceRef String @db.Uuid
+  state String
+  reason String?
+  contributionConfirmed Boolean @default(false)
+  acceptanceConfirmed Boolean @default(false)
+  behaviorCheck String?
+  confirmedByCode String
+  @@unique([tenantId, assessmentRef, revisionNo, taskCode, evidenceRef])
+}
+model AssessmentTimingSample {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  evidenceRef String @db.Uuid
+  caseRef String @db.Uuid
+  taskCode String
+  taskVersion Int
+  origin String
+  unit String
+  clockBasis String
+  complexity String
+  technology String
+  context String
+  attributableMinutes Decimal @db.Decimal(18,6)
+  elapsedMinutes Decimal @db.Decimal(18,6)
+  waitMinutes Decimal @db.Decimal(18,6)
+  acceptedUnits Decimal @db.Decimal(18,6)
+  accepted Boolean
+  comparable Boolean
+  attempts Int
+  reworkMinutes Decimal @db.Decimal(18,6)
+  input Json
+  capturedAt DateTime
+  withdrawnAt DateTime?
+  @@unique([tenantId, evidenceRef, taskCode])
+  @@index([tenantId, taskCode, taskVersion, capturedAt])
+}
+model AssessmentBenchmark {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskCode String
+  taskVersion Int
+  version Int
+  scopeKey String
+  unit String
+  clockBasis String
+  complexity String
+  technology String
+  context String
+  minutesPerUnit Decimal @db.Decimal(18,6)
+  provenance Json
+  status String @default("CANDIDATE")
+  ownerCode String
+  approvedByCode String?
+  effectiveFrom DateTime?
+  reviewAt DateTime
+  createdAt DateTime @default(now())
+  @@unique([tenantId, taskCode, taskVersion, scopeKey, version])
+}
+model AssessmentSignOff {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  action String
+  employeeCode String
+  actorPrincipal String
+  digest String
+  attestation String
+  reason String?
+  metadata Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, assessmentRef, revisionNo])
+}
+model AssessmentRestriction {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  taskCode String
+  cause String
+  sourceRef String
+  raisedAt DateTime @default(now())
+  liftedAt DateTime?
+  liftedByCode String?
+  restorationRef String?
+  @@unique([tenantId, employeeCode, taskCode, cause, sourceRef])
+  @@index([tenantId, employeeCode, liftedAt])
+}
+model AssessmentCapability {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  taskCode String
+  taskVersion Int
+  scopeKey String
+  dimension String
+  status String
+  score Int?
+  revisionRef String @db.Uuid
+  sequence Int
+  expiresAt DateTime
+  publishedAt DateTime
+  @@unique([tenantId, employeeCode, taskCode, scopeKey, dimension])
+  @@index([tenantId, expiresAt])
+}
+model AssessmentAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  aggregateRef String
+  actorPrincipal String
+  actorCode String?
+  action String
+  inputDigest String
+  resultDigest String
+  metadata Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, aggregateRef, createdAt])
+}
+model AssessmentAutomationRun {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  runKey String
+  policyVersion Int
+  kind String
+  inputDigest String
+  inputs Json
+  actions Json
+  outcome String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, runKey])
+}
+model AssessmentException {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  key String
+  kind String
+  ownerRole String
+  scopeRef String
+  detail Json
+  status String @default("OPEN")
+  stableSince DateTime?
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+  version Int @default(1)
+  @@unique([tenantId, key])
+  @@index([tenantId, kind, status])
+}
+model AssessmentInboxEvent {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  eventId String
+  source String
+  payload Json
+  status String @default("PENDING")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  leaseUntil DateTime?
+  lastErrorCode String?
+  createdAt DateTime @default(now())
+  processedAt DateTime?
+  @@unique([tenantId, eventId])
+  @@index([status, nextAttemptAt])
+}
+model AssessmentIntegration {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  kind String
+  key String
+  sourceRef String
+  targetRef String?
+  status String
+  payload Json
+  sequence Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, kind, key])
+}
+model AssessmentAppraisalInput {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  cycleId Int
+  revisionRef String @db.Uuid
+  content Json
+  amendment Boolean @default(false)
+  createdAt DateTime @default(now())
+  @@unique([tenantId, employeeCode, cycleId, revisionRef])
+}
+model AssessmentCodeChange {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  oldCode String
+  newCode String
+  approvedByCode String
+  reason String
+  changedAt DateTime @default(now())
+  propagationState String @default("PENDING")
+  @@unique([tenantId, oldCode])
+}
+model AssessmentNotification {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  key String
+  kind String
+  assessmentRef String?
+  dueAt DateTime
+  sentAt DateTime?
+  readAt DateTime?
+  payload Json
+  @@unique([tenantId, key])
+  @@index([tenantId, employeeCode, sentAt])
+}
+
+// Employee identity and separation. Business references are company + employee code.
+enum EmploymentCategory {
+  MANAGEMENT
+  EMPLOYEE
+  INTERNEE
+}
+enum SeparationType {
+  RESIGNATION
+  TERMINATION_WITH_CAUSE
+  TERMINATION_WITHOUT_CAUSE
+  CONTRACT_END
+  INTERNSHIP_COMPLETION
+  RETIREMENT
+  MUTUAL_SEPARATION
+  DEATH_IN_SERVICE
+}
+enum SeparationState {
+  DRAFT
+  SUBMITTED
+  MANAGER_REVIEW
+  HR_VERIFICATION
+  MANAGEMENT_DECISION
+  APPROVED
+  NOTICE_PERIOD
+  HANDOVER_IN_PROGRESS
+  CLEARANCE
+  EXIT_COMPLETED
+  WITHDRAWN
+  CANCELLED
+}
+model EmployeeCodeConfiguration {
+  tenantId String @id @db.Uuid
+  padding Int @default(4)
+  separator String @default("-")
+  version Int @default(1)
+  actorCode String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model EmployeeCodeSequence {
+  tenantId String @db.Uuid
+  prefix String
+  lastValue BigInt @default(0)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@id([tenantId, prefix])
+}
+model EmployeeCodeReservation {
+  tenantId String @db.Uuid
+  employeeCode String
+  collisionKey String
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@id([tenantId, employeeCode])
+  @@unique([tenantId, collisionKey])
+}
+model EmployeeCodeAlias {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  newCode String
+  effectiveAt DateTime
+  reason String
+  actorCode String
+  conversionRef String? @db.Uuid
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, employeeCode])
+}
+model EmployeeCategoryConversion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  category EmploymentCategory
+  effectiveAt DateTime
+  reason String
+  requestedByCode String
+  approvedByCode String?
+  state String @default("REQUESTED")
+  newCode String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, state, effectiveAt])
+}
+model SeparationPolicy {
+  tenantId String @id @db.Uuid
+  policy Json
+  actorCode String
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model Separation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  type SeparationType
+  state SeparationState @default(DRAFT)
+  reasonCode String
+  reason String
+  proposedLastWorkingAt DateTime
+  lastWorkingAt DateTime?
+  submittedAt DateTime?
+  approvedAt DateTime?
+  deferredUntil DateTime?
+  withdrawalRequestedAt DateTime?
+  completedAt DateTime?
+  accessDueEmittedAt DateTime?
+  createdByCode String
+  managerCode String?
+  category EmploymentCategory
+  gradeCode String
+  policySnapshot Json
+  recommendation Json?
+  verification Json?
+  verifiedByCode String?
+  documents Json
+  rehireEligible Boolean?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, id])
+  @@index([tenantId, employeeCode, state])
+  @@index([tenantId, deferredUntil])
+  separationTransitions SeparationTransition[]
+  noticePeriodRecords NoticePeriodRecord[]
+  replacementPlans ReplacementPlan[]
+  replacementSessions ReplacementSession[]
+  knowledgeTransferItems KnowledgeTransferItem[]
+  assetHandoverItems AssetHandoverItem[]
+  accessRevocationTasks AccessRevocationTask[]
+  clearanceItems ClearanceItem[]
+  exitInterviews ExitInterview[]
+  finalSettlementSheets FinalSettlementSheet[]
+  separationDocuments SeparationDocument[]
+  separationSourceSnapshots SeparationSourceSnapshot[]
+}
+
+model SeparationTransition {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model NoticePeriodRecord {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ReplacementPlan {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ReplacementSession {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model KnowledgeTransferItem {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model AssetHandoverItem {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model AccessRevocationTask {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ClearanceItem {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ExitInterview {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model FinalSettlementSheet {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model SeparationDocument {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model SeparationSourceSnapshot {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model EmploymentCommandReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  requestKey String @db.Uuid
+  actorCode String
+  digest String
+  result Json
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, requestKey])
+}
+model EmploymentDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  key String
+  kind String
+  payload Json
+  state String @default("PENDING")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  lastError String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, key])
+}
+
+
+// Shared HR business approvals. Technical evidence reviews remain prerequisites.
+model HrApprovalRequest {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  kind String
+  sourceRef String
+  employeeCode String
+  stage String @default("INITIATOR")
+  version Int @default(0)
+  round Int @default(0)
+  managerCode String?
+  managerActorCode String?
+  hrActorCode String?
+  recommendation String?
+  verification String?
+  sourceHash String
+  snapshot Json
+  execution String @default("PENDING")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, kind, sourceRef])
+  @@unique([tenantId, id])
+  @@index([tenantId, stage, id])
+  @@index([tenantId, employeeCode])
+}
+model HrApprovalAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  approvalRef String @db.Uuid
+  version Int
+  round Int
+  actorCode String
+  fromStage String
+  toStage String
+  action String
+  reason String
+  sourceHash String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, approvalRef, version])
+}
+model HrApprovalReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  requestKey String @db.Uuid
+  actorCode String
+  digest String
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, requestKey])
 }

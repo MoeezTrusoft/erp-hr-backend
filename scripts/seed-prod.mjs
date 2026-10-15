@@ -1,3 +1,5 @@
+import { prepareEmployeeInsert } from "../src/services/employee-code.service.js";
+import { tenantTransaction } from "../src/lib/rlsTenant.js";
 // scripts/seed-prod.mjs — generate a coherent, production-like HR dataset (~75
 // employees) across all modules, + one linked RBAC user per employee. Runs in
 // the HR pod: HR writes via the C4-extended prisma singleton (encrypts
@@ -125,12 +127,12 @@ async function main() {
     const residential = `House ${1 + rnd(400)}, Street ${1 + rnd(40)}, ${pick(AREAS)}, ${city}`;
     // Probation ends 90d after joining (past for tenured staff, upcoming for recent hires).
     const joinDate = daysAgo(hireDaysAgo);
-    const e = await prisma.employee.create({
-      data: {
+    const e = await tenantTransaction(prisma, async tx => tx.employee.create({
+      data: await prepareEmployeeInsert(tx, {
         tenant_id: TENANT,
         first_name: first, last_name: last, middle_name: rnd(3) === 0 ? pick(["Bin","Ul","Al"]) : null,
         preferred_name: rnd(3) === 0 ? first : null,
-        employee_name: name, employee_code: `EMP-${String(i + 1).padStart(4, "0")}`,
+        employee_name: name,
         work_email: workEmail, email: personalEmail,
         personal_contact: `+9230${rnd(9)}${String(rnd(9999999)).padStart(7,"0")}`,
         work_phone: `+9221${String(rnd(9999999)).padStart(7,"0")}`,
@@ -144,8 +146,8 @@ async function main() {
         employee_type: pick(["Permanent","Permanent","Contract"]), employement_status: "Active", status: "Active",
         hire_date: joinDate, joining_date: joinDate, probation_end_date: new Date(joinDate.getTime() + 90 * 86400000),
         fte: 1.0,
-      },
-    });
+      }, { tenantId: TENANT, category: "EMPLOYEE" }),
+    }), { tenantId: TENANT });
     e._gi = gi; e._bu = bu;
     emps.push(e);
   }

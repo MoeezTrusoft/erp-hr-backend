@@ -1,3 +1,4 @@
+import { EmploymentCategory, EmploymentCode } from "@trusoft/contracts/employment";
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
@@ -379,7 +380,9 @@ export function registerEmployeeTools(server) {
       stateProvince: z.string().optional(),
       country: z.string().optional(),
       postalCode: z.string().optional(),
-      employeeCode: z.string().optional(),
+      employeeCode: EmploymentCode.optional(),
+      employeeCategory: EmploymentCategory,
+      contractNoticeDays: z.number().int().nonnegative().max(730).optional(),
       jobTitle: z.string().optional(),
       companyId: z.union([z.string(), z.number()]).optional(),
       departmentId: z.union([z.string(), z.number()]).optional(),
@@ -474,7 +477,9 @@ export function registerEmployeeTools(server) {
       stateProvince: z.string().optional(),
       country: z.string().optional(),
       postalCode: z.string().optional(),
-      employeeCode: z.string().optional(),
+      employeeCode: EmploymentCode.optional(),
+      employeeCategory: EmploymentCategory.optional(),
+      contractNoticeDays: z.number().int().nonnegative().max(730).optional(),
       jobTitle: z.string().optional(),
       companyId: z.union([z.string(), z.number()]).optional(),
       departmentId: z.union([z.string(), z.number()]).optional(),

@@ -65,5 +65,6 @@ export function buildContextFromHeaders(req) {
     permissions,
     correlationId,
     actorVerified: true,
+    servicePrincipal: claims.sub ?? claims.actor?.id ?? claims.iss,
   };
 }

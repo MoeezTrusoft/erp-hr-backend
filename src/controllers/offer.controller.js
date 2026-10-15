@@ -35,7 +35,7 @@ export const sendOffer = async (req, res) => {
 export const respondOffer = async (req, res) => {
     try {
         const { accepted } = req.body;
-        const result = await svc.respondOffer(req.params.id, accepted);
+        const result = await svc.respondOffer(req.params.id, accepted, req.user?.tenantId, req.body.employeeCategory);
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
 };

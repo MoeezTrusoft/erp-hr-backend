@@ -133,7 +133,7 @@ export function captureDb(seed = {}, hooks = {}) {
   const create = (model, data) => {
     const now = new Date();
     const row = {
-      id: randomUUID(),
+      id: model === 'attendanceAnomaly' ? state[model].length + 1 : randomUUID(),
       manually_corrected: false,
       currentApprovalLevel: 1,
       workflowVersion: 0,

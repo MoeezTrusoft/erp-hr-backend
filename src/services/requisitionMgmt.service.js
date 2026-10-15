@@ -1,3 +1,4 @@
+import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 // src/services/requisitionMgmt.service.js — Job Requisition Management read/action/export surface.
 //
 // Backs the requisition-management screens (enhanced list, single detail,
@@ -185,34 +186,13 @@ const requireScoped = async (id, tenantId) => {
 
 // Submit for approval: status → PENDING_APPROVAL.
 export const submitRequisition = async (id, tenantId) => {
-  await requireScoped(id, tenantId);
-  await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: { status: "PENDING_APPROVAL" },
-  });
-  return getManagedRequisition(id, tenantId);
+  return legacySubmit('REQUISITION',id);
 };
 
 // Reject: status → REJECTED and record a RequisitionApproval row for the
 // caller (approverId = caller employeeId) with the rejection comments.
 export const rejectRequisition = async (id, tenantId, { comments, approverId } = {}) => {
-  await requireScoped(id, tenantId);
-  await prisma.$transaction([
-    prisma.jobRequisition.update({
-      where: { id: Number(id) },
-      data: { status: "REJECTED" },
-    }),
-    prisma.requisitionApproval.create({
-      data: scopedWhere(tenantId, {
-        requisitionId: Number(id),
-        approverId: Number(approverId),
-        status: "REJECTED",
-        comments: comments ?? null,
-        decidedAt: new Date(),
-      }),
-    }),
-  ]);
-  return getManagedRequisition(id, tenantId);
+  return legacyDecision('REQUISITION',id);
 };
 
 // Close: status → CLOSED.

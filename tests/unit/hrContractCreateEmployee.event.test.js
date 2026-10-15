@@ -30,7 +30,12 @@ const mockTransaction = jest.fn();
 const mockLogAction = jest.fn();
 
 const prismaMock = {
-  employee: { create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: jest.fn() },
+  employeeCodeConfiguration: {findUnique: jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence: {upsert: jest.fn().mockResolvedValue({lastValue:0n}), update: jest.fn().mockResolvedValue({})},
+  employeeCodeReservation: {findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null)},
+  $executeRaw: jest.fn().mockResolvedValue([]),
+
+  employee: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null), create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: jest.fn() },
   position: { findUnique: mockPositionFindUnique },
   region: { findUnique: mockRegionFindUnique },
   emergencyContacts: { createMany: mockEmergencyCreateMany },
@@ -82,7 +87,7 @@ describe("hrContract.createEmployee — lifecycle event + tenant (ARCH-01 §7–
 
   it("threads the verified ctx.tenantId into Employee.tenant_id (never null)", async () => {
     await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace" },
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace" },
       42,
       { tenantId: TENANT, correlationId: "corr-1" }
     );
@@ -93,7 +98,7 @@ describe("hrContract.createEmployee — lifecycle event + tenant (ARCH-01 §7–
 
   it("enqueues exactly one hr.employee.lifecycle.v1 EventEnvelope IN-TX with the tenant + correlation", async () => {
     await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace" },
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace" },
       42,
       { tenantId: TENANT, correlationId: "corr-42" }
     );
@@ -113,7 +118,7 @@ describe("hrContract.createEmployee — lifecycle event + tenant (ARCH-01 §7–
 
   it("persists the effective status (not blank) — defaults to Active when none supplied", async () => {
     await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace" },
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace" },
       42,
       { tenantId: TENANT, correlationId: "corr-1" }
     );
@@ -125,7 +130,7 @@ describe("hrContract.createEmployee — lifecycle event + tenant (ARCH-01 §7–
 
   it("takes tenant ONLY from the verified claim — a tenant in the request body is ignored", async () => {
     await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace", tenant_id: "00000000-0000-4000-8000-000000000000", tenantId: "spoofed" },
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace", tenant_id: "00000000-0000-4000-8000-000000000000", tenantId: "spoofed" },
       42,
       { tenantId: TENANT, correlationId: "corr-1" }
     );
@@ -134,14 +139,11 @@ describe("hrContract.createEmployee — lifecycle event + tenant (ARCH-01 §7–
     expect(mockOutboxCreate.mock.calls[0][0].data.tenantId).toBe(TENANT);
   });
 
-  it("fails closed: no verified tenant => no event enqueued (aggregate write still proceeds)", async () => {
-    await hrContractService.createEmployee(
-      { firstName: "Ada", lastName: "Lovelace" },
-      42,
-      {} // no tenant in ctx
-    );
-
-    expect(mockEmployeeCreate).toHaveBeenCalledTimes(1);
+  it("fails closed: no verified tenant => no employee or event is written", async () => {
+    await expect(hrContractService.createEmployee(
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace" }, 42, {}
+    )).rejects.toThrow(/company/i);
+    expect(mockEmployeeCreate).not.toHaveBeenCalled();
     expect(mockOutboxCreate).not.toHaveBeenCalled();
   });
 });

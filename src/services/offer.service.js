@@ -1,3 +1,5 @@
+import { consumeApproval } from './approval/adapters.js';
+import { prepareEmployeeInsert } from "./employee-code.service.js";
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { uploadFileToDAM } from "./dam.media.service.js";
@@ -79,6 +81,7 @@ export const sendOffer = async (id, tenantId, ctx = {}) => {
     // M1-HR: the SENT flip + hr.recruitment.offer_sent.v1 outbox event are
     // atomic (outbox-on-write, validate-before-write). Ids-only, tenant-scoped.
     return tenantTransaction(prisma, async (tx) => {
+        await consumeApproval(tx, tenantId, "OFFER", String(id));
         const row = await tx.offer.update({ where: { id: Number(id) }, data: { status: "SENT", sentAt: new Date() } });
         const event = offerSentEvent(
             { id: row.id, candidateId: row.candidateId, tenantId: row.tenantId ?? existing.tenantId ?? tenantId },
@@ -89,17 +92,24 @@ export const sendOffer = async (id, tenantId, ctx = {}) => {
     });
 };
 
-export const respondOffer = async (id, accepted, tenantId) => {
-    await assertOfferInTenant(id, tenantId);
+export const respondOffer = async (id, accepted, tenantId, employeeCategory) => {
+  if (accepted && !employeeCategory) throw Object.assign(new Error("Explicit employee category is required to accept and provision this offer"), { status: 422 });
+  return tenantTransaction(prisma, async (tx) => {
+    if(!tenantId)throw Object.assign(new Error('Verified company is required'),{status:403});
+    await tx.$queryRaw`SELECT id FROM "Offer" WHERE id=${Number(id)} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
+    const prior=await tx.offer.findFirst({where:{id:Number(id),tenantId}});
+    if(!prior)throw Object.assign(new Error('Offer not found'),{status:404});
+    if(prior.status===(accepted?'ACCEPTED':'DECLINED'))return prior;
+    if(['ACCEPTED','DECLINED'].includes(prior.status))throw Object.assign(new Error('Offer was already decided'),{status:409});
 
-    const updated = await prisma.offer.update({
+    const updated = await tx.offer.update({
         where: { id: Number(id) },
         data: { status: accepted ? "ACCEPTED" : "DECLINED", respondedAt: new Date() },
     });
 
     // AUTO-PROVISION: When offer is accepted, create Employee + EmploymentTerms + PayrollAssignment
     if (accepted) {
-        const offer = await prisma.offer.findUnique({
+        const offer = await tx.offer.findUnique({
             where: { id: Number(id) },
             include: {
                 application: { include: { candidate: true } },
@@ -112,8 +122,8 @@ export const respondOffer = async (id, accepted, tenantId) => {
             const salaryNum = parseFloat(salaryStr) || 0;
 
             // 1) Create Employee from Candidate data
-            const employee = await prisma.employee.create({
-                data: {
+            const employee = await tx.employee.create({
+                data: await prepareEmployeeInsert(tx, {
                     tenant_id: tenantId ?? null,
                     first_name: candidate.firstName,
                     last_name: candidate.lastName || '',
@@ -126,11 +136,11 @@ export const respondOffer = async (id, accepted, tenantId) => {
                     status: 'active',
                     job_title: offer.notes || 'New Hire',
                     createdById: offer.createdById || null,
-                },
+                }, { tenantId, category: employeeCategory }),
             });
 
             // 2) Create EmploymentTerms from Offer salary
-            const employmentTerm = await prisma.employmentTerms.create({
+            const employmentTerm = await tx.employmentTerms.create({
                 data: {
                     tenantId: tenantId ?? null,
                     employeeId: employee.id,
@@ -142,11 +152,11 @@ export const respondOffer = async (id, accepted, tenantId) => {
             });
 
             // 3) Resolve or create BASE_SALARY earning type
-            let earningType = await prisma.payrollEarningType.findFirst({
+            let earningType = await tx.payrollEarningType.findFirst({
                 where: { ...(tenantId ? { tenantId } : {}), code: 'BASE_SALARY' },
             });
             if (!earningType) {
-                earningType = await prisma.payrollEarningType.create({
+                earningType = await tx.payrollEarningType.create({
                     data: {
                         tenantId: tenantId ?? null,
                         code: 'BASE_SALARY',
@@ -157,7 +167,7 @@ export const respondOffer = async (id, accepted, tenantId) => {
             }
 
             // 4) Create PayrollAssignment for base salary
-            await prisma.payrollAssignment.create({
+            await tx.payrollAssignment.create({
                 data: {
                     tenantId: tenantId ?? null,
                     employeeId: employee.id,
@@ -171,6 +181,7 @@ export const respondOffer = async (id, accepted, tenantId) => {
     }
 
     return updated;
+  }, { tenantId });
 };
 
 export const uploadOfferLetter = async (id, file, tenantId) => {

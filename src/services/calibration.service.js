@@ -94,12 +94,7 @@ export const finalizeCalibrationService = async (id, finalizedBy, tenantId) => {
     },
   });
 
-  // Optionally, mark all reviews in that cycle as FINALIZED (tenant-scoped so a
-  // finalize never reaches another tenant's reviews in the same cycle).
-  await prisma.performanceReview.updateMany({
-    where: scopedWhere(tenantId, { cycleId: session.cycleId }),
-    data: { status: "FINALIZED" },
-  });
+  // Appraisal finalization is exclusively performed by the shared approval workflow.
    await logAction({
     employeeId: Number(finalizedBy),
     type: "Update", // 👈 changed from CREATE to UPDATE

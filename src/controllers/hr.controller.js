@@ -57,6 +57,7 @@ export const createEmployee = async (req, res) => {
     // A.5/A.4: thread the request correlationId + acting principal so the
     // emitted hr.employee.lifecycle.v1 envelope is traceable end-to-end.
     const ctx = {
+      tenantId: req.user?.tenantId,
       correlationId: req.correlationId,
       actorId: req.user?.userId ?? createdBy ?? null,
     };

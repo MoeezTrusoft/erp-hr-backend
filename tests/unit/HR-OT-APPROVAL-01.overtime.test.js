@@ -12,6 +12,8 @@ const REQUESTER = 100, MANAGER = 200, FINANCE = 300;
 let matrix, requests, approvals, assignments, punches;
 
 const prismaMock = {
+    $executeRaw: jest.fn(),
+    payrollRun: { findFirst: jest.fn(async () => null) },
     payrollApprovalMatrix: { findMany: jest.fn(async () => matrix) },
     overtimeRequest: {
         findFirst: jest.fn(async ({ where }) => requests.find((r) =>
@@ -39,6 +41,8 @@ jest.unstable_mockModule('../../src/lib/logger.js', () => ({
 }));
 
 const ot = await import('../../src/services/overtimeApproval.service.js');
+const {applyDecision} = await import('../../src/services/approval/adapters.js');
+const finalize=(request,approved)=>applyDecision(prismaMock,{tenantId:TENANT,now:new Date(),who:{id:FINANCE,employee_code:'MGMT-300'}},{kind:'OVERTIME'},{row:request},approved,'Final Management decision');
 
 beforeEach(() => {
     jest.clearAllMocks();
@@ -54,10 +58,10 @@ const raise = () => ot.createOvertimeRequest({
 });
 
 describe('HR-OT-APPROVAL-01 raising', () => {
-    it('routes to the first payroll approval level', async () => {
+    it('awaits employee submission to the shared review workflow', async () => {
         const r = await raise();
-        expect(r.routed).toBe(true);
-        expect(r.level).toBe(1);
+        expect(r.routed).toBe(false);
+        expect(r.level).toBeNull();expect(r.stage).toBe('INITIATOR');
         expect(r.request.status).toBe('PENDING');
     });
 
@@ -87,44 +91,10 @@ describe('HR-OT-APPROVAL-01 raising', () => {
 });
 
 describe('HR-OT-APPROVAL-01 payroll only sees approved hours', () => {
-    it('writes NOTHING to payroll at an intermediate approval', async () => {
-        const { request } = await raise();
-        const first = await ot.decideOvertimeRequest({
-            tenantId: TENANT, requestId: request.id, approverId: MANAGER, decision: 'APPROVED',
-        });
-
-        expect(first.final).toBe(false);
-        expect(first.payrollHours).toBeNull();
-        expect(assignments).toHaveLength(0);        // payroll untouched
-    });
-
-    it('writes the hours only on the FINAL approval', async () => {
-        const { request } = await raise();
-        await ot.decideOvertimeRequest({ tenantId: TENANT, requestId: request.id, approverId: MANAGER, decision: 'APPROVED' });
-        const last = await ot.decideOvertimeRequest({ tenantId: TENANT, requestId: request.id, approverId: FINANCE, decision: 'APPROVED' });
-
-        expect(last.final).toBe(true);
-        expect(last.payrollHours).toBe(3);
-        expect(assignments[0].overtimeHours).toBe(3);
-    });
-
-    it('writes nothing when rejected at any level', async () => {
-        const { request } = await raise();
-        const res = await ot.decideOvertimeRequest({
-            tenantId: TENANT, requestId: request.id, approverId: MANAGER, decision: 'REJECTED',
-        });
-
-        expect(res.final).toBe(true);
-        expect(res.payrollHours).toBeNull();
-        expect(assignments).toHaveLength(0);
-    });
-
-    it('refuses a decision from anyone but the current approver', async () => {
-        const { request } = await raise();
-        await expect(ot.decideOvertimeRequest({
-            tenantId: TENANT, requestId: request.id, approverId: FINANCE, decision: 'APPROVED',
-        })).rejects.toThrow('not the approver for this level');
-    });
+    it('leaves pending hours out of payroll and blocks the legacy direct decision', async()=>{const {request}=await raise();await expect(ot.decideOvertimeRequest({tenantId:TENANT,requestId:request.id,approverId:MANAGER,decision:'APPROVED'})).rejects.toMatchObject({status:401});expect(request.status).toBe('PENDING');expect(assignments).toHaveLength(0);});
+    it('writes hours at final Management approval to the existing roster',async()=>{const {request}=await raise();assignments.push({id:1,overtimeHours:0});await finalize(request,true);expect(request.status).toBe('APPROVED');expect(assignments[0].overtimeHours).toBe(3);});
+    it('Management rejection leaves payroll untouched',async()=>{const {request}=await raise();await finalize(request,false);expect(request.status).toBe('REJECTED');expect(assignments).toHaveLength(0);});
+    it('refuses final approval without a roster',async()=>{const {request}=await raise();await expect(finalize(request,true)).rejects.toThrow('Configure the roster');expect(request.status).toBe('PENDING');expect(assignments).toHaveLength(0);});
 });
 
 describe('HR-OT-APPROVAL-01 detection from device punches', () => {
