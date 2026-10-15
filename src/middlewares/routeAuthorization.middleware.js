@@ -1,3 +1,4 @@
+import { COMPANY_SETUP_TOOLS } from '@trusoft/contracts/hr-company-setup';
 import { HR_APPROVAL_TOOLS } from '@trusoft/contracts/hr-approval';
 import { EMPLOYMENT_TOOLS } from "@trusoft/contracts/employment";
 // F-02 / ARCH-00 P-02 / ARCH-01 §4.3 / ARCH-06 §6
@@ -143,6 +144,11 @@ export function resolveHrRoutePolicy(req) {
   if (!req.route) return null;
   const method = String(req.method || "").toUpperCase();
   const path = normalizePath(req);
+  if (path.startsWith('/api/hr/company-setup/')) {
+    const d=Object.values(COMPANY_SETUP_TOOLS).find(d=>path==='/api/hr/company-setup/'+d.route);
+    if(!d||method!=='POST')return null;
+    return {permission:d.permission,anyOf:[d.permission],resource:'hr.setup',action:'command',self:false,ownership:null,servicePrincipals:[]};
+  }
   if (path.startsWith('/api/hr/approvals/')) {
     const definition=Object.values(HR_APPROVAL_TOOLS).find(d=>path==='/api/hr/approvals/'+d.route);
     if(!definition) return null;

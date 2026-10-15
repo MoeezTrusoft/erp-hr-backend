@@ -61,6 +61,7 @@ export function tenantTransaction(client, fn, opts = {}) {
 // see across tenants. Physical tables: bank_details, employment_terms,
 // EmergencyContacts (see hr_rls_pilot_extend migration).
 const RLS_MODELS = new Set([
+    'HrSetupReview', 'HrSetupAudit', 'HrSetupReceipt',
     'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt',
     'EmployeeCodeConfiguration', 'EmployeeCodeSequence', 'EmployeeCodeReservation', 'EmployeeCodeAlias', 'EmployeeCategoryConversion', 'SeparationPolicy', 'Separation', 'EmploymentCommandReceipt', 'EmploymentDelivery', 'SeparationTransition', 'NoticePeriodRecord', 'ReplacementPlan', 'ReplacementSession', 'KnowledgeTransferItem', 'AssetHandoverItem', 'AccessRevocationTask', 'ClearanceItem', 'ExitInterview', 'FinalSettlementSheet', 'SeparationDocument', 'SeparationSourceSnapshot',
     'AssessmentIdentity', 'AssessmentCategory', 'AssessmentTaskVersion', 'AssessmentProfileVersion', 'AssessmentProfileTask', 'AssessmentGuideVersion', 'EmployeeAssessmentProfile', 'AssessmentQualification', 'AssessmentConfiguration', 'AssessmentTriggerPolicy', 'AssessmentAssignment', 'AssessmentRevision', 'AssessmentObservation', 'AssessmentDimension', 'AssessmentCase', 'AssessmentEvidence', 'AssessmentEvidenceLink', 'AssessmentTimingSample', 'AssessmentBenchmark', 'AssessmentSignOff', 'AssessmentRestriction', 'AssessmentCapability', 'AssessmentAudit', 'AssessmentAutomationRun', 'AssessmentException', 'AssessmentInboxEvent', 'AssessmentIntegration', 'AssessmentAppraisalInput', 'AssessmentCodeChange', 'AssessmentNotification',

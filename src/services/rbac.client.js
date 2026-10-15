@@ -316,6 +316,15 @@ async function rbacMcp(method, params) {
   return text ? JSON.parse(text) : null;
 }
 
+export const companySetupSnapshot = () => rbacMcp('tools/call', {name:'rbac_hr_setup_snapshot',arguments:{}});
+export async function applyCompanySetupIdentity(plan) {
+  const proof=signServiceJwtEdDSA({purpose:'HR_SETUP_IDENTITY',tid:plan.tenantId,plan});
+  if(!proof)throw new Error('HR approval signing is not configured');
+  const result=await rbacMcp('tools/call',{name:'rbac_hr_setup_identity_apply',arguments:{proof}});
+  if(!result?.applied||result.reviewRef!==plan.reviewRef||result.digest!==plan.digest)throw new Error('Account correction has not been acknowledged');
+  return result;
+}
+
 /**
  * List the acting user's company's departments from RBAC (resource rbac://departments).
  * @returns {Promise<Array<{ id:number, name:string, description?:string|null }>>}
