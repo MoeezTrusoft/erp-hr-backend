@@ -74,6 +74,7 @@ import { registerDevelopmentPlanTools } from "./tools/developmentPlanTools.js";
 import { registerLoanTools } from "./tools/loanTools.js";
 import { registerDeductionTools } from "./tools/deductionTools.js";
 import { registerCrossTenantTools } from "./tools/crossTenantTools.js";
+import { registerHrDirectoryTools } from "./tools/hrDirectoryTools.js";
 import { inferToolAnnotations } from "./utils/toolAnnotations.js";
 import { isZodRawShape } from "./utils/isZodRawShape.js";
 import { normalizeError } from "../middlewares/error.middleware.js";
@@ -334,4 +335,5 @@ export function registerAllTools(server) {
   registerSeparationTools(server);
   registerApprovalTools(server);
   registerAssessmentTools(server);
+  registerHrDirectoryTools(server);
 }

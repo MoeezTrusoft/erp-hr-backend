@@ -37,6 +37,20 @@ const WORKER_ID_MAX_LEN = 128;
 // REQ-A.4 — the durable Redis stream the HR outbox drains into.
 export const HR_EVENTS_STREAM = 'hr:events';
 
+// Events whose consumers read a different stream. hr.availability.changed.v1
+// is a PM source event (contracts events/pm-execution): PM's pm-source-intake
+// group reads pm:source-events, so it is routed there instead of hr:events.
+export const HR_EVENT_STREAM_ROUTES = Object.freeze({
+    'hr.availability.changed.v1': 'pm:source-events',
+});
+
+/** Stream an outbox event is XADDed to (route table, else the default). */
+export function streamForEvent(eventName, defaultStream = HR_EVENTS_STREAM) {
+    return Object.hasOwn(HR_EVENT_STREAM_ROUTES, eventName)
+        ? HR_EVENT_STREAM_ROUTES[eventName]
+        : defaultStream;
+}
+
 // Default freshness window for the dispatcher heartbeat (A.6). A dispatcher
 // that has not beaten within this window is considered stale/down.
 export const DEFAULT_HEARTBEAT_MAX_STALE_MS = 2 * 60_000;
@@ -92,6 +106,8 @@ export function generateWorkerId() {
  * consumer-side dedup key (at-least-once delivery).
  *
  *   XADD hr:events * event=<name> envelope=<json> eid=<envelope.id> srcId=<aggregateId>
+ *
+ * Names in HR_EVENT_STREAM_ROUTES go to their routed stream instead.
  */
 export function createStreamPublisher({ redis, stream = HR_EVENTS_STREAM } = {}) {
     if (!redis || typeof redis.xadd !== 'function') {
@@ -101,7 +117,7 @@ export function createStreamPublisher({ redis, stream = HR_EVENTS_STREAM } = {})
         const eid = payload?.id ?? '';
         const srcId = aggregateId != null ? String(aggregateId) : '';
         return redis.xadd(
-            stream,
+            streamForEvent(eventName, stream),
             '*',
             'event', String(eventName),
             'envelope', JSON.stringify(payload),

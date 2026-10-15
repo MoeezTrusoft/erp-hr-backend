@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { employee } from "../separation/base.js";
 import { assertAttendancePeriodOpen } from "../attendancePeriod.service.js";
 import { enqueueHrDomainEvent } from "../hrDomainEvent.service.js";
+import { leaveEventFacts } from "../../lib/leaveEventFacts.js";
 
 export const fail = (message, status = 409) => {
   throw Object.assign(new Error(`HR-4200: ${message}`), {
@@ -606,10 +607,15 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
       eventName: `hr.leave.${approved ? "approved" : "rejected"}.v1`,
       aggregateType: "LeaveRequest",
       aggregateId: row.id,
+      // Additive since 0.15.0 consumers (PM, Visual): the leave request id,
+      // its policy, day count and inclusive UTC date range. Ids only; the
+      // employee is still identified by employeeCode (resolve it with
+      // hr_identity_resolve; never treat an HR id as an RBAC user id).
       payload: {
         employeeCode: s.who.employee_code,
         requestRef: String(row.id),
         status,
+        ...leaveEventFacts(row),
       },
     });
   } else if (kind === "OVERTIME") {

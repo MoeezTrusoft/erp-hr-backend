@@ -30,6 +30,7 @@ import Redis from 'ioredis';
 
 import defaultPrisma from '../lib/prisma.js';
 import defaultLogger from '../lib/logger.js';
+import { startOutboxWake } from './outbox-wake.job.js';
 import {
     runOutboxDispatch,
     createStreamPublisher,
@@ -73,7 +74,13 @@ function clampInterval(ms, fallback = DEFAULT_DISPATCH_INTERVAL_MS) {
  * @param {object}  [args.logger]           pino logger.
  * @param {Function}[args.setTimeoutFn]     injectable timer (tests).
  * @param {Function}[args.clearTimeoutFn]   injectable timer (tests).
- * @returns {{ stop: () => Promise<void>, whenIdle: () => Promise<void> }}
+ * wake() (LISTEN hr_outbox, see outbox-wake.job.js) runs a batch now instead
+ * of waiting for the timer. A wake during an in-flight batch is remembered and
+ * runs one more batch right after it; a batch that published rows also runs
+ * again at once so a backlog drains without waiting a full interval. A failed
+ * batch always waits errorBackoffMs.
+ *
+ * @returns {{ stop: () => Promise<void>, whenIdle: () => Promise<void>, wake: () => void }}
  */
 export function startOutboxDispatchLoop({
     run,
@@ -89,6 +96,8 @@ export function startOutboxDispatchLoop({
     const interval = clampInterval(intervalMs);
 
     let running = true;
+    let busy = false;
+    let wakePending = false;
     let timer = null;
     // The promise of the in-flight tick, so stop()/tests can await quiescence.
     let inflight = Promise.resolve();
@@ -103,12 +112,22 @@ export function startOutboxDispatchLoop({
     };
 
     function tick() {
-        timer = null;
         if (!running) return;
+        if (busy) {
+            wakePending = true;
+            return;
+        }
+        busy = true;
+        if (timer != null) {
+            clearTimeoutFn(timer);
+            timer = null;
+        }
         inflight = (async () => {
             let nextDelay = interval;
             try {
-                await run();
+                const counts = await run();
+                if (counts?.published > 0) wakePending = true;
+                if (wakePending) nextDelay = 0;
             } catch (err) {
                 nextDelay = errorBackoffMs;
                 logger.warn?.(
@@ -116,6 +135,8 @@ export function startOutboxDispatchLoop({
                     'hr outbox loop: drain failed — backing off'
                 );
             }
+            busy = false;
+            wakePending = false;
             schedule(nextDelay);
         })();
     }
@@ -125,6 +146,7 @@ export function startOutboxDispatchLoop({
     tick();
 
     return {
+        wake: tick,
         async stop() {
             if (!running) {
                 // Idempotent: still await any tail tick already in flight.
@@ -175,6 +197,7 @@ export function startHrOutboxDispatcher({
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
     }),
+    wakeFactory = startOutboxWake,
 } = {}) {
     const noop = { enabled: false, stop: async () => {} };
 
@@ -217,6 +240,12 @@ export function startHrOutboxDispatcher({
             }),
         });
 
+        // LISTEN hr_outbox wake (best effort; polling continues without it).
+        // HR_OUTBOX_LISTEN_ENABLED=false turns it off.
+        const stopWake = isEnabledFlag(env.HR_OUTBOX_LISTEN_ENABLED)
+            ? wakeFactory(loop.wake, { env, logger })
+            : async () => {};
+
         logger.info?.(
             { stream: 'hr:events', workerId, intervalMs },
             'hr outbox loop: dispatcher started'
@@ -226,6 +255,7 @@ export function startHrOutboxDispatcher({
             enabled: true,
             workerId,
             async stop() {
+                try { await stopWake(); } catch { /* best effort */ }
                 await loop.stop();
                 try { await redis.quit(); } catch { /* best effort */ }
             },

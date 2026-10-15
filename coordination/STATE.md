@@ -45,3 +45,10 @@
 
 **Requests:**
 - None
+
+## Session Handoff (2026-10-15, Visual Studio automation, branch claude/visual-studio-automation)
+- Done: ported PR #22 as migration 20261015130000_pm_availability_events (hr.availability.changed.v1 full snapshots to pm:source-events, per-transaction coalescing via deferred trigger, 90-day lookback, max 1000 exceptions with exceptionsTruncated, LISTEN hr_outbox wake); 20261015140000_hr_identity_skill_lookup_indexes.
+- Done: MCP hr_identity_resolve + hr_skill_holders_list (contracts 0.15.0 mcp/hr), gated on hr.employee.read = existing RBAC hr:employee VIEW (no new RBAC key to seed); hr.leave.approved/rejected.v1 gain leaveRequestId, leavePolicyId, totalDays, startDate, endDate.
+- Tests: Jest full suite + tests/availability/*.test.mjs (native PostgreSQL, wired into assessment.yml); lint clean. The STATE failure list above did not reproduce on origin/main (268 suites green).
+- Open: hrEvents leaveApprovedEvent/leaveRejectedEvent still not emitted (their employeeId key would be read by notification-hub as a recipient user id); availability "available" does not flip at a future separatedAt until another write republishes.
+- Requests: gateway maps hr_identity_resolve and hr_skill_holders_list to hr.employee.read; PM consumes pm:source-events (pm-source-intake).

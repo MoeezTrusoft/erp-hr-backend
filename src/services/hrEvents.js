@@ -21,6 +21,8 @@
 // surrounding aggregate write. enqueueHrDomainEvent also guards this, so a null
 // builder result is a no-op the caller can pass straight through.
 
+import { toDateOnly } from '../lib/leaveEventFacts.js';
+
 function tenantOf(row) {
     return row?.tenantId ?? row?.tenant_id ?? null;
 }
@@ -50,6 +52,8 @@ export function leaveApprovedEvent(req, ctx = {}) {
             employeeId: req?.employeeId != null ? String(req.employeeId) : null,
             leavePolicyId: req?.leavePolicyId != null ? String(req.leavePolicyId) : null,
             totalDays: req?.totalDays ?? null,
+            startDate: toDateOnly(req?.startDate),
+            endDate: toDateOnly(req?.endDate),
             status: 'APPROVED',
         },
     });
@@ -62,6 +66,8 @@ export function leaveRejectedEvent(req, ctx = {}, extra = {}) {
         payload: {
             leaveRequestId: String(req?.id),
             employeeId: req?.employeeId != null ? String(req.employeeId) : null,
+            startDate: toDateOnly(req?.startDate),
+            endDate: toDateOnly(req?.endDate),
             status: 'REJECTED',
             reason: extra?.reason ?? null,
         },

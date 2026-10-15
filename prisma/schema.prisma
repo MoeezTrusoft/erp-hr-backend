@@ -483,6 +483,7 @@ model Employee {
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 
   @@unique([tenant_id, employee_code])
+  @@index([tenant_id, userId])
   @@index([biometric_id])
   @@index([personId])
   @@index([positionId])
@@ -3480,6 +3481,7 @@ model EmployeeSkill {
 
   @@unique([employeeId, skillId])
   @@index([tenantId])
+  @@index([tenantId, skillId, verified, score])
   @@map("employee_skills")
 }
 
@@ -5054,4 +5056,28 @@ model HrApprovalReceipt {
   result Json
   createdAt DateTime @default(now())
   @@unique([tenantId, requestKey])
+}
+
+// PM availability snapshots (migration 20261015130000_pm_availability_events).
+// Both tables are written only by the database trigger functions that emit
+// hr.availability.changed.v1; application code never touches them.
+// Version: monotonic sourceVersion per (tenant, employee).
+model HrPmAvailabilityVersion {
+  tenantId   String @db.Uuid
+  employeeId Int
+  version    BigInt @default(1)
+
+  @@id([tenantId, employeeId])
+  @@map("hr_pm_availability_versions")
+}
+
+// Pending: per-transaction coalescing queue, drained by a deferred trigger at
+// commit (always empty between transactions).
+model HrPmAvailabilityPending {
+  txid       BigInt
+  tenantId   String @db.Uuid
+  employeeId Int
+
+  @@id([txid, tenantId, employeeId])
+  @@map("hr_pm_availability_pending")
 }

@@ -253,3 +253,27 @@ describe('C5 — approval guards', () => {
         ).rejects.toMatchObject({ status: 409, message: expect.stringContaining('HR must assign the leave policy') });
     });
 });
+
+describe('hr.leave.approved.v1 payload (backwards-compatible additions)', () => {
+    it('keeps employeeCode/requestRef/status and adds the leave id, policy, days and date range', async () => {
+        const { enqueueHrDomainEvent } = await import('../../src/services/hrDomainEvent.service.js');
+        prismaMock.leaveRequest.findUnique.mockImplementation(async () => ({
+            id: 1, employeeId: 481, status: 'PENDING', leavePolicyId: 73,
+            tenantId: '40314ef4-0a81-4390-b631-b3ad3f21f523', totalDays: 3,
+            startDate: midnight('2026-09-21'), endDate: midnight('2026-09-23'),
+            approvals: [], leavePolicy: { id: 73, name: 'Annual Leave', leaveTypeCode: 'ANNUAL', approvalWorkflow: null },
+        }));
+        await svc.approveLeaveRequest(1, {});
+        const call = enqueueHrDomainEvent.mock.calls.find(([, args]) => args.eventName === 'hr.leave.approved.v1');
+        expect(call[1].payload).toEqual({
+            employeeCode: 'EMP-481',
+            requestRef: '1',
+            status: 'APPROVED',
+            leaveRequestId: '1',
+            leavePolicyId: '73',
+            totalDays: 3,
+            startDate: '2026-09-21',
+            endDate: '2026-09-23',
+        });
+    });
+});
