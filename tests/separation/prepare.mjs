@@ -85,6 +85,8 @@ try {
   await db.query(
     employment.slice(employment.indexOf("-- Employment security guards")),
   );
+  const setup=await readFile('prisma/migrations/20261016120000_hr_company_setup/migration.sql','utf8');
+  await db.query(setup.slice(setup.indexOf('-- SETUP_SECURITY')));
   const approvals=await readFile('prisma/migrations/20261015120000_hr_approval_workflow/migration.sql','utf8');
   await db.query(approvals.slice(approvals.indexOf('-- Approval security guards')));
   await db.query(
