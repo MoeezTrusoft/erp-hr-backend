@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 3ff431ad2d761226ac4b2dd45722d0ae5f9393c0 # onsite biometric acceptance contracts (0.17.4)
+          ref: 1198bc8c9f9e944640f4f6768de0b81ec454b1f9 # onsite biometric acceptance contracts (0.17.4)
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
