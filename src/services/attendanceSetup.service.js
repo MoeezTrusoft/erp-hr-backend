@@ -101,9 +101,11 @@ export async function buildAttendanceSetup(tenantId, db = prisma) {
   ]);
   const boundSchedules=[];
   const templates=await db.shiftTemplate.findMany({where:{tenantId}});
+  const today=dateKey(civilNow(new Date(),draft?.settings?.timeZone || DEFAULT_SETTINGS.timeZone));
   for(const employee of employees) {
-    const own=await Promise.all(schedules.filter(s=>s.employeeId===employee.id).map(async s=>({...s,
-      schedule_pattern:await bindRosterShifts(db,tenantId,employee,s.schedule_pattern,templates)})));
+    const own=await Promise.all(schedules.filter(s=>s.employeeId===employee.id).map(async s=>
+      s.effective_end_date && dateKey(s.effective_end_date)<today ? s : {...s,
+        schedule_pattern:await bindRosterShifts(db,tenantId,employee,s.schedule_pattern,templates)}));
     boundSchedules.push(...own);
   }
   return json({
