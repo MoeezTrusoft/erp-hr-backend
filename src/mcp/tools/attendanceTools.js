@@ -428,6 +428,9 @@ export function registerAttendanceTools(server) {
   // roster. Mirrors lib/schedulePattern.js, which the service now enforces too.
   const SHIFT_WINDOW = z
     .object({
+      templateId: z.number().int().positive().optional(),
+      checkoutCutoffTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).nullable().optional(),
+      checkoutCutoffDayOffset: z.number().int().min(0).max(2).nullable().optional(),
       from: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "shift window times must be HH:MM (24h)"),
       to: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "shift window times must be HH:MM (24h)"),
     })
@@ -475,6 +478,8 @@ export function registerAttendanceTools(server) {
     "hr_work_schedule_create",
     "Create a work schedule for an employee. Rejects periods that overlap an existing schedule for the same employee.",
     {
+      dryRun: z.boolean().optional(),
+      previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       employeeId: z.string().min(1).describe("Employee the schedule is for (references Employee); defaults to the caller when omitted"),
       schedule_name: z.string().min(1).describe("Human-readable schedule name"),
       effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
@@ -495,6 +500,8 @@ export function registerAttendanceTools(server) {
     "hr_work_schedule_update",
     "Update a work schedule (partial). Only the fields you send are changed.",
     {
+      dryRun: z.boolean().optional(),
+      previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       id: z.string().min(1).describe("Work schedule id (references WorkSchedule)"),
       correctionReason: z.string().min(1).optional(),
       schedule_name: z.string().optional().describe("Human-readable schedule name"),

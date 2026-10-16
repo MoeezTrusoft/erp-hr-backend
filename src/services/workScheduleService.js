@@ -1,7 +1,8 @@
 import prisma from '../lib/prisma.js';
+import { createHash } from 'node:crypto';
 import { tenantTransaction } from '../lib/rlsTenant.js';
 import { assertSchedulePattern } from '../lib/schedulePattern.js';
-import { bindRosterShifts, validateEmployeeShiftSequence, syncCurrentShiftSupervisors } from './shiftGovernance.service.js';
+import { bindRosterShifts, validateEmployeeShiftSequence, syncCurrentShiftSupervisors, previewShiftSupervisor } from './shiftGovernance.service.js';
 import { civilNow } from '../lib/attendanceClock.js';
 import {
   addDays,
@@ -15,7 +16,7 @@ import {
 } from '../lib/attendanceDates.js';
 
 const include = {
-  employee: { select: { first_name: true, last_name: true } },
+  employee: { select: { employee_code: true } },
   overtimeRule: true,
 };
 const scope = (tenantId) => {
@@ -198,13 +199,21 @@ export async function writeRoster({
             ? previous.effective_end_date
             : row.effective_end_date,
       );
-      const assignments = await tx.shiftAssignment.findMany({where:{tenantId,employeeId:eid}});
+      const assignments = await tx.shiftAssignment.findMany({where:{tenantId,employeeId:eid},orderBy:{id:'asc'}});
       const proposed = other.map(r=>close?.id===r.id ? {...r,effective_end_date:addDays(from,-1)}:r);
       validateEmployeeShiftSequence([...proposed,row],assignments);
+      const windows = [row.schedule_pattern.shift, ...(row.schedule_pattern.rotatingShifts || []), ...Object.values(row.schedule_pattern.shiftByDay || {})].filter(Boolean);
+      const impacts = await Promise.all(windows.map(window => previewShiftSupervisor(tx,tenantId,employee,window)));
+      const reviewed = {...row,schedule_pattern:{...row.schedule_pattern,correctedAt:undefined}};
+      const previewToken = createHash('sha256').update(JSON.stringify({rows,assignments,employee,impacts,reviewed})).digest('hex');
+      if (data.previewToken && data.previewToken !== previewToken) throw badSetup('Roster or supervisor changed after preview. Review the new impact before saving.',409);
       if (dryRun)
         return {
           action,
           employeeId: eid,
+          employeeCode: employee.employee_code,
+          previewToken,
+          impacts,
           closes: close?.id ?? null,
           proposed: row,
         };
@@ -232,9 +241,9 @@ export async function writeRoster({
 }
 
 export const createWorkSchedule = (data) =>
-  writeRoster({ tenantId: data.tenantId, employeeId: data.employeeId, data });
+  writeRoster({ tenantId: data.tenantId, employeeId: data.employeeId, data, dryRun: data.dryRun === true });
 export const updateWorkSchedule = (id, data, updatedBy, tenantId) =>
-  writeRoster({ tenantId, id, data, action: 'update' });
+  writeRoster({ tenantId, id, data, action: 'update', dryRun: data.dryRun === true });
 export const deleteWorkSchedule = (id, deletedBy, tenantId) =>
   writeRoster({ tenantId, id, data: {}, action: 'delete' });
 

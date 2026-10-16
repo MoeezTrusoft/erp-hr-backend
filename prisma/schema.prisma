@@ -917,6 +917,27 @@ model AttendanceGraceMembership {
   @@map("attendance_grace_memberships")
 }
 
+model AttendanceCorrectionRequest {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime @db.Date
+  sessionKey String
+  checkIn String?
+  checkOut String?
+  reason String
+  evidence String
+  reasonCategory String?
+  evidenceDate String?
+  status String @default("PENDING")
+  version Int @default(1)
+  evaluationVersion Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, employeeId, date], map: "attendance_correction_scope")
+  @@map("attendance_correction_requests")
+}
+
 model AttendanceManualTime {
   id Int @id @default(autoincrement())
   tenantId String @db.Uuid

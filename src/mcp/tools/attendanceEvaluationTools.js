@@ -12,6 +12,8 @@ import {
 } from "../../services/attendanceEvaluation.service.js";
 import { queueAttendanceEvaluation } from "../../services/attendanceFinalization.service.js";
 import { applyEvaluatedShifts } from "../../services/attendanceWriter.service.js";
+import { employeeScope } from '../../services/attendanceRules.service.js';
+import prisma from '../../lib/prisma.js';
 
 export function registerAttendanceEvaluationTools(server) {
   const register = (name, description, schema, fn, needsActor = false) =>
@@ -25,7 +27,9 @@ export function registerAttendanceEvaluationTools(server) {
           throw Object.assign(new Error("Authentication required"), {
             status: 401,
           });
-        assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+        const readOnly = name === 'hr_attendance_explain';
+        assertPermission(permissions, readOnly ? 'GET' : 'PUT', "hr:attendance", user.isAdmin);
+        if (readOnly) await employeeScope(prisma, user, args.employeeId);
         const actorEmployeeId = needsActor
           ? await requireEmployeeActor(user)
           : user.employeeId;

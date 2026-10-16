@@ -25,6 +25,8 @@ import {
   LEGACY_ATTENDANCE_CODES,
 } from "./attendanceRulePayroll.service.js";
 import * as money from "../lib/money.js";
+import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
+import { attendanceViewMatches, shiftKey } from '../lib/attendanceViewFilters.js';
 
 const fail = (status, message) => {
   throw Object.assign(new Error(message), { status });
@@ -44,13 +46,13 @@ const requireManagement = (user) => {
   if (!isManagement(user))
     fail(403, "Only the Management role may decide attendance anomalies");
 };
-async function employeeScope(db, user, employeeId) {
+export async function employeeScope(db, user, employeeId) {
   const employee = await db.employee.findFirst({
     where: { id: employeeId, tenant_id: user.tenantId },
   });
   if (!employee) fail(404, "Employee not found");
   if (
-    !isAttendanceHr(user) &&
+    !isAttendanceHr(user) && !isManagement(user) &&
     employeeId !== Number(user.employeeId) &&
     employee.managerId !== Number(user.employeeId)
   )
@@ -77,7 +79,7 @@ async function command(user, fn, db = prisma) {
   });
 }
 export async function listRuleCases(
-  { user, from, to, status, employeeId, page = 1, pageSize = 30 },
+  { user, from, to, status, employeeId, q, category, site, department, shift, page = 1, pageSize = 30 },
   db = prisma,
 ) {
   dateRange(from,to,370);
@@ -85,7 +87,7 @@ export async function listRuleCases(
   const employees = await db.employee.findMany({
     where: {
       tenant_id: user.tenantId,
-      ...(!isAttendanceHr(user)
+      ...(!isAttendanceHr(user) && !isManagement(user)
         ? {
             OR: [
               { id: Number(user.employeeId) || -1 },
@@ -97,9 +99,6 @@ export async function listRuleCases(
     select: {
       id: true,
       employee_code: true,
-      employee_name: true,
-      first_name: true,
-      last_name: true,
       managerId: true,
     },
   });
@@ -108,18 +107,21 @@ export async function listRuleCases(
     fail(403, "Employee is outside your scope");
   const where = {
     tenantId: user.tenantId,
-    employeeId: employeeId || { in: ids },
+    employeeId: { in: employees.filter(e => (!employeeId || e.id === employeeId) && (!q || e.employee_code?.toLowerCase().includes(q.toLowerCase()))).map(e => e.id) },
     date: { gte: dateOnly(from), lte: dateOnly(to) },
     ...(status ? { status } : {}),
   };
   // One snapshot supplies both the cards and the paginated review table.
   // Include legacy cases: they were already counted by the timesheet cards.
-  const all = await db.attendanceAnomaly.findMany({
+  const fetched = await db.attendanceAnomaly.findMany({
       where,
       orderBy: [{ date: "desc" }, { id: "desc" }],
   });
+  const categoryOf = row => row.type==='ABSENT'?'absent':row.type==='LATE_CHECKIN'?'late':row.type==='EARLY_CHECKOUT'?'early':'other';
+  const runtime = site || department || shift ? await loadAttendanceRuntime({tenantId:user.tenantId,from,to,db}) : null;
+  const all = fetched.filter(row => (!category || categoryOf(row) === category) && (!runtime || attendanceViewMatches(runtime.resolve(row.employeeId,row.date),{site,department,shift})));
   const summary={absent:0,late:0,early:0,other:0,total:all.length};
-  for(const row of all) summary[row.type==='ABSENT'?'absent':row.type==='LATE_CHECKIN'?'late':row.type==='EARLY_CHECKOUT'?'early':'other']++;
+  for(const row of all) summary[categoryOf(row)]++;
   const items=all.slice((page-1)*pageSize,page*pageSize);
   return {
     items: items.map((a) => ({
@@ -128,11 +130,63 @@ export async function listRuleCases(
     })),
     total:all.length,
     summary,
+    observedAt: new Date().toISOString(),
     page,
     pageSize,
     canDecide: isManagement(user),
     canEnter: isAttendanceHr(user),
   };
+}
+export async function attendanceFilterOptions({user,from,to},db=prisma) {
+  const days=dateRange(from,to,370);
+  const [runtime,employees,departments] = await Promise.all([
+    loadAttendanceRuntime({tenantId:user.tenantId,from,to,db}),
+    db.employee.findMany({where:{tenant_id:user.tenantId,...(!isAttendanceHr(user)&&!isManagement(user)?{OR:[{id:Number(user.employeeId)||-1},{managerId:Number(user.employeeId)||-1}]}:{})},select:{id:true}}),
+    db.businessUnit.findMany({where:{tenantId:user.tenantId},select:{id:true,name:true}}),
+  ]);
+  const sites=new Map(), shifts=new Set(), departmentIds=new Set();
+  for(const employee of employees) for(const day of days) {
+    const info=runtime.resolve(employee.id,day);
+    if(info.departmentId) departmentIds.add(info.departmentId);
+    const key=shiftKey(info.shift); if(key) shifts.add(key);
+    for(const site of info.sites||[]) if(info.siteAssignment?.siteIds?.includes(site.id)) sites.set(site.id,site.name);
+  }
+  return {sites:[...sites].map(([id,name])=>({id,name})),departments:departments.filter(d=>departmentIds.has(d.id)),shifts:[...shifts].sort().map(key=>({id:key,name:key}))};
+}
+export async function myAttendanceDay({user},db=prisma) {
+  if(!user.employeeId) return {linked:false};
+  const employee=await employeeScope(db,user,Number(user.employeeId));
+  const utcDay=dateKey(new Date());
+  const runtime=await loadAttendanceRuntime({tenantId:user.tenantId,from:addDays(utcDay,-1),to:addDays(utcDay,15),db});
+  const zone=runtime.configOn(utcDay)?.settings?.timeZone || 'Asia/Karachi';
+  const day=dateKey(civilNow(new Date(),zone)),plan=runtime.resolve(employee.id,day);
+  let nextShift=null;
+  for(const next of dateRange(addDays(day,1),addDays(day,14),14)) {const info=runtime.resolve(employee.id,next);if(info.working && info.shift?.start){nextShift={date:next,...info.shift};break;}}
+  const [record,requests]=await Promise.all([db.attendance.findFirst({where:{tenantId:user.tenantId,employeeId:employee.id,date:dateOnly(day)}}),db.hrApprovalRequest.findMany({where:{tenantId:user.tenantId,employeeCode:employee.employee_code,kind:{in:['ATTENDANCE_CORRECTION','ATTENDANCE','LEAVE','OVERTIME','SHIFT_SWAP','TIME_CREDIT']}},orderBy:{updatedAt:'desc'},take:10})]);
+  return {linked:true,employeeCode:employee.employee_code,date:day,timeZone:zone,shift:plan.shift,calendar:plan.calendarStatus || (plan.working?'WORKDAY':plan.reason),sites:(plan.sites||[]).filter(site=>plan.siteAssignment?.siteIds?.includes(site.id)).map(site=>site.name),record:record?{checkIn:record.check_in,checkOut:record.check_out,status:record.status,processing:record.processingState}:null,nextShift,requests:requests.map(r=>({reference:r.id,sourceRef:r.sourceRef,kind:r.kind,stage:r.stage,updatedAt:r.updatedAt}))};
+}
+export async function exportAttendanceRecords({user,...filters},db=prisma) {
+  dateRange(filters.from,filters.to,92);
+  const employees=await db.employee.findMany({where:{tenant_id:user.tenantId,...(!isAttendanceHr(user)&&!isManagement(user)?{OR:[{id:Number(user.employeeId)||-1},{managerId:Number(user.employeeId)||-1}]}:{})},select:{id:true}});
+  const {listCheckInOuts}=await import('./timesheetReport.service.js');
+  const result=await listCheckInOuts({...filters,tenantId:user.tenantId,employeeIds:employees.map(e=>e.id),exportMode:true,page:1});
+  if(result.total>20000) fail(422,'This export exceeds 20,000 rows. Narrow the dates or scope; no partial file was generated.');
+  const generatedAt=new Date().toISOString();
+  const receipt=await audit(db,user,'ATTENDANCE_EXPORTED',{filters,rows:result.total,generatedAt});
+  return {reference:receipt.id,generatedAt,company:user.tenantId,filters,total:result.total,items:result.items.map(row=>({employeeCode:row.employee?.code,date:dateKey(row.date),calendar:row.calendarStatus,outcome:row.status,processing:row.processingState,checkIn:row.checkIn,checkOut:row.checkOut,decimalHours:row.totalHours,timeZone:row.timeZone}))};
+}
+export async function employeeCodeOptions({ user, q = '', page = 1, pageSize = 50 }, db = prisma) {
+  const where = { tenant_id: user.tenantId, employee_code: { contains: q, mode: 'insensitive' },
+    ...(!isAttendanceHr(user) && !isManagement(user) ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] } : {}),
+  };
+  const select = { id: true, employee_code: true, status:true, hire_date:true, businessUnit:{select:{name:true}} };
+  const exact = q ? await db.employee.findFirst({ where: {...where, employee_code:{equals:q,mode:'insensitive'}}, select }) : null;
+  const [remaining, total] = await Promise.all([
+    db.employee.findMany({ where: {...where,...(exact?{id:{not:exact.id}}:{})}, select, orderBy: { employee_code: 'asc' }, skip: Math.max(0,(page - 1) * pageSize - (exact ? 1 : 0)), take: pageSize - (exact && page === 1 ? 1 : 0) }),
+    db.employee.count({ where }),
+  ]);
+  const rows = exact && page === 1 ? [exact,...remaining] : remaining;
+  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code,department:e.businessUnit?.name,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
 }
 export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
   const row = await db.attendanceAnomaly.findFirst({
@@ -195,7 +249,7 @@ export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
   return {
     anomaly: row,
     employee,
-    history,
+    history: await (async()=>{const {attendanceActorCodes}=await import('../lib/attendanceActorCodes.js');const codes=await attendanceActorCodes(db,user.tenantId,history.map(a=>a.actorId));return history.map(a=>({...a,actorCode:codes.get(String(a.actorId)) || null}));})(),
     attendance,
     period: { ...period, provisional: !run },
     assessment: ruleDeductions(periodCases),
@@ -389,8 +443,13 @@ export async function finalizeRuleCase(
     db,
   );
 }
-export async function enterRuleTime(
-  { user, employeeId, date, sessionKey, checkIn, checkOut, reason, version },
+export async function enterRuleTime() {
+  fail(410, 'Submit a missing-time correction through the employee, Line Manager, HR and Management approval workflow');
+}
+
+// Internal application step; public commands cannot call this directly.
+export async function applyMissingTime(
+  { user, employeeId, date, sessionKey, checkIn, checkOut, reason, version, validateOnly = false },
   db = prisma,
 ) {
   requireHr(user);
@@ -458,11 +517,14 @@ export async function enterRuleTime(
           timestamp = new Date(+timestamp + 86400000);
         if (timestamp > civilNow(new Date(), selected.setupSnapshot.timeZone))
           fail(400, "A future punch cannot be entered");
+        if (selected.verdict.deadline && +timestamp > +new Date(selected.verdict.deadline))
+          fail(400, 'The requested time is after this shift’s checkout cutoff; review the next scheduled shift');
         proposed[direction] = timestamp;
         entries.push({ direction, timestamp });
       }
       if (proposed.IN && proposed.OUT && +proposed.IN >= +proposed.OUT)
         fail(400, "Check-out must be later than check-in");
+      if (validateOnly) return { valid: true, entries };
       for (const { direction, timestamp } of entries) {
         const saved = await tx.attendanceManualTime.create({
           data: {

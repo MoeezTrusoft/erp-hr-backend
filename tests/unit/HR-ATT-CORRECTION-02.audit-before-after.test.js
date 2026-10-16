@@ -1,7 +1,7 @@
 // Corrections append immutable evidence and retain earlier evaluation revisions.
 import { describe, it, expect } from '@jest/globals';
 import { evaluationDb, evaluate, TENANT, DATE } from '../helpers/evaluationDb.js';
-import { enterRuleTime } from '../../src/services/attendanceRules.service.js';
+import { applyMissingTime as enterRuleTime } from '../../src/services/attendanceRules.service.js';
 const user = { tenantId: TENANT, userId: 'hr-2', employeeId: 2, roles: ['HR'] };
 describe('HR missing-time audit', () => {
   it('retains original evaluation and device evidence, attributing the added time', async () => {

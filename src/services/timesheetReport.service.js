@@ -21,6 +21,7 @@ import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
 import { completeTimesheetRows } from '../lib/timesheetRows.js';
+import { attendanceActorCodes } from '../lib/attendanceActorCodes.js';
 
 // Statuses that count as "showed up" for a working day.
 // T&A-RULE-06 — EARLY_CHECKOUT is an attended (half-credit) day: it counts as
@@ -471,7 +472,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
 
   let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, where),
-    select: { date: true, status: true, employee: { select: { id: true, first_name: true, last_name: true, employee_code: true } } },
+    select: { date: true, status: true, employee: { select: { id: true, employee_code: true } } },
   });
   // TIMESHEET-ELIG-02 — span-cap before daily aggregation.
   rows = filterRowsByEmploymentSpan(rows, gridSpanEnds);
@@ -498,7 +499,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
       if (r.employee) {
         bucket.absentees.push({
           id: r.employee.id,
-          name: [r.employee.first_name, r.employee.last_name].filter(Boolean).join(" ") || r.employee.employee_code,
+          name: r.employee.employee_code || 'Employee code required',
         });
       }
     }
@@ -532,7 +533,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
   return { month: label, days };
 }
 
-export async function getAttendanceSummaryWeekly({ tenantId, month }) {
+export async function getAttendanceSummaryWeekly({ tenantId, month, employeeId }) {
   const { start, end, label } = resolveMonth(month);
   const weeks = monthWeeks(start, end);
 
@@ -548,7 +549,7 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
   let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, {
       // HR-ATT-ELIG-01 — eligible employees only (see getTimesheetKpis).
-      employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
+      employeeId: employeeId == null ? { in: (await eligibilityEmployeeIds(tenantId, start)).eligible } : Number(employeeId),
       date: { gte: start, lte: end },
     }),
     select: { date: true, status: true, employee: { select: EMPLOYEE_SELECT } },
@@ -630,7 +631,7 @@ export async function getAttendanceSummaryWeekly({ tenantId, month }) {
  * @param {{tenantId:string|null, month?:string}} args
  * @returns {Promise<{month:string, days:Array<{date:string,weekLabel:string,absenteeismPct:number}>}>}
  */
-export async function getAbsenteeismTrend({ tenantId, month }) {
+export async function getAbsenteeismTrend({ tenantId, month, employeeId }) {
   const { start, end, label } = resolveMonth(month);
   const weeks = monthWeeks(start, end);
 
@@ -644,7 +645,7 @@ export async function getAbsenteeismTrend({ tenantId, month }) {
   let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, {
       // HR-ATT-ELIG-01 — eligible employees only (see getTimesheetKpis).
-      employeeId: { in: (await eligibilityEmployeeIds(tenantId, start)).eligible },
+      employeeId: employeeId == null ? { in: (await eligibilityEmployeeIds(tenantId, start)).eligible } : Number(employeeId),
       date: { gte: start, lte: end },
     }),
     select: { employeeId: true, date: true, status: true },
@@ -755,18 +756,10 @@ function toEnumStatus(raw) {
 const EMPLOYEE_SELECT = {
   id: true,
   employee_code: true,
-  employee_name: true,
-  first_name: true,
-  last_name: true,
-  photo_url: true,
 };
 
 function fullName(emp) {
-  if (!emp) return null;
-  const denorm = emp.employee_name && emp.employee_name.trim();
-  if (denorm) return denorm;
-  const joined = `${emp.first_name ?? ""} ${emp.last_name ?? ""}`.trim();
-  return joined || null;
+  return emp?.employee_code || 'Employee code required';
 }
 
 /**
@@ -852,12 +845,15 @@ async function punchesForPageRows(pageRows, tenantId) {
 
 export async function listCheckInOuts({
   tenantId,
+  site, department, shift,
   q,
   status,
   exclude,
   from,
   to,
   employeeId,
+  employeeIds,
+  exportMode = false,
   sortBy = "date",
   sortDir = "desc",
   page = 1,
@@ -927,6 +923,10 @@ export async function listCheckInOuts({
     spanEnds = employmentEndByEmployee;
   }
 
+  if (employeeIds) {
+    const requested = typeof where.employeeId === 'object' ? where.employeeId.in : [where.employeeId];
+    where.employeeId = { in: employeeIds.filter(id => requested.includes(id)) };
+  }
   let records = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, {date:where.date,employeeId:where.employeeId}),
     include: { employee: { select: EMPLOYEE_SELECT } },
@@ -973,7 +973,7 @@ export async function listCheckInOuts({
   const employees=await prisma.employee.findMany({where:scopedEmployeeWhere(tenantId,{id:where.employeeId}),select:EMPLOYEE_SELECT});
   if(employees.length) {
     const runtime=await loadAttendanceRuntime({tenantId,from:period.from,to:period.to});
-    records=completeTimesheetRows({records,employees,anomalies:anomaliesForWindow,runtime,from:period.from,to:period.to});
+    records=completeTimesheetRows({records,employees,anomalies:anomaliesForWindow,runtime,from:period.from,to:period.to,filters:{site,department,shift}});
   }
   records=filterRowsByEmploymentSpan(records,spanEnds).filter(r=>
     (!enumStatus || r.status===enumStatus) && !(where.status?.notIn||where.NOT?.status?.in||[]).includes(r.status));
@@ -1071,13 +1071,17 @@ export async function listCheckInOuts({
       evaluationVersion:a.evaluationVersion,
       date: a.date,
       employee: emp
-        ? { id: emp.id, code:emp.employee_code, name: fullName(emp), avatar: emp.photo_url ?? null }
+        ? { id: emp.id, code:emp.employee_code }
         : { id: null, name: null, avatar: null },
       status: STATUS_DISPLAY[a.status] ?? a.status,
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
       totalHours: a.total_hours ?? null,
       calendarStatus:a.calendarStatus ?? null,
+      plannedShift:a.plannedShift ?? null,
+      assignedSites:a.assignedSites ?? [],
+      timeZone:a.timeZone ?? null,
+      setupReason:a.setupReason ?? null,
       holidayName:a.holidayName ?? null,
       absenceAnomaly:a.absenceAnomaly === true,
       workMode: a.work_mode ?? null,
@@ -1092,7 +1096,7 @@ export async function listCheckInOuts({
   // q = employee-name contains, case-insensitive (JS filter after fetch).
   if (q && q.trim()) {
     const needle = q.trim().toLowerCase();
-    rows = rows.filter((r) => [r.employee?.code,r.employee?.name].some(value=>(value||'').toLowerCase().includes(needle)));
+    rows = rows.filter((r) => (r.employee?.code || '').toLowerCase().includes(needle));
   }
 
   const total = rows.length;
@@ -1104,8 +1108,8 @@ export async function listCheckInOuts({
     let bv;
     switch (sortBy) {
       case "employee":
-        av = (a.employee?.name ?? "").toLowerCase();
-        bv = (b.employee?.name ?? "").toLowerCase();
+        av = (a.employee?.code ?? "").toLowerCase();
+        bv = (b.employee?.code ?? "").toLowerCase();
         break;
       case "status":
         av = a.status;
@@ -1134,13 +1138,13 @@ export async function listCheckInOuts({
     }
     if (av < bv) return -1 * dir;
     if (av > bv) return 1 * dir;
-    return 0;
+    return String(a.employee?.code || '').localeCompare(String(b.employee?.code || ''));
   };
   rows.sort(cmp);
 
   // ── Paginate ──────────────────────────────────────────────────────────────
   const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
-  const safeSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 100) : 20;
+  const safeSize = exportMode ? 20000 : Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 100) : 20;
   const start = (safePage - 1) * safeSize;
   const pageRows = rows.slice(start, start + safeSize);
 
@@ -1153,6 +1157,7 @@ export async function listCheckInOuts({
   // offer cancel. Batched the same way: one query for the whole page.
   const pageEmployeeIds = [...new Set(pageRows.map((r) => r._employeeId).filter(Number.isFinite))];
   const callInByKey = new Map();
+  const correctionByKey = new Map();
   if (pageEmployeeIds.length) {
     const dates = pageRows.map((r) => startOfDay(r.date).getTime());
     const callIns = await prisma.attendanceCallIn.findMany({
@@ -1162,8 +1167,20 @@ export async function listCheckInOuts({
       }),
       select: { id: true, employeeId: true, date: true, reason: true, calledBy: true },
     });
+    const actorCodes = await attendanceActorCodes(prisma, tenantId, callIns.map(c=>c.calledBy));
     for (const c of callIns) {
-      callInByKey.set(`${c.employeeId}:${dayKey(c.date)}`, c);
+      callInByKey.set(`${c.employeeId}:${dayKey(c.date)}`, {...c,calledBy:actorCodes.get(String(c.calledBy)) || 'Authorized HR operator'});
+    }
+    const corrections = await prisma.attendanceCorrectionRequest.findMany({
+      where:{tenantId,employeeId:{in:pageEmployeeIds},date:{gte:new Date(Math.min(...dates)),lte:new Date(Math.max(...dates))}},
+      select:{id:true,employeeId:true,date:true,status:true},orderBy:{createdAt:'desc'},
+    });
+    const approvals = corrections.length ? await prisma.hrApprovalRequest.findMany({where:{tenantId,kind:'ATTENDANCE_CORRECTION',sourceRef:{in:corrections.map(c=>c.id)}},select:{sourceRef:true,stage:true}}) : [];
+    const stages = new Map(approvals.map(a=>[a.sourceRef,a.stage]));
+    for(const c of corrections){
+      const key=`${c.employeeId}:${dayKey(c.date)}`;
+      if(!correctionByKey.has(key))correctionByKey.set(key,[]);
+      correctionByKey.get(key).push({reference:c.id,stage:stages.get(c.id) || (c.status==='PENDING'?'DRAFT':c.status)});
     }
   }
 
@@ -1173,6 +1190,7 @@ export async function listCheckInOuts({
     return {
       ...rest,
       punches: punchesByRow.get(key) ?? [],
+      correctionRequests:correctionByKey.get(key) || [],
       onCall: callIn
         ? { id: callIn.id, reason: callIn.reason ?? null, calledBy: callIn.calledBy ?? null }
         : null,

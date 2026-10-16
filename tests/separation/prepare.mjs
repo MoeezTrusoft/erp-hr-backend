@@ -91,6 +91,8 @@ try {
   await db.query(tracker.slice(tracker.indexOf('-- TRACKER_SECURITY')));
   const approvals=await readFile('prisma/migrations/20261015120000_hr_approval_workflow/migration.sql','utf8');
   await db.query(approvals.slice(approvals.indexOf('-- Approval security guards')));
+  const correction=await readFile('prisma/migrations/20261019090000_attendance_correction_workflow/migration.sql','utf8');
+  await db.query(correction.slice(correction.indexOf('CREATE UNIQUE INDEX attendance_correction_active')));
   await db.query(
     "DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='assessment_test_user') THEN CREATE ROLE assessment_test_user LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE; END IF; END $$; ALTER ROLE assessment_test_user PASSWORD 'assessment-local-test'; GRANT USAGE ON SCHEMA public TO assessment_test_user; GRANT ALL ON ALL TABLES IN SCHEMA public TO assessment_test_user; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO assessment_test_user;",
   );

@@ -94,11 +94,17 @@ async function fixture(kind) {
     return { ...original, kind };
   }
   const n = ++counter,
-    date = new Date(Date.UTC(2026, 9, 1 + n)),
+    date = new Date(Date.UTC(2026, kind === 'ATTENDANCE_CORRECTION' ? 0 : 9, 1 + n)),
     end = new Date(+date + 3600000);
   let row;
   await db(async (tx) => {
     const base = { tenantId: company, employeeId: people.EMPLOYEE.id };
+    if (kind === 'ATTENDANCE_CORRECTION') {
+      const { replayTenant } = await import('../../src/lib/attendanceReplay.js');
+      const day = date.toISOString().slice(0,10);
+      const [session] = await replayTenant({ tenantId: company, employeeIds: [people.EMPLOYEE.id], from: day, to: day, db: tx, includeEmpty: true });
+      row = await tx.attendanceCorrectionRequest.create({ data: { ...base, id: randomUUID(), date, sessionKey: session.sessionKey, checkIn: '09:00:01', checkOut: '17:00:00', reason: 'Fictional missed capture', evidence: 'Fictional supervised register TEST-001', reasonCategory:'MISSED_PUNCH', evidenceDate:day, evaluationVersion: 0 } });
+    }
     if (kind === "TIME_CREDIT") {
       row = await tx.attendanceTimeCredit.create({
         data: {

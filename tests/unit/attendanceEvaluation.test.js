@@ -89,6 +89,14 @@ const apply = (db, extra = {}) =>
     ...extra,
   });
 describe("interval attendance calculation", () => {
+  it('blocks handoff for submitted and returned corrections, but not an unsubmitted draft', async () => {
+    const db = database([], config(), { attendanceCorrectionRequest:[{id:'correction',tenantId:TENANT,employeeId:1,date:new Date(date),status:'PENDING'}], hrApprovalRequest:[{id:'approval',tenantId:TENANT,kind:'ATTENDANCE_CORRECTION',sourceRef:'correction',stage:'INITIATOR'}] });
+    const result = await attendanceCompleteness({tenantId:TENANT,from:date,to:date},db);
+    expect(result.issues.some(i=>i.code==='CORRECTION_AWAITING_INITIATOR')).toBe(true);
+    await db.hrApprovalRequest.deleteMany({where:{id:'approval'}});
+    const draft = await attendanceCompleteness({tenantId:TENANT,from:date,to:date},db);
+    expect(draft.issues.some(i=>i.code.startsWith('CORRECTION_AWAITING_'))).toBe(false);
+  });
   it("never invents an OUT from repeated authenticated IN events", () => {
     expect(
       score([

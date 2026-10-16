@@ -1,4 +1,6 @@
 import { dateKey, dateRange, dateOnly } from "./attendanceDates.js";
+import { civilNow } from "./attendanceClock.js";
+import { attendanceViewMatches } from './attendanceViewFilters.js';
 
 // A read projection: calendar rows never create payroll or attendance marks.
 export function completeTimesheetRows({
@@ -8,43 +10,54 @@ export function completeTimesheetRows({
   runtime,
   from,
   to,
+  now = new Date(),
+  filters = {},
 }) {
   const rows = new Map(
     records.map((r) => [`${r.employeeId}:${dateKey(r.date)}`, { ...r }]),
   );
   const people = new Map(employees.map((e) => [e.id, e]));
+  const days = dateRange(from, to, 370), nowByZone = new Map();
   for (const employee of employees)
-    for (const date of dateRange(from, to, 370)) {
-      const info = runtime.resolve(employee.id, dateOnly(date));
+    for (const date of days) {
+      const key = `${employee.id}:${date}`, previous = rows.get(key);
+      const info = previous?.setupSnapshot || runtime.resolve(employee.id, dateOnly(date));
+      if (["NOT_ELIGIBLE", "MANUAL_MONTHLY"].includes(info.reason)) continue;
       const status =
         info.calendarStatus ||
         (info.reason === "HOLIDAY"
           ? "HOLIDAY"
           : ["OFF_DAY", "ROTATION_OFF"].includes(info.reason)
             ? "WEEKLY_OFF"
-            : null);
-      if (!status) continue;
-      const key = `${employee.id}:${date}`,
-        previous = rows.get(key);
+            : info.reason === "APPROVED_LEAVE" ? "LEAVE" : info.working === true ? "WORKDAY" : null);
+      const zone=info.timeZone || 'Asia/Karachi';
+      if(!nowByZone.has(zone)) nowByZone.set(zone,+civilNow(now,zone));
+      const future = info.shift?.start && +info.shift.start > nowByZone.get(zone);
+      const nonworking = ["HOLIDAY", "WEEKLY_OFF", "LEAVE"].includes(status);
       rows.set(key, {
         ...(previous || {
           id: null,
           employeeId: employee.id,
           employee,
           date: dateOnly(date),
-          total_hours: 0,
-          processingState: "CALENDAR",
+          total_hours: nonworking ? 0 : null,
+          processingState: nonworking ? "CALENDAR" : info.working == null ? "SETUP_REQUIRED" : future ? "SCHEDULED" : "AWAITING_EVALUATION",
           check_in: null,
           check_out: null,
         }),
-        status,
+        status: previous && (!nonworking || previous.check_in || previous.check_out) ? previous.status : nonworking ? status : info.working == null ? "SETUP_REQUIRED" : "PENDING_ATTENDANCE",
         calendarStatus: status,
         holidayName: info.holidayName,
+        plannedShift: info.shift || null,
+        timeZone: info.timeZone || null,
+        assignedSites: (info.sites || []).filter(site => info.siteAssignment?.siteIds?.includes(site.id)).map(site => ({ id: site.id, name: site.name })),
+        setupReason: info.reason,
       });
     }
   for (const anomaly of anomalies) {
     if (
       anomaly.type !== "ABSENT" ||
+      anomaly.status === "RESOLVED" ||
       anomaly.evidenceState === "SUPERSEDED" ||
       !anomaly.date ||
       !people.has(anomaly.employeeId)
@@ -52,7 +65,7 @@ export function completeTimesheetRows({
       continue;
     const key = `${anomaly.employeeId}:${dateKey(anomaly.date)}`,
       previous = rows.get(key);
-    if (previous?.calendarStatus) continue;
+    if (["HOLIDAY", "WEEKLY_OFF", "LEAVE"].includes(previous?.calendarStatus) || previous?.processingState === "SCHEDULED" || previous?.processingState === "SETUP_REQUIRED") continue;
     if (previous) {
       previous.absenceAnomaly = true;
       if (
@@ -75,5 +88,5 @@ export function completeTimesheetRows({
         check_out: null,
       });
   }
-  return [...rows.values()];
+  return [...rows.values()].filter(row => attendanceViewMatches(row.setupSnapshot || runtime.resolve(row.employeeId,dateOnly(row.date)),filters));
 }

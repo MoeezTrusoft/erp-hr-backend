@@ -14,6 +14,15 @@ import {
 import { completeTimesheetRows } from "../../src/lib/timesheetRows.js";
 import { listRuleCases } from "../../src/services/attendanceRules.service.js";
 import { captureDb, TENANT, OTHER_TENANT } from "../helpers/captureDb.js";
+describe('unevaluated calendar projection', () => {
+  it('shows planned and setup states without inventing absence, hours or punches', () => {
+    const result = completeTimesheetRows({ records:[], employees:[{id:1}], anomalies:[], from:'2026-10-12',to:'2026-10-14',now:new Date('2026-10-12T04:00:00Z'), runtime:{resolve:(_id,day)=>day.toISOString().startsWith('2026-10-14') ? {working:null,reason:'MISSING_ROSTER'} : {working:true,timeZone:'Asia/Karachi',shift:{start:new Date(day.toISOString().slice(0,10)+'T09:00:00Z')}}} });
+    expect(result).toHaveLength(3);
+    expect(result[0]).toMatchObject({status:'PENDING_ATTENDANCE',calendarStatus:'WORKDAY',processingState:'AWAITING_EVALUATION',total_hours:null,check_in:null});
+    expect(result[1]).toMatchObject({status:'PENDING_ATTENDANCE',processingState:'SCHEDULED'});
+    expect(result[2]).toMatchObject({status:'SETUP_REQUIRED',calendarStatus:null,total_hours:null});
+  });
+});
 const at = (t) => new Date("2026-10-12T" + t + "Z");
 const window = {
   from: "09:00",
@@ -340,6 +349,7 @@ describe("timesheet and anomaly projection", () => {
       to: "2026-10-14",
       runtime: {
         resolve: (_id, day) => ({
+          working: day.getUTCDate() === 14,
           calendarStatus:
             day.getUTCDate() === 12
               ? "WEEKLY_OFF"
@@ -349,14 +359,15 @@ describe("timesheet and anomaly projection", () => {
         }),
       },
     });
-    expect(rows.find((r) => r.status === "HOLIDAY")).toMatchObject({
+    expect(rows.find((r) => r.calendarStatus === "HOLIDAY")).toMatchObject({
+      status: 'PRESENT',
       total_hours: 3.5,
       check_in: at("09:00:00"),
       check_out: at("13:00:00"),
     });
     expect(rows.map((r) => r.status).sort()).toEqual([
       "ABSENT",
-      "HOLIDAY",
+      "PRESENT",
       "WEEKLY_OFF",
     ]);
   });

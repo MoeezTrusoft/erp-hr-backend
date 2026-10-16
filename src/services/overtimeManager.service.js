@@ -25,8 +25,7 @@ const DEFAULT_MONTHLY_LIMIT_HOURS = 40;
 const WEEKS_PER_MONTH = 4;
 
 const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
+  e?.employee_code ||
   null;
 
 // yyyy-mm-dd (local) for a Date, used to key ShiftAssignment rows to a day.
@@ -73,9 +72,7 @@ const employeesById = async (ids, tenantId) => {
     where: scopedEmployeeWhere(tenantId, { id: { in: unique } }),
     select: {
       id: true,
-      employee_name: true,
-      first_name: true,
-      last_name: true,
+      employee_code: true,
       job_title: true,
       photo_url: true,
     },
@@ -210,6 +207,7 @@ export const getShiftRosterWeek = async ({ department, weekStart } = {}, tenantI
       });
       return {
         employeeId: e.id,
+        employeeCode: e.employee_code,
         name: employeeName(e),
         photo: e.photo_url ?? null,
         designation: e.job_title ?? null,

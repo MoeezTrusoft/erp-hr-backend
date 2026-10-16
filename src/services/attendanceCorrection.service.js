@@ -15,7 +15,7 @@ export async function listCorrections({ tenantId, from, to, employeeId } = {}) {
     if (from) where.date.gte = startOfDay(from);
     if (to) where.date.lte = startOfDay(to);
   }
-  return prisma.attendance.findMany({
+  const rows = await prisma.attendance.findMany({
     where,
     select: {
       id: true, employeeId: true, date: true, check_in: true, check_out: true,
@@ -24,4 +24,8 @@ export async function listCorrections({ tenantId, from, to, employeeId } = {}) {
     },
     orderBy: [{ date: "asc" }, { employeeId: "asc" }],
   });
+  const ids = [...new Set(rows.flatMap(row => [row.employeeId,row.corrected_by_id]).filter(Boolean))];
+  const employees = ids.length ? await prisma.employee.findMany({where:{tenant_id:tenantId,id:{in:ids}},select:{id:true,employee_code:true}}) : [];
+  const codes = new Map(employees.map(e => [e.id,e.employee_code]));
+  return rows.map(row => ({...row,employeeCode:codes.get(row.employeeId) || null,actorCode:codes.get(row.corrected_by_id) || null}));
 }

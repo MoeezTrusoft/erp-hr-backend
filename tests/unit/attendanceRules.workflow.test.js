@@ -1,7 +1,7 @@
 import {describe,it,expect} from '@jest/globals';
 import {captureDb,TENANT,OTHER_TENANT} from '../helpers/captureDb.js';
 import {applyEvaluatedShifts} from '../../src/services/attendanceWriter.service.js';
-import {enterRuleTime,commentRuleCase,finalizeRuleCase,saveGraceRule,listRuleCases} from '../../src/services/attendanceRules.service.js';
+import {applyMissingTime as enterRuleTime,commentRuleCase,finalizeRuleCase,saveGraceRule,listRuleCases} from '../../src/services/attendanceRules.service.js';
 import {ruleDeductions} from '../../src/lib/attendanceAnomalyRules.js';
 import {loadSource} from '../../src/services/approval/adapters.js';
 const prove=async(db,row)=>{const source=await loadSource(db,{tenantId:TENANT},'ATTENDANCE',`${row.id}@${row.factHash}`);await db.hrApprovalRequest.create({data:{tenantId:TENANT,kind:'ATTENDANCE',sourceRef:`${row.id}@${row.factHash}`,stage:'REJECTED',sourceHash:source.digest}});};

@@ -265,6 +265,25 @@ export async function applyShiftSupervisor(
   return true;
 }
 
+// Read-only impact used by roster preview and validated again at save time.
+export async function previewShiftSupervisor(tx, tenantId, employee, window) {
+  const shift = await shiftForEmployee(tx, tenantId, employee, window);
+  const current = employee.managerId ? await tx.employee.findFirst({where:{id:employee.managerId,tenant_id:tenantId}}) : null;
+  const base = { previousCode: current?.employee_code || null, supervisorCode: current?.employee_code || null, shift: shift?.name || null, cutoff: shift?.checkoutCutoffTime || null, cutoffDayOffset: shift?.checkoutCutoffDayOffset ?? null };
+  if (!shift?.supervisorId) return {...base, result:'No reassignment configured'};
+  if (shift.supervisorId === employee.id) return {...base, result:'No change: employee is the shift supervisor'};
+  const supervisor = await tx.employee.findFirst({where:{id:shift.supervisorId,tenant_id:tenantId,status:'Active'}});
+  if (!supervisor) fail('Shift supervisor is no longer active; update the shift',409);
+  let manager = supervisor;
+  const seen = new Set([employee.id]);
+  while (manager) {
+    if (seen.has(manager.id)) fail('Shift supervisor would create a reporting cycle',409);
+    seen.add(manager.id);
+    manager = manager.managerId ? await tx.employee.findFirst({where:{id:manager.managerId,tenant_id:tenantId}}) : null;
+  }
+  return {...base, supervisorCode:supervisor.employee_code, result:supervisor.id===employee.managerId ? 'No change' : 'Reassign on effective shift date'};
+}
+
 // Invoked by the existing attendance planner so future-dated moves take effect
 // on the company's civil date, even if the employee has not punched yet.
 export async function syncCurrentShiftSupervisors(
