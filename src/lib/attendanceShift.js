@@ -1,3 +1,4 @@
+import { checkoutAt } from './shiftCheckout.js';
 const DAY_MS = 86400000;
 const isoDow = (d) => new Date(d).getUTCDay() || 7;
 export function shiftCandidates(pattern, day) {
@@ -14,7 +15,7 @@ export function shiftCandidates(pattern, day) {
     const start = mk(raw?.from);
     let end = mk(raw?.to);
     if (start && end && end <= start) end = new Date(end.getTime() + DAY_MS);
-    return { start, end };
+    return { start, end, checkoutCutoff: checkoutAt(raw, day), templateId: raw?.templateId ?? null };
   };
 
   const rotating = Array.isArray(pattern?.rotatingShifts)
@@ -77,4 +78,28 @@ export function shiftFor(pattern, day, anchor) {
     if (!best || d < best.d) best = { d, opt };
   }
   return best.opt;
+}
+
+export function nextShiftStart(pattern, shift) {
+  if (!shift?.start) return null;
+  const first = new Date(shift.start); first.setUTCHours(0,0,0,0);
+  for (let offset = 0; offset <= 370; offset++) {
+    const day = new Date(+first + offset * DAY_MS);
+    const p = typeof pattern === 'function' ? pattern(day) : pattern;
+    // Alternatives without a rotation phase are not an assigned next shift.
+    if(p?.rotatingShifts?.length && !p.cycle?.sequence) return null;
+    const next = scheduledShifts(p, day).filter(s=>+s.start>+shift.start).sort((a,b)=>a.start-b.start)[0];
+    if (next) return next.start;
+  }
+  return null;
+}
+
+export function scheduledShifts(pattern, day) {
+  if (!pattern || pattern.scheduled===false || (pattern.scheduled!==true && pattern.offDays?.includes(isoDow(day)))) return [];
+  const cycle = pattern.cycle;
+  if (cycle && !cycle.sequence && pattern.scheduled!==true) {
+    const index = ((Math.round((day-new Date(cycle.anchor+'T00:00:00Z'))/DAY_MS)%cycle.days)+cycle.days)%cycle.days;
+    if ((Array.isArray(cycle.offIndex)?cycle.offIndex:[cycle.offIndex]).includes(index)) return [];
+  }
+  return shiftCandidates(pattern, day);
 }

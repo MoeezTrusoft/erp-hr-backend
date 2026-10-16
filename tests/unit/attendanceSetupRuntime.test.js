@@ -14,6 +14,7 @@ const models = [
   'employeeHolidayCalendar',
   'employeeDeviceEnrolment',
   'shiftAssignment',
+  'shiftTemplate',
   'leave',
   'leaveRequest',
   'attendanceCallIn',
@@ -42,6 +43,7 @@ jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
   tenantTransaction: jest.fn(async (_db, fn) => fn(db)),
 }));
 const {
+  buildAttendanceSetup,
   loadAttendanceRuntime,
   previewAttendanceSetup,
   publishAttendanceSetup,
@@ -152,6 +154,21 @@ describe('published runtime isolation', () => {
   });
 });
 describe('setup publication guards', () => {
+  it('preserves closed rosters after a department transfer while binding the current shift',async()=>{
+    const oldPattern={shift:{templateId:10,from:'09:00',to:'17:00',checkoutCutoffTime:'22:00',checkoutCutoffDayOffset:0}};
+    db.employee.findMany.mockResolvedValue([{id:1,businessUnitId:3}]);
+    db.shiftTemplate.findMany.mockResolvedValue([
+      {id:10,tenantId,departmentId:4,fromTime:'09:00',toTime:'17:00',checkoutCutoffTime:'23:00',checkoutCutoffDayOffset:0},
+      {id:20,tenantId,departmentId:3,fromTime:'09:00',toTime:'17:00',checkoutCutoffTime:'21:00',checkoutCutoffDayOffset:0},
+    ]);
+    db.workSchedule.findMany.mockResolvedValue([
+      {employeeId:1,effective_start_date:'2020-01-01',effective_end_date:'2020-12-31',schedule_pattern:oldPattern},
+      {employeeId:1,effective_start_date:'2021-01-01',schedule_pattern:{shift:{templateId:20,from:'09:00',to:'17:00'}}},
+    ]);
+    const config=await buildAttendanceSetup(tenantId,db);
+    expect(config.schedules[0].schedule_pattern).toEqual(oldPattern);
+    expect(config.schedules[1].schedule_pattern.shift.checkoutCutoffTime).toBe('21:00');
+  });
   it('rejects a stale draft version before any write', async () => {
     db.attendanceSetupDraft.findUnique.mockResolvedValue({ version: 2 });
     await expect(

@@ -18,6 +18,7 @@ import {
 } from '../lib/attendanceDates.js';
 import { evaluateShift } from '../lib/attendanceEvaluator.js';
 import { civilNow } from '../lib/attendanceClock.js';
+import { bindRosterShifts } from './shiftGovernance.service.js';
 
 const json = (value) => JSON.parse(JSON.stringify(value));
 const digest = (value) =>
@@ -61,6 +62,7 @@ export async function buildAttendanceSetup(tenantId, db = prisma) {
         first_name: true,
         last_name: true,
         managerId: true,
+        businessUnitId: true,
         hire_date: true,
         joining_date: true,
         employement_status: true,
@@ -97,6 +99,15 @@ export async function buildAttendanceSetup(tenantId, db = prisma) {
       orderBy: { id: 'asc' },
     }),
   ]);
+  const boundSchedules=[];
+  const templates=await db.shiftTemplate.findMany({where:{tenantId}});
+  const today=dateKey(civilNow(new Date(),draft?.settings?.timeZone || DEFAULT_SETTINGS.timeZone));
+  for(const employee of employees) {
+    const own=await Promise.all(schedules.filter(s=>s.employeeId===employee.id).map(async s=>
+      s.effective_end_date && dateKey(s.effective_end_date)<today ? s : {...s,
+        schedule_pattern:await bindRosterShifts(db,tenantId,employee,s.schedule_pattern,templates)}));
+    boundSchedules.push(...own);
+  }
   return json({
     draftVersion: draft?.version ?? 0,
     settings: validateSettings(draft?.settings || DEFAULT_SETTINGS),
@@ -105,7 +116,7 @@ export async function buildAttendanceSetup(tenantId, db = prisma) {
     approvalLevels,
     employees,
     periods,
-    schedules,
+    schedules:boundSchedules,
     calendars,
     holidays,
     calendarAssignments,

@@ -6,6 +6,9 @@ const db = {
   employee: { findFirst: jest.fn(async () => ({ id: 1 })) },
   overtimeRule: { findFirst: jest.fn(async () => null) },
   payrollRun: { findFirst: jest.fn(async () => null) },
+  shiftTemplate:{findMany:jest.fn(async()=>[])},
+  shiftAssignment:{findMany:jest.fn(async()=>[])},
+  attendanceSetupDraft:{findUnique:jest.fn(async()=>null)},
   workSchedule: {
     findMany: jest.fn(async () => structuredClone(rows)),
     findFirst: jest.fn(async ({ where }) =>

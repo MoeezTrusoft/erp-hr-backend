@@ -80,6 +80,8 @@ export async function listRuleCases(
   { user, from, to, status, employeeId, page = 1, pageSize = 30 },
   db = prisma,
 ) {
+  dateRange(from,to,370);
+  page=Math.max(1,Number(page)||1); pageSize=Math.min(100,Math.max(1,Number(pageSize)||30));
   const employees = await db.employee.findMany({
     where: {
       tenant_id: user.tenantId,
@@ -94,6 +96,7 @@ export async function listRuleCases(
     },
     select: {
       id: true,
+      employee_code: true,
       employee_name: true,
       first_name: true,
       last_name: true,
@@ -105,26 +108,26 @@ export async function listRuleCases(
     fail(403, "Employee is outside your scope");
   const where = {
     tenantId: user.tenantId,
-    rulesVersion: 2,
     employeeId: employeeId || { in: ids },
     date: { gte: dateOnly(from), lte: dateOnly(to) },
     ...(status ? { status } : {}),
   };
-  const [items, total] = await Promise.all([
-    db.attendanceAnomaly.findMany({
+  // One snapshot supplies both the cards and the paginated review table.
+  // Include legacy cases: they were already counted by the timesheet cards.
+  const all = await db.attendanceAnomaly.findMany({
       where,
       orderBy: [{ date: "desc" }, { id: "desc" }],
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    db.attendanceAnomaly.count({ where }),
-  ]);
+  });
+  const summary={absent:0,late:0,early:0,other:0,total:all.length};
+  for(const row of all) summary[row.type==='ABSENT'?'absent':row.type==='LATE_CHECKIN'?'late':row.type==='EARLY_CHECKOUT'?'early':'other']++;
+  const items=all.slice((page-1)*pageSize,page*pageSize);
   return {
     items: items.map((a) => ({
       ...a,
       employee: employees.find((e) => e.id === a.employeeId),
     })),
-    total,
+    total:all.length,
+    summary,
     page,
     pageSize,
     canDecide: isManagement(user),
@@ -133,7 +136,7 @@ export async function listRuleCases(
 }
 export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
   const row = await db.attendanceAnomaly.findFirst({
-    where: { tenantId: user.tenantId, id: anomalyId, rulesVersion: 2 },
+    where: { tenantId: user.tenantId, id: anomalyId },
   });
   if (!row) fail(404, "Anomaly not found");
   const employee = await employeeScope(db, user, row.employeeId);
@@ -203,9 +206,10 @@ export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
           : a,
       ),
     ),
-    canDecide: isManagement(user) && row.employeeId !== Number(user.employeeId),
-    canEnter: isAttendanceHr(user),
-    commentKinds: [
+    legacy: row.rulesVersion !== 2,
+    canDecide: row.rulesVersion===2 && isManagement(user) && row.employeeId !== Number(user.employeeId),
+    canEnter: row.rulesVersion===2 && isAttendanceHr(user),
+    commentKinds: row.rulesVersion!==2 ? [] : [
       ...(row.employeeId === Number(user.employeeId) ? ["EMPLOYEE"] : []),
       ...(employee.managerId === Number(user.employeeId) ? ["MANAGER"] : []),
       ...(isAttendanceHr(user) ? ["HR"] : []),

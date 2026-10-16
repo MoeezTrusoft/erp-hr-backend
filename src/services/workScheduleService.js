@@ -1,6 +1,8 @@
 import prisma from '../lib/prisma.js';
 import { tenantTransaction } from '../lib/rlsTenant.js';
 import { assertSchedulePattern } from '../lib/schedulePattern.js';
+import { bindRosterShifts, validateEmployeeShiftSequence, syncCurrentShiftSupervisors } from './shiftGovernance.service.js';
+import { civilNow } from '../lib/attendanceClock.js';
 import {
   addDays,
   badSetup,
@@ -120,7 +122,7 @@ export async function writeRoster({
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:roster:${eid}`}))`;
       const employee = await tx.employee.findFirst({
         where: { id: eid, tenant_id: tenantId },
-        select: { id: true },
+        select: { id: true, businessUnitId: true, managerId: true, employee_code: true },
       });
       if (!employee) throw badSetup('Employee not found in tenant', 404);
       const rows = await tx.workSchedule.findMany({
@@ -142,6 +144,8 @@ export async function writeRoster({
         return tx.workSchedule.delete({ where: { id: previous.id } });
       }
       const row = validated(data, previous || {});
+      row.schedule_pattern = await bindRosterShifts(tx,tenantId,employee,row.schedule_pattern);
+      assertSchedulePattern(row.schedule_pattern);
       if (
         row.overtimeRuleId &&
         !(await tx.overtimeRule.findFirst({
@@ -194,6 +198,9 @@ export async function writeRoster({
             ? previous.effective_end_date
             : row.effective_end_date,
       );
+      const assignments = await tx.shiftAssignment.findMany({where:{tenantId,employeeId:eid}});
+      const proposed = other.map(r=>close?.id===r.id ? {...r,effective_end_date:addDays(from,-1)}:r);
+      validateEmployeeShiftSequence([...proposed,row],assignments);
       if (dryRun)
         return {
           action,
@@ -206,16 +213,19 @@ export async function writeRoster({
           where: { id: close.id },
           data: { effective_end_date: addDays(from, -1) },
         });
-      return previous
-        ? tx.workSchedule.update({
+      const saved = previous
+        ? await tx.workSchedule.update({
             where: { id: previous.id },
             data: row,
             include,
           })
-        : tx.workSchedule.create({
+        : await tx.workSchedule.create({
             data: { ...row, tenantId, employeeId: eid },
             include,
           });
+      const draft=await tx.attendanceSetupDraft.findUnique({where:{tenantId}});
+      await syncCurrentShiftSupervisors(tx,tenantId,dateKey(civilNow(new Date(),draft?.settings?.timeZone || 'Asia/Karachi')),{employeeIds:[eid]});
+      return saved;
     },
     { tenantId, txOptions: { isolationLevel: 'Serializable' } },
   );

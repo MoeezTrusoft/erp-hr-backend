@@ -36,6 +36,12 @@ const workModeEnum = z
   .enum(["remote", "hybrid", "onsite"])
   .describe("Work mode — one of remote | hybrid | onsite");
 const id = z.union([z.number(), z.string()]);
+const mappingFields = {
+  departmentId: z.coerce.number().int().positive().nullable().optional(),
+  supervisorCode: z.string().nullable().optional().describe('Employee code of the department supervisor; null clears the mapping'),
+  checkoutCutoffTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
+  checkoutCutoffDayOffset: z.number().int().min(0).max(1).optional(),
+};
 
 export function registerShiftTemplateSwapTools(server) {
   // ---- Shift templates ----------------------------------------------------
@@ -64,6 +70,7 @@ export function registerShiftTemplateSwapTools(server) {
     "Create a shift template",
     {
       name: z.string().min(1).describe("Template display name"),
+      ...mappingFields,
       fromTime: z.string().min(1).describe('Start time, e.g. "09:00"'),
       toTime: z.string().min(1).describe('End time, e.g. "17:00"'),
       shiftType: shiftTypeEnum.optional().describe("Shift band — one of morning | evening | night; defaults to morning"),
@@ -83,6 +90,7 @@ export function registerShiftTemplateSwapTools(server) {
     {
       id: id.describe("ShiftTemplate id to update (references ShiftTemplate.id)"),
       name: z.string().min(1).optional().describe("New template name"),
+      ...mappingFields,
       fromTime: z.string().min(1).optional().describe('New start time, e.g. "09:00"'),
       toTime: z.string().min(1).optional().describe('New end time, e.g. "17:00"'),
       shiftType: shiftTypeEnum.optional(),

@@ -12,6 +12,11 @@ import { legacyWithdraw, legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
+import { tenantTransaction } from '../lib/rlsTenant.js';
+import { validateShiftMapping, bindRosterShifts, validateEmployeeShiftSequence, queueChangedShift, shiftForEmployee } from './shiftGovernance.service.js';
+import { dateKey } from '../lib/attendanceDates.js';
+import { civilNow } from '../lib/attendanceClock.js';
+import { assertRosterPeriodEditable } from './workScheduleService.js';
 
 const employeeName = (e) =>
   e?.employee_name ||
@@ -51,8 +56,49 @@ const shapeTemplate = (t, assignedCount) => ({
   toTime: t.toTime,
   shiftType: t.shiftType,
   workMode: t.workMode ?? null,
+  departmentId: t.departmentId ?? null,
+  department: t.department?.name ?? null,
+  supervisorCode: t.supervisor?.employee_code ?? null,
+  checkoutCutoffTime: t.checkoutCutoffTime ?? null,
+  checkoutCutoffDayOffset: t.checkoutCutoffDayOffset ?? 0,
   assignedCount,
 });
+const templateInclude = { department: true, supervisor: {select:{employee_code:true}} };
+const rosterWindows=p=>[p?.shift,...(Array.isArray(p?.shifts)?p.shifts:[]),...(Array.isArray(p?.rotatingShifts)?p.rotatingShifts:[]),...Object.values(p?.shiftByDay||{})].filter(Boolean);
+async function validateTemplateUse(tx,tenantId,previous,{schedules,employees,overrides,templates,today}) {
+  for(const employee of employees) {
+    const matches=w=>Number(w.templateId)===previous.id || (!w.templateId && previous.departmentId===employee.businessUnitId && w.from===previous.fromTime && w.to===previous.toTime);
+    const own=schedules.filter(s=>s.employeeId===employee.id);
+    const active=s=>!s.effective_end_date || dateKey(s.effective_end_date)>=today;
+    const assigned=overrides.filter(a=>a.employeeId===employee.id);
+    if(!own.some(s=>active(s)&&rosterWindows(s.schedule_pattern).some(matches)) && !assigned.some(a=>a.templateId===previous.id&&dateKey(a.date)>=today)) continue;
+    const proposed=await Promise.all(own.map(async s=>{
+      if(!active(s)) return s;
+      const pattern=structuredClone(s.schedule_pattern);
+      for(const window of rosterWindows(pattern)) if(matches(window)) window.templateId=previous.id;
+      return {...s,schedule_pattern:await bindRosterShifts(tx,tenantId,employee,pattern,templates)};
+    }));
+    for(const assignment of assigned.filter(a=>a.templateId===previous.id&&dateKey(a.date)>=today))
+      await shiftForEmployee(tx,tenantId,employee,assignment,templates);
+    validateEmployeeShiftSequence(proposed,assigned);
+  }
+}
+async function mappingData(tx, tenantId, patch) {
+  const data={};
+  if(patch.departmentId!==undefined) {
+    data.departmentId=patch.departmentId===null ? null : Number(patch.departmentId);
+    if(data.departmentId!==null && (!Number.isInteger(data.departmentId)||data.departmentId<1)) throw badRequest('Invalid department');
+  }
+  if(patch.supervisorCode!==undefined) {
+    const code=String(patch.supervisorCode||'').trim();
+    const employee=code ? await tx.employee.findFirst({where:{tenant_id:tenantId,employee_code:code,status:'Active'}}) : null;
+    if(code&&!employee) throw badRequest('Active supervisor employee code not found in this company');
+    data.supervisorId=employee?.id ?? null;
+  }
+  if(patch.checkoutCutoffTime!==undefined) data.checkoutCutoffTime=patch.checkoutCutoffTime||null;
+  if(patch.checkoutCutoffDayOffset!==undefined) data.checkoutCutoffDayOffset=Number(patch.checkoutCutoffDayOffset);
+  return data;
+}
 
 /**
  * Paginated shift-template library with the assigned-employee count per
@@ -80,6 +126,7 @@ export const listShiftTemplates = async (query = {}, tenantId) => {
       orderBy,
       skip: list.skip,
       take: list.pageSize,
+      include: templateInclude,
     }),
     prisma.shiftTemplate.count({ where }),
   ]);
@@ -100,20 +147,24 @@ export const listShiftTemplates = async (query = {}, tenantId) => {
 
   const items = rows.map((t) => shapeTemplate(t, countByTemplate.get(t.id) ?? 0));
 
-  return buildListPayload({
+  const [departments,supervisors]=await Promise.all([
+    prisma.businessUnit.findMany({where:{tenantId},select:{id:true,name:true},orderBy:{name:'asc'}}),
+    prisma.employee.findMany({where:scopedEmployeeWhere(tenantId,{status:'Active'}),select:{employee_code:true,businessUnitId:true},orderBy:{employee_code:'asc'}}),
+  ]);
+  return {...buildListPayload({
     ...list,
     sort,
     total,
     filters: { shiftType, workMode },
     items,
-  });
+  }),departments,supervisors};
 };
 
 /**
  * Create a shift template (tenant stamped fail-closed).
  */
 export const createShiftTemplate = async (
-  { name, fromTime, toTime, shiftType, workMode } = {},
+  { name, fromTime, toTime, shiftType, workMode, ...mapping } = {},
   tenantId
 ) => {
   const cleanName = typeof name === "string" ? name.trim() : "";
@@ -133,16 +184,27 @@ export const createShiftTemplate = async (
     }
   }
 
-  const created = await prisma.shiftTemplate.create({
-    data: {
+  const created = await tenantTransaction(prisma,async tx=>{
+    const data = {
       name: cleanName,
       fromTime,
       toTime,
       shiftType: type,
       workMode: mode,
       tenantId: tenantId ?? null,
-    },
-  });
+      ...await mappingData(tx,tenantId,mapping),
+    };
+    await validateShiftMapping(tx,tenantId,data);
+    const row=await tx.shiftTemplate.create({data,include:templateInclude});
+    const [schedules,employees,overrides,templates,draft]=await Promise.all([
+      tx.workSchedule.findMany({where:{tenantId}}),tx.employee.findMany({where:{tenant_id:tenantId}}),
+      tx.shiftAssignment.findMany({where:{tenantId}}),tx.shiftTemplate.findMany({where:{tenantId}}),
+      tx.attendanceSetupDraft.findUnique({where:{tenantId}}),
+    ]);
+    await validateTemplateUse(tx,tenantId,row,{schedules,employees,overrides,templates,
+      today:dateKey(civilNow(new Date(),draft?.settings?.timeZone||'Asia/Karachi'))});
+    return row;
+  },{tenantId,txOptions:{isolationLevel:'Serializable'}});
 
   return shapeTemplate(created, 0);
 };
@@ -188,21 +250,46 @@ export const updateShiftTemplate = async ({ id, ...patch } = {}, tenantId) => {
     }
   }
 
+  return tenantTransaction(prisma,async tx=>{
+  Object.assign(data,await mappingData(tx,tenantId,patch));
   if (Object.keys(data).length === 0) throw badRequest("No editable fields provided");
-
-  const result = await prisma.shiftTemplate.updateMany({
+  const previous=await tx.shiftTemplate.findFirst({where:scopedWhere(tenantId,{id:templateId})});
+  if(!previous) throw notFound('Shift template not found');
+  await validateShiftMapping(tx,tenantId,{...previous,...data});
+  const result = await tx.shiftTemplate.updateMany({
     where: scopedWhere(tenantId, { id: templateId }),
     data,
   });
   if (result.count === 0) throw notFound("Shift template not found");
 
-  const updated = await prisma.shiftTemplate.findFirst({
+  // Rebind proposed patterns for validation only. Published setup remains a
+  // versioned snapshot; revised cutoffs take effect when HR republishes it.
+  const schedules=await tx.workSchedule.findMany({where:{tenantId}});
+  const employees=await tx.employee.findMany({where:{tenant_id:tenantId}});
+  const overrides=await tx.shiftAssignment.findMany({where:{tenantId}});
+  const templates=await tx.shiftTemplate.findMany({where:{tenantId}});
+  const draft=await tx.attendanceSetupDraft.findUnique({where:{tenantId}});
+  const today=dateKey(civilNow(new Date(),draft?.settings?.timeZone||'Asia/Karachi'));
+  const changed={...previous,...data};
+  const changedAssignments=overrides.filter(a=>a.templateId===templateId && dateKey(a.date)>=today).map(a=>({...a,
+    fromTime:changed.fromTime,toTime:changed.toTime,checkoutCutoffTime:changed.checkoutCutoffTime,checkoutCutoffDayOffset:changed.checkoutCutoffDayOffset}));
+  await validateTemplateUse(tx,tenantId,previous,{schedules,employees,templates,today,
+    overrides:overrides.map(a=>changedAssignments.find(c=>c.id===a.id)||a)});
+  for(const assignment of changedAssignments) {
+    await assertRosterPeriodEditable(tx,tenantId,assignment.date,assignment.date);
+    await tx.shiftAssignment.update({where:{id:assignment.id},data:{fromTime:assignment.fromTime,toTime:assignment.toTime,
+      checkoutCutoffTime:assignment.checkoutCutoffTime,checkoutCutoffDayOffset:assignment.checkoutCutoffDayOffset}});
+    await queueChangedShift(tx,tenantId,assignment.employeeId,assignment.date,today);
+  }
+  const updated = await tx.shiftTemplate.findFirst({
     where: scopedWhere(tenantId, { id: templateId }),
+    include: templateInclude,
   });
-  const assigned = await prisma.shiftAssignment.count({
+  const assigned = await tx.shiftAssignment.count({
     where: scopedWhere(tenantId, { templateId }),
   });
   return shapeTemplate(updated, assigned);
+  },{tenantId,txOptions:{isolationLevel:'Serializable'}});
 };
 
 /**
@@ -212,12 +299,18 @@ export const deleteShiftTemplate = async ({ id } = {}, tenantId) => {
   const templateId = toId(id);
   if (templateId == null) throw badRequest("Valid template id is required");
 
-  const result = await prisma.shiftTemplate.deleteMany({
+  return tenantTransaction(prisma,async tx=>{
+  const used=await tx.shiftAssignment.count({where:scopedWhere(tenantId,{templateId})});
+  const rosters=await tx.workSchedule.findMany({where:{tenantId}});
+  if(used || rosters.some(r=>rosterWindows(r.schedule_pattern).some(w=>Number(w.templateId)===templateId)))
+    throw Object.assign(new Error('This shift is referenced by a roster or assignment and cannot be deleted'),{status:409});
+  const result = await tx.shiftTemplate.deleteMany({
     where: scopedWhere(tenantId, { id: templateId }),
   });
   if (result.count === 0) throw notFound("Shift template not found");
 
   return { id: templateId, deleted: true };
+  },{tenantId,txOptions:{isolationLevel:'Serializable'}});
 };
 
 // ---------------------------------------------------------------------------

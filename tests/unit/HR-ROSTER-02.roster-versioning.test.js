@@ -27,6 +27,9 @@ let rows;
 let nextId;
 
 const prismaMock = {
+    shiftTemplate:{findMany:jest.fn(async()=>[])},
+    shiftAssignment:{findMany:jest.fn(async()=>[])},
+    attendanceSetupDraft:{findUnique:jest.fn(async()=>null)},
     $executeRaw: jest.fn(),
     employee: {findFirst:jest.fn(async()=>({id:EMPLOYEE}))},
     payrollRun: {findFirst:jest.fn(async()=>null)},

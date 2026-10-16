@@ -80,23 +80,13 @@ function dedupePunches(punches, windowMin) {
 }
 
 /**
- * Lateness in minutes, tolerant of midnight.
- *
- * Comparing raw minutes-of-day breaks both ways here: 00:30 on a 22:00 shift is
- * 2.5h late, not 21.5h early, and 23:05 on a 00:00 shift is 55m early, not 23h
- * late. Comparing absolute timestamps and folding by whole days handles both.
+ * Exact lateness against the dated shift, including overnight work.
  */
 function latenessMinutes(checkIn, shiftStart) {
   if (!checkIn || !shiftStart) return null;
-  // ATT-GRACE-MIN-01 (2026-09-14) — HR counts grace in elapsed whole minutes:
-  // an 8:05 PM arrival against an 8:00 PM shift is 5 minutes late (ON TIME
-  // under a 5-minute grace), not 5.78 rounded up to 6 (operator report:
-  // Huzaifa/Asad 20:05:47 with a 5-min grace were flagged LATE by second
-  // rounding). Truncate to elapsed minutes; never round up into a penalty.
-  let diff = Math.floor((checkIn.getTime() - shiftStart.getTime()) / MIN_MS);
-  if (diff > 720) diff -= 1440;
-  if (diff < -720) diff += 1440;
-  return diff;
+  // Compare exact elapsed time. At the boundary is on time; even one second
+  // after it is late. The dated roster already resolves midnight.
+  return (checkIn.getTime() - shiftStart.getTime()) / MIN_MS;
 }
 
 function creditToStatus(credit, arrivalStatus, durationStatus) {
@@ -122,8 +112,13 @@ function creditToStatus(credit, arrivalStatus, durationStatus) {
  *            scheduledMinutes, workedPercent, latenessMinutes, checkIn, checkOut}}
  */
 export function evaluateShift(args = {}) {
-  const result = applyAnomalyRules(evaluateShiftCore(args), args);
   const cutoff = shiftDeadline(args.shift, args.policy);
+  const outside=(args.punches||[]).filter(p=>cutoff && +p.timestamp>+cutoff);
+  const safeArgs=outside.length ? {...args,punches:args.punches.filter(p=>!outside.includes(p))} : args;
+  const result = applyAnomalyRules(evaluateShiftCore(safeArgs), safeArgs);
+  if(outside.length) Object.assign(result,{status:'PUNCH_CONFLICT',dayCredit:null,requiresRegularization:true,
+    processingState:'NEEDS_REVIEW',anomalies:[],issues:[...(result.issues||[]),{code:'PUNCH_OUTSIDE_CHECKOUT_CUTOFF',
+      punches:outside.map(p=>({at:p.timestamp,type:p.type}))}]});
   return {
     ...result,
     processingState: result.processingState || (result.inProgress ? 'OPEN' :
@@ -351,10 +346,8 @@ function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, 
   // ── Early departure ───────────────────────────────────────────────────────
   let leftEarlyBeyondGrace = false;
   if (shift.end && checkOut) {
-    // ATT-GRACE-MIN-01 — same elapsed-minutes rule as lateness: floor, never
-    // round, so a 04:59:5x checkout against a 05:00 shift end is 0 minutes
-    // early, not 1.
-    const early = Math.floor((shift.end.getTime() - checkOut.getTime()) / MIN_MS);
+    // Compare exact elapsed time: equality is on time, even with zero grace.
+    const early = (shift.end.getTime() - checkOut.getTime()) / MIN_MS;
     if (early > p.earlyLeaveGraceMin) {
       // T&A-RULE-06 — this is the fact that decides the day's LABEL below,
       // not just whether an anomaly is raised.

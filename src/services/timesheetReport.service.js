@@ -19,6 +19,8 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
+import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
+import { completeTimesheetRows } from '../lib/timesheetRows.js';
 
 // Statuses that count as "showed up" for a working day.
 // T&A-RULE-06 — EARLY_CHECKOUT is an attended (half-credit) day: it counts as
@@ -752,6 +754,7 @@ function toEnumStatus(raw) {
 
 const EMPLOYEE_SELECT = {
   id: true,
+  employee_code: true,
   employee_name: true,
   first_name: true,
   last_name: true,
@@ -925,7 +928,7 @@ export async function listCheckInOuts({
   }
 
   let records = await prisma.attendance.findMany({
-    where: scopedWhere(tenantId, where),
+    where: scopedWhere(tenantId, {date:where.date,employeeId:where.employeeId}),
     include: { employee: { select: EMPLOYEE_SELECT } },
   });
   // TIMESHEET-ELIG-02 — enforce the employment span per row before pagination.
@@ -957,6 +960,7 @@ export async function listCheckInOuts({
     }),
     select: {
       id: true, employeeId: true, date: true, type: true, status: true,
+      evidenceState: true,
       sourceKind: true,
       raisedById: true, raisedByName: true,
       reason: true, detail: true, fromTime: true, toTime: true,
@@ -966,6 +970,13 @@ export async function listCheckInOuts({
     },
     orderBy: { createdAt: "desc" },
   });
+  const employees=await prisma.employee.findMany({where:scopedEmployeeWhere(tenantId,{id:where.employeeId}),select:EMPLOYEE_SELECT});
+  if(employees.length) {
+    const runtime=await loadAttendanceRuntime({tenantId,from:period.from,to:period.to});
+    records=completeTimesheetRows({records,employees,anomalies:anomaliesForWindow,runtime,from:period.from,to:period.to});
+  }
+  records=filterRowsByEmploymentSpan(records,spanEnds).filter(r=>
+    (!enumStatus || r.status===enumStatus) && !(where.status?.notIn||where.NOT?.status?.in||[]).includes(r.status));
   const anomalyByKey = new Map();
   for (const an of anomaliesForWindow) {
     if (an.date == null) continue; // window-wide forms don't attach to a day
@@ -1060,11 +1071,15 @@ export async function listCheckInOuts({
       evaluationVersion:a.evaluationVersion,
       date: a.date,
       employee: emp
-        ? { id: emp.id, name: fullName(emp), avatar: emp.photo_url ?? null }
+        ? { id: emp.id, code:emp.employee_code, name: fullName(emp), avatar: emp.photo_url ?? null }
         : { id: null, name: null, avatar: null },
       status: STATUS_DISPLAY[a.status] ?? a.status,
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
+      totalHours: a.total_hours ?? null,
+      calendarStatus:a.calendarStatus ?? null,
+      holidayName:a.holidayName ?? null,
+      absenceAnomaly:a.absenceAnomaly === true,
       workMode: a.work_mode ?? null,
       request,
       // internal sort keys (not serialized to the FE)
@@ -1077,7 +1092,7 @@ export async function listCheckInOuts({
   // q = employee-name contains, case-insensitive (JS filter after fetch).
   if (q && q.trim()) {
     const needle = q.trim().toLowerCase();
-    rows = rows.filter((r) => (r.employee?.name ?? "").toLowerCase().includes(needle));
+    rows = rows.filter((r) => [r.employee?.code,r.employee?.name].some(value=>(value||'').toLowerCase().includes(needle)));
   }
 
   const total = rows.length;
