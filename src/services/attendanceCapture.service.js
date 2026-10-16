@@ -69,6 +69,7 @@ export async function registerCaptureDevice(
         data: {
           tenantId,
           sn,
+          active: false,
           name: name.trim(),
           timeZone,
           allowedTenantIds: [tenantId],
@@ -101,6 +102,8 @@ export async function updateCaptureDevice(
         where: { id, tenantId },
       });
       if (!device) throw captureError("Device not found", 404);
+      if (active === true && !device.active)
+        throw captureError("Activate through the HR onsite acceptance package after HR verification and Management approval", 409);
       const updated = await tx.attendanceCaptureDevice.update({
         where: { id, tenantId },
         data: {
@@ -293,7 +296,7 @@ export async function receiveCapture(
               source === "DEVICE_SYNC" ? [tenantId] : device.allowedTenantIds,
             )
         : {};
-      const issue = reason || hit.reason;
+      const issue = reason || hit.reason || (device.acceptanceMode === "SUPERVISED" ? "ONSITE_SUPERVISED_REVIEW" : null);
       return {
         id: randomUUID(),
         tenantId: hit.tenantId || owner,
@@ -312,6 +315,7 @@ export async function receiveCapture(
         ),
         deviceUserId: punch?.deviceUserId,
         raw: {
+          ...(device.acceptanceSiteRef ? { acceptanceSiteRef: device.acceptanceSiteRef, acceptanceMode: device.acceptanceMode } : {}),
           line: raw,
           receivedAt: new Date().toISOString(),
           ...(notes ? { notes: String(notes).slice(0, 2000) } : {}),
@@ -726,6 +730,8 @@ export async function reviewCaptureEvents(
             409,
           );
         let hit = {};
+        if (event.raw?.acceptanceMode === "SUPERVISED" && action !== "DISMISS")
+          throw captureError("Supervised evidence requires an employee attendance correction with line-manager, HR and Management approval; it cannot be released by Retry or Resolve",409);
         if (event.source === "BIOMETRIC") {
           if (action === "RESOLVE")
             throw captureError(

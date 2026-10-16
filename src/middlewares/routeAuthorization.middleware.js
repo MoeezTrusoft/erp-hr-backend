@@ -1,3 +1,4 @@
+import { ACCEPTANCE_TOOLS } from '@trusoft/contracts/attendance-acceptance';
 import { COMPANY_SETUP_TOOLS } from '@trusoft/contracts/hr-company-setup';
 import { HR_APPROVAL_TOOLS } from '@trusoft/contracts/hr-approval';
 import { EMPLOYMENT_TOOLS } from "@trusoft/contracts/employment";
@@ -144,6 +145,11 @@ export function resolveHrRoutePolicy(req) {
   if (!req.route) return null;
   const method = String(req.method || "").toUpperCase();
   const path = normalizePath(req);
+  if (path.startsWith('/api/hr/attendance-acceptance/')) {
+    const d=Object.values(ACCEPTANCE_TOOLS).find(d=>path==='/api/hr/attendance-acceptance/'+d.route);
+    if(!d||method!=='POST')return null;
+    return {permission:d.permission,anyOf:[d.permission],resource:'hr.setup',action:'command',self:false,ownership:null,servicePrincipals:[]};
+  }
   if (path.startsWith('/api/hr/company-setup/')) {
     const d=Object.values(COMPANY_SETUP_TOOLS).find(d=>path==='/api/hr/company-setup/'+d.route);
     if(!d||method!=='POST')return null;

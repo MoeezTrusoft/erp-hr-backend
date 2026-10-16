@@ -4033,6 +4033,8 @@ model MonthlyPayrollAttendance {
 
 // Stage 2: original evidence is immutable; attribution and processing are audited.
 model AttendanceCaptureDevice {
+  acceptanceSiteRef String? @db.Uuid
+  acceptanceMode String?
   siteId String?
   biometricProfiles AttendanceBiometricProfile[]
   biometricChallenges AttendanceBiometricChallenge[]
@@ -4041,7 +4043,7 @@ model AttendanceCaptureDevice {
   sn String @unique @db.VarChar(64)
   name String
   timeZone String
-  active Boolean @default(true)
+  active Boolean @default(false)
   allowedTenantIds String[] @db.Uuid
   credentialHash String?
   legacyKeyAllowed Boolean @default(false)
@@ -5200,4 +5202,58 @@ model HrApprovalReceipt {
   result Json
   createdAt DateTime @default(now())
   @@unique([tenantId, requestKey])
+}
+
+// Onsite acceptance is company-scoped; approval binds a frozen evidence revision.
+model AttendanceAcceptanceSite {
+  technicalByCode String?
+  technicalByUserId Int?
+  technicalHash String?
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  slot String
+  state String @default("DRAFT")
+  version Int @default(1)
+  payload Json
+  contentHash String
+  editorUserIds Json
+  createdByCode String
+  createdByUserId Int
+  managerCode String?
+  managerUserId Int?
+  verifiedByCode String?
+  verifiedByUserId Int?
+  verifiedHash String?
+  approvedByCode String?
+  approvedByUserId Int?
+  approvedHash String?
+  approvedAt DateTime?
+  activatedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, slot])
+  @@index([tenantId, state])
+}
+model AttendanceAcceptanceAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  siteRef String @db.Uuid
+  version Int
+  action String
+  actorCode String
+  actorUserId Int
+  payload Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, siteRef, version])
+}
+model AttendanceAcceptanceEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  siteRef String @db.Uuid
+  runKey String
+  payload Json
+  content String
+  uploadedByCode String
+  createdAt DateTime @default(now())
+  @@index([tenantId, siteRef])
 }

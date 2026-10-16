@@ -135,6 +135,15 @@ afterEach(() => {
 });
 
 describe("supervised biometric enrolment and verification", () => {
+  it("holds a matched PAD-passed capture when the site's approved mode is supervised", async () => {
+    const db = database();
+    await enrol(db);
+    await db.attendanceCaptureDevice.updateMany({where:{sn:device.sn},data:{acceptanceMode:"SUPERVISED",acceptanceSiteRef:"site-test"}});
+    const ticket = await verifyTicket(db);
+    await submitBiometricSample(signed(ticket),db,{engine,now});
+    expect(db.snapshot().attendanceCaptureEvent[0]).toMatchObject({state:"NEEDS_REVIEW",raw:{acceptanceMode:"SUPERVISED"}});
+    expect(db.snapshot().attendanceDevicePunch).toHaveLength(0);
+  });
   it("encrypts templates, exposes metadata only, and never stores raw samples", async () => {
     const db = database();
     const result = await enrol(db);

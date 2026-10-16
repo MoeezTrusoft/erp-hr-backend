@@ -61,6 +61,7 @@ export function tenantTransaction(client, fn, opts = {}) {
 // see across tenants. Physical tables: bank_details, employment_terms,
 // EmergencyContacts (see hr_rls_pilot_extend migration).
 const RLS_MODELS = new Set([
+    'AttendanceAcceptanceSite', 'AttendanceAcceptanceAudit', 'AttendanceAcceptanceEvidence',
     'HrSetupReview', 'HrSetupAudit', 'HrSetupReceipt', 'HrSetupTask', 'HrSetupEvidence',
     'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt',
     'EmployeeCodeConfiguration', 'EmployeeCodeSequence', 'EmployeeCodeReservation', 'EmployeeCodeAlias', 'EmployeeCategoryConversion', 'SeparationPolicy', 'Separation', 'EmploymentCommandReceipt', 'EmploymentDelivery', 'SeparationTransition', 'NoticePeriodRecord', 'ReplacementPlan', 'ReplacementSession', 'KnowledgeTransferItem', 'AssetHandoverItem', 'AccessRevocationTask', 'ClearanceItem', 'ExitInterview', 'FinalSettlementSheet', 'SeparationDocument', 'SeparationSourceSnapshot',

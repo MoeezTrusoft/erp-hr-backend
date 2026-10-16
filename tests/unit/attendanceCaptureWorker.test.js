@@ -31,6 +31,16 @@ const evaluate = async ({ db, tenantId, employeeIds }) => {
   return { created: 1 };
 };
 describe("capture processing recovery", () => {
+  it("refuses supervised evidence even if mistakenly queued as pending", async () => {
+    const db = captureDb();
+    await submit(db);
+    const row = db.snapshot().attendanceCaptureEvent[0];
+    await db.attendanceCaptureEvent.updateMany({where:{id:row.id},data:{raw:{...row.raw,acceptanceMode:"SUPERVISED"}}});
+    await drainCapture({limit:1,now,evaluate},db);
+    expect(db.snapshot().attendanceDevicePunch).toHaveLength(0);
+    expect(db.snapshot().attendance).toHaveLength(0);
+    expect(db.snapshot().attendanceCaptureEvent[0].state).toBe("NEEDS_REVIEW");
+  });
   it("commits punch projection, calculation and outbox together", async () => {
     const db = captureDb();
     await submit(db);
