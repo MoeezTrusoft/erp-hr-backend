@@ -4690,6 +4690,28 @@ model SeparationPolicy {
   updatedAt DateTime @updatedAt
 }
 
+model HrSetupTask {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskKey String
+  version Int @default(1)
+  payload Json
+  editorUserIds Json
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, taskKey])
+}
+
+model HrSetupEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskKey String
+  payload Json
+  content String
+  uploadedByCode String
+  createdAt DateTime @default(now())
+  @@index([tenantId, taskKey])
+}
+
 model HrSetupReview {
   reservedEmployeeId Int?
   reservedUserId Int?

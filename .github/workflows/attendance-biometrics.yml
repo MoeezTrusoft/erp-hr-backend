@@ -1,7 +1,7 @@
 name: Attendance biometric adapters
 on:
   pull_request:
-    paths: ['biometrics/**', '.github/workflows/attendance-biometrics.yml']
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,9 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
           cache: pip
-          cache-dependency-path: 'biometrics/**/requirements.txt'
+          cache-dependency-path: "biometrics/**/requirements.txt"
       - name: Install capture and face runtimes without model weights
         run: python -m pip install -r biometrics/agent/requirements.txt -r biometrics/insightface/requirements.txt
       - name: Check capture and face adapter contracts
@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
           cache: maven
           cache-dependency-path: biometrics/sourceafis/pom.xml
       - name: Test real SourceAFIS extraction and package the service

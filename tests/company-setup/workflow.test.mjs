@@ -66,6 +66,8 @@ const { mcpCtx } = await import("../../src/mcp/context.js");
 const { tenantTransaction } = await import("../../src/lib/rlsTenant.js");
 const { saveSetup, actSetup, readSetup, overviewSetup } =
   await import("../../src/services/company-setup/service.js");
+const { readTasks, saveTask, uploadEvidence, readEvidence } =
+  await import("../../src/services/company-setup/tracker.js");
 const { configureSeparation } =
   await import("../../src/services/separation/service.js");
 const company = randomUUID(),
@@ -120,6 +122,27 @@ const fresh = (ref) =>
 async function approved(row) {
   row = await act("HR", row, "SUBMIT");
   return act("CEO", row, "APPROVE");
+}
+async function completeTasks() {
+  const { tracker } = await as("HR", () => readTasks());
+  for (const task of tracker.items) {
+    if (task.status === "COMPLETE" && !task.stale) continue;
+    await as("HR", () =>
+      saveTask({
+        taskKey: task.taskKey,
+        expectedVersion: task.version,
+        requestKey: randomUUID(),
+        ownerCode: people.HR.employee_code,
+        dueDate: "2026-10-30",
+        status: "COMPLETE",
+        notes: "Verified company records and applied approved corrections",
+        evidenceRefs: ["controlled-doc:company-check"],
+        attachmentRefs: task.attachmentRefs,
+        reviewRefs: [],
+        reason: "Completion evidence checked",
+      }),
+    );
+  }
 }
 test(
   "company setup: approved activation, isolation, conflicts and recovery",
@@ -398,6 +421,138 @@ test(
         },
       );
       await t.test(
+        "action tracking requires company owners, completion evidence, versions and scoped immutable uploads",
+        async () => {
+          const initial = await as("HR", () => readTasks());
+          assert.equal(
+            initial.tracker.items.filter((t) => t.category === "EMPLOYEE_SETUP")
+              .length,
+            Object.keys(people).length,
+          );
+          const task = initial.tracker.items.find(
+              (t) => t.taskKey === "company:notice",
+            ),
+            input = {
+              taskKey: task.taskKey,
+              expectedVersion: 0,
+              requestKey: randomUUID(),
+              ownerCode: people.HR.employee_code,
+              dueDate: "2026-10-30",
+              status: "COMPLETE",
+              notes: "Verified contract notice evidence",
+              evidenceRefs: [],
+              attachmentRefs: [],
+              reviewRefs: [],
+              reason: "Evidence review",
+            };
+          await assert.rejects(
+            as("HR", () => saveTask(input)),
+            /evidence/,
+          );
+          await assert.rejects(
+            as("HR", () => saveTask({ ...input, ownerCode: "EMP-OTHER" })),
+            /active owner/,
+          );
+          await assert.rejects(
+            as("HR", () => saveTask({ ...input, status: "NOT_APPLICABLE" })),
+            /N\/A/,
+          );
+          await assert.rejects(
+            as("CEO", () => saveTask(input)),
+            /Requires/,
+          );
+          const upload = {
+            expectedVersion: 0,
+            requestKey: randomUUID(),
+            taskKey: task.taskKey,
+            fileName: "notice.pdf",
+            contentBase64: Buffer.from(
+              "%PDF-1.4\ncontrolled test evidence",
+            ).toString("base64"),
+            reason: "Signed notice evidence",
+          };
+          await assert.rejects(
+            as("HR", () =>
+              uploadEvidence({ ...upload, fileName: "notice.png" }),
+            ),
+            /Supported evidence/,
+          );
+          const uploaded = await as("HR", () => uploadEvidence(upload));
+          const again = await as("HR", () => uploadEvidence(upload));
+          assert.equal(
+            again.evidence.evidenceRef,
+            uploaded.evidence.evidenceRef,
+          );
+          const evidence = await as("CEO", () =>
+            readEvidence({ evidenceRef: uploaded.evidence.evidenceRef }),
+          );
+          assert.equal(evidence.evidence.contentBase64, upload.contentBase64);
+          await assert.rejects(
+            as("ADMIN", () =>
+              readEvidence({ evidenceRef: uploaded.evidence.evidenceRef }),
+            ),
+            /Requires/,
+          );
+          await assert.rejects(
+            as(
+              "HR",
+              () =>
+                readEvidence({ evidenceRef: uploaded.evidence.evidenceRef }),
+              other,
+            ),
+            /linked employee/,
+          );
+          const stored = await db((tx) =>
+            tx.hrSetupEvidence.findUnique({
+              where: { id: uploaded.evidence.evidenceRef },
+            }),
+          );
+          assert.ok(stored.content.startsWith("c4.v1:"));
+          assert.ok(stored.payload.encrypted.startsWith("c4.v1:"));
+          await assert.rejects(
+            db((tx) =>
+              tx.hrSetupEvidence.update({
+                where: { id: stored.id },
+                data: { content: "tampered" },
+              }),
+            ),
+            /append-only/,
+          );
+          await assert.rejects(
+            as("HR", () =>
+              saveTask({ ...input, evidenceRefs: ["controlled-doc:notice"] }),
+            ),
+            /changed/,
+          );
+          const final = {
+            ...input,
+            expectedVersion: uploaded.tracker.version,
+            requestKey: randomUUID(),
+            attachmentRefs: [uploaded.evidence.evidenceRef],
+          };
+          await as("HR", () => saveTask(final));
+          await assert.rejects(
+            as("HR", () => saveTask({ ...final, requestKey: randomUUID() })),
+            /changed/,
+          );
+          await assert.rejects(
+            as("HR", () =>
+              saveTask({
+                ...input,
+                taskKey: "company:grades",
+                attachmentRefs: [uploaded.evidence.evidenceRef],
+              }),
+            ),
+            /does not belong/,
+          );
+          const current = (
+            await as("HR", () => readTasks())
+          ).tracker.items.find((t) => t.taskKey === task.taskKey);
+          assert.equal(current.history.length, 2);
+          assert.equal(current.status, "COMPLETE");
+        },
+      );
+      await t.test(
         "policy requires staged approval and readiness; dependency outage is explicit",
         async () => {
           assert.throws(() => configureSeparation({}), /Management approval/);
@@ -446,7 +601,75 @@ test(
               expectedVersion: r.version,
             },
           );
+          await db((tx) =>
+            tx.employee.update({
+              where: { id: people.HR2.id },
+              data: { employement_status: "" },
+            }),
+          );
+          await assert.rejects(
+            act("HR", r, "SUBMIT"),
+            /blank employment-status/,
+          );
+          await db((tx) =>
+            tx.employee.update({
+              where: { id: people.HR2.id },
+              data: { status: "Inactive", employement_status: "Inactive" },
+            }),
+          );
+          await assert.rejects(
+            act("HR", r, "SUBMIT"),
+            /enabled company access for inactive/,
+          );
+          await db((tx) =>
+            tx.employee.update({
+              where: { id: people.HR2.id },
+              data: {
+                status: "Active",
+                employement_status: "Active",
+                userId: null,
+              },
+            }),
+          );
+          await assert.rejects(
+            act("HR", r, "SUBMIT"),
+            /enabled linked company account/,
+          );
+          await db((tx) =>
+            tx.employee.update({
+              where: { id: people.HR2.id },
+              data: { userId: people.HR2.userId },
+            }),
+          );
+          await assert.rejects(act("HR", r, "SUBMIT"), /actions incomplete/);
+          await completeTasks();
+          await assert.rejects(
+            act("HR", r, "SUBMIT"),
+            /action evidence changed/,
+          );
+          r = await save(r.data, {
+            kind: "POLICY",
+            employeeCode: undefined,
+            reviewRef: r.reviewRef,
+            expectedVersion: r.version,
+          });
           r = await approved(r);
+          assert.ok(r.completionSnapshot.items.length > 13);
+          await assert.rejects(
+            as("HR", () =>
+              saveTask({
+                taskKey: "company:notice",
+                expectedVersion: 2,
+                requestKey: randomUUID(),
+                ownerCode: people.HR.employee_code,
+                dueDate: "2026-10-30",
+                status: "IN_PROGRESS",
+                notes: "new evidence",
+                reason: "change",
+              }),
+            ),
+            /frozen/,
+          );
           await db((tx) =>
             tx.employee.update({
               where: { id: people.HR2.id },
@@ -463,6 +686,22 @@ test(
               data: { managerId: people.CEO.id },
             }),
           );
+          await db((tx) =>
+            tx.employee.update({
+              where: { id: people.HR2.id },
+              data: { contractNoticeDays: 31 },
+            }),
+          );
+          await assert.rejects(act("HR", r, "ACTIVATE"), /source changed/);
+          r = await act("CEO", r, "REVERT");
+          await completeTasks();
+          r = await save(r.data, {
+            kind: "POLICY",
+            employeeCode: undefined,
+            reviewRef: r.reviewRef,
+            expectedVersion: r.version,
+          });
+          r = await approved(r);
           r = await act("HR", r, "ACTIVATE");
           assert.equal(r.state, "ACTIVE");
           assert.equal(
@@ -475,6 +714,40 @@ test(
             ).approvalReviewRef,
             r.reviewRef,
           );
+        },
+      );
+      await t.test(
+        "Management cannot approve a completed package whose action evidence they edited",
+        async () => {
+          permissions.CEO.push("prepare");
+          const task = (await as("CEO", () => readTasks())).tracker.items.find(
+            (t) => t.taskKey === "company:notice",
+          );
+          await as("CEO", () =>
+            saveTask({
+              taskKey: task.taskKey,
+              expectedVersion: task.version,
+              requestKey: randomUUID(),
+              ownerCode: people.HR.employee_code,
+              dueDate: "2026-10-30",
+              status: "COMPLETE",
+              notes: "Management contributed notice evidence",
+              evidenceRefs: ["controlled-doc:notice-schedule"],
+              attachmentRefs: task.attachmentRefs,
+              reason: "Contributed evidence",
+            }),
+          );
+          permissions.CEO.pop();
+          let policy = await save(
+            samplePolicy(people.HR.employee_code, people.CEO.employee_code),
+            { kind: "POLICY", employeeCode: undefined },
+          );
+          policy = await act("HR", policy, "SUBMIT");
+          await assert.rejects(act("CEO", policy, "APPROVE"), /not available/);
+          permissions.HR2.push("approve");
+          policy = await act("HR2", policy, "REVERT");
+          permissions.HR2.pop();
+          assert.equal(policy.state, "RETURNED");
         },
       );
       await t.test(
@@ -536,6 +809,17 @@ test(
             ),
           );
           assert.deepEqual(rows, []);
+          const hidden = await mcpCtx.run({ user: { tenantId: other } }, () =>
+            tenantTransaction(
+              prisma,
+              async (tx) => ({
+                tasks: await tx.hrSetupTask.findMany(),
+                evidence: await tx.hrSetupEvidence.findMany(),
+              }),
+              { tenantId: other },
+            ),
+          );
+          assert.deepEqual(hidden, { tasks: [], evidence: [] });
         },
       );
     } finally {

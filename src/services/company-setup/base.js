@@ -96,7 +96,13 @@ export async function audit(tx, env, row, action, reason) {
     },
   });
 }
-export async function view(tx, env, row, blockers = []) {
+export async function view(
+  tx,
+  env,
+  row,
+  blockers = [],
+  includeCompletion = true,
+) {
   const history = await tx.hrSetupAudit.findMany({
     where: { tenantId: env.tenantId, reviewRef: row.id },
     orderBy: { version: "asc" },
@@ -111,6 +117,9 @@ export async function view(tx, env, row, blockers = []) {
     version: row.version,
     data: payload.data,
     evidenceRefs: payload.evidenceRefs,
+    completionSnapshot: includeCompletion
+      ? payload.completionSnapshot || null
+      : null,
     preparedByCode: row.preparedByCode,
     approvedByCode: row.approvedByCode,
     createdAt: row.createdAt.toISOString(),
