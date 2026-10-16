@@ -917,6 +917,43 @@ model AttendanceGraceMembership {
   @@map("attendance_grace_memberships")
 }
 
+model AttendanceExportJob {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  ownerUserId String
+  filters Json
+  employeeIds Json
+  columns Json
+  format String
+  status String @default("QUEUED")
+  progress Int @default(0)
+  total Int?
+  artifact Json?
+  leaseToken String? @db.Uuid
+  leaseUntil DateTime?
+  error String?
+  generatedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, ownerUserId, createdAt], map: "attendance_export_owner")
+  @@index([status, leaseUntil], map: "attendance_export_queue")
+  @@map("attendance_export_jobs")
+}
+
+model AttendanceSavedView {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  ownerUserId String
+  name String
+  filters Json
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, ownerUserId], map: "attendance_view_owner")
+  @@map("attendance_saved_views")
+}
+
 model AttendanceCorrectionRequest {
   id String @id @db.Uuid
   tenantId String @db.Uuid

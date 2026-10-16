@@ -5,7 +5,9 @@ import { setup, db, people, company, prisma } from '../approval/fixtures.mjs';
 import { mcpCtx } from '../../src/mcp/context.js';
 import { applyEvaluatedShifts } from '../../src/services/attendanceWriter.service.js';
 import { registerAllTools } from '../../src/mcp/toolRegistry.js';
+import { startAttendanceExportWorker } from '../../src/jobs/attendance-export.loop.js';
 await setup();
+const exportWorker=startAttendanceExportWorker({enabled:true,intervalMs:500});
 const date = '2026-02-12';
 await db(tx => applyEvaluatedShifts({ tenantId: company, employeeIds: [people.EMPLOYEE.id], from: date, to: date, db: tx, dryRun: false }));
 const handlers = new Map();
@@ -51,4 +53,4 @@ const server = http.createServer(async (req, res) => {
   } catch(e) { res.statusCode=e.status || 500; res.end(JSON.stringify({error:{message:e.message}})); }
 });
 server.listen(5397,'127.0.0.1');
-process.on('SIGTERM',()=>server.close(async()=>{await prisma.$disconnect();process.exit(0);}));
+process.on('SIGTERM',()=>server.close(async()=>{await exportWorker.stop();await prisma.$disconnect();process.exit(0);}));

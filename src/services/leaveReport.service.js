@@ -43,25 +43,19 @@ const TABLE_SORT_FIELDS = {
 // display name is employee_name || (first_name + " " + last_name).trim()).
 const EMPLOYEE_SELECT = {
   id: true,
-  employee_name: true,
-  first_name: true,
-  last_name: true,
-  photo_url: true,
+  employee_code: true,
 };
 
 const LEAVE_POLICY_SELECT = { id: true, name: true, leaveTypeCode: true };
 
 function fullName(emp) {
   if (!emp) return null;
-  const denorm = emp.employee_name && emp.employee_name.trim();
-  if (denorm) return denorm;
-  const joined = `${emp.first_name ?? ""} ${emp.last_name ?? ""}`.trim();
-  return joined || null;
+  return emp.employee_code || "Employee code required";
 }
 
 function employeeDto(emp) {
   if (!emp) return null;
-  return { id: emp.id, name: fullName(emp), avatar: emp.photo_url ?? null };
+  return { id: emp.id, name: fullName(emp), code: emp.employee_code, avatar: null };
 }
 
 function toDateOrNull(raw) {
@@ -185,9 +179,7 @@ export async function listLeaveTable({
     and.push({
       employee: {
         OR: [
-          { employee_name: { contains: needle, mode: "insensitive" } },
-          { first_name: { contains: needle, mode: "insensitive" } },
-          { last_name: { contains: needle, mode: "insensitive" } },
+          { employee_code: { contains: needle, mode: "insensitive" } },
         ],
       },
     });

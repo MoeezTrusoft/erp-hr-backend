@@ -854,6 +854,7 @@ export async function listCheckInOuts({
   employeeId,
   employeeIds,
   exportMode = false,
+  exportLimit = 20000,
   sortBy = "date",
   sortDir = "desc",
   page = 1,
@@ -1144,7 +1145,7 @@ export async function listCheckInOuts({
 
   // ── Paginate ──────────────────────────────────────────────────────────────
   const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
-  const safeSize = exportMode ? 20000 : Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 100) : 20;
+  const safeSize = exportMode ? Math.min(100000,Math.max(1,exportLimit)) : Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 100) : 20;
   const start = (safePage - 1) * safeSize;
   const pageRows = rows.slice(start, start + safeSize);
 

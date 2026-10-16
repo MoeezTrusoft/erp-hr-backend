@@ -116,14 +116,14 @@ export const getLeavePolicies = async (filters = {}) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -146,14 +146,14 @@ export const getLeavePolicyById = async (id) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
@@ -162,7 +162,7 @@ export const getLeavePolicyById = async (id) => {
           employee: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true
             }
           }
@@ -229,7 +229,7 @@ export const createLeavePolicy = async (data,createdById) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -292,7 +292,7 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -390,7 +390,7 @@ export const getLeaveRequests = async (filters = {}) => {
         employee: {
           select: {
             id: true,
-            first_name: true,
+            employee_code: true, first_name: true,
             last_name: true,
             job_title: true,
             businessUnit: { select: { id: true, name: true } },
@@ -406,7 +406,7 @@ export const getLeaveRequests = async (filters = {}) => {
             approver: {
               select: {
                 id: true,
-                first_name: true,
+                employee_code: true, first_name: true,
                 last_name: true
               }
             }
@@ -416,7 +416,7 @@ export const getLeaveRequests = async (filters = {}) => {
         createdBy: {
           select: {
             id: true,
-            first_name: true,
+            employee_code: true, first_name: true,
             last_name: true
           }
         }
@@ -449,7 +449,7 @@ export const getLeaveRequestById = async (id, tenantId) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true,
           // C.2 bugfix: the Employee→Position relation is `Position` (schema
@@ -474,7 +474,7 @@ export const getLeaveRequestById = async (id, tenantId) => {
           approver: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true,
               job_title: true
             }
@@ -485,14 +485,14 @@ export const getLeaveRequestById = async (id, tenantId) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -575,7 +575,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
@@ -632,7 +632,7 @@ export const updateLeaveRequest = async (id, data) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
@@ -668,7 +668,7 @@ export const getPendingApprovals = async (userId, userRole) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true
         }
@@ -679,7 +679,7 @@ export const getPendingApprovals = async (userId, userRole) => {
           approver: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true
             }
           }
@@ -697,7 +697,7 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
       approver: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true
         }
@@ -705,7 +705,7 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -746,7 +746,7 @@ export const getLeaveBalances = async (filters = {}) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true,
           // C.2 bugfix: the Employee→Position relation is `Position` (schema
@@ -759,7 +759,7 @@ export const getLeaveBalances = async (filters = {}) => {
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -821,14 +821,14 @@ export const updateLeaveBalance = async (employeeId, data) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -974,7 +974,7 @@ export const getAccrualHistory = async (filters = {}) => {
         action_by: {
           select: {
             id: true,
-            first_name: true,
+            employee_code: true, first_name: true,
             last_name: true
           }
         }
@@ -1030,14 +1030,14 @@ export const getHolidays = async (filters = {}) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -1109,7 +1109,7 @@ export const createHoliday = async (data) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -1285,7 +1285,7 @@ export const processCarryOver = async (data) => {
           employee: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true,
               status: true
             }

@@ -4,6 +4,8 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import * as service from "../../services/attendanceRules.service.js";
 import { saveCorrectionRequest, myCorrectionRequests } from '../../services/attendanceCorrectionRequest.service.js';
+import * as workspace from '../../services/attendanceWorkspace.service.js';
+import { attendanceExportInput, attendanceViewInput } from '../../lib/attendanceWorkspaceSchemas.js';
 export function registerAttendanceRulesTools(server) {
   const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     id = z.number().int().positive();
@@ -12,6 +14,13 @@ export function registerAttendanceRulesTools(server) {
   const common = { anomalyId: id, version };
   const filters = { site:z.string().max(100).optional(),department:z.string().max(100).optional(),shift:z.string().max(100).optional() };
   const defs = [
+    ['export_start',attendanceExportInput.shape,workspace.startAttendanceExport],
+    ['exports',{},workspace.listAttendanceExports],
+    ['export_status',{id:z.string().uuid()},workspace.readAttendanceExport],
+    ['export_download',{id:z.string().uuid(),page:z.number().int().positive().default(1)},workspace.downloadAttendanceExport],
+    ['views',{},workspace.listAttendanceViews],
+    ['view_save',attendanceViewInput.shape,workspace.saveAttendanceView],
+    ['view_delete',{id:z.string().uuid(),version},workspace.deleteAttendanceView],
     ['my_day',{},service.myAttendanceDay],
     ['export_records',{from:date,to:date,...filters,q:z.string().max(50).optional(),status:z.string().max(50).optional(),sortBy:z.enum(['date','employee','status','checkIn','checkOut']).optional(),sortDir:z.enum(['asc','desc']).optional()},service.exportAttendanceRecords],
     ['filter_options',{from:date,to:date},service.attendanceFilterOptions],

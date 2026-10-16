@@ -31,7 +31,7 @@ export async function listApprovalLevels({ tenantId }) {
     orderBy: { level: "asc" },
     include: {
       approver: {
-        select: { id: true, employee_code: true, employee_name: true, job_title: true },
+        select: { id: true, employee_code: true, job_title: true },
       },
     },
   });
@@ -45,12 +45,9 @@ export async function listApproverCandidates({ tenantId, search, limit = 50 } = 
   const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const term = typeof search === "string" ? search.trim() : "";
 
-  const where = {};
+  const where = {tenant_id: tenantId};
   if (term) {
     where.OR = [
-      { employee_name: { contains: term, mode: "insensitive" } },
-      { first_name: { contains: term, mode: "insensitive" } },
-      { last_name: { contains: term, mode: "insensitive" } },
       { employee_code: { contains: term, mode: "insensitive" } },
     ];
   }
@@ -60,9 +57,6 @@ export async function listApproverCandidates({ tenantId, search, limit = 50 } = 
     select: {
       id: true,
       employee_code: true,
-      employee_name: true,
-      first_name: true,
-      last_name: true,
       job_title: true,
     },
     orderBy: { employee_code: "asc" },
@@ -73,7 +67,7 @@ export async function listApproverCandidates({ tenantId, search, limit = 50 } = 
     id: e.id,
     employee_code: e.employee_code,
     // employee_name is not always populated; fall back to the name parts.
-    name: e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(" ") || e.employee_code,
+    name: e.employee_code || "Employee code required",
     job_title: e.job_title,
   }));
 }

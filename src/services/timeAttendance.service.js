@@ -13,8 +13,7 @@ import { exportRows } from "../lib/export.util.js";
 const STANDARD_DAY_HOURS = 8; // fallback target/day when no WorkSchedule exists
 const ABSENTEEISM_WINDOW_DAYS = 14;
 
-const employeeName = (e) =>
-  e?.employee_name || [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() || null;
+const employeeName = (e) => e?.employee_code || "Employee code required";
 
 // WFH derivation: an employee is "working from home" when they are PRESENT/LATE
 // AND their Employee.work_mode is Remote or Hybrid (case-insensitive).
@@ -183,9 +182,7 @@ const buildRecordsWhere = (query, q) => {
   if (q) {
     employeeFilters.push({
       OR: [
-        { employee_name: { contains: q, mode: "insensitive" } },
-        { first_name: { contains: q, mode: "insensitive" } },
-        { last_name: { contains: q, mode: "insensitive" } },
+        { employee_code: { contains: q, mode: "insensitive" } },
       ],
     });
   }
@@ -226,7 +223,7 @@ export const listAttendanceRecords = async (query, tenantId) => {
       take: list.pageSize,
       include: {
         employee: {
-          select: { id: true, employee_name: true, first_name: true, last_name: true },
+          select: { id: true, employee_code: true },
         },
       },
     }),
@@ -320,7 +317,7 @@ export const listPendingApprovals = async (query, tenantId) => {
       skip: list.skip,
       take: list.pageSize,
       include: {
-        employee: { select: { employee_name: true, first_name: true, last_name: true } },
+        employee: { select: { employee_code: true } },
       },
     }),
     prisma.timesheet.count({ where }),

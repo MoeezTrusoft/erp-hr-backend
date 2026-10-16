@@ -11,7 +11,7 @@ const fail = (status, message) => {
   throw Object.assign(new Error(message), { status });
 };
 const name = (e) =>
-  e?.employee_name || [e?.first_name, e?.last_name].filter(Boolean).join(' ');
+  e?.employee_code || 'Employee code required';
 export function monthlyMode(runtime, employeeId, month) {
   const { start, end } = payrollMonth(month),
     modes = new Set();
