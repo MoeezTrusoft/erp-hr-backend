@@ -20,7 +20,8 @@ import { civilNow, civilInstant } from './attendanceClock.js';
 import { dateRange } from './attendanceDates.js';
 import { evaluateSiteEvidence } from './attendanceSiteRules.js';
 
-import { shiftFor, shiftCandidates } from './attendanceShift.js';
+import { shiftFor, shiftCandidates, nextShiftStart } from './attendanceShift.js';
+import { boundedCheckout } from './shiftCheckout.js';
 export { shiftFor, shiftCandidates };
 
 const MIN_MS = 60 * 1000;
@@ -117,6 +118,12 @@ export function sessioniseByRoster(
   let open = null; // { key, start, end } of the shift currently in progress
   const tol = windowHours * 60 * MIN_MS;
   const closeTol = closeHours * 60 * MIN_MS;
+  const deadlines=new Map();
+  const deadlineFor = shift => {
+    const key=shift.start.toISOString();
+    if(!deadlines.has(key)) deadlines.set(key,+boundedCheckout(shift,{checkoutLeniencyMin:closeHours*60},nextShiftStart(pattern,shift)));
+    return deadlines.get(key);
+  };
 
   /** Distance from `t` to the nearest rostered START, across a day either side. */
   const toNearestStart = (at) => {
@@ -170,7 +177,7 @@ export function sessioniseByRoster(
         && t <= open.end + closeTol;
 
       // 1. Does this punch belong to the shift already in progress?
-      if (open && ((t >= open.start - tol && t <= open.end + tol) || late || closesByDevice)) {
+      if (open && t <= open.deadline && ((t >= open.start - tol && t <= open.end + tol) || late || closesByDevice)) {
         key = open.key;
         // Past the rostered end, the shift is finished; a later punch is a new
         // arrival rather than a third scan of the same shift.
@@ -178,15 +185,18 @@ export function sessioniseByRoster(
       } else {
         // 2. Otherwise it opens a shift. Choose the window whose START it is
         //    nearest — an arrival is defined by its start, not by either edge.
-        let best = null;
+        let best = null, knownRoster=false;
         for (const offset of [-1, 0, 1]) {
           const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
           // A rotating roster offers more than one window per day; the punch has
           // to be tried against each, or a night arrival gets pulled onto the
           // wrong day by the day-shift window.
-          for (const { start, end } of shiftCandidates(pattern, startOfDay(anchor))) {
+          for (const candidate of shiftCandidates(pattern, startOfDay(anchor))) {
+            const { start, end } = candidate;
             if (!start || !end) continue;
-            if (t < start.getTime() - tol || t > end.getTime() + tol) continue;
+            knownRoster=true;
+            const deadline = deadlineFor(candidate);
+            if (t < start.getTime() - tol || t > deadline) continue;
             const distance = Math.abs(t - ((!legacyDirectionInference && (p.status===1||p.status===5)) ? end.getTime():start.getTime()));
             if (!best || distance < best.distance) {
               best = {
@@ -194,25 +204,31 @@ export function sessioniseByRoster(
                 key: dayKey(startOfDay(anchor)),
                 start: start.getTime(),
                 end: end.getTime(),
+                deadline,
               };
             }
           }
         }
         if (best) {
           key = best.key;
-          open = { key: best.key, start: best.start, end: best.end };
+          open = { key: best.key, start: best.start, end: best.end, deadline: best.deadline };
+        } else {
+          // Keep original direction/evidence, but never attach an out-of-window
+          // punch back to an earlier session via its calendar date.
+          if(knownRoster && (open || shiftCandidates(pattern,startOfDay(p.punchedAt)).length)) key += '|unassigned';
+          open = null;
         }
       }
     }
 
-    const dayPattern = typeof pattern === 'function' ? pattern(new Date(key+'T00:00:00Z')) : pattern;
+    const dayPattern = typeof pattern === 'function' ? pattern(new Date(key.split('|')[0]+'T00:00:00Z')) : pattern;
     if (dayPattern?.shifts?.length) {
       const candidates = [-1,0,1].flatMap(offset=>{
         const day = startOfDay(new Date(+p.punchedAt+offset*DAY_MS));
         return shiftCandidates(pattern,day).map(s=>({...s,day}));
       });
       const direction = p.status===1||p.status===5 ? 'OUT':'IN';
-      const nearest = candidates.filter(s=>t>=+s.start-tol&&t<=+s.end+closeTol)
+      const nearest = candidates.filter(s=>t>=+s.start-tol&&t<=deadlineFor(s))
         .sort((a,b)=>Math.abs(t-+(direction==='OUT'?a.end:a.start))-Math.abs(t-+(direction==='OUT'?b.end:b.start)))[0];
       if(nearest) key=dayKey(nearest.day)+'|'+nearest.start.toISOString();
     }
@@ -261,7 +277,7 @@ export function sessioniseByRoster(
     const lone = loneDirection();
 
     const shaped = list.map((p, i) => {
-      const evidence = {timestamp:p.punchedAt, occurredAt:p.occurredAt, directionVerified:p.directionVerified,
+      const evidence = {timestamp:p.punchedAt, occurredAt:p.occurredAt, directionVerified:p.directionVerified, outsideShiftWindow:groupKey.endsWith('|unassigned'),
         eventId:p.captureEventId || (p.id!=null?'legacy:'+p.id:null), siteId:p.siteId, sn:p.sn, assurance:p.assurance,clockIssue:p.clockIssue};
       if (p.directionVerified || (p.trustDirection ?? !legacyDirectionInference)) return { ...evidence, type: deviceDir(p.status) || '' };
       const positional = lone ?? (i === 0 ? "IN" : i === list.length - 1 ? "OUT" : "");
@@ -286,7 +302,9 @@ export function sessioniseByRoster(
     // Attendance.primary_sn / Attendance.secondary_punches: primary punches
     // are the normal case, punches on any other device are recorded
     // explicitly rather than silently merged.
-    out.push({ day: startOfDay(new Date(`${key}T00:00:00Z`)), punches: shaped, corrections, punchSn: list.map((p) => p.sn ?? null) });
+    out.push({ day: startOfDay(new Date(`${key}T00:00:00Z`)), punches: shaped, corrections,
+      unassigned:groupKey.endsWith('|unassigned'),anchor:groupKey.includes('|')&&!groupKey.endsWith('|unassigned') ? new Date(groupKey.split('|')[1]):undefined,
+      punchSn: list.map((p) => p.sn ?? null) });
   }
 
   return out;
@@ -331,13 +349,21 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
   }
   const results=[];
   for(const [employeeId,rows] of byEmployee) {
-    const patternForDay=day=>runtime.resolve(employeeId,day).pattern;
+    const patterns=new Map();
+    const patternForDay=day=>{
+      const key=dayKey(day);
+      if(!patterns.has(key)) {
+        const info=runtime.resolve(employeeId,day);
+        patterns.set(key,info.pattern ? {...info.pattern,scheduled:info.working===true} : null);
+      }
+      return patterns.get(key);
+    };
     const sessions=sessioniseByRoster(rows,patternForDay);
     if(includeEmpty) for(const key of dateRange(from,to)) {
       const day=new Date(key+'T00:00:00Z'), info=runtime.resolve(employeeId,day);
       const windows=info.pattern?.shifts?.length ? shiftCandidates(info.pattern,day):[info.shift||{}];
       for(const window of windows) {
-        const found=sessions.some(s=>dayKey(s.day)===key && (!info.pattern?.shifts?.length ||
+        const found=sessions.some(s=>!s.unassigned && dayKey(s.day)===key && (!info.pattern?.shifts?.length ||
           +shiftFor(info.pattern,day,s.punches[0]?.timestamp).start===+window.start));
         if(!found)sessions.push({day,punches:[],corrections:[],punchSn:[],anchor:window.start});
       }
@@ -346,8 +372,9 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       const {day}=session,key=dayKey(day);
       if(key<from||key>to)continue;
       const info=runtime.resolve(employeeId,day,session.anchor||session.punches[0]?.timestamp);
+      if (info.shift) info.shift.nextShiftStart = nextShiftStart(patternForDay, info.shift);
       if(['NOT_ELIGIBLE','MANUAL_MONTHLY'].includes(info.reason))continue;
-      const sessionKey=info.shift?.start?.toISOString()||key;
+      const sessionKey=session.unassigned ? key+'|unassigned' : info.shift?.start?.toISOString()||key;
       const membership=memberships.find(m=>m.employeeId===employeeId&&dayKey(m.effectiveFrom)<=key);
       const grace=resolveGrace([...legacyGraceDefaults(runtime.configOn?.(day),info,employeeId),...graceRules],{employeeId,date:day,shiftKey:shiftRuleKey(info),...membership});
       info.policy={...(policy||info.policy),graceMinutes:grace.checkInMinutes,earlyLeaveGraceMin:grace.checkOutMinutes,resolvedGrace:grace};
@@ -382,11 +409,21 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       let verdict;
       if(info.working && (!info.shift?.start||!info.shift?.end)) {info.working=null;info.reason='MISSING_SHIFT_WINDOW';}
       if(info.working && info.rotating && !session.punches.length) {info.working=null;info.reason='ROTATION_ASSIGNMENT_REQUIRED';}
-      if(info.working==null) verdict={status:'SETUP_REQUIRED',dayCredit:null,processingState:'NEEDS_REVIEW',
+      if(session.unassigned) verdict={status:'PUNCH_CONFLICT',dayCredit:null,processingState:'NEEDS_REVIEW',
+        requiresRegularization:true,checkIn:null,checkOut:null,workedMinutes:0,intervals:[],anomalies:[],
+        issues:[{code:'PUNCH_OUTSIDE_CHECKOUT_CUTOFF'}]};
+      else if(info.working==null) verdict={status:'SETUP_REQUIRED',dayCredit:null,processingState:'NEEDS_REVIEW',
         requiresRegularization:true,anomalies:[],workedMinutes:0,issues:[{code:info.reason}],intervals:[]};
-      else if(!info.working && session.punches.length<2) verdict={
-        status:info.reason==='HOLIDAY'?'HOLIDAY':info.reason==='APPROVED_LEAVE'?'ON_LEAVE':'WEEKLY_OFF',
-        dayCredit:0,processingState:'FINALIZED',requiresRegularization:false,anomalies:[],workedMinutes:0,intervals:[],issues:[]};
+      else if(!info.working && session.punches.length<2) {
+        // Preserve the existing non-working-day credit rule while retaining a
+        // lone observation for the timesheet. Calendar labels are a read projection.
+        verdict={
+          status:info.reason==='HOLIDAY'?'HOLIDAY':info.reason==='APPROVED_LEAVE'?'ON_LEAVE':'WEEKLY_OFF',
+          checkIn:session.punches.find(p=>p.type==='IN')?.timestamp || null,
+          checkOut:session.punches.find(p=>p.type==='OUT')?.timestamp || null,
+          dayCredit:0,processingState:'FINALIZED',requiresRegularization:false,
+          anomalies:[],workedMinutes:0,intervals:[],issues:[]};
+      }
       else {
         verdict=evaluateShift({punches:session.punches,shift:info.shift,policy:info.policy,
           now:civilNow(now,info.timeZone),credits:ownCredits});
@@ -401,7 +438,7 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       try { deadline=civilInstant(verdict.deadline,info.timeZone); }
       catch { Object.assign(verdict,{dayCredit:null,processingState:'NEEDS_REVIEW',requiresRegularization:true,
         issues:[...(verdict.issues||[]),{code:'AMBIGUOUS_SHIFT_DEADLINE'}]}); }
-      results.push({employeeId,day,sessionKey:info.shift?.start?.toISOString()||key,shift:info.shift,
+      results.push({employeeId,day,sessionKey,shift:session.unassigned ? null : info.shift,
         deadline,verdict,setupVersion:info.setupVersion,setupSnapshot:info,corrections:session.corrections,
         punchSn:session.punchSn,evidence:session.punches.map(p=>({eventId:p.eventId,sn:p.sn,siteId:p.siteId,
           direction:p.type,inferred:p.inferred===true,at:p.timestamp,occurredAt:p.occurredAt,assurance:p.assurance,

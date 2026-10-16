@@ -26,6 +26,8 @@
 // that flexibility while removing the silent failures, which is the part that
 // actually hurt.
 
+import { validateCheckoutWindow } from './shiftCheckout.js';
+import { scheduledShifts } from './attendanceShift.js';
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -40,6 +42,9 @@ function checkWindow(win, label, errors) {
     if (!HHMM.test(String(win[end] ?? ""))) {
       errors.push(`${label}.${end}: expected HH:MM, got ${JSON.stringify(win[end])}`);
     }
+  }
+  if (win.checkoutCutoffTime) {
+    try { validateCheckoutWindow(win); } catch (error) { errors.push(`${label}: ${error.message}`); }
   }
 }
 
@@ -171,7 +176,24 @@ export function validateSchedulePattern(pattern) {
     if(pattern[key] != null && (!Number.isFinite(pattern[key]) || pattern[key]<0 || pattern[key]>max))errors.push(`${key}: must be between 0 and ${max}`);
   }
 
-  return { valid: errors.length === 0, errors };
+  const hasCutoff=[pattern.shift,...(Array.isArray(pattern.shifts)?pattern.shifts:[]),...(Array.isArray(rotating)?rotating:[]),...Object.values(pattern.shiftByDay||{})].some(w=>w?.checkoutCutoffTime);
+  if (!errors.length && hasCutoff) {
+    // Cover weekdays and a complete rotation, including the transition back
+    // to its first day. The next scheduled start bounds every explicit cutoff.
+    const first = new Date(`${pattern.cycle?.anchor || '2026-01-05'}T00:00:00Z`);
+    const days = Math.min(740, Math.max(14, Number(pattern.cycle?.days || 7) * 2 + 2));
+    let previous = null;
+    for (let i = 0; i < days; i++) {
+      const day = new Date(+first + i * 86400000);
+      if (pattern.offDays?.includes(day.getUTCDay() || 7)) continue;
+      for (const shift of scheduledShifts(pattern, day)) {
+        if (previous?.checkoutCutoff && +previous.checkoutCutoff > +shift.start - 3600000)
+          errors.push('Latest checkout must be at least one hour before the next scheduled shift starts');
+        previous = shift;
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
 /** Throwing form, for write paths that should refuse rather than branch. */

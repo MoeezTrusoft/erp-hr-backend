@@ -15,6 +15,7 @@ import {
 } from "./attendancePeriod.service.js";
 import { loadAttendanceRuntime } from "./attendanceSetup.service.js";
 import { applyEvaluatedShifts } from "./attendanceWriter.service.js";
+import { syncCurrentShiftSupervisors } from './shiftGovernance.service.js';
 const shiftDate = (day, n) => dateKey(addDays(day, n));
 
 export async function enqueueEvaluationRange(
@@ -75,6 +76,7 @@ export async function planAttendanceFinalization(
           const today = dateKey(
             civilNow(now, latest.config.settings?.timeZone || "Asia/Karachi"),
           );
+          failures.push(...await syncCurrentShiftSupervisors(tx,tenantId,today,{strict:false}));
           const cursor = await tx.attendanceEvaluationCursor.findFirst({
             where: { tenantId },
           });

@@ -52,17 +52,14 @@ describe('HR-ATT-POLICY-01 arrival', () => {
         expect(r.anomalies.map((a) => a.type)).toContain('LATE_CHECKIN');
     });
 
-    // ATT-GRACE-MIN-01 (2026-09-14) — HR counts grace in elapsed whole minutes.
-    // An 8:05:47 arrival against an 8:00 PM shift is 5 minutes late (ON TIME
-    // under a 5-minute grace), not 5.78 seconds-rounded to 6. Real case:
-    // Huzaifa/Asad 20:05:47/20:05:50 with a 5-min grace were flagged LATE.
+    // Grace boundaries use exact timestamps; seconds must not be discarded.
     it('keeps seconds when comparing arrival with the exact grace boundary', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:05:47Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.latenessMinutes).toBe(5);          // 5 elapsed minutes, not 6
+        expect(r.latenessMinutes).toBeCloseTo(5 + 47/60);
         expect(r.status).toBe('LATE'); // 5m47s is beyond an exact 5-minute grace.
     });
 
@@ -72,7 +69,7 @@ describe('HR-ATT-POLICY-01 arrival', () => {
             shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.latenessMinutes).toBe(6);
+        expect(r.latenessMinutes).toBeCloseTo(6 + 1/60);
         expect(r.status).toBe('LATE');
     });
 
@@ -377,7 +374,7 @@ describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
     it('shows LATE (half-credit) once past half the shift — T&A-RULE-07', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T14:30:00Z'), OUT('2026-08-14T22:30:00Z')],
-            shift: DAY_SHIFT, policy: PCT, nextDay: CLOSED, now: LATER,
+            shift: {...DAY_SHIFT,checkoutCutoff:at('2026-08-14T23:00:00Z')}, policy: PCT, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.latenessMinutes).toBe(270);        // > 240

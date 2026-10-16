@@ -329,10 +329,13 @@ export function resolveEmployeeDay(
     assignment?.fromTime && assignment?.toTime
       ? {
           ...original,
-          shift: { from: assignment.fromTime, to: assignment.toTime },
+          shift: { from: assignment.fromTime, to: assignment.toTime, templateId:assignment.templateId,
+            checkoutCutoffTime:assignment.checkoutCutoffTime,checkoutCutoffDayOffset:assignment.checkoutCutoffDayOffset },
           rotatingShifts: undefined,
           shifts: undefined,
           shiftByDay: undefined,
+          cycle: undefined,
+          offDays: [],
         }
       : original;
   if (!validateSchedulePattern(pattern).valid)
@@ -360,7 +363,7 @@ export function resolveEmployeeDay(
   const holiday = holidays.find((h) => h.fullDay !== false);
   const onLeave = leaves.some((l) => covers(l, key, 'start_date', 'end_date'));
   const calledIn = callIns.some((c) => dateKey(c.date) === key);
-  const cycle = pattern.cycle;
+  const cycle = original.cycle;
   const index = cycle
     ? ((Math.round((dateOnly(key) - dateOnly(cycle.anchor)) / DAY_MS) %
         cycle.days) +
@@ -373,17 +376,18 @@ export function resolveEmployeeDay(
       ? cycle.sequence[index] == null
       : [].concat(cycle.offIndex).includes(index));
   const off =
-    list(pattern.offDays).includes(dateOnly(key).getUTCDay() || 7) || cycleOff;
+    list(original.offDays).includes(dateOnly(key).getUTCDay() || 7) || cycleOff;
+  const assignedWork=assignment?.status==='on_shift' && assignment?.fromTime && assignment?.toTime;
   let working = true,
     reason = null;
   if (onLeave) {
     working = false;
     reason = 'APPROVED_LEAVE';
   } else if (calledIn) reason = 'ON_CALL';
-  else if (holiday) {
+  else if (holiday || assignment?.status === 'holiday') {
     working = false;
     reason = 'HOLIDAY';
-  } else if (assignment?.status === 'off' || off) {
+  } else if (assignment?.status === 'off' || (off && !assignedWork)) {
     working = false;
     reason = cycleOff && assignment?.status !== 'off' ? 'ROTATION_OFF' : 'OFF_DAY';
   } else if (profile.mode === 'PAID_NO_PUNCH' || pattern.paidWithoutPunches)
@@ -427,10 +431,11 @@ export function resolveEmployeeDay(
   return {
     ...base,
     pattern,
-    shift: { start, end, exclusions, paidBreaks },
+    shift: { ...shift, start, end, exclusions, paidBreaks },
     working,
     reason,
     holidayName: holiday?.name,
+    calendarStatus: holiday || assignment?.status==='holiday' ? 'HOLIDAY' : (off || assignment?.status==='off') ? 'WEEKLY_OFF' : null,
     calendarIds: ids,
     rotating: Boolean(pattern.rotatingShifts?.length>1 && !cycle?.sequence),
     rosterId: rosters[0].id,

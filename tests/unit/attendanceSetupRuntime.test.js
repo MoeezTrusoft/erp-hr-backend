@@ -14,6 +14,7 @@ const models = [
   'employeeHolidayCalendar',
   'employeeDeviceEnrolment',
   'shiftAssignment',
+  'shiftTemplate',
   'leave',
   'leaveRequest',
   'attendanceCallIn',

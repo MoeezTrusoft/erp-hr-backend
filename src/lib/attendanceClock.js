@@ -1,4 +1,5 @@
 import { parseCaptureTimestamp } from "./attendanceCapture.js";
+import { boundedCheckout } from './shiftCheckout.js';
 
 export function civilNow(now, timeZone) {
   return parseCaptureTimestamp(new Date(now).toISOString(), timeZone).punchedAt;
@@ -11,7 +12,5 @@ export function civilInstant(value, timeZone) {
   ).occurredAt;
 }
 export function shiftDeadline(shift, policy = {}) {
-  return shift?.end
-    ? new Date(+shift.end + (policy.checkoutLeniencyMin ?? 240) * 60000)
-    : null;
+  return boundedCheckout(shift, policy);
 }

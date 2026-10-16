@@ -26,6 +26,8 @@ const employmentPeriodFindMany = jest.fn().mockResolvedValue([]);
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
     default: {
         attendance: { findMany: attendanceFindMany },
+        attendanceDevicePunch: {findMany:jest.fn(async()=>[])},
+        attendanceCallIn: {findMany:jest.fn(async()=>[])},
         // Timesheet now also attaches raised anomaly requests to each day.
         // Empty fixtures keep this date-window test focused on Attendance.
         attendanceAnomaly: { findMany: jest.fn().mockResolvedValue([]) },
@@ -92,10 +94,16 @@ describe('HR-TIMESHEET-WINDOW-01: default window', () => {
     });
 
     it('keeps other filters working alongside the window', async () => {
-        await listCheckInOuts({ tenantId: TENANT, status: 'late', employeeId: '151' });
+        attendanceFindMany.mockResolvedValueOnce([
+            {id:1,employeeId:151,date:new Date('2026-06-01'),status:'LATE'},
+            {id:2,employeeId:151,date:new Date('2026-06-02'),status:'PRESENT'},
+        ]);
+        const result=await listCheckInOuts({ tenantId: TENANT, status: 'late', employeeId: '151',from:'2026-06-01',to:'2026-06-30' });
         const where = whereOf(attendanceFindMany);
         expect(where.date).toBeDefined();
-        expect(where.status).toBeDefined();
+        // Status is applied after calendar/absence rows have been completed.
+        expect(result.items.map(row=>row.status)).toEqual(['late']);
+        expect(result.total).toBe(1);
         expect(where.employeeId).toBe(151);
     });
 });

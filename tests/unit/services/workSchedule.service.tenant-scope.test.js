@@ -13,6 +13,9 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 const VALID={employeeId:7,schedule_name:'Original',total_hours_per_week:40,effective_start_date:new Date('2099-01-01'),effective_end_date:null,schedule_pattern:{shift:{from:'09:00',to:'17:00'},offDays:[6,7]}};
 const prisma = {
+  shiftTemplate:{findMany:jest.fn()},
+  shiftAssignment:{findMany:jest.fn()},
+  attendanceSetupDraft:{findUnique:jest.fn()},
   $executeRaw:jest.fn(),
   payrollRun:{findFirst:jest.fn(async()=>null)},
   workSchedule: {
@@ -34,6 +37,9 @@ const service = await import('../../../src/services/workScheduleService.js');
 
 beforeEach(() => {
   jest.resetAllMocks();
+  prisma.shiftTemplate.findMany.mockResolvedValue([]);
+  prisma.shiftAssignment.findMany.mockResolvedValue([]);
+  prisma.attendanceSetupDraft.findUnique.mockResolvedValue(null);
   prisma.employee.findFirst.mockResolvedValue({id:7});
   prisma.workSchedule.findMany.mockResolvedValue([]);
   prisma.payrollRun.findFirst.mockResolvedValue(null);

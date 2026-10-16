@@ -13,6 +13,11 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
+import { tenantTransaction } from '../lib/rlsTenant.js';
+import { shiftForEmployee, validateEmployeeShiftSequence, syncCurrentShiftSupervisors, queueChangedShift } from './shiftGovernance.service.js';
+import { assertRosterPeriodEditable } from './workScheduleService.js';
+import { dateKey } from '../lib/attendanceDates.js';
+import { civilNow } from '../lib/attendanceClock.js';
 
 // Fallback monthly overtime limit (hours) when the tenant has no OvertimeRule.
 const DEFAULT_MONTHLY_LIMIT_HOURS = 40;
@@ -387,7 +392,7 @@ export const bulkAssignShifts = async ({ assignments } = {}, tenantId) => {
 
   const data = assignments.map((a, i) => {
     const empId = Number(a?.employeeId);
-    if (!Number.isFinite(empId)) {
+    if (!Number.isInteger(empId) || empId<1) {
       throw Object.assign(
         new Error(`assignments[${i}].employeeId is required`),
         { status: 400 }
@@ -403,15 +408,53 @@ export const bulkAssignShifts = async ({ assignments } = {}, tenantId) => {
     return {
       employeeId: empId,
       date: parsedDate,
+      status: 'on_shift',
+      templateId: a?.templateId != null ? Number(a.templateId) : null,
+      checkoutCutoffTime: null,
+      checkoutCutoffDayOffset: 0,
       shiftType: a?.shiftType ?? "morning",
       workMode: a?.workMode ?? "onsite",
       ...(a?.fromTime != null ? { fromTime: String(a.fromTime) } : {}),
       ...(a?.toTime != null ? { toTime: String(a.toTime) } : {}),
-      ...(a?.templateId != null ? { templateId: Number(a.templateId) } : {}),
       tenantId: tenantId ?? null,
     };
   });
 
-  const result = await prisma.shiftAssignment.createMany({ data });
-  return { count: result.count };
+  return tenantTransaction(prisma,async tx=>{
+    const keys=new Set();
+    for(const row of data) {
+      row.date=new Date(dateKey(row.date)+'T00:00:00Z');
+      const key=row.employeeId+':'+dateKey(row.date);
+      if(keys.has(key)) throw Object.assign(new Error('Duplicate employee/date in shift assignment'),{status:400});
+      keys.add(key);
+    }
+    const ids=[...new Set(data.map(r=>r.employeeId))].sort((a,b)=>a-b);
+    for(const employeeId of ids) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:roster:${employeeId}`}))`;
+      const employee=await tx.employee.findFirst({where:scopedEmployeeWhere(tenantId,{id:employeeId})});
+      if(!employee) throw Object.assign(new Error('Employee not found in this company'),{status:404});
+      const changes=data.filter(r=>r.employeeId===employeeId);
+      const existing=await tx.shiftAssignment.findMany({where:{tenantId,employeeId}});
+      const schedules=await tx.workSchedule.findMany({where:{tenantId,employeeId}});
+      for(const row of changes) {
+        await assertRosterPeriodEditable(tx,tenantId,row.date,row.date);
+        const template=await shiftForEmployee(tx,tenantId,employee,row);
+        if(template) Object.assign(row,{templateId:template.id,fromTime:template.fromTime,toTime:template.toTime,
+          checkoutCutoffTime:template.checkoutCutoffTime,checkoutCutoffDayOffset:template.checkoutCutoffDayOffset});
+        if(!row.fromTime||!row.toTime) throw Object.assign(new Error('Choose a shift template or provide its start and end'),{status:400});
+      }
+      validateEmployeeShiftSequence(schedules,[...existing.filter(r=>!changes.some(c=>+c.date===+r.date)),...changes]);
+      for(const row of changes) {
+        const old=existing.filter(r=>+r.date===+row.date);
+        if(old.length>1) throw Object.assign(new Error('Resolve duplicate existing shift assignments first'),{status:409});
+        if(old[0]) await tx.shiftAssignment.update({where:{id:old[0].id},data:row});
+        else await tx.shiftAssignment.create({data:row});
+      }
+    }
+    const draft=await tx.attendanceSetupDraft.findUnique({where:{tenantId}});
+    const today=dateKey(civilNow(new Date(),draft?.settings?.timeZone||'Asia/Karachi'));
+    await syncCurrentShiftSupervisors(tx,tenantId,today,{employeeIds:ids});
+    for(const row of data) await queueChangedShift(tx,tenantId,row.employeeId,row.date,today);
+    return {count:data.length};
+  },{tenantId,txOptions:{isolationLevel:'Serializable'}});
 };

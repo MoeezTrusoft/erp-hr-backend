@@ -18,6 +18,9 @@ let createdSchedules;
 let updatedSchedules;
 
 const prismaMock = {
+    shiftTemplate:{findMany:jest.fn(async()=>[])},
+    shiftAssignment:{findMany:jest.fn(async()=>[])},
+    attendanceSetupDraft:{findUnique:jest.fn(async()=>null)},
     $executeRaw:jest.fn(),payrollRun:{findFirst:jest.fn(async()=>null)},
     employee: {
         findMany: jest.fn(async () => employeeRows),
@@ -104,7 +107,7 @@ beforeEach(() => {
         { employeeId: 490, startDate: d('2026-01-01'), endDate: d('2026-07-31') },
     ];
     scheduleRows = [
-        { id: 1, tenantId: TENANT, employeeId: 481, schedule_name: 'General', effective_start_date: d('2025-01-01'), effective_end_date: null },
+        { id: 1, tenantId: TENANT, employeeId: 481, schedule_name: 'General', effective_start_date: d('2025-01-01'), effective_end_date: null, schedule_pattern:{shift:{from:'09:00',to:'17:00'}} },
     ];
 });
 

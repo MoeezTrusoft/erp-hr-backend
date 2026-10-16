@@ -39,7 +39,7 @@ export const DEFAULT_SHIFT_START_MIN =
 export function minutesOfDay(date) {
   const d = date instanceof Date ? date : new Date(date);
   if (Number.isNaN(d.getTime())) return null;
-  return d.getUTCHours() * 60 + d.getUTCMinutes();
+  return d.getUTCHours() * 60 + d.getUTCMinutes() + d.getUTCSeconds() / 60 + d.getUTCMilliseconds() / 60000;
 }
 
 /**

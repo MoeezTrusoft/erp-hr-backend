@@ -407,6 +407,7 @@ model Employee {
   reportTo     Employee?     @relation("ReportToRelation", fields: [reportToId], references: [id])
   teamMembers  Employee[]    @relation("ManagerRelation")
   reports      Employee[]    @relation("ReportToRelation")
+  supervisedShifts ShiftTemplate[] @relation("ShiftSupervisor")
 
   // Payroll relations
   payrollPayslips    PayrollPayslip[]
@@ -525,6 +526,7 @@ model BusinessUnit {
   updated_at  DateTime @updatedAt
 
   employees Employee[]
+  shifts ShiftTemplate[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -1499,11 +1501,18 @@ model ShiftTemplate {
   toTime    String // "17:00"
   shiftType String   @default("morning") // morning | evening | night
   workMode  String? // remote | hybrid | onsite
+  departmentId Int?
+  supervisorId Int?
+  checkoutCutoffTime String?
+  checkoutCutoffDayOffset Int @default(0)
+  department BusinessUnit? @relation(fields: [departmentId], references: [id], onDelete: Restrict, map: "shift_department_fk")
+  supervisor Employee? @relation("ShiftSupervisor", fields: [supervisorId], references: [id], onDelete: Restrict, map: "shift_supervisor_fk")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tenantId  String?  @db.Uuid
 
   @@unique([tenantId, name])
+  @@index([tenantId, departmentId, fromTime, toTime], map: "shift_department_window_idx")
   @@index([tenantId])
   @@map("shift_templates")
 }
@@ -1519,6 +1528,8 @@ model ShiftAssignment {
   toTime        String?
   overtimeHours Float    @default(0)
   templateId    Int?
+  checkoutCutoffTime String?
+  checkoutCutoffDayOffset Int @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   tenantId      String?  @db.Uuid
