@@ -51,10 +51,7 @@ const bucketForPolicy = (policy) => {
 
 const emptyBucket = () => ({ total: 0, remaining: 0, used: 0 });
 
-const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
-  null;
+const employeeName = (e) => e?.employee_code || "Employee code required";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -159,9 +156,7 @@ export const getLeaveRequestsDashboard = async (query, tenantId) => {
       employee: {
         is: {
           OR: [
-            { employee_name: { contains: list.q, mode: "insensitive" } },
-            { first_name: { contains: list.q, mode: "insensitive" } },
-            { last_name: { contains: list.q, mode: "insensitive" } },
+            { employee_code: { contains: list.q, mode: "insensitive" } },
           ],
         },
       },
@@ -181,7 +176,7 @@ export const getLeaveRequestsDashboard = async (query, tenantId) => {
       take: list.pageSize,
       include: {
         employee: {
-          select: { id: true, employee_name: true, first_name: true, last_name: true },
+          select: { id: true, employee_code: true },
         },
         leavePolicy: { select: { id: true, name: true, leaveTypeCode: true } },
       },
@@ -253,7 +248,7 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
       // leave the month actually held.
       totalDays: true,
       employee: {
-        select: { id: true, first_name: true, last_name: true, job_title: true, Position: true },
+        select: { id: true, employee_code: true, job_title: true, Position: true },
       },
       leavePolicy: { select: { id: true, name: true, leaveTypeCode: true } },
     },

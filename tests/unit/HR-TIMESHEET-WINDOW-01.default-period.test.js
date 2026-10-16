@@ -28,6 +28,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
         attendance: { findMany: attendanceFindMany },
         attendanceDevicePunch: {findMany:jest.fn(async()=>[])},
         attendanceCallIn: {findMany:jest.fn(async()=>[])},
+        attendanceCorrectionRequest: {findMany:jest.fn(async()=>[])},
         // Timesheet now also attaches raised anomaly requests to each day.
         // Empty fixtures keep this date-window test focused on Attendance.
         attendanceAnomaly: { findMany: jest.fn().mockResolvedValue([]) },

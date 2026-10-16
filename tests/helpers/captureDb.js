@@ -109,6 +109,8 @@ export function captureDb(seed = {}, hooks = {}) {
     attendanceSetupDraft: [],
     leaveRequest: [],
     attendanceCallIn: [],
+    attendanceCorrectionRequest: [],
+    hrApprovalRequest: [],
     ...seed,
   });
   const calls = [];

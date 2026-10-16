@@ -84,7 +84,7 @@ describe('HR-ATT-POLICY-01 form defaults', () => {
     it('fills everything except reason', async () => {
         const d = await form.getAnomalyFormDefaults({ tenantId: TENANT, employeeId: EMP, date: DAY });
 
-        expect(d.applicant.name).toBe('Asad Ullah');       // employee_name is null here
+        expect(d.applicant.name).toBe('EMP100'); // Attendance identity is the employee code only.
         expect(d.position).toBe('Senior Support Engineer'); // linked Position wins over job_title
         expect(d.department).toBe('Operations');
         expect(d.leaveDate.getDate()).toBe(14);

@@ -508,8 +508,10 @@ export async function listCaptureEvents(
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: take + 1,
   });
+  const people = await db.employee.findMany({ where: { tenant_id: tenantId, id: { in: [...new Set(rows.map(row => row.employeeId).filter(Boolean))] } }, select: { id: true, employee_code: true } });
+  const codes = new Map(people.map(person => [person.id, person.employee_code]));
   return {
-    items: rows.slice(0, take),
+    items: rows.slice(0, take).map(row => ({ ...row, employeeCode: codes.get(row.employeeId) || null })),
     nextCursor: rows.length > take ? rows[take - 1].id : null,
   };
 }
@@ -695,7 +697,9 @@ export async function captureTrace({ tenantId, id }, db = prisma) {
       where: { tenantId, captureEventId: id },
     }),
   ]);
-  return { event, punch, audit };
+  const {attendanceActorCodes}=await import('../lib/attendanceActorCodes.js');
+  const codes=await attendanceActorCodes(db,tenantId,[...audit.map(a=>a.actorId),event.biometricApprovedBy]);
+  return { event:{...event,biometricApprovedByCode:codes.get(String(event.biometricApprovedBy)) || null}, punch, audit:audit.map(a=>({...a,actorCode:codes.get(String(a.actorId)) || null})) };
 }
 export async function reviewCaptureEvents(
   { tenantId, actorId, items, action, reason },

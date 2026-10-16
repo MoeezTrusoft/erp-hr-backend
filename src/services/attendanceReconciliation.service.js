@@ -101,7 +101,7 @@ export async function buildMonthlyReconciliation({ tenantId, from, to }) {
     return {
       employeeId: e.id,
       employeeCode: e.employee_code,
-      employeeName: e.employee_name,
+      employeeName: e.employee_code || "Employee code required",
       ...a,
       expectedDays,
       missingDays,

@@ -4,6 +4,7 @@ export const METHOD_ACTION = {
   PUT: "EDIT",
   PATCH: "EDIT",
   DELETE: "DELETE",
+  EXPORT: "EXPORT",
 };
 
 const ACTION_TO_BIT = {

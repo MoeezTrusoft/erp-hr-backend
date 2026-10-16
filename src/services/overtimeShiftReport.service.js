@@ -29,23 +29,17 @@ const OT_STATUSES = new Set(["PENDING", "APPROVED", "REJECTED", "WITHDRAWN"]);
 
 const EMPLOYEE_SELECT = {
   id: true,
-  employee_name: true,
-  first_name: true,
-  last_name: true,
-  photo_url: true,
+  employee_code: true,
   job_title: true,
   businessUnitId: true,
 };
 
-const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
-  null;
+const employeeName = (e) => e?.employee_code || "Employee code required";
 
 // A compact employee card {id,name,avatar[,role]}. role included when withRole.
 const employeeCard = (e, withRole = false) => {
   if (!e) return null;
-  const card = { id: e.id, name: employeeName(e), avatar: e.photo_url ?? null };
+  const card = { id: e.id, code: e.employee_code, name: employeeName(e), avatar: null };
   if (withRole) card.role = e.job_title ?? null;
   return card;
 };

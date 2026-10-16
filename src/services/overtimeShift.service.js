@@ -41,10 +41,7 @@ const DEFAULT_PATTERN = {
   friday: "09:00-17:00",
 };
 
-const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
-  null;
+const employeeName = (e) => e?.employee_code || "Employee code required";
 
 // First/last instant of the current calendar month (local server time).
 const monthRange = (now = new Date()) => {
@@ -152,7 +149,7 @@ const buildApproverMap = async (rows, tenantId) => {
   if (!ids.length) return new Map();
   const employees = await prisma.employee.findMany({
     where: scopedEmployeeWhere(tenantId, { id: { in: ids } }),
-    select: { id: true, employee_name: true, first_name: true, last_name: true },
+    select: { id: true, employee_code: true },
   });
   return new Map(employees.map((e) => [e.id, employeeName(e)]));
 };

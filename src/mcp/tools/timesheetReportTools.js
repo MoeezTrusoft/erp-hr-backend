@@ -25,6 +25,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import prisma from '../../lib/prisma.js';
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -53,7 +54,7 @@ export function registerTimesheetReportTools(server) {
       const scope = resolveAttendanceReadScope(user, permissions);
       const effective = scope.canViewOthers
         ? employeeId
-        : scope.employeeId;
+        : scope.employeeId ?? -1;
       const data = await getTimesheetKpis({ tenantId: user.tenantId, from, to, employeeId: effective });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_timesheet_kpis")
@@ -68,7 +69,8 @@ export function registerTimesheetReportTools(server) {
     withToolError(async ({ month }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getAttendanceSummaryWeekly({ tenantId: user.tenantId, month });
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await getAttendanceSummaryWeekly({ tenantId: user.tenantId, month, employeeId: scope.canViewOthers ? undefined : scope.employeeId ?? -1 });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_summary_weekly")
   );
@@ -82,18 +84,20 @@ export function registerTimesheetReportTools(server) {
     withToolError(async ({ month }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getAbsenteeismTrend({ tenantId: user.tenantId, month });
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await getAbsenteeismTrend({ tenantId: user.tenantId, month, employeeId: scope.canViewOthers ? undefined : scope.employeeId ?? -1 });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_absenteeism_trend")
   );
 
   server.tool(
     "hr_checkinout_list",
-    "Paginated / filtered / sorted check-in-out table. Each row: attendanceId, date, employee{id,name,avatar}, status (display: on-time|late|half-day|early-checkout|absent), checkIn, checkOut, workMode.",
+    "Paginated, filtered check-in-out table with company-scoped employee codes, calendar classification, outcome and processing state.",
     {
-      q: z.string().optional().describe("Employee-name contains, case-insensitive."),
+      site:z.string().max(100).optional(), department:z.string().max(100).optional(), shift:z.string().max(100).optional(),
+      q: z.string().optional().describe("Employee-code contains, case-insensitive."),
       status: z
-        .enum(["on-time", "late", "half-day", "early-checkout", "absent", "missing-checkin", "missing-checkout", "on-leave", "weekly-off", "holiday"])
+        .enum(["on-time", "late", "half-day", "early-checkout", "absent", "missing-checkin", "missing-checkout", "on-leave", "weekly-off", "holiday", "pending-attendance", "punch-conflict", "setup-required"])
         .optional()
         .describe("Display status filter — on-time | late | half-day | early-checkout | absent | missing-checkin | missing-checkout | on-leave | weekly-off | holiday (mapped to the stored enum)."),
       exclude: z
@@ -118,6 +122,11 @@ export function registerTimesheetReportTools(server) {
       const effectiveArgs = scope.canViewOthers
         ? args
         : { ...args, employeeId: String(scope.employeeId ?? -1) };
+      if (!scope.canViewOthers && permissions?.includes?.('hr.approvals.manager')) {
+        const team = await prisma.employee.findMany({ where: { tenant_id: user.tenantId, OR: [{ id: scope.employeeId || -1 }, { managerId: scope.employeeId || -1 }] }, select: { id: true } });
+        effectiveArgs.employeeId = args.employeeId;
+        effectiveArgs.employeeIds = team.map(employee => employee.id);
+      }
       const data = await listCheckInOuts({ tenantId: user.tenantId, ...effectiveArgs });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_checkinout_list")

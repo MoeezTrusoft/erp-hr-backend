@@ -29,7 +29,8 @@ let employeeWorkMode;
 let employeeTenant;
 
 const prismaMock = {
-    employee: { findUnique: jest.fn(async () => ({ id: EMP, tenant_id: employeeTenant, work_mode: employeeWorkMode })) },
+    employee: {
+        findMany: jest.fn(async () => [{id:1,employee_code:"EMP-001"}]), findUnique: jest.fn(async () => ({ id: EMP, tenant_id: employeeTenant, work_mode: employeeWorkMode })) },
     attendance: {
         findFirst: jest.fn(async ({ where }) =>
             attendanceRows.find((r) => r.employeeId === where.employeeId

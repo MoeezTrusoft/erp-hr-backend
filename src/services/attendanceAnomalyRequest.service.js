@@ -133,9 +133,6 @@ async function loadRequester(employeeId, tenantId) {
       tenant_id: true,
       id: true,
       employee_code: true,
-      employee_name: true,
-      first_name: true,
-      last_name: true,
       job_title: true,
       businessUnit: { select: { name: true } },
       // Relation is capital-P on Employee (Position), unlike businessUnit.
@@ -149,11 +146,7 @@ async function loadRequester(employeeId, tenantId) {
   return {
     id: employee.id,
     employee_code: employee.employee_code,
-    // employee_name is frequently null in this roster.
-    name:
-      employee.employee_name ||
-      [employee.first_name, employee.last_name].filter(Boolean).join(" ") ||
-      employee.employee_code,
+    name: employee.employee_code || "Employee code required",
     // Position prefers the linked Position record, then the free-text job title.
     position: employee.Position?.title ?? employee.job_title ?? null,
     // Department authoritative source is RBAC; businessUnit is the local

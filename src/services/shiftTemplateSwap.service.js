@@ -19,8 +19,7 @@ import { civilNow } from '../lib/attendanceClock.js';
 import { assertRosterPeriodEditable } from './workScheduleService.js';
 
 const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
+  e?.employee_code ||
   null;
 
 const SHIFT_TYPES = ["morning", "evening", "night"];
@@ -331,7 +330,7 @@ const buildNameMap = async (rows, tenantId) => {
   if (!ids.length) return new Map();
   const employees = await prisma.employee.findMany({
     where: scopedEmployeeWhere(tenantId, { id: { in: ids } }),
-    select: { id: true, employee_name: true, first_name: true, last_name: true },
+    select: { id: true, employee_code: true },
   });
   return new Map(employees.map((e) => [e.id, employeeName(e)]));
 };

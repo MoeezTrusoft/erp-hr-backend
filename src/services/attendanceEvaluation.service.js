@@ -27,7 +27,7 @@ export async function attendanceCompleteness(
   db = prisma,
 ) {
   const days = dateRange(from, to, 370);
-  const [employees, runtime, rows, events, jobs] = await Promise.all(
+  const [employees, runtime, rows, events, jobs, corrections] = await Promise.all(
     [
       db.employee.findMany({
         where: {
@@ -65,6 +65,10 @@ export async function attendanceCompleteness(
           ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
         },
       }),
+      db.attendanceCorrectionRequest.findMany({
+        where: { tenantId, status: "PENDING", date: { gte: dateOnly(from), lte: dateOnly(to) }, ...(employeeIds ? { employeeId: { in: employeeIds } } : {}) },
+        select: { id: true, employeeId: true, date: true },
+      }),
     ],
   );
   const byDay = new Map(
@@ -95,6 +99,7 @@ export async function attendanceCompleteness(
       const row = byDay.get(employee.id + "|" + date),
         entry = {
           employeeId: employee.id,
+          employeeCode: employee.employee_code,
           date,
           working: info.working,
           state: row?.processingState || "MISSING",
@@ -143,7 +148,17 @@ export async function attendanceCompleteness(
         date: dateKey(job.date),
         jobId: job.id,
       });
-  return { from, to, ready: issues.length === 0, totals, issues, coverage };
+  const codes = new Map(employees.map(e => [e.id, e.employee_code]));
+  if (corrections.length) {
+    const approvals = await db.hrApprovalRequest.findMany({where:{tenantId,kind:"ATTENDANCE_CORRECTION",sourceRef:{in:corrections.map(c=>c.id)}}});
+    for (const correction of corrections) {
+      const approval=approvals.find(a=>a.sourceRef===correction.id);
+      // A saved draft has not been submitted and cannot hold payroll indefinitely.
+      if (!approval || ["WITHDRAWN", "REJECTED"].includes(approval.stage)) continue;
+      issues.push({code:"CORRECTION_AWAITING_"+approval.stage,employeeId:correction.employeeId,date:dateKey(correction.date),requestRef:correction.id,approvalRef:approval.id});
+    }
+  }
+  return { from, to, ready: issues.length === 0, totals, issues: issues.map(issue => ({ ...issue, employeeCode: codes.get(issue.employeeId) || null })), coverage };
 }
 export async function assertAttendanceComplete(args, db = prisma) {
   const result = await attendanceCompleteness(args, db);
@@ -165,11 +180,11 @@ export async function explainAttendance(
   const row = await db.attendance.findFirst({
     where: { tenantId, employeeId, date: dateOnly(date) },
   });
-  if (!row)
-    throw Object.assign(
-      new Error("Attendance has not been evaluated for this date"),
-      { status: 404 },
-    );
+  if (!row) {
+    const runtime=await loadAttendanceRuntime({tenantId,from:date,to:date,db});
+    const plan=runtime.resolve(employeeId,date);
+    return {attendance:{processingState:plan.working==null?'SETUP_REQUIRED':'AWAITING_EVALUATION',status:plan.reason || 'PENDING_ATTENDANCE',calculation:null,setupSnapshot:plan},history:[],credits:[],punches:[],planned:true};
+  }
   const [history, credits, punches] = await Promise.all([
     db.attendanceEvaluation.findMany({
       where: { tenantId, attendanceId: row.id },

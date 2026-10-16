@@ -311,6 +311,7 @@ export async function applyEvaluatedShifts(args) {
     if (changed)
       summary.changes.push({
         employeeId,
+        employeeCode: employeeMap.get(employeeId)?.employee_code || null,
         date: dayKey(day),
         before: old
           ? {

@@ -297,6 +297,7 @@ export function resolveEmployeeDay(
     timeZone: config.settings?.timeZone || 'Asia/Karachi',
     sites: list(config.settings?.sites),
     siteAssignment: list(config.settings?.siteAssignments).find(a=>a.employeeId===employee.id&&covers(a,key)) ?? null,
+    departmentId: employee.businessUnitId ?? null,
     deviceSites: list(config.settings?.deviceSites).filter(a=>covers(a,key)),
     siteRoutes: list(config.settings?.siteRoutes),
   };

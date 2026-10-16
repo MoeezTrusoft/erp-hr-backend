@@ -33,6 +33,7 @@ import {
 import { startHrOutboxDispatcher } from "./jobs/outbox.loop.js";
 import { startSystemAccountProvisioningWorker } from "./jobs/system-account-provisioning.loop.js";
 import { startAttendanceCaptureWorker } from './jobs/attendance-capture.loop.js';
+import { startAttendanceExportWorker } from './jobs/attendance-export.loop.js';
 import { startAttendanceEscalationWorker } from './jobs/attendance-escalation.loop.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +95,7 @@ const separationWorker = startSeparationWorker();
 const accountProvisioningWorker = startSystemAccountProvisioningWorker();
 const attendanceEscalationWorker = startAttendanceEscalationWorker();
 const attendanceCaptureWorker = startAttendanceCaptureWorker();
+const attendanceExportWorker = startAttendanceExportWorker();
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
@@ -110,6 +112,7 @@ async function gracefulShutdown() {
   await assessmentWorker.stop();
   attendanceEscalationWorker.stop();
   await attendanceCaptureWorker.stop();
+  await attendanceExportWorker.stop();
   stopAttendanceListener();
   // Stop the realtime health beat + release the attendance Redis client.
   try { realtimeHealth?.stop?.(); } catch { /* best effort */ }

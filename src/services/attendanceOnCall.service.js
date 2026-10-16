@@ -41,7 +41,7 @@ export async function createCallIn({ employeeId, date, reason, calledBy }) {
   // never as a cross-tenant write.
   const employee = await prisma.employee.findFirst({
     where: { id },
-    select: { id: true, first_name: true, last_name: true },
+    select: { id: true, employee_code: true },
   });
   if (!employee) {
     throw Object.assign(new Error(`employee ${id} not found`), { status: 404, code: "HR-4040" });
@@ -64,7 +64,7 @@ export async function createCallIn({ employeeId, date, reason, calledBy }) {
       });
 
   logger.info({ employeeId: id, date: day, id: row.id }, "on-call call-in recorded");
-  return { ...row, employeeName: [employee.first_name, employee.last_name].filter(Boolean).join(" ").trim() };
+  return { ...row, employeeName: employee.employee_code || "Employee code required" };
 }
 
 /** Call-ins in a window (optionally one employee). */
@@ -90,11 +90,11 @@ export async function listCallIns({ from, to, employeeId } = {}) {
   const employees = rows.length
     ? await prisma.employee.findMany({
         where: { id: { in: [...new Set(rows.map((r) => r.employeeId))] } },
-        select: { id: true, first_name: true, last_name: true },
+        select: { id: true, employee_code: true },
       })
     : [];
   const nameById = new Map(
-    employees.map((e) => [e.id, [e.first_name, e.last_name].filter(Boolean).join(" ").trim()]),
+    employees.map((e) => [e.id, e.employee_code || "Employee code required"]),
   );
 
   return {

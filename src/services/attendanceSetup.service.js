@@ -219,9 +219,7 @@ export async function previewAttendanceSetup({ tenantId, from, to }) {
     if (dates.length)
       impact.push({
         employeeId: employee.id,
-        name:
-          employee.employee_name ||
-          [employee.first_name, employee.last_name].filter(Boolean).join(' '),
+        name: employee.employee_code || 'Employee code required',
         dates,
       });
   }

@@ -15,6 +15,10 @@ export const hash = (value) =>
     .update(JSON.stringify(json(value)))
     .digest("hex");
 const definitions = {
+  ATTENDANCE_CORRECTION: [
+    "attendanceCorrectionRequest", "attendance_correction_requests", "employeeId", ["PENDING"],
+    ["date", "sessionKey", "checkIn", "checkOut", "reason", "evidence", "reasonCategory", "evidenceDate", "evaluationVersion", "version"],
+  ],
   TIME_CREDIT: [
     "attendanceTimeCredit",
     "attendance_time_credits",
@@ -283,6 +287,7 @@ export const registry = Object.fromEntries(
         pending,
         fields,
         numeric: ![
+          "ATTENDANCE_CORRECTION",
           "TIME_CREDIT",
           "TIME_CREDIT_REVOCATION",
           "ASSESSMENT_RELEASE",
@@ -488,6 +493,7 @@ export async function sourceCandidates(tx, env, kind) {
   return candidates;
 }
 export async function onSubmit(tx, env, kind, s) {
+  if (kind === 'ATTENDANCE_CORRECTION' && ((!s.row.checkIn && !s.row.checkOut) || !s.row.reason?.trim() || !s.row.evidence?.trim() || !s.row.reasonCategory || !s.row.evidenceDate)) fail('Complete the supported missing time, reason category, explanation, evidence reference and source date before submitting.',422);
   if (kind === "TIMESHEET" && !s.snapshot.entries.length)
     fail("Cannot submit an empty timesheet", 422);
   if (
@@ -540,7 +546,10 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
   )
     return "SEPARATE_ACTION";
   await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${kind + ":" + row.id},true)`;
-  if (kind === "TIME_CREDIT") {
+  if (kind === "ATTENDANCE_CORRECTION") {
+    const { finalizeCorrectionRequest } = await import('../attendanceCorrectionRequest.service.js');
+    await finalizeCorrectionRequest(tx, env, row, approved);
+  } else if (kind === "TIME_CREDIT") {
     const { finalizeTimeCredit } =
       await import("../attendanceEvaluation.service.js");
     await finalizeTimeCredit(tx, env, row, approved);

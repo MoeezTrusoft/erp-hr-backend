@@ -107,6 +107,13 @@ test("shift master, roster moves, audit and cutoff rollback use real PostgreSQL"
         },
       }),
     );
+  const proposedRoster={tenantId,employeeId:people.CAPTURE.id,schedule_name:'Preview only',effective_start_date:tomorrow,total_hours_per_week:40,schedule_pattern:{shift:{from:'09:00',to:'17:00',templateId:dayShift.id},offDays:[7]}};
+  const beforePreview=await db(tx=>tx.workSchedule.count({where:{tenantId,employeeId:people.CAPTURE.id}}));
+  const preview=await as(()=>createWorkSchedule({...proposedRoster,dryRun:true}));
+  assert.equal(preview.employeeCode,'EMP-CAPTURE');
+  assert.ok(preview.previewToken);
+  assert.equal(await db(tx=>tx.workSchedule.count({where:{tenantId,employeeId:people.CAPTURE.id}})),beforePreview);
+  await assert.rejects(as(()=>createWorkSchedule({...proposedRoster,schedule_name:'Changed since review',previewToken:preview.previewToken})),/after preview/);
   await as(() =>
     bulkAssignShifts(
       {
@@ -347,7 +354,8 @@ test("recorded punches, absence, holiday rows, worked hours and case counts agre
     byDate("2026-10-12").checkIn.toISOString(),
     "2026-10-12T09:00:01.000Z",
   );
-  assert.equal(byDate("2026-10-13").status, "holiday");
+  assert.equal(byDate("2026-10-13").calendarStatus, "HOLIDAY");
+  assert.equal(byDate("2026-10-13").status, "early-checkout");
   assert.equal(byDate("2026-10-13").totalHours, 4);
   assert.equal(byDate("2026-10-14").status, "absent");
   assert.equal(byDate("2026-10-18").status, "weekly-off");

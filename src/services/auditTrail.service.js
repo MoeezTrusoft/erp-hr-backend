@@ -23,6 +23,7 @@ import prisma from "../lib/prisma.js";
 import { scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 import { queryAuditEvents } from "./audit.client.js";
+import { attendanceActorCodes } from '../lib/attendanceActorCodes.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -134,6 +135,7 @@ export async function getAuditTrail({
     }
 
     // Map each AuditEvent → a flat FE row.
+    const actorCodes = await attendanceActorCodes(prisma,tenantId,events.map(e=>e.actorId));
     const rows = events.map((ev) => {
         const { entity: rawEntity, action: parsedAction } = parseEventName(ev?.name);
         const actorIdStr = ev?.actorId != null ? String(ev.actorId) : null;
@@ -161,6 +163,7 @@ export async function getAuditTrail({
             entityLabel: rawEntity ? capitalize(rawEntity) : null,
             action: parsedAction,
             actorType: ev?.actorType ?? null,
+            actorCode:actorCodes.get(String(ev?.actorId)) || null,
             user,
             userId: actorIdStr,
             role,
