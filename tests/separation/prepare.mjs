@@ -93,6 +93,8 @@ try {
   await db.query(approvals.slice(approvals.indexOf('-- Approval security guards')));
   const workspace=await readFile('prisma/migrations/20261020090000_attendance_workspace/migration.sql','utf8');
   await db.query(workspace.slice(workspace.indexOf('-- WORKSPACE_SECURITY')));
+  const acceptance=await readFile('prisma/migrations/20261020120000_attendance_onsite_acceptance/migration.sql','utf8');
+  await db.query(acceptance.slice(acceptance.indexOf('-- ACCEPTANCE_SECURITY')).replace(/ALTER TABLE attendance_capture_devices ADD COLUMN[^;]+;/g,''));
   const correction=await readFile('prisma/migrations/20261019090000_attendance_correction_workflow/migration.sql','utf8');
   await db.query(correction.slice(correction.indexOf('CREATE UNIQUE INDEX attendance_correction_active')));
   await db.query(

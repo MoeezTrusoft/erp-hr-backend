@@ -17,6 +17,16 @@ const input = (rows) => ({
   sn: "DEVICE-1",
   rows: rows || ["101\t2026-10-01 22:00:00\t0\t1\t0"],
 });
+it("keeps supervised device evidence in review and refuses direct release", async () => {
+  const db = captureDb();
+  await db.attendanceCaptureDevice.updateMany({where:{sn:"DEVICE-1"},data:{acceptanceMode:"SUPERVISED",acceptanceSiteRef:"site-test"}});
+  await receiveCapture(input(), db);
+  const row = db.snapshot().attendanceCaptureEvent[0];
+  expect(row).toMatchObject({state:"NEEDS_REVIEW",reason:"ONSITE_SUPERVISED_REVIEW",raw:{acceptanceMode:"SUPERVISED"}});
+  for (const action of ["RETRY","RESOLVE","APPROVE_BIOMETRIC"])
+    await expect(reviewCaptureEvents({tenantId:TENANT,actorId:"hr",items:[{id:row.id,version:row.version}],action,reason:"Attempt direct release"},db)).rejects.toThrow(/employee attendance correction/);
+  expect(db.snapshot().attendanceDevicePunch).toHaveLength(0);
+});
 describe("capture validation and time semantics", () => {
   it.each([
     "2026-02-30 09:00:00",
@@ -202,6 +212,10 @@ describe("durable receipt and tenant attribution", () => {
     expect(
       db.snapshot().attendanceCaptureDevice.at(-1).credentialHash,
     ).not.toBe(registered.credential);
+    expect(registered.device.active).toBe(false);
+    await expect(authenticateCaptureDevice("NEW", registered.credential, db)).rejects.toMatchObject({status:403});
+    // The real approval/activation boundary is covered by PostgreSQL acceptance tests.
+    await db.attendanceCaptureDevice.update({where:{sn:"NEW"},data:{active:true}});
     expect(
       (await authenticateCaptureDevice("NEW", registered.credential, db)).sn,
     ).toBe("NEW");

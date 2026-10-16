@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: f40f1784ba1a7ec60bb204baa8e5fea9af28d419 # attendance correction approval contracts
+          ref: 3ff431ad2d761226ac4b2dd45722d0ae5f9393c0 # onsite biometric acceptance contracts (0.17.4)
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -41,7 +41,7 @@ jobs:
         env:
           ASSESSMENT_TEST_ADMIN_URL: postgresql://postgres:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
       - name: Exercise workflow and database invariants
-        run: node --test tests/assessment/*.test.mjs tests/separation/*.test.mjs tests/approval/*.test.mjs tests/company-setup/*.test.mjs tests/attendance/*.test.mjs
+        run: node --test tests/assessment/*.test.mjs tests/separation/*.test.mjs tests/approval/*.test.mjs tests/company-setup/*.test.mjs tests/attendance/*.test.mjs tests/acceptance/*.test.mjs
         env:
           ASSESSMENT_TEST_ADMIN_URL: postgresql://postgres:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
           ASSESSMENT_TEST_DATABASE_URL: postgresql://assessment_test_user:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test

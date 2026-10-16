@@ -71,6 +71,8 @@ export async function drainCapture(
               },
             });
             for (const event of batch) {
+              if (event.raw?.acceptanceMode === 'SUPERVISED')
+                throw captureError('ONSITE_SUPERVISED_REVIEW: attendance correction approval is required',409);
               if (
                 event.source === "BIOMETRIC" &&
                 (!event.raw?.biometric?.matched ||

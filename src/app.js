@@ -1,3 +1,4 @@
+import attendanceAcceptanceRoutes from './routes/attendanceAcceptance.routes.js';
 import setupRoutes from './routes/company-setup.routes.js';
 import approvalRoutes from './routes/approval.routes.js';
 import separationRoutes from "./routes/separation.routes.js";
@@ -179,6 +180,7 @@ export const createApp = () => {
     // guard has filled req.user.tenantId.
     app.use("/api", establishTenantContext);
     const authorizedRouters = [
+        ["/api/hr/attendance-acceptance", attendanceAcceptanceRoutes],
         ["/api/hr/company-setup", setupRoutes],
         ["/api/hr/approvals", approvalRoutes],
         ["/api/hr/separations", separationRoutes],

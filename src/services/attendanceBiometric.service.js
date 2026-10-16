@@ -530,11 +530,13 @@ export async function submitBiometricSample(
           const receiptId = randomUUID(),
             eventId = randomUUID();
           const state =
-            pad === "PASSED" && +now <= +challenge.expiresAt
+            pad === "PASSED" && +now <= +challenge.expiresAt && current.acceptanceMode !== "SUPERVISED"
               ? "PENDING"
               : "NEEDS_REVIEW";
           const reviewReason =
-            pad !== "PASSED"
+            current.acceptanceMode === "SUPERVISED"
+              ? "ONSITE_SUPERVISED_REVIEW"
+              : pad !== "PASSED"
               ? "BIOMETRIC_PAD_UNVERIFIED"
               : "BIOMETRIC_DELAYED_UPLOAD";
           const summary = {
@@ -571,6 +573,7 @@ export async function submitBiometricSample(
               employeeId: challenge.employeeId,
               fingerprint: fingerprint(["BIOMETRIC", challenge.id]),
               raw: {
+                ...(current.acceptanceSiteRef ? { acceptanceSiteRef: current.acceptanceSiteRef, acceptanceMode: current.acceptanceMode } : {}),
                 receivedAt: now.toISOString(),
                 biometric: {
                   ...matched,

@@ -481,7 +481,7 @@ export async function saveTask(raw) {
     return persistTask(tx, env, task, old, data, reason);
   });
 }
-function fileData(input) {
+export function fileData(input) {
   const bytes = Buffer.from(input.contentBase64, "base64");
   if (
     !bytes.length ||

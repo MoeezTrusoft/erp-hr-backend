@@ -1,3 +1,4 @@
+import { registerAttendanceAcceptanceTools } from './tools/attendanceAcceptanceTools.js';
 import { registerCompanySetupTools } from './tools/companySetupTools.js';
 import { registerApprovalTools } from './tools/approvalTools.js';
 import { registerSeparationTools } from "./tools/separationTools.js";
@@ -335,5 +336,6 @@ export function registerAllTools(server) {
   registerSeparationTools(server);
   registerApprovalTools(server);
   registerCompanySetupTools(server);
+  registerAttendanceAcceptanceTools(server);
   registerAssessmentTools(server);
 }
