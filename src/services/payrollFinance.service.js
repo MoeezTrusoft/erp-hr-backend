@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { HrPayrollFinanceSummaryV1, PAYROLL_FINANCE_EVENT, PayrollMoney, payrollMinor } from '@trusoft/contracts/payroll-finance';
 import { tenantTransaction } from '../lib/rlsTenant.js';
 import { enqueueHrDomainEvent } from './hrDomainEvent.service.js';
@@ -61,7 +62,9 @@ export function createPayrollFinanceService(db) {
         if (prior?.status === 'DRAFT') fail('Approve the pending summary before preparing a later revision');
         const approvedPrior = await tx.payrollFinanceSummary.findFirst({ where: { tenantId, month: source.month, status: 'APPROVED' }, orderBy: { revision: 'desc' } });
         for (const [items, key] of [['payments', 'reference'], ['advances', 'id']]) for (const old of approvedPrior?.payload?.[items] || []) {
-          if (!input[items].some(x => x[key] === old[key] && digest(x) === digest(old))) fail('Revisions must retain previously approved payments and advances unchanged');
+          // PostgreSQL JSONB reorders object keys. Compare evidence values while
+          // preserving the existing request/source hashes and approval history.
+          if (!input[items].some(x => x[key] === old[key] && isDeepStrictEqual(x, old))) fail('Revisions must retain previously approved payments and advances unchanged');
         }
         const paid = [...input.payments, ...input.advances].reduce((n,x) => n + payrollMinor(x.amount), 0n);
         const id = randomUUID(), revision = (prior?.revision || 0) + 1;

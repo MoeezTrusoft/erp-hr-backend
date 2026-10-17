@@ -40,6 +40,7 @@ test('request retry, independent approval, source drift, durable outbox and cumu
   const payment={reference:'PAY1',date:'2026-10-31',amount:'30',accountRef:'BANK',evidenceAssetId:'test-dam-id'};
   const second=await service.prepare(ctx(104),prepare({payments:[payment]}));assert.equal(second.revision,2);assert.equal(second.payload.paymentStatus,'PARTIAL');
   await service.approve(ctx(105),{id:second.id,expectedVersion:1});
+  second.payload.payments[0]=Object.fromEntries(Object.entries(payment).reverse());
   await assert.rejects(service.prepare(ctx(104),prepare()),/retain/);
   await assert.rejects(service.prepare(ctx(104),prepare({payments:[{...payment,amount:'100'}]})),/retain/);
   assert.throws(()=>prepare({employerContribution:'12'}),/evidence/);
