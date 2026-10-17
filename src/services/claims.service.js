@@ -22,10 +22,7 @@ import logger from "../lib/logger.js";
 const num = (v) => (v == null ? null : Number(v));
 
 // Employee display name from the snake_case columns.
-const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
-  null;
+const employeeName = e => e?.employee_code || 'Employee code required';
 
 // Shape an included Employee into the list/drawer employee sub-object.
 const shapeEmployee = (e) =>
@@ -34,6 +31,7 @@ const shapeEmployee = (e) =>
         id: e.id,
         employeeId: e.id,
         name: employeeName(e),
+        employeeCode: e.employee_code || null,
         role: e.job_title || null,
         avatar: e.photo_url || null,
         department: e.businessUnit?.name || null,
@@ -42,9 +40,7 @@ const shapeEmployee = (e) =>
 
 const EMPLOYEE_SELECT = {
   id: true,
-  first_name: true,
-  last_name: true,
-  employee_name: true,
+  employee_code: true,
   photo_url: true,
   job_title: true,
   businessUnitId: true,
@@ -112,9 +108,7 @@ export async function listClaims({
     and.push({
       OR: [
         { title: { contains: q, mode: "insensitive" } },
-        { employee: { employee_name: { contains: q, mode: "insensitive" } } },
-        { employee: { first_name: { contains: q, mode: "insensitive" } } },
-        { employee: { last_name: { contains: q, mode: "insensitive" } } },
+        { employee: { employee_code: { contains: q, mode: "insensitive" } } },
       ],
     });
   }
@@ -194,7 +188,8 @@ function shapeDrawer(claim) {
 
 const shapeApprover = (e) =>
   e
-    ? { id: e.id, name: employeeName(e), role: e.job_title || null, avatar: e.photo_url || null }
+    ? { id: e.id, name: employeeName(e),
+        employeeCode: e.employee_code || null, role: e.job_title || null, avatar: e.photo_url || null }
     : null;
 
 const DRAWER_INCLUDE = {
@@ -204,7 +199,7 @@ const DRAWER_INCLUDE = {
     orderBy: { level: "asc" },
     include: {
       approver: {
-        select: { id: true, first_name: true, last_name: true, employee_name: true, photo_url: true, job_title: true },
+        select: { id: true, employee_code: true, photo_url: true, job_title: true },
       },
     },
   },
@@ -371,7 +366,7 @@ export async function respondClaimInfo({ tenantId, infoId, response }) {
 const CSV_COLUMNS = [
   { key: "claimId", header: "Claim ID" },
   { key: "title", header: "Title" },
-  { key: "employee", header: "Employee", value: (r) => r.employee?.name || "" },
+  { key: "employee", header: "Employee code", value: (r) => r.employee?.name || "" },
   { key: "category", header: "Category" },
   { key: "amount", header: "Amount" },
   { key: "submittedAt", header: "Submitted", value: (r) => (r.submittedAt ? new Date(r.submittedAt).toISOString() : "") },

@@ -2261,6 +2261,7 @@ model PayrollRun {
   approvedAt       DateTime?
   ruleVersion      String?
   ratesEffectiveAt DateTime?
+  calculationConfigVersion Int?
   created_at       DateTime         @default(now())
   updated_at       DateTime         @updatedAt
 
@@ -2274,7 +2275,7 @@ model PayrollRun {
   // is unique WITHIN a tenant, so two DIFFERENT tenants may each own the same
   // (periodStart, periodEnd). The app-level overlap guard in createPayrollRun is
   // already tenant-scoped (withTenant), so this aligns the DB constraint with it.
-  @@unique([tenantId, periodStart, periodEnd])
+  @@index([tenantId, periodStart, periodEnd])
   @@unique([tenantId, id], map: "payroll_runs_tenant_id_id")
   @@index([tenantId])
   @@map("payroll_runs")
@@ -2297,6 +2298,9 @@ model PayrollPayslip {
   // copied from its run so a single payslip is independently reproducible.
   ruleVersion     String?
   distributedAt   DateTime?
+  paidAt DateTime?
+  paymentReference String?
+  paymentEvidence Json?
   status          PayslipStatus @default(DRAFT)
   // Payroll-This-Month bulk actions (approve/hold/disburse) audit.
   approvedById    Int?
@@ -2567,6 +2571,7 @@ model LoanRepayment {
   payrollRunId Int? // Link to the payroll run that deducted it
   payslipId    Int? // Link to the payslip line
   deductedAt   DateTime @default(now())
+  settledAt DateTime?
   note         String?
 
   loan Loan @relation(fields: [loanId], references: [id])

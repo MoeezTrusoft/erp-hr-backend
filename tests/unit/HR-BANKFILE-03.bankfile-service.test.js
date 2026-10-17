@@ -49,6 +49,7 @@ const finalizedRun = {
     tenantId: TENANT_A,
     status: 'FINALIZED',
     currencyCode: 'USD',
+    countryCode:'US',
     periodEnd: new Date('2026-01-31T00:00:00Z'),
 };
 
@@ -56,12 +57,14 @@ const payslips = [
     {
         id: 1,
         employeeId: 100,
+        status:"FINALIZED",
         netAmount: 2500.5, // → 250050 cents
         employee: {
             id: 100,
+            employee_code:"EMP-100",
             first_name: 'Ada',
             last_name: 'Lovelace',
-            employee_name: 'Ada Lovelace',
+            employee_name: 'EMP-100',
             bankDetails: [
                 { accountNumber: ACCT_1, routingNumber: ROUTING, accountType: 'CHECKING', isPrimary: true, bankName: 'Chase' },
             ],
@@ -70,12 +73,14 @@ const payslips = [
     {
         id: 2,
         employeeId: 200,
+        status:"FINALIZED",
         netAmount: 1999.99, // → 199999 cents
         employee: {
             id: 200,
+            employee_code:"EMP-200",
             first_name: 'Alan',
             last_name: 'Turing',
-            employee_name: 'Alan Turing',
+            employee_name: 'EMP-200',
             bankDetails: [
                 { accountNumber: ACCT_2, routingNumber: ROUTING, accountType: 'SAVINGS', isPrimary: true, bankName: 'Chase' },
             ],

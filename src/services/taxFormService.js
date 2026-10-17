@@ -128,12 +128,7 @@ const accumulatePayslip = (acc, slip) => {
 const recipientIdentity = (employee) => ({
     employeeId: employee?.id ?? null,
     employeeCode: employee?.employee_code ?? null,
-    name:
-        employee?.employee_name
-        || [employee?.first_name, employee?.last_name].filter(Boolean).join(' ')
-        || (employee?.id != null ? `EMP ${employee.id}` : null),
-    firstName: employee?.first_name ?? null,
-    lastName: employee?.last_name ?? null,
+    name: employee?.employee_code || 'Employee code required',
     // Decrypted in-memory by the prisma C4 extension; surfaced ONLY here.
     tin: employee?.nationality_id_no ?? null,
     tinType: employee?.nationality_id_type ?? null,
@@ -224,6 +219,8 @@ export const generateYearEndTaxForms = async (
     const runs = await prisma.payrollRun.findMany({
         where: withTenant(tenantId, {
             status: 'FINALIZED',
+            countryCode: 'US',
+            currencyCode: 'USD',
             periodEnd: { gte: start, lte: end },
         }),
         select: { id: true, currencyCode: true },
@@ -248,9 +245,6 @@ export const generateYearEndTaxForms = async (
                 select: {
                     id: true,
                     employee_code: true,
-                    first_name: true,
-                    last_name: true,
-                    employee_name: true,
                     employee_type: true,
                     nationality_id_no: true,
                     nationality_id_type: true,

@@ -14,8 +14,7 @@ describe('N-14 loan bridge selection', () => {
     it('still selects outstanding loans (the ordinary case)', () => {
         const w = loanBridgeWhere(500, 9);
         expect(w.employeeId).toBe(500);
-        expect(w.status).toBe('ACTIVE');
-        expect(w.OR).toContainEqual({ outstandingMinor: { gt: 0 } });
+        expect(w.OR).toContainEqual({ status:'ACTIVE', outstandingMinor: { gt: 0 } });
     });
 
     it('also selects loans already repaid BY THIS RUN', () => {

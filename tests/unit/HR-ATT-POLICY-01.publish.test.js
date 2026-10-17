@@ -16,6 +16,7 @@ const LEVELS = [{ id: 1, level: 1, role: 'MANAGER', useEmployeeManager: true, st
 
 const emptyList = jest.fn(async () => []);
 const prismaMock = {
+    $executeRaw: jest.fn(async () => 0),
     employee: { count: jest.fn(async () => 0) },
     salaryComponent: { findMany: emptyList, count: jest.fn(async () => 0), updateMany: jest.fn(async () => ({ count: 0 })) },
     gradeLevel: { findMany: emptyList },

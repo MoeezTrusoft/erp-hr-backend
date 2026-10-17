@@ -1,3 +1,4 @@
+import { COMPANY_PAYROLL_BANKS, payrollPaymentStage } from './payrollPayments.service.js';
 // src/services/bankFileService.js — HR-BANKFILE-03 / HR-PAY-04
 //
 // Generate a bank/ACH disbursement file from a FINALIZED PayrollRun. For each
@@ -37,7 +38,7 @@ export const maskAccount = (acct) => {
 
 const primaryBankOf = (employee) => {
     const banks = employee?.bankDetails ?? [];
-    return banks.find((b) => b.isPrimary) ?? banks[0] ?? null;
+    return banks.find((b) => b.isPrimary) ?? null;
 };
 
 /**
@@ -53,7 +54,7 @@ const primaryBankOf = (employee) => {
  */
 export const generateBankDisbursementFile = async (
     runId,
-    { tenantId, format = 'nacha', origin = {}, actorId = null } = {},
+    { tenantId, format = 'csv', origin = {}, actorId = null } = {},
 ) => {
     const fmt = String(format).toLowerCase();
     if (!isSupportedFormat(fmt)) {
@@ -71,6 +72,8 @@ export const generateBankDisbursementFile = async (
         throw fail(409, 'HR-1211', `Payroll run ${runId} is ${run.status}; only FINALIZED runs are exportable`);
     }
 
+    if(fmt!=='csv' && run.countryCode!=='US') throw fail(400,'HR-1213','NACHA is a US format. Use the preparation CSV and validate the bank-specific format before submission.');
+
     // Payslips for the run, tenant-scoped. The employee's bank details are
     // c4-encrypted at rest and decrypted to plaintext by the prisma extension on
     // this read (in-memory only).
@@ -80,9 +83,7 @@ export const generateBankDisbursementFile = async (
             employee: {
                 select: {
                     id: true,
-                    first_name: true,
-                    last_name: true,
-                    employee_name: true,
+                    employee_code: true,
                     bankDetails: {
                         select: {
                             accountNumber: true,
@@ -101,23 +102,24 @@ export const generateBankDisbursementFile = async (
     const rows = [];
     const missing = [];
     for (const slip of payslips) {
-        const amountMinor = money.fromMajor(slip.netAmount);
-        if (amountMinor <= 0) continue; // nothing to disburse (zero/negative net)
+        const amountMinor = money.decimalToMinor(slip.netAmount,run.currencyCode);
+        if (amountMinor < 0) throw fail(422,'HR-1212','Negative net pay must be resolved before bank export');
+        if (amountMinor === 0 || slip.paidAt) continue;
+        if(['SUBMITTED','ACKNOWLEDGED'].includes(payrollPaymentStage(slip.paymentEvidence))) throw fail(409,'HR-1211','Resolve the recorded bank submission before exporting another payment file');
 
         const emp = slip.employee ?? {};
         const bank = primaryBankOf(emp);
         if (!bank || !bank.accountNumber || !bank.routingNumber) {
-            missing.push(emp.id ?? slip.employeeId); // ids only — never account data
+            missing.push(emp.employee_code || "Employee code required"); // ids only — never account data
             continue;
         }
 
-        const name =
-            emp.employee_name ||
-            [emp.first_name, emp.last_name].filter(Boolean).join(' ') ||
-            `EMP ${emp.id ?? slip.employeeId}`;
+        if(!emp.employee_code) throw fail(422,'HR-1212','Employee code is required for bank export');
+        if(!['FINALIZED','DISTRIBUTED'].includes(slip.status)) throw fail(409,'HR-1211','All payslips must be finalized and free of holds');
+        const name=emp.employee_code;
 
         rows.push({
-            employeeId: emp.id ?? slip.employeeId,
+            employeeId: emp.employee_code,
             name,
             routingNumber: bank.routingNumber,
             accountNumber: bank.accountNumber,
@@ -131,7 +133,7 @@ export const generateBankDisbursementFile = async (
         throw fail(
             422,
             'HR-1212',
-            `Cannot generate disbursement file: ${missing.length} employee(s) missing bank account/routing details (employee ids: ${missing.join(', ')})`,
+            `Cannot generate disbursement file: ${missing.length} employee(s) missing bank account/routing details (employee codes: ${missing.join(', ')})`,
         );
     }
 
@@ -184,6 +186,9 @@ export const generateBankDisbursementFile = async (
         contentType: descriptor.contentType,
         content,
         summary: {
+            provider:COMPANY_PAYROLL_BANKS[tenantId] || null,
+            bankValidated:false,
+            purpose:'Preparation file; validate against the bank specification before uploading',
             runId,
             rowCount: rows.length,
             totalMinor: money.minorToWire(totalMinor),

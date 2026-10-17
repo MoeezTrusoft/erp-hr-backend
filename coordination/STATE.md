@@ -45,3 +45,15 @@
 
 **Requests:**
 - None
+
+2026-10-17 Payroll hardening: published salary components/rules drive both preview and processing; decimal formula arithmetic and readiness gates enforced.
+Approval: employee initiator -> line manager recommendation -> HR verification -> Management decision; Management returns to HR; reviewed source snapshots and code-only identity preserved.
+Payments: confirmed company banks, preparation CSV, encrypted evidence and exact-amount reconciliation; loan recovery reserves until finalization and cancellation retains history.
+Validation: PostgreSQL payroll lifecycle, approval regression, additive migration rehearsal, focused payroll/export tests and lint/boundary checks; frontend browser journey passes desktop/mobile.
+Release: migration 20261017190000_payroll_workflow_controls; deploy coordinated frontend and gateway tools. Bank API credentials/specifications are pending; no production deployment or payment was performed.
+
+2026-10-17 Payroll migration rehearsal found FORCE RLS hid historical loan repayments from the backfill.
+Fix: scope the existing system tenant context to an explicit migration transaction so settled repayments remain settled.
+Security: COMMIT clears the context; application row security remains enabled and forced.
+Validation: regression runs the real migration as a non-superuser table owner under FORCE RLS and checks context cleanup, historical settlement, and new pending repayment behavior.
+Release: apply this correction before the pending payroll migration in production; the original migration has only run on a disposable rehearsal clone.

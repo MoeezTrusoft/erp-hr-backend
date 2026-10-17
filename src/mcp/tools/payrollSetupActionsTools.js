@@ -52,15 +52,15 @@ export function registerPayrollSetupActionsTools(server) {
       midMonthExitSettlement: z
         .boolean()
         .optional()
-        .describe("Run final settlement + gratuity + leave encashment on mid-month exit (PayrollRuleConfig.midMonthExitSettlement)"),
+        .describe("Unsupported legacy setting; final settlement uses the separation workflow"),
       lwpRecovery: z
         .boolean()
         .optional()
-        .describe("Recover leave-without-pay: monthly basic / working days * LWP days (PayrollRuleConfig.lwpRecovery)"),
+        .describe("Recover approved unpaid leave using the published deduction basis and calendar-day divisor"),
       complianceHold: z
         .boolean()
         .optional()
-        .describe("Block disbursement on unfiled EOBI/PSSF compliance (PayrollRuleConfig.complianceHold)"),
+        .describe("Unsupported legacy setting; statutory filing evidence is not an automatic bank integration"),
       garnishmentRecovery: z
         .boolean()
         .optional()
@@ -70,11 +70,11 @@ export function registerPayrollSetupActionsTools(server) {
         .min(0)
         .max(100)
         .optional()
-        .describe("Garnishment recovery cap as a percent of net pay, 0-100 (PayrollRuleConfig.garnishmentCapPct)"),
+        .describe("Loan recovery cap as a percent of gross pay, 0-100 (PayrollRuleConfig.garnishmentCapPct)"),
       offCycleRelease: z
         .boolean()
         .optional()
-        .describe("Allow single-employee off-cycle disbursement (PayrollRuleConfig.offCycleRelease)"),
+        .describe("Unsupported legacy setting; off-cycle payroll release is not implemented"),
       // HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
       deductionBasis: z
         .enum(["BASIC", "GROSS"])

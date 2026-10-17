@@ -1,7 +1,10 @@
 import { legacyDecision } from "./approval/legacy.js";
 // src/services/loan.service.js — Loan & salary advance management
-import prisma from "../config/prisma.js";
+import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { lockAttendancePeriod } from "./attendancePeriod.service.js";
+import { assertNoPayrollLoanReservation } from "./payrollLoans.service.js";
 
 /** HR-PAYROLL-ADVANCE-01 — mirrors the Prisma `LoanKind` enum. */
 export const LOAN_KINDS = ["LOAN", "ADVANCE"];
@@ -83,36 +86,42 @@ export const getLoan = async (id, tenantId) => {
 };
 
 /**
- * Record a repayment (auto-called during payroll processing).
+ * Record a manual repayment. Payroll reservations post during finalization.
  */
 export const recordRepayment = async ({ loanId, amountMinor, payrollRunId, payslipId, tenantId }) => {
-    const loan = await prisma.loan.findFirst({
+    if(!Number.isSafeInteger(amountMinor) || amountMinor<=0) throw Object.assign(new Error('Repayment must be a positive integer in minor currency units'),{status:400});
+    if(payrollRunId || payslipId) throw Object.assign(new Error('Payroll repayments must be posted through payroll finalization'),{status:409});
+    return tenantTransaction(prisma,async tx=>{
+    await lockAttendancePeriod(tx,tenantId,true);
+    const loan = await tx.loan.findFirst({
         where: scopedWhere(tenantId, { id: Number(loanId), status: "ACTIVE" }),
     });
     if (!loan) throw Object.assign(new Error("Active loan not found"), { status: 404 });
+    await assertNoPayrollLoanReservation(tx,tenantId,loan.id);
+    if(amountMinor>loan.outstandingMinor) throw Object.assign(new Error('Repayment exceeds the outstanding balance'),{status:409});
 
     const newOutstanding = loan.outstandingMinor - amountMinor;
     const newStatus = newOutstanding <= 0 ? "PAID_OFF" : "ACTIVE";
 
-    const [repayment] = await prisma.$transaction([
-        prisma.loanRepayment.create({
+    const repayment = await tx.loanRepayment.create({
             data: scopedData(tenantId, {
                 loanId: Number(loanId),
                 amountMinor,
+                settledAt:new Date(),
                 payrollRunId: payrollRunId ? Number(payrollRunId) : null,
                 payslipId: payslipId ? Number(payslipId) : null,
             }),
-        }),
-        prisma.loan.update({
+        });
+        await tx.loan.update({
             where: { id: Number(loanId) },
             data: {
                 outstandingMinor: Math.max(0, newOutstanding),
                 status: newStatus,
             },
-        }),
-    ]);
+        });
 
     return repayment;
+    },{tenantId});
 };
 
 /**
@@ -130,9 +139,9 @@ export const getActiveLoanDeductions = async (employeeId, tenantId) => {
 
     return loans.map(loan => ({
         code: "LOAN",
-        name: `Loan Repayment (ID:${loan.id})`,
-        amount: loan.monthlyInstallmentMinor / 100, // Convert to major units for payslip
-        amountMinor: loan.monthlyInstallmentMinor,
+        name: 'Loan repayment',
+        amount: Math.min(loan.monthlyInstallmentMinor,loan.outstandingMinor) / 100, // Convert to major units for payslip
+        amountMinor: Math.min(loan.monthlyInstallmentMinor,loan.outstandingMinor),
         loanId: loan.id,
         isLoan: true, // Flag for garnishment cap logic
     }));

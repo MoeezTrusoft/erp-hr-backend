@@ -191,8 +191,7 @@ const csvEscape = (v) => {
  */
 export const buildBankCsv = (rows, opts = {}) => {
     const header = [
-        'employee_id',
-        'employee_name',
+        'employee_code',
         'routing_number',
         'account_number',
         'account_type',
@@ -202,7 +201,6 @@ export const buildBankCsv = (rows, opts = {}) => {
     const body = rows.map((r) =>
         [
             r.employeeId ?? '',
-            r.name ?? '',
             r.routingNumber ?? '',
             r.accountNumber ?? '',
             (r.accountType || 'CHECKING').toUpperCase(),

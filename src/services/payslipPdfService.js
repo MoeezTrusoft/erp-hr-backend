@@ -46,7 +46,7 @@ export const generatePayslipPdf = async (payslip, options = {}) => {
         doc.font("Helvetica-Bold").text("Period:", 320, infoTop);
         doc.font("Helvetica").text(`${payslip.periodStart || ""} — ${payslip.periodEnd || ""}`, 380, infoTop);
 
-        doc.font("Helvetica-Bold").text("Employee ID:", 40, infoTop + 16);
+        doc.font("Helvetica-Bold").text("Employee Code:", 40, infoTop + 16);
         doc.font("Helvetica").text(String(payslip.employeeId || ""), 130, infoTop + 16);
         doc.font("Helvetica-Bold").text("Pay Date:", 320, infoTop + 16);
         doc.font("Helvetica").text(payslip.payDate || payslip.periodEnd || "", 380, infoTop + 16);

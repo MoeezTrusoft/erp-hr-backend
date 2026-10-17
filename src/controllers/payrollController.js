@@ -112,7 +112,7 @@ export const finalizePayrollRun = async (req, res) => {
 export const exportBankDisbursementFile = async (req, res) => {
     try {
         const { id } = req.params;
-        const format = (req.query.format || 'nacha').toLowerCase();
+        const format = (req.query.format || 'csv').toLowerCase();
         const result = await bankFileService.generateBankDisbursementFile(parseInt(id), {
             tenantId: tenantOf(req),
             format,
