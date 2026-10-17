@@ -23,7 +23,7 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { HR_ERRORS } from "../constants/errorCodes.js";
 import { payslipQuestionRaisedEvent } from "./hrEvents.js";
 
-const DEFAULT_TOTAL_WORKING_DAYS = 26;
+
 
 // Statuses considered "official" for YTD aggregation. We prefer FINALIZED /
 // DISTRIBUTED slips, but fall back to ALL of the employee's slips when the year
@@ -53,7 +53,8 @@ function yearBounds(date) {
 }
 
 const PAYSLIP_INCLUDE = {
-  payrollRun: { select: { id: true, periodStart: true, periodEnd: true } },
+  employee: {select:{employee_code:true}},
+  payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true } },
   earnings: {
     include: { earningType: { select: { code: true, name: true, isTaxable: true } } },
   },
@@ -104,26 +105,18 @@ async function computeYtd({ tenantId, employeeId, periodEnd }) {
   const { start, end } = yearBounds(periodEnd);
   const baseWhere = scopedWhere(tenantId, {
     employeeId: Number(employeeId),
-    payrollRun: { periodEnd: { gte: start, lt: end } },
+    payrollRun: { periodEnd: { gte: start, lt: end, lte: new Date(periodEnd) } },
   });
 
-  // Prefer official (FINALIZED/DISTRIBUTED) slips; fall back to all when the
-  // calendar year has no official slip yet.
+  // YTD includes official slips through this payslip period only.
   const officialWhere = { ...baseWhere, status: { in: YTD_OFFICIAL_STATUSES } };
-  let slips = await prisma.payrollPayslip.findMany({
+  const slips = await prisma.payrollPayslip.findMany({
     where: officialWhere,
     include: {
       deductions: { include: { deductionType: { select: { code: true } } } },
     },
   });
-  if (slips.length === 0) {
-    slips = await prisma.payrollPayslip.findMany({
-      where: baseWhere,
-      include: {
-        deductions: { include: { deductionType: { select: { code: true } } } },
-      },
-    });
-  }
+
 
   let gross = 0;
   let net = 0;
@@ -190,8 +183,8 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
       : Promise.resolve(0),
   ]);
 
-  const totalWorkingDays = DEFAULT_TOTAL_WORKING_DAYS;
-  const daysPaid = Math.max(0, totalWorkingDays - leaveTaken);
+  const totalWorkingDays = slip.attendancePeriodDays ?? (periodStart && periodEnd ? Math.round((new Date(periodEnd)-new Date(periodStart))/86400000)+1 : null);
+  const daysPaid = slip.payableDays ?? null;
   const workingDays = daysPaid;
 
   return {
@@ -200,10 +193,14 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
     // admin session (no employee binding) can chain employee-keyed follow-up
     // calls (trend, payslip list) off this id instead of failing.
     employeeId: slip.employeeId,
+    employeeCode: slip.employee?.employee_code || "Employee code required",
+    currencyCode: slip.payrollRun?.currencyCode,
     period: { from: periodStart, to: periodEnd },
     status: slip.status,
     netPay: Number(slip.netAmount) || 0,
-    receivedOn: slip.distributedAt ?? null,
+    receivedOn: slip.paidAt ?? null,
+    distributedAt: slip.distributedAt ?? null,
+    paymentReference: slip.paymentReference ?? null,
     gross: Number(slip.grossAmount) || 0,
     totalDeductions: Number(slip.totalDeductions) || 0,
     ytd: { gross: ytd.gross, tax: ytd.tax, net: ytd.net },
@@ -270,6 +267,7 @@ export async function getEarningTrend6mo({ tenantId, employeeId }) {
     where: scopedWhere(tenantId, {
       employeeId: Number(employeeId),
       payrollRun: { periodEnd: { gte: windowStart } },
+      status:{in:YTD_OFFICIAL_STATUSES},
     }),
     include: { payrollRun: { select: { periodEnd: true } } },
   });
@@ -350,6 +348,8 @@ export async function questionPayslip({ tenantId, employeeId, payslipId, questio
       data: {
         payslipId: slipId,
         employeeId: slip.employeeId,
+    employeeCode: slip.employee?.employee_code || "Employee code required",
+    currencyCode: slip.payrollRun?.currencyCode,
         question,
         status: "OPEN",
         tenantId: tenantId ?? null,

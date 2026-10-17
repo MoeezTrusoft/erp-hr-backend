@@ -1,3 +1,6 @@
+import { employeeCode } from '../lib/payrollConfiguration.js';
+import { payrollReadiness } from './payrollReadiness.service.js';
+import { payrollEligibleFilter } from './payrollService.js';
 // src/services/payrollDashboard.service.js — "Payroll This Month" company dashboard.
 //
 // Read/aggregate helpers that back the Payroll-This-Month screen (KPIs, variance,
@@ -23,18 +26,14 @@ function pctChange(current, previous) {
 }
 
 // Employee display name from the snake_case columns.
-function employeeName(e) {
-  if (!e) return null;
-  const joined = [e.first_name, e.last_name].filter(Boolean).join(" ").trim();
-  return e.employee_name || joined || null;
-}
+const employeeName = employeeCode;
 
 // PayslipStatus enum → FE display label.
 const STATUS_DISPLAY = {
   DRAFT: "pending",
   APPROVED: "approved",
   HOLD: "hold",
-  DISTRIBUTED: "disbursed",
+  DISTRIBUTED: "distributed",
   FINALIZED: "finalized",
 };
 // FE display → enum (for the employees-list status filter).
@@ -42,7 +41,7 @@ const DISPLAY_TO_STATUS = {
   pending: "DRAFT",
   approved: "APPROVED",
   hold: "HOLD",
-  disbursed: "DISTRIBUTED",
+  distributed: "DISTRIBUTED",
 };
 
 // Bucket a deduction into a coarse category by its type's code/name.
@@ -53,7 +52,7 @@ function deductionBucket(code, name) {
   return "Other";
 }
 
-const BASIC_CODES = new Set(["BASIC", "SALARY"]);
+const BASIC_CODES = new Set(["BASIC", "SALARY", "BASE_SALARY"]);
 
 // ── current-run resolution ───────────────────────────────────────────────────
 
@@ -309,103 +308,8 @@ export async function getBlockingIssues({ tenantId, runId } = {}) {
   const run = await resolveCurrentRun({ tenantId, runId });
   if (!run) return [];
 
-  const payslips = await loadRunPayslips(tenantId, run.id, { employeeId: true });
-  const empIds = [...new Set(payslips.map((p) => p.employeeId))];
-
-  const period = { gte: run.periodStart, lte: run.periodEnd };
-
-  const [bankRows, negLeaveRows, otPending, activeTaxRate, termsRows] = await Promise.all([
-    empIds.length
-      ? prisma.bankDetail.findMany({
-          where: scopedWhere(tenantId, { employeeId: { in: empIds }, isPrimary: true }),
-          select: { employeeId: true },
-        })
-      : Promise.resolve([]),
-    prisma.leaveBalance.findMany({
-      where: scopedWhere(tenantId, {
-        balance: { lt: 0 },
-        ...(empIds.length ? { employeeId: { in: empIds } } : {}),
-      }),
-      select: { employeeId: true },
-    }),
-    prisma.overtimeRequest.count({
-      where: scopedWhere(tenantId, {
-        status: "PENDING",
-        date: period,
-        ...(empIds.length ? { employeeId: { in: empIds } } : {}),
-      }),
-    }),
-    prisma.taxRate.findFirst({
-      where: scopedWhere(tenantId, {
-        status: "ACTIVE",
-        countryCode: run.countryCode,
-        effectiveFrom: { lte: run.periodEnd },
-        OR: [{ effectiveTo: null }, { effectiveTo: { gte: run.periodStart } }],
-      }),
-      select: { id: true },
-    }),
-    empIds.length
-      ? prisma.employmentTerms.findMany({
-          where: scopedWhere(tenantId, {
-            employeeId: { in: empIds },
-            effectiveFrom: { lte: run.periodEnd },
-            OR: [{ effectiveTo: null }, { effectiveTo: { gte: run.periodStart } }],
-          }),
-          select: { employeeId: true },
-        })
-      : Promise.resolve([]),
-  ]);
-
-  const withBank = new Set(bankRows.map((r) => r.employeeId));
-  const missingBank = empIds.filter((id) => !withBank.has(id)).length;
-
-  const negLeave = new Set(negLeaveRows.map((r) => r.employeeId)).size;
-
-  const withTerms = new Set(termsRows.map((r) => r.employeeId));
-  const termsExpired = empIds.filter((id) => !withTerms.has(id)).length;
-
-  const issues = [];
-  if (missingBank > 0) {
-    issues.push({
-      type: "missingBankDetails",
-      severity: "high",
-      message: `${missingBank} employee(s) have no primary bank details`,
-      count: missingBank,
-    });
-  }
-  if (negLeave > 0) {
-    issues.push({
-      type: "negativeLeaveBalance",
-      severity: "medium",
-      message: `${negLeave} employee(s) have a negative leave balance`,
-      count: negLeave,
-    });
-  }
-  if (otPending > 0) {
-    issues.push({
-      type: "otPending",
-      severity: "medium",
-      message: `${otPending} overtime request(s) pending approval in this period`,
-      count: otPending,
-    });
-  }
-  if (!activeTaxRate) {
-    issues.push({
-      type: "taxSlabNotApplied",
-      severity: "high",
-      message: `No active tax slab is effective for ${run.countryCode} in this period`,
-      count: 1,
-    });
-  }
-  if (termsExpired > 0) {
-    issues.push({
-      type: "salaryTermsExpired",
-      severity: "high",
-      message: `${termsExpired} employee(s) have no salary terms effective for this period`,
-      count: termsExpired,
-    });
-  }
-  return issues;
+  const employees=await prisma.employee.findMany({where:{tenant_id:tenantId,...payrollEligibleFilter(run)},include:{employmentTerms:{where:{tenantId,effectiveFrom:{lte:run.periodEnd},OR:[{effectiveTo:null},{effectiveTo:{gte:run.periodStart}}]},orderBy:{effectiveFrom:'desc'},take:1}}});
+  return (await payrollReadiness({tenantId,run,employees})).issues;
 }
 
 // ── employees table ──────────────────────────────────────────────────────────
@@ -473,9 +377,7 @@ export async function listPayrollEmployees({
       where: scopedEmployeeWhere(tenantId, { id: { in: empIds } }),
       select: {
         id: true,
-        first_name: true,
-        last_name: true,
-        employee_name: true,
+        employee_code: true,
         photo_url: true,
         businessUnitId: true,
         gradeLevelId: true,
@@ -524,7 +426,7 @@ export async function listPayrollEmployees({
     // Build allowance breakdown for tooltip
     const allowanceBreakdown = earnings
       .filter((e) => e.earningType?.code !== 'BASIC')
-      .map((e) => `${e.earningType?.code || 'Other'}: PKR ${Number(e.amount || 0).toLocaleString()}`)
+      .map((e) => `${e.earningType?.code || 'Other'}: ${run.currencyCode} ${Number(e.amount || 0).toLocaleString()}`)
       .join(' | ');
     // Extract tax from deductions array — match "income tax", "tax", etc.
     const tax = (p.deductions || [])
@@ -535,9 +437,11 @@ export async function listPayrollEmployees({
     const net = Number(p.netAmount) || 0;
     return {
       payslipId: p.id,
+      currency: run.currencyCode,
       employee: {
         id: p.employeeId,
         name: employeeName(emp),
+        employeeCode: employeeCode(emp),
         avatar: emp?.photo_url ?? null,
         department: emp?.businessUnit?.name ?? null,
         businessUnitId: emp?.businessUnitId ?? null,
@@ -606,33 +510,8 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
     .filter((x) => Number.isInteger(x));
   if (!ids.length) return { updated: 0 };
 
-  // [A-08] Separation of duties — bulk APPROVE must not let the run's own
-  // processor rubber-stamp their processing one payslip at a time. The run-level
-  // gate already enforces approver≠processedBy (HR-PAY-06); this closes the bulk
-  // side-door. hold/disburse don't establish approval, so they stay ungated. A
-  // legacy run with processedBy=null can never establish a violation.
-  if (action === "approve" && actorId != null) {
-    const targets = await prisma.payrollPayslip.findMany({
-      where: scopedWhere(tenantId, { id: { in: ids } }),
-      select: { id: true, payrollRunId: true },
-    });
-    const runIds = [...new Set(targets.map((p) => p.payrollRunId))];
-    const runs = await prisma.payrollRun.findMany({
-      where: scopedWhere(tenantId, { id: { in: runIds } }),
-      select: { id: true, processedBy: true },
-    });
-    const offenders = runs
-      .filter((r) => r.processedBy != null && Number(r.processedBy) === Number(actorId))
-    if (offenders.length > 0) {
-      const names = offenders.map((r) => `run ${r.id}`).join(", ");
-      throw Object.assign(
-        new Error(
-          `Separation of duties: you processed ${names} — a different person must approve its payslips`,
-        ),
-        { status: 403 },
-      );
-    }
-  }
+  if(action==='approve') throw Object.assign(new Error('Submit the complete payroll run in HR Approval Centre'),{status:409});
+  if(action==='hold' && !reason?.trim()) throw Object.assign(new Error('A hold reason is required'),{status:400});
 
   const now = new Date();
   let data;
@@ -653,13 +532,15 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
     if(targets.length!==ids.length)throw Object.assign(new Error('One or more payslips are outside this company'),{status:404});
     if(action!=='hold')for(const runId of new Set(targets.map(p=>p.payrollRunId))){
       const run=await tx.payrollRun.findFirst({where:scopedWhere(tenantId,{id:runId})});
-      if(!run || !['APPROVED','FINALIZED'].includes(run.status)||!run.approvedBy)throw Object.assign(new Error('Complete HR Approval Centre review of the payroll run first'),{status:409});
+      if(!run || !['FINALIZED'].includes(run.status)||!run.approvedBy)throw Object.assign(new Error('Complete HR Approval Centre review of the payroll run first'),{status:409});
     }
-    if(action==='disburse'&&targets.some(p=>!['APPROVED','FINALIZED'].includes(p.status)))throw Object.assign(new Error('Only approved payslips can be disbursed'),{status:409});
+    if(action==='disburse'&&targets.some(p=>!['FINALIZED'].includes(p.status)))throw Object.assign(new Error('Only finalized payslips can be distributed'),{status:409});
+    if(action==='hold' && targets.some(p=>p.status!=='DRAFT')) throw Object.assign(new Error('Return payroll to the initiator before holding a payslip'),{status:409});
     const res = await tx.payrollPayslip.updateMany({
       where: scopedWhere(tenantId, { id: { in: ids } }),
       data,
     });
+    for(const target of targets) await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:target.payrollRunId,payslipId:target.id,action:action==='hold'?'PAYSLIP_HELD':'PAYSLIP_DISTRIBUTED',details:reason?.trim() || 'Payslip distribution recorded; this does not record payment',employeeId:actorId}});
     return res.count;
   }, { tenantId });
 
@@ -670,7 +551,7 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
 // ── CSV export ───────────────────────────────────────────────────────────────
 
 const CSV_HEADERS = [
-  "Employee",
+  "Employee code",
   "Department",
   "Pay Grade",
   "Basic",

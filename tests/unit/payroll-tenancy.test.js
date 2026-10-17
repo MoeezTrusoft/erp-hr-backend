@@ -39,6 +39,9 @@ const prismaMock = {
     employee: mk(),
 };
 
+prismaMock.$transaction=async fn=>fn(prismaMock);
+prismaMock.$executeRaw=async()=>0;
+
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/utils/logs.js', () => ({ logAction: jest.fn().mockResolvedValue(undefined) }));
 

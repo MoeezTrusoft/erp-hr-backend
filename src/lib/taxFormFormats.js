@@ -58,9 +58,7 @@ const addr = (recipient) => recipient?.address ?? {};
 // ── W-2 CSV ──────────────────────────────────────────────────────────────────
 const W2_HEADER = [
     'tax_year',
-    'employee_id',
     'employee_code',
-    'employee_name',
     'ssn',
     'address',
     'city',
@@ -83,9 +81,7 @@ const w2Row = (rec) => {
     const a = addr(rec.recipient);
     return csvLine([
         rec.taxYear,
-        rec.recipient?.employeeId,
         rec.recipient?.employeeCode,
-        rec.recipient?.name,
         rec.recipient?.tin, // decrypted SSN — present ONLY in the export artifact
         a.street,
         a.city,
@@ -110,9 +106,7 @@ export const buildW2Csv = (records = []) =>
 // ── 1099-NEC CSV ─────────────────────────────────────────────────────────────
 const NEC_HEADER = [
     'tax_year',
-    'recipient_id',
     'recipient_code',
-    'recipient_name',
     'tin',
     'tin_type',
     'address',
@@ -130,9 +124,7 @@ const necRow = (rec) => {
     const a = addr(rec.recipient);
     return csvLine([
         rec.taxYear,
-        rec.recipient?.employeeId,
         rec.recipient?.employeeCode,
-        rec.recipient?.name,
         rec.recipient?.tin, // decrypted TIN/EIN — present ONLY in the export artifact
         rec.recipient?.tinType,
         a.street,

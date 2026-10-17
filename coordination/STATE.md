@@ -45,3 +45,9 @@
 
 **Requests:**
 - None
+
+2026-10-17 Payroll hardening: published salary components/rules drive both preview and processing; decimal formula arithmetic and readiness gates enforced.
+Approval: employee initiator -> line manager recommendation -> HR verification -> Management decision; Management returns to HR; reviewed source snapshots and code-only identity preserved.
+Payments: confirmed company banks, preparation CSV, encrypted evidence and exact-amount reconciliation; loan recovery reserves until finalization and cancellation retains history.
+Validation: PostgreSQL payroll lifecycle, approval regression, additive migration rehearsal, focused payroll/export tests and lint/boundary checks; frontend browser journey passes desktop/mobile.
+Release: migration 20261017190000_payroll_workflow_controls; deploy coordinated frontend and gateway tools. Bank API credentials/specifications are pending; no production deployment or payment was performed.

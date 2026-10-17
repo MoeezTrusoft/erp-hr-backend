@@ -35,6 +35,9 @@ export const HR_ERRORS = {
     CONFLICT: { code: 'HR-4090', httpStatus: 409, message: 'Conflict' },
     PRECONDITION_FAILED: { code: 'HR-4120', httpStatus: 412, message: 'Precondition failed' },
     PRECONDITION_REQUIRED: { code: 'HR-4280', httpStatus: 428, message: 'Precondition required' },
+    PAYROLL_PERIOD: { code: 'HR-4301', httpStatus: 400, message: 'Invalid payroll period' },
+    PAYROLL_READINESS: { code: 'HR-4302', httpStatus: 409, message: 'Complete payroll setup before processing' },
+    PAYROLL_LOAN_CHANGED: { code: 'HR-4303', httpStatus: 409, message: 'Loan balance changed; reconcile payroll before finalization' },
 
     // ---- internal / unexpected (ERR-3: generic client message only) ----
     INTERNAL: { code: 'HR-5000', httpStatus: 500, message: 'Internal server error' },

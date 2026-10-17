@@ -30,7 +30,7 @@ export const listClaims = async ({ employeeId, status, tenantId } = {}) => {
   return prisma.reimbursementClaim.findMany({
     where,
     orderBy: { created_at: "desc" },
-    include: { employee: { select: { id: true, first_name: true, last_name: true } }, approvedBy: { select: { id: true, first_name: true, last_name: true } } },
+    include: { employee: { select: { id: true, employee_code: true } }, approvedBy: { select: { id: true, employee_code: true } } },
   });
 };
 

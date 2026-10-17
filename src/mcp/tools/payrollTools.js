@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { payrollPaymentStatus, recordPayrollPayment } from '../../services/payrollPayments.service.js';
+import prisma from '../../lib/prisma.js';
 import {
   mcpCancelPayrollRun,
   mcpCreateDeductionType,
@@ -37,6 +39,24 @@ function getCtx() {
 }
 
 export function registerPayrollTools(server) {
+  server.tool('hr_payroll_payment_status','Read recorded bank submission, acknowledgement and reconciliation evidence',{
+    runId:z.coerce.number().int().positive(),
+  },withToolError(async args=>{
+    const {user,permissions}=getCtx();
+    assertPayrollAdminSurface(permissions);
+    return {content:[{type:'text',text:JSON.stringify(await payrollPaymentStatus({...args,tenantId:user.tenantId}))}]};
+  },'hr_payroll_payment_status'));
+  server.tool('hr_payroll_payment_record','Record evidence of bank activity; does not send money or call a bank API',{
+    runId:z.coerce.number().int().positive(),employeeCode:z.string().trim().min(1),
+    stage:z.enum(['SUBMITTED','ACKNOWLEDGED','REJECTED','RECONCILED']),
+    reference:z.string().trim().min(1).max(200),evidenceRef:z.string().trim().min(8).max(2000),
+    amount:z.string().regex(/^\d+(\.\d{1,2})?$/),currency:z.string().length(3),occurredAt:z.string().datetime(),requestKey:z.string().uuid(),
+  },withToolError(async args=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,'PUT','hr:payroll',user.isAdmin);
+    const actor=await prisma.employee.findFirst({where:{tenant_id:user.tenantId,userId:Number(user.userId)||-1}});
+    return {content:[{type:'text',text:JSON.stringify(await recordPayrollPayment({...args,tenantId:user.tenantId,actorCode:actor?.employee_code}))}]};
+  },'hr_payroll_payment_record'));
   // ── RESOURCES ────────────────────────────────────────────────────────────
 
   server.resource(
@@ -317,14 +337,15 @@ export function registerPayrollTools(server) {
     "Export the bank/ACH disbursement file for a FINALIZED payroll run",
     {
       id: z.string().min(1).describe("Payroll run ID (must be FINALIZED)"),
-      format: z.enum(["nacha", "csv"]).optional().describe("Wire format (default: nacha)"),
+      format: z.enum(["nacha", "csv"]).optional().describe("Preparation CSV by default; NACHA only for US runs"),
     },
     withToolError(async ({ id, format }) => {
       const { user, permissions } = getCtx();
       // Same C4 payroll gate as GET /hr/api/payroll/runs/:id/bank-file.
       assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
-      const data = await mcpExportBankDisbursementFile(user, id, format ? { format } : {});
-      return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data) }] };
+      const data=await mcpExportBankDisbursementFile(user,id,{format:format || 'csv'});
+      const artifact=typeof data==='string'?{content:data,filename:`payroll-preparation-${id}.${format==='nacha'?'ach':'csv'}`,contentType:format==='nacha'?'text/plain':'text/csv'}:data;
+      return { content: [{ type: "text", text: JSON.stringify(artifact) }] };
     })
   );
 
@@ -393,7 +414,7 @@ export function registerPayrollTools(server) {
           // PDF header needs department name — Employee carries it as the
           // businessUnit relation (a bare `department: true` select here was a
           // latent PrismaClientValidationError that 500'd every PDF render).
-          employee: { select: { first_name: true, last_name: true, job_title: true, businessUnit: { select: { name: true } } } },
+          employee: { select: { employee_code: true, job_title: true, businessUnit: { select: { name: true } } } },
           earnings: true,
           deductions: true,
           payrollRun: { select: { periodStart: true, periodEnd: true, currencyCode: true, countryCode: true } },
@@ -402,13 +423,13 @@ export function registerPayrollTools(server) {
       if (!payslip) throw Object.assign(new Error("Payslip not found"), { status: 404 });
 
       const pdfBuffer = await generatePayslipPdf({
-        employeeName: `${payslip.employee?.first_name || ""} ${payslip.employee?.last_name || ""}`.trim(),
-        employeeId: payslip.employeeId,
+        employeeName: payslip.employee?.employee_code || "Employee code required",
+        employeeId: payslip.employee?.employee_code || "Employee code required",
         department: payslip.employee?.businessUnit?.name ?? null,
         jobTitle: payslip.employee?.job_title,
         periodStart: payslip.payrollRun?.periodStart?.toISOString().split("T")[0],
         periodEnd: payslip.payrollRun?.periodEnd?.toISOString().split("T")[0],
-        payDate: payslip.payrollRun?.periodEnd?.toISOString().split("T")[0],
+        payDate: payslip.paidAt?.toISOString().split("T")[0] || "Not recorded",
         earnings: (payslip.earnings || []).map((e) => ({ description: e.description, amount: e.amount })),
         deductions: (payslip.deductions || []).map((d) => ({ description: d.description, amount: d.amount })),
         prorationFactor: payslip.prorationFactor,
@@ -420,7 +441,7 @@ export function registerPayrollTools(server) {
           type: "text",
           text: JSON.stringify({
             payslipId: payslip.id,
-            employeeId: payslip.employeeId,
+            employeeId: payslip.employee?.employee_code || "Employee code required",
             pdfBase64: pdfBuffer.toString("base64"),
             mime: "application/pdf",
           }),

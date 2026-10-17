@@ -1,3 +1,10 @@
+import { Prisma } from '@prisma/client';
+const Decimal = Prisma.Decimal.clone({precision:40,rounding:Prisma.Decimal.ROUND_HALF_EVEN});
+const MONEY_FUNCTIONS = {
+  min: (...a) => Decimal.min(...a), max: (...a) => Decimal.max(...a),
+  round: (x,d=new Decimal(0)) => { if(!d.isInteger() || d.lt(0) || d.gt(12)) throw new Error('round precision must be between 0 and 12'); return x.toDecimalPlaces(d.toNumber(),Decimal.ROUND_HALF_CEIL); },
+  floor: x=>x.floor(), ceil:x=>x.ceil(), abs:x=>x.abs(), pow:(x,y)=>x.pow(y),
+};
 // src/lib/payrollFormula.js
 //
 // Safe expression evaluator for Payroll Setup salary-component formulas.
@@ -36,7 +43,7 @@ function tokenize(src) {
       while (j < s.length && /[0-9.]/.test(s[j])) j++;
       const num = s.slice(i, j);
       if ((num.match(/\./g) || []).length > 1) throw new Error(`bad number "${num}"`);
-      tokens.push({ t: "num", v: Number(num) });
+      tokens.push({ t: "num", v: Number(num), raw:num });
       i = j;
       continue;
     }
@@ -52,7 +59,7 @@ function tokenize(src) {
   return tokens;
 }
 
-function makeParser(tokens, resolve) {
+function makeParser(tokens, resolve, exact = false) {
   let pos = 0;
   const peek = () => tokens[pos];
   const next = () => tokens[pos++];
@@ -63,7 +70,7 @@ function makeParser(tokens, resolve) {
     while (peek() && (peek().t === "+" || peek().t === "-")) {
       const op = next().t;
       const right = parseTerm();
-      left = op === "+" ? left + right : left - right;
+      left = exact ? (op==='+' ? left.plus(right) : left.minus(right)) : (op === "+" ? left + right : left - right);
     }
     return left;
   }
@@ -72,7 +79,11 @@ function makeParser(tokens, resolve) {
     while (peek() && (peek().t === "*" || peek().t === "/" || peek().t === "%")) {
       const op = next().t;
       const right = parseFactor();
-      if (op === "*") left = left * right;
+      if(exact){
+        if(op!=='*' && right.isZero()) throw new Error('division or modulo by zero');
+        left=op==='*'?left.times(right):op==='/'?left.div(right):left.mod(right);
+      }
+      else if (op === "*") left = left * right;
       else if (op === "/") { if (right === 0) throw new Error("division by zero"); left = left / right; }
       else { if (right === 0) throw new Error("modulo by zero"); left = left % right; }
     }
@@ -80,18 +91,18 @@ function makeParser(tokens, resolve) {
   }
   function parseFactor() {
     const tok = peek();
-    if (tok && (tok.t === "+" || tok.t === "-")) { next(); const v = parseFactor(); return tok.t === "-" ? -v : v; }
+    if (tok && (tok.t === "+" || tok.t === "-")) { next(); const v = parseFactor(); return tok.t === "-" ? (exact?v.negated():-v) : v; }
     return parsePrimary();
   }
   function parsePrimary() {
     const tok = next();
     if (!tok) throw new Error("unexpected end of formula");
-    if (tok.t === "num") return tok.v;
+    if (tok.t === "num") return exact ? new Decimal(tok.raw) : tok.v;
     if (tok.t === "(") { const v = parseExpr(); expect(")"); return v; }
     if (tok.t === "ident") {
       if (peek() && peek().t === "(") {
         next(); // consume '('
-        const fn = FUNCTIONS[tok.v.toLowerCase()];
+        const fn = (exact?MONEY_FUNCTIONS:FUNCTIONS)[tok.v.toLowerCase()];
         if (!fn) throw new Error(`unknown function "${tok.v}"`);
         const args = [];
         if (peek() && peek().t !== ")") {
@@ -102,6 +113,7 @@ function makeParser(tokens, resolve) {
         return fn(...args);
       }
       const val = resolve(tok.v);
+      if (exact) { if(val==null || !new Decimal(val).isFinite()) throw new Error(`unknown or non-numeric variable "${tok.v}"`); return new Decimal(val); }
       if (typeof val !== "number" || Number.isNaN(val)) throw new Error(`unknown or non-numeric variable "${tok.v}"`);
       return val;
     }
@@ -126,6 +138,14 @@ export function evaluateFormula(formula, scope = {}) {
   for (const [k, v] of Object.entries(scope)) upper[String(k).toUpperCase()] = v;
   const resolve = (name) => upper[String(name).toUpperCase()];
   return makeParser(tokenize(formula), resolve);
+}
+
+// Monetary calculations retain decimal strings until the minor-unit boundary.
+export function evaluateMoneyFormula(formula, scope = {}) {
+  const upper=Object.fromEntries(Object.entries(scope).map(([k,v])=>[k.toUpperCase(),v]));
+  const result=makeParser(tokenize(formula),name=>upper[name.toUpperCase()],true);
+  if(!result.isFinite()) throw new Error('Formula must produce a finite amount');
+  return result.toFixed();
 }
 
 /** Collect the identifier (variable/function) names referenced by a formula. */

@@ -40,13 +40,9 @@ describe('T-0.3 PayrollRuleConfig.absenceRecoveryEnabled', () => {
     expect(rules.absenceRecoveryEnabled).toBe(true);
   });
 
-  test('updatePayrollRules persists absenceRecoveryEnabled like the other toggles', async () => {
-    prismaMock.payrollRuleConfig.upsert.mockImplementation(async ({ update }) => ({ id: 1, ...update }));
-    await updatePayrollRules({ tenantId: 't-uuid', absenceRecoveryEnabled: true });
-    expect(prismaMock.payrollRuleConfig.upsert).toHaveBeenCalledTimes(1);
-    const arg = prismaMock.payrollRuleConfig.upsert.mock.calls[0][0];
-    expect(arg.update.absenceRecoveryEnabled).toBe(true);
-    expect(arg.create.absenceRecoveryEnabled).toBe(true);
+  test('rejects the obsolete absence switch rather than pretending it overrides Management decisions',async()=>{
+    await expect(updatePayrollRules({tenantId:'t-uuid',absenceRecoveryEnabled:false})).rejects.toThrow('not supported');
+    expect(prismaMock.payrollRuleConfig.upsert).not.toHaveBeenCalled();
   });
 
   test('updatePayrollRules does not touch the flag when it is not provided', async () => {
