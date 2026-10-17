@@ -27,17 +27,19 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN groupadd --system --gid 10001 nodeapp \
   && useradd --system --uid 10001 --gid nodeapp --home-dir /app --shell /usr/sbin/nologin nodeapp
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json package-lock.json .npmrc ./
-COPY prisma ./prisma
-COPY src ./src
+COPY --chown=nodeapp:nodeapp --from=deps /app/node_modules ./node_modules
+COPY --chown=nodeapp:nodeapp package.json package-lock.json .npmrc ./
+COPY --chown=nodeapp:nodeapp prisma ./prisma
+COPY --chown=nodeapp:nodeapp src ./src
 # REQ-HR-DEPLOY-HARDENING-2026-09-02 §3a. Without these the image cannot run its
 # own post-deploy verification: `npm run smoke:deploy` and `npm run
 # db:indexes:deploy` both live under scripts/, and every Prisma 7 CLI command
 # needs prisma.config.js to resolve datasource.url. Omitting them is why the
 # smoke had to be hand-copied into a running pod to work at all.
-COPY prisma.config.js ./
-COPY scripts ./scripts
+COPY --chown=nodeapp:nodeapp prisma.config.js ./
+COPY --chown=nodeapp:nodeapp scripts ./scripts
+COPY --chown=nodeapp:nodeapp --from=contracts package.json /contracts/package.json
+COPY --chown=nodeapp:nodeapp --from=contracts src /contracts/src
 USER nodeapp
 EXPOSE 3001
 CMD ["node", "src/server.js"]

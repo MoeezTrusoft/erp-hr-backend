@@ -2213,6 +2213,28 @@ model RatingAdjustment {
 
 // ==================== PAYROLL MODELS ====================
 
+model PayrollFinanceSummary {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  month String
+  runId Int
+  revision Int
+  version Int @default(1)
+  status String @default("DRAFT")
+  requestId String
+  inputHash String
+  payload Json
+  reason String
+  preparedBy String
+  approvedBy String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  approvedAt DateTime? @db.Timestamptz
+  run PayrollRun @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: Restrict)
+  @@unique([tenantId, month, revision])
+  @@unique([tenantId, requestId])
+  @@map("payroll_finance_summaries")
+}
+
 model PayrollRun {
   id               Int              @id @default(autoincrement())
   tenantId         String?          @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
@@ -2244,6 +2266,7 @@ model PayrollRun {
 
   // Relations
   payslips        PayrollPayslip[]
+  financeSummaries PayrollFinanceSummary[]
   logs            Log[]
   PayrollAuditLog PayrollAuditLog[]
 
@@ -2252,6 +2275,7 @@ model PayrollRun {
   // (periodStart, periodEnd). The app-level overlap guard in createPayrollRun is
   // already tenant-scoped (withTenant), so this aligns the DB constraint with it.
   @@unique([tenantId, periodStart, periodEnd])
+  @@unique([tenantId, id], map: "payroll_runs_tenant_id_id")
   @@index([tenantId])
   @@map("payroll_runs")
 }

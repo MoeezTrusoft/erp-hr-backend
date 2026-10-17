@@ -9,6 +9,7 @@ import { registerEmployeeTools } from "./tools/employeeTools.js";
 import { registerAttendanceTools } from "./tools/attendanceTools.js";
 import { registerLeaveTools } from "./tools/leaveTools.js";
 import { registerPayrollTools } from "./tools/payrollTools.js";
+import { registerPayrollFinanceTools } from "./tools/payrollFinanceTools.js";
 import { registerPerformanceTools } from "./tools/performanceTools.js";
 import { registerRecruitmentTools } from "./tools/recruitmentTools.js";
 import { registerOnboardingTools } from "./tools/onboardingTools.js";
@@ -264,6 +265,7 @@ export function registerAllTools(server) {
   registerAttendanceTools(server);
   registerLeaveTools(server);
   registerPayrollTools(server);
+  registerPayrollFinanceTools(server);
   registerPerformanceTools(server);
   registerRecruitmentTools(server);
   registerOnboardingTools(server);
