@@ -27,10 +27,6 @@ const SORT_FIELDS = new Set(["sortOrder", "code", "name", "type"]);
 const BASE_FORMULA_VARS = [
   "BASIC",
   "GROSS",
-  "NET",
-  "DAYS_WORKED",
-  "WORKING_DAYS",
-  "LWP_DAYS",
 ];
 
 const GRADE_SELECT = { id: true, name: true };

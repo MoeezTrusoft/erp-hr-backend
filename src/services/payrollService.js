@@ -1,3 +1,8 @@
+const payrollError = (message, status = 409) => Object.assign(new Error(message), {status});
+import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/payrollConfiguration.js';
+import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
+import { loadSource } from './approval/adapters.js';
+import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.js';
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
 import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
@@ -570,6 +575,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 : money.mulRate(grossMinor, assignment.rate || '0');
             earnings.push({
                 earningTypeId: assignment.earningType.id,
+                code: assignment.earningType.code, taxable:assignment.earningType.isTaxable !== false,
                 amount: money.minorToDecimal(amountMinor, currency),
                 description: assignment.earningType.name,
             });
@@ -598,6 +604,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 : money.mulRate(grossMinor, assignment.rate || '0');
             deductions.push({
                 deductionTypeId: assignment.deductionType.id,
+                code: assignment.deductionType.code,
                 amount: money.minorToDecimal(amountMinor, currency),
                 description: assignment.deductionType.name,
             });
@@ -619,7 +626,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     }
 
     // 6) BRIDGE: Loan repayments → Deduction (with garnishment cap)
-    if (bridges.loanLines?.length > 0) {
+    if (ruleConfig.garnishmentRecovery !== false && bridges.loanLines?.length > 0) {
         // [A-02] one default, one source: the config service publishes 33, so
         // the engine fallback is 33 too — never the unsigned 40. (T-2.4/A1.)
         const capPct = ruleConfig.garnishmentCapPct != null
@@ -748,7 +755,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             Number(nilEstimate.taxYearEnd.slice(0,4))!==Number(nilEstimate.taxYearStart.slice(0,4))+1||
             money.decimalToMinor(String(nilEstimate.monthlyTaxableSalary),currency)!==taxBaseMinor||
             annual<0n||annual>money.decimalToMinor(firstTaxable.bracketMin,currency)*12n)
-            throw new Error('Annual nil-tax estimate is invalid or stale; review the payroll tax projection');
+            throw payrollError('Annual nil-tax estimate is invalid or stale; review the payroll tax projection');
         taxMinor=0n;
     }
     if (taxMinor > 0n || sorted.length > 0) {
@@ -885,7 +892,7 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
                 payslips: {
                     include: {
                         employee: {
-                            select: { id: true, first_name: true, last_name: true }
+                            select: { id: true, employee_code: true }
                         }
                     }
                 }
@@ -903,15 +910,15 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
     if (empIds.length > 0) {
         const emps = await prisma.employee.findMany({
             where: { id: { in: empIds }, tenant_id: tenantId },
-            select: { id: true, employee_name: true },
+            select: { id: true, employee_code: true },
         });
-        empMap = Object.fromEntries(emps.map(e => [e.id, e.employee_name]));
+        empMap = Object.fromEntries(emps.map(e => [e.id, e.employee_code]));
     }
 
     const enrichedRuns = payrollRuns.map(r => ({
         ...r,
-        processedByName: r.processedBy ? empMap[r.processedBy] || `#${r.processedBy}` : null,
-        approvedByName: r.approvedBy ? empMap[r.approvedBy] || `#${r.approvedBy}` : null,
+        processedByName: r.processedBy ? empMap[r.processedBy] || 'Employee code required' : null,
+        approvedByName: r.approvedBy ? empMap[r.approvedBy] || 'Employee code required' : null,
     }));
 
     return {
@@ -934,7 +941,7 @@ export const getPayrollRunById = async (id, tenantId) => {
             payslips: {
                 include: {
                     employee: {
-                        select: { id: true, first_name: true, last_name: true, job_title: true }
+                        select: { id: true, employee_code: true, job_title: true }
                     },
                     earnings: {
                         include: {
@@ -953,32 +960,13 @@ export const getPayrollRunById = async (id, tenantId) => {
 };
 
 export const createPayrollRun = async (data, createdBy, tenantId) => {
-  const existingRun = await prisma.payrollRun.findFirst({
-    where: withTenant(tenantId, {
-      OR: [
-        {
-          periodStart: { lte: data.periodEnd },
-          periodEnd: { gte: data.periodStart }
-        }
-      ]
-    })
-  });
-
-  if (existingRun) {
-    throw new Error('Payroll run already exists for the specified period');
-  }
-
-  const exactData = { ...data };
-  for (const field of ['totalGross', 'totalDeductions', 'totalNet']) {
-    if (exactData[field] != null) exactData[field] = money.decimalToPersistence(exactData[field]);
-  }
-  const create = await prisma.payrollRun.create({
-    data: {
-      ...exactData,
-      tenantId: tenantId ?? null,
-      status: 'PENDING'
-    }
-  });
+  assertPayrollPeriod(data);
+  const create = await tenantTransaction(prisma, async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':payroll-period'},0))`;
+    const existing = await tx.payrollRun.findFirst({where:{tenantId,status:{not:'CANCELLED'},periodStart:{lte:new Date(data.periodEnd)},periodEnd:{gte:new Date(data.periodStart)}}});
+    if(existing) throw payrollError('Payroll run already exists for the specified period');
+    return tx.payrollRun.create({data:{tenantId,periodStart:new Date(data.periodStart),periodEnd:new Date(data.periodEnd),countryCode:data.countryCode,currencyCode:data.currencyCode,status:'PENDING'}});
+  },{tenantId});
 
   await logAction({
     employeeId: Number(createdBy),
@@ -1001,18 +989,17 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
 // manually) do not resurface.
 export const loanBridgeWhere = (employeeId, payrollRunId) => ({
     employeeId,
-    status: 'ACTIVE',
     OR: [
-        { outstandingMinor: { gt: 0 } },
+        { status:'ACTIVE', outstandingMinor: { gt: 0 } },
         { repayments: { some: { payrollRunId } } },
     ],
 });
 
 // Statuses a run may be (re-)processed FROM. PENDING is the first run; COMPLETED
-// and FAILED allow an idempotent re-process (no doubled payslips). PROCESSING is
-// allowed so a crashed run can be retried. APPROVED/FINALIZED/CANCELLED are
+// and FAILED allow an idempotent re-process (no doubled payslips). PROCESSING
+// prevents concurrent processing. APPROVED/FINALIZED/CANCELLED are
 // terminal-ish and must NOT be silently re-computed.
-const PROCESSABLE_STATUSES = new Set(['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'REJECTED']);
+const PROCESSABLE_STATUSES = new Set(['PENDING', 'COMPLETED', 'FAILED', 'REJECTED']);
 
 // N-10 — the payroll-eligible employee filter for a run. payroll_included is
 // the documented payroll switch (hr.service.js:508; the attendance writer and
@@ -1092,7 +1079,8 @@ export const scopeAttendanceToEmployment = (employee, periodEnd) => {
     return before - employee.attendance.length;
 };
 
-export const processPayrollRun = async (id, updatedBy, tenantId) => {
+export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) => {
+    const preview = options.preview === true;
     const payrollRun = await prisma.payrollRun.findFirst({
         where: withTenant(tenantId, { id }),
         include: {
@@ -1101,11 +1089,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
     });
 
     if (!payrollRun) {
-        throw new Error('Payroll run not found');
+        throw payrollError('Payroll run not found',404);
     }
 
-    if (!PROCESSABLE_STATUSES.has(payrollRun.status)) {
-        throw new Error(`Payroll run cannot be processed from ${payrollRun.status} status`);
+    if (!preview && !PROCESSABLE_STATUSES.has(payrollRun.status)) {
+        throw payrollError(`Payroll run cannot be processed from ${payrollRun.status} status`);
     }
 
     // TS-SUBMIT-01 (operator item 3, 2026-09-17) — submitting the timesheet is
@@ -1114,7 +1102,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
     // unresolved anomalies, then activates the vault run). Every run created
     // BY the gatekeeper carries the submission audit row, so a run whose month
     // has no submission was created out-of-band — refuse it.
-    {
+    if (!preview) {
         const month = `${payrollRun.periodStart.getUTCFullYear()}-${String(payrollRun.periodStart.getUTCMonth() + 1).padStart(2, '0')}`;
         const submission = await prisma.payrollAuditLog.findFirst({
             where: withTenant(tenantId, {
@@ -1124,17 +1112,25 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             select: { id: true },
         });
         if (!submission) {
-            throw new Error(`HR-TP-03 timesheet for ${month} has not been submitted — submit the timesheet before running payroll (operator workflow 2026-09-17)`);
+            throw payrollError(`HR-TP-03 timesheet for ${month} has not been submitted — submit the timesheet before running payroll (operator workflow 2026-09-17)`);
         }
     }
 
     // Update status to PROCESSING (scoped: updateMany so the tenant predicate
     // applies — a cross-tenant id would touch zero rows). Stamp processedBy so
     // the approver can be enforced as a DISTINCT employee at finalize time.
-    await prisma.payrollRun.updateMany({
-        where: withTenant(tenantId, { id }),
-        data: { status: 'PROCESSING', processedBy: toInt(updatedBy) }
-    });
+    if (!preview) await tenantTransaction(prisma,async tx=>{
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':approval-source:PAYROLL:' + id},0))`;
+        await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
+        const current=await tx.payrollRun.findFirst({where:{tenantId,id}});
+        if(!PROCESSABLE_STATUSES.has(current?.status)) throw payrollError('Payroll changed or is already processing; refresh');
+        const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
+        if(approval && !['INITIATOR','REJECTED'].includes(approval.stage)) throw payrollError('Return the payroll to its initiator before recalculation');
+        const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(updatedBy) ?? -1}});
+        if(!actor?.employee_code) throw payrollError('A verified employee code is required to process payroll');
+        if(approval && approval.employeeCode!==actor.employee_code) throw payrollError('The payroll initiator must perform the recalculation');
+        await tx.payrollRun.update({where:{id},data:{status:'PROCESSING',processedBy:actor.id,approvedBy:null,approvedAt:null}});
+    },{tenantId});
 
     try {
         // Get all active employees for this tenant
@@ -1219,10 +1215,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
 
         // Remove only unapproved, undistributed, zero-value leftovers for
         // employees who no longer qualify for this period. Keep a full audit.
-        await tenantTransaction(prisma, async tx => {
+        if (!preview) await tenantTransaction(prisma, async tx => {
             const stale=await tx.payrollPayslip.findMany({where:withTenant(tenantId,{payrollRunId:id,employeeId:{notIn:employees.map(e=>e.id)}}),include:{earnings:true,deductions:true}});
             for(const slip of stale) {
-                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})) throw new Error(`Ineligible employee ${slip.employeeId} has a protected or nonzero payslip; review before recalculation`);
+                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})) throw payrollError('An ineligible employee has a protected or nonzero payslip; review employee setup before recalculation');
                 await tx.payrollAuditLog.create({data:{tenantId,action:'INELIGIBLE_ZERO_PAYSLIP_REMOVED',payrollRunId:id,employeeId:slip.employeeId,details:'Employee was not employed in this payroll period. Removed only an undistributed DRAFT payslip with all totals zero.',oldValues:JSON.parse(JSON.stringify(slip))}});
                 await tx.payrollPayslip.delete({where:{id:slip.id}});
             }
@@ -1244,8 +1240,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         for(const audit of attendanceSnapshots) {
             const employee=employees.find(e=>e.id===audit.employeeId);if(!employee)continue;
             const snapshot=audit.newValues;
-            if(snapshot?.periodStart!==payrollRun.periodStart.toISOString().slice(0,10)||snapshot?.periodEnd!==payrollRun.periodEnd.toISOString().slice(0,10)||!Array.isArray(snapshot?.attendance)||!Array.isArray(snapshot?.anomalies)) throw new Error('Attendance snapshot does not match payroll period');
-            const restore=rows=>rows.map(row=>{const date=new Date(row.date);if(!Number.isFinite(date.getTime())||date<payrollRun.periodStart||date>payrollRun.periodEnd)throw new Error('Attendance snapshot contains an out-of-period date');return {...row,date};});
+            if(snapshot?.periodStart!==payrollRun.periodStart.toISOString().slice(0,10)||snapshot?.periodEnd!==payrollRun.periodEnd.toISOString().slice(0,10)||!Array.isArray(snapshot?.attendance)||!Array.isArray(snapshot?.anomalies)) throw payrollError('Attendance snapshot does not match payroll period');
+            const restore=rows=>rows.map(row=>{const date=new Date(row.date);if(!Number.isFinite(date.getTime())||date<payrollRun.periodStart||date>payrollRun.periodEnd)throw payrollError('Attendance snapshot contains an out-of-period date');return {...row,date};});
             employee.attendance=restore(snapshot.attendance);
             // Decisions always come from current, tenant-scoped cases; legacy
             // day-level snapshots cannot waive or introduce rule deductions.
@@ -1277,10 +1273,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             for(const day of periodDays) {
                 if(!employedOn(employee,employee.employmentPeriods||[],day))continue;
                 const info=attendanceRuntime.resolve(employee.id,day);
-                if(info.working==null)throw badSetup('Complete attendance setup for employee '+employee.id+' on '+day,409);
+                if(info.working==null)throw badSetup('Complete attendance setup for '+employeeCode(employee)+' on '+day,409);
                 modes.add(info.profile?.mode);
             }
-            if(modes.size>1)throw badSetup('Attendance input mode changes inside the payroll period for employee '+employee.id,409);
+            if(modes.size>1)throw badSetup('Attendance input mode changes inside the payroll period for '+employeeCode(employee),409);
             if(modes.size)employee.attendanceInputMode=[...modes][0];
         }
 
@@ -1288,15 +1284,17 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
         // is the same as everything off.
-        const ruleConfig = (await prisma.payrollRuleConfig.findUnique({ where: { tenantId } })) ?? {};
+        const readiness = await payrollReadiness({tenantId,run:{...payrollRun,calculationConfigVersion:null},employees});
+        assertReady(readiness.issues);
+        const config = readiness.snapshot.config;
+        const ruleConfig = config.payRules || {};
+        const components = config.salaryComponents || [];
 
         // HR-02 — read the VERSIONED tax snapshot ONCE for the run's country,
         // effective at the run's period end. selectEffectiveTaxRates ignores
         // future-dated and foreign-country rows; computeRuleVersion records the
         // exact rule the run is computed against so it is reproducible.
-        const allCountryRates = await prisma.taxRate.findMany({
-            where: withTenant(tenantId, { countryCode: payrollRun.countryCode })
-        });
+        const allCountryRates = config.taxSlabs || [];
         const ratesEffectiveAt = payrollRun.periodEnd;
         const effectiveRates = selectEffectiveTaxRates(allCountryRates, {
             countryCode: payrollRun.countryCode,
@@ -1306,7 +1304,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
 
         // Resolve the persisted type ids the pure engine leaves null (base
         // salary earning) once per run.
-        const baseSalaryEarningTypeId = await getBaseSalaryEarningTypeId(tenantId);
+        const baseSalaryEarningTypeId = preview ? null : await getBaseSalaryEarningTypeId(tenantId);
 
         // HR-PAYROLL-DEDUCTION-TYPE-01 — code → PayrollDeductionType, resolved
         // ONCE per run and LAZILY: a tenant that never emits an EOBI line never
@@ -1314,11 +1312,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         // per-employee map below cannot race two creates for the same code.
         const deductionTypeIds = new Map();
         const resolveDeductionTypeId = (code) => {
-            const name = DEDUCTION_TYPE_NAMES[code];
+            const name = DEDUCTION_TYPE_NAMES[code] || components.find(c=>c.code===code && c.type==='DEDUCTION')?.name;
             // No silent fallback. A line reaching persistence with no resolvable
             // type is a bug in whichever bridge emitted it — recording it as
             // income tax is how this finding happened in the first place.
-            if (!name) throw new Error(`HR-PAYROLL-DEDUCTION-TYPE-01: deduction line has no resolvable deduction type (code=${code ?? 'none'})`);
+            if (!name) throw payrollError(`HR-PAYROLL-DEDUCTION-TYPE-01: deduction line has no resolvable deduction type (code=${code ?? 'none'})`);
             if (!deductionTypeIds.has(code)) {
                 deductionTypeIds.set(code, getOrCreateDeductionType(code, name, tenantId));
             }
@@ -1328,9 +1326,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         // One tenant-wide financial lock serializes these writes. Do not fill the
         // connection pool with waiting transactions while type lookups need a connection.
         const payslips = [];
-        for (const employee of employees) payslips.push(await tenantTransaction(prisma, async (tx) => {
+        for (const employee of employees.filter(e=>!options.employeeCode || e.employee_code===options.employeeCode)) payslips.push(await tenantTransaction(prisma, async (tx) => {
             const prisma = tx;
             await lockAttendancePeriod(tx, tenantId, true);
+            const reservingRuns=await prisma.payrollRun.findMany({where:{tenantId,status:{notIn:['FAILED','CANCELLED']}},select:{id:true}});
             const employmentTerm = employee.employmentTerms[0]
                 ? { ...employee.employmentTerms[0], baseSalaryEarningTypeId }
                 : null;
@@ -1361,7 +1360,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                         startDate: { lte: payrollRun.periodEnd },
                         endDate: { gte: payrollRun.periodStart },
                     }),
-                    select: { totalDays: true, leavePolicy: { select: { leaveTypeCode: true } } },
+                    select: { totalDays: true, startDate:true,endDate:true, leavePolicy: { select: { leaveTypeCode: true } } },
                 }),
                 // Active benefit enrollments with plan details
                 prisma.employeeBenefit.findMany({
@@ -1376,13 +1375,13 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 // deduction line, never silently re-pay the installment.
                 prisma.loan.findMany({
                     where: withTenant(tenantId, loanBridgeWhere(employee.id, payrollRun.id)),
-                    select: { id: true, monthlyInstallmentMinor: true, outstandingMinor: true },
+                    select: { id: true, kind:true, monthlyInstallmentMinor: true, outstandingMinor: true, repayments:{where:{OR:[{payrollRunId:id},{settledAt:null,payrollRunId:{in:reservingRuns.map(r=>r.id)}}]}} },
                 }),
             ]);
 
             // Build bridge data
             const previousSlip=await prisma.payrollPayslip.findFirst({where:{tenantId,payrollRunId:id,employeeId:employee.id}});
-            await releaseFailedCarry(prisma,{tenantId,employeeId:employee.id});
+            if (!preview) await releaseFailedCarry(prisma,{tenantId,employeeId:employee.id});
             const attendanceAdjustments=await prisma.attendancePayrollAdjustment.findMany({where:{tenantId,employeeId:employee.id,currencyCode:currency,sourcePeriodEnd:{lt:payrollRun.periodStart},OR:[{appliedPayslipId:null},...(previousSlip?[{appliedPayslipId:previousSlip.id}]:[])]}});
             const bridges = {
                 attendanceAdjustments,
@@ -1394,7 +1393,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 })),
                 lwpDays: unpaidLeaves
                     .filter(l => l.leavePolicy?.leaveTypeCode === 'UNPAID' || l.leavePolicy?.leaveTypeCode === 'LWP')
-                    .reduce((sum, l) => sum + (l.totalDays || 0), 0),
+                    .reduce((sum, l) => { const span=Math.round((new Date(l.endDate)-new Date(l.startDate))/86400000)+1; const overlap=Math.max(0,Math.round((Math.min(+l.endDate,+payrollRun.periodEnd)-Math.max(+l.startDate,+payrollRun.periodStart))/86400000)+1); return sum+(l.totalDays||0)*overlap/span; }, 0),
                 benefitLines: employeeBenefits.map(eb => ({
                     planName: eb.benefitPlan?.name,
                     employerContributionMinor: eb.benefitPlan?.employerContributionMinor || 0,
@@ -1402,8 +1401,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 })),
                 loanLines: activeLoans.map(loan => ({
                     loanId: loan.id,
-                    name: `Loan Repayment (ID:${loan.id})`,
-                    amountMinor: loan.monthlyInstallmentMinor,
+                    name: loan.kind==='ADVANCE' ? 'Salary advance repayment' : 'Loan repayment',
+                    amountMinor: Math.min(loan.monthlyInstallmentMinor, Math.max(0,loan.outstandingMinor + loan.repayments.filter(r=>r.settledAt && r.payrollRunId===id).reduce((sum,r)=>sum+r.amountMinor,0) - loan.repayments.filter(r=>!r.settledAt && r.payrollRunId!==id).reduce((sum,r)=>sum+r.amountMinor,0))),
                 })),
                 attendanceRows: employee.attendance || [],
                 anomalyRows: employee.attendanceAnomalies || [],
@@ -1413,7 +1412,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             const built = buildPayslipFromInputs({
                 employee,
                 employmentTerm,
-                assignments: employee.payrollAssignments,
+                assignments: payrollAssignments({employee,employmentTerm,assignments:employee.payrollAssignments,components,payrollRun}),
                 payrollRun,
                 taxRateRows: allCountryRates,
                 asOf: ratesEffectiveAt,
@@ -1426,12 +1425,14 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             // FORCE-RLS: payroll_earnings / payroll_deductions are tenant-scoped;
             // each nested-created line must carry tenantId (== app.tenant_id) or
             // the WITH CHECK policy rejects the insert.
-            const earnings = built.earnings.map((e) => ({
+            if (Number(built.netAmount) < 0) throw payrollError(`Negative net pay for ${employeeCode(employee)}; resolve deductions before processing`);
+            if (preview) return {...built,employeeCode:employeeCode(employee)};
+            const earnings = await Promise.all(built.earnings.map(async (e) => ({
                 tenantId: tenantId ?? null,
-                earningTypeId: e.earningTypeId ?? baseSalaryEarningTypeId,
+                earningTypeId: e.earningTypeId ?? (e.code ? await getOrCreateEarningType(e.code,e.description,e.taxable,tenantId) : baseSalaryEarningTypeId),
                 amount: e.amount,
                 description: e.description
-            }));
+            })));
             // Promise.all preserves array order — the deduction ORDER is part of
             // the determinism contract and must survive the async resolve.
             const deductions = await Promise.all(built.deductions.map(async (d) => ({
@@ -1472,43 +1473,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
                 // Record loan repayments for this payslip (T-1.2 — idempotent:
                 // a repayment already recorded for [loan, run] is never
                 // re-created or re-decremented on re-process).
-                for (const loan of bridges.loanLines || []) {
-                    const loanDeduction = built.deductions.find(d => d.loanId === loan.loanId);
-                    if (loanDeduction) {
-                        const deductMinor = money.decimalToMinor(loanDeduction.amount, currency);
-                        const existingRepayment = await prisma.loanRepayment.findFirst({
-                            where: { loanId: loan.loanId, payrollRunId: id },
-                            select: { id: true, amountMinor: true },
-                        });
-                        const plan = planLoanRepayment({
-                            existing: existingRepayment,
-                            installmentMinor: deductMinor,
-                            grossLimitMinor: deductMinor > 0n ? deductMinor : 1n,
-                            usedMinor: 0n,
-                        });
-                        if (!plan.skip && plan.amountMinor > 0n) {
-                            await prisma.loanRepayment.create({
-                                data: {
-                                    tenantId: tenantId ?? null,
-                                    loanId: loan.loanId,
-                                    amountMinor: Number(plan.amountMinor),
-                                    payrollRunId: id,
-                                    payslipId: updated.id,
-                                },
-                            });
-                            await prisma.loan.update({
-                                where: { id: loan.loanId },
-                                data: { outstandingMinor: { decrement: Number(plan.amountMinor) } },
-                            });
-                        }
-                    }
-                }
-                // AUDIT: Log the re-process event for this payslip
+                await reservePayrollLoans(prisma,{tenantId,runId:id,payslipId:updated.id,deductions:built.deductions,currency});
                 await prisma.payrollAuditLog.create({
                     data: {
                         tenantId: tenantId ?? null,
                         action: 'PAYSLIP_REPROCESSED',
-                        details: `Payslip re-processed for employee ${employee.id}`,
+                        details: `Payslip re-processed for ${employeeCode(employee)}`,
                         payrollRunId: id,
                         payslipId: updated.id,
                         employeeId: employee.id,
@@ -1544,43 +1514,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             });
             // Record loan repayments for this payslip (T-1.2 — idempotent by
             // [loan, run]; see the re-process branch above for the contract).
-            for (const loan of bridges.loanLines || []) {
-                const loanDeduction = built.deductions.find(d => d.loanId === loan.loanId);
-                if (loanDeduction) {
-                    const deductMinor = money.decimalToMinor(loanDeduction.amount, currency);
-                    const existingRepayment = await prisma.loanRepayment.findFirst({
-                        where: { loanId: loan.loanId, payrollRunId: id },
-                        select: { id: true, amountMinor: true },
-                    });
-                    const plan = planLoanRepayment({
-                        existing: existingRepayment,
-                        installmentMinor: deductMinor,
-                        grossLimitMinor: deductMinor > 0n ? deductMinor : 1n,
-                        usedMinor: 0n,
-                    });
-                    if (!plan.skip && plan.amountMinor > 0n) {
-                        await prisma.loanRepayment.create({
-                            data: {
-                                tenantId: tenantId ?? null,
-                                loanId: loan.loanId,
-                                amountMinor: Number(plan.amountMinor),
-                                payrollRunId: id,
-                                payslipId: created.id,
-                            },
-                        });
-                        await prisma.loan.update({
-                            where: { id: loan.loanId },
-                            data: { outstandingMinor: { decrement: Number(plan.amountMinor) } },
-                        });
-                    }
-                }
-            }
-            // AUDIT: Log the initial payslip creation
+            await reservePayrollLoans(prisma,{tenantId,runId:id,payslipId:created.id,deductions:built.deductions,currency});
             await prisma.payrollAuditLog.create({
                 data: {
                     tenantId: tenantId ?? null,
                     action: 'PAYSLIP_CREATED',
-                    details: `Payslip created for employee ${employee.id}`,
+                    details: `Payslip created for ${employeeCode(employee)}`,
                     payrollRunId: id,
                     payslipId: created.id,
                     employeeId: employee.id,
@@ -1619,9 +1558,14 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
 
         // Update payroll run with totals (scoped). Record the rule version +
         // as-of so the run is reproducible against the rates in effect.
+        if (preview) {
+            if (options.employeeCode && !payslips.length) throw payrollError('Employee code is not eligible in this payroll');
+            return {runId:id,configVersion:readiness.snapshot.version,payslips,totalGross,totalDeductions,totalNet};
+        }
         await prisma.payrollRun.updateMany({
             where: withTenant(tenantId, { id }),
             data: {
+                calculationConfigVersion:readiness.snapshot.version,
                 status: 'COMPLETED',
                 totalGross,
                 totalDeductions,
@@ -1633,6 +1577,14 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
             }
         });
 
+        // A rejected calculation starts a new, fully audited review round.
+        await tenantTransaction(prisma, async tx=>{
+          const row=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
+          if(row?.stage==='REJECTED'){
+            const next=await tx.hrApprovalRequest.update({where:{id:row.id},data:{stage:'INITIATOR',version:{increment:1},execution:'PENDING',recommendation:null,verification:null,managerActorCode:null,hrActorCode:null}});
+            await tx.hrApprovalAudit.create({data:{tenantId,approvalRef:row.id,version:next.version,round:row.round,actorCode:row.employeeCode,fromStage:'REJECTED',toStage:'INITIATOR',action:'RECALCULATE',reason:'Rejected payroll recalculated; full review required',sourceHash:row.sourceHash}});
+          }
+        },{tenantId});
         const updatedRun = await getPayrollRunById(id, tenantId);
 
         // Create audit log (tenant-stamped)
@@ -1654,7 +1606,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
         return updatedRun;
     } catch (error) {
         // Mark as failed if processing fails (scoped)
-        await prisma.payrollRun.updateMany({
+        if (!preview) await prisma.payrollRun.updateMany({
             where: withTenant(tenantId, { id }),
             data: { status: 'FAILED' }
         });
@@ -1669,6 +1621,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId) => {
 // computeProgressiveTaxMinor) which processPayrollRun drives — the same code the
 // golden-file regression test exercises (no mock copy of the logic).
 
+const getOrCreateEarningType = async (code,name,taxable,tenantId) => {
+  const row=await prisma.payrollEarningType.upsert({where:{tenantId_code:{tenantId,code}},create:{tenantId,code,name,isTaxable:taxable!==false},update:{}});
+  return row.id;
+};
 const getBaseSalaryEarningTypeId = async (tenantId) => {
     let earningType = await prisma.payrollEarningType.findFirst({
         where: withTenant(tenantId, { code: 'BASE_SALARY' })
@@ -1728,7 +1684,7 @@ export const approvePayrollRun = async (id, approverId, tenantId) => {
 
 export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
   const payrollRun = await prisma.payrollRun.findFirst({ where: withTenant(tenantId, { id }) });
-  if (!payrollRun) throw new Error('Payroll run not found');
+  if (!payrollRun) throw payrollError('Payroll run not found',404);
 
   // X-07 — If-Match / 412 optimistic concurrency (opt-in via ctx.ifMatch). A
   // finalize racing a concurrent re-process/approve is rejected, not clobbered.
@@ -1736,16 +1692,17 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
 
   // Approval gate: a run is only finalizable once it has been APPROVED by a
   // distinct approver. A COMPLETED-but-unapproved run is blocked here.
+  if (payrollRun.status === 'FINALIZED') return getPayrollRunById(id,tenantId);
   if (payrollRun.status !== 'APPROVED') {
-    throw new Error('HR-2012 payroll run requires approval before it can be finalized');
+    throw payrollError('HR-2012 payroll run requires approval before it can be finalized');
   }
   if (payrollRun.approvedBy == null) {
-    throw new Error('HR-2012 payroll run requires approval before it can be finalized');
+    throw payrollError('HR-2012 payroll run requires approval before it can be finalized');
   }
   // Defence in depth: re-assert separation of duties at finalize time too, in
   // case the approval row was tampered with.
   if (payrollRun.processedBy != null && payrollRun.approvedBy === payrollRun.processedBy) {
-    throw new Error('HR-2011 self-approval forbidden: the approver must be distinct from the processor');
+    throw payrollError('HR-2011 self-approval forbidden: the approver must be distinct from the processor');
   }
 
   // M1-HR: the payslip + run FINALIZED flips, the audit row, and the
@@ -1753,6 +1710,19 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
   // (outbox-on-write, validate-before-write). The event is ids-only +
   // tenant-scoped from the run's verified tenant.
   await tenantTransaction(prisma, async (tx) => {
+    await lockAttendancePeriod(tx,tenantId,true);
+    await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
+    const locked=await tx.payrollRun.findFirst({where:{id,tenantId}});
+    if(locked.status==='FINALIZED') return;
+    if(locked.status!=='APPROVED') throw payrollError('Payroll approval is required');
+    const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
+    const source=await loadSource(tx,{tenantId},'PAYROLL',String(id),{pending:false});
+    if(approval?.stage!=='APPROVED'||approval.sourceHash!==source.digest) throw payrollError('Complete HR Approval Centre review of the current payroll');
+    const employees=await tx.employee.findMany({where:{tenant_id:tenantId,payrollPayslips:{some:{payrollRunId:id}}},include:{employmentTerms:{where:{tenantId,effectiveFrom:{lte:locked.periodEnd},OR:[{effectiveTo:null},{effectiveTo:{gte:locked.periodStart}}]},orderBy:{effectiveFrom:'desc'},take:1}}});
+    assertReady((await payrollReadiness({tenantId,run:locked,employees,db:tx})).issues);
+    const holds=await tx.payrollPayslip.count({where:{tenantId,payrollRunId:id,status:'HOLD'}});
+    if(holds) throw payrollError('Resolve held payslips before finalization');
+    await settlePayrollLoans(tx,{tenantId,runId:id});
     await tx.payrollPayslip.updateMany({
       where: withTenant(tenantId, { payrollRunId: id }),
       data: { status: 'FINALIZED' }
@@ -1780,7 +1750,7 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
       data: {
         tenantId: tenantId ?? null,
         action: 'PAYROLL_FINALIZED',
-        details: `Payroll run finalized and ready for distribution (approved by ${payrollRun.approvedBy})`,
+        details: 'Payroll finalized after HR Approval Centre approval',
         payrollRunId: id
       }
     });
@@ -1810,44 +1780,18 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
 
   return getPayrollRunById(id, tenantId);
 };
-export const cancelPayrollRun = async (id, deletedBy, tenantId) => {
-  const payrollRun = await prisma.payrollRun.findFirst({ where: withTenant(tenantId, { id }) });
-  if (!payrollRun) throw new Error('Payroll run not found');
-
-  if (payrollRun.status === 'COMPLETED') {
-    throw new Error('Cannot cancel a completed payroll run');
-  }
-
-  // Create audit log BEFORE deleting the run (FK constraint requires the run to exist)
-  await prisma.payrollAuditLog.create({
-    data: {
-      tenantId: tenantId ?? null,
-      action: 'PAYROLL_CANCELLED',
-      details: 'Payroll run cancelled',
-      payrollRunId: id
-    }
-  });
-
-  await prisma.payrollPayslip.deleteMany({
-    where: withTenant(tenantId, { payrollRunId: id })
-  });
-
-  // deleteMany (not delete) so the tenant predicate guards the destructive op:
-  // a cross-tenant id deletes zero rows (we already verified ownership above).
-  await prisma.payrollRun.deleteMany({
-    where: withTenant(tenantId, { id })
-  });
-
-  await logAction({
-    employeeId: Number(deletedBy),
-    type: "Delete",
-    module: "Payroll Run",
-    result: "SUCCESS",
-    notes: `Payroll run "${id}" cancelled and deleted`,
-    tenantId: tenantId ?? null,
-  });
-};
-
+export const cancelPayrollRun = async (id, deletedBy, tenantId) => tenantTransaction(prisma,async tx=>{
+  await lockAttendancePeriod(tx,tenantId,true);
+  await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
+  const run=await tx.payrollRun.findFirst({where:{id,tenantId}});
+  if(!run) throw payrollError('Payroll run not found',404);
+  if(!['PENDING','FAILED','REJECTED'].includes(run.status)) throw payrollError('Only pending, failed or Management-rejected payroll may be cancelled');
+  if(await tx.loanRepayment.count({where:{tenantId,payrollRunId:id,settledAt:{not:null}}})) throw Object.assign(new Error('Reconcile posted loan repayments before cancelling this historical payroll'),{status:409});
+  await tx.loanRepayment.deleteMany({where:{tenantId,payrollRunId:id,settledAt:null}});
+  await tx.payrollRun.update({where:{id},data:{status:'CANCELLED'}});
+  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_CANCELLED',details:'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
+  return {id,status:'CANCELLED'};
+},{tenantId});
 
 // Earning Type Operations
 export const getEarningTypes = async (tenantId) => {
@@ -1876,7 +1820,7 @@ export const createEarningType = async (data, createdBy, tenantId) => {
 export const updateEarningType = async (id, data, updatedBy, tenantId) => {
   // Ownership check then scoped update; a cross-tenant id is not-found.
   const existing = await prisma.payrollEarningType.findFirst({ where: withTenant(tenantId, { id }) });
-  if (!existing) throw new Error('Earning type not found');
+  if (!existing) throw payrollError('Earning type not found');
 
   await prisma.payrollEarningType.updateMany({
     where: withTenant(tenantId, { id }),
@@ -1920,7 +1864,7 @@ export const createDeductionType = async (data, createdBy, tenantId) => {
 
 export const updateDeductionType = async (id, data, updatedBy, tenantId) => {
   const existing = await prisma.payrollDeductionType.findFirst({ where: withTenant(tenantId, { id }) });
-  if (!existing) throw new Error('Deduction type not found');
+  if (!existing) throw payrollError('Deduction type not found');
 
   await prisma.payrollDeductionType.updateMany({
     where: withTenant(tenantId, { id }),
@@ -2050,7 +1994,7 @@ export const getPayslips = async ({ page, limit, payrollRunId, employeeId, tenan
             orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
             include: {
                 employee: {
-                    select: { id: true, first_name: true, last_name: true, job_title: true }
+                    select: { id: true, employee_code: true, job_title: true }
                 },
                 payrollRun: true,
                 earnings: {
@@ -2088,8 +2032,7 @@ export const getPayslipById = async (id, tenantId) => {
             employee: {
                 select: {
                     id: true,
-                    first_name: true,
-                    last_name: true,
+                    employee_code: true,
                     job_title: true
                 }
             },
@@ -2114,11 +2057,11 @@ export const distributePayslip = async (id, createdBy, tenantId) => {
   });
 
   if (!payslip) {
-    throw new Error("Payslip not found");
+    throw payrollError("Payslip not found");
   }
 
   if (payslip.status !== "FINALIZED") {
-    throw new Error("Only finalized payslips can be distributed");
+    throw payrollError("Only finalized payslips can be distributed");
   }
 
   await prisma.payrollPayslip.updateMany({
@@ -2233,7 +2176,7 @@ export const getAuditLogs = async ({ page, limit, payrollRunId, payslipId, tenan
                     select: { id: true, employeeId: true }
                 },
                 employee: {
-                    select: { id: true, first_name: true, last_name: true }
+                    select: { id: true, employee_code: true }
                 }
             }
         }),

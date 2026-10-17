@@ -73,7 +73,7 @@ const prismaMock = {
     $transaction: jest.fn(async (ops) => Promise.all(ops)),
 };
 
-jest.unstable_mockModule('../../src/config/prisma.js', () => ({ default: prismaMock }));
+jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 
 const loanService = await import('../../src/services/loan.service.js');
 

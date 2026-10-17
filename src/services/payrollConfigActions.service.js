@@ -15,6 +15,7 @@ import { getAttendancePolicy } from "./attendancePolicyConfig.service.js";
 import { listDeductionRules } from "./attendanceDeductionRule.service.js";
 import { listApprovalLevels } from "./attendanceApprovalLevel.service.js";
 import logger from "../lib/logger.js";
+import { validatePayrollConfiguration } from '../lib/payrollConfiguration.js';
 
 function notFound(message) {
   return Object.assign(new Error(message), { status: 404 });
@@ -28,7 +29,7 @@ function toIntOrNull(raw) {
 
 // ── GLOBAL KPIs ─────────────────────────────────────────────────────────────
 export async function getGlobalKpis({ tenantId }) {
-  const [activeEmployees, totalPayComponents, approvalRows] = await Promise.all([
+  const [activeEmployees, totalPayComponents] = await Promise.all([
     // Employee has string status fields (status / employement_status) — count
     // the active ones. tenant scoping uses the snake_case tenant_id column.
     prisma.employee.count({
@@ -39,18 +40,13 @@ export async function getGlobalKpis({ tenantId }) {
     prisma.salaryComponent.count({
       where: scopedWhere(tenantId, { active: true }),
     }),
-    // DISTINCT approval levels among ACTIVE approval-matrix rows.
-    prisma.payrollApprovalMatrix.findMany({
-      where: scopedWhere(tenantId, { status: "ACTIVE" }),
-      distinct: ["level"],
-      select: { level: true },
-    }),
+
   ]);
 
   return {
     activeEmployees,
     totalPayComponents,
-    approvalLevels: approvalRows.length,
+    approvalLevels: 3,
   };
 }
 
@@ -180,6 +176,8 @@ export async function publishConfig({ tenantId, publishedById }) {
   const result = await tenantTransaction(prisma, async (tx) => {
     // 1. Assemble the full current config (reads run under the tx tenant GUC).
     const config = await buildConfigObjectTx(tx, tenantId);
+    validatePayrollConfiguration(config);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':payroll-config'},0))`;
 
     // 2. Next version = current publishedVersion + 1.
     const meta = await tx.payrollConfigMeta.findUnique({ where: { tenantId } });

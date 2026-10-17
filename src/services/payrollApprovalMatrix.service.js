@@ -21,16 +21,13 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { decimalToPersistence } from "../lib/money.js";
 
 const APPROVER_SELECT = {
-    select: { id: true, employee_name: true, first_name: true, last_name: true, photo_url: true },
+    select: { id: true, employee_code: true, photo_url: true },
 };
 
 function flattenApprover(emp) {
     if (!emp) return null;
-    const name =
-        emp.employee_name ||
-        [emp.first_name, emp.last_name].filter(Boolean).join(" ").trim() ||
-        null;
-    return { id: emp.id, name, avatar: emp.photo_url || null };
+    const name = emp.employee_code || 'Employee code required';
+    return { id: emp.id, employeeCode:emp.employee_code, name, avatar: emp.photo_url || null };
 }
 
 function toRow(r) {

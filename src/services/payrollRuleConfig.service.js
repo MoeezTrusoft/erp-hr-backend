@@ -8,6 +8,7 @@
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { SUPPORTED_PAY_RULES } from '../lib/payrollConfiguration.js';
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -67,10 +68,15 @@ export async function getPayrollRules({ tenantId }) {
 }
 
 export async function updatePayrollRules({ tenantId, ...toggles }) {
+  const unsupported=Object.keys(toggles).filter(key=>!SUPPORTED_PAY_RULES.includes(key));
+  if(unsupported.length) throw badRequest(`These settings are not supported by the payroll engine: ${unsupported.join(', ')}`);
   // Build the change-set from ONLY the provided keys.
   const data = {};
   for (const key of BOOL_KEYS) {
-    if (toggles[key] !== undefined) data[key] = Boolean(toggles[key]);
+    if (toggles[key] !== undefined) {
+      if(typeof toggles[key]!=='boolean') throw badRequest(`${key} must be true or false`);
+      data[key] = toggles[key];
+    }
   }
   if (toggles.garnishmentCapPct !== undefined) {
     const pct = Number(toggles.garnishmentCapPct);

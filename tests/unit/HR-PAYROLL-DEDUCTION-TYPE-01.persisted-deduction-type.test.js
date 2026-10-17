@@ -33,6 +33,10 @@ const mk = () => ({
 
 const prismaMock = {
     payrollRun: mk(),
+    hrApprovalRequest: mk(),
+    payrollConfigSnapshot: mk(),
+    bankDetail: mk(),
+    leaveBalance: mk(),
     payrollPayslip: mk(),
     payrollEarning: mk(),
     payrollDeduction: mk(),
@@ -56,6 +60,7 @@ const prismaMock = {
 
 prismaMock.$transaction=async fn=>fn(prismaMock);
 prismaMock.$executeRaw=async()=>0;
+prismaMock.$queryRaw=async()=>[];
 jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({configOn:()=>({}),resolve:()=>({working:true,profile:{mode:'DEVICE'}})})}));
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/utils/logs.js', () => ({ logAction: jest.fn().mockResolvedValue(undefined) }));
@@ -112,6 +117,14 @@ const setup = ({
         currencyCode,
     };
 
+    prismaMock.hrApprovalRequest.findUnique.mockResolvedValue(null);
+    prismaMock.employee.findFirst.mockResolvedValue({id:PROCESSOR,employee_code:'EMP-PROCESSOR'});
+    prismaMock.payrollRun.update.mockResolvedValue(payrollRun);
+    prismaMock.payrollConfigSnapshot.findFirst.mockResolvedValue({version:1,config:{payRules:ruleConfig || {},salaryComponents:[],taxSlabs:(taxRateRows.length?taxRateRows:[{countryCode,bracketMin:0,bracketMax:null,rate:0,effectiveFrom:'2026-01-01'}]).map(r=>({...r,status:'ACTIVE'}))}});
+    prismaMock.bankDetail.findMany.mockResolvedValue([{employeeId:4242,accountNumber:'TEST',routingNumber:'TEST'}]);
+    prismaMock.leaveBalance.findMany.mockResolvedValue([]);
+    prismaMock.loanRepayment.findMany.mockResolvedValue([]);
+    prismaMock.loanRepayment.deleteMany.mockResolvedValue({count:0});
     prismaMock.payrollRun.findFirst.mockResolvedValue(payrollRun);
     prismaMock.payrollRun.findMany.mockResolvedValue([]);
     prismaMock.payrollPayslip.findMany.mockResolvedValue([]);
@@ -124,6 +137,7 @@ const setup = ({
     prismaMock.employee.findMany.mockResolvedValue([
         {
             id: 4242,
+            employee_code:"EMP-4242",
             hire_date: null,
             term_date: null,
             employmentTerms: [{ id: 1, baseSalary: 6543.21, payFrequency: 'MONTHLY', currency: currencyCode }],
@@ -151,9 +165,9 @@ const setup = ({
     });
 
     prismaMock.overtimeRequest.findMany.mockResolvedValue([]);
-    prismaMock.leaveRequest.findMany.mockResolvedValue(unpaidLeaves);
+    prismaMock.leaveRequest.findMany.mockResolvedValue(unpaidLeaves.map(l=>({...l,startDate:new Date('2026-06-01'),endDate:new Date('2026-06-30')})));
     prismaMock.employeeBenefit.findMany.mockResolvedValue(benefits);
-    prismaMock.loan.findMany.mockResolvedValue(loans);
+    prismaMock.loan.findMany.mockResolvedValue(loans.map(l=>({...l,repayments:[]})));
     prismaMock.loan.update.mockResolvedValue({});
     prismaMock.loanRepayment.create.mockResolvedValue({ id: 1 });
     prismaMock.loanRepayment.count.mockResolvedValue(0);
@@ -202,7 +216,7 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
 
         expect(codesByDescription()).toEqual({
             'Benefit: Health': 'BENEFIT_CONTRIBUTION',
-            'Loan Repayment (ID:12)': 'LOAN_REPAYMENT',
+            'Loan repayment': 'LOAN_REPAYMENT',
             'LWP Recovery (2 days)': 'LWP_RECOVERY',
             'Management-disapproved attendance: 1 day(s)': 'ATTENDANCE_RULES_V2',
             'Social Security (FICA)': 'FICA_SOCIAL_SECURITY',
@@ -219,7 +233,7 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
     it('keeps EOBI and FICA as SEPARATE statutory types (different obligations)', async () => {
         setup({ countryCode: 'PK', currencyCode: 'PKR', ruleConfig: { eobiEnabled: true }, taxRateRows: [] });
         await payroll.processPayrollRun(RUN_ID, PROCESSOR, TENANT);
-        expect(codesByDescription()).toEqual({ 'EOBI (Employee)': 'EOBI_EMPLOYEE' });
+        expect(codesByDescription()).toEqual({ 'EOBI (Employee)': 'EOBI_EMPLOYEE', 'Income Tax':'INCOME_TAX' });
 
         setup();
         await payroll.processPayrollRun(RUN_ID, PROCESSOR, TENANT);
@@ -237,17 +251,17 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
     it('gives NI its own type too', async () => {
         setup({ countryCode: 'GB', currencyCode: 'GBP', taxRateRows: [] });
         await payroll.processPayrollRun(RUN_ID, PROCESSOR, TENANT);
-        expect(codesByDescription()).toEqual({ 'National Insurance (NI)': 'NATIONAL_INSURANCE' });
+        expect(codesByDescription()).toEqual({ 'National Insurance (NI)': 'NATIONAL_INSURANCE', 'Income Tax':'INCOME_TAX' });
     });
 
     it('creates deduction types LAZILY — none for a line the tenant never emits', async () => {
-        setup({ taxRateRows: [] }); // no tax table ⇒ no income-tax line at all
+        setup({ taxRateRows: [] }); // explicit zero-rate published bracket
         await payroll.processPayrollRun(RUN_ID, PROCESSOR, TENANT);
 
         const created = [...typeStore.keys()].sort();
-        expect(created).toEqual(['FICA_MEDICARE', 'FICA_SOCIAL_SECURITY']);
-        // the catch-all is gone: no INCOME_TAX row is minted for a run with no tax
-        expect(created).not.toContain('INCOME_TAX');
+        expect(created).toEqual(['FICA_MEDICARE', 'FICA_SOCIAL_SECURITY', 'INCOME_TAX']);
+        // A zero-rate bracket emits a zero tax line, separate from other deductions.
+        expect(Number(persistedDeductions().find(d=>codeOf(d)==='INCOME_TAX').amount)).toBe(0);
         expect(created).not.toContain('LOAN_REPAYMENT');
         expect(created).not.toContain('EOBI_EMPLOYEE');
     });
@@ -275,7 +289,7 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
         const rows = persistedDeductions();
         expect(rows.map((d) => d.description)).toEqual([
             'Benefit: Health',
-            'Loan Repayment (ID:12)',
+            'Loan repayment',
             'Social Security (FICA)',
             'Medicare (FICA)',
             'Income Tax',

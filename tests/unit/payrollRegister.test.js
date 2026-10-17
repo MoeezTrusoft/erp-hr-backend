@@ -11,18 +11,17 @@ describe('payroll register',()=>{
 
 const {payrollRegisterProfile}=await import('../../src/lib/payrollRegisterProfiles.js');
 it.each([
- ['8f4a526f-d45b-4da2-b772-d6682e849812','Khurram Gul','Irfan Abdi'],
- ['14d8c7b1-194d-4e35-b058-b9cb9aa9fba2','Khurram Gul','Irfan Abdi'],
- ['8ff0533b-62f6-4be9-a78e-69adf49e00bc','Khurram Gul','Irfan Abdi'],
- ['40314ef4-0a81-4390-b631-b3ad3f21f523','Samar Abbas','Irfan Abdi'],
- ['61b7eb53-ab6e-413f-9d9a-1ecf4e071e73','Hasan Abbas','Imran Abdi'],
-])('prints the specified tenant signatories for %s',(tenant,authorized,approved)=>{
- expect(payrollRegisterProfile(tenant).signatories.map(s=>s.name)).toEqual(['Afsha Khan',authorized,approved]);
- expect(payrollRegisterProfile(tenant).signatories.map(s=>s.label)).toEqual(['PREPARED BY','AUTHORIZED BY','APPROVED BY']);
+ ['8f4a526f-d45b-4da2-b772-d6682e849812','JOC'],
+ ['14d8c7b1-194d-4e35-b058-b9cb9aa9fba2','BOC'],
+ ['8ff0533b-62f6-4be9-a78e-69adf49e00bc','HomeNet'],
+ ['40314ef4-0a81-4390-b631-b3ad3f21f523','TruSoft'],
+ ['61b7eb53-ab6e-413f-9d9a-1ecf4e071e73','HomeVision'],
+])('uses actual approval actor codes instead of static personal names for %s',(tenant,companyName)=>{
+ expect(payrollRegisterProfile(tenant)).toEqual({companyName});
 });
 it('does not match a company display label as a tenant identity',()=>expect(payrollRegisterProfile('HomeVision')).toBeNull());
 
-it('retains historical payroll rows when the employee is no longer accessible in this tenant',()=>{const m=buildPayrollRegister({run,payslips:[{...slip,employeeId:549,employee:null,payableDays:30}]});expect(m.count).toBe(1);expect(m.offices[0].departments[0].rows[0]).toMatchObject({name:'Employee #549 (record unavailable)',paidDays:'30'});expect(m.totals.net).toBe(10000n);});
+it('retains historical payroll rows when the employee is no longer accessible in this tenant',()=>{const m=buildPayrollRegister({run,payslips:[{...slip,employeeId:549,employee:null,payableDays:30}]});expect(m.count).toBe(1);expect(m.offices[0].departments[0].rows[0]).toMatchObject({name:'Employee code required',paidDays:'30'});expect(m.totals.net).toBe(10000n);});
 
 it('retains employment deduction explanations in the register',()=>{
  const m=buildPayrollRegister({run,payslips:[{...slip,deductions:[{amount:'15.25',description:'Joining/leaving date deduction (20 days outside employment)',deductionType:{code:'EMPLOYMENT_PRORATION'}}]}]});

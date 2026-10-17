@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { employee } from "../separation/base.js";
-import { assertAttendancePeriodOpen } from "../attendancePeriod.service.js";
+import { assertAttendancePeriodOpen, lockAttendancePeriod } from "../attendancePeriod.service.js";
+import { assertNoPayrollLoanReservation } from "../payrollLoans.service.js";
 import { enqueueHrDomainEvent } from "../hrDomainEvent.service.js";
 
 export const fail = (message, status = 409) => {
@@ -204,6 +205,7 @@ const definitions = {
       "employeeCount",
       "ruleVersion",
       "ratesEffectiveAt",
+      "calculationConfigVersion",
     ],
   ],
   ATTENDANCE: [
@@ -323,6 +325,7 @@ export async function loadSource(
 ) {
   const d = registry[kind],
     id = sourceId(kind, ref);
+  if(lock && kind==='LOAN_WRITEOFF') await lockAttendancePeriod(tx,env.tenantId,true);
   if (lock)
     await tx.$queryRawUnsafe(
       `SELECT id FROM "${d.table}" WHERE "tenantId"=$1::uuid AND id=$2${d.numeric ? "" : "::uuid"} FOR UPDATE`,
@@ -405,8 +408,21 @@ export async function loadSource(
         grossAmount: true,
         totalDeductions: true,
         netAmount: true,
+        payableDays: true,
+        attendanceBasisMinor: true,
+        attendancePeriodDays: true,
+        earnings: { orderBy: { id: "asc" }, select: { earningTypeId: true, amount: true, description: true } },
+        deductions: { orderBy: { id: "asc" }, select: { deductionTypeId: true, amount: true, description: true } },
       },
     });
+  if (kind === 'PAYROLL' && pending && await tx.payrollPayslip.count({where:{tenantId:env.tenantId,payrollRunId:id,status:'HOLD'}})) fail('Resolve held payslips before submitting payroll for approval');
+  // Keep already-reviewed legacy runs verifiable after this additive upgrade.
+  // Recalculation pins a configuration version and opts into the stronger
+  // line-item snapshot; new calculations always use that snapshot.
+  if (kind === 'PAYROLL' && row.calculationConfigVersion == null) {
+    delete data.calculationConfigVersion;
+    data.payslips=data.payslips.map(s=>pick(s,['employeeId','grossAmount','totalDeductions','netAmount']));
+  }
   if (kind === "ASSESSMENT_RELEASE") {
     const revision = await tx.assessmentRevision.findFirst({
       where: {
@@ -653,11 +669,16 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
       },
     });
   else if (kind === "LOAN_WRITEOFF") {
-    if (approved)
+    if (approved) {
+      await lockAttendancePeriod(tx,env.tenantId,true);
+      const current=await tx.loan.findFirst({where:{id:row.id,tenantId:env.tenantId}});
+      if(current?.outstandingMinor!==row.outstandingMinor || current?.status!==row.status) fail('Loan balance changed; refresh the write-off request');
+      await assertNoPayrollLoanReservation(tx,env.tenantId,row.id);
       await tx.loan.update({
         where: { id: row.id },
         data: { status: "WRITTEN_OFF", outstandingMinor: 0 },
       });
+    }
   } else if (kind === "LOAN")
     await tx.loan.update({
       where: { id: row.id },
