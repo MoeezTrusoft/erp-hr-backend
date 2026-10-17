@@ -42,7 +42,7 @@ test('approved payment evidence survives JSONB storage and unchanged payroll rev
   try {
     const run=await as(104,()=>tenantTransaction(prisma,async tx=>{
       const people=[];
-      for(const role of ['maker','checker'])people.push(await tx.employee.create({data:{tenant_id:tenantId,employee_code:'FIN-JSON-'+randomUUID(),employeeCategory:'EMPLOYEE',first_name:'Synthetic',last_name:role,employee_name:'Synthetic '+role,payroll_included:false,status:'Inactive',employement_status:'Inactive'}}));
+      for(const role of ['maker','checker'])people.push(await tx.employee.create({data:{tenant_id:tenantId,employee_code:'FIN-JSON-'+randomUUID().toUpperCase(),employeeCategory:'EMPLOYEE',first_name:'Synthetic',last_name:role,employee_name:'Synthetic '+role,payroll_included:false,status:'Inactive',employement_status:'Inactive'}}));
       const run=await tx.payrollRun.create({data:{tenantId,periodStart:new Date('2026-10-01'),periodEnd:new Date('2026-10-31'),countryCode:'PK',currencyCode:'PKR',status:'FINALIZED',totalGross:'100',totalDeductions:'0',totalNet:'100',employeeCount:1,processedBy:people[0].id,approvedBy:people[1].id,approvedAt:new Date()}});
       await tx.payrollPayslip.create({data:{tenantId,payrollRunId:run.id,employeeId:people[0].id,grossAmount:'100',totalDeductions:'0',netAmount:'100',status:'FINALIZED'}});
       return run;
