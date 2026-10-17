@@ -1,7 +1,7 @@
 name: Attendance evaluation database safeguards
 on:
+  # Branch protection requires postgres on every PR, including payroll-only fixes.
   pull_request:
-    paths: ['prisma/**', 'src/**/attendance*.js', 'src/services/timesheetSubmission.service.js', 'scripts/test-attendance-evaluation-postgres.py', '.github/workflows/attendance-evaluation.yml']
   workflow_dispatch:
 permissions:
   contents: read

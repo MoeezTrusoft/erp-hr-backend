@@ -57,3 +57,13 @@ Fix: scope the existing system tenant context to an explicit migration transacti
 Security: COMMIT clears the context; application row security remains enabled and forced.
 Validation: regression runs the real migration as a non-superuser table owner under FORCE RLS and checks context cleanup, historical settlement, and new pending repayment behavior.
 Release: apply this correction before the pending payroll migration in production; the original migration has only run on a disposable rehearsal clone.
+2026-10-17 Live payroll verification: configuration publication failed because verified employee claims arrive as numeric strings.
+Fix: normalize the publisher to a positive safe integer before storing snapshot and metadata attribution; reject invalid non-null identities.
+Regression: native payroll and browser fixtures now use string employee claims matching the gateway session.
+Validation: 14 publication unit tests, the PostgreSQL payroll/approval/reconciliation lifecycle, and changed-file ESLint pass.
+Release: no new migration; rebuild HR after merge and repeat live publication, approval, export and reconciliation verification.
+2026-10-17 CI follow-up: the required postgres job was filtered out of payroll-only pull requests.
+Fix: run the attendance database safeguards workflow on every pull request so branch protection receives its required check.
+Evidence: manually dispatched tests passed, but GitHub still required the pull-request check before merging.
+Validation: workflow YAML parses and retains the complete PostgreSQL migration, tenant isolation and concurrency test job.
+Release: no application or migration changes; reviewer approval remains required for this CI commit.
