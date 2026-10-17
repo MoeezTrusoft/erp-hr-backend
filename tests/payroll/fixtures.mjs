@@ -95,7 +95,7 @@ export async function setupPayroll() {
     });
   });
   await as("EMPLOYEE", () =>
-    publishConfig({ tenantId: company, publishedById: people.EMPLOYEE.id }),
+    publishConfig({ tenantId: company, publishedById: String(people.EMPLOYEE.id) }),
   );
   let loanReview = await submit({ kind: "LOAN", ref: String(loan.id) });
   loanReview = await act("MANAGER", loanReview, "RECOMMEND_APPROVAL");

@@ -73,6 +73,19 @@ beforeEach(() => {
 const ATTENDANCE_KEYS = ['attendancePolicy', 'attendanceDeductionRules', 'attendanceApprovalLevels'];
 
 describe('HR-ATT-POLICY-01 attendance config joins the payroll config set', () => {
+    it('preserves a numeric-string JWT employee identity in snapshot and metadata', async () => {
+        await actions.publishConfig({ tenantId: TENANT, publishedById: '627' });
+        expect(prismaMock.payrollConfigSnapshot.create.mock.calls[0][0].data.publishedById).toBe(627);
+        const meta = prismaMock.payrollConfigMeta.upsert.mock.calls[0][0];
+        expect(meta.create.publishedById).toBe(627);
+        expect(meta.update.publishedById).toBe(627);
+    });
+
+    it.each(['not-an-employee', '', '1.5', -1, 0, true])('rejects invalid publisher %s without publishing', async (publishedById) => {
+        await expect(actions.publishConfig({ tenantId: TENANT, publishedById })).rejects.toMatchObject({ status: 400 });
+        expect(prismaMock.payrollConfigSnapshot.create).not.toHaveBeenCalled();
+    });
+
     it('buildConfigObject exposes the attendance sections', async () => {
         const config = await actions.buildConfigObject({ tenantId: TENANT });
 
