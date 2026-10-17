@@ -173,6 +173,15 @@ export async function buildConfigObject({ tenantId }) {
 
 // ── PUBLISH ─────────────────────────────────────────────────────────────────
 export async function publishConfig({ tenantId, publishedById }) {
+  // Verified JWT employee claims may be numeric strings; Prisma's Int audit
+  // columns require numbers. Reject invalid identities instead of dropping them.
+  const publisherId = publishedById == null ? null : Number(publishedById);
+  if (publishedById != null && (
+    !['string', 'number'].includes(typeof publishedById) ||
+    !Number.isSafeInteger(publisherId) || publisherId <= 0
+  )) {
+    throw Object.assign(new Error('Invalid payroll publisher identity'), { status: 400 });
+  }
   const result = await tenantTransaction(prisma, async (tx) => {
     // 1. Assemble the full current config (reads run under the tx tenant GUC).
     const config = await buildConfigObjectTx(tx, tenantId);
@@ -186,7 +195,7 @@ export async function publishConfig({ tenantId, publishedById }) {
 
     // 3. Immutable snapshot of the config set.
     const snapshot = await tx.payrollConfigSnapshot.create({
-      data: { tenantId, version, config, publishedById: publishedById ?? null, publishedAt },
+      data: { tenantId, version, config, publishedById: publisherId, publishedAt },
     });
 
     // 4. Flip every DRAFT config row → PUBLISHED.
@@ -226,7 +235,7 @@ export async function publishConfig({ tenantId, publishedById }) {
         publishedVersion: version,
         hasUnpublished: false,
         publishedAt,
-        publishedById: publishedById ?? null,
+        publishedById: publisherId,
       },
       create: {
         tenantId,
@@ -234,7 +243,7 @@ export async function publishConfig({ tenantId, publishedById }) {
         publishedVersion: version,
         hasUnpublished: false,
         publishedAt,
-        publishedById: publishedById ?? null,
+        publishedById: publisherId,
       },
     });
 

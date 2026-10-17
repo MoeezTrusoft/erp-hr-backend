@@ -69,7 +69,7 @@ const server = http.createServer(async (req, res) => {
         {
           ...ctx,
           permissions,
-          user: { ...ctx.user, employeeId: people[role].id },
+          user: { ...ctx.user, employeeId: String(people[role].id) },
         },
         async () => {
           if (approvalHandlers[name]) return approvalHandlers[name](input);
