@@ -32,13 +32,13 @@ describe('REQ-HR-DEPLOY-HARDENING-3a the image can verify itself', () => {
     const dockerfile = read('Dockerfile');
 
     test('scripts/ is in the runtime image, or smoke:deploy cannot run', () => {
-        expect(dockerfile).toMatch(/^COPY\s+scripts\s+\.\/scripts\s*$/m);
+        expect(dockerfile).toMatch(/^COPY\s+(?:--chown=nodeapp:nodeapp\s+)?scripts\s+\.\/scripts\s*$/m);
     });
 
     test('prisma.config.js is in the runtime image, or no Prisma 7 CLI command works', () => {
         // Prisma 7 reads datasource.url from the config file, not schema.prisma.
         // Without it, `migrate status` / `migrate deploy` fail in-cluster.
-        expect(dockerfile).toMatch(/^COPY\s+prisma\.config\.js\s+\.\/\s*$/m);
+        expect(dockerfile).toMatch(/^COPY\s+(?:--chown=nodeapp:nodeapp\s+)?prisma\.config\.js\s+\.\/\s*$/m);
     });
 
     test('the npm scripts the runbook cites actually resolve to shipped files', () => {
