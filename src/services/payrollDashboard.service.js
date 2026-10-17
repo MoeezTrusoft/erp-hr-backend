@@ -556,6 +556,7 @@ const CSV_HEADERS = [
   "Pay Grade",
   "Basic",
   "Allowances",
+  "Tax",
   "Deductions",
   "Net",
   "Status",
@@ -580,11 +581,12 @@ export async function exportPayrollCsv({ tenantId, runId } = {}) {
   for (const row of items) {
     lines.push(
       [
-        row.employee?.name,
+        row.employee?.employeeCode,
         row.employee?.department,
         row.payGrade,
         row.basic,
         row.allowances,
+        row.tax,
         row.deductions,
         row.net,
         row.status,

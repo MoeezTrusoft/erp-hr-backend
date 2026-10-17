@@ -67,3 +67,8 @@ Fix: run the attendance database safeguards workflow on every pull request so br
 Evidence: manually dispatched tests passed, but GitHub still required the pull-request check before merging.
 Validation: workflow YAML parses and retains the complete PostgreSQL migration, tenant isolation and concurrency test job.
 Release: no application or migration changes; reviewer approval remains required for this CI commit.
+2026-10-17 Payroll CSV export: live UAT found that tax was omitted while the other-deductions column correctly excluded it.
+Fix: export a separate Tax column and explicitly use the employee-code property.
+Regression: tax-only and tax-plus-loan rows must reconcile earnings minus tax and other deductions to net pay.
+Validation: new service regressions fail before the fix and pass afterward; changed-file ESLint passes.
+Release: no schema or payroll calculation changes; combine with the Finance HR branch before deployment and re-download the live register.
