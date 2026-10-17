@@ -62,3 +62,8 @@ Fix: normalize the publisher to a positive safe integer before storing snapshot 
 Regression: native payroll and browser fixtures now use string employee claims matching the gateway session.
 Validation: 14 publication unit tests, the PostgreSQL payroll/approval/reconciliation lifecycle, and changed-file ESLint pass.
 Release: no new migration; rebuild HR after merge and repeat live publication, approval, export and reconciliation verification.
+2026-10-17 CI follow-up: the required postgres job was filtered out of payroll-only pull requests.
+Fix: run the attendance database safeguards workflow on every pull request so branch protection receives its required check.
+Evidence: manually dispatched tests passed, but GitHub still required the pull-request check before merging.
+Validation: workflow YAML parses and retains the complete PostgreSQL migration, tenant isolation and concurrency test job.
+Release: no application or migration changes; reviewer approval remains required for this CI commit.
