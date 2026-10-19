@@ -270,7 +270,17 @@ const prisma = {
   // Phase 4 — the submit path also consults the hiring freeze. This suite is
   // about the FIELD gate, so no freeze is ever in effect here.
   recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
+  employee: { findFirst: jest.fn(async () => ({ managerId: 9 })) },
 };
+
+// The HR Approval Centre owns the PENDING_APPROVAL move once the gate passes.
+const mockLegacySubmit = jest.fn(async () => ({}));
+jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
+  legacyDecision: jest.fn(async () => {
+    throw Object.assign(new Error("HR-4201"), { status: 409, code: "HR-4201" });
+  }),
+  legacySubmit: mockLegacySubmit,
+}));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
@@ -304,6 +314,7 @@ describe("Phase 2.2 — the gate is wired into the real submit paths", () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ id: 5, title: "Backend Engineer", status: "DRAFT" });
 
     await expect(submitRequisition(5, TENANT, 9)).rejects.toThrow(/cannot be submitted/i);
+    expect(mockLegacySubmit).not.toHaveBeenCalled();
     // A refused submit must leave no status flip and no history row.
     expect(prisma.jobRequisition.update).not.toHaveBeenCalled();
     expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
@@ -314,7 +325,8 @@ describe("Phase 2.2 — the gate is wired into the real submit paths", () => {
 
     await submitRequisition(5, TENANT, 9);
 
-    expect(prisma.jobRequisition.update.mock.calls[0][0].data).toEqual({ status: "PENDING_APPROVAL" });
+    // The gate passed, so the HR Approval Centre opened the review.
+    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
   });
 
   it("validates the requisition AS IT WILL BE, so fixing the fields and submitting in one PATCH works", async () => {

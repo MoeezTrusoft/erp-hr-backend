@@ -97,7 +97,18 @@ const prisma = {
   businessUnit: { findMany: jest.fn() },
   $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
   $executeRaw: jest.fn(async () => 1),
+  // The submitted event is routed to the requester's line manager.
+  employee: { findFirst: jest.fn(async () => ({ managerId: 12 })) },
 };
+
+// The HR Approval Centre owns the PENDING_APPROVAL move once every gate passes.
+const mockLegacySubmit = jest.fn(async () => ({}));
+jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
+  legacyDecision: jest.fn(async () => {
+    throw Object.assign(new Error("HR-4201"), { status: 409, code: "HR-4201" });
+  }),
+  legacySubmit: mockLegacySubmit,
+}));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
@@ -280,7 +291,7 @@ describe("Phase 4 — the freeze blocks submission and publication, and nothing 
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQUISITION });
 
     await submitRequisition(5, TENANT, 9);
-    expect(prisma.jobRequisition.update).toHaveBeenCalled();
+    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
   });
 
   it("lets a frozen tenant close a requisition — a freeze is not a lock", async () => {

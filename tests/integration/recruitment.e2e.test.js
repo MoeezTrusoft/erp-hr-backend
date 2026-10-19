@@ -96,8 +96,11 @@ const freezeFns = {
 const approvalFns = {
   approveOffer: jest.fn(async () => ({})),
   assertOfferApproved: jest.fn(async () => undefined),
+  getOfferApprovalPolicy: jest.fn(async () => ({ rules: [] })),
+  setOfferApprovalPolicy: jest.fn(async () => ({ rules: [] })),
 };
 const handoffFns = {
+  listFailedHandoffs: jest.fn(async () => ({})),
   getOfferHandoff: jest.fn(async () => ({})),
   runOfferHandoff: jest.fn(async () => ({})),
 };

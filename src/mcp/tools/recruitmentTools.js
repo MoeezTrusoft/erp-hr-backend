@@ -542,7 +542,7 @@ export function registerRecruitmentTools(server) {
 
   server.tool(
     "hr_offer_approve",
-    "Record one required offer approval decision",
+    "Offer approval is decided in the HR Approval Centre; this answers HR-4201 with its link for the offer",
     {
       id: z.string().min(1).describe("Offer id"),
       stage: z.enum(["hiringManager", "hrHead", "finance"]).describe("Approval stage"),

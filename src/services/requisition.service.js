@@ -1,4 +1,4 @@
-import { legacyDecision } from "./approval/legacy.js";
+import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import {
@@ -14,10 +14,30 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
-import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
-import { applyApprovalDecision, chainFor, chainStatusFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
+import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
+
+// The HR Approval Centre request for a requisition, reduced to what a detail
+// view needs. Stages: INITIATOR, MANAGER, HR, MANAGEMENT, APPROVED, REJECTED,
+// WITHDRAWN. No request yet means the requisition was never submitted.
+const approvalCentreProgress = async (tenantId, requisitionId) => {
+  const request = tenantId
+    ? await prisma.hrApprovalRequest.findUnique({
+        where: { tenantId_kind_sourceRef: { tenantId, kind: "REQUISITION", sourceRef: String(requisitionId) } },
+        select: { stage: true, version: true, round: true, updatedAt: true },
+      })
+    : null;
+  return {
+    engine: "HR_APPROVAL_CENTRE",
+    workflowUrl: "/hr/approvals",
+    submitted: Boolean(request),
+    stage: request?.stage ?? null,
+    version: request?.version ?? null,
+    round: request?.round ?? null,
+    updatedAt: request?.updatedAt ?? null,
+  };
+};
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into every recruitment read and stamped on every create, fail-closed when
@@ -139,12 +159,11 @@ export const getByIdRequisitions = async (id, tenantId, scope = null) => {
   });
   if (!getByID) return getByID;
 
-  // Phase 4 — the detail carries the chain it is being approved against and which
-  // step is next, so a caller never has to reconstruct the matrix to answer
-  // "who is this waiting on?". Read-only and best-effort: a matrix lookup that
-  // fails must not take the requisition detail down with it.
+  // The detail says where the HR Approval Centre review stands, so a caller never
+  // has to query the centre to answer "who is this waiting on?". Read-only and
+  // best-effort: a lookup that fails must not take the requisition detail down.
   try {
-    return { ...getByID, approvalProgress: await chainStatusFor(tenantId, getByID) };
+    return { ...getByID, approvalProgress: await approvalCentreProgress(tenantId, getByID.id) };
   } catch {
     return getByID;
   }
@@ -243,6 +262,9 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   if (openings !== undefined) updateData.openings = openings ? Number(openings) : undefined;
   if (priority !== undefined) updateData.priority = priority; // JobRequisition.priority String?: Low | Medium | High | Urgent
   Object.assign(updateData, expansion);
+  // A submit through this surface saves the field changes first and then opens
+  // the HR Approval Centre review, which owns the PENDING_APPROVAL move.
+  let submitAfterUpdate = false;
   if (status !== undefined && String(status).toUpperCase() !== String(existing.status).toUpperCase()) {
     // Phase 3.2 — status is not a free field. A generic update may only perform a
     // LEGAL transition (e.g. REJECTED → DRAFT to revise); it can never jump to
@@ -259,6 +281,8 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
       requisition: { ...existing, ...updateData },
       comments: data.comments ?? data.reason,
     });
+    // Decisions belong to the HR Approval Centre: answer HR-4201 before any write.
+    if (["APPROVED", "REJECTED"].includes(updateData.status)) return legacyDecision("REQUISITION", id);
     // Phase 4 — a freeze blocks ADVANCING the requisition. Checked against the
     // merged row so a same-PATCH department change is judged on where the
     // requisition is going, not where it was.
@@ -270,6 +294,8 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
     if (updateData.status === "PENDING_APPROVAL") {
       const validitySnapshot = await assertFinanceValidityAtSubmit(tenantId, { ...existing, ...updateData }, existing.budgetApprovalSnapshot);
       if (validitySnapshot) updateData.budgetApprovalSnapshot = validitySnapshot;
+      submitAfterUpdate = true;
+      delete updateData.status;
     }
   }
 
@@ -307,17 +333,6 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
           actorId: updatedBy,
           source: "requisition.update",
         });
-        // Phase 4 closure — a submission through the generic PATCH surface emits
-        // the same approver-routed event the management and legacy surfaces do,
-        // so the notified approver cannot depend on which URL was used.
-        if (statusMove.to === "PENDING_APPROVAL") {
-          const submitted = await tx.jobRequisition.findFirst({
-            where: scopedWhere(tenantId, { id: Number(id) }),
-          });
-          if (submitted) {
-            await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: submitted, actorId: updatedBy });
-          }
-        }
       }
       return result;
     },
@@ -329,6 +344,31 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
       select: { version: true },
     });
     throw preconditionFailedError(fresh?.version);
+  }
+
+  if (submitAfterUpdate) {
+    await legacySubmit("REQUISITION", id, data.comments ?? data.reason ?? undefined);
+    // Phase 4 closure — the submission emits the same routed event the
+    // management and legacy surfaces do, so the audience cannot depend on the URL.
+    await tenantTransaction(
+      prisma,
+      async (tx) => {
+        await recordRequisitionTransition(tx, {
+          requisitionId: Number(id),
+          tenantId,
+          fromStatus: existing.status,
+          toStatus: "PENDING_APPROVAL",
+          reason: data.comments ?? data.reason ?? null,
+          actorId: updatedBy,
+          source: "requisition.update",
+        });
+        const submitted = await tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+        if (submitted) {
+          await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: submitted, actorId: updatedBy });
+        }
+      },
+      { tenantId },
+    );
   }
 
   const updatedRequi = await prisma.jobRequisition.findFirst({

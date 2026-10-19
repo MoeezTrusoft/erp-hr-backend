@@ -232,6 +232,8 @@ const prisma = {
   },
   requisitionTransition: { create: jest.fn(async ({ data }) => ({ id: 1, ...data })) },
   jobPosting: { create: jest.fn(async () => ({ id: 1 })) },
+  // The submitted event is routed to the requester's line manager.
+  employee: { findFirst: jest.fn(async () => ({ managerId: 12 })) },
   businessUnit: { findMany: jest.fn(async () => []) },
   recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
   $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
@@ -248,6 +250,13 @@ jest.unstable_mockModule("../../src/services/rbac.client.js", () => ({
 }));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
   enqueueHrDomainEvent: jest.fn(async () => undefined),
+}));
+const mockLegacySubmit = jest.fn(async () => ({}));
+jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
+  legacyDecision: jest.fn(async () => {
+    throw Object.assign(new Error("HR-4201: Open HR Approval Centre"), { status: 409, code: "HR-4201" });
+  }),
+  legacySubmit: mockLegacySubmit,
 }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   tenantTransaction: jest.fn((client, fn) => fn(client)),
@@ -283,101 +292,19 @@ beforeEach(() => {
   REQUISITION_ROW = { ...REQUISITION };
 });
 
-describe("Phase 4 — an unconfigured tenant keeps today's single-step approval", () => {
-  it("approves in ONE decision when no matrix is configured", async () => {
-    await approveRequisition(5, "APPROVED", undefined, 8, TENANT);
-
-    expect(prisma.jobRequisition.update).toHaveBeenCalled();
-    expect(prisma.jobRequisition.update.mock.calls[0][0].data.status).toBe("APPROVED");
-    // Recorded as an un-stepped decision, which is exactly what it is.
-    expect(DECISIONS[0].stepOrder).toBeNull();
-  });
-
-  it("still refuses self-approval with no matrix configured", async () => {
-    // The gap the decision called out: this used to be allowed.
-    await expect(approveRequisition(5, "APPROVED", undefined, 7, TENANT)).rejects.toThrow(
-      /cannot approve it/i,
-    );
+describe("Requisition decisions belong to the HR Approval Centre, not the matrix", () => {
+  it.each([
+    ["without a configured matrix", []],
+    ["with a configured three-step matrix", chainRules],
+  ])("refuses every decision %s and writes nothing", async (_label, rules) => {
+    RULES = rules;
+    await expect(approveRequisition(5, "APPROVED", "ok", 8, TENANT)).rejects.toMatchObject({ code: "HR-4201" });
+    await expect(approveRequisition(5, "REJECTED", "no budget", 9, TENANT)).rejects.toMatchObject({ code: "HR-4201" });
+    // The legacy /api/hr surface answers the same, whatever URL the client used.
+    await expect(legacyApprove(5, TENANT, 8, "ok")).rejects.toMatchObject({ code: "HR-4201" });
     expect(DECISIONS).toHaveLength(0);
-  });
-});
-
-describe("Phase 4 — a configured chain needs every step, in order", () => {
-  beforeEach(() => {
-    RULES = chainRules;
-  });
-
-  it("does NOT approve on the first of three steps, and reports what is next", async () => {
-    const result = await approveRequisition(5, "APPROVED", "ok", 8, TENANT);
-
-    expect(result.approvalDecision).toBe("STEP_RECORDED");
-    expect(result.status).toBe("PENDING_APPROVAL");
-    expect(result.approvalProgress.nextStep.role).toBe("HR_HEAD");
-    // The status was NOT moved. (The one update that DID happen is the chain
-    // snapshot, which carries no `status` — asserting on the absence of `update`
-    // altogether would have hidden whether the snapshot was taken.)
     expect(statusMoves()).toEqual([]);
-    const sources = prisma.requisitionTransition.create.mock.calls.map((c) => c[0].data.source);
-    expect(sources).toEqual(["requisition.approval_step"]);
-  });
-
-  it("approves only when the LAST step is satisfied", async () => {
-    await approveRequisition(5, "APPROVED", undefined, 8, TENANT); // step 1
-    await approveRequisition(5, "APPROVED", undefined, 9, TENANT); // step 2
-    expect(statusMoves()).toEqual([]);
-
-    const final = await approveRequisition(5, "APPROVED", undefined, 10, TENANT); // step 3
-    expect(statusMoves()).toEqual(["APPROVED"]);
-    expect(final.status).toBe("APPROVED");
-  });
-
-  it("refuses one employee deciding two steps of the chain", async () => {
-    await approveRequisition(5, "APPROVED", undefined, 8, TENANT);
-    await expect(approveRequisition(5, "APPROVED", undefined, 8, TENANT)).rejects.toThrow(
-      /already decided an earlier step/i,
-    );
-    // Only the first decision was recorded.
-    expect(DECISIONS).toHaveLength(1);
-  });
-
-  it("records each decision against its own step and role", async () => {
-    await approveRequisition(5, "APPROVED", undefined, 8, TENANT);
-    await approveRequisition(5, "APPROVED", undefined, 9, TENANT);
-    expect(DECISIONS.map((d) => [d.stepOrder, d.role])).toEqual([
-      [1, "HIRING_MANAGER"],
-      [2, "HR_HEAD"],
-    ]);
-  });
-
-  it("freezes the chain at the first decision, so a later edit cannot move the goalposts", async () => {
-    await approveRequisition(5, "APPROVED", undefined, 8, TENANT);
-    const snapshotCall = prisma.jobRequisition.update.mock.calls.find(
-      (call) => call[0].data.approvalChainSnapshot,
-    );
-    expect(snapshotCall[0].data.approvalChainSnapshot).toHaveLength(3);
-
-    // Now the tenant deletes a step. The in-flight requisition must NOT notice.
-    RULES = [{ stepOrder: 1, role: "HR_HEAD" }];
-    const frozen = await chainFor({ ...REQUISITION_ROW, approvalChainSnapshot: snapshotCall[0].data.approvalChainSnapshot }, { tenantId: TENANT });
-    expect(frozen).toHaveLength(3);
-  });
-
-  it("records a REJECTION at the step it stopped, and ends the chain", async () => {
-    await approveRequisition(5, "APPROVED", undefined, 8, TENANT); // step 1 done
-    await approveRequisition(5, "REJECTED", "no budget", 9, TENANT);
-
-    expect(DECISIONS[1].status).toBe("REJECTED");
-    expect(DECISIONS[1].stepOrder).toBe(2);
-    expect(statusMoves()).toEqual(["REJECTED"]);
-  });
-
-  it("applies the SAME chain through the legacy /api/hr surface", async () => {
-    // Otherwise the number of required signatures would depend on which URL the
-    // client happened to call.
-    const result = await legacyApprove(5, TENANT, 8, "ok");
-    expect(result.approvalDecision).toBe("STEP_RECORDED");
-    expect(DECISIONS[0].stepOrder).toBe(1);
-    expect(statusMoves()).toEqual([]);
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
   });
 });
 
@@ -395,16 +322,20 @@ describe("Phase 4 — configuring the matrix", () => {
     );
   });
 
-  it("refuses to SUBMIT a requisition whose chain could never be completed", async () => {
-    // The requisition's own requester is pinned as the only approver of a step
-    // that requires an independent approver. Discovered here — while the fix is
-    // still cheap — instead of at approval, when the requisition is already
-    // submitted and nobody can decide it.
+  it("no longer blocks SUBMIT on a matrix that could never be completed; the centre opens the review", async () => {
+    // Reviewer availability is the HR Approval Centre's check now (a verified
+    // initiator with a current line manager), so an unsatisfiable matrix is no
+    // longer a reason to refuse submission.
     RULES = [{ stepOrder: 1, role: "HR_HEAD", approverId: REQUISITION.requestedById }];
     REQUISITION_ROW = { ...REQUISITION, status: "DRAFT" };
 
-    await expect(submitRequisition(5, TENANT, 7)).rejects.toThrow(/could never be decided/i);
+    await submitRequisition(5, TENANT, 7);
+    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
+    // The status move itself is the centre's; recruitment records the history.
     expect(statusMoves()).toEqual([]);
+    expect(prisma.requisitionTransition.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ toStatus: "PENDING_APPROVAL", source: "requisition.submit" }) }),
+    );
   });
 
   it("seeds the recommended chain", async () => {

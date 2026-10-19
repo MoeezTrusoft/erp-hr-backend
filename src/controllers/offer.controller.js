@@ -1,7 +1,7 @@
 import * as svc from "../services/offer.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import { legacyDecision } from "../services/approval/legacy.js";
 import {
-    approveOffer,
     getOfferApprovalPolicy as getOfferApprovalPolicySvc,
     setOfferApprovalPolicy as setOfferApprovalPolicySvc,
 } from "../services/offerApproval.service.js";
@@ -47,18 +47,15 @@ export const listOffers = async (req, res) => {
 export const approve = async (req, res) => {
     try {
         const tenantId = req.user?.tenantId ?? null;
-        const approverId = req.user?.employeeId ?? null;
         if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
-        const result = await approveOffer({
-            offerId: req.params.id,
-            stage: req.body?.stage,
-            decision: req.body?.decision,
-            reason: req.body?.reason,
-            approverId,
-            tenantId,
-        });
+        // Offer authorization belongs to the HR Approval Centre (initiator, line
+        // manager, HR, Management). This answers HR-4201 with the centre's link
+        // for this offer and never records a decision itself.
+        const result = await legacyDecision("OFFER", req.params.id);
         return res.status(200).json({ success: true, data: result });
-    } catch (e) { return res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+    } catch (e) {
+        return res.status(e.status || 400).json({ success: false, message: e.message, code: e.code, details: e.details });
+    }
 };
 
 export const sendOffer = async (req, res) => {

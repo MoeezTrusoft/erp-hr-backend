@@ -24,7 +24,6 @@ export const REQUISITION_STATUSES = Object.freeze([
 
 import { assertRequisitionSubmittable } from "../lib/requisitionFields.js";
 import { assertNotHiringFrozen } from "./recruitmentFreeze.service.js";
-import { assertChainSubmittable } from "./requisitionApprovalChain.service.js";
 
 // DRAFT ──submit──▶ PENDING_APPROVAL ──decide──▶ APPROVED ──post──▶ POSTED ──▶ CLOSED
 //   │                      │                        │                          ▲
@@ -157,7 +156,9 @@ export const assertRequisitionNotFrozen = async (tenantId, requisition, targetSt
 export const assertRequisitionAdvanceAllowed = async (tenantId, requisition, targetStatus) => {
     const target = normalizeStatus(targetStatus);
     await assertRequisitionNotFrozen(tenantId, requisition, target);
-    if (target === "PENDING_APPROVAL") return assertChainSubmittable(tenantId, requisition);
+    // Reviewer availability is the HR Approval Centre's check (a verified
+    // initiator with a current line manager); the recruitment approval matrix no
+    // longer decides who approves, so it no longer blocks submission either.
     return null;
 };
 

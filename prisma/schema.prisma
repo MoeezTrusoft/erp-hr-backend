@@ -4015,6 +4015,9 @@ model Offer {
   compensation       Json? // { baseSalary, currency, bonus, allowances, benefits:[...] }
   approvals          Json? // legacy presentation snapshot; canonical decisions live in OfferApproval
   approvalStatus     String      @default("PENDING") // PENDING | APPROVED | REJECTED
+  // Category chosen at acceptance; the hire handoff allocates the employee code
+  // from it, so a retried handoff provisions the same kind of employee.
+  employeeCategory EmploymentCategory?
   createdById        Int?
   created_at         DateTime    @default(now())
   updated_at         DateTime    @updatedAt

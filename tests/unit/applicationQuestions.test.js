@@ -30,6 +30,9 @@ const prisma = {
     applicationStageHistory: { create: jest.fn() },
     candidate: { findFirst: jest.fn(), update: jest.fn(), create: jest.fn() },
     candidateConsent: { create: jest.fn() },
+    // §3.2 — intake issues the email-verification and status-link tokens in the
+    // same transaction as the application.
+    candidateEmailVerification: { updateMany: jest.fn(), create: jest.fn() },
     application: { findFirst: jest.fn(), create: jest.fn() },
     $transaction: jest.fn(),
 };

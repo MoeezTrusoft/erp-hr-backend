@@ -36,11 +36,14 @@ import { describe, it, expect, beforeAll, afterEach, jest } from "@jest/globals"
 jest.setTimeout(60_000);
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-// hr-data is a SIBLING of the erp-hr-backend repo: <erp>/hr-data/recruitment/resume-parsings.
-const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE_DIR = path.resolve(THIS_DIR, "../../..", "hr-data/recruitment/resume-parsings");
+// The corpus is four real candidates' CVs. They are personal data and are never
+// committed, so this suite runs only where an operator points it at the corpus:
+//   HR_RESUME_FIXTURE_DIR=<erp>/hr-data/recruitment/resume-parsings npm test -- resumeParsing.fixtures
+// Without the variable the suite is skipped (it cannot run in CI by design); with
+// it, a missing fixture still fails loudly, so silent fixture loss stays caught.
+const FIXTURE_DIR = process.env.HR_RESUME_FIXTURE_DIR ? path.resolve(process.env.HR_RESUME_FIXTURE_DIR) : null;
+const describeFixtures = FIXTURE_DIR ? describe : describe.skip;
 const RESUME_FIXTURES = ["Muhammad_Waleed_Ahmed_CV.pdf", "Farhan-Resume.pdf", "kashif ali.pdf", "muhammadabdullah.pdf"];
 
 const prisma = {
@@ -97,6 +100,7 @@ afterEach(() => {
 beforeAll(async () => {
     // Warm the lazy vendor import so the first test does not pay its cost.
     pdfParseWarm = await import("pdf-parse").catch(() => null);
+    if (!FIXTURE_DIR) return; // suite skipped: no corpus configured
     for (const name of RESUME_FIXTURES) {
         const p = path.join(FIXTURE_DIR, name);
         if (!fs.existsSync(p)) throw new Error(`Fixture missing: ${p}`);
@@ -105,7 +109,7 @@ beforeAll(async () => {
     }
 });
 
-describe("real resume fixtures — extraction (hr-data/recruitment/resume-parsings)", () => {
+describeFixtures("real resume fixtures — extraction (hr-data/recruitment/resume-parsings)", () => {
     it("a disabled AI flag refuses the parse BEFORE any plane call (Phase 15 gate)", async () => {
         process.env.HR_RECRUITMENT_AI = "false";
         downloadDamAssetBuffer.mockResolvedValue({

@@ -5,9 +5,10 @@
 // must still be refused when the candidate has asked not to be contacted.
 import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
-const OFFER = { id: 9, status: "APPROVED", candidateId: 5, tenantId: "tenant-a" };
+// A DRAFT offer whose HR Approval Centre request is APPROVED (consumed on send).
+const OFFER = { id: 9, status: "DRAFT", candidateId: 5, tenantId: "tenant-a" };
 
-const prisma = { offer: { findFirst: jest.fn(), update: jest.fn(async () => ({ ...OFFER, status: "SENT" })) } };
+const prisma = { offer: { findFirst: jest.fn(async () => OFFER), update: jest.fn(async () => ({ ...OFFER, status: "SENT" })) } };
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
@@ -16,12 +17,8 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({ uploadFileToDAM: jest.fn() }));
 
-const assertOfferApproved = jest.fn(async () => OFFER);
-jest.unstable_mockModule("../../src/services/offerApproval.service.js", () => ({
-  assertOfferApproved,
-  approveOfferStage: jest.fn(),
-  listOfferApprovals: jest.fn(),
-}));
+const consumeApproval = jest.fn(async () => ({ id: "approval-1", stage: "APPROVED" }));
+jest.unstable_mockModule("../../src/services/approval/adapters.js", () => ({ consumeApproval }));
 
 const assertCommunicationsAllowed = jest.fn(async () => ({ allowed: true }));
 jest.unstable_mockModule("../../src/services/candidatePrivacy.service.js", () => ({
@@ -43,7 +40,8 @@ const { sendOffer } = await import("../../src/services/offer.service.js");
 describe("offer send respects the privacy gate", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    assertOfferApproved.mockResolvedValue(OFFER);
+    prisma.offer.findFirst.mockResolvedValue(OFFER);
+    consumeApproval.mockResolvedValue({ id: "approval-1", stage: "APPROVED" });
     assertCommunicationsAllowed.mockResolvedValue({ allowed: true });
   });
 
@@ -55,6 +53,24 @@ describe("offer send respects the privacy gate", () => {
       expect.objectContaining({ tenantId: "tenant-a", candidateId: 5, purpose: "PROCESSING" }),
     );
     expect(prisma.offer.update).toHaveBeenCalled();
+    // The send consumed the HR Approval Centre approval for this exact offer.
+    expect(consumeApproval).toHaveBeenCalledWith(prisma, "tenant-a", "OFFER", "9");
+  });
+
+  it("refuses to send without a completed HR Approval Centre approval", async () => {
+    consumeApproval.mockRejectedValue(
+      Object.assign(new Error("Complete the employee, manager, HR and Management approval workflow"), { status: 400 }),
+    );
+
+    await expect(sendOffer(9, "tenant-a")).rejects.toThrow(/approval workflow/);
+    expect(prisma.offer.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses to send an offer that is no longer a DRAFT", async () => {
+    prisma.offer.findFirst.mockResolvedValue({ ...OFFER, status: "SENT" });
+
+    await expect(sendOffer(9, "tenant-a")).rejects.toMatchObject({ code: "HR-RECRUITMENT-OFFER-STATUS" });
+    expect(consumeApproval).not.toHaveBeenCalled();
   });
 
   it("refuses to send to a do-not-contact candidate", async () => {

@@ -38,7 +38,18 @@ const prisma = {
   // Phase 4 — the submit and publish paths also consult the hiring freeze; no
   // freeze is in effect in this suite, which is about the history rows written.
   recruitmentHiringFreeze: { findFirst: jest.fn(async () => null) },
+  // The submitted event is routed to the requester's line manager.
+  employee: { findFirst: jest.fn(async () => ({ managerId: 12 })) },
 };
+
+// Decisions answer HR-4201 from the HR Approval Centre; its submit opens review.
+const mockLegacySubmit = jest.fn(async () => ({}));
+jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
+  legacyDecision: jest.fn(async () => {
+    throw Object.assign(new Error("HR-4201: Open HR Approval Centre"), { status: 409, code: "HR-4201" });
+  }),
+  legacySubmit: mockLegacySubmit,
+}));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
@@ -131,7 +142,9 @@ describe("Phase 2.1 — requisition transition history", () => {
 
     await submitRequisition(5, TENANT, 9);
 
-    expect(prisma.jobRequisition.update.mock.calls[0][0].data).toEqual({ status: "PENDING_APPROVAL" });
+    // The PENDING_APPROVAL move is the HR Approval Centre's, opened by submit.
+    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
+    expect(prisma.jobRequisition.update).not.toHaveBeenCalled();
     expect(historyRow()).toMatchObject({
       requisitionId: 5,
       fromStatus: "DRAFT",
@@ -163,38 +176,16 @@ describe("Phase 2.1 — requisition transition history", () => {
     });
   });
 
-  it("records a rejection with its mandatory reason", async () => {
-    prisma.jobRequisition.findFirst.mockResolvedValue({
-      id: 5,
-      status: "PENDING_APPROVAL",
-      departmentId: null,
-      approvals: [],
-      transitions: [],
-    });
-    prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "REJECTED" });
-
-    await rejectRequisition(5, TENANT, { comments: "No headcount", approverId: 3 });
-
-    expect(historyRow()).toMatchObject({
-      fromStatus: "PENDING_APPROVAL",
-      toStatus: "REJECTED",
-      reason: "No headcount",
-      actorId: 3,
-      source: "requisition.reject",
-    });
-  });
-
-  it("records the approval decision against the status re-read inside the transaction", async () => {
+  it("leaves rejection and approval history to the HR Approval Centre's final decision", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ id: 5, status: "PENDING_APPROVAL" });
-    prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "APPROVED" });
 
-    await approveRequisition(5, "APPROVED", undefined, 3, TENANT);
-
-    expect(historyRow()).toMatchObject({
-      fromStatus: "PENDING_APPROVAL",
-      toStatus: "APPROVED",
-      actorId: 3,
-    });
+    await expect(rejectRequisition(5, TENANT, { comments: "No headcount", approverId: 3 }))
+      .rejects.toMatchObject({ code: "HR-4201" });
+    await expect(approveRequisition(5, "APPROVED", undefined, 3, TENANT))
+      .rejects.toMatchObject({ code: "HR-4201" });
+    // The centre's Management decision writes this history (covered in
+    // requisitionWorkflow.service.test.js); a refused legacy call writes none.
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
   });
 
   it("records a publication, which previously left no trace at all", async () => {

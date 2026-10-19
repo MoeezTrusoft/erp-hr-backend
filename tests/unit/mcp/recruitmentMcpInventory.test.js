@@ -59,6 +59,8 @@ function collect(register) {
   const resources = [];
   register({
     tool: (name) => tools.push(name),
+    // Contract-driven registrars on main use the newer registerTool API.
+    registerTool: (name) => tools.push(name),
     resource: (name) => resources.push(name),
   });
   return { tools, resources };
@@ -236,10 +238,14 @@ describe("Recruitment MCP tool inventory", () => {
     const all = [];
     registerAllTools({
       tool: (name) => all.push(name),
+      registerTool: (name) => all.push(name),
       resource: () => {},
     });
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(559);
+    // 696 = the 559 on the recruitment branch plus the tools main added since
+    // the fork (approval, assessment, separation, company setup, attendance,
+    // payroll finance), counted after the merge with no duplicates.
+    expect(all).toHaveLength(696);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

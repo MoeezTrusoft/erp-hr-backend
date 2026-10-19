@@ -16,7 +16,7 @@
 // write, and a matrix fixed between submit and first decision SHOULD take effect
 // (nobody has signed anything yet).
 import prisma from "../lib/prisma.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionSubmittedEvent } from "./hrEvents.js";
 import {
@@ -258,16 +258,25 @@ export const chainStatusFor = async (tenantId, requisition) => {
  * submission that the gate already accepted.
  */
 export const emitRequisitionSubmittedEvent = async (tx, { tenantId, requisition, actorId = null }) => {
-  const chain = await chainFor(requisition, { db: tx, tenantId });
-  const first = nextPendingStep(chain, []);
+  // The HR Approval Centre reviews every requisition with the same chain, and
+  // its first reviewer is the requester's direct line manager. Route the
+  // recruitment event to that person (stage 1); the centre's own
+  // hr.approval.transitioned.v1 events cover the later stages.
+  const requester = requisition?.requestedById
+    ? await tx.employee.findFirst({
+        where: scopedEmployeeWhere(tenantId, { id: Number(requisition.requestedById) }),
+        select: { managerId: true },
+      })
+    : null;
+  const managerId = requester?.managerId ?? null;
   await enqueueHrDomainEvent(
     tx,
     requisitionSubmittedEvent(
       requisition,
       { actorId },
       {
-        pendingApproverId: first?.approverId ?? null,
-        pendingStepOrder: first?.stepOrder ?? null,
+        pendingApproverId: managerId,
+        pendingStepOrder: managerId ? 1 : null,
       },
     ),
   );

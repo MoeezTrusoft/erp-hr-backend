@@ -13,6 +13,8 @@ const mockTransition = jest.fn(async () => ({ success: true, changed: true }));
 
 const prisma = {
   offer: { findFirst: jest.fn(), update: jest.fn(async () => offerRow) },
+  // Concurrent responses are serialized with a row lock on "offers".
+  $queryRaw: jest.fn(async () => [{ id: 9 }]),
 };
 
 // offer.service now reaches the candidate PII service (privacy gate on send), so
@@ -44,12 +46,16 @@ describe("Offer acceptance", () => {
   });
 
   it("accepts a SENT offer, hires the application, and runs the handoff once", async () => {
-    const result = await respondOffer(9, true, "tenant-a", { actorId: 12 });
+    const result = await respondOffer(9, true, "tenant-a", { actorId: 12, employeeCategory: "EMPLOYEE" });
 
     expect(result.replayed).toBe(false);
+    // The category is stored so the handoff (and any retry) allocates the same
+    // kind of employee code.
     expect(prisma.offer.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: "ACCEPTED" }) }),
+      expect.objectContaining({ data: expect.objectContaining({ status: "ACCEPTED", employeeCategory: "EMPLOYEE" }) }),
     );
+    // The lock names the real table; main's version locked "Offer", which does not exist.
+    expect(prisma.$queryRaw.mock.calls[0][0].join("")).toContain('FROM "offers"');
     expect(mockTransition).toHaveBeenCalledWith(
       expect.objectContaining({ id: 3, targetStage: "hired", source: "offer-accept", actorId: 12 }),
       prisma,
@@ -60,7 +66,7 @@ describe("Offer acceptance", () => {
   it("replays a repeated acceptance without provisioning again", async () => {
     prisma.offer.findFirst.mockResolvedValue({ ...offerRow, status: "ACCEPTED" });
 
-    const result = await respondOffer(9, true, "tenant-a");
+    const result = await respondOffer(9, true, "tenant-a", { employeeCategory: "EMPLOYEE" });
 
     expect(result.replayed).toBe(true);
     expect(result.handoff.employeeId).toBe(77);
@@ -79,8 +85,17 @@ describe("Offer acceptance", () => {
   it("refuses a response to an offer that was never sent", async () => {
     prisma.offer.findFirst.mockResolvedValue({ ...offerRow, status: "DRAFT" });
 
-    await expect(respondOffer(9, true, "tenant-a"))
+    await expect(respondOffer(9, true, "tenant-a", { employeeCategory: "EMPLOYEE" }))
       .rejects.toMatchObject({ code: "HR-RECRUITMENT-OFFER-NOT-SENT" });
+    expect(mockRunOfferHandoff).not.toHaveBeenCalled();
+  });
+
+  it("refuses to accept without an explicit employee category, before any write", async () => {
+    for (const ctx of [{}, { employeeCategory: "CONTRACTOR" }]) {
+      await expect(respondOffer(9, true, "tenant-a", ctx))
+        .rejects.toMatchObject({ status: 422, code: "HR-RECRUITMENT-OFFER-CATEGORY-REQUIRED" });
+    }
+    expect(prisma.offer.update).not.toHaveBeenCalled();
     expect(mockRunOfferHandoff).not.toHaveBeenCalled();
   });
 

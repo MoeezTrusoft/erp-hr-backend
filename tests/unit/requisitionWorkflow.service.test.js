@@ -34,10 +34,20 @@ const prisma = {
   // Approval/posting now run in a tenant transaction (decision + approval row +
   // outbox event commit together), so the double must hand back the same client.
   $transaction: jest.fn((fn) => fn(prisma)),
+  // The Approval Centre finaliser marks the row it is finalising.
+  $executeRaw: jest.fn(async () => 1),
 };
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: mockLogAction }));
+// Decisions answer HR-4201 from the HR Approval Centre's legacy entry point.
+const mockLegacyDecision = jest.fn(async () => {
+  throw Object.assign(new Error("HR-4201: Open HR Approval Centre"), { status: 409, code: "HR-4201" });
+});
+jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
+  legacyDecision: mockLegacyDecision,
+  legacySubmit: jest.fn(async () => ({})),
+}));
 jest.unstable_mockModule("../../src/services/rbac.client.js", () => ({
   getDepartmentById: jest.fn(async () => null),
   listDepartments: jest.fn(async () => []),
@@ -83,57 +93,52 @@ describe("Requisition state machine (Phase 3.2)", () => {
       .not.toThrow();
   });
 
-  it("blocks approving a requisition that was never submitted", async () => {
-    prisma.jobRequisition.findFirst.mockResolvedValue({ id: 1, status: "DRAFT" });
-
-    await expect(approveRequisition(1, "APPROVED", null, 5, "tenant-a"))
-      .rejects.toMatchObject({ code: "HR-RECRUITMENT-REQUISITION-TRANSITION-INVALID" });
+  it("routes every decision to the HR Approval Centre and writes nothing itself", async () => {
+    // The Approval Centre (initiator, line manager, HR, Management) is the only
+    // decision engine; this legacy entry point answers HR-4201 with its link.
+    for (const status of ["APPROVED", "REJECTED"]) {
+      await expect(approveRequisition(1, status, "Headcount approved", 5, "tenant-a"))
+        .rejects.toMatchObject({ code: "HR-4201", status: 409 });
+    }
+    expect(mockLegacyDecision).toHaveBeenCalledWith("REQUISITION", 1);
     expect(prisma.jobRequisition.update).not.toHaveBeenCalled();
     expect(prisma.requisitionApproval.create).not.toHaveBeenCalled();
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
+    expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
   });
 
-  it("approves a submitted requisition and records the decision", async () => {
-    await approveRequisition(1, "APPROVED", "Headcount approved", 5, "tenant-a");
+  it("the Approval Centre's Management decision records the transition and emits the decision event", async () => {
+    const TENANT = "55555555-5555-4555-8555-555555555555";
+    prisma.jobRequisition.update.mockResolvedValue({ id: 1, status: "APPROVED", tenantId: TENANT, requestedById: 7 });
+    const { applyDecision } = await import("../../src/services/approval/adapters.js");
 
+    const outcome = await applyDecision(
+      prisma,
+      { tenantId: TENANT, now: new Date(), who: { id: 5, employee_code: "MGMT-005" } },
+      { kind: "REQUISITION" },
+      { row: { id: 1, status: "PENDING_APPROVAL" } },
+      true,
+      "Headcount approved",
+    );
+
+    expect(outcome).toBe("APPLIED");
     expect(prisma.requisitionApproval.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "APPROVED", approverId: 5 }) }),
     );
-    expect(prisma.jobRequisition.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: "APPROVED", approvedById: 5 }) }),
+    expect(prisma.requisitionTransition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          fromStatus: "PENDING_APPROVAL",
+          toStatus: "APPROVED",
+          actorId: 5,
+          source: "hr-approval-centre",
+        }),
+      }),
     );
-  });
-
-  it("emits the decision event inside the same transaction", async () => {
-    const TENANT = "55555555-5555-4555-8555-555555555555";
-    prisma.jobRequisition.findFirst.mockResolvedValue({ id: 1, status: "PENDING_APPROVAL", tenantId: TENANT });
-    prisma.jobRequisition.update.mockResolvedValue({ id: 1, status: "APPROVED", tenantId: TENANT });
-
-    await approveRequisition(1, "APPROVED", "Headcount approved", 5, TENANT);
-
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(prisma.outboxEvent.create).toHaveBeenCalledTimes(1);
-    // The outbox row is { tenantId, eventName, aggregateType, aggregateId, payload }
-    // where `payload` is the validated envelope.
     const written = prisma.outboxEvent.create.mock.calls[0][0].data;
     expect(written.eventName).toBe("hr.recruitment.requisition_decided.v1");
     expect(written.tenantId).toBe(TENANT);
-    expect(written.payload.payload).toMatchObject({ decision: "APPROVED", reason: "Headcount approved" });
-  });
-
-  it("blocks a decision raced by a concurrent one, inside the transaction", async () => {
-    // Pre-read says PENDING_APPROVAL, the in-transaction read says already decided.
-    prisma.jobRequisition.findFirst
-      .mockResolvedValueOnce({ id: 1, status: "PENDING_APPROVAL" })
-      .mockResolvedValueOnce({ id: 1, status: "APPROVED" });
-
-    await expect(approveRequisition(1, "APPROVED", "again", 5, "tenant-a"))
-      .rejects.toMatchObject({ code: "HR-RECRUITMENT-REQUISITION-NOOP" });
-    expect(prisma.requisitionApproval.create).not.toHaveBeenCalled();
-  });
-
-  it("requires an approver identity", async () => {
-    await expect(approveRequisition(1, "APPROVED", null, undefined, "tenant-a"))
-      .rejects.toMatchObject({ code: "HR-RECRUITMENT-APPROVER-REQUIRED" });
+    expect(written.payload.payload).toMatchObject({ decision: "APPROVED", reason: "Headcount approved", requestedById: "7" });
   });
 
   it("refuses to create a requisition outside DRAFT", async () => {

@@ -722,10 +722,29 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
         decidedAt: env.now,
       },
     });
-    await tx.jobRequisition.update({
+    const decided = await tx.jobRequisition.update({
       where: { id: row.id },
       data: { status, approvedById: approved ? env.who.id : null },
     });
+    // Recruitment keeps its own immutable transition history and decision event,
+    // written in this same transaction as the Management decision.
+    const { recordRequisitionTransition } = await import("../requisitionWorkflow.service.js");
+    const { requisitionDecisionEvent } = await import("../hrEvents.js");
+    await recordRequisitionTransition(tx, {
+      requisitionId: row.id,
+      tenantId: env.tenantId,
+      fromStatus: row.status,
+      toStatus: status,
+      reason,
+      actorId: env.who.id,
+      source: "hr-approval-centre",
+    });
+    const event = requisitionDecisionEvent(
+      decided,
+      { actorId: env.who.id },
+      { decision: status, reason, decidedById: env.who.id },
+    );
+    if (event) await enqueueHrDomainEvent(tx, event);
   } else if (kind === "PAYROLL") {
     await tx.payrollRun.update({
       where: { id: row.id },

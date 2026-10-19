@@ -139,6 +139,19 @@ prismaMock.$transaction = jest.fn(async (arg) =>
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prismaMock }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: jest.fn().mockResolvedValue(undefined) }));
+// The HR Approval Centre owns decisions (HR-4201) and opens the review on
+// submit; the double performs the centre's PENDING_APPROVAL move for the row.
+const mockLegacyDecision = jest.fn(async () => {
+  throw Object.assign(new Error("HR-4201: Open HR Approval Centre"), { status: 409, code: "HR-4201" });
+});
+jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
+  legacyDecision: mockLegacyDecision,
+  legacySubmit: jest.fn(async (kind, id) => {
+    const row = REQUISITIONS.find((r) => r.id === Number(id));
+    if (row) row.status = "PENDING_APPROVAL";
+    return row;
+  }),
+}));
 
 const hrContract = await import("../../src/services/hrContract.service.js");
 const attendanceSvc = await import("../../src/services/attendance.service.js");
@@ -198,7 +211,7 @@ describe("Phase 1.2 — requisition transitions are tenant-scoped", () => {
   });
 
   it("refuses a null-tenant legacy requisition", async () => {
-    await expect(hrContract.approveRequisition(300, TENANT_A, 1)).rejects.toThrow(/not found/i);
+    await expect(hrContract.submitRequisition(300, TENANT_A, 1, "please review")).rejects.toThrow(/not found/i);
     expect(prismaMock.jobRequisition.update).not.toHaveBeenCalled();
   });
 
@@ -222,17 +235,14 @@ describe("Phase 1.2 — requisition transitions are tenant-scoped", () => {
     expect(prismaMock.jobRequisition.findFirst).not.toHaveBeenCalled();
   });
 
-  it("stamps the verified tenant on the approval row it writes", async () => {
-    setStatus(100, "PENDING_APPROVAL"); // only a submitted requisition may be decided
-    await hrContract.approveRequisition(100, TENANT_A, 7, "within budget");
-
-    expect(APPROVALS).toHaveLength(1);
-    expect(APPROVALS[0]).toMatchObject({
-      requisitionId: 100,
-      approverId: 7,
-      status: "APPROVED",
-      tenantId: TENANT_A,
-    });
+  it("sends every decision to the HR Approval Centre, which scopes by the verified company", async () => {
+    setStatus(100, "PENDING_APPROVAL");
+    await expect(hrContract.approveRequisition(100, TENANT_A, 7, "within budget")).rejects.toMatchObject({ code: "HR-4201" });
+    await expect(hrContract.rejectRequisition(300, TENANT_A, 7, "no budget")).rejects.toMatchObject({ code: "HR-4201" });
+    // This surface writes no decision row; the centre writes it, tenant-stamped,
+    // at the Management decision.
+    expect(APPROVALS).toHaveLength(0);
+    expect(prismaMock.jobRequisition.update).not.toHaveBeenCalled();
   });
 
   it("reopens only the caller's own requisition", async () => {
