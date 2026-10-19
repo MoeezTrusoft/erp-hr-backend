@@ -324,7 +324,10 @@ export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize 
     period: { from: s.payrollRun?.periodStart ?? null, to: s.payrollRun?.periodEnd ?? null },
     net: Number(s.netAmount) || 0,
     status: s.status,
-    receivedOn: s.distributedAt ?? null,
+    // Same meaning as getMyPayslip: receivedOn is the reconciled bank credit;
+    // payslip delivery is reported separately.
+    receivedOn: s.paidAt ?? null,
+    distributedAt: s.distributedAt ?? null,
   }));
 
   return { items, total, page: currentPage, pageSize: take };
@@ -335,7 +338,7 @@ export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize 
  * (scoped findFirst; 404), creates a PayslipQuestion (OPEN), and enqueues the
  * hr.payslip.question_raised.v1 outbox event — all inside one RLS-bound tx.
  */
-export async function questionPayslip({ tenantId, employeeId, payslipId, question, ctx = {} }) {
+export async function questionPayslip({ tenantId, employeeId, payslipId, question, employeeScoped = false, ctx = {} }) {
   const slipId = Number(payslipId);
 
   return tenantTransaction(prisma, async (tx) => {
@@ -343,6 +346,11 @@ export async function questionPayslip({ tenantId, employeeId, payslipId, questio
     // when the session has no binding (HR/admin asking about someone's slip).
     const slipWhere = scopedWhere(tenantId, { id: slipId });
     if (employeeId != null && employeeId !== "") slipWhere.employeeId = Number(employeeId);
+    // Self-service may only ask about its own released slip (same rule as reads).
+    if (employeeScoped) {
+      slipWhere.employeeId = employeeId != null && employeeId !== "" ? Number(employeeId) : -1;
+      slipWhere.status = { in: EMPLOYEE_VISIBLE_STATUSES };
+    }
     const slip = await tx.payrollPayslip.findFirst({
       where: slipWhere,
       select: { id: true, employeeId: true },
@@ -353,8 +361,6 @@ export async function questionPayslip({ tenantId, employeeId, payslipId, questio
       data: {
         payslipId: slipId,
         employeeId: slip.employeeId,
-    employeeCode: slip.employee?.employee_code || "Employee code required",
-    currencyCode: slip.payrollRun?.currencyCode,
         question,
         status: "OPEN",
         tenantId: tenantId ?? null,

@@ -1,7 +1,7 @@
 import * as payrollService from '../services/payrollService.js';
 import * as bankFileService from '../services/bankFileService.js';
 import { auditC4Read } from '../lib/c4Access.js';
-import { respondServerError } from '../utils/httpError.js';
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 import { requireEmployeeActor } from '../lib/employeeActor.js';
 import { serializePayrollMoney } from '../lib/money.js';
 
@@ -97,9 +97,13 @@ export const finalizePayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
         const finalizedBy = req.user?.employeeId;
-        const result = await payrollService.finalizePayrollRun(parseInt(id), finalizedBy, tenantOf(req));
+        const result = await payrollService.finalizePayrollRun(parseInt(id), finalizedBy, tenantOf(req), {
+            ifMatch: req.headers?.["if-match"] ?? null,
+        });
         res.json({ success: true, data: wire(result) });
     } catch (error) {
+        // A stale If-Match keeps its 412 so the client reloads instead of retrying.
+        if (respondPreconditionAware(res, error)) return;
         res.status(400).json({ success: false, error: error.message });
     }
 };
