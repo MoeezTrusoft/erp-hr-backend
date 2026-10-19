@@ -11,6 +11,7 @@ import { interviewScheduledEvent } from "./hrEvents.js";
 // uses, so a fresh schedule and a moved schedule cannot disagree about what
 // counts as a conflict.
 import { blockedInterviewers } from "../lib/interviewScheduling.js";
+import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
@@ -96,6 +97,15 @@ export const scheduleInterview = async ({ applicationId, type, interviewType, sc
             applicationCandidateId = application?.candidateId ?? null;
             if (!application) {
                 throw Object.assign(new Error(`Application "${applicationId}" not found`), { status: 404 });
+            }
+            // D-11 — an interview invitation is candidate-facing contact, so it
+            // passes the same do-not-contact and consent gate as an offer send.
+            // A refusal rolls back the interview created above.
+            if (application.candidateId != null) {
+                await assertCommunicationsAllowed(
+                    { tenantId, candidateId: application.candidateId, purpose: "PROCESSING" },
+                    { db: tx },
+                );
             }
             if (application.stage !== "interview" && !["offer", "hired", "rejected", "withdrawn"].includes(application.stage)) {
                 await transitionApplicationStageInTransaction({

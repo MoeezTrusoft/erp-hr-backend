@@ -28,6 +28,7 @@ import prisma from "../config/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
 import { recordRetentionRun } from "../lib/recruitmentOpsMetrics.js";
 import {
   DEFAULT_INVITATION_VALIDITY_DAYS,
@@ -95,6 +96,9 @@ export async function inviteToApply({
       "HR-RECRUITMENT-INVITATION-CANDIDATE-ANONYMIZED",
     );
   }
+  // D-11 — an invitation is unsolicited outbound contact: a do-not-contact
+  // entry or withdrawn consent blocks it, exactly as it blocks an offer send.
+  await assertCommunicationsAllowed({ tenantId, candidateId: cId, purpose: "TALENT_POOL" }, { db });
 
   const open = await db.talentPoolInvitation.findFirst({
     where: scopedWhere(tenantId, { candidateId: cId, jobRequisitionId: rId, status: "INVITED" }),
