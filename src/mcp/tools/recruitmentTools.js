@@ -210,7 +210,7 @@ export function registerRecruitmentTools(server) {
       recruiterId: z.string().optional().describe("Employee id of the recruiter who owns the pipeline (distinct from requestedById, the hiring manager)"),
       // ── Phase 4 / §2.5 — the application window ──
       closesAt: z.string().optional().describe("When applications stop being accepted; ISO date. Omit for no deadline"),
-      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible"),
+      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; CLOSED is terminal, so a later refill is a new requisition"),
       // z.record(z.string(), z.unknown()) — NOT z.record(z.any()): in Zod v4.3.x
       // the single-argument record crashes the SDK's tools/list JSON-Schema
       // conversion (Cannot read properties of undefined (reading '_zod')), which
@@ -254,7 +254,7 @@ export function registerRecruitmentTools(server) {
       recruiterId: z.string().nullable().optional(),
       // ── Phase 4 / §2.5 — the application window (absent ⇒ unchanged) ──
       closesAt: z.string().nullable().optional().describe("When applications stop being accepted; ISO date, or null for no deadline. The eligibility gate refuses applications after it"),
-      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible (a human can reopen)"),
+      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; CLOSED is terminal, so a later refill is a new requisition"),
       jobContent: z.record(z.string(), z.unknown()).nullable().optional(),
       expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },

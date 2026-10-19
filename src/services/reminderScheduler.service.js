@@ -11,6 +11,9 @@ import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 import { applyRetention } from "./candidatePrivacy.service.js";
 import { purgeExpiredDrafts } from "./applicationDraft.service.js";
+import { autoCloseFilledRequisitions } from "./requisitionPublication.service.js";
+import { expireInvitations } from "./talentPoolInvitation.service.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 
 const reminderLog = logger.child({ component: "reminder-jobs" });
 
@@ -193,6 +196,67 @@ export async function runCandidateRetentionJob({
     "candidate retention job: done",
   );
   return { mode: resolved, asOf: at, tenants: tenants.length, wouldAnonymize, anonymized, suspendedByLegalHold, perTenant };
+}
+
+// ── D-07 — scheduled recruitment sweeps ──────────────────────────────────────
+//
+// autoCloseFilledRequisitions and expireInvitations existed with no caller, so
+// "close when filled" and "invitations expire after 30 days" were documented
+// behaviours nothing performed (expiry was only derived at read time). Both are
+// tenant-scoped functions, so each job first finds the tenants with work, then
+// sweeps each one in isolation: one tenant's failure is reported and never
+// aborts the others. Both are governed by HR_RECRUITMENT_WORKFLOW_ENFORCEMENT.
+
+const tenantsWith = async (model, where) => {
+  const rows = await prisma[model].findMany({ where, select: { tenantId: true }, distinct: ["tenantId"] });
+  return rows.map((row) => row.tenantId).filter(Boolean);
+};
+
+const sweepTenants = async (label, tenants, run) => {
+  const perTenant = [];
+  for (const tenantId of tenants) {
+    try {
+      perTenant.push({ tenantId, ...(await run(tenantId)) });
+    } catch (err) {
+      reminderLog.error({ errMessage: err?.message, tenantId }, `${label}: tenant failed`);
+      perTenant.push({ tenantId, error: err?.message ?? "unknown" });
+    }
+  }
+  return perTenant;
+};
+
+export async function runRequisitionAutoCloseJob({ now = new Date() } = {}) {
+  if (!isRecruitmentFlagEnabled("workflow")) {
+    reminderLog.info("requisition auto-close job: workflow flag off — nothing to do");
+    return { skipped: "flag-disabled", tenants: 0, closed: 0, perTenant: [] };
+  }
+  const tenants = await tenantsWith("jobRequisition", {
+    status: { in: ["APPROVED", "POSTED"] },
+    autoCloseWhenFilled: true,
+    autoClosedAt: null,
+  });
+  const perTenant = await sweepTenants("requisition auto-close job", tenants, async (tenantId) => {
+    const closed = await autoCloseFilledRequisitions({ tenantId, now });
+    return { closed: closed.length };
+  });
+  const closed = perTenant.reduce((sum, row) => sum + (row.closed ?? 0), 0);
+  reminderLog.info({ tenants: tenants.length, closed }, "requisition auto-close job: done");
+  return { tenants: tenants.length, closed, perTenant };
+}
+
+export async function runTalentPoolInvitationExpiryJob({ asOf = new Date() } = {}) {
+  if (!isRecruitmentFlagEnabled("workflow")) {
+    reminderLog.info("talent-pool invitation expiry job: workflow flag off — nothing to do");
+    return { skipped: "flag-disabled", tenants: 0, expired: 0, perTenant: [] };
+  }
+  const tenants = await tenantsWith("talentPoolInvitation", { status: "INVITED", expiresAt: { lte: asOf } });
+  const perTenant = await sweepTenants("talent-pool invitation expiry job", tenants, async (tenantId) => {
+    const result = await expireInvitations({ tenantId, asOf, dryRun: false });
+    return { expired: result.expired?.length ?? 0 };
+  });
+  const expired = perTenant.reduce((sum, row) => sum + (row.expired ?? 0), 0);
+  reminderLog.info({ tenants: tenants.length, expired }, "talent-pool invitation expiry job: done");
+  return { tenants: tenants.length, expired, perTenant };
 }
 
 // Back-compat shim: the old export name. Now it just logs that scheduling has

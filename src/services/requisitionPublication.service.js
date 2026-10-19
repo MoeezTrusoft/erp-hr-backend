@@ -378,10 +378,11 @@ export const closeActivePostingsForRequisition = async (
 // events at different moments, so NEITHER the hired transition nor this sweep
 // closes the requisition as a side effect of the other. The sweep is the one
 // place auto-close happens, it only touches requisitions that OPTED IN
-// (autoCloseWhenFilled), and it is deliberately NOT irreversible: it stamps
-// autoClosedAt and moves the status to CLOSED — a plain state move a human can
-// reopen. It never deletes postings, never locks fields, and never touches a
-// requisition that did not ask for it.
+// (autoCloseWhenFilled). It stamps autoClosedAt and moves the status to CLOSED,
+// which is terminal in the requisition state machine: a role that needs
+// refilling later is raised as a new requisition. It never deletes postings,
+// never locks fields, and never touches a requisition that did not ask for it.
+// The hourly requisition-autoclose job (src/jobs/reminder.queue.js) runs it.
 
 /**
  * Auto-close every eligible requisition whose required openings are filled.

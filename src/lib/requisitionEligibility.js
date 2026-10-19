@@ -6,7 +6,7 @@
 // Pure functions, no DB and no I/O, and one exported answer shape. Why one
 // module: the decision names three conditions (posting active, requisition
 // publishable/open, closing date not passed) and one optional behaviour
-// (autoCloseWhenFilled, NOT irreversible). Five callers read this answer — the
+// (autoCloseWhenFilled, which closes terminally). Five callers read this answer — the
 // application-creation gate, the hired prerequisite, the auto-close sweep, the
 // candidate-facing listing and the "closed job" UX copy — and five callers
 // re-deriving "is this job open" from raw columns is how a withdrawn

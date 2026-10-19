@@ -31,6 +31,8 @@ import {
     runAbsenceMarkingJob,
     runCandidateRetentionJob,
     runApplicationDraftSweepJob,
+    runRequisitionAutoCloseJob,
+    runTalentPoolInvitationExpiryJob,
 } from '../services/reminderScheduler.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
@@ -64,6 +66,11 @@ export const JOB_CANDIDATE_RETENTION = 'candidate-retention';
 // erasure): three "retention" meanings in one name is how an operator stops
 // knowing which sweep did what.
 export const JOB_APPLICATION_DRAFT_SWEEP = 'application-draft-sweep';
+// D-07 — the recruitment sweeps that existed with no schedule: close requisitions
+// that opted into auto-close once their openings are filled, and expire
+// talent-pool invitations past their validity.
+export const JOB_REQUISITION_AUTOCLOSE = 'requisition-autoclose';
+export const JOB_TALENT_POOL_INVITATION_EXPIRY = 'talent-pool-invitation-expiry';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -124,6 +131,18 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:application-draft-sweep', repeat: { pattern: '10 4 * * *' } },
         },
+        {
+            // Hourly at :20 — a filled requisition stops advertising within the hour.
+            name: JOB_REQUISITION_AUTOCLOSE,
+            data: {},
+            opts: { jobId: 'repeat:requisition-autoclose', repeat: { pattern: '20 * * * *' } },
+        },
+        {
+            // 04:20 daily — after the other recruitment sweeps.
+            name: JOB_TALENT_POOL_INVITATION_EXPIRY,
+            data: {},
+            opts: { jobId: 'repeat:talent-pool-invitation-expiry', repeat: { pattern: '20 4 * * *' } },
+        },
     ];
 }
 
@@ -139,6 +158,8 @@ export function buildReminderProcessor({
     absenceMarking = runAbsenceMarkingJob,
     candidateRetention = runCandidateRetentionJob,
     applicationDraftSweep = runApplicationDraftSweepJob,
+    requisitionAutoClose = runRequisitionAutoCloseJob,
+    talentPoolInvitationExpiry = runTalentPoolInvitationExpiryJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -163,6 +184,10 @@ export function buildReminderProcessor({
                     return candidateRetention(data);
                 case JOB_APPLICATION_DRAFT_SWEEP:
                     return applicationDraftSweep(data);
+                case JOB_REQUISITION_AUTOCLOSE:
+                    return requisitionAutoClose(data);
+                case JOB_TALENT_POOL_INVITATION_EXPIRY:
+                    return talentPoolInvitationExpiry(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }
