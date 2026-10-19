@@ -619,6 +619,8 @@ model Log {
   correlationId String?
 
   @@index([tenantId])
+
+  @@index([correlationId])
 }
 
 model Attendance {
@@ -3586,12 +3588,12 @@ model OnboardingChecklistTemplate {
   isDefault   Boolean  @default(false)
   createdById Int?
   created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  updated_at  DateTime @default(now()) @updatedAt
   tenantId    String?  @db.Uuid
 
-  @@unique([tenantId, name])
+  @@unique([tenantId, name], map: "onboarding_checklist_templates_tenant_name_key")
   @@index([tenantId])
-  @@index([tenantId, isDefault, isActive])
+  @@index([tenantId, isDefault, isActive], map: "onboarding_checklist_templates_default_idx")
   @@map("onboarding_checklist_templates")
 }
 
@@ -4154,14 +4156,15 @@ model ApplicationDraft {
   expiresAt     DateTime
   submittedAt   DateTime?
   created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
+  updated_at    DateTime  @default(now()) @updatedAt
   tenantId      String?   @db.Uuid
 
   candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
-  @@unique([candidateId, requisitionId])
+  @@unique([candidateId, requisitionId], map: "application_drafts_candidate_requisition_key")
   @@index([tenantId])
   @@index([expiresAt])
+  @@map("application_drafts")
 }
 
 // Phase 5 / §3.2 — candidate EMAIL VERIFICATION tokens (magic links).
@@ -4184,6 +4187,7 @@ model CandidateEmailVerification {
 
   @@index([candidateId])
   @@index([tenantId])
+  @@map("candidate_email_verifications")
 }
 
 // Append-only consent history. The CURRENT state is mirrored onto

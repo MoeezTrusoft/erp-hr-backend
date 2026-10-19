@@ -307,7 +307,7 @@ describe("Phase 4 — the freeze control cannot silently stop working", () => {
 
   it("ships its policy in the same migration that creates the table", () => {
     const sql = readFileSync(
-      path.join(root, "prisma/migrations/20260920240000_recruitment_hiring_freeze/migration.sql"),
+      path.join(root, "prisma/migrations/20261021001000_recruitment_hiring_freeze/migration.sql"),
       "utf8",
     );
     expect(sql).toContain("FORCE ROW LEVEL SECURITY");

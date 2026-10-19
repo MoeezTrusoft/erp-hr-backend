@@ -427,7 +427,7 @@ describe("Phase 4 — the matrix cannot silently stop working", () => {
 
   it("ships its policy in the same migration that creates the table", () => {
     const sql = readFileSync(
-      path.join(root, "prisma/migrations/20260920250000_recruitment_approval_chain/migration.sql"),
+      path.join(root, "prisma/migrations/20261021001100_recruitment_approval_chain/migration.sql"),
       "utf8",
     );
     expect(sql).toContain("FORCE ROW LEVEL SECURITY");

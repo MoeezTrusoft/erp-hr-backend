@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS "talent_pool_invitations" (
 
 ALTER TABLE "talent_pool_invitations"
     ADD CONSTRAINT "talent_pool_invitations_candidateId_fkey"
-    FOREIGN KEY ("candidateId") REFERENCES "candidates"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    FOREIGN KEY ("candidateId") REFERENCES "Candidate"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 ALTER TABLE "talent_pool_invitations"
     ADD CONSTRAINT "talent_pool_invitations_jobRequisitionId_fkey"
@@ -89,11 +89,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS "talent_pool_invitations_open_role_key"
     ON "talent_pool_invitations" ("tenantId", "candidateId", "jobRequisitionId")
     WHERE "status" = 'INVITED' AND "jobRequisitionId" IS NOT NULL;
 
-ALTER TABLE "candidates" ADD COLUMN IF NOT EXISTS "retentionPopulation" TEXT;
+ALTER TABLE "Candidate" ADD COLUMN IF NOT EXISTS "retentionPopulation" TEXT;
 
-ALTER TABLE "candidates"
+ALTER TABLE "Candidate"
     DROP CONSTRAINT IF EXISTS "candidates_retentionPopulation_check";
-ALTER TABLE "candidates"
+ALTER TABLE "Candidate"
     ADD CONSTRAINT "candidates_retentionPopulation_check"
     CHECK ("retentionPopulation" IS NULL OR "retentionPopulation" IN ('APPLICANT', 'TALENT_POOL'));
 

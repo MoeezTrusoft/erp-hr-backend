@@ -45,7 +45,7 @@ const FEEDBACK = {
 
 let ready = false;
 // Phase 3.4 — the lock writes `amendmentLog` / `lastAmendedAt`. Those ship in
-// migration 20260920200000_recruitment_scorecard_amendment_log; until it has been
+// migration 20261021000600_recruitment_scorecard_amendment_log; until it has been
 // applied to THIS database the client knows the columns but Postgres does not, so
 // the lock cases are skipped the same way the whole suite skips an unreachable DB
 // (rather than failing on a schema the migration has not reached yet).

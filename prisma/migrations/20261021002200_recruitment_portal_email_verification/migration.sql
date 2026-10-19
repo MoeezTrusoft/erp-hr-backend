@@ -33,7 +33,7 @@ CREATE TABLE "candidate_email_verifications" (
 
 ALTER TABLE "candidate_email_verifications"
     ADD CONSTRAINT "candidate_email_verifications_candidateId_fkey"
-    FOREIGN KEY ("candidateId") REFERENCES "candidates"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    FOREIGN KEY ("candidateId") REFERENCES "Candidate"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- The portal verifies by presenting the token; the lookup is by hash.
 CREATE UNIQUE INDEX IF NOT EXISTS "candidate_email_verifications_tokenHash_key"
@@ -49,7 +49,7 @@ ALTER TABLE "candidate_email_verifications" ADD CONSTRAINT "candidate_email_veri
 
 -- ── The candidate-facing verified state (additive, nullable — UNKNOWN for
 --    pre-existing rows, same posture as every privacy column). ────────────────
-ALTER TABLE "candidates" ADD COLUMN IF NOT EXISTS "emailVerifiedAt" TIMESTAMP(3);
+ALTER TABLE "Candidate" ADD COLUMN IF NOT EXISTS "emailVerifiedAt" TIMESTAMP(3);
 
 -- ── F-DB-05 convention: staged NOT VALID backfill + own RLS policy ───────────
 ALTER TABLE "candidate_email_verifications" ADD CONSTRAINT "candidate_email_verifications_tenant_not_null_staged"

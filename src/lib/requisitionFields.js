@@ -17,7 +17,7 @@
 // ── Vocabularies ─────────────────────────────────────────────────────────────
 // Kept as frozen arrays rather than Prisma enums so adding a value is a one-line
 // migration; each has a matching CHECK constraint in
-// 20260920230000_recruitment_requisition_expansion so the database agrees with
+// 20261021000900_recruitment_requisition_expansion so the database agrees with
 // the service instead of trusting it.
 
 // FR-02.02 — the keys whose presence in an update payload counts as a FIELD EDIT

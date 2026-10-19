@@ -40,7 +40,7 @@ CREATE TABLE "application_drafts" (
 
 ALTER TABLE "application_drafts"
     ADD CONSTRAINT "application_drafts_candidateId_fkey"
-    FOREIGN KEY ("candidateId") REFERENCES "candidates"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    FOREIGN KEY ("candidateId") REFERENCES "Candidate"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- ONE draft per candidate per requisition: re-saving overwrites.
 CREATE UNIQUE INDEX IF NOT EXISTS "application_drafts_candidate_requisition_key"
