@@ -20,6 +20,7 @@
 //                          candidate's interviews (via applications), else null.
 
 import prisma from "../lib/prisma.js";
+import { createApplication } from "./applicationService.js";
 import { scopedWhere, withTenant } from "../lib/tenancy.js";
 import { inviteToApply } from "./talentPoolInvitation.service.js";
 
@@ -281,16 +282,14 @@ export const moveToPipeline = async ({ candidateId, jobRequisitionId, tenantId, 
   });
   if (existing) return { created: false, application: existing };
 
-  const application = await prisma.application.create({
-    data: {
-      candidateId: cId,
-      jobRequisitionId: rId,
-      stage: "applied",
-      status: "open",
-      tenantId: tenantId ?? null,
-      createdById: addedById != null ? Number(addedById) : null,
-    },
-    include: { candidate: true, jobRequisition: true },
+  // D-09 — the same intake path a recruiter uses: the requisition eligibility
+  // gate, the initial stage-history row and the application_created event.
+  const application = await createApplication({
+    candidateId: cId,
+    jobRequisitionId: rId,
+    tenantId,
+    createdById: addedById,
+    source: "talent-pool",
   });
 
   return { created: true, application };

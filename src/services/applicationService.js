@@ -5,6 +5,8 @@ import { transitionApplicationStage } from "./applicationWorkflow.service.js";
 import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { applicationCreatedEvent } from "./hrEvents.js";
 
 // Phase 1.4 (remainder) — application reads/writes are TENANT-scoped and, when a
 // caller passes a scope, ROW-scoped. The MCP tools used to reach prisma directly
@@ -73,6 +75,7 @@ export const createApplication = async ({
     status = "open",
     tenantId,
     createdById,
+    source = "application",
 }) => {
     if (String(stage).toLowerCase() !== "applied") {
         throw Object.assign(new Error("New applications must start in the applied stage"), { status: 409, code: "HR-RECRUITMENT-INITIAL-STAGE" });
@@ -141,9 +144,15 @@ export const createApplication = async ({
                 toStage: "applied",
                 reason: "initial application",
                 actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
-                source: "application",
+                source,
             },
         });
+        // D-09 — every intake path announces the new applicant, not only the
+        // public portal: the hiring manager is routed from the requisition.
+        const event = applicationCreatedEvent(create, {
+            actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : undefined,
+        });
+        if (event) await enqueueHrDomainEvent(tx, event);
         await logAction({
             employeeId: createdById ?? null,
             type: "CREATE",
