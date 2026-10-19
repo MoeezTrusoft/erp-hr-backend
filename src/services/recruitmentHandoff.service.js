@@ -25,6 +25,7 @@ import { resolveTasksForProvisioning } from "./onboardingTemplate.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { offerHandoffCompletedEvent, offerHandoffFailedEvent, candidateHiredEvent } from "./hrEvents.js";
 import { prepareEmployeeInsert } from "./employee-code.service.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { enqueueEmployeeLifecycle, mapEmployeeToLifecycleInput } from "./employeeOutbox.service.js";
 
 // Main's employee-code rules: every new employee carries a server-allocated
@@ -130,6 +131,12 @@ async function recordAttempt(db, { handoffId, tenantId, step, status, error = nu
 // the offer, so later retries agree.
 export async function runOfferHandoff({ offerId, tenantId, actorId = null, employeeCategory = null } = {}) {
   requireTenant(tenantId);
+  if (!isRecruitmentFlagEnabled("offerHandoff")) {
+    throw Object.assign(new Error("Hire provisioning is disabled"), {
+      status: 503,
+      code: "HR-RECRUITMENT-OFFER-HANDOFF-DISABLED",
+    });
+  }
   const id = Number(offerId);
   if (!Number.isInteger(id) || id <= 0) throw handoffError("A valid offer id is required");
 

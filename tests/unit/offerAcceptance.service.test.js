@@ -3,7 +3,7 @@
 // Phase 9 — offer response is a one-way transition: only a SENT offer can be
 // answered, a repeat acceptance REPLAYS (never re-provisions), and acceptance
 // moves the application to hired inside the same transaction.
-import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+import { jest, describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 
 const offerRow = { id: 9, status: "SENT", applicationId: 3, candidateId: 5, tenantId: "tenant-a" };
 
@@ -107,5 +107,29 @@ describe("Offer acceptance", () => {
     expect(result.handoff).toBeNull();
     expect(mockTransition).not.toHaveBeenCalled();
     expect(mockRunOfferHandoff).not.toHaveBeenCalled();
+  });
+});
+
+describe("D-08 — HR_RECRUITMENT_OFFER_HANDOFF is read by acceptance", () => {
+  afterEach(() => {
+    delete process.env.HR_RECRUITMENT_OFFER_HANDOFF;
+  });
+
+  it("refuses an acceptance with 503 before any write while the flag is off", async () => {
+    process.env.HR_RECRUITMENT_OFFER_HANDOFF = "off";
+    prisma.offer.update.mockClear();
+
+    await expect(respondOffer(9, true, "tenant-a", { employeeCategory: "EMPLOYEE" }))
+      .rejects.toMatchObject({ status: 503, code: "HR-RECRUITMENT-OFFER-HANDOFF-DISABLED" });
+    expect(prisma.offer.update).not.toHaveBeenCalled();
+  });
+
+  it("still records a decline while the flag is off — nothing is provisioned", async () => {
+    process.env.HR_RECRUITMENT_OFFER_HANDOFF = "off";
+    prisma.offer.findFirst.mockResolvedValue({ ...offerRow });
+    prisma.offer.update.mockResolvedValue({ ...offerRow, status: "DECLINED" });
+
+    const result = await respondOffer(9, false, "tenant-a");
+    expect(result.offer.status).toBe("DECLINED");
   });
 });

@@ -2,7 +2,7 @@
 //
 // Phase 9 — an ACCEPTED offer must provision exactly one employee/onboarding
 // checklist, and a failed handoff must be visible and retryable.
-import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+import { jest, describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 
 const tx = {
   employee: { findFirst: jest.fn(), create: jest.fn() },
@@ -325,5 +325,22 @@ describe("listFailedHandoffs — the operator fleet view (Phase 9 residue)", () 
   it("requires a tenant", async () => {
     await expect(listFailedHandoffs({ tenantId: null }))
       .rejects.toMatchObject({ code: "HR-TENANT-REQUIRED" });
+  });
+});
+
+describe("D-08 — HR_RECRUITMENT_OFFER_HANDOFF is read by the handoff", () => {
+  afterEach(() => {
+    delete process.env.HR_RECRUITMENT_OFFER_HANDOFF;
+  });
+
+  it("refuses to provision with 503 while the flag is off, before touching the handoff row", async () => {
+    process.env.HR_RECRUITMENT_OFFER_HANDOFF = "disabled";
+    prisma.offerHandoff.create.mockClear();
+
+    await expect(runOfferHandoff({ offerId: 9, tenantId: TENANT })).rejects.toMatchObject({
+      status: 503,
+      code: "HR-RECRUITMENT-OFFER-HANDOFF-DISABLED",
+    });
+    expect(prisma.offerHandoff.create).not.toHaveBeenCalled();
   });
 });

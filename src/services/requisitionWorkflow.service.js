@@ -24,6 +24,7 @@ export const REQUISITION_STATUSES = Object.freeze([
 
 import { assertRequisitionSubmittable } from "../lib/requisitionFields.js";
 import { assertNotHiringFrozen } from "./recruitmentFreeze.service.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 
 // DRAFT ──submit──▶ PENDING_APPROVAL ──decide──▶ APPROVED ──post──▶ POSTED ──▶ CLOSED
 //   │                      │                        │                          ▲
@@ -113,7 +114,10 @@ export function assertRequisitionTransition(from, to, { comments, requisition } 
                 "HR-RECRUITMENT-REQUISITION-GATE-CONTEXT-REQUIRED",
             );
         }
-        assertRequisitionSubmittable(requisition);
+        // HR_RECRUITMENT_WORKFLOW_ENFORCEMENT off is the documented rollback to
+        // legacy permissive submission: only the mandatory-field gate is lifted.
+        // Legal transitions, reasons and the hiring freeze still apply.
+        if (isRecruitmentFlagEnabled("workflow")) assertRequisitionSubmittable(requisition);
     }
     return target;
 }

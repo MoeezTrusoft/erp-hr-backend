@@ -1,7 +1,7 @@
 // tests/unit/requisitionWorkflow.service.test.js
 //
 // Phase 3.2 — the requisition approval chain must be enforced, not advisory.
-import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+import { jest, describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 
 const mockLogAction = jest.fn(async () => undefined);
 
@@ -170,5 +170,25 @@ describe("Requisition state machine (Phase 3.2)", () => {
     const written = prisma.outboxEvent.create.mock.calls[0][0].data;
     expect(written.eventName).toBe("hr.recruitment.requisition_posted.v1");
     expect(written.payload.payload).toMatchObject({ requisitionId: "1", externalUrl: "https://jobs.example.com/1" });
+  });
+});
+
+describe("D-08 — HR_RECRUITMENT_WORKFLOW_ENFORCEMENT is read by the submission gate", () => {
+  afterEach(() => {
+    delete process.env.HR_RECRUITMENT_WORKFLOW_ENFORCEMENT;
+  });
+
+  it("refuses an incomplete submission while the flag is on (the default)", () => {
+    expect(() => assertRequisitionTransition("DRAFT", "PENDING_APPROVAL", { requisition: { id: 1, title: "x" } }))
+      .toThrow(/cannot be submitted/i);
+  });
+
+  it("lifts only the mandatory-field gate when the flag is off", () => {
+    process.env.HR_RECRUITMENT_WORKFLOW_ENFORCEMENT = "off";
+    expect(assertRequisitionTransition("DRAFT", "PENDING_APPROVAL", { requisition: { id: 1, title: "x" } }))
+      .toBe("PENDING_APPROVAL");
+    // Legal transitions and reasons still apply.
+    expect(() => assertRequisitionTransition("DRAFT", "APPROVED")).toThrow();
+    expect(() => assertRequisitionTransition("PENDING_APPROVAL", "REJECTED")).toThrow(/requires a reason/);
   });
 });

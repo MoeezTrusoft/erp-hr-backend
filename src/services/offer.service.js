@@ -12,6 +12,8 @@ import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
 import { offerScopeWhere, maskOfferForScope, maskOffersForScope } from "../lib/recruitmentAccess.js";
 import { offerAcceptedEvent } from "./hrEvents.js";
 
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+
 const EMPLOYEE_CATEGORIES = new Set(["MANAGEMENT", "EMPLOYEE", "INTERNEE"]);
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
@@ -143,6 +145,14 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
     if (!tenantId) throw Object.assign(new Error("Verified company is required"), { status: 403, code: "HR-TENANT-REQUIRED" });
     const acceptedFlag = accepted === true || accepted === "true" || accepted === "ACCEPTED";
     const desired = acceptedFlag ? "ACCEPTED" : "DECLINED";
+    // HR_RECRUITMENT_OFFER_HANDOFF off stops acceptance before any write: an
+    // acceptance whose provisioning cannot run would leave a hire half-made.
+    if (acceptedFlag && !isRecruitmentFlagEnabled("offerHandoff")) {
+        throw Object.assign(new Error("Offer acceptance and hire provisioning are disabled"), {
+            status: 503,
+            code: "HR-RECRUITMENT-OFFER-HANDOFF-DISABLED",
+        });
+    }
     // An accepted offer provisions an employee, and every employee needs a
     // server-allocated code whose prefix comes from an explicit category.
     const employeeCategory = ctx.employeeCategory ?? null;

@@ -19,18 +19,22 @@
 // back to the documented default so a typo cannot take a feature down.
 
 const DEFINITIONS = Object.freeze({
-    // §2 — requisition workflow enforcement (mandatory-field gate, approval
-    // chain, posting rules). The core of Phase 4.
+    // §2 — requisition workflow enforcement. Read by the mandatory-field
+    // submission gate and by the scheduled sweeps (requisition auto-close,
+    // talent-pool invitation expiry). Approval itself is the HR Approval
+    // Centre's and is never flag-gated.
     workflow: {
         env: "HR_RECRUITMENT_WORKFLOW_ENFORCEMENT",
         def: true, // ON: the audit and the plan treat this as the intended state
-        desc: "Requisition submission gates (mandatory fields, approval chain)",
+        desc: "Requisition mandatory-field submission gate and the scheduled recruitment sweeps",
     },
-    // §2.7-adjacent — the offers API and the handoff pipeline.
+    // §2.7-adjacent — offer acceptance and the hiring handoff pipeline. Off
+    // refuses acceptance and handoff runs with a 503, so no hire is left
+    // half-provisioned; offer approval stays with the HR Approval Centre.
     offerHandoff: {
         env: "HR_RECRUITMENT_OFFER_HANDOFF",
         def: true,
-        desc: "Offer approval/acceptance and the hiring handoff pipeline",
+        desc: "Offer acceptance and the hiring handoff pipeline",
     },
     // §3 — public careers portal intake (the internet-facing surface).
     portal: {
