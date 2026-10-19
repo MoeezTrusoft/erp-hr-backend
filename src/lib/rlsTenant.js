@@ -161,6 +161,41 @@ const RLS_MODELS = new Set([
     // Weekend on-call call-ins (HR-ATT-ONCALL-01) — tenant-owned; the policy
     // ships in 20261005230000_hr_oncall_ins with the table.
     'AttendanceCallIn',
+    // Recruitment workflow, offer approvals, hire handoff and candidate privacy
+    // tables (migrations 20260920130000 / 143000 / 160000 / 180000) — FORCE-RLS
+    // with a tenantId NOT NULL on every one of them, so the policy needs no
+    // null-tenant arm. Their policies ship in the same migrations.
+    //
+    // Same trap as the attendance-policy block above: a model listed here without
+    // a policy sets a GUC nothing reads, but a table WITH a policy and NO entry
+    // here is worse — tenantTransaction still sets the GUC for the writes it
+    // wraps, so writes appear to work, while ordinary reads run with no GUC, the
+    // policy hides every row, and the feature silently reads back empty.
+    'ApplicationStageHistory',
+    // Phase 2.1 — requisition transition history (20260920210000). Same
+    // convention: tenantId column, its own policy in the same migration.
+    'RequisitionTransition',
+    // Phase 2.2 — typed, ACL'd requisition attachments (20260920230000). The row
+    // is tenant-owned even though its bytes live in DAM: the pointer's visibility
+    // rule must not be readable across tenants.
+    'RequisitionAttachment',
+    // Phase 4 — hiring freezes (20260920240000). Read on the SUBMISSION and
+    // PUBLICATION paths, which run under the ordinary request tenant context; a
+    // freeze that reads back empty would silently stop gating anything.
+    'RecruitmentHiringFreeze',
+    // Phase 4 — the approval matrix (20260920250000). Same trap, worse
+    // consequence: a matrix that reads back empty makes every approval chain
+    // vanish and every requisition approve in ONE step, with no error anywhere.
+    'RequisitionApprovalRule',
+    'OfferApproval',
+    'OfferHandoff',
+    'OfferHandoffAttempt',
+    'CandidateConsent',
+    'CandidateDncEntry',
+    'CandidateRetentionPolicy',
+    'CandidateLegalHold',
+    'CandidateAnonymizationLog',
+    'CandidateDataAccessRequest',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

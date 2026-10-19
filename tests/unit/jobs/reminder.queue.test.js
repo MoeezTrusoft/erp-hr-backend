@@ -18,6 +18,7 @@ import {
     JOB_REVIEW_REMINDER,
     JOB_DOCUMENT_EXPIRY,
     JOB_RETENTION_SWEEP,
+    JOB_APPLICATION_DRAFT_SWEEP,
     defaultJobOptions,
     repeatableJobs,
     startReminderJobs,
@@ -55,6 +56,9 @@ describe('repeatable de-dup', () => {
         // covers the three migrated cron jobs
         const names = jobs.map((j) => j.name);
         expect(names).toEqual(expect.arrayContaining([JOB_REVIEW_REMINDER, JOB_DOCUMENT_EXPIRY, JOB_RETENTION_SWEEP]));
+        // Phase 5 residue — the save-and-return draft sweep is REGISTERED (its
+        // purge existed as an exposed service function with no scheduler).
+        expect(names).toContain(JOB_APPLICATION_DRAFT_SWEEP);
         // each repeatable carries a cron pattern
         expect(jobs.every((j) => typeof j.opts.repeat?.pattern === 'string')).toBe(true);
     });

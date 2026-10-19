@@ -29,6 +29,8 @@ import {
     runDocumentExpiryJob,
     runRetentionSweepJob,
     runAbsenceMarkingJob,
+    runCandidateRetentionJob,
+    runApplicationDraftSweepJob,
 } from '../services/reminderScheduler.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
@@ -50,6 +52,18 @@ export const JOB_RETENTION_SWEEP = 'retention-sweep';
 // day when the body runs. The job body itself (tenant sweep + guards) lives
 // with the other processors in reminderScheduler.service.js.
 export const JOB_ABSENCE_MARKING = 'absence-marking';
+// Phase 10 (remainder) — candidate-data retention (GDPR erasure), deliberately a
+// DIFFERENT job from JOB_RETENTION_SWEEP above, which prunes the queue's own
+// completed/failed rows. Two different meanings of "retention" in one job name is
+// how an operator ends up believing candidate erasure runs when only housekeeping
+// does.
+export const JOB_CANDIDATE_RETENTION = 'candidate-retention';
+// Phase 5 residue — save-and-return draft expiry (deletes never-submitted WIP
+// forms past their 30-day clock). Deliberately a distinct job name from
+// JOB_RETENTION_SWEEP (queue housekeeping) and JOB_CANDIDATE_RETENTION (GDPR
+// erasure): three "retention" meanings in one name is how an operator stops
+// knowing which sweep did what.
+export const JOB_APPLICATION_DRAFT_SWEEP = 'application-draft-sweep';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -90,6 +104,26 @@ export function repeatableJobs() {
             // 22:00 UTC == 03:00 PKT — closes yesterday's window in Karachi.
             opts: { jobId: 'repeat:absence-marking', repeat: { pattern: '0 22 * * *' } },
         },
+        {
+            // 04:00 daily — after the 03:30 housekeeping sweep, so the two never
+            // contend for the same window.
+            //
+            // NO `mode` IN THE JOB DATA ON PURPOSE. It is read from
+            // HR_CANDIDATE_RETENTION_MODE at run time (default `dry-run`), so
+            // flipping a tenant to live erasure is an env change an operator can
+            // see and revert — not an edit to registered job payloads that keeps
+            // running until the queue is rebuilt.
+            name: JOB_CANDIDATE_RETENTION,
+            data: {},
+            opts: { jobId: 'repeat:candidate-retention', repeat: { pattern: '0 4 * * *' } },
+        },
+        {
+            // 04:10 daily — after the candidate-retention window, so sweeps never
+            // contend; the purge itself is a single deleteMany on expired rows.
+            name: JOB_APPLICATION_DRAFT_SWEEP,
+            data: {},
+            opts: { jobId: 'repeat:application-draft-sweep', repeat: { pattern: '10 4 * * *' } },
+        },
     ];
 }
 
@@ -103,6 +137,8 @@ export function buildReminderProcessor({
     documentExpiry = runDocumentExpiryJob,
     retentionSweep = runRetentionSweepJob,
     absenceMarking = runAbsenceMarkingJob,
+    candidateRetention = runCandidateRetentionJob,
+    applicationDraftSweep = runApplicationDraftSweepJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -123,6 +159,10 @@ export function buildReminderProcessor({
                     return retentionSweep(data);
                 case JOB_ABSENCE_MARKING:
                     return absenceMarking(data);
+                case JOB_CANDIDATE_RETENTION:
+                    return candidateRetention(data);
+                case JOB_APPLICATION_DRAFT_SWEEP:
+                    return applicationDraftSweep(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

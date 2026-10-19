@@ -68,6 +68,11 @@ const TOOLS = [
   { name: 'hr_talent_pool_profile_get', gate: 'hr:recruitment', action: 'VIEW', args: { candidateId: '1' } },
   { name: 'hr_talent_pool_move_to_pipeline', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1', jobRequisitionId: '1' } },
   { name: 'hr_talent_pool_invite', gate: 'hr:recruitment', action: 'EDIT', args: { candidateId: '1' } },
+  // FR-10 residue — the invitation lifecycle, segmentation and the pool sweep.
+  { name: 'hr_talent_pool_invitation_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
+  { name: 'hr_talent_pool_invitation_respond', gate: 'hr:recruitment', action: 'EDIT', args: { invitationId: '1', action: 'respond', response: 'ACCEPTED' } },
+  { name: 'hr_talent_pool_segment', gate: 'hr:recruitment', action: 'VIEW', args: { skills: ['Node.js'] } },
+  { name: 'hr_talent_pool_retention_sweep', gate: 'hr:recruitment', action: 'EDIT', args: {} },
 ];
 
 describe('CANDIDATE-PIPELINE-SCENARIOS — registration', () => {

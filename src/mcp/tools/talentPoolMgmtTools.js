@@ -21,6 +21,13 @@ import {
   moveToPipeline,
   inviteCandidate,
 } from "../../services/talentPoolMgmt.service.js";
+import {
+  listInvitations,
+  respondToInvitation,
+  segmentTalentPool,
+  sweepTalentPoolRetention,
+  withdrawInvitation,
+} from "../../services/talentPoolInvitation.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -98,7 +105,7 @@ export function registerTalentPoolMgmtTools(server) {
   // ── INVITE ─────────────────────────────────────────────────────────────
   server.tool(
     "hr_talent_pool_invite",
-    "Invite a talent-pool candidate to apply: records an 'Invited to apply' note on the pool membership (or candidate). If a jobRequisitionId is given, also moves them into that job's pipeline.",
+    "Invite a talent-pool candidate to apply: opens an invitation (status INVITED with an expiry) and records an 'Invited to apply' note. Re-inviting while an invitation is open returns the SAME invitation. If a jobRequisitionId is given, also moves them into that job's pipeline.",
     {
       candidateId: z.coerce.number().int().positive().describe("Candidate id (references Candidate)"),
       jobRequisitionId: z.coerce.number().int().positive().optional().describe("Optional job requisition id (references JobRequisition); when given, also moves the candidate into that job's pipeline"),
@@ -114,5 +121,93 @@ export function registerTalentPoolMgmtTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_talent_pool_invite")
+  );
+
+  // ── INVITATION LIFECYCLE (FR-10 residue) ────────────────────────────────
+  server.tool(
+    "hr_talent_pool_invitation_list",
+    "List talent-pool invitations with status, expiry, answer and the derived 'expired' flag (newest first; optionally narrowed by status or candidate)",
+    {
+      status: z.enum(["INVITED", "ACCEPTED", "DECLINED", "WITHDRAWN", "EXPIRED"]).optional(),
+      candidateId: z.coerce.number().int().positive().optional(),
+      limit: z.coerce.number().int().positive().max(200).optional(),
+    },
+    withToolError(async ({ status, candidateId, limit }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listInvitations({
+        tenantId: user.tenantId,
+        status: status ?? null,
+        candidateId: candidateId ?? null,
+        limit,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_talent_pool_invitation_list")
+  );
+
+  server.tool(
+    "hr_talent_pool_invitation_respond",
+    "Advance a talent-pool invitation: record the candidate's answer (ACCEPTED/DECLINED) or withdraw it. One-way — an answered invitation cannot be re-answered; re-inviting is a new invitation.",
+    {
+      invitationId: z.coerce.number().int().positive().describe("Invitation id (references TalentPoolInvitation)"),
+      action: z.enum(["respond", "withdraw"]).describe("respond = the candidate's answer; withdraw = the recruiter pulls it back"),
+      response: z.enum(["ACCEPTED", "DECLINED"]).optional().describe("Required when action=respond"),
+      note: z.string().optional().describe("Answer note, or the withdrawal reason"),
+    },
+    withToolError(async ({ invitationId, action, response, note }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = action === "withdraw"
+        ? await withdrawInvitation({ tenantId: user.tenantId, invitationId, reason: note })
+        : await respondToInvitation({ tenantId: user.tenantId, invitationId, response, note });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_talent_pool_invitation_respond")
+  );
+
+  // ── SEGMENTATION (FR-10 residue) ────────────────────────────────────────
+  server.tool(
+    "hr_talent_pool_segment",
+    "Segment talent-pool candidates by skills, location, source, experience and invitation state; reports how many matched and, per filter, why the rest were excluded",
+    {
+      poolNames: z.array(z.string()).optional(),
+      skills: z.array(z.string()).optional().describe("Any-of: a candidate with one of these skills is in the segment"),
+      locations: z.array(z.string()).optional(),
+      sources: z.array(z.string()).optional(),
+      minExperienceYears: z.number().nonnegative().optional(),
+      maxExperienceYears: z.number().nonnegative().optional(),
+      invitedWithinDays: z.number().int().nonnegative().optional(),
+      hasOpenInvitation: z.boolean().optional(),
+      limit: z.coerce.number().int().positive().max(500).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const { limit, ...filters } = args;
+      const data = await segmentTalentPool({ tenantId: user.tenantId, filters, limit });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_talent_pool_segment")
+  );
+
+  // ── POOL RETENTION SWEEP (FR-10 residue) ────────────────────────────────
+  server.tool(
+    "hr_talent_pool_retention_sweep",
+    "Sweep the TALENT_POOL retention clock: DRY RUN by default. Removes pool memberships whose clock has closed (never erases a candidate — that is the APPLICANT sweep's action) and reports legal-hold suspensions.",
+    {
+      asOf: z.string().optional().describe("ISO date to evaluate as of (defaults to now)"),
+      dryRun: z.boolean().optional().describe("Defaults to true; apply mode is flag-gated (HR_RECRUITMENT_RETENTION_AUTOMATION)"),
+      limit: z.coerce.number().int().positive().max(2000).optional(),
+    },
+    withToolError(async ({ asOf, dryRun, limit }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await sweepTalentPoolRetention({
+        tenantId: user.tenantId,
+        asOf: asOf ? new Date(asOf) : new Date(),
+        dryRun: dryRun !== false,
+        limit,
+        actorId: user.employeeId ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_talent_pool_retention_sweep")
   );
 }

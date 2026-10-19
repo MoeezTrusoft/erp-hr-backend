@@ -14,7 +14,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { exportRows } from "../../lib/export.util.js";
-import { computeRecruitmentAnalytics } from "../../services/recruitmentAnalytics.service.js";
+import { computeRecruitmentAnalytics, drillDownRecruitmentMetric } from "../../services/recruitmentAnalytics.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -27,14 +27,64 @@ const today = () => new Date().toISOString().slice(0, 10);
 export function registerRecruitmentAnalyticsTools(server) {
   server.tool(
     "hr_recruitment_analytics_get",
-    "Compute tenant-scoped recruitment analytics: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, and an ILLUSTRATIVE cost-per-hire / cost breakdown (constants, not DB spend — flagged illustrativeCostData:true).",
-    z.object({}),
-    withToolError(async () => {
+    "Compute tenant-scoped recruitment analytics: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, and an ILLUSTRATIVE cost-per-hire / cost breakdown (constants, not DB spend — flagged illustrativeCostData:true). Optional drill-down filters (FR-11): dateFrom/dateTo (ISO), requisitionIds, departmentId, stage, source.",
+    {
+      dateFrom: z.string().optional().describe("ISO date — include applications applied at or after this instant"),
+      dateTo: z.string().optional().describe("ISO date — include applications applied at or before this instant"),
+      requisitionIds: z.array(z.string()).optional().describe("Restrict to these requisition ids (numeric strings)"),
+      departmentId: z.string().optional().describe("Restrict to this department id (numeric string)"),
+      stage: z.string().optional().describe("Restrict to this current application stage (e.g. 'interview')"),
+      source: z.string().optional().describe("Restrict to this candidate source string"),
+    },
+    withToolError(async ({ dateFrom, dateTo, requisitionIds, departmentId, stage, source }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await computeRecruitmentAnalytics(user.tenantId);
+      const filters = {
+        ...(dateFrom ? { dateFrom } : {}),
+        ...(dateTo ? { dateTo } : {}),
+        ...(requisitionIds?.length ? { requisitionIds: requisitionIds.map(Number) } : {}),
+        ...(departmentId ? { departmentId: Number(departmentId) } : {}),
+        ...(stage ? { stage } : {}),
+        ...(source ? { source } : {}),
+      };
+      const data = await computeRecruitmentAnalytics(user.tenantId, filters);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_recruitment_analytics_get")
+  );
+
+  // NFR-12 reporting integrity — "allow drill-down to the data behind metrics".
+  // Runs the SAME filter + fetch pipeline the metric payload used, so the rows
+  // returned are the rows the number was computed from (never a parallel query
+  // that can silently disagree with it).
+  server.tool(
+    "hr_recruitment_analytics_drilldown",
+    "Return the ROW-LEVEL evidence behind one recruitment metric (NFR-12): pass the metric you are explaining plus the SAME filters the metric was computed with. Canonical metrics (totalHires, timeToFillDays, timeToFirstFillDays, timeToHireDays, stageConversion, dropOff, offerAcceptanceRate, sourceEffectiveness) or a group slice (funnel:<stage>, source:<name>, disposition:<code>). Returns the filter echo, total/returned counts, a truncated flag, and rows (applications, or requisitions for fill/rate metrics).",
+    {
+      metric: z.string().min(1).describe("Metric to explain, e.g. 'totalHires' or 'funnel:interview'"),
+      dateFrom: z.string().optional().describe("Same filter the metric was computed with (ISO date)"),
+      dateTo: z.string().optional().describe("Same filter the metric was computed with (ISO date)"),
+      requisitionIds: z.array(z.string()).optional().describe("Same filter the metric was computed with"),
+      departmentId: z.string().optional().describe("Same filter the metric was computed with"),
+      stage: z.string().optional().describe("Same filter the metric was computed with"),
+      source: z.string().optional().describe("Same filter the metric was computed with"),
+      limit: z.string().optional().describe("Max rows to return (1-500); defaults to 100"),
+    },
+    withToolError(async ({ metric, dateFrom, dateTo, requisitionIds, departmentId, stage, source, limit }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const filters = {
+        ...(dateFrom ? { dateFrom } : {}),
+        ...(dateTo ? { dateTo } : {}),
+        ...(requisitionIds?.length ? { requisitionIds: requisitionIds.map(Number) } : {}),
+        ...(departmentId ? { departmentId: Number(departmentId) } : {}),
+        ...(stage ? { stage } : {}),
+        ...(source ? { source } : {}),
+      };
+      const parsedLimit = Number(limit);
+      const safeLimit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 500) : 100;
+      const data = await drillDownRecruitmentMetric(user.tenantId, metric, filters, { limit: safeLimit });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_recruitment_analytics_drilldown")
   );
 
   server.tool(

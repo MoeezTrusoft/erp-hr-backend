@@ -2,6 +2,15 @@ import { legacyDecision, legacySubmit } from './approval/legacy.js';
 import { prepareEmployeeInsert, guardIdentityEdit } from "./employee-code.service.js";
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
+import {
+  assertRequisitionTransition,
+  assertRequisitionAdvanceAllowed,
+  recordRequisitionTransition,
+} from "./requisitionWorkflow.service.js";
+import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
+import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
+import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1868,28 +1877,50 @@ export const getRequisition = async (id, tenantId) => {
   return { ...requisitionRow(requisition), postings: requisition.postings };
 };
 
-export const createRequisition = async (data, actorId) => {
+export const createRequisition = async (data, actorId, tenantId = null) => {
   if (!data.title) throw new Error("Title is required");
   if (!actorId) throw new Error("Employee context is required");
 
+  // Phase 2.2 — the legacy surface writes the expansion fields too. Without this
+  // a requisition created here could never satisfy the submission gate, so the
+  // legacy UI would be able to create requisitions it cannot submit.
+  const expansion = pickRequisitionFields(data);
+  const requestedById = toInt(data.requestedById) || Number(actorId);
+  assertReplacementPairing({ ...expansion, requestedById });
+
   const requisition = await prisma.jobRequisition.create({
-    data: {
+    data: scopedData(tenantId, {
       title: data.title,
       description: data.description || null,
       departmentId: toInt(data.departmentId),
       positionId: toInt(data.positionId),
       // Hiring manager: an explicitly chosen requestedById wins, else the creator.
-      requestedById: toInt(data.requestedById) || Number(actorId),
+      requestedById,
       openings: Number(data.openings || 1),
       status: data.status || "DRAFT",
-    },
+      ...expansion,
+    }),
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
 
   return requisitionRow(requisition);
 };
 
-export const updateRequisition = async (id, data) => {
+export const updateRequisition = async (id, data, tenantId = null) => {
+  // Phase 1.2 — tenant-scoped pre-read so a cross-tenant id is not-found rather
+  // than a successful write. Previously this was a bare `update({ where: { id } })`
+  // with no tenant predicate at all, unlike the transition paths beside it.
+  const existing = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+  });
+  if (!existing) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+
+  const expansion = pickRequisitionFields(data);
+  assertReplacementPairing({ ...existing, ...expansion });
+  // FR-02.02 — the legacy /api/hr surface enforces the same post-submission
+  // field lock as the newer path, or the lock would be bypassable by URL choice.
+  assertRequisitionFieldsEditable(existing, { ...data, ...expansion });
+
   const requisition = await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: {
@@ -1902,6 +1933,7 @@ export const updateRequisition = async (id, data) => {
         data.requestedById === undefined || data.requestedById === ''
           ? undefined
           : toInt(data.requestedById),
+      ...expansion,
     },
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
@@ -1909,33 +1941,84 @@ export const updateRequisition = async (id, data) => {
   return requisitionRow(requisition);
 };
 
-const transitionRequisition = async ({ id, status, actorId, comments }) => {
-  if (["APPROVED","REJECTED"].includes(status)) return legacyDecision("REQUISITION",id);
-  if (status === "PENDING_APPROVAL") return legacySubmit("REQUISITION",id,comments);
+// Phase 1.2 (legacy /api/hr surface) — tenant is required and the row is read
+// tenant-scoped: a cross-tenant id reads as not-found, never as a transition.
+// Decisions (APPROVED / REJECTED) belong to the HR Approval Centre and answer
+// HR-4201; submission runs the recruitment gates and then opens the Approval
+// Centre review; close and reopen stay native recruitment transitions.
+const transitionRequisition = async ({ id, tenantId, status, actorId, comments }) => {
+  if (["APPROVED", "REJECTED"].includes(status)) return legacyDecision("REQUISITION", id);
   if (!actorId) throw new Error("Employee context is required");
+  if (!tenantId) {
+    throw Object.assign(new Error("Tenant context is required"), {
+      status: 400,
+      code: "HR-TENANT-REQUIRED",
+    });
+  }
 
-  const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
+  const requisition = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+  });
   if (!requisition) throw new Error("Requisition not found");
 
-  const updated = await tenantTransaction(prisma, async (tx) => {
-    if (["APPROVED", "REJECTED"].includes(status)) {
-      await tx.requisitionApproval.create({
-        data: {
-          requisitionId: Number(id),
-          approverId: Number(actorId),
-          status,
-          comments,
-          decidedAt: new Date(),
+  // Phase 2.2 — the legacy surface runs the same mandatory-field gate, legal
+  // transition rule and reason rule as every other requisition path.
+  assertRequisitionTransition(requisition.status, status, { comments, requisition });
+  // Phase 4 — a hiring freeze blocks submission here too, or the freeze would be
+  // bypassable simply by using the older endpoint.
+  await assertRequisitionAdvanceAllowed(tenantId, requisition, status);
+
+  if (status === "PENDING_APPROVAL") {
+    // FR-02.10 — the Finance validity gate; dormant until configured, and run
+    // before any transaction (no HTTP inside a tx).
+    const financeSnapshot = await assertFinanceValidityAtSubmit(tenantId, requisition, requisition.budgetApprovalSnapshot);
+    if (financeSnapshot) {
+      await tenantTransaction(
+        prisma,
+        (tx) => tx.jobRequisition.update({ where: { id: Number(id) }, data: { budgetApprovalSnapshot: financeSnapshot } }),
+        { tenantId },
+      );
+    }
+    await legacySubmit("REQUISITION", id, comments);
+    const submitted = await tenantTransaction(prisma, async (tx) => {
+      await recordRequisitionTransition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        fromStatus: requisition.status,
+        toStatus: "PENDING_APPROVAL",
+        reason: comments,
+        actorId,
+        source: "requisition.legacy",
+      });
+      await emitRequisitionSubmittedEvent(tx, { tenantId, requisition, actorId });
+      return tx.jobRequisition.findFirst({
+        where: scopedWhere(tenantId, { id: Number(id) }),
+        include: {
+          position: true,
+          requestedBy: true,
+          approvedBy: true,
+          approvals: { include: { approver: true }, orderBy: { id: "desc" } },
         },
+      });
+    }, { tenantId });
+    return requisitionRow(submitted);
+  }
+
+  const updated = await tenantTransaction(prisma, async (tx) => {
+    // Phase 4 / §2.4a — closing takes the requisition off every channel it was
+    // published to, in the same transaction as the status flip.
+    if (status === "CLOSED") {
+      await closeActivePostingsForRequisition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        closeReason: "REQUISITION_CLOSED",
+        actorId,
       });
     }
 
-    return tx.jobRequisition.update({
+    const moved = await tx.jobRequisition.update({
       where: { id: Number(id) },
-      data: {
-        status,
-        approvedById: status === "APPROVED" || status === "REJECTED" ? Number(actorId) : undefined,
-      },
+      data: { status },
       include: {
         position: true,
         requestedBy: true,
@@ -1943,22 +2026,34 @@ const transitionRequisition = async ({ id, status, actorId, comments }) => {
         approvals: { include: { approver: true }, orderBy: { id: "desc" } },
       },
     });
-  });
+
+    // Phase 2.1 — the legacy surface writes the same history row as every other.
+    await recordRequisitionTransition(tx, {
+      requisitionId: Number(id),
+      tenantId,
+      fromStatus: requisition.status,
+      toStatus: status,
+      reason: comments,
+      actorId,
+      source: "requisition.legacy",
+    });
+    return moved;
+  }, { tenantId });
 
   return requisitionRow(updated);
 };
 
-export const submitRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "PENDING_APPROVAL" });
+export const submitRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "PENDING_APPROVAL" });
 
-export const approveRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "APPROVED" });
+export const approveRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "APPROVED" });
 
-export const rejectRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "REJECTED" });
+export const rejectRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "REJECTED" });
 
-export const closeRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "CLOSED" });
+export const closeRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "CLOSED" });
 
-export const reopenRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "DRAFT" });
+export const reopenRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "DRAFT" });

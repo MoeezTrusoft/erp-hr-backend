@@ -1,0 +1,11 @@
+-- Phase 4 / decision record §2.4a — requisition WITHDRAWAL.
+--
+-- A withdrawal ("this recruitment was cancelled before it filled") must be
+-- distinguishable from CLOSED ("the opening was filled / the search ended"), so
+-- it is a status of its own rather than an overloaded CLOSED. It is terminal:
+-- a withdrawn requisition is a historical record, exactly like CLOSED.
+--
+-- Own migration, in the repo's established convention: ALTER TYPE ... ADD VALUE
+-- is appended by Postgres and cannot be USED in the same transaction that adds
+-- it, so the value is added here and first written by the service at runtime.
+ALTER TYPE "RequisitionStatus" ADD VALUE IF NOT EXISTS 'WITHDRAWN';

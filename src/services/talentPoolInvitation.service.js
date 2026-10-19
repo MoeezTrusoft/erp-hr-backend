@@ -1,0 +1,430 @@
+// src/services/talentPoolInvitation.service.js — FR-10 residue.
+//
+// The talent-pool INVITATION LIFECYCLE, the SEGMENTATION surface and the pool
+// population's RETENTION SWEEP. The DECISIONS (which transitions are legal, how
+// long an invitation lives, what a segment means) live in
+// lib/talentPoolPolicy.js; this module is the storage and the wiring.
+//
+// Three problems this closes, in the plan's own words:
+//
+//   1. "invitation lifecycle" — an invitation is now a row with a status, an
+//      expiry and an answer, not a timestamp appended to a note. Re-inviting an
+//      answered candidate is refused (a change of mind is a NEW invitation, so
+//      the answer stays history), and a lapsed invitation is EXPIRED, which is
+//      not a rejection — it records that nobody answered.
+//
+//   2. "segmentation" — pool candidates can be selected by skills, location,
+//      source, experience and invitation state, with the reason a row fell out of
+//      the segment attributed to the filter that rejected it.
+//
+//   3. "talent-pool retention sweep" — the pool clock was already stamped on
+//      `Candidate.retentionUntil`, but the only sweep in the codebase was the
+//      APPLICANT one, which ERASES a candidate. Erasing someone kept on file for
+//      future roles on the applicant basis is the wrong action under the wrong
+//      lawful basis, so the pool sweep EXPIRES their pool memberships instead,
+//      dry-run by default and flag-gated for apply exactly like the applicant
+//      sweep.
+import prisma from "../config/prisma.js";
+import logger from "../lib/logger.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { recordRetentionRun } from "../lib/recruitmentOpsMetrics.js";
+import {
+  DEFAULT_INVITATION_VALIDITY_DAYS,
+  checkInvitationTransition,
+  invitationExpiry,
+  isInvitationExpired,
+  matchesSegment,
+  resolveInvitationResponse,
+  segmentRejectionReasons,
+  validateSegment,
+} from "../lib/talentPoolPolicy.js";
+
+export const TALENT_POOL_RETENTION_POPULATION = "TALENT_POOL";
+
+const poolError = (message, code, status = 409) => Object.assign(new Error(message), { status, code });
+
+const requireTenant = (tenantId) => {
+  if (tenantId === undefined || tenantId === null || tenantId === "") {
+    throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+  }
+};
+
+// ── The invitation lifecycle ────────────────────────────────────────────────
+
+/**
+ * Invite a candidate to apply.
+ *
+ * Idempotent while the invitation is OPEN: a second call for the same candidate
+ * and role returns the live invitation with `reused: true` instead of stacking a
+ * second one. That is a deliberate difference from "refuse" — the caller's intent
+ * (the candidate has an open invitation) is already satisfied, and a retry after
+ * a network blip is not an error.
+ */
+export async function inviteToApply({
+  tenantId,
+  candidateId,
+  jobRequisitionId = null,
+  poolName = null,
+  validityDays = DEFAULT_INVITATION_VALIDITY_DAYS,
+  note = null,
+  actorId = null,
+  db = prisma,
+} = {}) {
+  requireTenant(tenantId);
+  const cId = Number(candidateId);
+  if (!Number.isInteger(cId) || cId <= 0) {
+    throw poolError("candidateId is required", "HR-RECRUITMENT-INVITATION-CANDIDATE-REQUIRED", 400);
+  }
+  const rId = jobRequisitionId === null || jobRequisitionId === undefined || jobRequisitionId === ""
+    ? null
+    : Number(jobRequisitionId);
+  if (rId !== null && (!Number.isInteger(rId) || rId <= 0)) {
+    throw poolError("jobRequisitionId must be a positive integer when given", "HR-RECRUITMENT-INVITATION-REQUISITION-INVALID", 400);
+  }
+
+  const candidate = await db.candidate.findFirst({
+    where: scopedWhere(tenantId, { id: cId }),
+    select: { id: true, anonymizedAt: true },
+  });
+  if (!candidate) throw poolError("Candidate not found", "HR-RECRUITMENT-INVITATION-CANDIDATE-NOT-FOUND", 404);
+  // Inviting an erased candidate would re-create a record the erasure removed.
+  if (candidate.anonymizedAt) {
+    throw poolError(
+      "Candidate has been anonymized and cannot be invited",
+      "HR-RECRUITMENT-INVITATION-CANDIDATE-ANONYMIZED",
+    );
+  }
+
+  const open = await db.talentPoolInvitation.findFirst({
+    where: scopedWhere(tenantId, { candidateId: cId, jobRequisitionId: rId, status: "INVITED" }),
+  });
+  if (open && !isInvitationExpired(open)) return { invitation: open, reused: true };
+
+  const invitedAt = new Date();
+  const expiresAt = invitationExpiry({ invitedAt, validityDays });
+  const invitation = await db.talentPoolInvitation.create({
+    data: scopedData(tenantId, {
+      candidateId: cId,
+      jobRequisitionId: rId,
+      poolName: poolName ? String(poolName).trim() : null,
+      status: "INVITED",
+      invitedById: Number.isInteger(Number(actorId)) ? Number(actorId) : null,
+      invitedAt,
+      expiresAt,
+      responseNote: note ? String(note).trim() : null,
+    }),
+  });
+
+  return { invitation, reused: false };
+}
+
+/** Move an OPEN invitation to a terminal status, enforcing the one-way map. */
+const transitionInvitation = async ({ tenantId, invitationId, to, responseNote = null, actorId = null, db = prisma }) => {
+  requireTenant(tenantId);
+  const invitation = await db.talentPoolInvitation.findFirst({
+    where: scopedWhere(tenantId, { id: Number(invitationId) }),
+  });
+  if (!invitation) throw poolError("Invitation not found", "HR-RECRUITMENT-INVITATION-NOT-FOUND", 404);
+
+  const move = checkInvitationTransition(invitation.status, to);
+  if (!move.ok) throw poolError(move.error, move.code);
+
+  const note = responseNote === null || responseNote === undefined ? null : String(responseNote).trim();
+  return db.talentPoolInvitation.update({
+    where: { id: invitation.id },
+    data: {
+      status: to,
+      respondedAt: new Date(),
+      responseNote: note && note.length ? note : invitation.responseNote,
+    },
+  });
+};
+
+/** The candidate's answer to an open invitation (ACCEPTED / DECLINED). */
+export const respondToInvitation = async ({ tenantId, invitationId, response, note = null, db = prisma } = {}) => {
+  const to = resolveInvitationResponse(response);
+  return transitionInvitation({ tenantId, invitationId, to, responseNote: note, db });
+};
+
+/** A recruiter pulling back an open invitation. */
+export const withdrawInvitation = async ({ tenantId, invitationId, reason = null, db = prisma } = {}) =>
+  transitionInvitation({ tenantId, invitationId, to: "WITHDRAWN", responseNote: reason, db });
+
+/** The tenant's invitations, newest first, optionally narrowed. */
+export async function listInvitations({ tenantId, status = null, candidateId = null, limit = 50, db = prisma } = {}) {
+  requireTenant(tenantId);
+  const where = scopedWhere(tenantId, {});
+  if (status) where.status = String(status).trim().toUpperCase();
+  if (candidateId != null) where.candidateId = Number(candidateId);
+  const items = await db.talentPoolInvitation.findMany({
+    where,
+    orderBy: { invitedAt: "desc" },
+    take: Math.min(Number(limit) || 50, 200),
+  });
+  // `expired` is derived, not stored: a row whose expiry has passed is reported as
+  // lapsed even before the sweep stamps it, so a reader never sees a live state
+  // the clock has already left.
+  const asOf = new Date();
+  return {
+    items: items.map((row) => ({ ...row, expired: isInvitationExpired(row, asOf) })),
+    total: items.length,
+  };
+}
+
+/**
+ * The EXPIRY half of the sweep: an INVITED row past its expiry becomes EXPIRED.
+ *
+ * Dry-run by default, like the applicant sweep — the caller sees which rows it
+ * would move, and the transition is the same one the policy module allows.
+ */
+export async function expireInvitations({ tenantId, asOf = new Date(), dryRun = true, limit = 500, db = prisma } = {}) {
+  requireTenant(tenantId);
+  const candidates = await db.talentPoolInvitation.findMany({
+    where: scopedWhere(tenantId, { status: "INVITED" }),
+    orderBy: { id: "asc" },
+    take: Math.min(Number(limit) || 500, 2000),
+  });
+  const due = candidates.filter((row) => isInvitationExpired(row, asOf));
+  if (dryRun) return { dryRun: true, asOf: new Date(asOf), wouldExpire: due.map((r) => r.id) };
+
+  const expired = [];
+  for (const row of due) {
+    const updated = await transitionInvitation({
+      tenantId,
+      invitationId: row.id,
+      to: "EXPIRED",
+      db,
+    });
+    expired.push(updated.id);
+  }
+  return { dryRun: false, asOf: new Date(asOf), expired };
+}
+
+// ── Segmentation ────────────────────────────────────────────────────────────
+
+/**
+ * Select pool candidates by a validated segment.
+ *
+ * The rows are loaded through the pool memberships (so a candidate with no pool
+ * membership is never "segmented" into one), then the pure predicate decides.
+ * The projection built here is the contract `lib/talentPoolPolicy.matchesSegment`
+ * documents — a change there and a change here have to be made together, which is
+ * why the shape is built in ONE place.
+ */
+export async function segmentTalentPool({ tenantId, filters = {}, limit = 100, db = prisma } = {}) {
+  requireTenant(tenantId);
+  const validated = validateSegment(filters);
+  if (!validated.ok) throw poolError(validated.error, validated.code || "HR-RECRUITMENT-SEGMENT-INVALID", 422);
+  const segment = validated.filters;
+
+  const memberships = await db.talentPool.findMany({
+    where: scopedWhere(tenantId, {}),
+    orderBy: { addedAt: "desc" },
+    take: Math.min(Number(limit) || 100, 500) * 4,
+    include: { candidate: { include: { candidateSkills: true } } },
+  });
+
+  const candidateIds = [...new Set(memberships.map((m) => m.candidateId))];
+  const openInvitations = candidateIds.length
+    ? await db.talentPoolInvitation.findMany({
+      where: scopedWhere(tenantId, { candidateId: { in: candidateIds }, status: "INVITED" }),
+      select: { candidateId: true, invitedAt: true, expiresAt: true },
+    })
+    : [];
+  const invitationByCandidate = new Map();
+  for (const row of openInvitations) {
+    const existing = invitationByCandidate.get(row.candidateId);
+    if (!existing || row.invitedAt > existing.invitedAt) invitationByCandidate.set(row.candidateId, row);
+  }
+
+  const rowsByCandidate = new Map();
+  for (const membership of memberships) {
+    const candidate = membership.candidate;
+    if (!candidate) continue;
+    const existing = rowsByCandidate.get(candidate.id) || {
+      candidateId: candidate.id,
+      name: [candidate.firstName, candidate.lastName].filter(Boolean).join(" ") || null,
+      location: candidate.location ?? null,
+      source: candidate.source ?? null,
+      experienceYears: deriveExperienceYears(candidate.parsedResume),
+      skillNames: (candidate.candidateSkills || []).map((s) => s.name).filter(Boolean),
+      poolNames: [],
+      anonymized: Boolean(candidate.anonymizedAt),
+      hasOpenInvitation: false,
+      lastInvitedAt: null,
+    };
+    existing.poolNames.push(membership.poolName);
+    const invitation = invitationByCandidate.get(candidate.id);
+    if (invitation && !isInvitationExpired(invitation, new Date())) {
+      existing.hasOpenInvitation = true;
+      existing.lastInvitedAt = invitation.invitedAt;
+    } else if (invitation && (!existing.lastInvitedAt || invitation.invitedAt > existing.lastInvitedAt)) {
+      existing.lastInvitedAt = invitation.invitedAt;
+    }
+    rowsByCandidate.set(candidate.id, existing);
+  }
+
+  const rows = [...rowsByCandidate.values()];
+  const matched = [];
+  const excluded = [];
+  for (const row of rows) {
+    // An erased candidate is not a segment member: their PII is gone, so listing
+    // them would be presenting a tombstone as a person.
+    if (row.anonymized) {
+      excluded.push({ candidateId: row.candidateId, reason: "anonymized" });
+      continue;
+    }
+    if (matchesSegment(row, segment)) {
+      matched.push({
+        candidateId: row.candidateId,
+        name: row.name,
+        location: row.location,
+        source: row.source,
+        experienceYears: row.experienceYears,
+        skills: row.skillNames,
+        pools: row.poolNames,
+        hasOpenInvitation: row.hasOpenInvitation,
+      });
+    } else {
+      excluded.push({ candidateId: row.candidateId, reason: segmentRejectionReasons(row, segment)[0] || "filter" });
+    }
+  }
+
+  // Attributable shortfall: a count alone cannot tell an operator whether the
+  // segment is empty because the pool is small or because one filter is wrong.
+  const excludedByReason = {};
+  for (const row of excluded) excludedByReason[row.reason] = (excludedByReason[row.reason] || 0) + 1;
+
+  return {
+    filters: segment,
+    matched,
+    counts: { candidates: rows.length, matched: matched.length, excluded: excluded.length },
+    excludedByReason,
+  };
+}
+
+/** The candidate's experience in years, derived from the parsed resume when present. */
+const deriveExperienceYears = (parsedResume) => {
+  if (!parsedResume || typeof parsedResume !== "object") return null;
+  const years = Number(parsedResume.totalExperienceYears ?? parsedResume.experienceYears);
+  return Number.isFinite(years) ? years : null;
+};
+
+// ── The pool population's retention sweep ───────────────────────────────────
+
+/**
+ * Expire the POOL memberships of candidates whose TALENT_POOL clock has closed.
+ *
+ * What it deliberately does NOT do: erase the candidate. `retentionUntil` is
+ * stamped under the TALENT_POOL policy when someone is kept on file for future
+ * roles, and the candidate may also be a live applicant; the pool action is to
+ * stop keeping them for future roles, which is the membership. Erasure stays the
+ * APPLICANT sweep's job, under the APPLICANT clock (see previewRetentionDue).
+ *
+ * Legal holds are honoured: a held candidate is reported as suspended rather than
+ * swept, because the hold exists precisely to stop the clock.
+ */
+export async function sweepTalentPoolRetention({
+  tenantId,
+  asOf = new Date(),
+  dryRun = true,
+  limit = 500,
+  actorId = null,
+  db = prisma,
+} = {}) {
+  requireTenant(tenantId);
+  const cutoff = new Date(asOf);
+
+  const memberships = await db.talentPool.findMany({
+    where: scopedWhere(tenantId, {}),
+    orderBy: { id: "asc" },
+    take: Math.min(Number(limit) || 500, 2000),
+    include: { candidate: { select: { id: true, retentionUntil: true, retentionPopulation: true, anonymizedAt: true } } },
+  });
+
+  const due = memberships.filter((membership) => {
+    const candidate = membership.candidate;
+    if (!candidate || candidate.anonymizedAt) return false;
+    if (!candidate.retentionUntil || new Date(candidate.retentionUntil) > cutoff) return false;
+    // NULL is a pre-existing clock, stamped under the APPLICANT policy — the only
+    // one that existed then — so it is NOT the pool's clock to sweep.
+    return candidate.retentionPopulation === TALENT_POOL_RETENTION_POPULATION;
+  });
+
+  const candidateIds = [...new Set(due.map((m) => m.candidateId))];
+  const holds = candidateIds.length
+    ? await db.candidateLegalHold.findMany({
+      where: scopedWhere(tenantId, { candidateId: { in: candidateIds }, releasedAt: null }),
+      select: { candidateId: true },
+    })
+    : [];
+  const heldIds = new Set(holds.map((h) => h.candidateId));
+
+  const sweepable = due.filter((m) => !heldIds.has(m.candidateId));
+  const suspended = due.filter((m) => heldIds.has(m.candidateId)).map((m) => ({ membershipId: m.id, candidateId: m.candidateId }));
+
+  if (dryRun) {
+    recordRetentionRun("dry-run");
+    return {
+      dryRun: true,
+      population: TALENT_POOL_RETENTION_POPULATION,
+      asOf: cutoff,
+      wouldRemoveMemberships: sweepable.map((m) => m.id),
+      candidates: [...new Set(sweepable.map((m) => m.candidateId))],
+      suspendedByLegalHold: suspended,
+      // Stated explicitly so nobody reads this sweep as an erasure.
+      candidateErasure: "not performed — the pool sweep removes memberships; erasure is the APPLICANT sweep's action",
+    };
+  }
+
+  if (!isRecruitmentFlagEnabled("retention")) {
+    recordRetentionRun("refused-flag");
+    return {
+      dryRun: true,
+      refused: true,
+      reason: "flag-disabled",
+      population: TALENT_POOL_RETENTION_POPULATION,
+      asOf: cutoff,
+      wouldRemoveMemberships: sweepable.map((m) => m.id),
+      suspendedByLegalHold: suspended,
+    };
+  }
+
+  const removed = [];
+  if (sweepable.length) {
+    await db.talentPool.deleteMany({
+      where: scopedWhere(tenantId, { id: { in: sweepable.map((m) => m.id) } }),
+    });
+    removed.push(...sweepable.map((m) => m.id));
+    // The clock belongs to the pool basis; with the memberships gone there is
+    // nothing left counting down on it, so the marker and clock are cleared for
+    // candidates who are no longer in ANY pool. Leaving them stamped would make
+    // the next sweep re-report a population that no longer exists.
+    const stillPooled = await db.talentPool.findMany({
+      where: scopedWhere(tenantId, { candidateId: { in: [...new Set(sweepable.map((m) => m.candidateId))] } }),
+      select: { candidateId: true },
+    });
+    const stillPooledIds = new Set(stillPooled.map((row) => row.candidateId));
+    const cleared = [...new Set(sweepable.map((m) => m.candidateId))].filter((id) => !stillPooledIds.has(id));
+    if (cleared.length) {
+      await db.candidate.updateMany({
+        where: scopedWhere(tenantId, { id: { in: cleared } }),
+        data: { retentionUntil: null, retentionPopulation: null },
+      });
+    }
+    logger.info(
+      { tenantId, actorId, removed: removed.length, candidates: cleared.length },
+      "talent pool retention sweep applied",
+    );
+  }
+
+  recordRetentionRun("applied");
+  return {
+    dryRun: false,
+    population: TALENT_POOL_RETENTION_POPULATION,
+    asOf: cutoff,
+    removedMemberships: removed,
+    suspendedByLegalHold: suspended,
+  };
+}

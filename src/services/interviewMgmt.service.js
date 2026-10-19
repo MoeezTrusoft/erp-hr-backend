@@ -13,8 +13,20 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
+import { logAction } from "../utils/logs.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { interviewOutcomeRecordedEvent } from "./hrEvents.js";
 
 const RATING_KEYS = ["technicalSkills", "problemSolving", "communication", "cultureFit"];
+
+// Phase 3.4 (remainder) — a two-point spread on the same 1-5 criterion is
+// reviewers disagreeing about the same evidence, which is worth putting in front
+// of the hiring manager before they decide. It is a SURFACING aid, never a gate:
+// nothing here blocks an outcome, and the constant is named so a reader can see
+// the threshold rather than infer it from a magic number.
+const DIVERGENCE_THRESHOLD = 2;
 
 // Prisma include used by both list + get so the shaped rows always carry the
 // candidate, requisition, interviewers (with employee → businessUnit) and the
@@ -133,6 +145,46 @@ const shapeRow = (interview) => {
   };
 };
 
+// Phase 3.4 (remainder) — OUTSTANDING FEEDBACK.
+//
+// The outcome gate only ever asked "is there AT LEAST ONE scorecard?". That made
+// a four-person panel decidable by a single reviewer with the other three
+// silent, and nothing anywhere told the hiring manager who had not been heard
+// from. The panel is the set of interviewers, so a panel member with no SUBMITTED
+// scorecard is outstanding by definition. A scorecard that exists but was never
+// submitted is not evidence, so it counts as outstanding too.
+const submittedCards = (interview) =>
+  (interview?.scorecards || []).filter((card) => Boolean(card.submittedAt));
+
+const outstandingFeedback = (interview) => {
+  const done = new Set(submittedCards(interview).map((card) => Number(card.reviewerId)));
+  return (interview?.interviewers || []).reduce((out, link) => {
+    const id = link.employee?.id ?? null;
+    if (id != null && !done.has(Number(id))) {
+      out.push({ interviewerId: Number(id), name: employeeName(link.employee), status: link.status ?? null });
+    }
+    return out;
+  }, []);
+};
+
+const feedbackSummary = (interview) => {
+  const submitted = submittedCards(interview);
+  const outstanding = outstandingFeedback(interview);
+  return {
+    panelSize: (interview?.interviewers || []).length,
+    submittedCount: submitted.length,
+    outstandingCount: outstanding.length,
+    outstanding,
+    // "every panel member has been heard" — the state a hiring manager should be
+    // in before they close a loop, and the one the outcome path never reported.
+    allPanelHeard: outstanding.length === 0,
+    lastSubmittedAt: submitted.reduce(
+      (latest, card) => (card.submittedAt && (!latest || card.submittedAt > latest) ? card.submittedAt : latest),
+      null,
+    ),
+  };
+};
+
 // Full detail — the list row plus per-reviewer scorecards.
 const shapeDetail = (interview) => ({
   ...shapeRow(interview),
@@ -145,7 +197,13 @@ const shapeDetail = (interview) => ({
     recommendation: card.recommendation ?? null,
     notes: card.notes ?? null,
     submittedAt: card.submittedAt ?? null,
+    // A locked record must be visibly locked, and an amendment must be visible
+    // rather than a silent difference between two readings of the row.
+    locked: Boolean(card.submittedAt),
+    amendedAt: card.lastAmendedAt ?? null,
+    amendmentCount: Array.isArray(card.amendmentLog) ? card.amendmentLog.length : 0,
   })),
+  feedback: feedbackSummary(interview),
 });
 
 /**
@@ -163,6 +221,7 @@ export const listInterviewsManaged = async ({
   page = 1,
   pageSize = 20,
   tenantId,
+  scope = null, // Phase 1.4 — record-level narrowing (optional)
 } = {}) => {
   const resolvedPage = Number(page) > 0 ? Number(page) : 1;
   const resolvedPageSize = Number(pageSize) > 0 ? Number(pageSize) : 20;
@@ -183,7 +242,8 @@ export const listInterviewsManaged = async ({
     };
   }
 
-  const where = scopedWhere(tenantId, filter);
+  // The scope predicate composes with the caller's own filters; both must hold.
+  const where = scopedWhere(tenantId, scope ? { AND: [filter, interviewScopeWhere(scope)] } : filter);
   const orderBy = { [sort === "scheduledAt" ? "scheduledAt" : sort]: order === "desc" ? "desc" : "asc" };
 
   const [items, total] = await Promise.all([
@@ -208,9 +268,9 @@ export const listInterviewsManaged = async ({
 /**
  * Full interview detail incl. per-reviewer scorecards (tenant-scoped).
  */
-export const getInterviewManaged = async ({ id, tenantId } = {}) => {
+export const getInterviewManaged = async ({ id, tenantId, scope = null } = {}) => {
   const interview = await prisma.interview.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), ...(scope ? interviewScopeWhere(scope) : {}) }),
     include: interviewInclude,
   });
   if (!interview) {
@@ -238,6 +298,7 @@ export const scoreInterview = async ({
   recommendation,
   comments,
   tenantId,
+  amendmentReason = null,
 } = {}) => {
   const idNum = Number(interviewId);
   const reviewer = Number(reviewerId);
@@ -278,29 +339,250 @@ export const scoreInterview = async ({
       submittedAt,
     },
     tenantId,
+    // Phase 3.4 — changing an ALREADY SUBMITTED scorecard requires an explicit
+    // amendment reason; without one the shared writer refuses with
+    // HR-RECRUITMENT-SCORECARD-LOCKED. An identical resubmit stays a no-op.
+    amendment: amendmentReason ? { reason: amendmentReason, by: reviewer } : null,
+  });
+
+  return getInterviewManaged({ id: idNum, tenantId });
+};
+
+// Phase 3.4 — interview outcome rules.
+//
+// A decisive outcome (NEXT_ROUND / REJECTED) feeds the OFFER prerequisite in the
+// application workflow ("a completed interview with a NEXT_ROUND decision"). If a
+// bare button press could set it, that prerequisite would be satisfiable with no
+// evidence behind it and the whole Phase 3 gate would be decorative. So a
+// decisive outcome requires at least one SUBMITTED scorecard; the only way past
+// that is an explicit `overrideReason`, which is stamped on the interview and
+// audited. HOLD stays available — it is an interim state, not a decision.
+const INTERVIEW_DECISIONS = Object.freeze(["NEXT_ROUND", "HOLD", "REJECTED"]);
+const DECISIVE_DECISIONS = new Set(["NEXT_ROUND", "REJECTED"]);
+
+/**
+ * OUTCOME — set Interview.decision and mark the interview COMPLETED.
+ * Tenant-scoped pre-read (fail-closed) so a cross-tenant id cannot be mutated.
+ */
+export const setInterviewOutcome = async ({
+  interviewId,
+  decision,
+  reason,
+  overrideReason,
+  actorId,
+  tenantId,
+} = {}) => {
+  const idNum = Number(interviewId);
+  if (!Number.isInteger(idNum) || idNum <= 0) {
+    throw Object.assign(new Error("A valid interview id is required"), { status: 400 });
+  }
+
+  const normalizedDecision = String(decision || "").trim().toUpperCase();
+  if (!INTERVIEW_DECISIONS.includes(normalizedDecision)) {
+    throw Object.assign(
+      new Error(`Unsupported interview decision: ${normalizedDecision || "(missing)"}`),
+      { status: 409, code: "HR-RECRUITMENT-INTERVIEW-DECISION-INVALID" },
+    );
+  }
+
+  const reasonText = String(reason || "").trim();
+  if (normalizedDecision === "REJECTED" && !reasonText) {
+    throw Object.assign(
+      new Error("A reason is required when rejecting a candidate at interview"),
+      { status: 409, code: "HR-RECRUITMENT-INTERVIEW-REASON-REQUIRED" },
+    );
+  }
+
+  const interview = await prisma.interview.findFirst({
+    where: scopedWhere(tenantId, { id: idNum }),
+    // applicationId + tenantId travel to the outcome event (ids-only payload).
+    // The panel and their scorecards travel too: the outcome path must be able to
+    // say WHO has not been heard from, and it cannot do that from the row alone.
+    select: {
+      id: true,
+      notes: true,
+      applicationId: true,
+      tenantId: true,
+      interviewers: {
+        select: {
+          status: true,
+          employee: { select: { id: true, employee_name: true, first_name: true, last_name: true } },
+        },
+      },
+      scorecards: { select: { reviewerId: true, submittedAt: true } },
+    },
+  });
+  if (!interview) {
+    throw Object.assign(new Error("Interview not found"), { status: 404 });
+  }
+
+  const overrideText = String(overrideReason || "").trim();
+  let overriddenWithoutFeedback = false;
+  if (DECISIVE_DECISIONS.has(normalizedDecision)) {
+    // Phase 3.4 (remainder) — only a SUBMITTED scorecard is evidence. A row that
+    // exists but was never submitted used to satisfy this gate.
+    const submitted = await prisma.interviewScorecard.count({
+      where: scopedWhere(tenantId, { interviewId: idNum, submittedAt: { not: null } }),
+    });
+    if (!submitted) {
+      if (!overrideText) {
+        throw Object.assign(
+          new Error("At least one submitted scorecard is required before a decisive interview outcome (pass overrideReason to override)"),
+          { status: 409, code: "HR-RECRUITMENT-INTERVIEW-FEEDBACK-REQUIRED" },
+        );
+      }
+      overriddenWithoutFeedback = true;
+    }
+  }
+
+  // The decision (plus why it was made) is appended to the interview notes so the
+  // record explains itself without relying on the audit log alone.
+  const stamps = [`Decision: ${normalizedDecision}`];
+  if (reasonText) stamps.push(`Reason: ${reasonText}`);
+  if (overriddenWithoutFeedback) stamps.push(`Overridden without scorecard: ${overrideText}`);
+
+  // Phase 3.4 (remainder) — the outcome records who has NOT been heard from. It
+  // does not BLOCK on them: a panel member who will never submit must not be able
+  // to stall hiring, and the gate above already guarantees real evidence. What it
+  // must never do is stay silent about a decidable-but-incomplete panel, which is
+  // how a one-reviewer decision passes as unanimous.
+  const outstanding = outstandingFeedback(interview);
+  if (outstanding.length) {
+    stamps.push(
+      `Outstanding panel feedback (${outstanding.length}): ${outstanding
+        .map((member) => member.name || `#${member.interviewerId}`)
+        .join(", ")}`,
+    );
+  }
+
+  const notes = interview.notes ? `${interview.notes}\n${stamps.join("\n")}` : stamps.join("\n");
+
+  // Phase 11 — the decision and its announcement commit together. The event is
+  // ids-only and flags whether the outcome rode an override, so the fabric shows
+  // that a human overrode the evidence gate rather than leaving it invisible.
+  await tenantTransaction(prisma, async (tx) => {
+    await tx.interview.update({
+      where: { id: idNum },
+      data: { decision: normalizedDecision, status: "COMPLETED", notes },
+    });
+
+    await logAction({
+      employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+      type: "UPDATE",
+      module: "InterviewOutcome",
+      result: "SUCCESS",
+      notes: `Interview "${idNum}" outcome set to "${normalizedDecision}"${overriddenWithoutFeedback ? " (overridden without scorecard)" : ""}${outstanding.length ? ` (${outstanding.length} panel member(s) had not submitted feedback)` : ""}.`,
+      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    });
+
+    await enqueueHrDomainEvent(
+      tx,
+      interviewOutcomeRecordedEvent(
+        // The ROW's tenant is authoritative (as in the application workflow): a
+        // legacy tenantless interview simply produces no event, rather than an
+        // event attributed to whatever tenant the caller passed in.
+        { id: idNum, applicationId: interview.applicationId ?? null, tenantId: interview.tenantId ?? null, outcome: normalizedDecision },
+        { actorId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null },
+        {
+          overridden: overriddenWithoutFeedback,
+          reason: reasonText || overrideText || null,
+          // Phase 11 — the panel is the routing list a notification consumer
+          // fans "your panel decided X" over. Read from the same pre-read the
+          // outstanding-feedback report uses, so the two can never disagree.
+          interviewerIds: (interview.interviewers || [])
+            .map((link) => link.employee?.id)
+            .filter((value) => value != null),
+        },
+      ),
+    );
   });
 
   return getInterviewManaged({ id: idNum, tenantId });
 };
 
 /**
- * OUTCOME — set Interview.decision and mark the interview COMPLETED.
- * Tenant-scoped pre-read (fail-closed) so a cross-tenant id cannot be mutated.
+ * Phase 3.4 (remainder) — HIRING-MANAGER CONSOLIDATION.
+ *
+ * The panel's feedback existed only as N separate scorecards: a hiring manager
+ * deciding an offer had to open each one and hold the comparison in their head,
+ * and nothing anywhere showed disagreement between reviewers about the SAME
+ * criterion. This returns one consolidated, tenant- and record-scoped view:
+ *
+ *   * per reviewer — overall, recommendation, notes, and whether the record was
+ *     amended after submission (and how many times);
+ *   * per criterion — average, min, max and spread across everyone who scored it,
+ *     with the individual values attributed, so a number is never anonymous;
+ *   * who has NOT submitted (the outstanding panel), so an "everyone agreed"
+ *     reading is never mistaken for a partial panel;
+ *   * `divergentCriteria` — surfaces, it does not decide. Nothing here approves,
+ *     rejects, or blocks anything; the human decision remains the human's.
  */
-export const setInterviewOutcome = async ({ interviewId, decision, tenantId } = {}) => {
-  const idNum = Number(interviewId);
+export const consolidateInterviewFeedback = async ({ id, tenantId, scope = null } = {}) => {
   const interview = await prisma.interview.findFirst({
-    where: scopedWhere(tenantId, { id: idNum }),
-    select: { id: true },
+    // Same scoping as every other read on this surface: a cross-tenant or
+    // out-of-scope id resolves to not-found, never to somebody else's panel.
+    where: scopedWhere(tenantId, { id: Number(id), ...(scope ? interviewScopeWhere(scope) : {}) }),
+    include: interviewInclude,
   });
   if (!interview) {
     throw Object.assign(new Error("Interview not found"), { status: 404 });
   }
 
-  await prisma.interview.update({
-    where: { id: idNum },
-    data: { decision, ...(decision ? { status: "COMPLETED" } : {}) },
-  });
+  const submitted = submittedCards(interview);
 
-  return getInterviewManaged({ id: idNum, tenantId });
+  const criteria = {};
+  for (const key of RATING_KEYS) {
+    const values = submitted
+      .map((card) => ({
+        reviewerId: card.reviewerId,
+        reviewer: employeeName(card.reviewer),
+        value: Number(card.scores?.[key]),
+      }))
+      .filter((entry) => Number.isFinite(entry.value));
+    const nums = values.map((entry) => entry.value);
+    criteria[key] = {
+      average: nums.length ? averageOf(nums) : null,
+      min: nums.length ? Math.min(...nums) : null,
+      max: nums.length ? Math.max(...nums) : null,
+      spread: nums.length ? Math.max(...nums) - Math.min(...nums) : null,
+      values,
+    };
+  }
+
+  const recommendations = submitted.reduce((acc, card) => {
+    const key = card.recommendation || "UNSPECIFIED";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const divergentCriteria = RATING_KEYS.filter(
+    (key) => (criteria[key].spread ?? 0) >= DIVERGENCE_THRESHOLD,
+  );
+
+  return {
+    interviewId: interview.id,
+    candidateName: candidateName(interview.application?.candidate),
+    role: interview.application?.jobRequisition?.title ?? null,
+    status: interview.status,
+    decision: interview.decision ?? null,
+    feedback: feedbackSummary(interview),
+    submittedCount: submitted.length,
+    averageOverall: averageOf(submitted.map((card) => card.overallScore)),
+    recommendations,
+    criteria,
+    divergentCriteria,
+    advisory: divergentCriteria.length
+      ? `Reviewers disagree by ${DIVERGENCE_THRESHOLD} points or more on: ${divergentCriteria.join(", ")}`
+      : null,
+    reviewers: submitted.map((card) => ({
+      reviewerId: card.reviewerId,
+      reviewer: employeeName(card.reviewer),
+      overallScore: card.overallScore ?? null,
+      recommendation: card.recommendation ?? null,
+      notes: card.notes ?? null,
+      submittedAt: card.submittedAt ?? null,
+      amendedAt: card.lastAmendedAt ?? null,
+      amendmentCount: Array.isArray(card.amendmentLog) ? card.amendmentLog.length : 0,
+    })),
+  };
 };

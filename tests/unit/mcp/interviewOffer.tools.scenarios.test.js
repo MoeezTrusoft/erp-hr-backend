@@ -9,6 +9,8 @@ jest.unstable_mockModule('../../../src/services/interviewMgmt.service.js', () =>
   getInterviewManaged: jest.fn(async () => ({ success: true })),
   scoreInterview: jest.fn(async () => ({ success: true })),
   setInterviewOutcome: jest.fn(async () => ({ success: true })),
+  // Phase 3.4 (remainder) — panel-feedback consolidation.
+  consolidateInterviewFeedback: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/services/offerMgmt.service.js', () => ({
   listOffersManage: jest.fn(async () => ({ success: true })),
@@ -46,12 +48,16 @@ const TOOLS = [
   { name: 'hr_interview_manage_get', gate: 'hr:recruitment', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_interview_score', gate: 'hr:recruitment', action: 'CREATE', args: { interviewId: '1', ratings: { technicalSkills: 5, problemSolving: 4, communication: 4, cultureFit: 5 }, decision: 'PASS', recommendation: 'Strong hire' } },
   { name: 'hr_interview_set_outcome', gate: 'hr:recruitment', action: 'EDIT', args: { interviewId: '1', decision: 'PASS' } },
-  // --- offerMgmtTools.js (5 tools) ---
+  // --- offerMgmtTools.js (7 tools) ---
   { name: 'hr_offers_manage_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_offer_manage_get', gate: 'hr:recruitment', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_offer_create_full', gate: 'hr:recruitment', action: 'CREATE', args: { applicationId: '1', candidateId: '1', jobRequisitionId: '1', baseSalary: 80000 } },
   { name: 'hr_offer_preview', gate: 'hr:recruitment', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_offer_preboarding', gate: 'hr:recruitment', action: 'EDIT', args: { id: '1' } },
+  // FR-09 residue — the approval policy is read with VIEW (a policy is not
+  // compensation data) and replaced with EDIT.
+  { name: 'hr_offer_approval_policy_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
+  { name: 'hr_offer_approval_policy_set', gate: 'hr:recruitment', action: 'EDIT', args: { rules: [{ stepOrder: 1, stage: 'hiringManager' }] } },
 ];
 
 describe('INTERVIEW-OFFER-SCENARIOS — registration', () => {

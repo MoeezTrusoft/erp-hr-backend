@@ -19,6 +19,10 @@ import {
   createOfferFull,
   markOfferPreboarding,
 } from "../../services/offerMgmt.service.js";
+import {
+  getOfferApprovalPolicy,
+  setOfferApprovalPolicy,
+} from "../../services/offerApproval.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -138,5 +142,58 @@ export function registerOfferMgmtTools(server) {
       const data = await markOfferPreboarding(id, { tenantId: user.tenantId, showSensitive, note });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_offer_preboarding")
+  );
+
+  // 6 ── APPROVAL POLICY: READ ─────────────────────────────────────────────────
+  // FR-09 residue — the tenant's role-specific approver chain. `amount`/
+  // `currency` are optional and only PREVIEW which chain an offer of that size
+  // resolves to, so a config screen can show the effect before saving.
+  server.tool(
+    "hr_offer_approval_policy_get",
+    "Read the tenant offer approval policy (role-specific approver chain with compensation windows); optionally preview the chain an offer of a given amount resolves to",
+    {
+      amount: z.number().nonnegative().optional().describe("Optional amount to preview the resolved chain for"),
+      currency: z.string().optional().describe("Optional ISO currency for the preview (a rule naming another currency does not apply)"),
+    },
+    withToolError(async ({ amount, currency }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await getOfferApprovalPolicy({
+        tenantId: user.tenantId,
+        amount: amount ?? null,
+        currency: currency ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_offer_approval_policy_get")
+  );
+
+  // 7 ── APPROVAL POLICY: WRITE ────────────────────────────────────────────────
+  // Replace-all rather than per-row editing: a chain is only coherent as a
+  // whole, and a partial edit could leave a tenant with a chain that is neither
+  // the old one nor the new one (same reasoning as the requisition matrix).
+  server.tool(
+    "hr_offer_approval_policy_set",
+    "Replace the tenant offer approval policy (rules: stage hiringManager|hrHead|finance, stepOrder, optional role, optional minAmount/maxAmount compensation window and currency)",
+    {
+      rules: z.array(z.object({
+        stepOrder: z.number().int().positive(),
+        stage: z.enum(["hiringManager", "hrHead", "finance"]),
+        role: z.string().optional(),
+        minAmount: z.number().nonnegative().optional(),
+        maxAmount: z.number().nonnegative().optional(),
+        currency: z.string().optional(),
+      })).min(1).describe("The full rule list; it replaces the tenant's active policy"),
+    },
+    withToolError(async ({ rules }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await setOfferApprovalPolicy({
+        tenantId: user.tenantId,
+        rules,
+        createdById: user.employeeId ?? user.userId ?? null,
+      });
+      const policy = await getOfferApprovalPolicy({ tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify({ rules: data, ...policy }) }] };
+    }, "hr_offer_approval_policy_set")
   );
 }

@@ -2,6 +2,8 @@
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
 import { upsertTags } from "./tagService.js";
+import { computeRetentionUntil } from "./candidatePrivacy.service.js";
+import { candidateScopeWhere, maskCandidateForScope, maskCandidatesForScope } from "../lib/recruitmentAccess.js";
 import { logAction } from "../utils/logs.js";
 import {
   decodeCursor,
@@ -54,6 +56,11 @@ export const createCandidate = async ({
     });
 
     return tenantTransaction(prisma, async (tx) => {
+        // Phase 10 — stamp the retention clock from the tenant's policy. No policy
+        // means NO clock (null), never a guessed default: a candidate must never be
+        // scheduled for erasure because we assumed a retention period nobody set.
+        const retentionUntil = await computeRetentionUntil({ tenantId, appliesTo: "APPLICANT" }, { db: tx });
+
         const candidate = await tx.candidate.create({
             data: {
                 firstName,
@@ -64,6 +71,12 @@ export const createCandidate = async ({
                 notes,
                 resumeMediaId: resumeMediaId != null ? Number(resumeMediaId) : null,
                 tenantId: tenantId ?? null,
+                retentionUntil,
+                // FR-10 residue — NAME the clock's population. A candidate created
+                // here applied, so this is the APPLICANT basis; the pool basis is
+                // stamped when they are added to a talent pool. Without the
+                // marker a later sweep cannot tell which clock it is reading.
+                retentionPopulation: retentionUntil ? "APPLICANT" : null,
                 // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
                 // finite creator id, else null (createdById is nullable).
                 createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
@@ -75,6 +88,7 @@ export const createCandidate = async ({
                 data: tags.map((tag) => ({
                     candidateId: candidate.id,
                     tagId: tag.id,
+                    tenantId: tenantId ?? null,
                 })),
                 skipDuplicates: true,
             });
@@ -140,7 +154,7 @@ export const updateCandidate = async ({
             });
 
             await tx.candidateTag.deleteMany({
-                where: { candidateId: id },
+                where: { candidateId: id, tenantId: tenantId ?? null },
             });
 
             if (tags.length) {
@@ -180,9 +194,16 @@ export const updateCandidate = async ({
 /**
  * Get candidate by ID (with tags and applications)
  */
-export const getCandidate = async ({ id, tenantId }) => {
-    return prisma.candidate.findFirst({
-        where: { id, tenantId: tenantId ?? null },
+// Phase 1.4 — `scope` narrows the row (a manager reaches only candidates who
+// applied to their requisitions; an interviewer only those they are meeting) and
+// masks the recruiter's internal notes for outward scopes.
+export const getCandidate = async ({ id, tenantId, scope = null }) => {
+    const candidate = await prisma.candidate.findFirst({
+        where: {
+            id,
+            tenantId: tenantId ?? null,
+            ...(scope ? candidateScopeWhere(scope) : {}),
+        },
         include: {
             tags: { include: { tag: true } },
             applications: {
@@ -192,6 +213,7 @@ export const getCandidate = async ({ id, tenantId }) => {
             },
         },
     });
+    return maskCandidateForScope(candidate, scope);
 };
 
 /**
@@ -204,12 +226,14 @@ export const listCandidates = async ({
     page = 1,
     limit = 20,
     cursor, // API-4: opaque keyset cursor (optional; additive, back-compatible)
+    scope = null, // Phase 1.4 — record-level narrowing (optional)
 }) => {
     const skip = (page - 1) * limit;
 
     const baseWhere = {
         tenantId: tenantId ?? null,
         status: "active",
+        ...(scope ? candidateScopeWhere(scope) : {}),
         ...(search
             ? {
                 OR: [
@@ -256,13 +280,18 @@ export const listCandidates = async ({
     // nextCursor is emitted ALONGSIDE the existing page fields; clients that
     // ignore it are unaffected.
     const nextCursor = nextCursorFrom(items, limit);
-    return { items, total, page, limit, nextCursor };
+    return { items: maskCandidatesForScope(items, scope), total, page, limit, nextCursor };
 };
 
-export const updateCandidateResumeMedia = async ({ id, mediaId }) => {
-    const candidate = await prisma.candidate.update({
-        where: { id: Number(id) },
+export const updateCandidateResumeMedia = async ({ id, mediaId, tenantId }) => {
+    const candidate = await prisma.candidate.findFirst({
+        where: { id: Number(id), tenantId: tenantId ?? null },
+        select: { id: true },
+    });
+    if (!candidate) throw Object.assign(new Error("Candidate not found"), { status: 404 });
+
+    return prisma.candidate.update({
+        where: { id: candidate.id },
         data: { resumeMediaId: Number(mediaId) },
     });
-    return candidate;
 };

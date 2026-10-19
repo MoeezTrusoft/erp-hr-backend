@@ -188,38 +188,44 @@ export const getRequisition = handle(
   "Requisition loaded"
 );
 
+// BLOCKER-1 / C.2 — the verified tenant (tenantOf) is threaded into the legacy
+// create/update too: create stamps it, update is scoped by it. Without it these
+// two paths were the only requisition writes with no tenant predicate.
 export const createRequisition = handle(
-  (req) => hrContract.createRequisition(req.body, actorId(req)),
+  (req) => hrContract.createRequisition(req.body, actorId(req), tenantOf(req)),
   "Requisition created",
   201
 );
 
 export const updateRequisition = handle(
-  (req) => hrContract.updateRequisition(req.params.id, req.body),
+  (req) => hrContract.updateRequisition(req.params.id, req.body, tenantOf(req)),
   "Requisition updated"
 );
 
+// BLOCKER-1 / C.2 — the requisition transitions take the verified tenant from
+// the service-JWT claim (tenantOf) so a cross-tenant id is a 404, not a
+// successful transition of another tenant's requisition.
 export const submitRequisition = handle(
-  (req) => hrContract.submitRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.submitRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition submitted"
 );
 
 export const approveRequisition = handle(
-  (req) => hrContract.approveRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.approveRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition approved"
 );
 
 export const rejectRequisition = handle(
-  (req) => hrContract.rejectRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.rejectRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition rejected"
 );
 
 export const closeRequisition = handle(
-  (req) => hrContract.closeRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.closeRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition closed"
 );
 
 export const reopenRequisition = handle(
-  (req) => hrContract.reopenRequisition(req.params.id, actorId(req), req.body.comments),
+  (req) => hrContract.reopenRequisition(req.params.id, tenantOf(req), actorId(req), req.body.comments),
   "Requisition reopened"
 );

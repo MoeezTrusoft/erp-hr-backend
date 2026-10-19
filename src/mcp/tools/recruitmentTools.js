@@ -1,6 +1,10 @@
 import { z } from "zod";
 import {
   mcpApproveRequisition,
+  mcpApproveOffer,
+  mcpOfferHandoffGet,
+  mcpOfferHandoffRetry,
+  mcpOfferHandoffsFailedList,
   mcpCreateApplication,
   mcpCreateCandidate,
   mcpCreateInterview,
@@ -29,6 +33,8 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
+import { PUBLICATION_CHANNELS } from "../../lib/requisitionPublication.js";
+import { listQuestions } from "../../services/applicationQuestion.service.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
 function getCtx() {
@@ -47,6 +53,20 @@ export function registerRecruitmentTools(server) {
     async (uri) => {
       const { user } = getCtx();
       const data = await mcpListRequisitions(user);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
+    }
+  );
+
+  // Phase 5 / §3.5 — the live intake form for one requisition: exactly the
+  // questions the public portal asks, in display order. A resource (read-only,
+  // no mutation surface) rather than a tool, mirroring the tags-list precedent.
+  server.resource(
+    "hr_recruitment_public_form",
+    "hr://recruitment/requisitions/{id}/public-form",
+    { description: "The application form (active questions, ordered) a candidate sees for one requisition" },
+    async (uri, { id }) => {
+      const { user } = getCtx();
+      const data = await listQuestions(Number(id), user.tenantId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );
@@ -173,9 +193,30 @@ export function registerRecruitmentTools(server) {
       employeeId: z.string().optional().describe("Employee id the requisition is linked to (numeric string); also a requester fallback"),
       requestedById: z.string().min(1).describe("Hiring manager employee id (references Employee, requestedById); numeric string. Required — the requisition has a NOT-NULL requester."),
       openings: z.number().int().positive().optional().describe("Number of open seats; defaults to 1"),
-      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED"]).optional().describe("RequisitionStatus enum; defaults to DRAFT"),
+      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED", "WITHDRAWN"]).optional().describe("RequisitionStatus enum; defaults to DRAFT"),
       priority: z.enum(["Low", "Medium", "High", "Urgent"]).optional().describe("Requisition priority (JobRequisition.priority): Low | Medium | High | Urgent"),
       description: z.string().optional().describe("Job description / free text"),
+      // ── Phase 2.2 expansion fields ──
+      location: z.string().optional().describe("Work location (free text; there is no Location table)"),
+      employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"]).optional(),
+      targetStartDate: z.string().optional().describe("ISO date the hire should start"),
+      gradeLevelId: z.string().optional().describe("GradeLevel id — the salary band (min/mid/max live on GradeLevel); numeric string"),
+      costCenterRef: z.string().optional().describe("Finance-owned cost-center id; required before submission"),
+      costCenterLabel: z.string().optional().describe("Cached cost-center label for display only — never the source of truth"),
+      budgetRef: z.string().optional().describe("Finance-owned budget reference id"),
+      budgetLabel: z.string().optional().describe("Cached budget label for display only"),
+      hiringReason: z.enum(["NEW_HIRE", "REPLACEMENT", "EXPANSION", "SEASONAL", "PROJECT", "OTHER"]).optional(),
+      replacementEmployeeId: z.string().optional().describe("Employee id being replaced; required when hiringReason=REPLACEMENT"),
+      recruiterId: z.string().optional().describe("Employee id of the recruiter who owns the pipeline (distinct from requestedById, the hiring manager)"),
+      // ── Phase 4 / §2.5 — the application window ──
+      closesAt: z.string().optional().describe("When applications stop being accepted; ISO date. Omit for no deadline"),
+      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible"),
+      // z.record(z.string(), z.unknown()) — NOT z.record(z.any()): in Zod v4.3.x
+      // the single-argument record crashes the SDK's tools/list JSON-Schema
+      // conversion (Cannot read properties of undefined (reading '_zod')), which
+      // 404s the ENTIRE tool surface for every MCP client. Same contract, safe
+      // wire schema.
+      jobContent: z.record(z.string(), z.unknown()).optional().describe("Structured job content {summary, responsibilities[], requirements[], skills[], benefits[], hiringProcess[], faq[{question,answer}]}"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -196,9 +237,25 @@ export function registerRecruitmentTools(server) {
       employeeId: z.string().optional().describe("Linked employee id; numeric string"),
       requestedById: z.string().optional().describe("Hiring manager employee id (references Employee); numeric string"),
       openings: z.number().int().positive().optional().describe("Number of open seats"),
-      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED"]).optional().describe("RequisitionStatus enum"),
+      status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED", "POSTED", "CLOSED", "WITHDRAWN"]).optional().describe("RequisitionStatus enum — WITHDRAWN is terminal and requires a reason (use hr_requisition_withdraw)"),
       priority: z.enum(["Low", "Medium", "High", "Urgent"]).optional().describe("Requisition priority: Low | Medium | High | Urgent"),
       description: z.string().optional().describe("Job description / free text"),
+      // ── Phase 2.2 expansion fields (absent ⇒ unchanged; explicit null clears) ──
+      location: z.string().nullable().optional(),
+      employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"]).nullable().optional(),
+      targetStartDate: z.string().nullable().optional().describe("ISO date, or null to clear"),
+      gradeLevelId: z.string().nullable().optional().describe("GradeLevel id (salary band); numeric string"),
+      costCenterRef: z.string().nullable().optional(),
+      costCenterLabel: z.string().nullable().optional(),
+      budgetRef: z.string().nullable().optional(),
+      budgetLabel: z.string().nullable().optional(),
+      hiringReason: z.enum(["NEW_HIRE", "REPLACEMENT", "EXPANSION", "SEASONAL", "PROJECT", "OTHER"]).nullable().optional(),
+      replacementEmployeeId: z.string().nullable().optional(),
+      recruiterId: z.string().nullable().optional(),
+      // ── Phase 4 / §2.5 — the application window (absent ⇒ unchanged) ──
+      closesAt: z.string().nullable().optional().describe("When applications stop being accepted; ISO date, or null for no deadline. The eligibility gate refuses applications after it"),
+      autoCloseWhenFilled: z.boolean().optional().describe("Close the requisition automatically once `openings` applications reach the hired stage; reversible (a human can reopen)"),
+      jobContent: z.record(z.string(), z.unknown()).nullable().optional(),
       expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
     },
     withToolError(async ({ id, ...rest }) => {
@@ -226,10 +283,26 @@ export function registerRecruitmentTools(server) {
 
   server.tool(
     "hr_requisition_post",
-    "Post an approved job requisition as a job posting",
+    "Publish an approved job requisition to one or more channels (Phase 4). Omit postingChannels to publish to the built-in CAREER_SITE. Publishing an ADDITIONAL channel to an already-posted requisition is allowed and does not re-run the approval. Use hr_requisition_postings_list to inspect the result and hr_requisition_posting_unpublish to take one channel down.",
     {
       id: z.string().min(1),
-      postingChannels: z.array(z.string()).optional().describe("e.g. LINKEDIN, INTERNAL, WEBSITE"),
+      externalUrl: z
+        .string()
+        .optional()
+        .describe("Public URL of the posting; required for every channel except CAREER_SITE"),
+      postingChannels: z
+        .array(
+          z.union([
+            z.enum(PUBLICATION_CHANNELS),
+            z.object({
+              channel: z.enum(PUBLICATION_CHANNELS),
+              externalUrl: z.string().optional(),
+              channelRef: z.string().optional().describe("The channel's own id for this posting"),
+            }),
+          ]),
+        )
+        .optional()
+        .describe(`Channels to publish to (${PUBLICATION_CHANNELS.join(" | ")}); default CAREER_SITE`),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -299,7 +372,7 @@ export function registerRecruitmentTools(server) {
 
   server.tool(
     "hr_application_create",
-    "Create a job application for a candidate",
+    "Create a job application for a candidate. Phase 4 eligibility applies: the requisition must be in an accepting state, have a live posting, and its closesAt (if set) must not have passed — otherwise the call is refused with HR-RECRUITMENT-APPLICATIONS-CLOSED and the candidate-facing reason attached.",
     {
       candidateId: z.string().min(1).describe("Candidate id (references Candidate); numeric string"),
       requisitionId: z.string().min(1).describe("Job requisition id (references JobRequisition); numeric string"),
@@ -319,12 +392,13 @@ export function registerRecruitmentTools(server) {
     "Move an application to a different recruitment stage",
     {
       id: z.string().min(1).describe("Application id; numeric string"),
-      stage: z.string().min(1).describe("Target pipeline stage (lowercased server-side): applied | screening | interview | offer | hired | rejected"),
+      stage: z.string().min(1).describe("Target pipeline stage (lowercased server-side): applied | screening | interview | offer | hired | rejected | on_hold | withdrawn"),
+      reason: z.string().optional().describe("Required when rejecting, holding, or withdrawing an application"),
     },
-    withToolError(async ({ id, stage }) => {
+    withToolError(async ({ id, stage, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await mcpUpdateApplicationStage(user, id, { stage });
+      const data = await mcpUpdateApplicationStage(user, id, { stage, reason });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -335,11 +409,12 @@ export function registerRecruitmentTools(server) {
     {
       id: z.string().min(1).describe("Application id; numeric string"),
       status: z.string().min(1).describe("Application status: open | closed | hired | rejected"),
+      reason: z.string().optional().describe("Required when status changes to rejected"),
     },
-    withToolError(async ({ id, status }) => {
+    withToolError(async ({ id, status, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await mcpUpdateApplicationStatus(user, id, { status });
+      const data = await mcpUpdateApplicationStatus(user, id, { status, reason });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -391,6 +466,12 @@ export function registerRecruitmentTools(server) {
         })
         .optional()
         .describe("Scorecard feedback — persisted to InterviewScorecard for the acting reviewer"),
+      amendmentReason: z
+        .string()
+        .optional()
+        .describe(
+          "Required only to CHANGE a scorecard the acting reviewer has already SUBMITTED (Phase 3.4 lock): without it the change is refused with HR-RECRUITMENT-SCORECARD-LOCKED, and the reason is appended to the scorecard's amendment log with the values it replaced. Resending the identical feedback never needs one.",
+        ),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
@@ -460,6 +541,23 @@ export function registerRecruitmentTools(server) {
   );
 
   server.tool(
+    "hr_offer_approve",
+    "Record one required offer approval decision",
+    {
+      id: z.string().min(1).describe("Offer id"),
+      stage: z.enum(["hiringManager", "hrHead", "finance"]).describe("Approval stage"),
+      decision: z.enum(["APPROVED", "REJECTED"]).describe("Approval decision"),
+      reason: z.string().optional().describe("Required for REJECTED decisions"),
+    },
+    withToolError(async ({ id, ...data }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const result = await mcpApproveOffer(user, id, data);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.tool(
     "hr_offer_send",
     "Send an offer",
     { id: z.string().min(1).describe("Offer id to send (references Offer); numeric string. Flips status to SENT and emits hr.recruitment.offer_sent.v1") },
@@ -467,6 +565,45 @@ export function registerRecruitmentTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
       const data = await mcpSendOffer(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_handoff_get",
+    "Inspect the accepted-offer handoff (employee/onboarding provisioning) for an offer",
+    { id: z.string().min(1).describe("Offer id; numeric string") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await mcpOfferHandoffGet(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_handoff_retry",
+    "Retry a FAILED accepted-offer handoff; replays an already-completed handoff unchanged",
+    { id: z.string().min(1).describe("Offer id; numeric string") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      const data = await mcpOfferHandoffRetry(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_offer_handoffs_failed_list",
+    "List FAILED (or in-progress) accepted-offer handoffs needing operator action — the fleet view behind handoff retries",
+    {
+      status: z.enum(["FAILED", "IN_PROGRESS", "COMPLETED"]).default("FAILED").describe("Filter by handoff status; defaults to FAILED"),
+      limit: z.string().optional().describe("Max rows (1-200); defaults to 50"),
+    },
+    withToolError(async ({ status, limit }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await mcpOfferHandoffsFailedList(user, { status, limit });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

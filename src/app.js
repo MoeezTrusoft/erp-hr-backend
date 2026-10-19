@@ -62,6 +62,7 @@ import payrollRoutes from "./routes/payrollRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
+import publicPortalRoutes from "./routes/publicPortal.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
@@ -69,6 +70,7 @@ import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
 import { establishTenantContext } from "./middlewares/tenantContext.middleware.js";
 import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
+import { attachRecruitmentOpsMetrics } from "./lib/recruitmentOpsMetrics.js";
 import {
     createHttpMetricsMiddleware,
     attachHttpRequestDurationMetric,
@@ -111,6 +113,10 @@ export const createApp = () => {
     // same exposition the rest of the service uses. attachInternal-
     // BoundaryMetric is idempotent across createApp() calls.
     attachInternalBoundaryMetric(register);
+    // Phase 15 — the seven recruitment rollout counters (transition failures,
+    // handoffs, parses, notifications, denials, exports, retention) on the
+    // same /metrics exposition. Idempotent across createApp() calls.
+    attachRecruitmentOpsMetrics(register);
     // A-RED (08-sota-roadmap §DO-NOW #2): surface the shared
     // http_request_duration_seconds histogram on this app's /metrics so
     // Prometheus/Grafana can compute Rate / Error / p95 per route.
@@ -173,6 +179,13 @@ export const createApp = () => {
     // /api guard because the device cannot present a gateway service-JWT; the
     // route has its own X-Intake-Key gate. Not proxied by the public gateway.
     app.use("/device-attendance", deviceAttendanceRoutes);
+
+    // Phase 5 / §3.1 — the PUBLIC careers portal. Mounted OUTSIDE the /api
+    // internal-service guard because an anonymous candidate cannot present a
+    // gateway service-JWT; the router carries its own guards (tenant pinning,
+    // rate limiting, uniform failures) and exposes only the two read shapes and
+    // the one write the portal needs — never the recruiter surface.
+    app.use("/public", publicPortalRoutes);
 
     app.use("/api", internalServiceGuard);
     // Bind the verified tenant to the async context so the Prisma tenant-scope

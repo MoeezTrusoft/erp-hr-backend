@@ -11,6 +11,10 @@ jest.unstable_mockModule('../../../src/mcp/controllers/recruitmentMcpController.
   mcpCreateRequisition: jest.fn(async () => ({ success: true })),
   mcpUpdateRequisition: jest.fn(async () => ({ success: true })),
   mcpApproveRequisition: jest.fn(async () => ({ success: true })),
+  mcpApproveOffer: jest.fn(async () => ({ success: true })),
+  mcpOfferHandoffGet: jest.fn(async () => ({ success: true })),
+  mcpOfferHandoffRetry: jest.fn(async () => ({ success: true })),
+  mcpOfferHandoffsFailedList: jest.fn(async () => ({ success: true })),
   mcpPostRequisition: jest.fn(async () => ({ success: true })),
   mcpDeleteRequisition: jest.fn(async () => ({ success: true })),
   mcpCreateCandidate: jest.fn(async () => ({ success: true })),
@@ -40,6 +44,7 @@ jest.unstable_mockModule('../../../src/mcp/utils/listEnvelope.js', () => ({
 }));
 jest.unstable_mockModule('../../../src/services/recruitmentAnalytics.service.js', () => ({
   computeRecruitmentAnalytics: jest.fn(async () => ({ success: true })),
+  drillDownRecruitmentMetric: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/lib/export.util.js', () => ({
   exportRows: jest.fn(async () => ({ ext: 'csv', mimeType: 'text/csv', buffer: Buffer.from('') })),
@@ -100,11 +105,15 @@ const TOOLS = [
   { name: 'hr_talent_pool_remove', gate: 'hr:recruitment', action: 'DELETE', args: { id: '1' } },
   // --- recruitmentAnalyticsTools.js (2 tools) ---
   { name: 'hr_recruitment_analytics_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
+  { name: 'hr_recruitment_analytics_drilldown', gate: 'hr:recruitment', action: 'VIEW', args: { metric: 'totalHires' } },
   { name: 'hr_recruitment_analytics_export', gate: 'hr:recruitment', action: 'VIEW', args: { format: 'csv' } },
-  // --- recruitmentExtraTools.js (3 tools) ---
+  // --- recruitmentExtraTools.js (7 tools) ---
   { name: 'hr_recruitment_cost_config_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_recruitment_cost_config_set', gate: 'hr:recruitment', action: 'EDIT', args: {} },
   { name: 'hr_candidate_resume_upload', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1', fileBase64: 'dGVzdA==' } },
+  { name: 'hr_requisition_attachment_list', gate: 'hr:recruitment', action: 'VIEW', args: { requisitionId: '1' } },
+  { name: 'hr_requisition_attachment_upload', gate: 'hr:recruitment', action: 'EDIT', args: { requisitionId: '1', category: 'JOB_DESCRIPTION', mediaId: '9' } },
+  { name: 'hr_requisition_attachment_delete', gate: 'hr:recruitment', action: 'DELETE', args: { requisitionId: '1', attachmentId: '1' } },
 ];
 
 describe('RECRUITMENT-SCENARIOS — registration', () => {

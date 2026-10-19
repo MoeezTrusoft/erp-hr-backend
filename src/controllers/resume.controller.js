@@ -24,7 +24,8 @@ export const previewResume = async (req, res) => {
     if (!hasPermission(req.user?.permissions, "hr:employee", "VIEW")) return deny(res);
     const mediaId = req.body?.resumeMediaId ?? req.query?.resumeMediaId ?? req.params?.mediaId;
     if (!mediaId) return sendError(res, "resumeMediaId is required", 400);
-    const data = await parseResumePreview(mediaId);
+    // The plane requires a tenantId (it keys the per-tenant token ceiling on it).
+    const data = await parseResumePreview(mediaId, { tenantId: req.user?.tenantId ?? null });
     return sendSuccess(res, data, "Resume parsed");
   } catch (err) {
     return fail(res, err);

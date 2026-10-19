@@ -1,17 +1,29 @@
 import * as svc from "../services/offer.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import {
+    approveOffer,
+    getOfferApprovalPolicy as getOfferApprovalPolicySvc,
+    setOfferApprovalPolicy as setOfferApprovalPolicySvc,
+} from "../services/offerApproval.service.js";
+import { getOfferHandoff, runOfferHandoff, listFailedHandoffs as listFailedHandoffsSvc } from "../services/recruitmentHandoff.service.js";
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 export const createOffer = async (req, res) => {
     try {
-        const createdById = req.headers["x-employee-id"];
-        const result = await svc.createOffer({ ...req.body, createdById });
+        const tenantId = req.user?.tenantId ?? null;
+        const createdById = req.user?.employeeId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await svc.createOffer({ ...req.body, createdById, tenantId });
         res.status(201).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
 };
 
 export const getOffer = async (req, res) => {
     try {
-        const result = await svc.getOffer(req.params.id);
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        // Phase 1.4 — an offer outside the caller's record scope reads as not-found.
+        const result = await svc.getOffer(req.params.id, tenantId, resolveRecruitmentScope(req.user));
         if (!result) return res.status(404).json({ success: false, message: "Not found" });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
@@ -20,14 +32,40 @@ export const getOffer = async (req, res) => {
 export const listOffers = async (req, res) => {
     try {
         const { page, limit } = req.query;
-        const result = await svc.listOffers({ page: Number(page) || 1, limit: Number(limit) || 20 });
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await svc.listOffers({
+            page: Number(page) || 1,
+            limit: Number(limit) || 20,
+            tenantId,
+            scope: resolveRecruitmentScope(req.user),
+        });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { respondServerError(req, res, e); }
 };
 
+export const approve = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        const approverId = req.user?.employeeId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await approveOffer({
+            offerId: req.params.id,
+            stage: req.body?.stage,
+            decision: req.body?.decision,
+            reason: req.body?.reason,
+            approverId,
+            tenantId,
+        });
+        return res.status(200).json({ success: true, data: result });
+    } catch (e) { return res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
 export const sendOffer = async (req, res) => {
     try {
-        const result = await svc.sendOffer(req.params.id);
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await svc.sendOffer(req.params.id, tenantId, { actorId: req.user?.employeeId ?? req.user?.userId ?? null });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
 };
@@ -35,9 +73,86 @@ export const sendOffer = async (req, res) => {
 export const respondOffer = async (req, res) => {
     try {
         const { accepted } = req.body;
-        const result = await svc.respondOffer(req.params.id, accepted, req.user?.tenantId, req.body.employeeCategory);
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await svc.respondOffer(req.params.id, accepted, tenantId, {
+            actorId: req.user?.employeeId ?? null,
+            employeeCategory: req.body?.employeeCategory,
+        });
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(400).json({ success: false, message: e.message }); }
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+// Phase 9 residue — the operator fleet view of FAILED handoffs.
+export const listFailedHandoffs = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await listFailedHandoffsSvc({
+            tenantId,
+            status: req.query.status || "FAILED",
+            limit: req.query.limit,
+        });
+        res.status(200).json({ success: true, data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+export const getHandoff = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await getOfferHandoff({ offerId: req.params.id, tenantId });
+        res.status(200).json({ success: true, data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+// Operator retry for a FAILED handoff. Idempotent: a COMPLETED handoff replays.
+export const retryHandoff = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await runOfferHandoff({
+            offerId: req.params.id,
+            tenantId,
+            actorId: req.user?.employeeId ?? null,
+        });
+        res.status(200).json({ success: true, data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+// FR-09 residue — the tenant offer approval policy (role-specific approver
+// chains with compensation windows). Reads are VIEW (the policy is not
+// compensation data); writes are EDIT and gated by the route authorization
+// layer exactly like every other recruitment write.
+export const getOfferApprovalPolicy = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const amount = req.query?.amount === undefined || req.query?.amount === "" ? null : Number(req.query.amount);
+        if (amount !== null && !Number.isFinite(amount)) {
+            return res.status(400).json({ success: false, message: "amount must be a number" });
+        }
+        const result = await getOfferApprovalPolicySvc({
+            tenantId,
+            amount,
+            currency: req.query?.currency ?? null,
+        });
+        res.status(200).json({ success: true, data: result });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
+};
+
+export const setOfferApprovalPolicy = async (req, res) => {
+    try {
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        await setOfferApprovalPolicySvc({
+            tenantId,
+            rules: req.body?.rules,
+            createdById: req.user?.employeeId ?? null,
+        });
+        const policy = await getOfferApprovalPolicySvc({ tenantId });
+        res.status(200).json({ success: true, data: policy });
+    } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }
 };
 
 export const uploadOfferLetter = async (req, res) => {
@@ -45,7 +160,9 @@ export const uploadOfferLetter = async (req, res) => {
         if (!req.files || req.files.length === 0) {
             return res.status(400).json({ success: false, message: "No file uploaded" });
         }
-        const result = await svc.uploadOfferLetter(req.params.id, req.files[0]);
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await svc.uploadOfferLetter(req.params.id, req.files[0], tenantId);
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) { res.status(400).json({ success: false, message: e.message }); }
 };
@@ -53,7 +170,9 @@ export const uploadOfferLetter = async (req, res) => {
 export const updateOffer = async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await svc.updateOffer(id, req.body);
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) return res.status(400).json({ success: false, message: "Tenant context is required" });
+        const result = await svc.updateOffer(id, req.body, tenantId);
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
         // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.

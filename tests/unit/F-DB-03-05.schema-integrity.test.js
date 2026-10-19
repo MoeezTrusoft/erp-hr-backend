@@ -82,7 +82,50 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // 122 + EmployeeDeviceEnrolment (HR-ATT-DEVICE-ENROLMENT-01), likewise.
     // 123 + AttendanceCallIn (HR-ATT-ONCALL-01), likewise — nullable-tenant
     // call-in rows join the staged-backfill cohort, same as every model here.
-    expect(nullableModels).toHaveLength(124);
+    // 123 + RequisitionTransition (Phase 2.1), the requisition's immutable
+    // transition history. Nullable-tenant like RequisitionApproval beside it: a
+    // legacy tenantless requisition must still be able to record a transition
+    // rather than fail its write on a NOT NULL column.
+    // 124 + RequisitionAttachment (Phase 2.2), the typed/ACL'd requisition
+    // documents. Nullable-tenant for the same reason: the pointer hangs off a
+    // requisition that may predate tenancy, and the row must not be unwritable
+    // just because the parent is legacy.
+    // 125 + RecruitmentHiringFreeze (Phase 4) — a freeze is a tenant control and
+    // every recruitment table beside it follows the same nullable-tenant
+    // convention. It carries its own RLS policy in the migration that creates it.
+    // 126 + RequisitionApprovalRule (Phase 4) — the approval matrix, same
+    // convention and same own-policy-in-own-migration rule.
+    // 127 + ApplicationQuestion (Phase 5 §3.5) — the public intake-form
+    // questions, nullable-tenant like every recruitment table beside it and
+    // carrying its own RLS policy in its creating migration.
+    // 128-130 + ApplicationScreening, DispositionReasonCode, ShortlistEntry
+    // (Phase 6 §4.1–4.3) — same convention, same own-policy-in-own-migration
+    // rule, all three in one migration.
+    // 131 + ResumeParseAttempt (Phase 6 §4.5a) — the content-hash-keyed parse
+    // ledger, own RLS policy in its creating migration.
+    // 132 + InterviewPacketItem (Phase 6 §4.4) — the interview packet, same
+    // nullable-tenant convention and own-policy-in-own-migration rule.
+    // 133 + InterviewLifecycleEvent (Phase 7 §5.4) — the coded cancel/reschedule
+    // ledger, same convention and own-policy-in-own-migration rule.
+    // 134-135 + ScorecardTemplate, ScorecardTemplateLink (Phase 7 §5.5) —
+    // tenant-configurable templates and their scope links, same convention.
+    // 136-137 + SkillAlias, AiInferenceRecord (Phase 13 §7.2/§7.4) — the
+    // taxonomy alias layer and the AI provenance ledger, same convention.
+    // 139 + CandidateEmailVerification (Phase 5 §3.2) — the magic-link token
+    // table, same convention and own-policy-in-own-migration rule.
+    // 140 + ApplicationDraft (Phase 5 FR-04.07) — save-and-return drafts,
+    // same convention and own-policy-in-own-migration rule.
+    // 141 + OnboardingTemplate (Phase 9 residue FR-13) — tenant-configurable
+    // onboarding checklists, same convention and own-policy-in-own-migration
+    // rule.
+    // 142 + OfferApprovalRule (Phase 9 residue FR-09) — the tenant offer
+    // approval policy (role-specific approver chains with compensation
+    // windows), same convention and own-policy-in-own-migration rule.
+    // 143 + TalentPoolInvitation (FR-10 residue) — the invitation lifecycle,
+    // same convention and own-policy-in-own-migration rule.
+    // 144: both sets above together (main's AttendanceCallIn plus the twenty
+    // recruitment models), counted after the recruitment branch was merged.
+    expect(nullableModels).toHaveLength(144);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

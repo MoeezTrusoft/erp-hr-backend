@@ -19,6 +19,9 @@ export async function uploadCandidateResume({ candidateId, fileBase64, fileName,
   if (!asset?.id) throw new Error("Failed to upload resume to DAM");
   const mediaId = Number(asset.id);
 
-  await prisma.candidate.update({ where: { id }, data: { resumeMediaId: mediaId } });
+  await prisma.candidate.update({
+    where: { id: candidate.id },
+    data: { resumeMediaId: mediaId },
+  });
   return { candidateId: id, resumeMediaId: mediaId, fileName: file.originalname, mimeType: file.mimetype };
 }
