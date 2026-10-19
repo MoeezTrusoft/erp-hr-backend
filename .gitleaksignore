@@ -1,0 +1,3 @@
+# Test fixture request key (a random UUID, not a credential) committed in
+# 6034234; the test now generates it with randomUUID().
+6034234c3d371fb802fe99a30ebd508158529bf0:tests/unit/payrollControls.test.js:generic-api-key:77

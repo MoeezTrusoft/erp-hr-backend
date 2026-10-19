@@ -75,7 +75,7 @@ const USER = {
 };
 const FULL = {
   'hr:benefits': ['VIEW', 'CREATE', 'EDIT', 'DELETE'],
-  'hr:payroll': ['VIEW', 'CREATE', 'EDIT', 'DELETE'],
+  'hr:payroll': ['VIEW', 'CREATE', 'EDIT', 'DELETE', 'EXPORT'],
 };
 
 function call(name, args, { user = USER, permissions = FULL } = {}) {
@@ -94,9 +94,9 @@ const CASES = [
   ['hr_benefit_enroll', { employeeId: '9', benefitPlanId: '5', electedAmount: 100 }, () => benefitCtl.mcpEnrollBenefit, [USER, '9', { benefitPlanId: '5', electedAmount: 100 }], 'hr:benefits', 'CREATE'],
   ['hr_benefit_unenroll', { employeeId: '9', benefitPlanId: '5' }, () => benefitCtl.mcpUnenrollBenefit, [USER, '9', '5'], 'hr:benefits', 'DELETE'],
   ['hr_employee_benefits_list', { employeeId: '9', status: 'ACTIVE' }, () => benefitCtl.mcpListEmployeeBenefits, [USER, '9', { status: 'ACTIVE' }], 'hr:benefits', 'VIEW'],
-  ['hr_payroll_bank_file_export', { id: '3', format: 'csv' }, () => payrollCtl.mcpExportBankDisbursementFile, [USER, '3', { format: 'csv' }], 'hr:payroll', 'VIEW'],
+  ['hr_payroll_bank_file_export', { id: '3', format: 'csv' }, () => payrollCtl.mcpExportBankDisbursementFile, [USER, '3', { format: 'csv' }], 'hr:payroll', 'EXPORT'],
   ['hr_tax_forms_list', { taxYear: '2025' }, () => taxCtl.mcpListYearEndTaxForms, [USER, '2025'], 'hr:payroll', 'VIEW'],
-  ['hr_tax_forms_export', { taxYear: '2025', formType: 'w2', format: 'csv' }, () => taxCtl.mcpExportYearEndTaxForms, [USER, '2025', { formType: 'w2', format: 'csv' }], 'hr:payroll', 'VIEW'],
+  ['hr_tax_forms_export', { taxYear: '2025', formType: 'w2', format: 'csv' }, () => taxCtl.mcpExportYearEndTaxForms, [USER, '2025', { formType: 'w2', format: 'csv' }], 'hr:payroll', 'EXPORT'],
 ];
 
 describe('hr_ benefits + payroll(bank-file/tax-form) MCP facade', () => {

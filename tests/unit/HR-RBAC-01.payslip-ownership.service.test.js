@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 let findFirst;
+let findMany;
 let svc;
 
 // The fake slip the mocked prisma "finds" — with earnings so getMyPayslip's
@@ -29,9 +30,11 @@ const FAKE_SLIP = {
 beforeEach(async () => {
   jest.resetModules();
   findFirst = jest.fn(async () => FAKE_SLIP);
+  findMany = jest.fn(async () => []);
   const dbish = () => ({
     findFirst: findFirst,
-    findMany: jest.fn(async () => []),
+    findMany: findMany,
+    count: jest.fn(async () => 0),
   });
   jest.unstable_mockModule("../../src/lib/prisma.js", () => ({
     default: {
@@ -95,5 +98,28 @@ describe("HR-RBAC-01 resolvePayslip employeeScoped where-clause", () => {
         where: expect.objectContaining({ id: 374, employeeId: 489 }),
       }),
     );
+  });
+});
+
+describe("D-05 employees never see DRAFT or HOLD payslips", () => {
+  const RELEASED = { in: ["FINALIZED", "DISTRIBUTED"] };
+
+  it("limits the employee's latest and explicit slip to finalized statuses", async () => {
+    await svc.getMyPayslip({ tenantId: "t1", employeeId: 489, employeeScoped: true });
+    expect(findFirst.mock.calls.at(-1)[0].where.status).toEqual(RELEASED);
+    await svc.getMyPayslip({ tenantId: "t1", employeeId: 489, payslipId: 374, employeeScoped: true });
+    expect(findFirst.mock.calls.at(-1)[0].where.status).toEqual(RELEASED);
+  });
+
+  it("keeps every status visible on the admin surface", async () => {
+    await svc.getMyPayslip({ tenantId: "t1", employeeId: null, payslipId: 374, employeeScoped: false });
+    expect(findFirst.mock.calls.at(-1)[0].where).not.toHaveProperty("status");
+  });
+
+  it("filters the employee's payslip list the same way", async () => {
+    await svc.listMyPayslips({ tenantId: "t1", employeeId: 489, employeeScoped: true });
+    expect(findMany.mock.calls.at(-1)[0].where.status).toEqual(RELEASED);
+    await svc.listMyPayslips({ tenantId: "t1", employeeId: 489 });
+    expect(findMany.mock.calls.at(-1)[0].where).not.toHaveProperty("status");
   });
 });

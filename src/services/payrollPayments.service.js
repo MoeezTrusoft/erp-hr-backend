@@ -72,6 +72,10 @@ export async function recordPayrollPayment({
   occurredAt,
   requestKey,
 }) {
+  // An unbound session has no code; Prisma drops `employee_code: undefined`
+  // from the filter, so the lookup below would match any employee.
+  if (typeof actorCode !== "string" || !actorCode.trim())
+    fail("A verified employee code is required to record payment", 403);
   if (!["SUBMITTED", "ACKNOWLEDGED", "REJECTED", "RECONCILED"].includes(stage))
     fail("Invalid payment stage", 400);
   if (!reference?.trim() || !evidenceRef?.trim() || !requestKey)

@@ -161,7 +161,13 @@ export function registerMyPayslipTools(server) {
       const { user, permissions } = getCtx();
       assertSelfOrPayrollRead(user, permissions);
       const empId = resolveEmployeeId(user, permissions, employeeId);
-      const data = await listMyPayslips({ tenantId: user.tenantId, employeeId: empId, page, pageSize });
+      const data = await listMyPayslips({
+        tenantId: user.tenantId,
+        employeeId: empId,
+        page,
+        pageSize,
+        employeeScoped: !resolveActorScope(user, permissions).canViewOthers,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslips_list")
   );

@@ -28,6 +28,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { HR_ERRORS } from "../../constants/errorCodes.js";
 import { assertPayrollAdminSurface, resolveActorScope } from "../utils/actorScope.js";
+import { EMPLOYEE_VISIBLE_STATUSES } from "../../services/myPayslip.service.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
@@ -108,7 +109,10 @@ export function registerPayrollTools(server) {
     "hr://payroll/audit-logs",
     { description: "List payroll audit logs" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Audit rows carry before/after salary totals: same gate as the register.
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      assertPayrollAdminSurface(permissions);
       const data = await mcpListPayrollAuditLogs(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -341,8 +345,9 @@ export function registerPayrollTools(server) {
     },
     withToolError(async ({ id, format }) => {
       const { user, permissions } = getCtx();
-      // Same C4 payroll gate as GET /hr/api/payroll/runs/:id/bank-file.
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      // Same export gate as GET /hr/api/payroll/runs/:id/bank-file: the file
+      // carries full account numbers, so hr:payroll:VIEW is not enough.
+      assertPermission(permissions, "EXPORT", "hr:payroll", user.isAdmin);
       const data=await mcpExportBankDisbursementFile(user,id,{format:format || 'csv'});
       const artifact=typeof data==='string'?{content:data,filename:`payroll-preparation-${id}.${format==='nacha'?'ach':'csv'}`,contentType:format==='nacha'?'text/plain':'text/csv'}:data;
       return { content: [{ type: "text", text: JSON.stringify(artifact) }] };
@@ -373,8 +378,8 @@ export function registerPayrollTools(server) {
     },
     withToolError(async ({ taxYear, formType, format }) => {
       const { user, permissions } = getCtx();
-      // Same C4 payroll gate as GET /hr/api/payroll/tax-forms/:taxYear/export.
-      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      // Same export gate as GET /hr/api/payroll/tax-forms/:taxYear/export.
+      assertPermission(permissions, "EXPORT", "hr:payroll", user.isAdmin);
       const query = {};
       if (formType) query.formType = formType;
       if (format) query.format = format;
@@ -398,7 +403,12 @@ export function registerPayrollTools(server) {
       if (!scope.canViewOthers) {
         const { default: prisma } = await import("../../lib/prisma.js");
         const owned = await prisma.payrollPayslip.findFirst({
-          where: { id: Number(payslipId), employeeId: scope.actingEmployeeId ?? -1 },
+          where: {
+            id: Number(payslipId),
+            employeeId: scope.actingEmployeeId ?? -1,
+            // Draft and held slips stay private until payroll is finalized.
+            status: { in: EMPLOYEE_VISIBLE_STATUSES },
+          },
           select: { id: true },
         });
         if (!owned) {
