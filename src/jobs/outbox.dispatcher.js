@@ -20,6 +20,8 @@
 //
 // Payload safety: never logs row.payload (the producer bounds it on write).
 import crypto from 'node:crypto';
+import { signModuleEvent } from '@trusoft/contracts/event-signature';
+import { PAYROLL_FINANCE_EVENT } from '@trusoft/contracts/payroll-finance';
 import os from 'node:os';
 
 import defaultPrisma from '../lib/prisma.js';
@@ -98,15 +100,19 @@ export function createStreamPublisher({ redis, stream = HR_EVENTS_STREAM } = {})
         throw new Error('createStreamPublisher: redis.xadd is required');
     }
     return async function streamPublisher({ eventName, payload, aggregateId }) {
+        const rawEnvelope = JSON.stringify(payload);
+        const signature = eventName === PAYROLL_FINANCE_EVENT
+            ? ['signature', signModuleEvent('hr', stream, rawEnvelope, process.env.HR_EVENTS_SIGNING_KEY)] : [];
         const eid = payload?.id ?? '';
         const srcId = aggregateId != null ? String(aggregateId) : '';
         return redis.xadd(
             stream,
             '*',
             'event', String(eventName),
-            'envelope', JSON.stringify(payload),
+            'envelope', rawEnvelope,
             'eid', String(eid),
             'srcId', srcId,
+            ...signature,
         );
     };
 }
