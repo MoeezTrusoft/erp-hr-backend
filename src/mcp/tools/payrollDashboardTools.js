@@ -104,9 +104,9 @@ export function registerPayrollDashboardTools(server) {
         .optional()
         .describe("Filter by department (Employee.businessUnitId)."),
       status: z
-        .enum(["pending", "approved", "hold", "disbursed"])
+        .enum(["pending", "approved", "hold", "finalized", "distributed", "disbursed"])
         .optional()
-        .describe("Filter by display status (mapped to the PayslipStatus enum)."),
+        .describe("Filter by display status (mapped to the PayslipStatus enum); disbursed is a legacy alias of distributed."),
       sortBy: z.enum(["name", "net", "status"]).optional().describe("Sort column (default name)."),
       sortDir: z.enum(["asc", "desc"]).optional().describe("Sort direction (default asc)."),
       page: z.coerce.number().int().positive().optional().describe("1-based page number (default 1)."),
