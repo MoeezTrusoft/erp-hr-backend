@@ -29,6 +29,7 @@
 //   * §7.4a   candidate-linked rows ride the candidate's retention/erasure
 //             policy (the FK is ON DELETE CASCADE).
 import prisma from "../lib/prisma.js";
+import { scopedWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { runAiTask } from "../lib/aiPlaneClient.js";
@@ -68,8 +69,11 @@ export async function loadAliasIndex(tenantId) {
  * @param {string|null} [opts.actorId] - provenance trace attribution
  */
 export async function matchCandidateToRequisitionAdvisory({ candidateId, requisitionId, tenantId = null, withAiSummary = false, actorId = null }) {
-    const candidate = await prisma.candidate.findUnique({
-        where: { id: Number(candidateId) },
+    // D-13 — both reads are tenant-scoped: a foreign tenant's candidate or
+    // requisition reads as not-found rather than being matched.
+    if (!tenantId) throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+    const candidate = await prisma.candidate.findFirst({
+        where: scopedWhere(tenantId, { id: Number(candidateId) }),
         select: {
             id: true,
             firstName: true,
@@ -81,13 +85,13 @@ export async function matchCandidateToRequisitionAdvisory({ candidateId, requisi
     });
     if (!candidate) throw Object.assign(new Error("Candidate not found"), { status: 404 });
 
-    const requisition = await prisma.jobRequisition.findUnique({
-        where: { id: Number(requisitionId) },
+    const requisition = await prisma.jobRequisition.findFirst({
+        where: scopedWhere(tenantId, { id: Number(requisitionId) }),
         select: { id: true, title: true, jobContent: true, requirements: true, tenantId: true },
     });
     if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
 
-    const index = await loadAliasIndex(tenantId ?? candidate.tenantId ?? requisition.tenantId ?? null);
+    const index = await loadAliasIndex(tenantId);
 
     // Candidate evidence: parsed resume skills + any hand-entered ones.
     const candidateItems = [

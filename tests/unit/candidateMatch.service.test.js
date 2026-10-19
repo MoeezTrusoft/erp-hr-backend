@@ -14,8 +14,8 @@ jest.setTimeout(15000);
 const prisma = {
     skillAlias: { findMany: jest.fn(async () => []) },
     skill: { findMany: jest.fn(async () => [] ) },
-    candidate: { findUnique: jest.fn() },
-    jobRequisition: { findUnique: jest.fn() },
+    candidate: { findFirst: jest.fn() },
+    jobRequisition: { findFirst: jest.fn() },
     aiInferenceRecord: { create: jest.fn(async (args) => ({ id: 1, ...args.data ?? args })) },
 };
 
@@ -49,8 +49,8 @@ beforeEach(() => {
     // default is OFF per §7.1b; flag-disabled behaviour has its own tests in
     // recruitmentFlags.test.js).
     process.env.HR_RECRUITMENT_AI = "true";
-    prisma.candidate.findUnique.mockResolvedValue(CAND);
-    prisma.jobRequisition.findUnique.mockResolvedValue(REQ);
+    prisma.candidate.findFirst.mockResolvedValue(CAND);
+    prisma.jobRequisition.findFirst.mockResolvedValue(REQ);
     prisma.skillAlias.findMany.mockResolvedValue([
         { alias: "JS", skillId: 1, scope: "PLATFORM", status: "ACTIVE", tenantId: null },
     ]);
@@ -62,7 +62,7 @@ beforeEach(() => {
 
 describe("candidateMatch.service — advisory matching", () => {
     test("returns a deterministic taxonomy report with ai=null when no AI requested", async () => {
-        const report = await matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7 });
+        const report = await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7 });
         expect(report.advisory).toBe(true);
         expect(report.ai).toBeNull();
         expect(report.taxonomy.matched[0].skillId).toBe(1); // JS → JavaScript via alias
@@ -73,20 +73,20 @@ describe("candidateMatch.service — advisory matching", () => {
     });
 
     test("legacy free-text requirements are used when jobContent has no skills", async () => {
-        prisma.jobRequisition.findUnique.mockResolvedValue({ ...REQ, jobContent: null, requirements: "JavaScript, React" });
-        const report = await matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7 });
+        prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQ, jobContent: null, requirements: "JavaScript, React" });
+        const report = await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7 });
         expect(report.taxonomy.coverage.requiredTotal).toBe(2);
     });
 
     test("404s surface for unknown candidate/requisition", async () => {
-        prisma.candidate.findUnique.mockResolvedValue(null);
-        await expect(matchCandidateToRequisitionAdvisory({ candidateId: 999, requisitionId: 7 })).rejects.toMatchObject({ status: 404 });
+        prisma.candidate.findFirst.mockResolvedValue(null);
+        await expect(matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 999, requisitionId: 7 })).rejects.toMatchObject({ status: 404 });
     });
 
     describe("with the AI plane", () => {
         test("a plane outage degrades instead of failing the read, and records degraded-unavailable provenance", async () => {
             runAiTask.mockRejectedValue(Object.assign(new Error("no REDIS_URL"), { code: "HR-AI-PLANE-UNAVAILABLE", status: 503 }));
-            const report = await matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7, withAiSummary: true });
+            const report = await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7, withAiSummary: true });
             expect(report.taxonomy.matched).toHaveLength(1); // deterministic layer intact
             expect(report.ai.unavailable).toBe(true);
             const row = prisma.aiInferenceRecord.create.mock.calls[0][0].data;
@@ -113,7 +113,7 @@ describe("candidateMatch.service — advisory matching", () => {
                     },
                 },
             });
-            const report = await matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7, withAiSummary: true });
+            const report = await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7, withAiSummary: true });
             expect(report.ai.summary).toBe("Solid JS foundation.");
             expect(report.ai.matchedSkills[0].skillId).toBe(1);
             expect(report.ai.missingSkills[0].skillId).toBe(2);
@@ -131,7 +131,7 @@ describe("candidateMatch.service — advisory matching", () => {
 
         test("a plane error status records error provenance and marks ai unavailable", async () => {
             runAiTask.mockResolvedValue({ taskId: "t-2", status: "error", error: "llm call failed" });
-            const report = await matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7, withAiSummary: true });
+            const report = await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7, withAiSummary: true });
             expect(report.ai.unavailable).toBe(true);
             const row = prisma.aiInferenceRecord.create.mock.calls[0][0].data;
             expect(row.status).toBe("error");
@@ -139,11 +139,11 @@ describe("candidateMatch.service — advisory matching", () => {
     });
 
     test("§7.3 — the service mutates no application state (no write calls beyond provenance)", async () => {
-        await matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7, withAiSummary: true });
+        await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7, withAiSummary: true });
         // The only prisma writes the service knows are aiInferenceRecord rows.
         const calledModels = Object.keys(prisma).filter((m) => typeof prisma[m]?.create === "function" && prisma[m].create.mock.calls.length);
         expect(calledModels).toEqual(["aiInferenceRecord"]);
-        expect(prisma.candidate.findUnique).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.anything() }));
+        expect(prisma.candidate.findFirst).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.anything() }));
     });
 
     test("loadAliasIndex resolves tenant extensions alongside the platform core", async () => {
@@ -155,5 +155,20 @@ describe("candidateMatch.service — advisory matching", () => {
         const { matchCandidateToRequisition } = await import("../../src/lib/skillNormalization.js");
         const report = matchCandidateToRequisition(index, [{ name: "JS" }], { required: ["JS"] });
         expect(report.matched[0].skillId).toBe(9); // tenant shadow wins
+    });
+});
+
+describe("D-13 — match reads are tenant-scoped", () => {
+    it("reads the candidate and requisition inside the caller's tenant", async () => {
+        prisma.candidate.findFirst.mockResolvedValue(CAND);
+        prisma.jobRequisition.findFirst.mockResolvedValue(REQ);
+        await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7 });
+        expect(prisma.candidate.findFirst.mock.calls.at(-1)[0].where).toEqual({ id: 11, tenantId: "t-1" });
+        expect(prisma.jobRequisition.findFirst.mock.calls.at(-1)[0].where).toEqual({ id: 7, tenantId: "t-1" });
+    });
+
+    it("refuses to match without a tenant", async () => {
+        await expect(matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7 }))
+            .rejects.toMatchObject({ status: 400, code: "HR-TENANT-REQUIRED" });
     });
 });

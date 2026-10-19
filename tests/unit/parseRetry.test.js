@@ -163,7 +163,7 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
         downloadDamAssetBuffer.mockResolvedValue(damPayload(content));
         prisma.resumeParseAttempt.findUnique.mockResolvedValue(completedRow(content));
 
-        const result = await resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE" });
+        const result = await resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE", tenantId: "t-1" });
 
         expect(result.fromCache).toBe(true);
         expect(result.skills[0].name).toBe("TypeScript");
@@ -177,7 +177,7 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
         downloadDamAssetBuffer.mockResolvedValue(damPayload(contentB));
         // The ledger holds a row for content A; content B must PARSE fresh.
         prisma.resumeParseAttempt.findUnique.mockImplementation(({ where }) => {
-            const requested = where.kind_contentHash.contentHash;
+            const requested = where.tenantId_kind_contentHash.contentHash;
             return Promise.resolve(requested === hash(contentA) ? completedRow(contentA) : null);
         });
         prisma.resumeParseAttempt.upsert.mockResolvedValue({ id: 2, attemptCount: 1 });
@@ -211,7 +211,7 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
         // Extract + vendor parse are the slow parts; stub the whole parse by
         // giving text that is too short → parseResumeText returns an empty-but-
         // successful result without ever touching a vendor client.
-        const result = await resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE", force: true });
+        const result = await resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE", tenantId: "t-1", force: true });
 
         expect(prisma.resumeParseAttempt.delete).toHaveBeenCalledWith({ where: { id: 1 } });
         expect(result.fromCache).toBe(false);
@@ -225,7 +225,7 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
             completedRow(content, { status: "FAILED", attemptCount: 3, lastError: "502" }),
         );
 
-        await expect(resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE" })).rejects.toMatchObject({
+        await expect(resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE", tenantId: "t-1" })).rejects.toMatchObject({
             status: 429,
             code: "HR-RESUME-ATTEMPTS-EXHAUSTED",
         });
@@ -271,5 +271,14 @@ describe("ingestCandidateResume parse-state projection (§4.5a)", () => {
                 data: expect.objectContaining({ parseStatus: "FAILED", parseError: expect.stringContaining("attempts") }),
             }),
         );
+    });
+});
+
+describe("D-13 — the parse cache is per tenant", () => {
+    it("refuses a parse without a tenant before any download", async () => {
+        downloadDamAssetBuffer.mockClear();
+        await expect(resumeService.parseResumeWithRetry(88, { kind: "CANDIDATE" }))
+            .rejects.toMatchObject({ status: 400, code: "HR-TENANT-REQUIRED" });
+        expect(downloadDamAssetBuffer).not.toHaveBeenCalled();
     });
 });

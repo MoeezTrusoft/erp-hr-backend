@@ -3498,7 +3498,7 @@ model ResumeParseAttempt {
   startedAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@unique([kind, contentHash])
+  @@unique([tenantId, kind, contentHash])
   @@index([tenantId])
   @@index([status, updatedAt])
   @@map("resume_parse_attempts")

@@ -285,6 +285,9 @@ async function recordInference(data) {
 // this wrapper owns: the DAM fetch, the hash, the ledger row, and the
 // attempt-loop that respects the backoff.
 export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenantId = null, candidateId = null, force = false } = {}) {
+  // D-13 — the cache is per tenant: the same bytes uploaded by two companies
+  // are two ledger rows, so one tenant's parsed result never serves another.
+  if (!tenantId) throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
   const dl = await downloadDamAssetBuffer(mediaId);
   if (!dl?.buffer) {
     throw Object.assign(new Error(`Could not download resume asset ${mediaId} from DAM`), {
@@ -299,7 +302,8 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
   // Retry/EXHAUSTED on an EXHAUSTED ledger row: an explicit force re-parse is
   // the operator's "I know, run it again" — it resets the ceiling for THIS
   // content only (a new row version), never silently.
-  let prior = await ledger.findUnique({ where: { kind_contentHash: { kind, contentHash } } });
+  const cacheKey = { tenantId_kind_contentHash: { tenantId, kind, contentHash } };
+  let prior = await ledger.findUnique({ where: cacheKey });
   if (force && prior && prior.status === "COMPLETED") {
     // Same content, completed, forced → re-run but keep ONE ledger row (reset).
     await ledger.delete({ where: { id: prior.id } });
@@ -341,7 +345,7 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
   // PARSE or RETRY: mark RUNNING and go. attemptCount carried forward on retry.
   const attemptNo = decision.attempt;
   const row = await ledger.upsert({
-    where: { kind_contentHash: { kind, contentHash } },
+    where: cacheKey,
     create: { kind, contentHash, mediaId: Number(mediaId) || null, status: "RUNNING", attemptCount: 1, tenantId },
     update: { status: "RUNNING", attemptCount: attemptNo, lastError: null, mediaId: Number(mediaId) || null },
   });
