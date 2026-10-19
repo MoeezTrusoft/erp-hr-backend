@@ -103,3 +103,19 @@ describe("NFR-12 — metric drill-down", () => {
     expect(() => normalizeAnalyticsFilters({ nonsense: 1 })).toThrow(/Unsupported analytics filter/);
   });
 });
+
+describe("D-15 — the shared filter pipeline reads what it filters on", () => {
+  it("selects the requisition id that the requisitionIds filter and drill-down read", async () => {
+    const { loadFilteredApplications } = await import("../../src/services/recruitmentAnalytics.service.js");
+    prisma.application.findMany.mockResolvedValueOnce([]);
+    await loadFilteredApplications("t-1", {});
+    const args = prisma.application.findMany.mock.calls.at(-1)[0];
+    expect(args.select.jobRequisition.select).toMatchObject({ id: true });
+    expect(args.where).toEqual({ tenantId: "t-1" });
+  });
+
+  it("refuses an unscoped read instead of reading every tenant", async () => {
+    const { loadFilteredApplications } = await import("../../src/services/recruitmentAnalytics.service.js");
+    await expect(loadFilteredApplications(undefined, {})).rejects.toMatchObject({ code: "HR-TENANT-REQUIRED" });
+  });
+});

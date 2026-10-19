@@ -129,20 +129,28 @@ export function normalizeAnalyticsFilters(filters = {}) {
 }
 
 /** The one fetch + JS filter both consumers use. */
+// Every analytics read is tenant-scoped. `tenantId ?? undefined` used to drop
+// the predicate entirely when no tenant was passed, reading every tenant.
+const requireAnalyticsTenant = (tenantId) => {
+  if (!tenantId) throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+};
+
 export async function loadFilteredApplications(tenantId, n = {}) {
+  requireAnalyticsTenant(tenantId);
   const {
     dateFrom, dateTo, requisitionIds, departmentId, stage, source, hasDateFilter, hasRowFilter,
   } = n;
   // Single fetch with the relations we need; compute everything in JS.
   const applications = await prisma.application.findMany({
-    where: { tenantId: tenantId ?? undefined },
+    where: { tenantId },
     select: {
       id: true,
       stage: true,
       appliedAt: true,
       updatedAt: true,
       candidate: { select: { id: true, source: true } },
-      jobRequisition: { select: { title: true, departmentId: true } },
+      // D-15 — `id` is what the requisitionIds filter and the drill-down read.
+      jobRequisition: { select: { id: true, title: true, departmentId: true } },
       interviews: { select: { id: true } },
       offer: { select: { status: true, respondedAt: true, sentAt: true } },
     },
@@ -236,7 +244,7 @@ export async function drillDownRecruitmentMetric(tenantId, metric, filters = {},
     // Dispositions live on the screening records; the application ids they carry
     // are the evidence, so this bucket is resolved through the screening table.
     const screenings = await prisma.applicationScreening.findMany({
-      where: { tenantId: tenantId ?? undefined, ...(value ? { reasonCode: value } : {}) },
+      where: { tenantId, ...(value ? { reasonCode: value } : {}) },
       select: { applicationId: true, outcome: true, reasonCode: true },
     });
     const ids = new Set(screenings.map((s) => s.applicationId));
@@ -423,7 +431,7 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
     // predicates (ids/department) so time-to-fill per requisition agrees with
     // the application-level numbers above; date/stage/source filtering happens
     // per application below, matching the legacy block's semantics.
-    const requisitionWhere = { tenantId: tenantId ?? undefined };
+    const requisitionWhere = { tenantId };
     if (requisitionIds?.length) requisitionWhere.id = { in: requisitionIds };
     if (departmentId != null) requisitionWhere.departmentId = departmentId;
     const requisitions = await prisma.jobRequisition.findMany({
