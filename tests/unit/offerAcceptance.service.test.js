@@ -36,7 +36,7 @@ jest.unstable_mockModule("../../src/services/recruitmentHandoff.service.js", () 
   getOfferHandoff: mockGetOfferHandoff,
 }));
 
-const { respondOffer } = await import("../../src/services/offer.service.js");
+const { respondOffer, updateOffer } = await import("../../src/services/offer.service.js");
 
 describe("Offer acceptance", () => {
   beforeEach(() => {
@@ -131,5 +131,29 @@ describe("D-08 — HR_RECRUITMENT_OFFER_HANDOFF is read by acceptance", () => {
 
     const result = await respondOffer(9, false, "tenant-a");
     expect(result.offer.status).toBe("DECLINED");
+  });
+});
+
+describe("D-10 — the generic offer update cannot move status freely", () => {
+  beforeEach(() => {
+    prisma.offer.updateMany = jest.fn(async () => ({ count: 1 }));
+    prisma.offer.findFirst.mockResolvedValue({ ...offerRow, status: "DRAFT" });
+  });
+
+  it.each([["SENT"], ["ACCEPTED"], ["DECLINED"], ["EXPIRED"], ["anything"]])(
+    "refuses an update that sets status %s",
+    async (status) => {
+      await expect(updateOffer(9, { status }, "tenant-a"))
+        .rejects.toMatchObject({ status: 409, code: "HR-RECRUITMENT-OFFER-STATUS-READONLY" });
+      expect(prisma.offer.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts a re-sent current status as a no-op and allows withdrawing a live offer", async () => {
+    await updateOffer(9, { status: "DRAFT", notes: "edited" }, "tenant-a");
+    expect(prisma.offer.updateMany.mock.calls[0][0].data).not.toHaveProperty("status");
+
+    await updateOffer(9, { status: "WITHDRAWN" }, "tenant-a");
+    expect(prisma.offer.updateMany.mock.calls[1][0].data.status).toBe("WITHDRAWN");
   });
 });

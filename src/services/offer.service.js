@@ -238,7 +238,7 @@ export const uploadOfferLetter = async (id, file, tenantId) => {
 };
 
 export const updateOffer = async (id, { applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, status, expectedVersion }, tenantId) => {
-    await assertOfferInTenant(id, tenantId);
+    const existing = await assertOfferInTenant(id, tenantId);
     // API-2 — optimistic-concurrency guard (opt-in). Absent ⇒ no reject.
     const expected = normalizeExpectedVersion(expectedVersion);
     const data = {};
@@ -253,7 +253,21 @@ export const updateOffer = async (id, { applicationId, candidateId, jobRequisiti
     if (startDate !== undefined) data.startDate = startDate ? new Date(startDate) : null;
     if (expiryDate !== undefined) data.expiryDate = expiryDate ? new Date(expiryDate) : null;
     if (notes !== undefined) data.notes = notes;
-    if (status !== undefined) data.status = status;
+    // D-10 — status is not a free field. It moves through send (Approval Centre),
+    // respond (accept / decline) or withdrawal; the generic update may only
+    // re-send the current status (a full-object PUT) or withdraw a live offer.
+    if (status !== undefined && status !== null && status !== "") {
+        const target = String(status).toUpperCase();
+        if (target !== existing.status) {
+            if (target !== "WITHDRAWN" || !["DRAFT", "SENT"].includes(existing.status)) {
+                throw Object.assign(
+                    new Error(`Offer status cannot move from ${existing.status} to ${target} through an update; use send, respond or withdraw`),
+                    { status: 409, code: "HR-RECRUITMENT-OFFER-STATUS-READONLY" },
+                );
+            }
+            data.status = "WITHDRAWN";
+        }
+    }
 
     // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
     const versionWhere = expected == null ? {} : { version: expected };
