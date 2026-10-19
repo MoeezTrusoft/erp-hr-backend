@@ -1,4 +1,5 @@
 import { describe, it, expect, jest } from "@jest/globals";
+import { randomUUID } from "node:crypto";
 import {
   payrollAssignments,
   validatePayrollConfiguration,
@@ -74,7 +75,7 @@ describe("published payroll controls", () => {
         tenantId: "company", runId: 1, employeeCode: "EMP-001", actorCode,
         stage: "SUBMITTED", reference: "REF-1", evidenceRef: "evidence-01",
         amount: "90", currency: "PKR", occurredAt: "2026-09-30T10:00:00Z",
-        requestKey: "6f1c3a52-6b47-4a43-9d6f-0d7f6f0a1b2c",
+        requestKey: randomUUID(),
       }),
     ).rejects.toMatchObject({ status: 403 });
   });
