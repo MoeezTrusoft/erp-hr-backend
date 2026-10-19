@@ -16,11 +16,16 @@ import { listRuleCases } from "../../src/services/attendanceRules.service.js";
 import { captureDb, TENANT, OTHER_TENANT } from "../helpers/captureDb.js";
 describe('unevaluated calendar projection', () => {
   it('shows planned and setup states without inventing absence, hours or punches', () => {
-    const result = completeTimesheetRows({ records:[], employees:[{id:1}], anomalies:[], from:'2026-10-12',to:'2026-10-14',now:new Date('2026-10-12T04:00:00Z'), runtime:{resolve:(_id,day)=>day.toISOString().startsWith('2026-10-14') ? {working:null,reason:'MISSING_ROSTER'} : {working:true,timeZone:'Asia/Karachi',shift:{start:new Date(day.toISOString().slice(0,10)+'T09:00:00Z')}}} });
+    const runtime={resolve:(_id,day)=>day.toISOString().startsWith('2026-10-14') ? {working:null,reason:'MISSING_ROSTER'} : {working:true,timeZone:'Asia/Karachi',shift:{start:new Date(day.toISOString().slice(0,10)+'T09:00:00Z')}}};
+    // 14 Oct 04:00Z is 09:00 in Karachi: every day of the window has begun.
+    const result = completeTimesheetRows({ records:[], employees:[{id:1}], anomalies:[], from:'2026-10-12',to:'2026-10-14',now:new Date('2026-10-14T04:00:00Z'), runtime });
     expect(result).toHaveLength(3);
     expect(result[0]).toMatchObject({status:'PENDING_ATTENDANCE',calendarStatus:'WORKDAY',processingState:'AWAITING_EVALUATION',total_hours:null,check_in:null});
-    expect(result[1]).toMatchObject({status:'PENDING_ATTENDANCE',processingState:'SCHEDULED'});
+    expect(result[1]).toMatchObject({status:'PENDING_ATTENDANCE',processingState:'AWAITING_EVALUATION'});
     expect(result[2]).toMatchObject({status:'SETUP_REQUIRED',calendarStatus:null,total_hours:null});
+    // ATT-DUE-ROWS-01 — on the 12th at 09:00 only the 12th is due.
+    const due = completeTimesheetRows({ records:[], employees:[{id:1}], anomalies:[], from:'2026-10-12',to:'2026-10-14',now:new Date('2026-10-12T04:00:00Z'), runtime });
+    expect(due.map(r=>r.date.toISOString().slice(0,10))).toEqual(['2026-10-12']);
   });
 });
 const at = (t) => new Date("2026-10-12T" + t + "Z");

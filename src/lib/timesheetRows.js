@@ -32,8 +32,15 @@ export function completeTimesheetRows({
             : info.reason === "APPROVED_LEAVE" ? "LEAVE" : info.working === true ? "WORKDAY" : null);
       const zone=info.timeZone || 'Asia/Karachi';
       if(!nowByZone.has(zone)) nowByZone.set(zone,+civilNow(now,zone));
-      const future = info.shift?.start && +info.shift.start > nowByZone.get(zone);
       const nonworking = ["HOLIDAY", "WEEKLY_OFF", "LEAVE"].includes(status);
+      // ATT-DUE-ROWS-01 (2026-10-19) — the table lists what is DUE, not the
+      // whole month. A working day is due once its shift has started; a rest
+      // day, holiday, leave or setup gap once its civil day has begun in the
+      // employee's zone. Days still ahead produced a month of "Awaiting
+      // attendance" and "Weekly Off" rows for shifts nobody could have
+      // punched yet. Stored records are always shown.
+      const dueAt = !nonworking && info.shift?.start ? +info.shift.start : +dateOnly(date);
+      if (!previous && dueAt > nowByZone.get(zone)) continue;
       rows.set(key, {
         ...(previous || {
           id: null,
@@ -41,7 +48,7 @@ export function completeTimesheetRows({
           employee,
           date: dateOnly(date),
           total_hours: nonworking ? 0 : null,
-          processingState: nonworking ? "CALENDAR" : info.working == null ? "SETUP_REQUIRED" : future ? "SCHEDULED" : "AWAITING_EVALUATION",
+          processingState: nonworking ? "CALENDAR" : info.working == null ? "SETUP_REQUIRED" : "AWAITING_EVALUATION",
           check_in: null,
           check_out: null,
         }),
@@ -65,7 +72,14 @@ export function completeTimesheetRows({
       continue;
     const key = `${anomaly.employeeId}:${dateKey(anomaly.date)}`,
       previous = rows.get(key);
-    if (["HOLIDAY", "WEEKLY_OFF", "LEAVE"].includes(previous?.calendarStatus) || previous?.processingState === "SCHEDULED" || previous?.processingState === "SETUP_REQUIRED") continue;
+    if (["HOLIDAY", "WEEKLY_OFF", "LEAVE"].includes(previous?.calendarStatus) || previous?.processingState === "SETUP_REQUIRED") continue;
+    if (!previous) {
+      // No due row for this day (ATT-DUE-ROWS-01): an absence can only be
+      // attached once the day has begun in the employee's zone.
+      const zone = runtime.resolve(anomaly.employeeId, dateOnly(dateKey(anomaly.date)))?.timeZone || 'Asia/Karachi';
+      if(!nowByZone.has(zone)) nowByZone.set(zone,+civilNow(now,zone));
+      if (+dateOnly(dateKey(anomaly.date)) > nowByZone.get(zone)) continue;
+    }
     if (previous) {
       previous.absenceAnomaly = true;
       if (

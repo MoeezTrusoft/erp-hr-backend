@@ -13,6 +13,12 @@ import { applyEvaluatedShiftsForDays } from "./attendanceWriter.service.js";
 import { captureAudit } from "./attendanceCapture.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
+// ATT-EXPLICIT-OUT-01 — a biometric kiosk authenticates the key the employee
+// pressed; the self-service check-in and check-out tools ARE that choice
+// (one tool per direction). Both are explicit directions, never positional
+// guesses, so the sessioniser and evaluator honour them as recorded.
+const VERIFIED_DIRECTION_SOURCES = new Set(["BIOMETRIC", "MANUAL"]);
+
 export async function assertCapturePeriodOpen(db, tenantId, days) {
   const ordered=[...days].sort();
   if(ordered.length)await assertAttendancePeriodOpen(db,tenantId,ordered[0],ordered.at(-1));
@@ -151,7 +157,7 @@ export async function drainCapture(
                     occurredAt: new Date(p.occurredAt),
                     localTime: p.localTime,
                     timeZone: p.timeZone,
-                    directionVerified: event.source === "BIOMETRIC",
+                    directionVerified: VERIFIED_DIRECTION_SOURCES.has(event.source),
                     assurance: jsonValue({source:event.source,modality:event.raw?.biometric?.modality,
                       pad:event.raw?.biometric?.pad,matched:event.raw?.biometric?.matched,
                       approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
@@ -174,7 +180,7 @@ export async function drainCapture(
                     verifyMode: p.verifyMode,
                     workCode: p.workCode,
                     rawLine: p.rawLine,
-                    directionVerified: event.source === "BIOMETRIC",
+                    directionVerified: VERIFIED_DIRECTION_SOURCES.has(event.source),
                     assurance: jsonValue({source:event.source,modality:event.raw?.biometric?.modality,
                       pad:event.raw?.biometric?.pad,matched:event.raw?.biometric?.matched,
                       approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
