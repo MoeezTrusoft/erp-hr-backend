@@ -112,6 +112,7 @@ export const retryHandoff = async (req, res) => {
             offerId: req.params.id,
             tenantId,
             actorId: req.user?.employeeId ?? null,
+            employeeCategory: req.body?.employeeCategory ?? null,
         });
         res.status(200).json({ success: true, data: result });
     } catch (e) { res.status(e.status || 400).json({ success: false, message: e.message, code: e.code }); }

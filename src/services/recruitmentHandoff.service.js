@@ -23,7 +23,13 @@ import { provisionHireCompensation } from "./payrollService.js";
 import { materializeOnboardingTaskRows } from "../lib/onboardingDefaults.js";
 import { resolveTasksForProvisioning } from "./onboardingTemplate.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { offerHandoffCompletedEvent, offerHandoffFailedEvent } from "./hrEvents.js";
+import { offerHandoffCompletedEvent, offerHandoffFailedEvent, candidateHiredEvent } from "./hrEvents.js";
+import { prepareEmployeeInsert } from "./employee-code.service.js";
+import { enqueueEmployeeLifecycle, mapEmployeeToLifecycleInput } from "./employeeOutbox.service.js";
+
+// Main's employee-code rules: every new employee carries a server-allocated
+// code whose prefix comes from one of these categories.
+const EMPLOYEE_CATEGORIES = new Set(["MANAGEMENT", "EMPLOYEE", "INTERNEE"]);
 
 export const HANDOFF_STATUS = Object.freeze({
   IN_PROGRESS: "IN_PROGRESS",
@@ -119,7 +125,10 @@ async function recordAttempt(db, { handoffId, tenantId, step, status, error = nu
  * Returns { handoff, replayed } — `replayed` is true when a previously completed
  * handoff was returned instead of provisioning again.
  */
-export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}) {
+// `employeeCategory` is only needed for an offer accepted before the category was
+// captured at acceptance: an operator supplies it on retry and it is stored on
+// the offer, so later retries agree.
+export async function runOfferHandoff({ offerId, tenantId, actorId = null, employeeCategory = null } = {}) {
   requireTenant(tenantId);
   const id = Number(offerId);
   if (!Number.isInteger(id) || id <= 0) throw handoffError("A valid offer id is required");
@@ -134,6 +143,16 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
   }
   const candidate = offer.application?.candidate;
   if (!candidate) throw handoffError("The accepted offer has no linked candidate to provision", "HR-RECRUITMENT-HANDOFF-NO-CANDIDATE");
+  if (employeeCategory != null && !EMPLOYEE_CATEGORIES.has(employeeCategory)) {
+    throw handoffError("employeeCategory must be MANAGEMENT, EMPLOYEE or INTERNEE", "HR-RECRUITMENT-HANDOFF-CATEGORY-INVALID");
+  }
+  if (offer.employeeCategory && employeeCategory && offer.employeeCategory !== employeeCategory) {
+    throw Object.assign(
+      new Error(`The offer was accepted as ${offer.employeeCategory}; a different category needs the approved category conversion`),
+      { status: 409, code: "HR-RECRUITMENT-HANDOFF-CATEGORY-CONFLICT" },
+    );
+  }
+  const category = offer.employeeCategory ?? employeeCategory;
 
   // Idempotency key: the unique offerId row. Created once, then reused.
   let handoff = await prisma.offerHandoff.findFirst({ where: scopedWhere(tenantId, { offerId: id }) });
@@ -165,10 +184,22 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
           })
         : null;
 
+      let hired = null;
       if (!employee) {
-        employee = await tx.employee.create({
-          data: {
-            tenant_id: tenantId,
+        // A new employee needs an explicit category: its prefix decides the
+        // server-allocated employee code. Fail (and record FAILED) rather than
+        // guess; an operator retries with the category.
+        if (!category) {
+          throw handoffError(
+            "Employee category is required to provision a new employee; retry the handoff with employeeCategory",
+            "HR-RECRUITMENT-HANDOFF-CATEGORY-REQUIRED",
+          );
+        }
+        if (!offer.employeeCategory) {
+          await tx.offer.update({ where: { id: offer.id }, data: { employeeCategory: category } });
+        }
+        hired = await tx.employee.create({
+          data: await prepareEmployeeInsert(tx, {
             first_name: candidate.firstName,
             last_name: candidate.lastName || "",
             employee_name: employeeFullName(candidate),
@@ -180,10 +211,16 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
             status: "active",
             job_title: offer.notes || "New Hire",
             createdById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
-          },
-          select: { id: true },
+          }, { tenantId, category }),
+          select: { id: true, tenant_id: true, employee_code: true, first_name: true, last_name: true, employee_name: true, hire_date: true, positionId: true, businessUnitId: true, work_email: true },
         });
-        await recordAttempt(tx, { handoffId: handoff.id, tenantId, step: "employee", status: "OK" });
+        employee = { id: hired.id };
+        // The new employee joins the organisation in this same transaction.
+        const lifecycle = mapEmployeeToLifecycleInput(hired, "hired", { tenantId });
+        if (lifecycle.tenantId) {
+          await enqueueEmployeeLifecycle(tx, { ...lifecycle, aggregateId: hired.id, actorId: actorId ?? undefined });
+        }
+        await recordAttempt(tx, { handoffId: handoff.id, tenantId, step: "employee", status: "OK", error: `code ${hired.employee_code}` });
       } else {
         await recordAttempt(tx, { handoffId: handoff.id, tenantId, step: "employee", status: "OK", error: "adopted existing employee by email" });
       }
@@ -280,8 +317,17 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null } = {}
         { ...completed, tenantId },
         { actorId: actorId ?? null },
       ));
+      // The candidate became an employee: the long-defined but never-emitted
+      // candidate_hired event finally has its emitter.
+      const hiredEvent = candidateHiredEvent(
+        { id: candidate.id, tenantId, applicationId: offer.applicationId, employeeId: employee.id },
+        { actorId: actorId ?? null },
+      );
+      if (hiredEvent) await enqueueHrDomainEvent(tx, hiredEvent);
 
-      recordHandoff(completed.status === HANDOFF_STATUS.COMPLETED ? "enqueued" : "other");
+      // D-14 — the counter allowlist is { completed, failed }; "enqueued"
+      // collapsed into "failed" and reported every success as a failure.
+      recordHandoff("completed");
       return { handoff: completed, replayed: false };
     }, { tenantId });
   } catch (error) {

@@ -57,7 +57,8 @@ export const mcpUpdateOffer = (user, id, data) => {
 export const mcpSendOffer = (user, id) => runController(sendOffer, { user, params: { id: String(id) } });
 export const mcpApproveOffer = (user, id, data) => runController(approve, { user, params: { id: String(id) }, body: data });
 export const mcpOfferHandoffGet = (user, id) => runController(getHandoff, { user, params: { id: String(id) } });
-export const mcpOfferHandoffRetry = (user, id) => runController(retryHandoff, { user, params: { id: String(id) } });
+export const mcpOfferHandoffRetry = (user, id, body = {}) =>
+  runController(retryHandoff, { user, params: { id: String(id) }, body });
 export const mcpOfferHandoffsFailedList = (user, query = {}) =>
   runController(listFailedHandoffs, { user, query });
 export const mcpAddTalentPool = (user, data) => runController(addToPool, { user, body: data });

@@ -584,11 +584,17 @@ export function registerRecruitmentTools(server) {
   server.tool(
     "hr_offer_handoff_retry",
     "Retry a FAILED accepted-offer handoff; replays an already-completed handoff unchanged",
-    { id: z.string().min(1).describe("Offer id; numeric string") },
-    withToolError(async ({ id }) => {
+    {
+      id: z.string().min(1).describe("Offer id; numeric string"),
+      employeeCategory: z
+        .enum(["MANAGEMENT", "EMPLOYEE", "INTERNEE"])
+        .optional()
+        .describe("Only for an offer accepted before its category was captured: the category the new employee's code is allocated from"),
+    },
+    withToolError(async ({ id, employeeCategory }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
-      const data = await mcpOfferHandoffRetry(user, id);
+      const data = await mcpOfferHandoffRetry(user, id, { employeeCategory });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

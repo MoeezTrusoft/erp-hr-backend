@@ -16,6 +16,9 @@ const tx = {
   onboardingChecklistTemplate: { findFirst: jest.fn(async () => null) },
   offerHandoff: { update: jest.fn() },
   offerHandoffAttempt: { create: jest.fn() },
+  offer: { update: jest.fn() },
+  // Outbox: the handoff announces completion, the hire and the new employee.
+  outboxEvent: { create: jest.fn(async ({ data }) => ({ id: 1, ...data })) },
 };
 
 const prismaDouble = {
@@ -40,6 +43,21 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   rlsTenantExtension: jest.fn((client) => client),
 }));
 
+// Employee codes are allocated by main's employee-code service under an
+// advisory lock; the double stands in for that allocation.
+const mockPrepareEmployeeInsert = jest.fn(async (_tx, data, { tenantId, category }) => ({
+  ...data,
+  tenant_id: tenantId,
+  employeeCategory: category,
+  employee_code: "EMP-0007",
+}));
+jest.unstable_mockModule("../../src/services/employee-code.service.js", () => ({
+  prepareEmployeeInsert: mockPrepareEmployeeInsert,
+}));
+
+const TENANT = "11111111-1111-4111-8111-111111111111";
+const eventNames = () => tx.outboxEvent.create.mock.calls.map(([arg]) => arg.data.eventName);
+
 const prisma = (await import("../../src/config/prisma.js")).default;
 const { runOfferHandoff, listFailedHandoffs, HANDOFF_STATUS } = await import(
   "../../src/services/recruitmentHandoff.service.js"
@@ -52,6 +70,7 @@ const ACCEPTED_OFFER = {
   currency: "PKR",
   startDate: new Date("2026-10-01T00:00:00Z"),
   employmentType: "FULL_TIME",
+  employeeCategory: "EMPLOYEE",
   applicationId: 3,
   application: {
     candidate: { id: 5, firstName: "Ayesha", lastName: "Khan", email: "ayesha@example.com", phone: "+92" },
@@ -66,7 +85,14 @@ describe("Recruitment accepted-offer handoff", () => {
     tx.offerHandoff.update.mockResolvedValue({ id: 1, offerId: 9, status: HANDOFF_STATUS.COMPLETED, employeeId: 77, checklistId: 55 });
     tx.offerHandoffAttempt.create.mockResolvedValue({ id: 1 });
     tx.employee.findFirst.mockResolvedValue(null);
-    tx.employee.create.mockResolvedValue({ id: 77 });
+    tx.employee.create.mockResolvedValue({
+      id: 77,
+      tenant_id: TENANT,
+      employee_code: "EMP-0007",
+      first_name: "Ayesha",
+      last_name: "Khan",
+      hire_date: new Date("2026-10-01T00:00:00Z"),
+    });
     tx.employmentTerms.findFirst.mockResolvedValue(null);
     tx.employmentTerms.create.mockResolvedValue({ id: 1 });
     tx.payrollEarningType.findFirst.mockResolvedValue({ id: 4 });
@@ -80,13 +106,13 @@ describe("Recruitment accepted-offer handoff", () => {
   it("provisions one employee and onboarding checklist for a first-time acceptance", async () => {
     prisma.offerHandoff.findFirst.mockResolvedValue(null);
 
-    const { handoff, replayed } = await runOfferHandoff({ offerId: 9, tenantId: "tenant-a" });
+    const { handoff, replayed } = await runOfferHandoff({ offerId: 9, tenantId: TENANT });
 
     expect(replayed).toBe(false);
     expect(handoff.status).toBe(HANDOFF_STATUS.COMPLETED);
     expect(tx.employee.create).toHaveBeenCalledTimes(1);
     expect(tx.employee.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ tenant_id: "tenant-a", email: "ayesha@example.com" }) }),
+      expect.objectContaining({ data: expect.objectContaining({ tenant_id: TENANT, email: "ayesha@example.com" }) }),
     );
     // N-15: the contractual base lives in employment_terms, so the handoff
     // writes terms and must NOT also write a BASE_SALARY assignment — payroll
@@ -95,7 +121,7 @@ describe("Recruitment accepted-offer handoff", () => {
     expect(tx.employmentTerms.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          tenantId: "tenant-a",
+          tenantId: TENANT,
           employeeId: 77,
           baseSalary: "85000",
           currency: "PKR",
@@ -109,14 +135,65 @@ describe("Recruitment accepted-offer handoff", () => {
     expect(tx.onboardingTask.createMany).toHaveBeenCalledTimes(1);
     const seeded = tx.onboardingTask.createMany.mock.calls[0][0].data;
     expect(seeded.length).toBeGreaterThan(0);
-    expect(seeded.every((row) => row.checklistId === 55 && row.tenantId === "tenant-a")).toBe(true);
+    expect(seeded.every((row) => row.checklistId === 55 && row.tenantId === TENANT)).toBe(true);
+  });
+
+  it("allocates the employee code from the offer's category and announces the hire", async () => {
+    prisma.offerHandoff.findFirst.mockResolvedValue(null);
+
+    await runOfferHandoff({ offerId: 9, tenantId: TENANT, actorId: 4 });
+
+    expect(mockPrepareEmployeeInsert).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({ email: "ayesha@example.com" }),
+      { tenantId: TENANT, category: "EMPLOYEE" },
+    );
+    // A client-supplied code would be refused; the handoff never sends one.
+    expect(mockPrepareEmployeeInsert.mock.calls[0][1].employee_code).toBeUndefined();
+    expect(eventNames()).toEqual(
+      expect.arrayContaining([
+        "hr.employee.lifecycle.v1",
+        "hr.recruitment.handoff_completed.v1",
+        "hr.recruitment.candidate_hired.v1",
+      ]),
+    );
+    // The offer already carried its category, so it is not rewritten.
+    expect(tx.offer.update).not.toHaveBeenCalled();
+  });
+
+  it("fails visibly, without guessing, when a legacy acceptance has no category", async () => {
+    prisma.offerHandoff.findFirst.mockResolvedValue(null);
+    prisma.offer.findFirst.mockResolvedValue({ ...ACCEPTED_OFFER, employeeCategory: null });
+    prisma.offerHandoff.update.mockResolvedValue({ id: 1, status: HANDOFF_STATUS.FAILED });
+
+    await expect(runOfferHandoff({ offerId: 9, tenantId: TENANT })).rejects.toMatchObject({
+      code: "HR-RECRUITMENT-HANDOFF-CATEGORY-REQUIRED",
+    });
+    expect(tx.employee.create).not.toHaveBeenCalled();
+  });
+
+  it("lets an operator retry a legacy acceptance with the category, and stores it", async () => {
+    prisma.offerHandoff.findFirst.mockResolvedValue(null);
+    prisma.offer.findFirst.mockResolvedValue({ ...ACCEPTED_OFFER, employeeCategory: null });
+
+    await runOfferHandoff({ offerId: 9, tenantId: TENANT, employeeCategory: "INTERNEE" });
+
+    expect(tx.offer.update).toHaveBeenCalledWith({ where: { id: 9 }, data: { employeeCategory: "INTERNEE" } });
+    expect(mockPrepareEmployeeInsert.mock.calls[0][2]).toEqual({ tenantId: TENANT, category: "INTERNEE" });
+  });
+
+  it("refuses a retry category that contradicts the one chosen at acceptance", async () => {
+    await expect(
+      runOfferHandoff({ offerId: 9, tenantId: TENANT, employeeCategory: "MANAGEMENT" }),
+    ).rejects.toMatchObject({ status: 409, code: "HR-RECRUITMENT-HANDOFF-CATEGORY-CONFLICT" });
+    expect(prisma.offerHandoff.create).not.toHaveBeenCalled();
   });
 
   it("does not duplicate checklist tasks when the checklist already exists", async () => {
     prisma.offerHandoff.findFirst.mockResolvedValue(null);
     tx.onboardingChecklist.findFirst.mockResolvedValue({ id: 55 });
 
-    await runOfferHandoff({ offerId: 9, tenantId: "tenant-a" });
+    await runOfferHandoff({ offerId: 9, tenantId: TENANT });
 
     expect(tx.onboardingChecklist.create).not.toHaveBeenCalled();
     expect(tx.onboardingTask.createMany).not.toHaveBeenCalled();
@@ -131,7 +208,7 @@ describe("Recruitment accepted-offer handoff", () => {
       checklistId: 55,
     });
 
-    const { handoff, replayed } = await runOfferHandoff({ offerId: 9, tenantId: "tenant-a" });
+    const { handoff, replayed } = await runOfferHandoff({ offerId: 9, tenantId: TENANT });
 
     expect(replayed).toBe(true);
     expect(handoff.employeeId).toBe(77);
@@ -143,7 +220,7 @@ describe("Recruitment accepted-offer handoff", () => {
     prisma.offerHandoff.findFirst.mockResolvedValue(null);
     tx.employee.findFirst.mockResolvedValue({ id: 42 });
 
-    await runOfferHandoff({ offerId: 9, tenantId: "tenant-a" });
+    await runOfferHandoff({ offerId: 9, tenantId: TENANT });
 
     expect(tx.employee.create).not.toHaveBeenCalled();
     expect(tx.employmentTerms.create).toHaveBeenCalledTimes(1);
@@ -155,7 +232,7 @@ describe("Recruitment accepted-offer handoff", () => {
   it("refuses to provision for an offer the candidate has not accepted", async () => {
     prisma.offer.findFirst.mockResolvedValue({ ...ACCEPTED_OFFER, status: "SENT" });
 
-    await expect(runOfferHandoff({ offerId: 9, tenantId: "tenant-a" }))
+    await expect(runOfferHandoff({ offerId: 9, tenantId: TENANT }))
       .rejects.toMatchObject({ code: "HR-RECRUITMENT-HANDOFF-OFFER-NOT-ACCEPTED" });
     expect(tx.employee.create).not.toHaveBeenCalled();
   });
@@ -164,7 +241,7 @@ describe("Recruitment accepted-offer handoff", () => {
     prisma.offerHandoff.findFirst.mockResolvedValue(null);
     tx.employmentTerms.create.mockRejectedValue(new Error("terms FK violation"));
 
-    await expect(runOfferHandoff({ offerId: 9, tenantId: "tenant-a" }))
+    await expect(runOfferHandoff({ offerId: 9, tenantId: TENANT }))
       .rejects.toThrow("terms FK violation");
 
     // The failure is recorded in its own tenant transaction (the provisioning tx
@@ -188,7 +265,6 @@ describe("Recruitment accepted-offer handoff", () => {
 });
 
 describe("listFailedHandoffs — the operator fleet view (Phase 9 residue)", () => {
-  const TENANT = "tenant-a";
 
   beforeEach(() => {
     jest.clearAllMocks();
