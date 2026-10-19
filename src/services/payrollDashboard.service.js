@@ -36,12 +36,16 @@ const STATUS_DISPLAY = {
   DISTRIBUTED: "distributed",
   FINALIZED: "finalized",
 };
-// FE display → enum (for the employees-list status filter).
+// FE display → enum (for the employees-list status filter). Every label in
+// STATUS_DISPLAY filters back to its status; "disbursed" is the label the
+// tool schema used to send, kept so older clients still filter.
 const DISPLAY_TO_STATUS = {
   pending: "DRAFT",
   approved: "APPROVED",
   hold: "HOLD",
+  finalized: "FINALIZED",
   distributed: "DISTRIBUTED",
+  disbursed: "DISTRIBUTED",
 };
 
 // Bucket a deduction into a coarse category by its type's code/name.
@@ -495,11 +499,18 @@ export async function listPayrollEmployees({
 
 // ── bulk payslip actions ─────────────────────────────────────────────────────
 
-const BULK_ACTIONS = new Set(["approve", "hold", "disburse"]);
+const BULK_ACTIONS = new Set(["approve", "hold", "release", "disburse"]);
+// A hold blocks submission, every review action and finalization, so it may
+// only be placed while the run is back with its initiator.
+const HOLDABLE_RUN_STATUSES = ["COMPLETED", "REJECTED", "FAILED"];
+const INITIATOR_STAGES = ["INITIATOR", "REJECTED"];
+const AUDIT_ACTIONS = { hold: "PAYSLIP_HELD", release: "PAYSLIP_HOLD_RELEASED", disburse: "PAYSLIP_DISTRIBUTED" };
 
 /**
- * bulkPayslipAction — approve / hold / disburse a set of payslips in ONE tenant
+ * bulkPayslipAction — hold / release / disburse a set of payslips in ONE tenant
  * transaction. Only tenant-scoped payslips are touched. Returns { updated }.
+ * Release returns a held slip to DRAFT at any stage before finalization: the
+ * approval snapshot excludes payslip status, so it restores the reviewed state.
  */
 export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, actorId } = {}) {
   if (!BULK_ACTIONS.has(action)) {
@@ -511,7 +522,7 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
   if (!ids.length) return { updated: 0 };
 
   if(action==='approve') throw Object.assign(new Error('Submit the complete payroll run in HR Approval Centre'),{status:409});
-  if(action==='hold' && !reason?.trim()) throw Object.assign(new Error('A hold reason is required'),{status:400});
+  if(['hold','release'].includes(action) && !reason?.trim()) throw Object.assign(new Error(`A ${action} reason is required`),{status:400});
 
   const now = new Date();
   let data;
@@ -523,6 +534,8 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
     };
   } else if (action === "hold") {
     data = { status: "HOLD", holdReason: reason ?? null };
+  } else if (action === "release") {
+    data = { status: "DRAFT", holdReason: null };
   } else {
     data = { status: "DISTRIBUTED", distributedAt: now };
   }
@@ -530,17 +543,23 @@ export async function bulkPayslipAction({ tenantId, payslipIds, action, reason, 
   const result = await tenantTransaction(prisma, async (tx) => {
     const targets=await tx.payrollPayslip.findMany({where:scopedWhere(tenantId,{id:{in:ids}}),select:{id:true,payrollRunId:true,status:true}});
     if(targets.length!==ids.length)throw Object.assign(new Error('One or more payslips are outside this company'),{status:404});
-    if(action!=='hold')for(const runId of new Set(targets.map(p=>p.payrollRunId))){
+    for(const runId of new Set(targets.map(p=>p.payrollRunId))){
       const run=await tx.payrollRun.findFirst({where:scopedWhere(tenantId,{id:runId})});
-      if(!run || !['FINALIZED'].includes(run.status)||!run.approvedBy)throw Object.assign(new Error('Complete HR Approval Centre review of the payroll run first'),{status:409});
+      if(action==='disburse'&&(!run || !['FINALIZED'].includes(run.status)||!run.approvedBy))throw Object.assign(new Error('Complete HR Approval Centre review of the payroll run first'),{status:409});
+      if(action==='release'&&(!run || ['FINALIZED','CANCELLED'].includes(run.status)))throw Object.assign(new Error('Held payslips can only be released before finalization'),{status:409});
+      if(action==='hold'){
+        const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(runId)}}});
+        if(!run || !HOLDABLE_RUN_STATUSES.includes(run.status) || (approval && !INITIATOR_STAGES.includes(approval.stage)))throw Object.assign(new Error('Return payroll to the initiator before holding a payslip'),{status:409});
+      }
     }
     if(action==='disburse'&&targets.some(p=>!['FINALIZED'].includes(p.status)))throw Object.assign(new Error('Only finalized payslips can be distributed'),{status:409});
     if(action==='hold' && targets.some(p=>p.status!=='DRAFT')) throw Object.assign(new Error('Return payroll to the initiator before holding a payslip'),{status:409});
+    if(action==='release' && targets.some(p=>p.status!=='HOLD')) throw Object.assign(new Error('Only held payslips can be released'),{status:409});
     const res = await tx.payrollPayslip.updateMany({
       where: scopedWhere(tenantId, { id: { in: ids } }),
       data,
     });
-    for(const target of targets) await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:target.payrollRunId,payslipId:target.id,action:action==='hold'?'PAYSLIP_HELD':'PAYSLIP_DISTRIBUTED',details:reason?.trim() || 'Payslip distribution recorded; this does not record payment',employeeId:actorId}});
+    for(const target of targets) await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:target.payrollRunId,payslipId:target.id,action:AUDIT_ACTIONS[action],details:reason?.trim() || 'Payslip distribution recorded; this does not record payment',employeeId:actorId}});
     return res.count;
   }, { tenantId });
 

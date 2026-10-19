@@ -19,7 +19,7 @@
 import { z } from "zod";
 
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission, hasPermission } from "../utils/assertPermission.js";
+import { hasPermission } from "../utils/assertPermission.js";
 import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import {
@@ -29,8 +29,6 @@ import {
   listMyPayslips,
   questionPayslip,
 } from "../../services/myPayslip.service.js";
-
-const RESOURCE_KEY = "hr:payroll";
 
 // HR-RBAC-01 T1.3c — self-service entitlement for the my-payslip family.
 // After the Employee-role grant remediation (D1=A) a plain employee holds
@@ -161,7 +159,13 @@ export function registerMyPayslipTools(server) {
       const { user, permissions } = getCtx();
       assertSelfOrPayrollRead(user, permissions);
       const empId = resolveEmployeeId(user, permissions, employeeId);
-      const data = await listMyPayslips({ tenantId: user.tenantId, employeeId: empId, page, pageSize });
+      const data = await listMyPayslips({
+        tenantId: user.tenantId,
+        employeeId: empId,
+        page,
+        pageSize,
+        employeeScoped: !resolveActorScope(user, permissions).canViewOthers,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_my_payslips_list")
   );
@@ -183,14 +187,18 @@ export function registerMyPayslipTools(server) {
     },
     withToolError(async ({ payslipId, question, employeeId }) => {
       const { user, permissions, correlationId } = getCtx();
-      assertPermission(permissions, "POST", RESOURCE_KEY, user.isAdmin);
-      const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: true });
+      // Employees ask about their own slips with the self-service grant; the
+      // admin surface may raise one on any slip in the company.
+      assertSelfOrPayrollRead(user, permissions);
+      const { canViewOthers } = resolveActorScope(user, permissions);
+      const empId = resolveEmployeeId(user, permissions, employeeId, { allowUnbound: canViewOthers });
       const ctx = { actorId: user.userId ?? user.employeeId, correlationId };
       const data = await questionPayslip({
         tenantId: user.tenantId,
         employeeId: empId,
         payslipId,
         question,
+        employeeScoped: !canViewOthers,
         ctx,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };

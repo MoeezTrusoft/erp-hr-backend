@@ -9,6 +9,8 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 let findFirst;
+let findMany;
+let questionCreate;
 let svc;
 
 // The fake slip the mocked prisma "finds" — with earnings so getMyPayslip's
@@ -29,9 +31,12 @@ const FAKE_SLIP = {
 beforeEach(async () => {
   jest.resetModules();
   findFirst = jest.fn(async () => FAKE_SLIP);
+  findMany = jest.fn(async () => []);
+  questionCreate = jest.fn(async ({ data }) => ({ id: 11, ...data }));
   const dbish = () => ({
     findFirst: findFirst,
-    findMany: jest.fn(async () => []),
+    findMany: findMany,
+    count: jest.fn(async () => 0),
   });
   jest.unstable_mockModule("../../src/lib/prisma.js", () => ({
     default: {
@@ -46,7 +51,12 @@ beforeEach(async () => {
     scopedWhere: (tenantId, extra) => ({ tenantId, ...extra }),
     scopedEmployeeWhere: (tenantId, extra) => ({ tenantId, ...extra }),
   }));
-  jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({ tenantTransaction: jest.fn() }));
+  jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
+    tenantTransaction: jest.fn((_db, fn) => fn({
+      payrollPayslip: { findFirst },
+      payslipQuestion: { create: questionCreate },
+    })),
+  }));
   jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
     enqueueHrDomainEvent: jest.fn(),
   }));
@@ -95,5 +105,59 @@ describe("HR-RBAC-01 resolvePayslip employeeScoped where-clause", () => {
         where: expect.objectContaining({ id: 374, employeeId: 489 }),
       }),
     );
+  });
+});
+
+describe("D-05 employees never see DRAFT or HOLD payslips", () => {
+  const RELEASED = { in: ["FINALIZED", "DISTRIBUTED"] };
+
+  it("limits the employee's latest and explicit slip to finalized statuses", async () => {
+    await svc.getMyPayslip({ tenantId: "t1", employeeId: 489, employeeScoped: true });
+    expect(findFirst.mock.calls.at(-1)[0].where.status).toEqual(RELEASED);
+    await svc.getMyPayslip({ tenantId: "t1", employeeId: 489, payslipId: 374, employeeScoped: true });
+    expect(findFirst.mock.calls.at(-1)[0].where.status).toEqual(RELEASED);
+  });
+
+  it("keeps every status visible on the admin surface", async () => {
+    await svc.getMyPayslip({ tenantId: "t1", employeeId: null, payslipId: 374, employeeScoped: false });
+    expect(findFirst.mock.calls.at(-1)[0].where).not.toHaveProperty("status");
+  });
+
+  it("filters the employee's payslip list the same way", async () => {
+    await svc.listMyPayslips({ tenantId: "t1", employeeId: 489, employeeScoped: true });
+    expect(findMany.mock.calls.at(-1)[0].where.status).toEqual(RELEASED);
+    await svc.listMyPayslips({ tenantId: "t1", employeeId: 489 });
+    expect(findMany.mock.calls.at(-1)[0].where).not.toHaveProperty("status");
+  });
+});
+
+describe("D-08 payslip questions", () => {
+  it("writes only model fields and pins an employee to their own released slip", async () => {
+    await svc.questionPayslip({ tenantId: "t1", employeeId: 489, payslipId: 374, question: "Why is tax higher?", employeeScoped: true });
+    expect(findFirst.mock.calls.at(-1)[0].where).toEqual(
+      expect.objectContaining({ id: 374, employeeId: 489, status: { in: ["FINALIZED", "DISTRIBUTED"] } }),
+    );
+    expect(Object.keys(questionCreate.mock.calls[0][0].data).sort()).toEqual(
+      ["employeeId", "payslipId", "question", "status", "tenantId"],
+    );
+  });
+
+  it("refuses an unbound employee-scoped session", async () => {
+    findFirst.mockResolvedValueOnce(null);
+    await expect(
+      svc.questionPayslip({ tenantId: "t1", employeeId: null, payslipId: 374, question: "?", employeeScoped: true }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(findFirst.mock.calls.at(-1)[0].where.employeeId).toBe(-1);
+    expect(questionCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("D-18 past payslips report credit and delivery separately", () => {
+  it("uses the reconciled paid date for receivedOn", async () => {
+    const paidAt = new Date("2026-10-01T10:00:00Z");
+    const distributedAt = new Date("2026-09-30T08:00:00Z");
+    findMany.mockResolvedValueOnce([{ id: 374, netAmount: "90", status: "DISTRIBUTED", paidAt, distributedAt, payrollRun: {} }]);
+    const { items } = await svc.listMyPayslips({ tenantId: "t1", employeeId: 489, employeeScoped: true });
+    expect(items[0]).toMatchObject({ receivedOn: paidAt, distributedAt });
   });
 });

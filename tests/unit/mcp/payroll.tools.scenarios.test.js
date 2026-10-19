@@ -34,9 +34,10 @@ const { registerPayrollTools } = await import('../../../src/mcp/tools/payrollToo
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
+const resources = new Map();
 const recording = {
   tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
-  resource: () => {},
+  resource: (name, ...rest) => resources.set(name, rest[rest.length - 1]),
 };
 registerPayrollTools(recording);
 
@@ -62,9 +63,9 @@ const TOOLS = [
   { name: 'hr_payroll_assignment_create', ctrl: () => payrollCtl.mcpCreatePayrollAssignment, gate: 'hr:payroll', action: 'CREATE', args: { employeeId: 7 } },
   { name: 'hr_payroll_earning_type_create', ctrl: () => payrollCtl.mcpCreateEarningType, gate: 'hr:payroll', action: 'CREATE', args: { name: 'Basic' } },
   { name: 'hr_payroll_deduction_type_create', ctrl: () => payrollCtl.mcpCreateDeductionType, gate: 'hr:payroll', action: 'CREATE', args: { name: 'Tax' } },
-  { name: 'hr_payroll_bank_file_export', ctrl: () => payrollCtl.mcpExportBankDisbursementFile, gate: 'hr:payroll', action: 'VIEW', args: { payrollRunId: 1 } },
+  { name: 'hr_payroll_bank_file_export', ctrl: () => payrollCtl.mcpExportBankDisbursementFile, gate: 'hr:payroll', action: 'EXPORT', args: { payrollRunId: 1 } },
   { name: 'hr_tax_forms_list', ctrl: () => taxCtl.mcpListYearEndTaxForms, gate: 'hr:payroll', action: 'VIEW', args: {} },
-  { name: 'hr_tax_forms_export', ctrl: () => taxCtl.mcpExportYearEndTaxForms, gate: 'hr:payroll', action: 'VIEW', args: {} },
+  { name: 'hr_tax_forms_export', ctrl: () => taxCtl.mcpExportYearEndTaxForms, gate: 'hr:payroll', action: 'EXPORT', args: {} },
 ];
 
 describe('PAYROLL-SCENARIOS — registration', () => {
@@ -96,5 +97,34 @@ describe.each(TOOLS)('$name scenarios', ({ name, ctrl: ctrlOf, gate, action, arg
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
     expect(ctrlOf()).not.toHaveBeenCalled();
+  });
+});
+
+describe('hr_payroll_audit_logs resource (salary before/after values)', () => {
+  const read = (permissions) => mcpCtx.run({ user: USER, permissions }, () => resources.get('hr_payroll_audit_logs')(new URL('hr://payroll/audit-logs')));
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it.each([
+    ['no grant', {}],
+    ['VIEW only', { 'hr:payroll': ['VIEW'] }],
+    ['EDIT without VIEW', { 'hr:payroll': ['EDIT'] }],
+  ])('refuses %s with 403', async (_label, permissions) => {
+    await expect(read(permissions)).rejects.toMatchObject({ status: 403 });
+    expect(payrollCtl.mcpListPayrollAuditLogs).not.toHaveBeenCalled();
+  });
+
+  it('serves the payroll admin surface', async () => {
+    await read({ 'hr:payroll': ['VIEW', 'EDIT'] });
+    expect(payrollCtl.mcpListPayrollAuditLogs).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('hr_payroll_run_finalize If-Match (D-12)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('forwards an optional ifMatch to the controller', async () => {
+    await call('hr_payroll_run_finalize', { id: '12', ifMatch: '"1792416772228"' }, { permissions: { 'hr:payroll': ['EDIT'] } });
+    expect(payrollCtl.mcpFinalizePayrollRun).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-A' }), '12', '"1792416772228"');
   });
 });

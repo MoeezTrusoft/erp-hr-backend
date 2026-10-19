@@ -125,6 +125,33 @@ export function sessioniseByRoster(
     return deadlines.get(key);
   };
 
+  // ATT-EXPLICIT-OUT-01 (2026-10-19) — a check-out the employee CHOSE is a
+  // check-out. Subhan worked the Thursday 1 Oct 15:00–00:00 shift through to
+  // 09:51 on Friday and selected check-out; Friday's own shift did not start
+  // until 15:00. The nine-hour close window (ATT-CLOSE-9H-01) ended at 09:00,
+  // so the punch was refused and opened Friday's session as an arrival. An
+  // explicit direction is not a positional guess: a chosen check-out closes
+  // the shift it belongs to for as long as that shift can still be running,
+  // which is until the next rostered start (and never more than a day past
+  // the rostered end). Direction is explicit when the employee recorded it
+  // through the self-service tool (directionVerified) or when the published
+  // policy trusts the device key. Position-inferred punches keep the window.
+  // A latest checkout HR configured on the roster (checkoutCutoffTime) is a
+  // published rule and still bounds the shift; the next rostered start only
+  // replaces the code's own nine-hour guess.
+  const isOut = p => p.status === 1 || p.status === 5;
+  const explicitOut = p => isOut(p) && (p.directionVerified || (p.trustDirection ?? !legacyDirectionInference));
+  const closeBounds=new Map();
+  const closeBoundFor = shift => {
+    const key=shift.start.toISOString();
+    if(!closeBounds.has(key)) {
+      const next = nextShiftStart(pattern, shift);
+      closeBounds.set(key, shift.checkoutCutoff ? +new Date(shift.checkoutCutoff)
+        : Math.min(+shift.end + DAY_MS, next ? +next - 1 : Infinity));
+    }
+    return closeBounds.get(key);
+  };
+
   /** Distance from `t` to the nearest rostered START, across a day either side. */
   const toNearestStart = (at) => {
     let best = Infinity;
@@ -172,12 +199,12 @@ export function sessioniseByRoster(
       // other two guards: its own shift has usually closed already (open=null)
       // or it lands outside the nine-hour window.
       const closesByDevice = open
-        && (p.status === 1 || p.status === 5)
+        && isOut(p)
         && t > open.end
-        && t <= open.end + closeTol;
+        && ((t <= open.deadline && t <= open.end + closeTol) || (explicitOut(p) && t <= open.closeBound));
 
       // 1. Does this punch belong to the shift already in progress?
-      if (open && t <= open.deadline && ((t >= open.start - tol && t <= open.end + tol) || late || closesByDevice)) {
+      if (open && ((t <= open.deadline && ((t >= open.start - tol && t <= open.end + tol) || late)) || closesByDevice)) {
         key = open.key;
         // Past the rostered end, the shift is finished; a later punch is a new
         // arrival rather than a third scan of the same shift.
@@ -196,8 +223,11 @@ export function sessioniseByRoster(
             if (!start || !end) continue;
             knownRoster=true;
             const deadline = deadlineFor(candidate);
-            if (t < start.getTime() - tol || t > deadline) continue;
-            const distance = Math.abs(t - ((!legacyDirectionInference && (p.status===1||p.status===5)) ? end.getTime():start.getTime()));
+            // An explicit check-out is timed against the END it closes and is
+            // accepted up to the shift's close bound, not the arrival deadline.
+            const bound = explicitOut(p) ? Math.max(deadline, closeBoundFor(candidate)) : deadline;
+            if (t < start.getTime() - tol || t > bound) continue;
+            const distance = Math.abs(t - (explicitOut(p) ? end.getTime():start.getTime()));
             if (!best || distance < best.distance) {
               best = {
                 distance,
@@ -205,13 +235,17 @@ export function sessioniseByRoster(
                 start: start.getTime(),
                 end: end.getTime(),
                 deadline,
+                closeBound: closeBoundFor(candidate),
               };
             }
           }
         }
         if (best) {
           key = best.key;
-          open = { key: best.key, start: best.start, end: best.end, deadline: best.deadline };
+          // A check-out cannot open a shift: a lone explicit OUT is the
+          // departure of a shift whose arrival is missing, so nothing stays
+          // open for the next genuine arrival to be paired against.
+          open = explicitOut(p) ? null : { key: best.key, start: best.start, end: best.end, deadline: best.deadline, closeBound: best.closeBound };
         } else {
           // Keep original direction/evidence, but never attach an out-of-window
           // punch back to an earlier session via its calendar date.
@@ -227,8 +261,8 @@ export function sessioniseByRoster(
         const day = startOfDay(new Date(+p.punchedAt+offset*DAY_MS));
         return shiftCandidates(pattern,day).map(s=>({...s,day}));
       });
-      const direction = p.status===1||p.status===5 ? 'OUT':'IN';
-      const nearest = candidates.filter(s=>t>=+s.start-tol&&t<=deadlineFor(s))
+      const direction = isOut(p) ? 'OUT':'IN';
+      const nearest = candidates.filter(s=>t>=+s.start-tol&&t<=(explicitOut(p) ? Math.max(deadlineFor(s),closeBoundFor(s)) : deadlineFor(s)))
         .sort((a,b)=>Math.abs(t-+(direction==='OUT'?a.end:a.start))-Math.abs(t-+(direction==='OUT'?b.end:b.start)))[0];
       if(nearest) key=dayKey(nearest.day)+'|'+nearest.start.toISOString();
     }

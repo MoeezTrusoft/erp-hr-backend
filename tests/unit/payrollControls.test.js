@@ -1,16 +1,17 @@
 import { describe, it, expect, jest } from "@jest/globals";
+import { randomUUID } from "node:crypto";
 import {
   payrollAssignments,
   validatePayrollConfiguration,
   employeeCode,
 } from "../../src/lib/payrollConfiguration.js";
-import { buildPayslipFromInputs } from "../../src/services/payrollService.js";
+import { buildPayslipFromInputs, isStaleProcessing, roundToWholeMajorHalfUp } from "../../src/services/payrollService.js";
 import {
   reservePayrollLoans,
   settlePayrollLoans,
 } from "../../src/services/payrollLoans.service.js";
 import { evaluateMoneyFormula } from "../../src/lib/payrollFormula.js";
-import { COMPANY_PAYROLL_BANKS } from "../../src/services/payrollPayments.service.js";
+import { COMPANY_PAYROLL_BANKS, recordPayrollPayment } from "../../src/services/payrollPayments.service.js";
 import {loadSource} from '../../src/services/approval/adapters.js';
 const run = {
   periodStart: new Date("2026-09-01"),
@@ -66,6 +67,18 @@ describe("published payroll controls", () => {
       ]),
     );
   });
+  it.each([undefined, null, "", "   "])("refuses bank evidence from a session with no employee code (%p)", async (actorCode) => {
+    // Prisma drops an undefined filter, so an unbound actor must be refused
+    // before the lookup could match an arbitrary employee.
+    await expect(
+      recordPayrollPayment({
+        tenantId: "company", runId: 1, employeeCode: "EMP-001", actorCode,
+        stage: "SUBMITTED", reference: "REF-1", evidenceRef: "evidence-01",
+        amount: "90", currency: "PKR", occurredAt: "2026-09-30T10:00:00Z",
+        requestKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
   it("uses a grade template and an explicit code override once", () => {
     const assignments = payrollAssignments({
       employee: { gradeLevelId: 3 },
@@ -90,6 +103,23 @@ describe("published payroll controls", () => {
         }).grossAmount,
       ),
     ).toBe(115000);
+  });
+  it.each([
+    ["PKR", 1234550n, 1234600n],
+    ["PKR", 1234549n, 1234500n],
+    ["JPY", 100001n, 100001n],
+    ["KWD", 1000499n, 1000000n],
+    ["KWD", 1000500n, 1001000n],
+  ])("rounds %s minor %p to the whole major unit %p", (currency, minor, expected) => {
+    expect(roundToWholeMajorHalfUp(minor, currency)).toBe(expected);
+  });
+  it("keeps a whole-yen salary exact instead of rounding it to hundreds", () => {
+    const slip = buildPayslipFromInputs({
+      employee: { id: 1 },
+      employmentTerm: { baseSalary: 100001, payFrequency: "MONTHLY", currency: "JPY" },
+      payrollRun: { ...run, countryCode: "JP", currencyCode: "JPY" },
+    });
+    expect(Number(slip.grossAmount)).toBe(100001);
   });
   it("excludes templates for another grade and inactive components", () => {
     expect(
@@ -144,6 +174,44 @@ describe("published payroll controls", () => {
       ruleConfig: { garnishmentRecovery: false },
     });
     expect(slip.deductions.some((d) => d.loanId)).toBe(false);
+  });
+  it.each([
+    ["final instalment with paisa", 120000, 100060, "1000.60"],
+    ["sub-rupee residual", 100040, 40, "0.40"],
+    ["regular instalment", 100040, 500000, "1000.00"],
+  ])("loan line keeps the balance exact when it clears the loan (%s)", (_label, installment, outstanding, expected) => {
+    const slip = buildPayslipFromInputs({
+      employee: { id: 1 },
+      employmentTerm: term,
+      payrollRun: run,
+      bridges: {
+        loanLines: [{
+          loanId: 1,
+          name: "Loan repayment",
+          amountMinor: Math.min(installment, outstanding),
+          outstandingMinor: outstanding,
+        }],
+      },
+      ruleConfig: { garnishmentRecovery: true, garnishmentCapPct: 100 },
+    });
+    const line = slip.deductions.find((d) => d.loanId === 1);
+    expect(Number(line.amount)).toBe(Number(expected));
+    // Never more than the balance, so finalization cannot fail on rounding.
+    expect(Math.round(Number(line.amount) * 100)).toBeLessThanOrEqual(outstanding);
+  });
+  it("treats only an untouched PROCESSING run as interrupted", () => {
+    const now = Date.parse("2026-10-19T12:00:00Z");
+    const at = (minutesAgo, status = "PROCESSING") => ({ status, updated_at: new Date(now - minutesAgo * 60000) });
+    expect(isStaleProcessing(at(31), now)).toBe(true);
+    expect(isStaleProcessing(at(29), now)).toBe(false);
+    expect(isStaleProcessing(at(90, "COMPLETED"), now)).toBe(false);
+    expect(isStaleProcessing({ status: "PROCESSING" }, now)).toBe(false);
+    process.env.PAYROLL_PROCESSING_STALE_MINUTES = "5";
+    try {
+      expect(isStaleProcessing(at(6), now)).toBe(true);
+    } finally {
+      delete process.env.PAYROLL_PROCESSING_STALE_MINUTES;
+    }
   });
   it("never substitutes a name or numeric key for an employee code", () => {
     expect(

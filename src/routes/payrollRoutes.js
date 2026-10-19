@@ -2,11 +2,19 @@ import express from 'express';
 import * as payrollController from '../controllers/payrollController.js';
 import * as taxFormController from '../controllers/taxFormController.js';
 import { requirePermission } from '../middlewares/hrContext.middleware.js';
+import { hasPermission } from '../lib/assertPermission.js';
 
 
 const router = express.Router();
 const admin = requirePermission('hr:payroll');
 const self = requirePermission('hr:payroll', { allowSelf: true });
+// Isolated-router fallback for the payroll admin surface; in the app the
+// central F-02 policy has already required one of these grants.
+const adminSurface = (req, res, next) => {
+  if (req.authz?.policy?.permission) return next();
+  if (['EDIT', 'EXPORT', 'CREATE', 'DELETE'].some((action) => hasPermission(req.user?.permissions, 'hr:payroll', action))) return next();
+  return res.status(403).json({ success: false, message: 'Forbidden', errors: [{ code: 'FORBIDDEN', message: 'Missing permission: hr:payroll admin surface' }], requestId: req.requestId });
+};
 
 // HR-03 compatibility gates remain for isolated router consumers. In the
 // production app, F-02's centralized policy is authoritative and supplies the
@@ -58,7 +66,7 @@ router.post('/tax-rates', admin, payrollController.createTaxRate);
 router.get('/tax-forms/:taxYear', admin, taxFormController.getYearEndTaxForms);
 router.get('/tax-forms/:taxYear/export', admin, taxFormController.exportYearEndTaxForms);
 
-// Audit Logs (admin only)
-router.get('/audit-logs', admin, payrollController.getAuditLogs);
+// Audit Logs (payroll admin surface: rows carry salary before/after values)
+router.get('/audit-logs', adminSurface, payrollController.getAuditLogs);
 
 export default router;

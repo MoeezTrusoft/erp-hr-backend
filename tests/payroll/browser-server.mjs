@@ -62,6 +62,8 @@ const server = http.createServer(async (req, res) => {
               "hr.payroll.create",
               "hr.payroll.update",
               "hr.payroll.delete",
+              // Register, bank preparation and tax form exports need EXPORT.
+              "hr.payroll.export",
             ]
           : []),
       ];

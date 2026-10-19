@@ -113,7 +113,17 @@ function creditToStatus(credit, arrivalStatus, durationStatus) {
  */
 export function evaluateShift(args = {}) {
   const cutoff = shiftDeadline(args.shift, args.policy);
-  const outside=(args.punches||[]).filter(p=>cutoff && +p.timestamp>+cutoff);
+  // ATT-EXPLICIT-OUT-01 — the checkout cutoff decides which shift an
+  // AMBIGUOUS late punch belongs to. A check-out the employee chose (not
+  // position-inferred) that lands before the next rostered start is not
+  // ambiguous: it is this shift's departure, however late, and is scored
+  // rather than parked as a conflict. Never more than a day past the end,
+  // and never past a latest checkout HR configured on the roster.
+  const nextStart = args.shift?.nextShiftStart ? +new Date(args.shift.nextShiftStart) : null;
+  const explicitOutBound = args.shift?.end && !args.shift.checkoutCutoff
+    ? Math.min(+args.shift.end + 24 * 60 * MIN_MS, nextStart ?? Infinity) : null;
+  const explicitOut = p => p.type === 'OUT' && !p.inferred && explicitOutBound != null && +p.timestamp < explicitOutBound;
+  const outside=(args.punches||[]).filter(p=>cutoff && +p.timestamp>+cutoff && !explicitOut(p));
   const safeArgs=outside.length ? {...args,punches:args.punches.filter(p=>!outside.includes(p))} : args;
   const result = applyAnomalyRules(evaluateShiftCore(safeArgs), safeArgs);
   if(outside.length) Object.assign(result,{status:'PUNCH_CONFLICT',dayCredit:null,requiresRegularization:true,
