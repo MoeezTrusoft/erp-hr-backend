@@ -10,6 +10,8 @@ import { EMPLOYMENT_TOOLS } from "@trusoft/contracts/employment";
 import { mcpCtx } from "../mcp/context.js";
 
 const PROTECTED = Symbol("F-02-route-protected");
+// Grants that place a caller on the payroll admin surface (actorScope.js).
+const PAYROLL_ADMIN_SURFACE = Object.freeze(["hr.payroll.update", "hr.payroll.export", "hr.payroll.create", "hr.payroll.delete"]);
 
 const METHOD_ACTION = Object.freeze({
   GET: "read",
@@ -164,6 +166,11 @@ export function resolveHrRoutePolicy(req) {
     const definition = Object.values(EMPLOYMENT_TOOLS).find(d => path === '/api/hr/separations/'+d.route);
     if (!definition || !['GET','POST'].includes(method)) return null;
     return { permission: definition.permission, anyOf: definition.permission ? [definition.permission] : ['hr.separation.self','hr.separation.manager','hr.separation.read','hr.separation.verify','hr.separation.manage','hr.separation.approve','hr.separation.task','hr.separation.settle'], resource:'hr.separation', action:'command', self:false, ownership:null, servicePrincipals:[] };
+  }
+  // Payroll audit rows carry before/after salary totals: like the MCP
+  // resource, reading them needs the payroll admin surface, not a bare read.
+  if (method === "GET" && path === "/api/payroll/audit-logs") {
+    return { permission: PAYROLL_ADMIN_SURFACE[0], anyOf: PAYROLL_ADMIN_SURFACE, resource: "hr.payroll", action: "read", self: false, ownership: null, servicePrincipals: [] };
   }
   const resource = resourceFor(path);
   const action = actionFor(method, path);

@@ -226,6 +226,22 @@ describe("F-02 centralized HR REST authorization", () => {
   });
 });
 
+describe("payroll audit log route", () => {
+  const audit = (scope) => run(request({ url: "/api/payroll/audit-logs", scope }));
+
+  it.each([[""], ["hr.payroll.read"], ["hr.payroll.read hr.payroll.self"]])("refuses scope %p", (scope) => {
+    const { res, next } = audit(scope);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it.each([["hr.payroll.update"], ["hr.payroll.export"], ["hr.payroll.create"], ["hr.payroll.delete"]])("allows the admin surface grant %p", (scope) => {
+    const { res, next } = audit(scope);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("F-02 structural route coverage", () => {
   it("wraps every route in nested routers and reports no uncovered endpoint", () => {
     const child = express.Router();
