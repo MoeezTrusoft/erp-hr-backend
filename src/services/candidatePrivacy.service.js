@@ -24,6 +24,7 @@
 // Every read and write is tenant-scoped, and every id-taking operation verifies
 // the row belongs to the caller's tenant before touching it.
 import prisma from "../lib/prisma.js";
+import { Prisma } from "@prisma/client";
 import { withTenant } from "../lib/tenancy.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { recordRetentionRun } from "../lib/recruitmentOpsMetrics.js";
@@ -490,11 +491,64 @@ const REDACTED_FIELD_NAMES = Object.freeze([
   "lastName",
   "email",
   "phone",
+  "location",
   "resumeUrl",
   "resumeMediaId",
   "notes",
   "parsedResume",
+  // D-12 — candidate data held on linked records, erased with the person.
+  "candidateSkills",
+  "applicationAnswers.value",
+  "applicationScreenings.notes",
+  "applicationScreenings.criteria",
+  "interviews.notes",
+  "interviewScorecards.notes",
+  "talentPoolInvitations.responseNote",
+  "candidateEmailVerifications",
 ]);
+
+// D-12 — the person's own words and derived profile live on linked records
+// too: parsed skills, free-text answers, screening and interview notes, an
+// invitation reply, verification tokens bound to their address. Aggregate
+// facts (stages, scores, outcomes, dates) stay reportable; text does not.
+// Each step runs only when the client has the model (narrow test doubles).
+async function redactLinkedRecords(db, tenantId, candidateId, applicationIds) {
+  const where = withTenant(tenantId, { candidateId });
+  if (db.candidateSkill?.deleteMany) await db.candidateSkill.deleteMany({ where });
+  if (db.candidateEmailVerification?.deleteMany) await db.candidateEmailVerification.deleteMany({ where });
+  if (db.talentPoolInvitation?.updateMany) {
+    await db.talentPoolInvitation.updateMany({ where, data: { responseNote: null } });
+  }
+  if (!applicationIds.length) return;
+  const inApplications = { applicationId: { in: applicationIds } };
+  // ApplicationAnswer has no tenant column; its applications were read
+  // tenant-scoped above, so the id list is already inside the tenant.
+  if (db.applicationAnswer?.updateMany) {
+    await db.applicationAnswer.updateMany({ where: inApplications, data: { value: Prisma.DbNull } });
+  }
+  if (db.applicationScreening?.updateMany) {
+    await db.applicationScreening.updateMany({
+      where: withTenant(tenantId, inApplications),
+      data: { notes: null, criteria: Prisma.DbNull },
+    });
+  }
+  if (db.interview?.findMany) {
+    const interviews = await db.interview.findMany({
+      where: withTenant(tenantId, inApplications),
+      select: { id: true },
+    });
+    const interviewIds = interviews.map((row) => row.id);
+    if (interviewIds.length) {
+      await db.interview.updateMany({ where: withTenant(tenantId, { id: { in: interviewIds } }), data: { notes: null } });
+      if (db.interviewScorecard?.updateMany) {
+        await db.interviewScorecard.updateMany({
+          where: withTenant(tenantId, { interviewId: { in: interviewIds } }),
+          data: { notes: null },
+        });
+      }
+    }
+  }
+}
 
 /**
  * Irreversibly remove a candidate's PII while preserving aggregate facts.
@@ -549,7 +603,7 @@ export async function anonymizeCandidate(
   // Aggregate facts survive erasure: pipeline history stays reportable without PII.
   const applications = await db.application.findMany({
     where: withTenant(tenantId, { candidateId: candidate.id }),
-    select: { stage: true, status: true },
+    select: { id: true, stage: true, status: true },
   });
   const retainedSummary = {
     applications: applications.length,
@@ -570,6 +624,7 @@ export async function anonymizeCandidate(
       lastName: null,
       email: `anon-${candidate.id}@anonymized.invalid`,
       phone: null,
+      location: null,
       resumeUrl: null,
       resumeMediaId: null,
       notes: null,
@@ -579,6 +634,8 @@ export async function anonymizeCandidate(
       anonymizedAt: at,
     },
   });
+
+  await redactLinkedRecords(db, tenantId, candidate.id, applications.map((row) => row.id).filter(Boolean));
 
   // FR-04.07 — drafts die with the person: an erasure must not leave a
   // re-identifiable half-finished form behind. Best-effort (the tombstone is

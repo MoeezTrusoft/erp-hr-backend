@@ -505,3 +505,38 @@ describe("Phase 10 (remainder) — archive behaviour", () => {
     });
   });
 });
+
+describe("D-12 — anonymization erases candidate data held on linked records", () => {
+  it("clears skills, answers, screening and interview notes, invitation replies and tokens", async () => {
+    const linked = {
+      ...db,
+      application: { findMany: jest.fn(async () => [{ id: 31, stage: "interview", status: "open" }]) },
+      candidateSkill: { deleteMany: jest.fn(async () => ({ count: 4 })) },
+      candidateEmailVerification: { deleteMany: jest.fn(async () => ({ count: 1 })) },
+      talentPoolInvitation: { updateMany: jest.fn(async () => ({ count: 1 })) },
+      applicationAnswer: { updateMany: jest.fn(async () => ({ count: 2 })) },
+      applicationScreening: { updateMany: jest.fn(async () => ({ count: 1 })) },
+      interview: { findMany: jest.fn(async () => [{ id: 41 }]), updateMany: jest.fn(async () => ({ count: 1 })) },
+      interviewScorecard: { updateMany: jest.fn(async () => ({ count: 2 })) },
+    };
+
+    await privacy.anonymizeCandidate({ tenantId: TENANT, candidateId: 7, reason: "Erasure request" }, { db: linked });
+
+    expect(linked.candidate.updateMany.mock.calls.at(-1)[0].data).toMatchObject({ location: null });
+    expect(linked.candidateSkill.deleteMany).toHaveBeenCalledWith({ where: { candidateId: 7, tenantId: TENANT } });
+    expect(linked.candidateEmailVerification.deleteMany).toHaveBeenCalledWith({ where: { candidateId: 7, tenantId: TENANT } });
+    expect(linked.talentPoolInvitation.updateMany.mock.calls[0][0].data).toEqual({ responseNote: null });
+    expect(linked.applicationAnswer.updateMany.mock.calls[0][0].where).toEqual({ applicationId: { in: [31] } });
+    expect(linked.applicationScreening.updateMany.mock.calls[0][0]).toMatchObject({
+      where: { applicationId: { in: [31] }, tenantId: TENANT },
+      data: { notes: null },
+    });
+    expect(linked.interview.updateMany.mock.calls[0][0].data).toEqual({ notes: null });
+    expect(linked.interviewScorecard.updateMany.mock.calls[0][0]).toMatchObject({
+      where: { interviewId: { in: [41] }, tenantId: TENANT },
+      data: { notes: null },
+    });
+    const logged = linked.candidateAnonymizationLog.create.mock.calls.at(-1)[0].data.redactedFields;
+    expect(logged).toEqual(expect.arrayContaining(["location", "candidateSkills", "interviews.notes"]));
+  });
+});
