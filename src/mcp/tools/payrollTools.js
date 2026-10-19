@@ -230,11 +230,14 @@ export function registerPayrollTools(server) {
   server.tool(
     "hr_payroll_run_finalize",
     "Finalize a processed payroll run",
-    { id: z.string().min(1).describe("Payroll run id (numeric string) — PayrollRun.id to finalize") },
-    withToolError(async ({ id }) => {
+    {
+      id: z.string().min(1).describe("Payroll run id (numeric string) — PayrollRun.id to finalize"),
+      ifMatch: z.union([z.string(), z.number()]).optional().describe("Optional run version (the run's `version`) the caller reviewed; a changed run returns 412"),
+    },
+    withToolError(async ({ id, ifMatch }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
-      const data = await mcpFinalizePayrollRun(user, id);
+      const data = await mcpFinalizePayrollRun(user, id, ifMatch);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

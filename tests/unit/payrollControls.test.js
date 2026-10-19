@@ -5,7 +5,7 @@ import {
   validatePayrollConfiguration,
   employeeCode,
 } from "../../src/lib/payrollConfiguration.js";
-import { buildPayslipFromInputs } from "../../src/services/payrollService.js";
+import { buildPayslipFromInputs, isStaleProcessing } from "../../src/services/payrollService.js";
 import {
   reservePayrollLoans,
   settlePayrollLoans,
@@ -157,6 +157,44 @@ describe("published payroll controls", () => {
       ruleConfig: { garnishmentRecovery: false },
     });
     expect(slip.deductions.some((d) => d.loanId)).toBe(false);
+  });
+  it.each([
+    ["final instalment with paisa", 120000, 100060, "1000.60"],
+    ["sub-rupee residual", 100040, 40, "0.40"],
+    ["regular instalment", 100040, 500000, "1000.00"],
+  ])("loan line keeps the balance exact when it clears the loan (%s)", (_label, installment, outstanding, expected) => {
+    const slip = buildPayslipFromInputs({
+      employee: { id: 1 },
+      employmentTerm: term,
+      payrollRun: run,
+      bridges: {
+        loanLines: [{
+          loanId: 1,
+          name: "Loan repayment",
+          amountMinor: Math.min(installment, outstanding),
+          outstandingMinor: outstanding,
+        }],
+      },
+      ruleConfig: { garnishmentRecovery: true, garnishmentCapPct: 100 },
+    });
+    const line = slip.deductions.find((d) => d.loanId === 1);
+    expect(Number(line.amount)).toBe(Number(expected));
+    // Never more than the balance, so finalization cannot fail on rounding.
+    expect(Math.round(Number(line.amount) * 100)).toBeLessThanOrEqual(outstanding);
+  });
+  it("treats only an untouched PROCESSING run as interrupted", () => {
+    const now = Date.parse("2026-10-19T12:00:00Z");
+    const at = (minutesAgo, status = "PROCESSING") => ({ status, updated_at: new Date(now - minutesAgo * 60000) });
+    expect(isStaleProcessing(at(31), now)).toBe(true);
+    expect(isStaleProcessing(at(29), now)).toBe(false);
+    expect(isStaleProcessing(at(90, "COMPLETED"), now)).toBe(false);
+    expect(isStaleProcessing({ status: "PROCESSING" }, now)).toBe(false);
+    process.env.PAYROLL_PROCESSING_STALE_MINUTES = "5";
+    try {
+      expect(isStaleProcessing(at(6), now)).toBe(true);
+    } finally {
+      delete process.env.PAYROLL_PROCESSING_STALE_MINUTES;
+    }
   });
   it("never substitutes a name or numeric key for an employee code", () => {
     expect(

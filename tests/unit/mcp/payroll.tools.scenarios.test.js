@@ -119,3 +119,12 @@ describe('hr_payroll_audit_logs resource (salary before/after values)', () => {
     expect(payrollCtl.mcpListPayrollAuditLogs).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('hr_payroll_run_finalize If-Match (D-12)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('forwards an optional ifMatch to the controller', async () => {
+    await call('hr_payroll_run_finalize', { id: '12', ifMatch: '"1792416772228"' }, { permissions: { 'hr:payroll': ['EDIT'] } });
+    expect(payrollCtl.mcpFinalizePayrollRun).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-A' }), '12', '"1792416772228"');
+  });
+});

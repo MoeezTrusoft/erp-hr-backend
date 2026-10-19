@@ -23,6 +23,7 @@ const payslipQuestionMock = {
   findUnique: jest.fn(async () => ({ id: 1 })),
   update: jest.fn(async () => ({ id: 1 })),
   delete: jest.fn(async () => ({})),
+  deleteMany: jest.fn(async () => ({ count: 1 })),
 };
 jest.unstable_mockModule('../../../src/lib/prisma.js', () => ({
   default: {
@@ -93,5 +94,36 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
     const res = await call(name, args, { user: { ...USER, headers: { 'x-is-admin': 'true' } }, permissions: {} });
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
+  });
+});
+
+describe('payslip question answers are company-scoped (D-08)', () => {
+  const HR = { 'hr:payroll': ['VIEW', 'EDIT', 'DELETE'] };
+  beforeEach(() => jest.clearAllMocks());
+
+  it('stores an answer as the response, marks it answered and records the responder', async () => {
+    await call('hr_payslip_question_update', { id: '5', answer: 'Tax uses the September slab.' }, { permissions: HR });
+    expect(payslipQuestionMock.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: 5, tenantId: 'tenant-A' }) }),
+    );
+    const { data } = payslipQuestionMock.update.mock.calls[0][0];
+    expect(data).toMatchObject({ response: 'Tax uses the September slab.', status: 'ANSWERED', respondedById: 7 });
+    expect(data.respondedAt).toBeInstanceOf(Date);
+    expect(data).not.toHaveProperty('answer');
+  });
+
+  it('refuses a question outside the company', async () => {
+    payslipQuestionMock.findFirst.mockResolvedValueOnce(null);
+    const missing = await call('hr_payslip_question_update', { id: '5', answer: 'x' }, { permissions: HR });
+    expect(parse(missing).status).toBe(404);
+    expect(payslipQuestionMock.update).not.toHaveBeenCalled();
+  });
+
+  it('deletes only within the company', async () => {
+    await call('hr_payslip_question_delete', { id: '5' }, { permissions: HR });
+    expect(payslipQuestionMock.deleteMany).toHaveBeenCalledWith({ where: expect.objectContaining({ id: 5, tenantId: 'tenant-A' }) });
+    payslipQuestionMock.deleteMany.mockResolvedValueOnce({ count: 0 });
+    const missing = await call('hr_payslip_question_delete', { id: '6' }, { permissions: HR });
+    expect(parse(missing).status).toBe(404);
   });
 });

@@ -21,7 +21,7 @@ import * as money from "../lib/money.js";
 import { withTenant } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { payrollRunFinalizedEvent } from "./hrEvents.js";
-import { assertIfMatch } from "../lib/optimisticConcurrency.js";
+import { assertIfMatch, versionOf } from "../lib/optimisticConcurrency.js";
 
 // HR-ATT-PAYROLL-BRIDGE-01 / HR-PAYROLL-DEDUCTION-TYPE-01 — EVERY deduction the
 // engine emits without a tenant-configured type carries a stable CODE, and the
@@ -626,6 +626,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     }
 
     // 6) BRIDGE: Loan repayments → Deduction (with garnishment cap)
+    const loanBalances = new Map(); // deduction line → remaining loan balance (minor)
     if (ruleConfig.garnishmentRecovery !== false && bridges.loanLines?.length > 0) {
         // [A-02] one default, one source: the config service publishes 33, so
         // the engine fallback is 33 too — never the unsigned 40. (T-2.4/A1.)
@@ -642,13 +643,15 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
                 ? grossLimit - loanTotalMinor
                 : loanMinor;
             if (cappedMinor > 0n) {
-                deductions.push({
+                const line = {
                     deductionTypeId: null,
                     code: 'LOAN_REPAYMENT',
                     amount: money.minorToDecimal(cappedMinor, currency),
                     description: loan.name || 'Loan Repayment',
                     loanId: loan.loanId,
-                });
+                };
+                if (loan.outstandingMinor != null) loanBalances.set(line, BigInt(loan.outstandingMinor));
+                deductions.push(line);
                 loanTotalMinor += cappedMinor;
             }
         }
@@ -790,10 +793,14 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         );
     }
     for (const line of deductions) {
-        line.amount = money.minorToDecimal(
-            roundToWholeMajor(money.decimalToMinor(line.amount, currency)),
-            currency,
-        );
+        const exact = money.decimalToMinor(line.amount, currency);
+        let rounded = roundToWholeMajor(exact);
+        // D-10: a loan line never reserves more than the remaining balance, and
+        // the instalment that clears the loan keeps its exact amount, so
+        // finalization settles it to zero instead of failing or leaving dust.
+        const balance = loanBalances.get(line);
+        if (balance != null && (exact >= balance || rounded > balance)) rounded = balance;
+        line.amount = money.minorToDecimal(rounded, currency);
     }
     // Present monthly contractual earnings in full, with employment proration
     // shown separately. Apply after tax, loan caps and line rounding so net pay,
@@ -917,6 +924,8 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
 
     const enrichedRuns = payrollRuns.map(r => ({
         ...r,
+        // X-07: the value clients send back as If-Match on finalize.
+        ...(versionOf(r) == null ? {} : { version: versionOf(r) }),
         processedByName: r.processedBy ? empMap[r.processedBy] || 'Employee code required' : null,
         approvedByName: r.approvedBy ? empMap[r.approvedBy] || 'Employee code required' : null,
     }));
@@ -935,7 +944,7 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
 export const getPayrollRunById = async (id, tenantId) => {
     // findFirst (not findUnique) so the read carries the tenant predicate: a
     // cross-tenant id resolves to null → controller returns 404.
-    return prisma.payrollRun.findFirst({
+    const run = await prisma.payrollRun.findFirst({
         where: withTenant(tenantId, { id }),
         include: {
             payslips: {
@@ -957,6 +966,9 @@ export const getPayrollRunById = async (id, tenantId) => {
             }
         }
     });
+    // X-07: `version` is what a client sends back as If-Match on finalize.
+    const version = versionOf(run);
+    return version == null ? run : { ...run, version };
 };
 
 export const createPayrollRun = async (data, createdBy, tenantId) => {
@@ -1000,6 +1012,17 @@ export const loanBridgeWhere = (employeeId, payrollRunId) => ({
 // prevents concurrent processing. APPROVED/FINALIZED/CANCELLED are
 // terminal-ish and must NOT be silently re-computed.
 const PROCESSABLE_STATUSES = new Set(['PENDING', 'COMPLETED', 'FAILED', 'REJECTED']);
+// D-11: calculation commits each employee separately, so a crash or restart can
+// leave a run in PROCESSING with no live request behind it. Once it has been
+// untouched for PAYROLL_PROCESSING_STALE_MINUTES (default 30) it may be
+// recalculated or cancelled again; a fresh PROCESSING run stays locked.
+export const processingStaleMinutes = () => {
+    const minutes = Number(process.env.PAYROLL_PROCESSING_STALE_MINUTES);
+    return Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
+};
+export const isStaleProcessing = (run, now = Date.now()) =>
+    run?.status === 'PROCESSING' && run.updated_at != null &&
+    now - new Date(run.updated_at).getTime() >= processingStaleMinutes() * 60_000;
 
 // N-10 — the payroll-eligible employee filter for a run. payroll_included is
 // the documented payroll switch (hr.service.js:508; the attendance writer and
@@ -1092,7 +1115,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         throw payrollError('Payroll run not found',404);
     }
 
-    if (!preview && !PROCESSABLE_STATUSES.has(payrollRun.status)) {
+    if (!preview && !PROCESSABLE_STATUSES.has(payrollRun.status) && !isStaleProcessing(payrollRun)) {
         throw payrollError(`Payroll run cannot be processed from ${payrollRun.status} status`);
     }
 
@@ -1123,12 +1146,14 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':approval-source:PAYROLL:' + id},0))`;
         await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
         const current=await tx.payrollRun.findFirst({where:{tenantId,id}});
-        if(!PROCESSABLE_STATUSES.has(current?.status)) throw payrollError('Payroll changed or is already processing; refresh');
+        const interrupted=isStaleProcessing(current);
+        if(!PROCESSABLE_STATUSES.has(current?.status) && !interrupted) throw payrollError('Payroll changed or is already processing; refresh');
         const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
         if(approval && !['INITIATOR','REJECTED'].includes(approval.stage)) throw payrollError('Return the payroll to its initiator before recalculation');
         const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(updatedBy) ?? -1}});
         if(!actor?.employee_code) throw payrollError('A verified employee code is required to process payroll');
         if(approval && approval.employeeCode!==actor.employee_code) throw payrollError('The payroll initiator must perform the recalculation');
+        if(interrupted) await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_PROCESSING_INTERRUPTED',details:`Recalculating a run left in PROCESSING since ${new Date(current.updated_at).toISOString()}`,employeeId:actor.id}});
         await tx.payrollRun.update({where:{id},data:{status:'PROCESSING',processedBy:actor.id,approvedBy:null,approvedAt:null}});
     },{tenantId});
 
@@ -1399,11 +1424,15 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                     employerContributionMinor: eb.benefitPlan?.employerContributionMinor || 0,
                     employeeContributionMinor: eb.electedAmountMinor || eb.benefitPlan?.employeeContributionMinor || 0,
                 })),
-                loanLines: activeLoans.map(loan => ({
-                    loanId: loan.id,
-                    name: loan.kind==='ADVANCE' ? 'Salary advance repayment' : 'Loan repayment',
-                    amountMinor: Math.min(loan.monthlyInstallmentMinor, Math.max(0,loan.outstandingMinor + loan.repayments.filter(r=>r.settledAt && r.payrollRunId===id).reduce((sum,r)=>sum+r.amountMinor,0) - loan.repayments.filter(r=>!r.settledAt && r.payrollRunId!==id).reduce((sum,r)=>sum+r.amountMinor,0))),
-                })),
+                loanLines: activeLoans.map(loan => {
+                    const outstandingMinor=Math.max(0,loan.outstandingMinor + loan.repayments.filter(r=>r.settledAt && r.payrollRunId===id).reduce((sum,r)=>sum+r.amountMinor,0) - loan.repayments.filter(r=>!r.settledAt && r.payrollRunId!==id).reduce((sum,r)=>sum+r.amountMinor,0));
+                    return {
+                        loanId: loan.id,
+                        name: loan.kind==='ADVANCE' ? 'Salary advance repayment' : 'Loan repayment',
+                        amountMinor: Math.min(loan.monthlyInstallmentMinor, outstandingMinor),
+                        outstandingMinor,
+                    };
+                }),
                 attendanceRows: employee.attendance || [],
                 anomalyRows: employee.attendanceAnomalies || [],
             };
@@ -1686,13 +1715,16 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
   const payrollRun = await prisma.payrollRun.findFirst({ where: withTenant(tenantId, { id }) });
   if (!payrollRun) throw payrollError('Payroll run not found',404);
 
-  // X-07 — If-Match / 412 optimistic concurrency (opt-in via ctx.ifMatch). A
-  // finalize racing a concurrent re-process/approve is rejected, not clobbered.
-  assertIfMatch(ctx.ifMatch, payrollRun);
-
   // Approval gate: a run is only finalizable once it has been APPROVED by a
-  // distinct approver. A COMPLETED-but-unapproved run is blocked here.
+  // distinct approver. A COMPLETED-but-unapproved run is blocked here. A replay
+  // of a finalize that already succeeded returns the run before the If-Match
+  // check, so a retry after a lost response does not read as a conflict.
   if (payrollRun.status === 'FINALIZED') return getPayrollRunById(id,tenantId);
+
+  // X-07 — If-Match / 412 optimistic concurrency (opt-in via ctx.ifMatch). A
+  // finalize racing a concurrent re-process/approve is rejected, not clobbered;
+  // it is checked again on the locked row below.
+  assertIfMatch(ctx.ifMatch, payrollRun);
   if (payrollRun.status !== 'APPROVED') {
     throw payrollError('HR-2012 payroll run requires approval before it can be finalized');
   }
@@ -1714,6 +1746,7 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
     await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
     const locked=await tx.payrollRun.findFirst({where:{id,tenantId}});
     if(locked.status==='FINALIZED') return;
+    assertIfMatch(ctx.ifMatch, locked);
     if(locked.status!=='APPROVED') throw payrollError('Payroll approval is required');
     const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
     const source=await loadSource(tx,{tenantId},'PAYROLL',String(id),{pending:false});
@@ -1785,8 +1818,19 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId) => tenantTransac
   await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
   const run=await tx.payrollRun.findFirst({where:{id,tenantId}});
   if(!run) throw payrollError('Payroll run not found',404);
-  if(!['PENDING','FAILED','REJECTED'].includes(run.status)) throw payrollError('Only pending, failed or Management-rejected payroll may be cancelled');
+  if(!['PENDING','FAILED','REJECTED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError('Only pending, failed, interrupted or Management-rejected payroll may be cancelled');
   if(await tx.loanRepayment.count({where:{tenantId,payrollRunId:id,settledAt:{not:null}}})) throw Object.assign(new Error('Reconcile posted loan repayments before cancelling this historical payroll'),{status:409});
+  // A submitted run carries an approval request; the source guard trigger only
+  // lets it reach CANCELLED once that request is WITHDRAWN in this transaction.
+  const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
+  if(approval){
+    if(!['INITIATOR','REJECTED'].includes(approval.stage)) throw Object.assign(new Error('Return the payroll to its initiator before cancelling'),{status:409});
+    const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(deletedBy) ?? -1}});
+    if(!actor?.employee_code) throw Object.assign(new Error('A verified employee code is required to cancel submitted payroll'),{status:403});
+    const withdrawn=await tx.hrApprovalRequest.update({where:{id:approval.id},data:{stage:'WITHDRAWN',execution:'APPLIED',version:{increment:1}}});
+    await tx.hrApprovalAudit.create({data:{tenantId,approvalRef:approval.id,version:withdrawn.version,round:withdrawn.round,actorCode:actor.employee_code,fromStage:approval.stage,toStage:'WITHDRAWN',action:'WITHDRAW',reason:'Payroll run cancelled',sourceHash:withdrawn.sourceHash}});
+    await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${'PAYROLL:'+id},true)`;
+  }
   await tx.loanRepayment.deleteMany({where:{tenantId,payrollRunId:id,settledAt:null}});
   await tx.payrollRun.update({where:{id},data:{status:'CANCELLED'}});
   await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_CANCELLED',details:'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});

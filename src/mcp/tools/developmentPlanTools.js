@@ -199,13 +199,29 @@ export function registerDevelopmentPlanTools(server) {
     "Update a payslip question response",
     {
       id: z.union([z.number(), z.string()]).describe("Question ID"),
-      answer: z.string().optional().describe("Answer text"),
-      status: z.string().optional().describe("Question status"),
+      answer: z.string().optional().describe("Answer text (stored as the question's response)"),
+      status: z.enum(["OPEN", "ANSWERED"]).optional().describe("Question status (an answer marks it ANSWERED)"),
     },
-    withToolError(async ({ id, ...data }) => {
+    withToolError(async ({ id, answer, status }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
-      const result = await prisma.payslipQuestion.update({ where: { id: Number(id) }, data });
+      const existing = await prisma.payslipQuestion.findFirst({
+        where: scopedWhere(user.tenantId, { id: Number(id) }),
+        select: { id: true },
+      });
+      if (!existing) throw Object.assign(new Error("Payslip question not found"), { status: 404 });
+      const data = {};
+      if (answer !== undefined) {
+        const responder = Number(user.employeeId);
+        Object.assign(data, {
+          response: answer,
+          respondedById: Number.isInteger(responder) && responder > 0 ? responder : null,
+          respondedAt: new Date(),
+          status: "ANSWERED",
+        });
+      }
+      if (status !== undefined) data.status = status;
+      const result = await prisma.payslipQuestion.update({ where: { id: existing.id }, data });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }, "hr_payslip_question_update")
   );
@@ -217,7 +233,10 @@ export function registerDevelopmentPlanTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:payroll", user.isAdmin);
-      await prisma.payslipQuestion.delete({ where: { id: Number(id) } });
+      const { count } = await prisma.payslipQuestion.deleteMany({
+        where: scopedWhere(user.tenantId, { id: Number(id) }),
+      });
+      if (!count) throw Object.assign(new Error("Payslip question not found"), { status: 404 });
       return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
     }, "hr_payslip_question_delete")
   );
