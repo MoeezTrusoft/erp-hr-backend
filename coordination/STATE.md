@@ -72,3 +72,8 @@ Fix: export a separate Tax column and explicitly use the employee-code property.
 Regression: tax-only and tax-plus-loan rows must reconcile earnings minus tax and other deductions to net pay.
 Validation: new service regressions fail before the fix and pass afterward; changed-file ESLint passes.
 Release: no schema or payroll calculation changes; combine with the Finance HR branch before deployment and re-download the live register.
+2026-10-19 Engagement Context Engine: communication-driven counterparty context (parties, events, facts, versioned profile) with Claude-generated drafts and PM project proposals/sync (ENGAGEMENT-CONTEXT-ENGINE.md).
+Fix: 25 hr_engagement_* MCP tools + REST parity under /api/hr/engagement, BullMQ refresh/inbox jobs, comms stream bridge, migration 20261021090000_engagement_context_engine (9 RLS tables).
+Regression: 57 new unit tests (tool scenarios with in-memory Prisma + fake Anthropic, service units, queue wiring); changed-file ESLint and src/lib depcruise pass.
+Validation: full jest/createApp suites that import @trusoft/contracts 0.17 subpaths cannot load in this checkout (local contracts is 0.11); rerun gate:p1 in CI with the real contracts package.
+Release: run prisma migrate deploy, set ANTHROPIC_API_KEY (+ optional PM/communication URLs), seed hr:engagement VIEW/CREATE/EDIT in RBAC and federate hr_engagement_* in the gateway before enabling the frontend flag.

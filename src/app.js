@@ -1,6 +1,7 @@
 import attendanceAcceptanceRoutes from './routes/attendanceAcceptance.routes.js';
 import setupRoutes from './routes/company-setup.routes.js';
 import approvalRoutes from './routes/approval.routes.js';
+import engagementRoutes from './routes/engagement.routes.js';
 import separationRoutes from "./routes/separation.routes.js";
 // src/app.js
 //
@@ -183,6 +184,7 @@ export const createApp = () => {
         ["/api/hr/attendance-acceptance", attendanceAcceptanceRoutes],
         ["/api/hr/company-setup", setupRoutes],
         ["/api/hr/approvals", approvalRoutes],
+        ["/api/hr/engagement", engagementRoutes],
         ["/api/hr/separations", separationRoutes],
         ["/api/hr", hrContractRoutes],
         ["/api/employee", hrRoutes],

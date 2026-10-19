@@ -24,6 +24,7 @@ import logger from "./lib/logger.js";
 import { createApp } from "./app.js";
 import { bootstrapAttendanceData } from "./services/attendance.bootstrap.service.js";
 import { startReminderJobs } from "./jobs/reminder.queue.js";
+import { startEngagementJobs } from "./jobs/engagement.queue.js";
 import { startAttendanceListener, stopAttendanceListener } from "./services/attendance.listener.service.js";
 import { startRealtimeHealthBroadcast } from "./services/attendance.realtime.service.js";
 import {
@@ -49,6 +50,7 @@ const httpServer = createServer({ maxHeaderSize: 65536 }, app);
 // Best-effort: a Redis/boot failure logs and returns a disabled handle — it
 // never takes down the HTTP server.
 const reminderJobs = startReminderJobs();
+const engagementJobs = startEngagementJobs();
 
 // X-13: wire the attendance realtime transport to the Redis Streams fabric.
 // Best-effort: when REDIS_URL is unset the transport stays unbound and every
@@ -117,6 +119,11 @@ async function gracefulShutdown() {
   // Stop the realtime health beat + release the attendance Redis client.
   try { realtimeHealth?.stop?.(); } catch { /* best effort */ }
   try { await attendanceRedis?.quit?.(); } catch { /* best effort */ }
+  try {
+    await engagementJobs?.stop?.();
+  } catch (err) {
+    logger.warn({ err: { message: err?.message } }, "engagement jobs: stop failed during shutdown");
+  }
   // Stop the BullMQ reminder jobs (close queues/workers + their Redis clients).
   try {
     await reminderJobs?.stop?.();

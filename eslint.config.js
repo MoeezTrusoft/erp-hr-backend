@@ -26,6 +26,10 @@ export default [
         files: [
             'src/lib/**/*.js',
             'src/services/assessment/**/*.js',
+            'src/services/engagement/**/*.js',
+            'src/mcp/tools/engagementTools.js',
+            'src/routes/engagement.routes.js',
+            'src/jobs/engagement.queue.js',
             'src/services/approval/**/*.js',
             'src/services/attendance-acceptance/**/*.js',
             'src/mcp/tools/attendanceAcceptanceTools.js',

@@ -5262,3 +5262,196 @@ model AttendanceAcceptanceEvidence {
   createdAt DateTime @default(now())
   @@index([tenantId, siteRef])
 }
+
+// ==================== ENGAGEMENT CONTEXT ENGINE ====================
+// Communication-driven relationship context for publishing leads, clients and
+// platform (publishing) users. Every row is tenant-scoped (RBAC Company uuid)
+// and under FORCE ROW LEVEL SECURITY (see src/lib/rlsTenant.js RLS_MODELS and
+// migration 20261021090000_engagement_context_engine). Status/kind columns are
+// strings guarded by SQL CHECK constraints (same convention as HrApproval*).
+
+model EngagementParty {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @db.Uuid
+  kind         String   @default("PERSON")
+  role         String   @default("LEAD")
+  stage        String   @default("NEW")
+  displayName  String
+  organization String?
+  emails       Json     @default("[]")
+  phones       Json     @default("[]")
+  identities   Json     @default("[]")
+  tags         Json     @default("[]")
+  timezone     String?
+  locale       String?
+  ownerUserId  String?
+  mergedIntoId String?  @db.Uuid
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, role, stage])
+  @@index([tenantId, updatedAt])
+}
+
+model EngagementEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @db.Uuid
+  partyId        String    @db.Uuid
+  channel        String
+  direction      String    @default("INBOUND")
+  sourceSystem   String    @default("MANUAL")
+  sourceId       String?
+  sourceThreadId String?
+  dedupeKey      String
+  occurredAt     DateTime
+  subject        String?
+  body           String
+  bodyHash       String
+  participants   Json      @default("[]")
+  attachments    Json      @default("[]")
+  metadata       Json      @default("{}")
+  extractedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([tenantId, dedupeKey])
+  @@index([tenantId, partyId, occurredAt])
+  @@index([tenantId, partyId, extractedAt])
+}
+
+model EngagementProfile {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @db.Uuid
+  partyId         String    @db.Uuid
+  version         Int       @default(0)
+  summary         String    @default("")
+  structured      Json      @default("{}")
+  model           String?
+  lastEventAt     DateTime?
+  lastRefreshedAt DateTime?
+  eventsAtRefresh Int       @default(0)
+  refreshStatus   String    @default("IDLE")
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([tenantId, partyId])
+  @@index([tenantId, refreshStatus])
+}
+
+model EngagementFact {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @db.Uuid
+  partyId        String    @db.Uuid
+  profileVersion Int
+  kind           String
+  key            String
+  value          String
+  confidence     Float     @default(0.5)
+  status         String    @default("ACTIVE")
+  sourceEventId  String?   @db.Uuid
+  supersededById String?   @db.Uuid
+  extractedAt    DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([tenantId, partyId, status])
+  @@index([tenantId, partyId, kind, key])
+}
+
+model EngagementDocument {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @db.Uuid
+  partyId         String    @db.Uuid
+  kind            String
+  status          String    @default("DRAFT")
+  title           String
+  body            String
+  format          String    @default("MARKDOWN")
+  structured      Json      @default("{}")
+  instructions    String?
+  profileVersion  Int       @default(0)
+  sourceEventIds  Json      @default("[]")
+  llmRunId        String?   @db.Uuid
+  version         Int       @default(1)
+  createdByUserId String?
+  approvedByUserId String?
+  approvedAt      DateTime?
+  sentAt          DateTime?
+  deliveryRef     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([tenantId, partyId, createdAt])
+  @@index([tenantId, kind, status])
+}
+
+model EngagementProjectLink {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  partyId      String    @db.Uuid
+  documentId   String?   @db.Uuid
+  requestKey   String
+  pmProjectId  Int?
+  status       String    @default("PROPOSED")
+  proposal     Json      @default("{}")
+  brief        Json      @default("{}")
+  lastSyncedAt DateTime?
+  lastError    String?
+  version      Int       @default(1)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([tenantId, requestKey])
+  @@index([tenantId, partyId, status])
+}
+
+model EngagementLlmRun {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @db.Uuid
+  partyId          String?  @db.Uuid
+  purpose          String
+  model            String
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  cacheReadTokens  Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  latencyMs        Int      @default(0)
+  stopReason       String?
+  status           String   @default("SUCCEEDED")
+  errorCode        String?
+  requestHash      String?
+  createdAt        DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, partyId, createdAt])
+}
+
+model EngagementInboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @db.Uuid
+  eventId       String
+  source        String
+  payload       Json
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  lastErrorCode String?
+  createdAt     DateTime  @default(now())
+  processedAt   DateTime?
+
+  @@unique([tenantId, eventId])
+  @@index([status, nextAttemptAt])
+}
+
+model EngagementCommandReceipt {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  requestKey String
+  toolName   String
+  digest     String
+  result     Json
+  createdAt  DateTime @default(now())
+
+  @@unique([tenantId, requestKey])
+}

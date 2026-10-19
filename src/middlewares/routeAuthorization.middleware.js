@@ -20,6 +20,7 @@ const METHOD_ACTION = Object.freeze({
 });
 
 const RESOURCE_PREFIXES = Object.freeze([
+  ["/api/hr/engagement", "hr.engagement"],
   ["/api/hr/requisitions", "hr.requisition"],
   ["/api/hr/positions", "hr.position"],
   ["/api/hr/employees", "hr.employee"],

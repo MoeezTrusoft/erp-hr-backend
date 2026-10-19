@@ -3,6 +3,7 @@ import { registerCompanySetupTools } from './tools/companySetupTools.js';
 import { registerApprovalTools } from './tools/approvalTools.js';
 import { registerSeparationTools } from "./tools/separationTools.js";
 import { registerAssessmentTools } from './tools/assessmentTools.js';
+import { registerEngagementTools } from './tools/engagementTools.js';
 import { registerAttendanceCaptureTools } from './tools/attendanceCaptureTools.js';
 import { registerMonthlyPayrollAttendanceTools } from './tools/monthlyPayrollAttendanceTools.js';
 import { registerEmployeeTools } from "./tools/employeeTools.js";
@@ -338,4 +339,5 @@ export function registerAllTools(server) {
   registerCompanySetupTools(server);
   registerAttendanceAcceptanceTools(server);
   registerAssessmentTools(server);
+  registerEngagementTools(server);
 }

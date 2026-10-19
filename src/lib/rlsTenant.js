@@ -62,6 +62,7 @@ export function tenantTransaction(client, fn, opts = {}) {
 // EmergencyContacts (see hr_rls_pilot_extend migration).
 const RLS_MODELS = new Set([
     'AttendanceAcceptanceSite', 'AttendanceAcceptanceAudit', 'AttendanceAcceptanceEvidence',
+    'EngagementParty', 'EngagementEvent', 'EngagementProfile', 'EngagementFact', 'EngagementDocument', 'EngagementProjectLink', 'EngagementLlmRun', 'EngagementInboxEvent', 'EngagementCommandReceipt',
     'HrSetupReview', 'HrSetupAudit', 'HrSetupReceipt', 'HrSetupTask', 'HrSetupEvidence',
     'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt',
     'EmployeeCodeConfiguration', 'EmployeeCodeSequence', 'EmployeeCodeReservation', 'EmployeeCodeAlias', 'EmployeeCategoryConversion', 'SeparationPolicy', 'Separation', 'EmploymentCommandReceipt', 'EmploymentDelivery', 'SeparationTransition', 'NoticePeriodRecord', 'ReplacementPlan', 'ReplacementSession', 'KnowledgeTransferItem', 'AssetHandoverItem', 'AccessRevocationTask', 'ClearanceItem', 'ExitInterview', 'FinalSettlementSheet', 'SeparationDocument', 'SeparationSourceSnapshot',
