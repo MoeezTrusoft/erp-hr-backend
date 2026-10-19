@@ -25,8 +25,10 @@ import { JOB_CONTENT_SCHEMA_VERSION } from "./requisitionFields.js";
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
 
-// The ONLY fields of a requisition that may leave the building.
-const PUBLIC_JOB_SELECT = Object.freeze({
+// The ONLY fields of a requisition that may leave the building. Exported so a
+// test can check every key against the generated Prisma datamodel: a select
+// naming a field that does not exist fails only against a real database.
+export const PUBLIC_JOB_SELECT = Object.freeze({
     id: true,
     title: true,
     status: true,
@@ -35,8 +37,10 @@ const PUBLIC_JOB_SELECT = Object.freeze({
     openings: true,
     closesAt: true,
     jobContent: true,
-    gradeLevel: { select: { name: true, bandMin: true, bandMax: true, bandCurrency: true } },
-    department: { select: { name: true } },
+    // GradeLevel stores the band as minSalary / maxSalary (+ bandCurrency).
+    // JobRequisition has no department relation: departmentId points at an
+    // RBAC-owned department, so the public shape carries no department name.
+    gradeLevel: { select: { name: true, minSalary: true, maxSalary: true, bandCurrency: true } },
     postings: {
         where: { isActive: true },
         select: { channel: true, externalUrl: true },
@@ -63,6 +67,9 @@ const matchesSearch = (job, q) => {
     return haystack.includes(needle);
 };
 
+// Decimal band amounts leave as plain numbers (major units), or null.
+const bandAmount = (value) => (value == null ? null : Number(value));
+
 /** The public shape of one job. Nothing else may be added by a caller. */
 export function toPublicJob(requisition, { now = new Date() } = {}) {
     const evaluation = evaluateRequisitionEligibility(requisition, { postings: requisition.postings ?? [], now });
@@ -75,9 +82,14 @@ export function toPublicJob(requisition, { now = new Date() } = {}) {
         location: requisition.location ?? null,
         employmentType: requisition.employmentType ?? null,
         openings: requisition.openings ?? 1,
-        department: requisition.department?.name ?? null,
+        department: null,
         grade: requisition.gradeLevel
-            ? { name: requisition.gradeLevel.name, min: requisition.gradeLevel.bandMin, max: requisition.gradeLevel.bandMax, currency: requisition.gradeLevel.bandCurrency }
+            ? {
+                  name: requisition.gradeLevel.name,
+                  min: bandAmount(requisition.gradeLevel.minSalary),
+                  max: bandAmount(requisition.gradeLevel.maxSalary),
+                  currency: requisition.gradeLevel.bandCurrency ?? null,
+              }
             : null,
         closesAt: requisition.closesAt ? new Date(requisition.closesAt).toISOString() : null,
         // Published content only — the versioned structured schema from §1.3,
