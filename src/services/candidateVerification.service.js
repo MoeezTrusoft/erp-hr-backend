@@ -98,7 +98,6 @@ export const sendVerificationEmail = async ({ tenantId, email, firstName, token 
         templateId: "hr.recruitment.portal_email_verification",
         data: { firstName, verifyUrl: link, expiresInHours: 24 },
     });
-    recordRecruitmentNotification("email_verification", result.sent ? "enqueued" : "dropped-error");
     return result;
 };
 
@@ -119,7 +118,6 @@ export const sendStatusLinkEmail = async ({ tenantId, email, firstName, token })
         templateId: "hr.recruitment.portal_status_link",
         data: { firstName, statusUrl: link },
     });
-    recordRecruitmentNotification("status_link", result.sent ? "enqueued" : "dropped-error");
     return result;
 };
 
@@ -158,7 +156,6 @@ export const sendApplicationConfirmation = async ({ tenantId, email, firstName, 
             statusUrl,
         },
     });
-    recordRecruitmentNotification("application_confirmation", result.sent ? "enqueued" : "dropped-error");
     return result;
 };
 
@@ -300,7 +297,6 @@ export const notifyMailboxOwner = async ({ tenantId, candidate, requisitionTitle
             },
             category: "hr.recruitment.mailbox_notice",
         });
-        recordRecruitmentNotification("mailbox_notice", result.sent ? "enqueued" : "dropped-error");
         return result;
     } catch (err) {
         recordRecruitmentNotification("mailbox_notice", "dropped-error");

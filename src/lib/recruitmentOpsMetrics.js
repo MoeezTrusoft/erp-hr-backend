@@ -35,6 +35,8 @@ const NOTIFY_EVENTS = Object.freeze([
     "interview_outcome_recorded", "offer_sent", "offer_accepted", "candidate_hired",
     "handoff_completed", "handoff_failed", "requisition_posted", "requisition_decided",
     "requisition_submitted", "requisition_closed",
+    // Portal candidate emails, counted once by the notification transport.
+    "email_verification", "status_link", "application_confirmation", "mailbox_notice", "draft_link",
 ]);
 const notifyEventLabel = (e) => (NOTIFY_EVENTS.includes(String(e)) ? String(e) : "other");
 

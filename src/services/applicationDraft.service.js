@@ -27,7 +27,6 @@ import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { sendCandidateEmail } from "../lib/notificationClient.js";
-import { recordRecruitmentNotification } from "../lib/recruitmentOpsMetrics.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { submitPublicApplication } from "./publicPortal.service.js";
 import logger from "../lib/logger.js";
@@ -148,7 +147,6 @@ export const saveApplicationDraft = async ({ tenantId, requisitionId, email, fir
             expiresInDays: 30,
         },
     });
-    recordRecruitmentNotification("draft_link", send.sent ? "enqueued" : "dropped-error");
 
     return { saved: true, emailed: send.sent, draftId: draft.id };
 };

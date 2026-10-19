@@ -79,9 +79,19 @@ export const sendCandidateEmail = async ({ tenantId, email, templateId, data, de
 
 // The hub template id and the metric event label are the same string family;
 // keep the metric's allowlist honest without leaking hub ids into callers.
-function templateEventLabel(templateId) {
-    const tail = String(templateId || "").split(".").pop();
-    return tail === "verification" ? "email_verification" : tail === "applied" ? "mailbox_notice" : "other";
+// D-14 — the previous mapping compared the last dot segment
+// ("portal_email_verification") with "verification", so every portal email
+// was counted as "other". The transport is the one place each send is counted.
+const TEMPLATE_EVENT_LABELS = Object.freeze({
+    "hr.recruitment.portal_email_verification": "email_verification",
+    "hr.recruitment.portal_status_link": "status_link",
+    "hr.recruitment.portal_application_confirmed": "application_confirmation",
+    "hr.recruitment.portal_application_confirmed_existing": "application_confirmation",
+    "hr.recruitment.portal_mailbox_notice": "mailbox_notice",
+    "hr.recruitment.portal_draft_link": "draft_link",
+});
+export function templateEventLabel(templateId) {
+    return TEMPLATE_EVENT_LABELS[String(templateId || "")] ?? "other";
 }
 
 function loggerSafe(level, obj, msg) {
