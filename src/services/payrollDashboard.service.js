@@ -36,12 +36,16 @@ const STATUS_DISPLAY = {
   DISTRIBUTED: "distributed",
   FINALIZED: "finalized",
 };
-// FE display → enum (for the employees-list status filter).
+// FE display → enum (for the employees-list status filter). Every label in
+// STATUS_DISPLAY filters back to its status; "disbursed" is the label the
+// tool schema used to send, kept so older clients still filter.
 const DISPLAY_TO_STATUS = {
   pending: "DRAFT",
   approved: "APPROVED",
   hold: "HOLD",
+  finalized: "FINALIZED",
   distributed: "DISTRIBUTED",
+  disbursed: "DISTRIBUTED",
 };
 
 // Bucket a deduction into a coarse category by its type's code/name.

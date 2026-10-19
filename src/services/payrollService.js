@@ -785,7 +785,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // re-processes are stable (round-once, not round-per-step). Figures that
     // were already whole rupees (Qasim's 13,000 tax, flat salary lines) are
     // bit-identical before and after.
-    const roundToWholeMajor = roundToWholeMajorHalfUp;
+    const roundToWholeMajor = (raw) => roundToWholeMajorHalfUp(raw, currency);
     for (const line of earnings) {
         line.amount = money.minorToDecimal(
             roundToWholeMajor(money.decimalToMinor(line.amount, currency)),
@@ -845,11 +845,14 @@ const isoDate = (d) => new Date(d).toISOString().split('T')[0];
 // N-22 — WHOLE-RUPEE rounding: half-up to a whole MAJOR unit in minor-space
 // (PKR rupee = 100 minor). Pure so tests can reproduce the persistence order:
 // compute paisa-exact FIRST (tax the exact base), then round the line ONCE.
-export const roundToWholeMajorHalfUp = (raw) => {
+// The major unit follows the currency's exponent (JPY 1, KWD 1000 minor).
+export const roundToWholeMajorHalfUp = (raw, currency = 'PKR') => {
+    const exponent = money.CURRENCY_EXPONENT[String(currency).toUpperCase()] ?? 2;
+    const unit = 10n ** BigInt(exponent);
     const value = BigInt(raw);
     const sign = value < 0n ? -1n : 1n;
     const abs = value < 0n ? -value : value;
-    return sign * ((abs + 50n) / 100n) * 100n;
+    return sign * ((abs + unit / 2n) / unit) * unit;
 };
 
 // T-1.2 / N-02 — repayment PLANNING for the loan bridge, extracted so both

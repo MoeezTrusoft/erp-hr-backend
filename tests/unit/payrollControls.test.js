@@ -5,7 +5,7 @@ import {
   validatePayrollConfiguration,
   employeeCode,
 } from "../../src/lib/payrollConfiguration.js";
-import { buildPayslipFromInputs, isStaleProcessing } from "../../src/services/payrollService.js";
+import { buildPayslipFromInputs, isStaleProcessing, roundToWholeMajorHalfUp } from "../../src/services/payrollService.js";
 import {
   reservePayrollLoans,
   settlePayrollLoans,
@@ -103,6 +103,23 @@ describe("published payroll controls", () => {
         }).grossAmount,
       ),
     ).toBe(115000);
+  });
+  it.each([
+    ["PKR", 1234550n, 1234600n],
+    ["PKR", 1234549n, 1234500n],
+    ["JPY", 100001n, 100001n],
+    ["KWD", 1000499n, 1000000n],
+    ["KWD", 1000500n, 1001000n],
+  ])("rounds %s minor %p to the whole major unit %p", (currency, minor, expected) => {
+    expect(roundToWholeMajorHalfUp(minor, currency)).toBe(expected);
+  });
+  it("keeps a whole-yen salary exact instead of rounding it to hundreds", () => {
+    const slip = buildPayslipFromInputs({
+      employee: { id: 1 },
+      employmentTerm: { baseSalary: 100001, payFrequency: "MONTHLY", currency: "JPY" },
+      payrollRun: { ...run, countryCode: "JP", currencyCode: "JPY" },
+    });
+    expect(Number(slip.grossAmount)).toBe(100001);
   });
   it("excludes templates for another grade and inactive components", () => {
     expect(
