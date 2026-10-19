@@ -10,7 +10,7 @@ import {
   settlePayrollLoans,
 } from "../../src/services/payrollLoans.service.js";
 import { evaluateMoneyFormula } from "../../src/lib/payrollFormula.js";
-import { COMPANY_PAYROLL_BANKS } from "../../src/services/payrollPayments.service.js";
+import { COMPANY_PAYROLL_BANKS, recordPayrollPayment } from "../../src/services/payrollPayments.service.js";
 import {loadSource} from '../../src/services/approval/adapters.js';
 const run = {
   periodStart: new Date("2026-09-01"),
@@ -65,6 +65,18 @@ describe("published payroll controls", () => {
         { company: "HomeVision", bank: "Meezan Bank" },
       ]),
     );
+  });
+  it.each([undefined, null, "", "   "])("refuses bank evidence from a session with no employee code (%p)", async (actorCode) => {
+    // Prisma drops an undefined filter, so an unbound actor must be refused
+    // before the lookup could match an arbitrary employee.
+    await expect(
+      recordPayrollPayment({
+        tenantId: "company", runId: 1, employeeCode: "EMP-001", actorCode,
+        stage: "SUBMITTED", reference: "REF-1", evidenceRef: "evidence-01",
+        amount: "90", currency: "PKR", occurredAt: "2026-09-30T10:00:00Z",
+        requestKey: "6f1c3a52-6b47-4a43-9d6f-0d7f6f0a1b2c",
+      }),
+    ).rejects.toMatchObject({ status: 403 });
   });
   it("uses a grade template and an explicit code override once", () => {
     const assignments = payrollAssignments({

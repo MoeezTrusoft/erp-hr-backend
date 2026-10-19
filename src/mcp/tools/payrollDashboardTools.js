@@ -137,16 +137,16 @@ export function registerPayrollDashboardTools(server) {
   // ── bulk action ─────────────────────────────────────────────────────────────
   server.tool(
     "hr_payroll_bulk_action",
-    "Bulk approve / hold / disburse a set of payslips in one tenant transaction. Returns the number updated.",
+    "Bulk hold / release / disburse a set of payslips in one tenant transaction. Returns the number updated.",
     {
       payslipIds: z
         .array(z.coerce.number().int().positive())
         .min(1)
         .describe("PayrollPayslip.id values to act on (required)."),
       action: z
-        .enum(["approve", "hold", "disburse"])
-        .describe("approve → APPROVED; hold → HOLD; disburse → DISTRIBUTED (required)."),
-      reason: z.string().optional().describe("Hold reason (used when action=hold)."),
+        .enum(["approve", "hold", "release", "disburse"])
+        .describe("approve is refused (use HR Approval Centre); hold → HOLD while the run is with its initiator; release → back to DRAFT before finalization; disburse → DISTRIBUTED (required)."),
+      reason: z.string().optional().describe("Reason, required when action=hold or release."),
     },
     withToolError(async ({ payslipIds, action, reason }) => {
       const { user, permissions } = getCtx();
@@ -173,7 +173,8 @@ export function registerPayrollDashboardTools(server) {
     },
     withToolError(async ({ runId, format = "csv", companyName }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+      // The register lists every employee's pay: export grant, as on REST.
+      assertPermission(permissions, "EXPORT", RESOURCE, user.isAdmin);
       const data = format === "pdf" ? await exportPayrollPdf({ tenantId: user.tenantId, runId, companyName }) : await exportPayrollCsv({ tenantId: user.tenantId, runId });
       return jsonResult(data);
     }, "hr_payroll_export")
