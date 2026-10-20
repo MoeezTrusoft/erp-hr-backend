@@ -208,9 +208,9 @@ deployment cannot and must not mint. The smoke now pins the refusal instead. If
 you need the 202 path exercised, do it in an environment where a synthetic
 acceptance site can legitimately be approved; never fabricate one here.
 
-The negative cases run before the positive one on purpose: a route that 200s
-without a key is worse than one that 403s with a good key, because it means
-anyone inside the cluster can inject attendance.
+The refusals are asserted before anything else on purpose: a route that accepts
+without a credential is worse than one that turns a good device away, because it
+means anyone inside the cluster can inject attendance.
 
 It needs `HR_ATTENDANCE_INTAKE_TENANT_ID`. It creates a temporary registered
 device with a random credential kept only in process memory and submits three
