@@ -1,6 +1,6 @@
 // tests/unit/mcp/candidatePipeline.tools.scenarios.test.js
 //
-// Per-tool scenario matrix for HR candidate pipeline + resume + talent pool mgmt tools (9 tools).
+// Per-tool scenario matrix for HR candidate pipeline + resume + talent pool mgmt tools.
 // DB-free: services are mocked; tool→service dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
@@ -8,6 +8,9 @@ jest.unstable_mockModule('../../../src/services/candidatePipeline.service.js', (
   getPipelineBoard: jest.fn(async () => ({ success: true })),
   listPipelineCards: jest.fn(async () => ({ success: true })),
   PIPELINE_STAGES: ['NEW', 'SCREENING', 'INTERVIEW', 'OFFER', 'HIRED', 'REJECTED'],
+}));
+jest.unstable_mockModule('../../../src/services/candidate-360.service.js', () => ({
+  getCandidate360: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/utils/apiContract.js', () => ({
   buildListPayload: jest.fn(({ items, page, pageSize, total, sort, order, filters }) => ({ items, page, pageSize, total, sort, order, filters })),
@@ -56,9 +59,10 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  // --- candidatePipelineTools.js (2 tools) ---
+  // --- candidatePipelineTools.js (3 tools) ---
   { name: 'hr_candidate_pipeline_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_candidate_pipeline_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
+  { name: 'hr_candidate_360_get', gate: 'hr:recruitment', action: 'VIEW', args: { candidateId: '1' } },
   // --- resumeTools.js (3 tools) ---
   { name: 'hr_resume_parse_preview', gate: 'hr:employee', action: 'VIEW', args: { resumeMediaId: '10' } },
   { name: 'hr_resume_employee_ingest', gate: 'hr:employee', action: 'CREATE', args: { employeeId: '7', resumeMediaId: '10' } },

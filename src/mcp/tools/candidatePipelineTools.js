@@ -7,6 +7,8 @@ import {
   getPipelineBoard,
   listPipelineCards,
 } from "../../services/candidatePipeline.service.js";
+import { getCandidate360 } from "../../services/candidate-360.service.js";
+import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -90,5 +92,28 @@ export function registerCandidatePipelineTools(server) {
       });
       return { content: [{ type: "text", text: JSON.stringify(payload) }] };
     }, "hr_candidate_pipeline_list")
+  );
+
+  // ── CANDIDATE 360 (F-14) ─────────────────────────────────────────────────
+  // One candidate across every requisition: profile, applications with stage
+  // history and screening, interviews with submitted scorecards, offers,
+  // documents, pools, privacy state and AI parse records — each section cut to
+  // the caller's recruitment scope (notes and compensation masked).
+  server.tool(
+    "hr_candidate_360_get",
+    "Candidate 360: one candidate's profile, applications with stage history, interviews and scorecards, offers, documents, talent pools, privacy state and AI records, scoped to the caller",
+    {
+      candidateId: z.union([z.string(), z.number()]).describe("Candidate id"),
+    },
+    withToolError(async ({ candidateId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await getCandidate360({
+        candidateId,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_candidate_360_get")
   );
 }

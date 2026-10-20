@@ -76,7 +76,7 @@ for (const [module, register] of RECRUITMENT_REGISTRARS) {
 const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentTools: 23, // + hr_offer_handoffs_failed_list (Phase 9 operator fleet view)
   requisitionMgmtTools: 14,
-  candidatePipelineTools: 2,
+  candidatePipelineTools: 3, // + hr_candidate_360_get (F-14)
   interviewMgmtTools: 16,
   offerMgmtTools: 7, // + hr_offer_approval_policy_get/_set (FR-09 residue)
   candidatePrivacyTools: 15,
@@ -89,6 +89,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
 });
 
 const EXPECTED_TOOLS = Object.freeze([
+  "hr_candidate_360_get",
   "hr_application_create",
   "hr_application_delete",
   "hr_application_get",
@@ -246,7 +247,8 @@ describe("Recruitment MCP tool inventory", () => {
     // 696 = the 559 on the recruitment branch plus the tools main added since
     // the fork (approval, assessment, separation, company setup, attendance,
     // payroll finance), counted after the merge with no duplicates.
-    expect(all).toHaveLength(696);
+    // 697 with hr_candidate_360_get (F-14).
+    expect(all).toHaveLength(697);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
