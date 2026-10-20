@@ -33,6 +33,7 @@ import { registerApplicationTools } from "../../../src/mcp/tools/applicationTool
 import { registerResumeTools } from "../../../src/mcp/tools/resumeTools.js";
 import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboardingTemplateTools.js";
 import { registerRecruitmentSettingsTools } from "../../../src/mcp/tools/recruitment-settings.tools.js";
+import { registerCandidateDuplicateTools } from "../../../src/mcp/tools/candidate-duplicate.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -56,6 +57,7 @@ const RECRUITMENT_REGISTRARS = [
   ["onboardingTemplateTools", registerOnboardingTemplateTools],
   // Phase 2 — intake and screening.
   ["recruitmentSettingsTools", registerRecruitmentSettingsTools],
+  ["candidateDuplicateTools", registerCandidateDuplicateTools],
 ];
 
 function collect(register) {
@@ -90,6 +92,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   applicationTools: 15,
   resumeTools: 6,
   recruitmentSettingsTools: 3, // Phase 2: settings get/set + source report
+  candidateDuplicateTools: 3, // Phase 2: duplicate list/resolve/detect
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -217,6 +220,9 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_recruitment_settings_get",
   "hr_recruitment_settings_set",
   "hr_recruitment_source_report",
+  "hr_candidate_duplicate_list",
+  "hr_candidate_duplicate_resolve",
+  "hr_candidate_duplicate_detect",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -256,8 +262,8 @@ describe("Recruitment MCP tool inventory", () => {
     // the fork (approval, assessment, separation, company setup, attendance,
     // payroll finance), counted after the merge with no duplicates.
     // 697 with hr_candidate_360_get (F-14).
-    // Phase 2: + 3 settings and source report tools.
-    expect(all).toHaveLength(700);
+    // Phase 2: + 3 settings and source report tools, + 3 duplicate tools.
+    expect(all).toHaveLength(703);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
