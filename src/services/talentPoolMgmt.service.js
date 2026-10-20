@@ -171,6 +171,65 @@ export const listManagedPool = async ({
   return { items: rows, total, page: resolvedPage, limit: resolvedLimit };
 };
 
+// ── DESCRIBE (Phase 5 — talent pool nurture) ────────────────────────────────
+
+/**
+ * The pool display data for a set of candidates, in the order given: the same
+ * fields and derivations the pool list shows (name, location, experience,
+ * skills, pool names), so a nurture proposal shows a recruiter nothing the
+ * talent pool screen does not already show them. Contact data is never part
+ * of it. An erased candidate is reported as such with no display data; an id
+ * that is not in this tenant is reported as missing.
+ */
+export const describePoolCandidates = async ({ tenantId, candidateIds = [], db = prisma } = {}) => {
+  const ids = [...new Set((Array.isArray(candidateIds) ? candidateIds : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) return [];
+
+  const candidates = await db.candidate.findMany({
+    where: withTenant(tenantId, { id: { in: ids } }),
+    select: { id: true, firstName: true, lastName: true, location: true, source: true, parsedResume: true, anonymizedAt: true },
+  });
+  const skills = await db.candidateSkill.findMany({
+    where: withTenant(tenantId, { candidateId: { in: ids } }),
+    select: { candidateId: true, name: true },
+  });
+  const memberships = await db.talentPool.findMany({
+    where: withTenant(tenantId, { candidateId: { in: ids } }),
+    select: { candidateId: true, poolName: true },
+  });
+
+  const byId = new Map(candidates.map((c) => [c.id, c]));
+  const group = (rows, key, value) => {
+    const out = new Map();
+    for (const row of rows) {
+      if (!out.has(row[key])) out.set(row[key], []);
+      out.get(row[key]).push(value(row));
+    }
+    return out;
+  };
+  const skillsBy = group(skills, "candidateId", (row) => ({ name: row.name }));
+  const poolsBy = group(memberships, "candidateId", (row) => row.poolName);
+
+  return ids.map((candidateId) => {
+    const candidate = byId.get(candidateId);
+    if (!candidate) return { candidateId, missing: true };
+    if (candidate.anonymizedAt) return { candidateId, anonymized: true };
+    return {
+      candidateId,
+      name: fullName(candidate),
+      location: candidate.location ?? deriveLocation(candidate.parsedResume),
+      experienceYears: deriveExperienceYears(candidate.parsedResume),
+      skills: deriveSkillNames(skillsBy.get(candidateId)),
+      pools: [...new Set(poolsBy.get(candidateId) ?? [])],
+      // False once the pool retention sweep (or a recruiter) removed them.
+      inPool: poolsBy.has(candidateId),
+      source: candidate.source ?? null,
+    };
+  });
+};
+
 // ── PROFILE ─────────────────────────────────────────────────────────────────
 
 /**

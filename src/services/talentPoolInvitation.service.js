@@ -70,6 +70,7 @@ export async function inviteToApply({
   validityDays = DEFAULT_INVITATION_VALIDITY_DAYS,
   note = null,
   actorId = null,
+  nurtureRunId = null,
   db = prisma,
 } = {}) {
   requireTenant(tenantId);
@@ -117,6 +118,9 @@ export async function inviteToApply({
       invitedAt,
       expiresAt,
       responseNote: note ? String(note).trim() : null,
+      // Phase 5 — the nurture run whose approval sent it (absent otherwise, so
+      // every other caller writes exactly what it wrote before).
+      ...(Number.isInteger(Number(nurtureRunId)) && Number(nurtureRunId) > 0 ? { nurtureRunId: Number(nurtureRunId) } : {}),
     }),
   });
 
@@ -145,10 +149,44 @@ const transitionInvitation = async ({ tenantId, invitationId, to, responseNote =
   });
 };
 
-/** The candidate's answer to an open invitation (ACCEPTED / DECLINED). */
+/**
+ * The candidate's answer to an open invitation (ACCEPTED / DECLINED).
+ *
+ * Phase 5 (talentNurture flag) — accepting a NURTURE invitation (one a
+ * recruiter-approved nurture run sent for a requisition) is applying: the
+ * application is created through the gated intake BEFORE the invitation is
+ * marked accepted, so a refusal (applications closed, do-not-contact) refuses
+ * the acceptance and leaves the invitation open, and the answer carries the
+ * application under `application`. Other invitations are unchanged: a
+ * role-specific invitation from hr_talent_pool_invite already moved the
+ * candidate into the pipeline when it was sent.
+ */
 export const respondToInvitation = async ({ tenantId, invitationId, response, note = null, db = prisma } = {}) => {
   const to = resolveInvitationResponse(response);
+  if (to === "ACCEPTED" && isRecruitmentFlagEnabled("talentNurture")) {
+    return acceptInvitation({ tenantId, invitationId, note, db });
+  }
   return transitionInvitation({ tenantId, invitationId, to, responseNote: note, db });
+};
+
+const acceptInvitation = async ({ tenantId, invitationId, note, db }) => {
+  requireTenant(tenantId);
+  const invitation = await db.talentPoolInvitation.findFirst({
+    where: scopedWhere(tenantId, { id: Number(invitationId) }),
+  });
+  if (!invitation?.nurtureRunId || !invitation.jobRequisitionId) {
+    return transitionInvitation({ tenantId, invitationId, to: "ACCEPTED", responseNote: note, db });
+  }
+  // Refuse an illegal answer before any application is created.
+  const move = checkInvitationTransition(invitation.status, "ACCEPTED");
+  if (!move.ok) throw poolError(move.error, move.code);
+
+  // Loaded on demand: the nurture service depends on this module (inviteToApply),
+  // and only a flag-on nurture acceptance needs it.
+  const { intakeAcceptedNurtureInvitation } = await import("./talent-nurture.service.js");
+  const application = await intakeAcceptedNurtureInvitation({ tenantId, invitation });
+  const updated = await transitionInvitation({ tenantId, invitationId, to: "ACCEPTED", responseNote: note, db });
+  return { ...updated, application };
 };
 
 /** A recruiter pulling back an open invitation. */
