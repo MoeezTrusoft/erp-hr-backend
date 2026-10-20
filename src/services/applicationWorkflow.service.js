@@ -11,6 +11,7 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationStageChangedEvent } from "./hrEvents.js";
 import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisitionEligibility.js";
 import { recordTransitionFailure } from "../lib/recruitmentOpsMetrics.js";
+import { syncReferralFromApplicationInTx } from "./internal-referral.service.js";
 
 export const APPLICATION_STAGES = Object.freeze([
     "applied",
@@ -248,6 +249,10 @@ async function transitionApplicationStageCore({
             { fromStage: application.stage, toStage: normalizedTarget, reason: reasonText },
         ),
     );
+
+    // Recruitment Phase 5 — a referral follows its application, on the same
+    // client, so the referral status and the stage move commit together.
+    await syncReferralFromApplicationInTx(db, { tenantId, applicationId: application.id, stage: normalizedTarget });
 
     return { success: true, changed: true, data: updated };
 }

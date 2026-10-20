@@ -30,15 +30,47 @@ export const PUBLICATION_CHANNELS = Object.freeze([
     "AGENCY",
     "REFERRAL",
     "OTHER",
+    // Recruitment Phase 5 — the employees' internal job board. Built in like
+    // CAREER_SITE, but it is NOT public: an INTERNAL-only posting is listed on
+    // the internal board and nowhere else (never the careers portal, never a
+    // job feed). The database CHECK must list it too (see the Phase 5 note).
+    "INTERNAL",
 ]);
 
 // The channels served by this product itself. Everything else is an external
 // system the operator records manually, so it must carry a URL.
-export const SELF_HOSTED_CHANNELS = Object.freeze(["CAREER_SITE"]);
+export const SELF_HOSTED_CHANNELS = Object.freeze(["CAREER_SITE", "INTERNAL"]);
 
 export const CHANNELS_REQUIRING_URL = Object.freeze(
     PUBLICATION_CHANNELS.filter((channel) => !SELF_HOSTED_CHANNELS.includes(channel)),
 );
+
+// Channels whose postings only employees may see. A posting on one of these
+// never makes a requisition visible to the anonymous careers portal: the
+// public readers keep only PUBLIC_CHANNELS postings, so a requisition whose
+// only live posting is INTERNAL reads there as having no live posting.
+export const INTERNAL_ONLY_CHANNELS = Object.freeze(["INTERNAL"]);
+
+export const PUBLIC_CHANNELS = Object.freeze(
+    PUBLICATION_CHANNELS.filter((channel) => !INTERNAL_ONLY_CHANNELS.includes(channel)),
+);
+
+// The postings that put a requisition on the employees' internal board: the
+// internal channel itself, and the careers site (a job open to the public is
+// open to employees too). External boards alone do not: a role advertised
+// only through an agency or LinkedIn was not opened to internal applicants.
+export const INTERNAL_BOARD_CHANNELS = Object.freeze(["CAREER_SITE", "INTERNAL"]);
+
+const channelOf = (posting) => String(posting?.channel ?? "").trim().toUpperCase();
+
+/** Whether a posting may be shown to (and applied through by) the public. Pure. */
+export const isPublicPosting = (posting) => PUBLIC_CHANNELS.includes(channelOf(posting));
+
+/** The postings that count for the public portal (drops internal-only ones). Pure. */
+export const publicPostings = (postings = []) => (postings ?? []).filter(isPublicPosting);
+
+/** Whether a posting puts its requisition on the internal board. Pure. */
+export const isInternalBoardPosting = (posting) => INTERNAL_BOARD_CHANNELS.includes(channelOf(posting));
 
 // The channel(s) a publication with no explicit list goes to (and the fallback
 // for the auto-publish sweep's configured list).

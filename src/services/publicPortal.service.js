@@ -55,6 +55,7 @@ import { issueEmailVerification, sendVerificationEmail, issueStatusLink, sendApp
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { validateAnswer, scoreAnswers } from "../lib/applicationQuestions.js";
 import { parsePublicApplicationInput, getPublicJob as getPublicJobShape } from "../lib/publicPortal.js";
+import { INTERNAL_ONLY_CHANNELS, PUBLIC_CHANNELS, publicPostings } from "../lib/requisitionPublication.js";
 import {
     checkIntakeDnc,
     logIntakeSuppressed,
@@ -92,8 +93,11 @@ const positiveInt = (value) => {
  */
 export function parseSourceAttribution(body = {}, { postings = [], defaultChannel = "CAREER_SITE" } = {}) {
     const postingId = positiveInt(body?.sourcePostingId);
+    // Recruitment Phase 5 — an anonymous applicant cannot claim the internal
+    // channel: INTERNAL attribution belongs to the employees' own board.
+    const claimed = normalizeSourceChannel(body?.sourceChannel, defaultChannel);
     return {
-        sourceChannel: normalizeSourceChannel(body?.sourceChannel, defaultChannel),
+        sourceChannel: INTERNAL_ONLY_CHANNELS.includes(claimed) ? defaultChannel : claimed,
         sourcePostingId: postingId && postings.some((p) => p.id === postingId && p.isActive !== false) ? postingId : null,
         sourceDetail: normalizeSourceDetail(body?.sourceDetail),
     };
@@ -252,14 +256,16 @@ async function reconcileCandidate(tx, { tenantId, input, now, mediaId }) {
 
 /** The intake itself, on the caller's tenant transaction. */
 async function intakeInTransaction(tx, { tenantId, reqId, input, body, now, mediaId, knockoutEnabled, settings }) {
+    // Recruitment Phase 5 — only PUBLIC postings open a job to the portal; an
+    // INTERNAL-only job answers like an unknown one.
     const requisition = await tx.jobRequisition.findFirst({
         where: { id: reqId, tenantId, status: "POSTED" },
-        include: { postings: { where: { isActive: true } } },
+        include: { postings: { where: { isActive: true, channel: { in: [...PUBLIC_CHANNELS] } } } },
     });
     // Anti-enumeration: unknown id and closed job look IDENTICAL from the
     // outside — same status, same code, same message.
     if (!requisition) throw fail("Position not found", 404, "HR-PORTAL-NOT-FOUND");
-    const evaluation = evaluateRequisitionEligibility(requisition, { postings: requisition.postings, now });
+    const evaluation = evaluateRequisitionEligibility(requisition, { postings: publicPostings(requisition.postings), now });
     if (!evaluation.eligible) {
         throw fail("Position not found", 404, "HR-PORTAL-NOT-FOUND", {
             candidateMessage: closedApplicationMessage(requisition, evaluation),

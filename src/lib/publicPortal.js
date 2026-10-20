@@ -21,6 +21,7 @@
 //     internal gate would refuse an application against.
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "./requisitionEligibility.js";
 import { JOB_CONTENT_SCHEMA_VERSION } from "./requisitionFields.js";
+import { PUBLIC_CHANNELS, publicPostings } from "./requisitionPublication.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -41,8 +42,12 @@ export const PUBLIC_JOB_SELECT = Object.freeze({
     // JobRequisition has no department relation: departmentId points at an
     // RBAC-owned department, so the public shape carries no department name.
     gradeLevel: { select: { name: true, minSalary: true, maxSalary: true, bandCurrency: true } },
+    // Recruitment Phase 5 — internal-only postings (the employees' board) never
+    // count here: a requisition whose only live posting is INTERNAL reads as
+    // having no live posting (NO_ACTIVE_POSTING) and is neither listed nor
+    // found, and INTERNAL never appears in `channels`.
     postings: {
-        where: { isActive: true },
+        where: { isActive: true, channel: { in: [...PUBLIC_CHANNELS] } },
         select: { channel: true, externalUrl: true, isActive: true, closedAt: true },
     },
 });
@@ -72,7 +77,10 @@ const bandAmount = (value) => (value == null ? null : Number(value));
 
 /** The public shape of one job. Nothing else may be added by a caller. */
 export function toPublicJob(requisition, { now = new Date() } = {}) {
-    const evaluation = evaluateRequisitionEligibility(requisition, { postings: requisition.postings ?? [], now });
+    // Recruitment Phase 5 — the select already drops internal-only postings;
+    // filtering again here keeps the rule true for any caller's rows.
+    const postings = publicPostings(requisition.postings ?? []);
+    const evaluation = evaluateRequisitionEligibility(requisition, { postings, now });
     const content =
         requisition.jobContent && typeof requisition.jobContent === "object" ? requisition.jobContent : {};
 
@@ -106,7 +114,7 @@ export function toPublicJob(requisition, { now = new Date() } = {}) {
         },
         // Which channels it is live on is public (the career site IS one);
         // the URLs are the ones recruiters recorded for this purpose.
-        channels: (requisition.postings ?? []).map((p) => ({ channel: p.channel, externalUrl: p.externalUrl })),
+        channels: postings.map((p) => ({ channel: p.channel, externalUrl: p.externalUrl })),
         eligible: evaluation.eligible,
         // §2.9a — a closed job says so, in candidate language, with one reason.
         candidateMessage: evaluation.eligible ? null : closedApplicationMessage(requisition, evaluation),
