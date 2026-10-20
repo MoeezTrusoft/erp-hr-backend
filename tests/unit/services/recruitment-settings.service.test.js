@@ -143,6 +143,48 @@ describe("normalizeRecruitmentSettingsInput", () => {
     });
 });
 
+describe("Phase 3a scheduling and offer knobs", () => {
+    it("accepts the knobs at their range edges", () => {
+        expect(normalizeRecruitmentSettingsInput({
+            slotOfferValidityHours: 1, feedbackNudgeHours: 0, feedbackEscalationHours: 720, offerReminderDays: 30,
+            workdayStart: "08:30", workdayEnd: "17:45", timeZone: "Europe/London",
+        })).toEqual({
+            slotOfferValidityHours: 1, feedbackNudgeHours: 0, feedbackEscalationHours: 720, offerReminderDays: 30,
+            workdayStart: "08:30", workdayEnd: "17:45", timeZone: "Europe/London",
+        });
+    });
+
+    it.each([
+        ["slotOfferValidityHours", 0],
+        ["feedbackNudgeHours", 169],
+        ["feedbackEscalationHours", 0],
+        ["offerReminderDays", 31],
+        ["workdayStart", "9:00"],
+        ["workdayEnd", "24:00"],
+        ["timeZone", "Mars/Olympus"],
+        ["timeZone", ""],
+    ])("rejects %s = %p", (key, value) => {
+        expect(() => normalizeRecruitmentSettingsInput({ [key]: value }))
+            .toThrow(expect.objectContaining({ status: 400, code: "HR-RECRUITMENT-SETTINGS-INVALID" }));
+    });
+
+    it("refuses a working window that would close before it opens, against the saved row", async () => {
+        tx.tenantRecruitmentSettings.findUnique.mockResolvedValueOnce({ ...ROW, workdayStart: "09:00", workdayEnd: "18:00" });
+        await expect(updateRecruitmentSettings({ tenantId: TENANT, expectedVersion: ROW.version, input: { workdayStart: "18:30" } }))
+            .rejects.toMatchObject({ status: 400, code: "HR-RECRUITMENT-SETTINGS-INVALID" });
+        expect(tx.tenantRecruitmentSettings.upsert).not.toHaveBeenCalled();
+    });
+
+    it("reads the defaults when never saved", async () => {
+        db.tenantRecruitmentSettings.findUnique.mockResolvedValueOnce(null);
+        const settings = await getRecruitmentSettings({ tenantId: TENANT });
+        expect(settings).toMatchObject({
+            slotOfferValidityHours: 72, workdayStart: "09:00", workdayEnd: "18:00", timeZone: "Asia/Karachi",
+            feedbackNudgeHours: 2, feedbackEscalationHours: 24, offerReminderDays: 3,
+        });
+    });
+});
+
 describe("updateRecruitmentSettings", () => {
     it("creates the row at version 1 under the advisory lock, from expectedVersion 0", async () => {
         const saved = await updateRecruitmentSettings({

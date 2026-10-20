@@ -150,6 +150,63 @@ const DEFINITIONS = Object.freeze({
         def: false,
         desc: "Duplicate candidate detection and merge suggestions",
     },
+    // Phase 3a — interview and offer orchestration. Each switch below writes to
+    // a calendar, messages a person or changes an offer without a recruiter
+    // action, so each is OFF until the tenant (and the external service it
+    // depends on) is ready.
+    //
+    // Calendar events for interviews through the Communication module (create,
+    // update, cancel) and its free-busy lookup for the slot finder. Off leaves
+    // calendarSyncStatus PENDING; nothing is written to any calendar.
+    calendarSync: {
+        env: "HR_RECRUITMENT_CALENDAR_SYNC",
+        def: false,
+        desc: "Interview calendar events and free-busy through the Communication module",
+    },
+    // Slot offers a candidate picks from through the portal; the confirm
+    // creates the interview. Off refuses sending and confirming (proposing a
+    // slot set for review still works).
+    selfScheduling: {
+        env: "HR_RECRUITMENT_SELF_SCHEDULING",
+        def: false,
+        desc: "Candidate self-scheduling from offered interview slots",
+    },
+    // Interview reminders (24 h and 1 h before), feedback nudges and
+    // escalation, and the no-show disposition prompt.
+    interviewReminders: {
+        env: "HR_RECRUITMENT_INTERVIEW_REMINDERS",
+        def: false,
+        desc: "Interview reminders, feedback nudges and escalation",
+    },
+    // The hiring manager's decision prompt once every panel scorecard is in,
+    // and the automatic advance of the application on a NEXT_ROUND decision.
+    decisionPrompts: {
+        env: "HR_RECRUITMENT_DECISION_PROMPTS",
+        def: false,
+        desc: "Decision prompts after the panel's scorecards and auto-advance on NEXT_ROUND",
+    },
+    // Offer letters rendered from the tenant's versioned templates to a PDF
+    // in DAM.
+    offerLetters: {
+        env: "HR_RECRUITMENT_OFFER_LETTERS",
+        def: false,
+        desc: "Versioned offer letters rendered from tenant templates",
+    },
+    // Sending a letter for e-signature through the adapter, and applying the
+    // provider's webhook (a signed letter accepts the offer).
+    esign: {
+        env: "HR_RECRUITMENT_ESIGN",
+        def: false,
+        desc: "Offer letter e-signature round trip",
+    },
+    // The offer expiry sweep: reminds the candidate before expiryDate and sets
+    // EXPIRED once it has passed. OFF: the first run would expire every SENT
+    // offer already past its date, so a tenant switches it on after review.
+    offerExpiry: {
+        env: "HR_RECRUITMENT_OFFER_EXPIRY",
+        def: false,
+        desc: "Offer expiry reminders and automatic expiry",
+    },
 });
 
 export const RECRUITMENT_FLAG_DEFINITIONS = DEFINITIONS;

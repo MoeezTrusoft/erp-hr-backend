@@ -68,6 +68,13 @@ const SETTINGS_FIELDS = Object.freeze([
   "companyUrl",
   "companyLogoUrl",
   "portalBaseUrl",
+  "slotOfferValidityHours",
+  "workdayStart",
+  "workdayEnd",
+  "timeZone",
+  "feedbackNudgeHours",
+  "feedbackEscalationHours",
+  "offerReminderDays",
 ]);
 
 const pickSettingsInput = (args) =>
@@ -109,6 +116,13 @@ export function registerRecruitmentSettingsTools(server) {
       companyUrl: nullableUrl("Employer website"),
       companyLogoUrl: nullableUrl("Employer logo"),
       portalBaseUrl: nullableUrl("Careers portal base URL the feed's apply links point at"),
+      slotOfferValidityHours: z.coerce.number().int().optional().describe("Hours a candidate has to pick an offered interview slot (1-720)"),
+      workdayStart: z.string().optional().describe("Start of the working window the slot finder proposes in, HH:MM in the tenant time zone"),
+      workdayEnd: z.string().optional().describe("End of that working window, HH:MM (after workdayStart)"),
+      timeZone: z.string().max(64).optional().describe("IANA time zone for the working window, e.g. Asia/Karachi"),
+      feedbackNudgeHours: z.coerce.number().int().optional().describe("Hours after an interview before a missing scorecard is nudged (0-168)"),
+      feedbackEscalationHours: z.coerce.number().int().optional().describe("Hours after an interview before a missing scorecard is escalated to the recruiter (1-720)"),
+      offerReminderDays: z.coerce.number().int().optional().describe("Days before an offer expires that the candidate is reminded (0-30)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

@@ -28,7 +28,17 @@ const INT_RANGES = Object.freeze({
     knockoutDelayHours: [0, 720],
     shortlistThreshold: [0, 100],
     shortlistTopPercent: [0, 100],
+    // Phase 3a — interview and offer orchestration.
+    slotOfferValidityHours: [1, 720],
+    feedbackNudgeHours: [0, 168],
+    feedbackEscalationHours: [1, 720],
+    offerReminderDays: [0, 30],
 });
+
+// HH:MM in the tenant's time zone; the migration's CHECK holds the same rule
+// and start < end.
+const CLOCK_KEYS = Object.freeze(["workdayStart", "workdayEnd"]);
+const CLOCK_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const TEXT_KEYS = Object.freeze({ companyName: 200 });
 const URL_KEYS = Object.freeze(["companyUrl", "companyLogoUrl", "portalBaseUrl"]);
@@ -44,6 +54,13 @@ export const RECRUITMENT_SETTINGS_DEFAULTS = Object.freeze({
     companyUrl: null,
     companyLogoUrl: null,
     portalBaseUrl: null,
+    slotOfferValidityHours: 72,
+    workdayStart: "09:00",
+    workdayEnd: "18:00",
+    timeZone: "Asia/Karachi",
+    feedbackNudgeHours: 2,
+    feedbackEscalationHours: 24,
+    offerReminderDays: 3,
 });
 
 export function defaultRecruitmentSettings(tenantId = null) {
@@ -142,6 +159,13 @@ export function normalizeRecruitmentSettingsInput(input = {}) {
     for (const key of URL_KEYS) {
         if (input[key] !== undefined) data[key] = normalizeUrl(key, input[key]);
     }
+    for (const key of CLOCK_KEYS) {
+        if (input[key] === undefined) continue;
+        const value = String(input[key] ?? "").trim();
+        if (!CLOCK_RE.test(value)) throw fail(`${key} must be HH:MM (24-hour)`, "HR-RECRUITMENT-SETTINGS-INVALID");
+        data[key] = value;
+    }
+    if (input.timeZone !== undefined) data.timeZone = normalizeTimeZone(input.timeZone);
     if (input.defaultChannels !== undefined) data.defaultChannels = normalizeChannels(input.defaultChannels);
     if (input.feedEnabled !== undefined) {
         if (typeof input.feedEnabled !== "boolean") {
@@ -150,6 +174,28 @@ export function normalizeRecruitmentSettingsInput(input = {}) {
         data.feedEnabled = input.feedEnabled;
     }
     return data;
+}
+
+function normalizeTimeZone(raw) {
+    const value = String(raw ?? "").trim();
+    try {
+        // Throws a RangeError for anything that is not an IANA zone.
+        new Intl.DateTimeFormat("en-US", { timeZone: value });
+    } catch {
+        throw fail("timeZone must be an IANA time zone such as Asia/Karachi", "HR-RECRUITMENT-SETTINGS-INVALID");
+    }
+    if (!value || value.length > 64) {
+        throw fail("timeZone must be an IANA time zone such as Asia/Karachi", "HR-RECRUITMENT-SETTINGS-INVALID");
+    }
+    return value;
+}
+
+// The working window must open before it closes, checked against the saved
+// row so changing one end alone cannot invert it.
+function assertWorkday(data, latest) {
+    const start = data.workdayStart ?? latest?.workdayStart ?? RECRUITMENT_SETTINGS_DEFAULTS.workdayStart;
+    const end = data.workdayEnd ?? latest?.workdayEnd ?? RECRUITMENT_SETTINGS_DEFAULTS.workdayEnd;
+    if (start >= end) throw fail("workdayStart must be before workdayEnd", "HR-RECRUITMENT-SETTINGS-INVALID");
 }
 
 const newFeedToken = () => randomBytes(24).toString("base64url");
@@ -177,6 +223,7 @@ export async function updateRecruitmentSettings({
     const row = await tenantTransaction(prisma, async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:recruitment-settings`}))`;
         const latest = await tx.tenantRecruitmentSettings.findUnique({ where: { tenantId } });
+        assertWorkday(data, latest);
         if (expectedVersion !== undefined && expectedVersion !== null && Number(expectedVersion) !== (latest?.version ?? 0)) {
             throw fail(
                 "Recruitment settings changed; refresh before saving",

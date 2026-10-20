@@ -125,7 +125,11 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // same convention and own-policy-in-own-migration rule.
     // 144: both sets above together (main's AttendanceCallIn plus the twenty
     // recruitment models), counted after the recruitment branch was merged.
-    expect(nullableModels).toHaveLength(144);
+    // 145 + EsignWebhookEvent (recruitment Phase 3a) — an e-signature delivery
+    // arrives before its envelope is matched to a tenant, so the column is
+    // nullable by design; its own RLS policy (system context only for a row
+    // without a tenant) lives in its creating migration.
+    expect(nullableModels).toHaveLength(145);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

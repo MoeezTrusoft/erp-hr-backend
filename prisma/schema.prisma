@@ -3267,6 +3267,7 @@ model Application {
 
   // Phase 2 — delayed dispositions and the fit score.
   scheduledDispositions ScheduledDisposition[]
+  slotOffers            InterviewSlotOffer[]
   score                 ApplicationScore?
 
   @@unique([candidateId, jobRequisitionId])
@@ -3850,18 +3851,37 @@ model Interview {
   calendarEventId     String? // provider event id
   calendarSyncedAt    DateTime?
   calendarSyncStatus  String? // PENDING | SYNCED | FAILED
+  // Phase 3a — the calendar sync worker's retry state and lease. The sync
+  // writes CREATE / UPDATE / CANCEL through the Communication module; a
+  // FAILED row is retried at calendarNextAttemptAt until the attempt ceiling.
+  calendarSyncAction     String? // CREATE | UPDATE | CANCEL
+  calendarSyncAttempts   Int       @default(0)
+  calendarNextAttemptAt  DateTime?
+  calendarLastError      String?
+  calendarClaimedBy      String?
+  calendarClaimExpiresAt DateTime?
+  // Phase 3a — reminders stop while a candidate's reschedule request is open;
+  // the no-show and decision-prompt facts are stamped once.
+  remindersPausedAt  DateTime?
+  noShowAt           DateTime?
+  decisionPromptedAt DateTime?
+  // The candidate-chosen slot offer this interview was created from.
+  slotOfferId        Int?
 
   application  Application            @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   interviewers InterviewInterviewer[]
   scorecards   InterviewScorecard[]
   packetItems  InterviewPacketItem[]
   lifecycleEvents InterviewLifecycleEvent[]
+  reminders    InterviewReminder[]
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
   @@index([applicationId])
   @@index([calendarProvider, calendarEventId]) // webhook-driven updates find the interview by its external event
+  @@index([calendarSyncStatus, calendarNextAttemptAt])
+  @@index([status, scheduledAt])
   @@map("interviews")
 }
 
@@ -4057,11 +4077,22 @@ model Offer {
   created_at         DateTime    @default(now())
   updated_at         DateTime    @updatedAt
 
+  // Phase 3a — expiry automation and decline capture. The reminder and the
+  // expiry are each stamped once; extending the expiry clears the reminder
+  // stamp so the candidate is reminded again before the new date.
+  expiryReminderSentAt DateTime?
+  expiredAt            DateTime?
+  expiryExtendedCount  Int       @default(0)
+  declineReasonCode    String? // see lib/offerDecline.js (CHECK in the migration)
+  declineNote          String?
+  talentPoolOptIn      Boolean?
+
   application     Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   candidate       Candidate       @relation(fields: [candidateId], references: [id])
   approvalRecords OfferApproval[]
   handoff         OfferHandoff?
   jobRequisition  JobRequisition  @relation(fields: [jobRequisitionId], references: [id])
+  letterVersions  OfferLetterVersion[]
 
   // API-2 — optimistic-concurrency guard (see Employee.version).
   version Int @default(0)
@@ -4075,6 +4106,7 @@ model Offer {
   // send attempt, so the tenant leads the index (a bare approvalStatus index is
   // near-useless: three distinct values across all tenants).
   @@index([tenantId, approvalStatus])
+  @@index([status, expiryDate])
   @@map("offers")
 }
 
@@ -6395,6 +6427,20 @@ model TenantRecruitmentSettings {
   companyUrl            String?
   companyLogoUrl        String?
   portalBaseUrl         String?
+  // Phase 3a — scheduling and offer knobs.
+  // Hours a candidate has to pick one of the offered interview slots.
+  slotOfferValidityHours  Int     @default(72)
+  // The working window the slot finder proposes inside (HH:MM, tenant time
+  // zone), and the time zone itself (IANA).
+  workdayStart            String  @default("09:00")
+  workdayEnd              String  @default("18:00")
+  timeZone                String  @default("Asia/Karachi")
+  // Hours after an interview ends before a missing scorecard is nudged, and
+  // before it is escalated to the recruiter.
+  feedbackNudgeHours      Int     @default(2)
+  feedbackEscalationHours Int     @default(24)
+  // Days before an offer's expiry the candidate is reminded.
+  offerReminderDays       Int     @default(3)
   version               Int      @default(1)
   updatedById           Int?
   createdAt             DateTime @default(now())
@@ -6515,4 +6561,127 @@ model CandidateDuplicateSuggestion {
   @@unique([tenantId, candidateAId, candidateBId])
   @@index([tenantId, status])
   @@map("candidate_duplicate_suggestions")
+}
+
+// ==================== RECRUITMENT PHASE 3a: INTERVIEW AND OFFER ORCHESTRATION ====================
+
+// A set of interview slots offered to a candidate, who picks one through a
+// tokenised portal link; the confirm creates the interview. The token is
+// stored hashed. slots is an ordered [{ start, end }] (ISO, UTC).
+model InterviewSlotOffer {
+  id               Int       @id @default(autoincrement())
+  tenantId         String    @db.Uuid
+  applicationId    Int
+  requisitionId    Int
+  interviewType    String
+  durationMinutes  Int       @default(60)
+  location         String?
+  interviewerIds   Int[]     @default([])
+  slots            Json
+  status           String    @default("PROPOSED") // PROPOSED | SENT | CONFIRMED | EXPIRED | CANCELLED
+  tokenHash        String?   @unique
+  expiresAt        DateTime?
+  sentAt           DateTime?
+  confirmedAt      DateTime?
+  chosenSlotStart  DateTime?
+  interviewId      Int?      @unique
+  cancelledAt      DateTime?
+  cancelReason     String?
+  createdById      Int?
+  version          Int       @default(1)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([applicationId])
+  @@index([status, expiresAt])
+  @@map("interview_slot_offers")
+}
+
+// One row per reminder, nudge or prompt sent for an interview, so a run that
+// repeats (or two that overlap) never sends the same one twice. recipientKey
+// is "candidate", "emp:<employeeId>" or "recruiter".
+model InterviewReminder {
+  id           Int      @id @default(autoincrement())
+  tenantId     String   @db.Uuid
+  interviewId  Int
+  kind         String // REMINDER_24H | REMINDER_1H | FEEDBACK_NUDGE | FEEDBACK_ESCALATION | DECISION_PROMPT | NO_SHOW_PROMPT
+  recipientKey String
+  sentAt       DateTime @default(now())
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@unique([interviewId, kind, recipientKey])
+  @@index([tenantId])
+  @@map("interview_reminders")
+}
+
+// A tenant's offer letter template: a body with {{merge.fields}} rendered to
+// a PDF. Versions are immutable; editing a template creates the next version,
+// so every rendered letter names exactly what it was built from.
+model OfferLetterTemplate {
+  id          Int      @id @default(autoincrement())
+  tenantId    String   @db.Uuid
+  key         String // e.g. STANDARD, CONTRACT, INTERNSHIP
+  version     Int      @default(1)
+  name        String
+  subject     String?
+  body        String   @db.Text
+  active      Boolean  @default(true)
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  @@unique([tenantId, key, version])
+  @@index([tenantId, key, active])
+  @@map("offer_letter_templates")
+}
+
+// One rendered offer letter: which template version, the PDF in DAM, and its
+// signature round trip through the e-signature adapter.
+model OfferLetterVersion {
+  id                  Int       @id @default(autoincrement())
+  tenantId            String    @db.Uuid
+  offerId             Int
+  version             Int
+  templateKey         String
+  templateVersion     Int
+  mediaId             Int?
+  contentHash         String?
+  renderedById        Int?
+  createdAt           DateTime  @default(now())
+  signatureStatus     String    @default("NONE") // NONE | SENT | VIEWED | SIGNED | DECLINED | EXPIRED | VOIDED | FAILED
+  esignProvider       String?
+  esignEnvelopeId     String?
+  sentForSignatureAt  DateTime?
+  signedAt            DateTime?
+  signedMediaId       Int?
+  signatureError      String?
+
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@unique([offerId, version])
+  @@unique([esignProvider, esignEnvelopeId])
+  @@index([tenantId])
+  @@map("offer_letter_versions")
+}
+
+// Every e-signature webhook delivery, keyed by the provider's event id, so a
+// redelivered event is acknowledged without being applied twice.
+model EsignWebhookEvent {
+  id              Int       @id @default(autoincrement())
+  provider        String
+  providerEventId String
+  tenantId        String?   @db.Uuid
+  envelopeId      String?
+  eventType       String?
+  status          String    @default("RECEIVED") // RECEIVED | APPLIED | IGNORED | FAILED
+  error           String?
+  receivedAt      DateTime  @default(now())
+  processedAt     DateTime?
+
+  @@unique([provider, providerEventId])
+  @@index([tenantId])
+  @@map("esign_webhook_events")
 }

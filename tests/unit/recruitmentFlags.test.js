@@ -50,7 +50,7 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
         expect(isRecruitmentFlagEnabled("approvalSla")).toBe(false); // unknown → default off
     });
 
-    it("every Phase 2 intake and screening switch defaults OFF and flips from env", () => {
+    it("every Phase 2 and Phase 3a switch defaults OFF and flips from env", () => {
         const phase2 = {
             knockout: "HR_RECRUITMENT_KNOCKOUT",
             jobFeed: "HR_RECRUITMENT_JOB_FEED",
@@ -58,6 +58,13 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
             scoring: "HR_RECRUITMENT_SCORING",
             communications: "HR_RECRUITMENT_COMMUNICATIONS",
             duplicates: "HR_RECRUITMENT_DUPLICATES",
+            calendarSync: "HR_RECRUITMENT_CALENDAR_SYNC",
+            selfScheduling: "HR_RECRUITMENT_SELF_SCHEDULING",
+            interviewReminders: "HR_RECRUITMENT_INTERVIEW_REMINDERS",
+            decisionPrompts: "HR_RECRUITMENT_DECISION_PROMPTS",
+            offerLetters: "HR_RECRUITMENT_OFFER_LETTERS",
+            esign: "HR_RECRUITMENT_ESIGN",
+            offerExpiry: "HR_RECRUITMENT_OFFER_EXPIRY",
         };
         for (const [key, env] of Object.entries(phase2)) {
             expect(RECRUITMENT_FLAG_DEFINITIONS[key].env).toBe(env);
@@ -112,8 +119,10 @@ describe("recruitmentFlags — snapshot", () => {
     it("exposes every flag with env, value, default and description", () => {
         const snap = recruitmentFlagSnapshot();
         expect(Object.keys(snap).sort()).toEqual([
-            "ai", "analytics", "approvalSla", "autoPublish", "canonicalDashboard", "communications", "duplicates",
-            "jobFeed", "knockout", "offerHandoff", "parseWorker", "portal", "postingExpiry", "retention", "scoring", "workflow",
+            "ai", "analytics", "approvalSla", "autoPublish", "calendarSync", "canonicalDashboard", "communications",
+            "decisionPrompts", "duplicates", "esign", "interviewReminders", "jobFeed", "knockout", "offerExpiry",
+            "offerHandoff", "offerLetters", "parseWorker", "portal", "postingExpiry", "retention", "scoring",
+            "selfScheduling", "workflow",
         ]);
         for (const [key, entry] of Object.entries(snap)) {
             expect(entry.env).toBe(RECRUITMENT_FLAG_DEFINITIONS[key].env);

@@ -210,6 +210,13 @@ const RLS_MODELS = new Set([
     'ApplicationScore',
     'CandidateCommunication',
     'CandidateDuplicateSuggestion',
+    // Recruitment Phase 3a (20261021003200) — FORCE RLS; esign webhook events
+    // carry a nullable tenant (system context only until matched).
+    'InterviewSlotOffer',
+    'InterviewReminder',
+    'OfferLetterTemplate',
+    'OfferLetterVersion',
+    'EsignWebhookEvent',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
