@@ -3427,8 +3427,8 @@ model ShortlistEntry {
   note          String?
   addedById     Int?
   addedAt       DateTime @default(now())
-  // Phase 2 — MANUAL (a recruiter added it) | SCORING_PROPOSAL (a recruiter
-  // accepted the fit-score proposal).
+  // Phase 2 — MANUAL (a recruiter added it, or confirmed a proposal) |
+  // SCORING_PROPOSAL (proposed by the fit score, awaiting a recruiter).
   source        String   @default("MANUAL")
 
   application Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)

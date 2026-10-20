@@ -34,7 +34,7 @@ import {
 import { validateScreeningAgainstTemplate } from "../lib/scorecardTemplates.js";
 import { resolveForApplication as resolveScreeningTemplate } from "./scorecardTemplate.service.js";
 import { scopedWhere } from "../lib/tenancy.js";
-import { requisitionScopeWhere, maskCandidateForScope } from "../lib/recruitmentAccess.js";
+import { applicationScopeWhere, requisitionScopeWhere, maskCandidateForScope } from "../lib/recruitmentAccess.js";
 
 export class ScreeningError extends Error {
     constructor(message, status = 400, details = undefined) {
@@ -201,22 +201,47 @@ export async function versionDispositionReason({ tenantId, code, label, requires
 }
 
 // ── §4.3 — the requisition shortlist ─────────────────────────────────────────
+//
+// Recruitment Phase 2 — every shortlist read and write applies the caller's
+// recruitment scope (applicationScopeWhere): a hiring manager reaches only the
+// applications on their own requisitions, and an application outside the
+// scope reads as not found. `scope` is the resolved scope; internal callers
+// that pass none keep the tenant-only behaviour.
+//
+// An entry's `source` tells a recruiter's mark (MANUAL) from a fit-score
+// proposal still waiting for one (SCORING_PROPOSAL, see
+// application-scoring.service.js). Adding an application that carries a
+// pending proposal confirms it: the entry becomes MANUAL with the actor.
+
+/**
+ * The scope predicates for an Application where-clause, as an AND list so a
+ * fragment can never override the id or tenant ([] when unrestricted or
+ * unscoped).
+ */
+const applicationScope = (scope) => (scope && !scope.unrestricted ? [applicationScopeWhere(scope)] : []);
 
 /**
  * Mark an application onto its requisition's shortlist. Idempotent: a repeat
  * add returns the existing row (reported as alreadyListed) rather than 409 —
  * marking is a toggle-like intent, not a creation race to police.
  */
-export async function addToShortlist({ applicationId, tenantId, note = null, actorId = null } = {}) {
+export async function addToShortlist({ applicationId, tenantId, note = null, actorId = null, scope = null } = {}) {
     if (!tenantId) throw fail("Tenant context is required", 400);
     return tenantTransaction(prisma, async (tx) => {
         const application = await tx.application.findFirst({
-            where: { id: Number(applicationId), tenantId },
+            where: { id: Number(applicationId), tenantId, AND: applicationScope(scope) },
             select: { id: true, jobRequisitionId: true },
         });
         if (!application) throw fail("Application not found", 404);
 
         const existing = await tx.shortlistEntry.findUnique({ where: { applicationId: application.id } });
+        if (existing?.source === "SCORING_PROPOSAL") {
+            // A recruiter marking a proposed application is the confirmation.
+            return await tx.shortlistEntry.update({
+                where: { applicationId: application.id },
+                data: { source: "MANUAL", addedById: actorId ?? null, addedAt: new Date(), ...(note != null ? { note } : {}) },
+            });
+        }
         if (existing) {
             // Refresh the note if provided; otherwise leave the row untouched.
             if (note != null) {
@@ -263,7 +288,10 @@ export async function listShortlist(requisitionId, tenantId, scope = null) {
     }
 
     const rows = await prisma.shortlistEntry.findMany({
-        where: scopedWhere(tenantId, { requisitionId: id }),
+        where: scopedWhere(tenantId, {
+            requisitionId: id,
+            ...(scope && !scope.unrestricted ? { application: applicationScopeWhere(scope) } : {}),
+        }),
         orderBy: { addedAt: "asc" },
         include: {
             application: {
@@ -289,9 +317,13 @@ export async function listShortlist(requisitionId, tenantId, scope = null) {
 }
 
 /** Remove an application from the shortlist. The screening/disposition record is the audit of WHY. */
-export async function removeFromShortlist({ applicationId, tenantId } = {}) {
+export async function removeFromShortlist({ applicationId, tenantId, scope = null } = {}) {
     const deleted = await prisma.shortlistEntry.deleteMany({
-        where: { applicationId: Number(applicationId), tenantId },
+        where: {
+            applicationId: Number(applicationId),
+            tenantId,
+            ...(scope && !scope.unrestricted ? { application: applicationScopeWhere(scope) } : {}),
+        },
     });
     if (deleted.count === 0) throw fail("Application is not on the shortlist", 404);
     return { removed: true };

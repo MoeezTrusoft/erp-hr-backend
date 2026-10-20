@@ -25,7 +25,7 @@ jest.unstable_mockModule("../../src/lib/logger.js", () => ({ default: { info: je
 const runAiTask = jest.fn();
 jest.unstable_mockModule("../../src/lib/aiPlaneClient.js", () => ({ runAiTask }));
 
-const { matchCandidateToRequisitionAdvisory, loadAliasIndex } = await import("../../src/services/candidateMatch.service.js");
+const { matchCandidateToRequisitionAdvisory, loadAliasIndex, requisitionSkillRequirements } = await import("../../src/services/candidateMatch.service.js");
 
 const CAND = {
     id: 11,
@@ -170,5 +170,53 @@ describe("D-13 — match reads are tenant-scoped", () => {
     it("refuses to match without a tenant", async () => {
         await expect(matchCandidateToRequisitionAdvisory({ candidateId: 11, requisitionId: 7 }))
             .rejects.toMatchObject({ status: 400, code: "HR-TENANT-REQUIRED" });
+    });
+});
+
+// Recruitment Phase 2 — the importance of a requisition skill. jobContent.skills
+// is stored as a flat string[] (normalizeJobContent), so "preferred" travels as
+// a marker in the string; older rows may carry {name, importance} objects. The
+// extraction used to compute the importance and then put every skill in
+// required.
+describe("requisitionSkillRequirements — preferred skills land in preferred", () => {
+    const req = (skills) => ({ jobContent: { skills }, requirements: null });
+
+    it("reads preferred / nice-to-have markers off flat strings", () => {
+        expect(requisitionSkillRequirements(req([
+            "JavaScript",
+            "React (preferred)",
+            "Nice to have: GraphQL",
+            "Docker (nice-to-have)",
+            "Preferred - Terraform",
+            "AWS [optional]",
+            "SQL",
+        ]))).toEqual({
+            required: ["JavaScript", "SQL"],
+            preferred: ["React", "GraphQL", "Docker", "Terraform", "AWS"],
+        });
+    });
+
+    it("honours {name, importance} objects", () => {
+        expect(requisitionSkillRequirements(req([
+            { name: "JavaScript", importance: "required" },
+            { name: "React", importance: "preferred" },
+            { name: "GraphQL", importance: "nice_to_have" },
+            { name: "Go", required: false },
+            { name: "SQL" },
+        ]))).toEqual({ required: ["JavaScript", "SQL"], preferred: ["React", "GraphQL", "Go"] });
+    });
+
+    it("keeps the {required, preferred} block and the legacy text fallback as they were", () => {
+        expect(requisitionSkillRequirements(req({ required: ["JavaScript"], preferred: ["React"] })))
+            .toEqual({ required: ["JavaScript"], preferred: ["React"] });
+        expect(requisitionSkillRequirements({ jobContent: null, requirements: "JavaScript, React" }))
+            .toEqual({ required: ["JavaScript", "React"], preferred: [] });
+        expect(requisitionSkillRequirements({ jobContent: { skills: [] }, requirements: null })).toBeNull();
+    });
+
+    it("feeds the advisory report's preferred coverage", async () => {
+        prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQ, jobContent: { skills: ["JavaScript", "React (preferred)"] } });
+        const report = await matchCandidateToRequisitionAdvisory({ tenantId: "t-1", candidateId: 11, requisitionId: 7 });
+        expect(report.taxonomy.coverage).toEqual({ requiredTotal: 1, requiredMatched: 1, preferredTotal: 1, preferredMatched: 0 });
     });
 });

@@ -101,7 +101,7 @@ export async function matchCandidateToRequisitionAdvisory({ candidateId, requisi
 
     // Requisition evidence: structured job content first (§ decision 1.3), the
     // legacy free-text requirements field as fallback source of skill names.
-    const reqSkills = extractRequisitionSkills(requisition.jobContent) ?? extractFromLegacyRequirements(requisition.requirements);
+    const reqSkills = requisitionSkillRequirements(requisition);
 
     // 1. Deterministic, taxonomy-anchored comparison — runs ALWAYS.
     const report = matchCandidateToRequisition(index, candidateItems, reqSkills);
@@ -244,6 +244,39 @@ async function recordInference(data) {
 }
 
 // ---- requisition skill extraction (deterministic, no AI) -------------------
+//
+// jobContent.skills is what normalizeJobContent (lib/requisitionFields.js)
+// stores: a flat string[]. Importance therefore travels IN the string, as a
+// marker a recruiter types ("React (preferred)", "Nice to have: GraphQL").
+// Older or hand-written rows may still carry {name, importance} objects or a
+// {required, preferred} block. All three shapes are read here; a skill with
+// no marker is required, which is what a flat list always meant.
+
+// Importance values (object entries) and markers (string entries) that make
+// a skill preferred rather than required. Compared lowercased, with
+// "-"/"_" read as spaces.
+const PREFERRED_IMPORTANCE = new Set(["preferred", "nice to have", "optional", "desired", "bonus", "plus"]);
+const PREFERRED_MARKER = "(?:preferred|nice[\\s_-]*to[\\s_-]*have|optional|desired|bonus|a plus)";
+const PREFERRED_SUFFIX = new RegExp(`\\s*[([]\\s*${PREFERRED_MARKER}\\s*[)\\]]\\s*$`, "i");
+const PREFERRED_PREFIX = new RegExp(`^\\s*${PREFERRED_MARKER}\\s*[:\\-–]\\s*`, "i");
+
+const isPreferredImportance = (value) =>
+    PREFERRED_IMPORTANCE.has(String(value ?? "").trim().toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " "));
+
+/** One skills[] entry → { name, importance }, reading the marker off a string. */
+function classifySkillEntry(entry) {
+    if (typeof entry === "string") {
+        const raw = entry.trim();
+        const stripped = raw.replace(PREFERRED_SUFFIX, "").replace(PREFERRED_PREFIX, "").trim();
+        return { name: stripped || null, importance: stripped !== raw ? "preferred" : "required" };
+    }
+    if (entry && typeof entry === "object") {
+        const name = typeof entry.name === "string" ? entry.name.trim() : null;
+        const preferred = isPreferredImportance(entry.importance ?? entry.priority) || entry.required === false;
+        return { name: name || null, importance: preferred ? "preferred" : "required" };
+    }
+    return { name: null, importance: "required" };
+}
 
 function extractRequisitionSkills(jobContent) {
     if (!jobContent || typeof jobContent !== "object") return null;
@@ -251,23 +284,36 @@ function extractRequisitionSkills(jobContent) {
     let required = [];
     let preferred = [];
     if (Array.isArray(skillsBlock)) {
-        // [{name, importance}] or flat string list (all required).
-        required = skillsBlock
-            .map((s) => {
-                const name = typeof s === "string" ? s : s?.name;
-                const importance = (typeof s === "object" && s?.importance) || "required";
-                return { name, importance };
-            })
-            .filter((s) => s.name);
+        // Strings (with an optional preferred marker) or {name, importance}.
+        // The importance used to be computed and then ignored, so every
+        // preferred skill was counted as required.
+        for (const entry of skillsBlock) {
+            const { name, importance } = classifySkillEntry(entry);
+            if (!name) continue;
+            (importance === "preferred" ? preferred : required).push(name);
+        }
     } else if (skillsBlock && typeof skillsBlock === "object") {
-        required = (skillsBlock.required ?? []).map((name) => ({ name, importance: "required" }));
-        preferred = (skillsBlock.preferred ?? []).map((name) => ({ name, importance: "preferred" }));
+        const names = (list) => (Array.isArray(list) ? list : []).map((s) => classifySkillEntry(s).name).filter(Boolean);
+        required = names(skillsBlock.required);
+        preferred = [
+            ...names(skillsBlock.preferred),
+            ...names(skillsBlock.niceToHave ?? skillsBlock.nice_to_have),
+            ...names(skillsBlock.optional),
+        ];
     }
     if (!required.length && !preferred.length) return null;
-    return {
-        required: required.map((s) => s.name),
-        preferred: preferred.map((s) => s.name),
-    };
+    return { required, preferred };
+}
+
+/**
+ * The requisition's skill requirements as { required: string[], preferred:
+ * string[] }: structured job content first, the legacy free-text
+ * requirements as the fallback, null when neither names a skill. Shared with
+ * the fit score (application-scoring.service.js) so both read one rule.
+ */
+export function requisitionSkillRequirements(requisition) {
+    if (!requisition) return null;
+    return extractRequisitionSkills(requisition.jobContent) ?? extractFromLegacyRequirements(requisition.requirements);
 }
 
 function extractFromLegacyRequirements(requirements) {

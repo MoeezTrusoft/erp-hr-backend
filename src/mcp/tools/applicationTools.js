@@ -206,7 +206,7 @@ export function registerApplicationTools(server) {
 
   server.tool(
     "hr_application_shortlist_add",
-    "Mark an application onto its requisition's shortlist (§4.3 — requisition-specific, no count limit). Idempotent: re-adding refreshes the note and reports alreadyListed.",
+    "Mark an application onto its requisition's shortlist (§4.3 — requisition-specific, no count limit). Idempotent: re-adding refreshes the note and reports alreadyListed. Adding an application with a pending fit-score proposal (source SCORING_PROPOSAL) confirms it as MANUAL.",
     {
       id: z.union([z.number(), z.string()]).describe("Application ID"),
       note: z.string().max(2000).optional().describe("Optional shared note for the hiring team"),
@@ -214,11 +214,13 @@ export function registerApplicationTools(server) {
     withToolError(async ({ id, note }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      // Scoped: a hiring manager shortlists only on their own requisitions.
       const data = await addToShortlist({
         applicationId: id,
         tenantId: user.tenantId,
         note: note ?? null,
         actorId: user.employeeId ?? null,
+        scope: resolveRecruitmentScope(user),
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_application_shortlist_add")
@@ -226,7 +228,7 @@ export function registerApplicationTools(server) {
 
   server.tool(
     "hr_requisition_shortlist_list",
-    "List a requisition's current shortlist with each application's stage and candidate identity (hiring-team view).",
+    "List a requisition's current shortlist with each application's stage and candidate identity (hiring-team view). Each entry's source is MANUAL (a recruiter marked it) or SCORING_PROPOSAL (a fit-score proposal awaiting confirmation).",
     { requisitionId: z.union([z.number(), z.string()]).describe("Requisition ID") },
     withToolError(async ({ requisitionId }) => {
       const { user, permissions } = getCtx();
@@ -243,7 +245,11 @@ export function registerApplicationTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await removeFromShortlist({ applicationId: id, tenantId: user.tenantId });
+      const data = await removeFromShortlist({
+        applicationId: id,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_application_shortlist_remove")
   );

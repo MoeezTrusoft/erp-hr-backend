@@ -33,6 +33,7 @@ import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
 import { registerRecruitmentExtraTools } from "./tools/recruitmentExtraTools.js";
 import { registerRecruitmentSettingsTools } from "./tools/recruitment-settings.tools.js";
 import { registerCandidateDuplicateTools } from "./tools/candidate-duplicate.tools.js";
+import { registerRecruitmentScoringTools } from "./tools/recruitment-scoring.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -294,6 +295,8 @@ export function registerAllTools(server) {
   registerRecruitmentSettingsTools(server);
   // Phase 2 — duplicate candidate suggestions and their resolution.
   registerCandidateDuplicateTools(server);
+  // Phase 2 — fit score, requisition ranking and shortlist proposals.
+  registerRecruitmentScoringTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);
