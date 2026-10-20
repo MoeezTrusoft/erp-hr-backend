@@ -36,6 +36,20 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
         expect(isRecruitmentFlagEnabled("retention")).toBe(false);
     });
 
+    it("approval SLA reminders, auto-publish and posting expiry default OFF (F-02, F-04) and flip from env", () => {
+        expect(isRecruitmentFlagEnabled("approvalSla")).toBe(false);
+        expect(isRecruitmentFlagEnabled("autoPublish")).toBe(false);
+        expect(isRecruitmentFlagEnabled("postingExpiry")).toBe(false);
+        process.env.HR_RECRUITMENT_APPROVAL_SLA = "on";
+        process.env.HR_RECRUITMENT_AUTO_PUBLISH = "true";
+        process.env.HR_RECRUITMENT_POSTING_EXPIRY = "yes";
+        expect(isRecruitmentFlagEnabled("approvalSla")).toBe(true);
+        expect(isRecruitmentFlagEnabled("autoPublish")).toBe(true);
+        expect(isRecruitmentFlagEnabled("postingExpiry")).toBe(true);
+        process.env.HR_RECRUITMENT_APPROVAL_SLA = "maybe";
+        expect(isRecruitmentFlagEnabled("approvalSla")).toBe(false); // unknown → default off
+    });
+
     it("an unknown key fails closed to off", () => {
         expect(isRecruitmentFlagEnabled("nonexistent")).toBe(false);
     });
@@ -80,7 +94,7 @@ describe("recruitmentFlags — env parsing", () => {
 describe("recruitmentFlags — snapshot", () => {
     it("exposes every flag with env, value, default and description", () => {
         const snap = recruitmentFlagSnapshot();
-        expect(Object.keys(snap).sort()).toEqual(["ai", "analytics", "offerHandoff", "portal", "retention", "workflow"]);
+        expect(Object.keys(snap).sort()).toEqual(["ai", "analytics", "approvalSla", "autoPublish", "canonicalDashboard", "offerHandoff", "portal", "postingExpiry", "retention", "workflow"]);
         for (const [key, entry] of Object.entries(snap)) {
             expect(entry.env).toBe(RECRUITMENT_FLAG_DEFINITIONS[key].env);
             expect(typeof entry.enabled).toBe("boolean");

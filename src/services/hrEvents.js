@@ -280,6 +280,77 @@ export function requisitionClosedEvent(requisition, ctx = {}, extra = {}) {
     });
 }
 
+const isoOrNull = (value) => {
+    if (value == null) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+// F-04 — the requisition's application window (closesAt) passed and the expiry
+// sweep closed every active posting with reason EXPIRED. The requisition STATUS
+// is deliberately unchanged (it stays POSTED until a recruiter closes it), so
+// this is not requisition_closed: the audience learns "no channel is live any
+// more", not "the search is over". ids-only.
+export function requisitionPostingsExpiredEvent(requisition, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.postings_expired.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            channels: Array.isArray(extra?.channels) ? [...extra.channels] : [],
+            closesAt: isoOrNull(requisition?.closesAt),
+            // Routing id (see requisitionDecisionEvent).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+        },
+    });
+}
+
+// F-02 — approval SLA. A REQUISITION/OFFER approval request has sat in one
+// Approval Centre stage past its SLA. The payload is ids + timing facts only:
+// the stage owner is routed by code (the line manager's code is on the request;
+// HR and MANAGEMENT are permission-resolved roles, so the hub routes those by
+// role and stageOwnerCode is null). `aggregateId` is the caller's dedupe key
+// (request:version:stage:kind) — the sweep's idempotency lives on it.
+function approvalSlaPayload(request, extra = {}) {
+    return {
+        approvalRef: String(request?.id),
+        kind: request?.kind ?? null,
+        sourceRef: request?.sourceRef != null ? String(request.sourceRef) : null,
+        stage: request?.stage ?? null,
+        round: request?.round ?? null,
+        version: request?.version ?? null,
+        stageEnteredAt: isoOrNull(extra?.stageEnteredAt),
+        hoursInStage: extra?.hoursInStage ?? null,
+        slaHours: extra?.slaHours ?? null,
+        initiatorCode: request?.employeeCode ?? null,
+        managerCode: request?.managerCode ?? null,
+        stageOwnerCode: request?.stage === 'LINE_MANAGER' ? request?.managerCode ?? null : null,
+    };
+}
+
+export function recruitmentApprovalReminderEvent(request, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.approval_reminder.v1', request, ctx, {
+        aggregateType: 'HrApprovalRequest',
+        aggregateId: extra?.aggregateId ?? request?.id,
+        payload: approvalSlaPayload(request, extra),
+    });
+}
+
+// Escalation goes to the role ABOVE the stalled stage (the line manager's stall
+// is HR's to chase; HR's is management's; management escalates within itself).
+const ESCALATE_TO_ROLE = Object.freeze({ LINE_MANAGER: 'HR', HR: 'MANAGEMENT', MANAGEMENT: 'MANAGEMENT' });
+
+export function recruitmentApprovalEscalatedEvent(request, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.approval_escalated.v1', request, ctx, {
+        aggregateType: 'HrApprovalRequest',
+        aggregateId: extra?.aggregateId ?? request?.id,
+        payload: {
+            ...approvalSlaPayload(request, extra),
+            escalateToRole: ESCALATE_TO_ROLE[request?.stage] ?? 'MANAGEMENT',
+        },
+    });
+}
+
 // Phase 11 — application lifecycle. A stage change is the event recruiters and
 // hiring managers actually want ("moved to interview"), so `from`/`to` travel
 // with the ids and the optional reason that the workflow already enforces.

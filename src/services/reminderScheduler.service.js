@@ -11,8 +11,17 @@ import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 import { applyRetention } from "./candidatePrivacy.service.js";
 import { purgeExpiredDrafts } from "./applicationDraft.service.js";
-import { autoCloseFilledRequisitions } from "./requisitionPublication.service.js";
+import {
+  autoCloseFilledRequisitions,
+  autoPublishApprovedRequisitions,
+  closePostingsPastClosesAt,
+} from "./requisitionPublication.service.js";
 import { expireInvitations } from "./talentPoolInvitation.service.js";
+import {
+  sweepApprovalSla,
+  APPROVAL_SLA_KINDS,
+  APPROVAL_SLA_STAGES,
+} from "./recruitment-approval-sla.service.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 
 const reminderLog = logger.child({ component: "reminder-jobs" });
@@ -257,6 +266,72 @@ export async function runTalentPoolInvitationExpiryJob({ asOf = new Date() } = {
   const expired = perTenant.reduce((sum, row) => sum + (row.expired ?? 0), 0);
   reminderLog.info({ tenants: tenants.length, expired }, "talent-pool invitation expiry job: done");
   return { tenants: tenants.length, expired, perTenant };
+}
+
+// ── F-04 — posting expiry past closesAt ──────────────────────────────────────
+//
+// A SIBLING of the auto-close job rather than a second step inside it: the two
+// discover tenants from different predicates (opted-in autoCloseWhenFilled vs
+// any POSTED requisition past closesAt), and a separate BullMQ job keeps their
+// retry ladders, DLQ entries and result summaries apart, so a failure in one is
+// never retried by re-running the other. Same governing flag as auto-close.
+export async function runRequisitionPostingExpiryJob({ now = new Date() } = {}) {
+  if (!isRecruitmentFlagEnabled("postingExpiry")) {
+    reminderLog.info("requisition posting expiry job: postingExpiry flag off — nothing to do");
+    return { skipped: "flag-disabled", tenants: 0, expired: 0, perTenant: [] };
+  }
+  const at = new Date(now);
+  const tenants = await tenantsWith("jobRequisition", { status: "POSTED", closesAt: { lt: at } });
+  const perTenant = await sweepTenants("requisition posting expiry job", tenants, async (tenantId) => {
+    const expired = await closePostingsPastClosesAt({ tenantId, now: at });
+    return { expired: expired.length };
+  });
+  const expired = perTenant.reduce((sum, row) => sum + (row.expired ?? 0), 0);
+  reminderLog.info({ tenants: tenants.length, expired }, "requisition posting expiry job: done");
+  return { tenants: tenants.length, expired, perTenant };
+}
+
+// ── F-04 — auto-publish on approval ──────────────────────────────────────────
+// Governed by its own flag (`autoPublish`, HR_RECRUITMENT_AUTO_PUBLISH, default
+// OFF): publication is candidate-facing, so a tenant opts in deliberately.
+export async function runRequisitionAutoPublishJob({ now = new Date() } = {}) {
+  if (!isRecruitmentFlagEnabled("autoPublish")) {
+    reminderLog.info("requisition auto-publish job: autoPublish flag off — nothing to do");
+    return { skipped: "flag-disabled", tenants: 0, published: 0, perTenant: [] };
+  }
+  const at = new Date(now);
+  const tenants = await tenantsWith("jobRequisition", { status: "APPROVED" });
+  const perTenant = await sweepTenants("requisition auto-publish job", tenants, async (tenantId) => {
+    const result = await autoPublishApprovedRequisitions({ tenantId, now: at });
+    return { published: result.published.length, skipped: result.skipped.length, failed: result.failed.length };
+  });
+  const published = perTenant.reduce((sum, row) => sum + (row.published ?? 0), 0);
+  reminderLog.info({ tenants: tenants.length, published }, "requisition auto-publish job: done");
+  return { tenants: tenants.length, published, perTenant };
+}
+
+// ── F-02 — approval SLA reminders and escalation ─────────────────────────────
+// Governed by `approvalSla` (HR_RECRUITMENT_APPROVAL_SLA, default OFF). The body
+// (thresholds, dedupe, per-enqueue tenant transactions) lives in
+// recruitment-approval-sla.service.js; this wrapper only finds the tenants with
+// pending REQUISITION/OFFER approvals and isolates them from each other.
+export async function runRecruitmentApprovalSlaJob({ now = new Date(), correlationId } = {}) {
+  if (!isRecruitmentFlagEnabled("approvalSla")) {
+    reminderLog.info("recruitment approval SLA job: approvalSla flag off — nothing to do");
+    return { skipped: "flag-disabled", tenants: 0, reminded: 0, escalated: 0, perTenant: [] };
+  }
+  const at = new Date(now);
+  const tenants = await tenantsWith("hrApprovalRequest", {
+    kind: { in: [...APPROVAL_SLA_KINDS] },
+    stage: { in: [...APPROVAL_SLA_STAGES] },
+  });
+  const perTenant = await sweepTenants("recruitment approval SLA job", tenants, (tenantId) =>
+    sweepApprovalSla({ tenantId, now: at, correlationId }),
+  );
+  const reminded = perTenant.reduce((sum, row) => sum + (row.reminded ?? 0), 0);
+  const escalated = perTenant.reduce((sum, row) => sum + (row.escalated ?? 0), 0);
+  reminderLog.info({ tenants: tenants.length, reminded, escalated }, "recruitment approval SLA job: done");
+  return { tenants: tenants.length, reminded, escalated, perTenant };
 }
 
 // Back-compat shim: the old export name. Now it just logs that scheduling has

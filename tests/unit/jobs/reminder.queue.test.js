@@ -19,6 +19,9 @@ import {
     JOB_DOCUMENT_EXPIRY,
     JOB_RETENTION_SWEEP,
     JOB_APPLICATION_DRAFT_SWEEP,
+    JOB_REQUISITION_POSTING_EXPIRY,
+    JOB_REQUISITION_AUTOPUBLISH,
+    JOB_RECRUITMENT_APPROVAL_SLA,
     defaultJobOptions,
     repeatableJobs,
     startReminderJobs,
@@ -59,6 +62,11 @@ describe('repeatable de-dup', () => {
         // Phase 5 residue — the save-and-return draft sweep is REGISTERED (its
         // purge existed as an exposed service function with no scheduler).
         expect(names).toContain(JOB_APPLICATION_DRAFT_SWEEP);
+        // F-02 / F-04 — the approval-SLA, auto-publish and posting-expiry
+        // sweeps are registered (job names carry no ':' either way).
+        expect(names).toEqual(expect.arrayContaining([
+            JOB_REQUISITION_POSTING_EXPIRY, JOB_REQUISITION_AUTOPUBLISH, JOB_RECRUITMENT_APPROVAL_SLA,
+        ]));
         // each repeatable carries a cron pattern
         expect(jobs.every((j) => typeof j.opts.repeat?.pattern === 'string')).toBe(true);
     });

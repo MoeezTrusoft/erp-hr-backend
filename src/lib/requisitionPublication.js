@@ -40,6 +40,42 @@ export const CHANNELS_REQUIRING_URL = Object.freeze(
     PUBLICATION_CHANNELS.filter((channel) => !SELF_HOSTED_CHANNELS.includes(channel)),
 );
 
+// The channel(s) a publication with no explicit list goes to (and the fallback
+// for the auto-publish sweep's configured list).
+export const DEFAULT_PUBLICATION_CHANNELS = Object.freeze(["CAREER_SITE"]);
+
+/**
+ * F-04 — resolve the auto-publish channel list from a comma-separated config
+ * value (HR_RECRUITMENT_DEFAULT_CHANNELS).
+ *
+ * Every entry is validated against the channel vocabulary. An entry is REJECTED
+ * (not published) when it is unknown, or when it is an external channel that
+ * needs a URL: an unattended publication has no URL to record, and a "live on
+ * LinkedIn" posting with no link is exactly what normalizeChannelPublication
+ * refuses for a human. An empty or wholly-rejected list falls back to
+ * DEFAULT_PUBLICATION_CHANNELS, so a typo can never stop publication.
+ *
+ * @param {string|undefined|null} raw
+ * @returns {{ channels: string[], rejected: string[], fallback: boolean }}
+ */
+export function resolveDefaultPublicationChannels(raw) {
+    const entries = String(raw ?? "")
+        .split(",")
+        .map((entry) => entry.trim().toUpperCase())
+        .filter(Boolean);
+    const channels = [];
+    const rejected = [];
+    for (const entry of entries) {
+        if (PUBLICATION_CHANNELS.includes(entry) && !CHANNELS_REQUIRING_URL.includes(entry)) {
+            if (!channels.includes(entry)) channels.push(entry);
+        } else if (!rejected.includes(entry)) {
+            rejected.push(entry);
+        }
+    }
+    if (!channels.length) return { channels: [...DEFAULT_PUBLICATION_CHANNELS], rejected, fallback: true };
+    return { channels, rejected, fallback: false };
+}
+
 // ── Posting close reasons (§2.4a) ────────────────────────────────────────────
 //
 // Coded, because "why did the posting stop" is a report, not prose. OTHER is the
@@ -190,7 +226,7 @@ export function normalizeChannelPublication(input, { externalUrl = null, channel
  */
 export function normalizeChannelList(postingChannels, { externalUrl = null, channelRef = null } = {}) {
     const raw = isBlank(postingChannels)
-        ? ["CAREER_SITE"]
+        ? [...DEFAULT_PUBLICATION_CHANNELS]
         : Array.isArray(postingChannels)
           ? postingChannels
           : [postingChannels];

@@ -22,7 +22,7 @@ import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { requisitionPostedEvent, requisitionClosedEvent } from "./hrEvents.js";
+import { requisitionPostedEvent, requisitionClosedEvent, requisitionPostingsExpiredEvent } from "./hrEvents.js";
 import {
     assertRequisitionTransition,
     assertRequisitionAdvanceAllowed,
@@ -33,7 +33,9 @@ import {
     normalizeChannelList,
     normalizePostingCloseReason,
     normalizeWithdrawalReason,
+    resolveDefaultPublicationChannels,
 } from "../lib/requisitionPublication.js";
+import logger from "../lib/logger.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -42,6 +44,10 @@ const actorIdOf = (value) => {
     const n = Number(value);
     return Number.isInteger(n) && n > 0 ? n : null;
 };
+
+const PUBLISH_SOURCE_MANUAL = "requisition.post";
+const PUBLISH_SOURCE_AUTO = "requisition.autopublish";
+const PUBLISH_SOURCES = Object.freeze([PUBLISH_SOURCE_MANUAL, PUBLISH_SOURCE_AUTO]);
 
 const POSTING_SELECT = Object.freeze({
     id: true,
@@ -85,7 +91,12 @@ export const publishRequisition = async ({
     channelRef = null,
     actorId = null,
     tenantId = null,
+    // Who published, as recorded on the transition row: a human/API caller is
+    // `requisition.post`; the F-04 sweep is `requisition.autopublish`. Closed
+    // vocabulary so a caller cannot write an arbitrary provenance string.
+    source = PUBLISH_SOURCE_MANUAL,
 } = {}) => {
+    const transitionSource = PUBLISH_SOURCES.includes(source) ? source : PUBLISH_SOURCE_MANUAL;
     const placements = normalizeChannelList(postingChannels, { externalUrl, channelRef });
 
     // Read + guards OUTSIDE the transaction so a refused publication never opens
@@ -141,7 +152,11 @@ export const publishRequisition = async ({
             await assertRequisitionTransition(requisition.status, "POSTED", { requisition });
             updated = await tx.jobRequisition.update({
                 where: { id: Number(id) },
-                data: { status: "POSTED" },
+                // publishedAt is the FIRST publication instant (audit: the column
+                // existed but nothing wrote it). Only stamped on the APPROVED →
+                // POSTED flip and only when empty, so an additional channel or a
+                // re-publish never rewrites when the role first went live.
+                data: { status: "POSTED", ...(requisition.publishedAt ? {} : { publishedAt: new Date() }) },
             });
             await recordRequisitionTransition(tx, {
                 requisitionId: Number(id),
@@ -149,7 +164,7 @@ export const publishRequisition = async ({
                 fromStatus: requisition.status,
                 toStatus: "POSTED",
                 actorId: actor,
-                source: "requisition.post",
+                source: transitionSource,
             });
         }
 
@@ -458,6 +473,183 @@ export const autoCloseFilledRequisitions = async ({ tenantId = null, now = new D
         );
     }
     return closed;
+};
+
+// ── F-04 — auto-publish on approval, and posting expiry past closesAt ────────
+//
+// The Approval Centre's REQUISITION finaliser moves a requisition to APPROVED and
+// stops there: nothing published it unless a recruiter remembered to. The
+// auto-publish sweep (requisition-autopublish job, flag `autoPublish`, default
+// OFF) closes that gap by calling the SAME publishRequisition a recruiter uses,
+// so the freeze guard, the transition row and the requisition_posted event are
+// identical; only the recorded source differs (`requisition.autopublish`).
+//
+// The expiry sweep (requisition-posting-expiry job, under its own postingExpiry
+// flag, default off) takes the postings of a requisition whose closesAt has passed off
+// every channel with the coded reason EXPIRED. It deliberately leaves the
+// requisition POSTED: eligibility already refuses applications past closesAt,
+// and ending the search is a recruiter's decision (close, or extend closesAt and
+// re-publish), not a side effect of a date.
+
+const sweepLog = logger.child({ component: "requisition-publication-sweeps" });
+
+const AUTO_PUBLISH_SKIP_CODES = Object.freeze({
+    "HR-RECRUITMENT-HIRING-FREEZE": "HIRING_FREEZE",
+    "HR-RECRUITMENT-PUBLICATION-STATUS-INVALID": "STATUS_CHANGED",
+    "HR-RECRUITMENT-REQUISITION-NOT-FOUND": "NOT_FOUND",
+});
+
+/**
+ * Publish every APPROVED, not-yet-advertised requisition to the default
+ * channel(s). Idempotent: a published requisition is POSTED and is never
+ * selected again; a requisition with an active posting is never selected.
+ *
+ * Skips (never publishes) a requisition whose closesAt is not in the future,
+ * and one under a hiring freeze (publishRequisition's own freeze guard refuses
+ * it; the refusal is reported as a skip, not a failure, and the next run picks
+ * it up once the freeze lifts).
+ *
+ * @param {object} args
+ * @param {string|null} args.tenantId
+ * @param {Date} [args.now]
+ * @param {string[]} [args.channels]  override; defaults to HR_RECRUITMENT_DEFAULT_CHANNELS
+ * @param {number} [args.limit=100]   max requisitions per tenant per run
+ */
+export const autoPublishApprovedRequisitions = async ({
+    tenantId = null,
+    now = new Date(),
+    channels,
+    limit = 100,
+} = {}) => {
+    const resolved = Array.isArray(channels) && channels.length
+        ? { channels: [...channels], rejected: [], fallback: false }
+        : resolveDefaultPublicationChannels(process.env.HR_RECRUITMENT_DEFAULT_CHANNELS);
+    if (resolved.rejected.length) {
+        sweepLog.warn(
+            { rejected: resolved.rejected, using: resolved.channels },
+            "auto-publish: HR_RECRUITMENT_DEFAULT_CHANNELS entries rejected (unknown, or an external channel that needs a URL)",
+        );
+    }
+
+    const at = new Date(now);
+    const candidates = await prisma.jobRequisition.findMany({
+        where: scopedWhere(tenantId, {
+            status: "APPROVED",
+            OR: [{ closesAt: null }, { closesAt: { gt: at } }],
+            postings: { none: { isActive: true } },
+        }),
+        select: { id: true, tenantId: true, closesAt: true },
+        orderBy: { id: "asc" },
+        take: limit,
+    });
+
+    const published = [];
+    const skipped = [];
+    const failed = [];
+    for (const requisition of candidates) {
+        if (requisition.closesAt && new Date(requisition.closesAt).getTime() <= at.getTime()) {
+            skipped.push({ id: requisition.id, reason: "CLOSES_AT_PASSED" });
+            continue;
+        }
+        try {
+            const result = await publishRequisition({
+                id: requisition.id,
+                tenantId: requisition.tenantId ?? tenantId,
+                postingChannels: resolved.channels,
+                actorId: null,
+                source: PUBLISH_SOURCE_AUTO,
+            });
+            if (result.published.length) {
+                published.push({ id: requisition.id, channels: result.published });
+            } else {
+                skipped.push({ id: requisition.id, reason: "ALREADY_POSTED" });
+            }
+        } catch (err) {
+            const reason = AUTO_PUBLISH_SKIP_CODES[err?.code];
+            if (reason) {
+                skipped.push({ id: requisition.id, reason });
+                continue;
+            }
+            // One requisition's failure must not stop the rest of the tenant.
+            sweepLog.error(
+                { errMessage: err?.message, requisitionId: requisition.id, tenantId: requisition.tenantId ?? tenantId },
+                "auto-publish: requisition failed",
+            );
+            failed.push({ id: requisition.id, error: err?.message ?? "unknown" });
+        }
+    }
+    return { channels: resolved.channels, published, skipped, failed };
+};
+
+/**
+ * Close every active posting of a POSTED requisition whose closesAt has passed,
+ * with close reason EXPIRED, and emit hr.recruitment.postings_expired.v1 in the
+ * same transaction. The requisition status is NOT changed. Idempotent: once the
+ * postings are closed the requisition no longer matches.
+ *
+ * @returns {Promise<Array<{ id: number, channels: string[], closedPostings: number }>>}
+ */
+export const closePostingsPastClosesAt = async ({ tenantId = null, now = new Date(), limit = 200 } = {}) => {
+    const at = new Date(now);
+    const candidates = await prisma.jobRequisition.findMany({
+        where: scopedWhere(tenantId, {
+            status: "POSTED",
+            closesAt: { lt: at },
+            postings: { some: { isActive: true } },
+        }),
+        select: { id: true, tenantId: true },
+        orderBy: { id: "asc" },
+        take: limit,
+    });
+
+    const expired = [];
+    for (const candidate of candidates) {
+        const scope = candidate.tenantId ?? tenantId;
+        const outcome = await tenantTransaction(
+            prisma,
+            async (tx) => {
+                // Re-read inside the tx: a recruiter who extended closesAt or
+                // closed the requisition since the scan must win.
+                const requisition = await tx.jobRequisition.findFirst({
+                    where: scopedWhere(scope, { id: candidate.id, status: "POSTED", closesAt: { lt: at } }),
+                    select: { id: true, tenantId: true, status: true, closesAt: true, requestedById: true },
+                });
+                if (!requisition?.closesAt || new Date(requisition.closesAt).getTime() >= at.getTime()) return null;
+
+                const active = await tx.jobPosting.findMany({
+                    where: scopedWhere(scope, { requisitionId: requisition.id, isActive: true }),
+                    select: { id: true, channel: true },
+                });
+                if (!active.length) return null;
+
+                const closedPostings = await closeActivePostingsForRequisition(tx, {
+                    requisitionId: requisition.id,
+                    tenantId: scope,
+                    closeReason: "EXPIRED",
+                    actorId: null,
+                });
+                if (!closedPostings) return null;
+
+                const channels = [...new Set(active.map((p) => p.channel))].sort();
+                await logAction({
+                    employeeId: null,
+                    type: "UPDATE",
+                    module: "Requisition Posting Expiry",
+                    result: "SUCCESS",
+                    notes: `Requisition "${requisition.id}" application window closed; ${closedPostings} posting(s) expired (${channels.join(", ")})`,
+                    tenantId: scope,
+                });
+                await enqueueHrDomainEvent(
+                    tx,
+                    requisitionPostingsExpiredEvent({ ...requisition, tenantId: scope }, {}, { channels }),
+                );
+                return { id: requisition.id, channels, closedPostings };
+            },
+            { tenantId: scope },
+        );
+        if (outcome) expired.push(outcome);
+    }
+    return expired;
 };
 
 /** Every posting for a requisition, active first. Tenant-scoped read. */

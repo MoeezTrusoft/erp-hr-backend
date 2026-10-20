@@ -21,7 +21,8 @@
 const DEFINITIONS = Object.freeze({
     // §2 — requisition workflow enforcement. Read by the mandatory-field
     // submission gate and by the scheduled sweeps (requisition auto-close,
-    // talent-pool invitation expiry). Approval itself is the HR Approval
+    // talent-pool invitation expiry). Approval
+    // itself is the HR Approval
     // Centre's and is never flag-gated.
     workflow: {
         env: "HR_RECRUITMENT_WORKFLOW_ENFORCEMENT",
@@ -55,12 +56,49 @@ const DEFINITIONS = Object.freeze({
         def: true,
         desc: "canonicalMetrics block in the recruitment analytics payload",
     },
+    // F-35 — the recruitment dashboard's headline numbers (open positions,
+    // time to fill, offer acceptance and the KPI alerts built on them) read the
+    // canonical definitions above instead of the dashboard's older formulas.
+    // OFF until the numbers are reconciled with the dashboard's owners, because
+    // switching it changes figures people already report.
+    canonicalDashboard: {
+        env: "HR_RECRUITMENT_CANONICAL_DASHBOARD",
+        def: false,
+        desc: "Recruitment dashboard headline metrics use the canonical definitions",
+    },
     // §7 — AI advisory features (match summary; resume parsing degrades to a
     // clear 503 when off).
     ai: {
         env: "HR_RECRUITMENT_AI",
         def: false, // OFF: §7.1b — with no approved provider/config, AI stays disabled
         desc: "AI advisory features (candidate match summary, resume parsing via the plane)",
+    },
+    // F-02 — requisition/offer approval SLA reminders and escalation (the
+    // scheduled recruitment-approval-sla sweep). OFF until the Notification Hub
+    // maps the reminder/escalation events, so a deploy never starts nagging
+    // approvers through a consumer that drops the event.
+    approvalSla: {
+        env: "HR_RECRUITMENT_APPROVAL_SLA",
+        def: false,
+        desc: "Approval SLA reminders and escalation for pending requisition/offer approvals",
+    },
+    // F-04 — publish an APPROVED requisition to the default channel(s) without
+    // a recruiter action (the scheduled requisition-autopublish sweep). OFF:
+    // publication is candidate-facing, so a tenant opts in deliberately.
+    autoPublish: {
+        env: "HR_RECRUITMENT_AUTO_PUBLISH",
+        def: false,
+        desc: "Automatic publication of approved requisitions to the default channel(s)",
+    },
+    // F-04 — close a posted requisition's active postings once its closesAt has
+    // passed (the scheduled requisition-posting-expiry sweep). OFF: the first
+    // run closes every posting already past its date, so a tenant switches it
+    // on once those requisitions have been reviewed. Applications past closesAt
+    // are refused either way (requisitionEligibility).
+    postingExpiry: {
+        env: "HR_RECRUITMENT_POSTING_EXPIRY",
+        def: false,
+        desc: "Automatic closing of postings on requisitions past their closesAt",
     },
 });
 

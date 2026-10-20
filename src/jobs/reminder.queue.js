@@ -33,6 +33,9 @@ import {
     runApplicationDraftSweepJob,
     runRequisitionAutoCloseJob,
     runTalentPoolInvitationExpiryJob,
+    runRequisitionPostingExpiryJob,
+    runRequisitionAutoPublishJob,
+    runRecruitmentApprovalSlaJob,
 } from '../services/reminderScheduler.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
@@ -71,6 +74,12 @@ export const JOB_APPLICATION_DRAFT_SWEEP = 'application-draft-sweep';
 // talent-pool invitations past their validity.
 export const JOB_REQUISITION_AUTOCLOSE = 'requisition-autoclose';
 export const JOB_TALENT_POOL_INVITATION_EXPIRY = 'talent-pool-invitation-expiry';
+// F-04 — close the postings of a POSTED requisition whose closesAt passed
+// (reason EXPIRED), and publish APPROVED requisitions to the default channel(s).
+export const JOB_REQUISITION_POSTING_EXPIRY = 'requisition-posting-expiry';
+export const JOB_REQUISITION_AUTOPUBLISH = 'requisition-autopublish';
+// F-02 — requisition/offer approval SLA reminders and escalation.
+export const JOB_RECRUITMENT_APPROVAL_SLA = 'recruitment-approval-sla';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -143,6 +152,27 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:talent-pool-invitation-expiry', repeat: { pattern: '20 4 * * *' } },
         },
+        {
+            // Hourly at :25 — after the :20 auto-close, so a filled requisition is
+            // closed as FILLED before its window could expire its postings.
+            name: JOB_REQUISITION_POSTING_EXPIRY,
+            data: {},
+            opts: { jobId: 'repeat:requisition-posting-expiry', repeat: { pattern: '25 * * * *' } },
+        },
+        {
+            // Every 10 minutes — an approved requisition goes live shortly after
+            // its final approval (flag-gated; a no-op while autoPublish is off).
+            name: JOB_REQUISITION_AUTOPUBLISH,
+            data: {},
+            opts: { jobId: 'repeat:requisition-autopublish', repeat: { pattern: '*/10 * * * *' } },
+        },
+        {
+            // Every 30 minutes — SLA thresholds are hours, so a reminder lands
+            // within half an hour of falling due (flag-gated, default off).
+            name: JOB_RECRUITMENT_APPROVAL_SLA,
+            data: {},
+            opts: { jobId: 'repeat:recruitment-approval-sla', repeat: { pattern: '*/30 * * * *' } },
+        },
     ];
 }
 
@@ -160,6 +190,9 @@ export function buildReminderProcessor({
     applicationDraftSweep = runApplicationDraftSweepJob,
     requisitionAutoClose = runRequisitionAutoCloseJob,
     talentPoolInvitationExpiry = runTalentPoolInvitationExpiryJob,
+    requisitionPostingExpiry = runRequisitionPostingExpiryJob,
+    requisitionAutoPublish = runRequisitionAutoPublishJob,
+    recruitmentApprovalSla = runRecruitmentApprovalSlaJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -188,6 +221,12 @@ export function buildReminderProcessor({
                     return requisitionAutoClose(data);
                 case JOB_TALENT_POOL_INVITATION_EXPIRY:
                     return talentPoolInvitationExpiry(data);
+                case JOB_REQUISITION_POSTING_EXPIRY:
+                    return requisitionPostingExpiry(data);
+                case JOB_REQUISITION_AUTOPUBLISH:
+                    return requisitionAutoPublish(data);
+                case JOB_RECRUITMENT_APPROVAL_SLA:
+                    return recruitmentApprovalSla(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

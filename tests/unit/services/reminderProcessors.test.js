@@ -27,6 +27,8 @@ jest.unstable_mockModule('../../../src/services/candidatePrivacy.service.js', ()
 // this suite's module graph stays limited to the reminder processors.
 jest.unstable_mockModule('../../../src/services/requisitionPublication.service.js', () => ({
     autoCloseFilledRequisitions: jest.fn(async () => []),
+    autoPublishApprovedRequisitions: jest.fn(async () => ({ published: [], skipped: [], failed: [] })),
+    closePostingsPastClosesAt: jest.fn(async () => []),
 }));
 jest.unstable_mockModule('../../../src/services/talentPoolInvitation.service.js', () => ({
     expireInvitations: jest.fn(async () => ({ dryRun: false, expired: [] })),
