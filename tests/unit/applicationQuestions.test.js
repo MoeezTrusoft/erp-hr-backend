@@ -34,6 +34,8 @@ const prisma = {
     // same transaction as the application.
     candidateEmailVerification: { updateMany: jest.fn(), create: jest.fn() },
     application: { findFirst: jest.fn(), create: jest.fn() },
+    // Phase 2 / D-11 — the intake probes the do-not-contact register.
+    candidateDncEntry: { findFirst: jest.fn(async () => null) },
     $transaction: jest.fn(),
 };
 const logAction = jest.fn();
@@ -41,11 +43,14 @@ const enqueueHrDomainEvent = jest.fn();
 const applicationCreatedEvent = jest.fn(() => ({}));
 
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
+// Phase 2 — the intake now reaches services that import the singleton directly.
+jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction }));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 jest.unstable_mockModule("../../src/services/hrEvents.js", () => ({ applicationCreatedEvent }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
     tenantTransaction: (client, fn) => fn(client),
+    rlsTenantExtension: (client) => client,
 }));
 
 const { validateQuestionDefinition, validateAnswer, validateQuestionSet, totalScore } = await import(

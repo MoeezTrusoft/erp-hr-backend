@@ -73,9 +73,13 @@ export const createCandidate = async (req, res) => {
             data: resumeParsing ? { ...candidate, resumeParsing } : candidate,
         });
     } catch (error) {
-        return res.status(400).json({
+        // A service refusal keeps its own 4xx (409 HR-RECRUITMENT-CANDIDATE-DNC);
+        // anything else stays the historical 400.
+        const status = Number(error?.status);
+        return res.status(status >= 400 && status < 500 ? status : 400).json({
             success: false,
             message: error.message,
+            ...(error?.code ? { code: error.code } : {}),
         });
     }
 };

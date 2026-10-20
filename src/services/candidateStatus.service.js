@@ -14,12 +14,15 @@
 //     No internal stage names, no rejection reasons, no recruiter comments,
 //     no scores, no interviewer data, no ids beyond the requisition title;
 //   * a link that is wrong, revoked, expired — or held by a candidate with no
-//     visible applications — renders the SAME empty body on the wire.
+//     visible applications — renders the SAME empty body on the wire;
+//   * Recruitment Phase 2 / D-11 — an address on the do-not-contact register
+//     gets no link and no email, behind the same uniform response.
 import prisma from "../config/prisma.js";
 import { projectCandidateStatusList } from "../lib/candidateStatusView.js";
 import { issueStatusLink, sendStatusLinkEmail, resolveStatusLink } from "./candidateVerification.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { checkIntakeDnc, logIntakeSuppressed } from "../lib/intake-dnc.util.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -46,7 +49,14 @@ export const requestStatusLink = async ({ tenantId, email } = {}) => {
     if (candidate) {
         issued = await tenantTransaction(
             prisma,
-            async (tx) => issueStatusLink(tx, { tenantId, candidate, email: address }),
+            async (tx) => {
+                const dnc = await checkIntakeDnc({ tenantId, email: address, tx });
+                if (dnc.blocked) {
+                    logIntakeSuppressed({ tenantId, email: address, path: "portal.status_link", reason: dnc.reason });
+                    return null;
+                }
+                return await issueStatusLink(tx, { tenantId, candidate, email: address });
+            },
             { tenantId },
         );
         if (issued) {

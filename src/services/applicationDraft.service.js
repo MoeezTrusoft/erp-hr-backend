@@ -22,6 +22,11 @@
 // ANTI-ENUMERATION (§3.4): every failure of load/submit renders the same
 // uniform response on the wire (the route owns the body); the token follows
 // the §3.2 pattern (sha256 at rest, raw token only in the email).
+//
+// Recruitment Phase 2 — D-11: an address on the do-not-contact register gets
+// no candidate row, no draft and no email, and the caller still answers with
+// the uniform saved body. The draft's resume and source attribution travel
+// through submit into the intake (the resume used to be dropped there).
 import crypto from "node:crypto";
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -29,7 +34,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { sendCandidateEmail } from "../lib/notificationClient.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { submitPublicApplication } from "./publicPortal.service.js";
-import logger from "../lib/logger.js";
+import { checkIntakeDnc, logIntakeSuppressed, normalizeSourceChannel, normalizeSourceDetail } from "../lib/intake-dnc.util.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -66,6 +71,13 @@ export function parseDraftPayload(body = {}) {
                 ? Number(body.resumeMediaId) || null
                 : null,
         source: String(body.source ?? "PORTAL").trim().toUpperCase() || "PORTAL",
+        // Phase 2 — the apply link's attribution, re-validated at submit
+        // against the requisition's active postings.
+        sourceChannel: normalizeSourceChannel(body.sourceChannel, null),
+        sourcePostingId: Number.isInteger(Number(body.sourcePostingId)) && Number(body.sourcePostingId) > 0
+            ? Number(body.sourcePostingId)
+            : null,
+        sourceDetail: normalizeSourceDetail(body.sourceDetail),
     };
 }
 
@@ -75,7 +87,9 @@ export function parseDraftPayload(body = {}) {
  * TX-scoped for the draft upsert; the email send happens after commit
  * (fail-soft, like every candidate email).
  *
- * @returns {Promise<{ saved: true, emailed: boolean }>}
+ * @returns {Promise<{ saved: true, emailed: boolean, draftId: number|null }>}
+ *   The route answers every outcome with `{ saved: true }` only; `emailed` and
+ *   `draftId` are for the caller's logs and tests, never the wire.
  */
 export const saveApplicationDraft = async ({ tenantId, requisitionId, email, firstName, body = {} } = {}) => {
     const address = String(email ?? "").trim().toLowerCase();
@@ -89,31 +103,36 @@ export const saveApplicationDraft = async ({ tenantId, requisitionId, email, fir
     }
     const payload = parseDraftPayload(body);
 
-    // Reconcile the candidate by email — same non-resurrection rule as intake.
-    const candidate = await prisma.candidate.findFirst({
-        where: { tenantId, email: address, anonymizedAt: null, status: "active" },
-        select: { id: true, firstName: true },
-    });
-    const candidateRow =
-        candidate ??
-        (await prisma.candidate.create({
-            data: {
-                firstName: payload.firstName ?? firstName ?? "",
-                email: address,
-                status: "active",
-                tenantId,
-                source: payload.source,
-            },
-            select: { id: true, firstName: true },
-        }));
-
     const token = newToken();
-    const draft = await tenantTransaction(
+    const saved = await tenantTransaction(
         prisma,
         async (tx) => {
+            // D-11 — a register hit writes nothing at all (not even the
+            // candidate row) and sends nothing.
+            const dnc = await checkIntakeDnc({ tenantId, email: address, tx });
+            if (dnc.blocked) return { suppressed: true, reason: dnc.reason };
+
+            // Reconcile the candidate by email — same non-resurrection rule as intake.
+            const candidate = await tx.candidate.findFirst({
+                where: { tenantId, email: address, anonymizedAt: null, status: "active" },
+                select: { id: true, firstName: true },
+            });
+            const candidateRow =
+                candidate ??
+                (await tx.candidate.create({
+                    data: {
+                        firstName: payload.firstName ?? firstName ?? "",
+                        email: address,
+                        status: "active",
+                        tenantId,
+                        source: payload.source,
+                    },
+                    select: { id: true, firstName: true },
+                }));
+
             // Replace the previous token by overwriting the row (unique on
             // candidate+requisition): the old link dies with the upsert.
-            return tx.applicationDraft.upsert({
+            const draft = await tx.applicationDraft.upsert({
                 where: { candidateId_requisitionId: { candidateId: candidateRow.id, requisitionId: reqId } },
                 create: scopedData(tenantId, {
                     candidateId: candidateRow.id,
@@ -130,9 +149,15 @@ export const saveApplicationDraft = async ({ tenantId, requisitionId, email, fir
                     expiresAt: new Date(Date.now() + DRAFT_TTL_MS),
                 },
             });
+            return { candidateRow, draft };
         },
         { tenantId },
     );
+    if (saved.suppressed) {
+        logIntakeSuppressed({ tenantId, email: address, path: "portal.draft_save", reason: saved.reason });
+        return { saved: true, emailed: false, draftId: null };
+    }
+    const { candidateRow, draft } = saved;
 
     // Fail-soft delivery after commit.
     const base = process.env.HR_PORTAL_BASE_URL || "";
@@ -224,7 +249,16 @@ export const submitApplicationDraft = async ({ token } = {}) => {
             answers: p.answers ?? undefined,
             policyVersion: p.policyVersion ?? undefined,
             source: p.source ?? "PORTAL",
+            sourceChannel: p.sourceChannel ?? undefined,
+            sourcePostingId: p.sourcePostingId ?? undefined,
+            sourceDetail: p.sourceDetail ?? undefined,
         },
+        // The resume would ride as a trusted argument, never a body field. The
+        // draft's resumeMediaId is NOT trusted yet: draft save takes it from the
+        // anonymous body, so any DAM asset id could be attached to a candidate
+        // and parsed. It is carried once the portal has an upload that binds the
+        // asset to this draft.
+        resumeMediaId: null,
     });
     await prisma.applicationDraft.update({
         where: { id: raw.id },

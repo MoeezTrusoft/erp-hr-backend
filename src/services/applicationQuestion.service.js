@@ -14,17 +14,31 @@
 // Ordering, question-set integrity and scoring bounds are all delegated to the
 // pure module in src/lib/applicationQuestions.js — the REST path and the MCP
 // path both come through here, so they cannot diverge.
+//
+// Recruitment Phase 2 — the knockout flag and rule are validated by the same
+// module; a bad rule is refused with HR-RECRUITMENT-KNOCKOUT-RULE-INVALID so the
+// caller can tell it apart from an ordinary definition error.
 
+import { Prisma } from "@prisma/client";
 import prisma from "../config/prisma.js";
 import { validateQuestionDefinition } from "../lib/applicationQuestions.js";
 
 export class ApplicationQuestionError extends Error {
-  constructor(message, status = 400, details = undefined) {
+  constructor(message, status = 400, details = undefined, code = undefined) {
     super(message);
     this.name = "ApplicationQuestionError";
     this.status = status;
     this.details = details;
+    if (code) this.code = code;
   }
+}
+
+/** The 400 for a definition that failed validation, coded by what failed. */
+function invalidDefinition({ errors, knockoutErrors = [] }) {
+  if (knockoutErrors.length) {
+    return new ApplicationQuestionError("Invalid knockout rule", 400, { errors }, "HR-RECRUITMENT-KNOCKOUT-RULE-INVALID");
+  }
+  return new ApplicationQuestionError("Invalid question definition", 400, { errors }, "HR-RECRUITMENT-QUESTION-INVALID");
 }
 
 async function assertRequisitionManageable(requisitionId, tenantId) {
@@ -53,6 +67,8 @@ export async function listQuestions(requisitionId, tenantId) {
       options: true,
       weights: true,
       maxScore: true,
+      knockout: true,
+      knockoutRule: true,
       isActive: true,
     },
   });
@@ -65,8 +81,9 @@ export async function listQuestions(requisitionId, tenantId) {
 export async function createQuestion(requisitionId, tenantId, definition, _actorId = undefined) {
   await assertRequisitionManageable(requisitionId, tenantId);
 
-  const { ok, errors, normalized } = validateQuestionDefinition(definition);
-  if (!ok) throw new ApplicationQuestionError("Invalid question definition", 400, { errors });
+  const validation = validateQuestionDefinition(definition);
+  const { ok, normalized } = validation;
+  if (!ok) throw invalidDefinition(validation);
 
   // Prompt uniqueness within the requisition's active set.
   const dupe = await prisma.applicationQuestion.findFirst({
@@ -99,6 +116,8 @@ export async function createQuestion(requisitionId, tenantId, definition, _actor
       options: normalized.options ?? undefined,
       weights: normalized.weights ?? undefined,
       maxScore: normalized.maxScore,
+      knockout: normalized.knockout,
+      knockoutRule: normalized.knockoutRule ?? undefined,
       isActive: normalized.isActive,
     },
   });
@@ -126,7 +145,13 @@ export async function updateQuestion(requisitionId, tenantId, questionId, defini
     );
   }
 
-  const { ok, errors, normalized } = validateQuestionDefinition({
+  // Turning knockout off drops the stored rule with it; otherwise an omitted
+  // rule keeps the stored one.
+  const knockout = definition.knockout ?? existing.knockout ?? false;
+  const knockoutRule = definition.knockout === false
+    ? definition.knockoutRule ?? null
+    : definition.knockoutRule ?? existing.knockoutRule ?? null;
+  const validation = validateQuestionDefinition({
     // An update carries only what changes; everything unspecified falls back to
     // the stored definition so a prompt-only edit doesn't have to resend the
     // options and weights (and can't accidentally blank them).
@@ -136,9 +161,12 @@ export async function updateQuestion(requisitionId, tenantId, questionId, defini
     orderIndex: definition.orderIndex ?? existing.orderIndex,
     options: definition.options ?? existing.options ?? undefined,
     weights: definition.weights ?? existing.weights ?? undefined,
+    knockout,
+    knockoutRule,
     isActive: definition.isActive ?? existing.isActive,
   });
-  if (!ok) throw new ApplicationQuestionError("Invalid question definition", 400, { errors });
+  const { ok, normalized } = validation;
+  if (!ok) throw invalidDefinition(validation);
 
   if (normalized.prompt !== existing.prompt) {
     const dupe = await prisma.applicationQuestion.findFirst({
@@ -166,6 +194,10 @@ export async function updateQuestion(requisitionId, tenantId, questionId, defini
       options: normalized.options ?? undefined,
       weights: normalized.weights ?? undefined,
       maxScore: normalized.maxScore,
+      knockout: normalized.knockout,
+      // A Json column is cleared with Prisma.DbNull (plain null is refused), so
+      // switching knockout off really removes the stored rule.
+      knockoutRule: normalized.knockoutRule ?? Prisma.DbNull,
       isActive: normalized.isActive,
     },
   });

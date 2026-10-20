@@ -143,6 +143,8 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
         findMany: jest.fn(async () => prisma.__questions ?? []),
       },
       applicationAnswer: { createMany: jest.fn(async () => ({ count: 0 })) },
+      // Phase 2 / D-11 — the intake probes the do-not-contact register.
+      candidateDncEntry: { findFirst: jest.fn(async () => null) },
       $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
     };
     // Phase 5 / §3.2 — the verification token lifecycle gets its own doubles.

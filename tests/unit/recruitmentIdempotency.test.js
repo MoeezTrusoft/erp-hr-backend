@@ -49,7 +49,9 @@ const prisma = {
     $transaction: (fn) => fn(prisma),
     jobRequisition: { findFirst: jest.fn() },
     application: { create: jest.fn(), findFirst: jest.fn() },
-    candidate: { findFirst: jest.fn() },
+    candidate: { findFirst: jest.fn(async () => ({ id: 11, email: "c11@example.com" })) },
+    // Phase 2 / D-11 — the intake probes the do-not-contact register.
+    candidateDncEntry: { findFirst: jest.fn(async () => null) },
     applicationStageHistory: { create: jest.fn(async () => ({})) }, // §3 stage-history row written in the same tx
 };
 

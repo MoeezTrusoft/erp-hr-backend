@@ -11,9 +11,14 @@ import {
   nextCursorFrom,
 } from "../mcp/utils/cursorPagination.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { assertIntakeAllowed } from "../lib/intake-dnc.util.js";
 
 /**
  * Create candidate with optional tags (skill names).
+ *
+ * Recruitment Phase 2 — D-11: an address on the do-not-contact register is
+ * refused with 409 HR-RECRUITMENT-CANDIDATE-DNC before anything is written;
+ * the message does not echo the address.
  */
 export const createCandidate = async ({
     firstName,
@@ -49,6 +54,9 @@ export const createCandidate = async ({
         error.status = 409; // Conflict
         throw error;
     }
+    // D-11 — before any write (tags included), on the request's tenant context.
+    await assertIntakeAllowed({ tenantId, email });
+
     const tags = await upsertTags({
         names: tagNames,
         tenantId,

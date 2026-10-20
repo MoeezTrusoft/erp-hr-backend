@@ -7,6 +7,19 @@ import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationCreatedEvent } from "./hrEvents.js";
+import { withTenant } from "../lib/tenancy.js";
+import { assertIntakeAllowed, normalizeSourceChannel, normalizeSourceDetail } from "../lib/intake-dnc.util.js";
+import { cancelPendingDispositionsForApplication } from "./scheduled-disposition.service.js";
+
+// Recruitment Phase 2 — the channel a recruiter-side intake path records when
+// the caller names none: a talent-pool move is TALENT_POOL, anything else a
+// recruiter keyed in is RECRUITER.
+const DEFAULT_CHANNEL_BY_SOURCE = Object.freeze({ "talent-pool": "TALENT_POOL" });
+
+const actorOf = (value) => {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : null;
+};
 
 // Phase 1.4 (remainder) — application reads/writes are TENANT-scoped and, when a
 // caller passes a scope, ROW-scoped. The MCP tools used to reach prisma directly
@@ -67,6 +80,11 @@ export const deleteApplication = async ({ id, tenantId, scope = null }) => {
  * happens INSIDE the write transaction, so a withdrawal or auto-close that lands
  * between the check and the insert still wins — the gate re-runs against the
  * same snapshot the insert commits on, rather than against a stale pre-read.
+ *
+ * Recruitment Phase 2 — D-11: a candidate on the do-not-contact register is
+ * refused with 409 HR-RECRUITMENT-CANDIDATE-DNC (inside the same transaction;
+ * the message never echoes the address). The application records its source
+ * channel (`sourceChannel`, default RECRUITER, TALENT_POOL for a pool move).
  */
 export const createApplication = async ({
     candidateId,
@@ -76,6 +94,8 @@ export const createApplication = async ({
     tenantId,
     createdById,
     source = "application",
+    sourceChannel,
+    sourceDetail,
 }) => {
     if (String(stage).toLowerCase() !== "applied") {
         throw Object.assign(new Error("New applications must start in the applied stage"), { status: 409, code: "HR-RECRUITMENT-INITIAL-STAGE" });
@@ -118,6 +138,20 @@ export const createApplication = async ({
             );
         }
 
+        // D-11 — the candidate is read in this tenant (a foreign id is not
+        // found), and its address checked against the register.
+        const candidate = await tx.candidate.findFirst({
+            where: withTenant(tenantId, { id: Number(candidateId) }),
+            select: { id: true, email: true },
+        });
+        if (!candidate) {
+            throw Object.assign(new Error(`Candidate "${candidateId}" not found`), {
+                status: 404,
+                code: "HR-RECRUITMENT-CANDIDATE-NOT-FOUND",
+            });
+        }
+        await assertIntakeAllowed({ tenantId, email: candidate.email, tx });
+
         const create = await tx.application.create({
             data: {
                 // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
@@ -130,6 +164,8 @@ export const createApplication = async ({
                 // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
                 // finite creator id, else null (createdById is nullable).
                 createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+                sourceChannel: normalizeSourceChannel(sourceChannel, DEFAULT_CHANNEL_BY_SOURCE[source] ?? "RECRUITER"),
+                sourceDetail: normalizeSourceDetail(sourceDetail),
             },
             include: {
                 candidate: true,
@@ -167,17 +203,29 @@ export const createApplication = async ({
 };
 
 /**
- * Update stage of an application
+ * Update stage of an application (the REST and hr_application_update_stage
+ * path). A recruiter moving the application by hand overrules any pending
+ * system disposition (the knockout rejection), so it is cancelled in the same
+ * transaction as the move. Moves made by other services (interview
+ * scheduling, offers) leave the early stages, and the disposition job cancels
+ * a pending row whose application is no longer in applied or screening.
  */
 export const updateApplicationStage = async ({ id, tenantId, stage, reason, updatedById }) => {
-    return transitionApplicationStage({
-        id,
-        tenantId,
-        targetStage: stage,
-        reason,
-        actorId: updatedById,
-        source: "rest",
-    });
+    return tenantTransaction(prisma, async (tx) => {
+        const transition = await transitionApplicationStage({
+            id,
+            tenantId,
+            targetStage: stage,
+            reason,
+            actorId: updatedById,
+            source: "rest",
+            db: tx,
+        });
+        if (transition?.changed) {
+            await cancelPendingDispositionsForApplication(tx, { tenantId, applicationId: id, actorId: actorOf(updatedById) });
+        }
+        return transition;
+    }, { tenantId });
 };
 
 
@@ -193,7 +241,7 @@ export const updateApplicationStatus = async ({ id, tenantId, status, reason, up
         });
     }
     if (["hired", "rejected"].includes(normalizedStatus)) {
-        return prisma.$transaction(async (tx) => {
+        return tenantTransaction(prisma, async (tx) => {
             const transition = await transitionApplicationStage({
                 id,
                 tenantId,
@@ -207,8 +255,11 @@ export const updateApplicationStatus = async ({ id, tenantId, status, reason, up
                 where: { id: Number(id), tenantId },
                 data: { status: normalizedStatus },
             });
+            if (transition?.changed) {
+                await cancelPendingDispositionsForApplication(tx, { tenantId, applicationId: id, actorId: actorOf(updatedById) });
+            }
             return { ...transition, status: normalizedStatus, count: updated.count };
-        });
+        }, { tenantId });
     }
     const updateStatus = await prisma.application.updateMany({
         where: { id: Number(id), tenantId },

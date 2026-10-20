@@ -298,7 +298,7 @@ export async function assertCommunicationsAllowed(
     const dnc = await findActiveDnc({ tenantId, email: resolvedEmail, at }, { db });
     if (dnc) {
       throw privacyError(
-        `${resolvedEmail} is on the do-not-contact register (${dnc.reasonCode}) — contact is blocked`,
+        `This candidate is on the do-not-contact register (${dnc.reasonCode}) — contact is blocked`,
         "HR-RECRUITMENT-DNC-BLOCKED",
       );
     }

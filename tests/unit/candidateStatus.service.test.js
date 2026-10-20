@@ -16,6 +16,8 @@ const TENANT = "11111111-1111-1111-1111-111111111111";
 
 const prisma = {
     candidate: { findFirst: jest.fn() },
+    // Phase 2 / D-11 — a link request probes the do-not-contact register.
+    candidateDncEntry: { findFirst: jest.fn(async () => null) },
     application: { findMany: jest.fn(async () => []) },
     candidateEmailVerification: {
         updateMany: jest.fn(async () => ({ count: 0 })),

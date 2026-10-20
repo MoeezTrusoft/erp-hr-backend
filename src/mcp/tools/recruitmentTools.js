@@ -402,6 +402,8 @@ export function registerRecruitmentTools(server) {
       requisitionId: z.string().min(1).describe("Job requisition id (references JobRequisition); numeric string"),
       stage: z.string().optional().describe("Pipeline stage: applied | screening | interview | offer | hired | rejected (default applied)"),
       status: z.string().optional().describe("Application status: open | closed (default open)"),
+      sourceChannel: z.string().optional().describe("Where the application came from: CAREER_SITE | LINKEDIN | INDEED | REFERRAL | AGENCY | TALENT_POOL | INTERNAL | RECRUITER | OTHER (default RECRUITER)"),
+      sourceDetail: z.string().max(200).optional().describe("Free-text detail on the source, e.g. the referrer or the agency (max 200)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

@@ -15,6 +15,9 @@ const prisma = {
     create: jest.fn(async ({ data }) => ({ id: 30, ...data, jobRequisition: requisition, candidate: { id: data.candidateId } })),
   },
   applicationStageHistory: { create: jest.fn(async () => ({ id: 1 })) },
+  // Phase 2 / D-11 — the intake reads the candidate and probes the DNC register.
+  candidate: { findFirst: jest.fn(async () => ({ id: 5, email: "c5@example.com" })) },
+  candidateDncEntry: { findFirst: jest.fn(async () => null) },
 };
 const enqueueHrDomainEvent = jest.fn(async () => undefined);
 

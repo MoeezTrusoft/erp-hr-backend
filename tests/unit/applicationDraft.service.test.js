@@ -47,6 +47,8 @@ const prisma = {
         }),
         deleteMany: jest.fn(async () => ({ count: 1 })),
     },
+    // Phase 2 / D-11 — a draft save probes the do-not-contact register.
+    candidateDncEntry: { findFirst: jest.fn(async () => null) },
     $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
 };
 

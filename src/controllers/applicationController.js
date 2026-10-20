@@ -3,13 +3,20 @@ import * as applicationService from "../services/applicationService.js";
 import { respondServerError } from '../utils/httpError.js';
 import { resolveRecruitmentScope } from '../lib/recruitmentAccess.js';
 
+// A service refusal keeps its own 4xx (409 HR-RECRUITMENT-CANDIDATE-DNC, 404);
+// anything else stays the historical 400.
+const clientErrorStatus = (error) => {
+    const status = Number(error?.status);
+    return status >= 400 && status < 500 ? status : 400;
+};
+
 export const createApplication = async (req, res) => {
     try {
         const actor = req.user || {};
         const tenantId = actor.tenantId ?? null;
         const createdById = actor.employeeId ?? null;
 
-        const { candidateId, requisitionId, jobRequisitionId: bodyJobRequisitionId, stage, status } = req.body;
+        const { candidateId, requisitionId, jobRequisitionId: bodyJobRequisitionId, stage, status, sourceChannel, sourceDetail } = req.body;
         const jobRequisitionId = bodyJobRequisitionId || requisitionId;
 
         if (!candidateId || !jobRequisitionId) {
@@ -33,6 +40,8 @@ export const createApplication = async (req, res) => {
             status,
             tenantId,
             createdById,
+            sourceChannel,
+            sourceDetail,
         });
 
         return res.status(201).json({
@@ -41,9 +50,10 @@ export const createApplication = async (req, res) => {
             data: app,
         });
     } catch (error) {
-        return res.status(400).json({
+        return res.status(clientErrorStatus(error)).json({
             success: false,
             message: error.message,
+            ...(error?.code ? { code: error.code } : {}),
         });
     }
 };

@@ -43,7 +43,7 @@ export const PUBLIC_JOB_SELECT = Object.freeze({
     gradeLevel: { select: { name: true, minSalary: true, maxSalary: true, bandCurrency: true } },
     postings: {
         where: { isActive: true },
-        select: { channel: true, externalUrl: true },
+        select: { channel: true, externalUrl: true, isActive: true, closedAt: true },
     },
 });
 

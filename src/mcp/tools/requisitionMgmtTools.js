@@ -235,7 +235,7 @@ export function registerRequisitionMgmtTools(server) {
 
   server.tool(
     "hr_requisition_questions_list",
-    "List the active application questions (form schema) for a requisition, in display order, with type, prompt, required flag, options, scoring weights and maxScore.",
+    "List the active application questions (form schema) for a requisition, in display order, with type, prompt, required flag, options, scoring weights, maxScore, and the knockout flag and knockoutRule.",
     { id: z.string().min(1).describe("Requisition ID") },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
@@ -247,7 +247,7 @@ export function registerRequisitionMgmtTools(server) {
 
   server.tool(
     `hr_requisition_question_create`,
-    `Add an application question to a requisition's intake form. Types: ${QUESTION_TYPES.join(" | ")}. Choice types need options [{value,label}]; NUMBER may carry options {min,max}; optional weights make it scored deterministically (maxScore is derived from the weights, never claimed separately).`,
+    `Add an application question to a requisition's intake form. Types: ${QUESTION_TYPES.join(" | ")}. Choice types need options [{value,label}]; NUMBER may carry options {min,max}; optional weights make it scored deterministically (maxScore is derived from the weights, never claimed separately). A REQUIRED SINGLE_CHOICE / MULTI_CHOICE / BOOLEAN / NUMBER question may be a knockout: knockout true with knockoutRule {values:[..]} (choice or BOOLEAN answers that disqualify) or {min,max} (NUMBER answers outside the band disqualify).`,
     {
       id: z.string().min(1).describe("Requisition ID"),
       type: z.enum(QUESTION_TYPES),
@@ -256,6 +256,8 @@ export function registerRequisitionMgmtTools(server) {
       orderIndex: z.coerce.number().int().min(0).optional().describe("Defaults to appending last"),
       options: z.any().optional().describe("[{value,label}] for choice types; {min,max} for NUMBER"),
       weights: z.any().optional().describe("Scoring map; omit for an unscored question"),
+      knockout: z.boolean().optional().describe("Knockout question (required questions only); default false"),
+      knockoutRule: z.any().optional().describe("{values:[..]} for choice/BOOLEAN, {min,max} for NUMBER; required when knockout is true"),
     },
     withToolError(async ({ id, ...definition }) => {
       const { user, permissions } = getCtx();
@@ -276,6 +278,8 @@ export function registerRequisitionMgmtTools(server) {
       orderIndex: z.coerce.number().int().min(0).optional(),
       options: z.any().optional(),
       weights: z.any().optional(),
+      knockout: z.boolean().optional().describe("false also clears the stored rule"),
+      knockoutRule: z.any().optional(),
     },
     withToolError(async ({ id, questionId, ...definition }) => {
       const { user, permissions } = getCtx();

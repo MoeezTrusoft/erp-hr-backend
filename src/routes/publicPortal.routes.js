@@ -20,7 +20,16 @@
 //   * UNIFORM FAILURES — unknown job, closed job and cross-tenant job all
 //     return the same 404 body, so the API cannot be probed for internal ids
 //     (§3.4's rule, applied to jobs as well as emails).
+//   * TENANT CONTEXT — the handler runs inside the request context
+//     (mcpCtx) pinned to the resolved tenant, exactly like the /api routes
+//     after establishTenantContext. Without it the deny-by-default tenant
+//     scope refuses every query (HR-4030) and FORCE-RLS reads (including the
+//     do-not-contact register) see nothing.
+//   * Recruitment Phase 2 — D-11 / D-16: apply, draft save and status-link
+//     answer every accepted outcome (new, duplicate, do-not-contact) with the
+//     same status and body.
 import express from "express";
+import { mcpCtx } from "../lib/requestContext.js";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
 import { consumeEmailVerification } from "../services/candidateVerification.service.js";
 import { requestStatusLink, readStatusViaLink } from "../services/candidateStatus.service.js";
@@ -112,7 +121,8 @@ const guard = (routeClass, handler) => [
             return res.status(404).json({ success: false, message: "Not found" });
         }
         try {
-            return await handler(req, res, tenantId);
+            // The portal has no user: the context carries only the pinned tenant.
+            return await mcpCtx.run({ user: { tenantId }, portal: true }, async () => await handler(req, res, tenantId));
         } catch (err) {
             const status = Number(err?.status) || 500;
             if (status >= 500) logger.error({ err: err?.message, route: req.path }, "public portal route failed");
@@ -209,14 +219,16 @@ router.post(
     express.json({ limit: "256kb" }),
     ...guard("apply", async (req, res, tenantId) => {
         try {
-            const result = await saveApplicationDraft({
+            await saveApplicationDraft({
                 tenantId,
                 requisitionId: req.body?.requisitionId,
                 email: req.body?.email,
                 firstName: req.body?.firstName,
                 body: req.body,
             });
-            return res.json({ success: true, data: result });
+            // Uniform: whether the email went out, and the draft's id, are not
+            // the anonymous caller's to know (D-11 suppression looks the same).
+            return res.json({ success: true, data: { saved: true } });
         } catch (err) {
             const status = Number(err?.status) || 500;
             if (status >= 500) logger.error({ err: err?.message }, "draft save failed");
@@ -253,7 +265,7 @@ router.post(
         const NOT_FOUND = { success: false, message: "This draft link is not valid" };
         try {
             const result = await submitApplicationDraft({ token: req.body?.token });
-            return res.status(201).json({ success: true, data: result });
+            return res.status(201).json({ success: true, data: { received: true, requisitionId: result?.requisitionId ?? null } });
         } catch (err) {
             const status = Number(err?.status) || 400;
             if (status >= 500) logger.error({ err: err?.message }, "draft submit failed");

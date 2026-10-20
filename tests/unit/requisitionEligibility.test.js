@@ -169,6 +169,9 @@ describe("Phase 4 — applications are refused for an ineligible requisition", (
         findFirst: jest.fn(async () => null),
       },
       applicationStageHistory: { create: jest.fn(async () => ({ id: 1 })) },
+      // Phase 2 / D-11 — the intake reads the candidate and probes the DNC register.
+      candidate: { findFirst: jest.fn(async () => ({ id: 12, email: "c12@example.com" })) },
+      candidateDncEntry: { findFirst: jest.fn(async () => null) },
       $transaction: jest.fn(async (arg) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg))),
     };
     jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));

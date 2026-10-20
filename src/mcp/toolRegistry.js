@@ -36,6 +36,7 @@ import { registerCandidateDuplicateTools } from "./tools/candidate-duplicate.too
 import { registerRecruitmentScoringTools } from "./tools/recruitment-scoring.tools.js";
 import { registerCandidateCommunicationTools } from "./tools/candidate-communication.tools.js";
 import { registerResumeParseStatusTools } from "./tools/resume-parse-status.tools.js";
+import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposition.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -303,6 +304,8 @@ export function registerAllTools(server) {
   registerCandidateCommunicationTools(server);
   // Phase 2 — the queued resume parse: status and recruiter re-queue.
   registerResumeParseStatusTools(server);
+  // Phase 2 — scheduled (reversible) knockout dispositions.
+  registerRecruitmentDispositionTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);
