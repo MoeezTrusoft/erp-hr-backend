@@ -35,6 +35,8 @@ const INT_RANGES = Object.freeze({
     offerReminderDays: [0, 30],
     // Phase 4 — the day-one readiness check runs this many days before start.
     onboardingReadinessLeadDays: [0, 14],
+    // Phase 5 — days after a referred hire starts before the bonus is eligible.
+    referralBonusWaitDays: [0, 730],
 });
 
 // HH:MM in the tenant's time zone; the migration's CHECK holds the same rule
@@ -64,6 +66,7 @@ export const RECRUITMENT_SETTINGS_DEFAULTS = Object.freeze({
     feedbackEscalationHours: 24,
     offerReminderDays: 3,
     onboardingReadinessLeadDays: 2,
+    referralBonusWaitDays: 90,
 });
 
 export function defaultRecruitmentSettings(tenantId = null) {

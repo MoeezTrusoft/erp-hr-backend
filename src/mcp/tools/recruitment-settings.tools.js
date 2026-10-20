@@ -76,6 +76,7 @@ const SETTINGS_FIELDS = Object.freeze([
   "feedbackEscalationHours",
   "offerReminderDays",
   "onboardingReadinessLeadDays",
+  "referralBonusWaitDays",
 ]);
 
 const pickSettingsInput = (args) =>
@@ -125,6 +126,7 @@ export function registerRecruitmentSettingsTools(server) {
       feedbackEscalationHours: z.coerce.number().int().optional().describe("Hours after an interview before a missing scorecard is escalated to the recruiter (1-720)"),
       offerReminderDays: z.coerce.number().int().optional().describe("Days before an offer expires that the candidate is reminded (0-30)"),
       onboardingReadinessLeadDays: z.coerce.number().int().optional().describe("Days before a new hire's start date the day-one readiness check runs (0-14)"),
+      referralBonusWaitDays: z.coerce.number().int().optional().describe("Days after a referred hire starts before the referral bonus is eligible (0-730)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

@@ -3131,6 +3131,10 @@ model Candidate {
   email         String
   phone         String?
   source        String? // LinkedIn, Referral, etc.
+  // Phase 5 — the agency that introduced this person, while its ownership
+  // window runs (a later submission by another agency is a conflict).
+  ownerAgencyId      Int?
+  ownershipExpiresAt DateTime?
   location      String? // city / region
   resumeUrl     String? // legacy - use resumeMediaId for new uploads
   resumeMediaId Int? // DAM asset ID for resume file
@@ -3194,6 +3198,7 @@ model Candidate {
   @@unique([tenantId, email])
   @@index([tenantId, status])
   @@index([tenantId, retentionUntil])
+  @@index([tenantId, ownerAgencyId])
 }
 
 model CandidateSkill {
@@ -3252,6 +3257,12 @@ model Application {
   sourceChannel     String?
   sourcePostingId   Int?
   sourceDetail      String?
+  // Phase 5 — an internal applicant (sourceChannel INTERNAL) links to their
+  // employee record; an agency submission records the owning agency until
+  // ownershipExpiresAt.
+  applicantEmployeeId Int?
+  ownerAgencyId       Int?
+  ownershipExpiresAt  DateTime?
   // Phase 2 — deterministic answer total and the knockout outcome at intake.
   answerScore       Int?
   answerMaxScore    Int?
@@ -3275,6 +3286,7 @@ model Application {
 
   @@unique([candidateId, jobRequisitionId])
   @@index([candidateId])
+  @@index([ownerAgencyId])
   @@index([jobRequisitionId])
 }
 
@@ -4477,6 +4489,15 @@ model CandidateDataAccessRequest {
   handledById     Int?
   notes           String?   @db.Text
   rejectionReason String?   @db.Text
+  // Phase 5 — portal intake (source PORTAL, verified by an emailed link
+  // before it counts), the access export, and the SLA alert.
+  source              String    @default("HR")
+  verificationTokenHash String?
+  verificationExpiresAt DateTime?
+  verifiedAt          DateTime?
+  exportMediaId       Int?
+  exportGeneratedAt   DateTime?
+  slaAlertedAt        DateTime?
   created_at      DateTime  @default(now())
   updated_at      DateTime  @updatedAt
 
@@ -4524,6 +4545,8 @@ model TalentPoolInvitation {
   expiresAt  DateTime?
   respondedAt DateTime?
   responseNote String?
+  // Phase 5 — the nurture run whose approval sent this invitation.
+  nurtureRunId Int?
 
   candidate      Candidate       @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   jobRequisition JobRequisition? @relation(fields: [jobRequisitionId], references: [id])
@@ -6533,6 +6556,21 @@ model TenantRecruitmentSettings {
   kioskShowScore          Boolean @default(false)
   // Phase 4 — days before the start date the day-one readiness check runs.
   onboardingReadinessLeadDays Int @default(2)
+  // Phase 5 — referral bonus eligibility waits this many days after the
+  // referred hire's start date.
+  referralBonusWaitDays Int @default(90)
+  // Phase 5 — retention apply mode per tenant: off until the data-policy
+  // owner signs off a dry-run (retentionSignoffRunId); the owner receives
+  // the dry-run reports.
+  retentionApplyEnabled   Boolean   @default(false)
+  retentionApplyEnabledAt DateTime?
+  retentionApplyEnabledById Int?
+  retentionSignoffRunId   Int?
+  dataPolicyOwnerId       Int?
+  // Phase 5 — analytics alert thresholds { timeToFillDays, slaBreaches,
+  // offerDeclineRatePct, failedHandoffs } and who receives the alerts.
+  alertThresholds         Json?
+  alertRecipientId        Int?
   version               Int      @default(1)
   updatedById           Int?
   createdAt             DateTime @default(now())
@@ -7146,5 +7184,196 @@ model OnboardingProvisioningRequest {
   @@index([tenantId, dueDate])
   @@index([checklistId])
   @@map("onboarding_provisioning_requests")
+}
+
+// ==================== RECRUITMENT PHASE 5 (talent, agency, privacy, analytics) ====================
+
+// A proposal to invite talent pool members matching a newly posted
+// requisition (skills and location); a recruiter approves it before any
+// invitation goes out. One per requisition.
+model TalentPoolNurtureRun {
+  id              Int       @id @default(autoincrement())
+  tenantId        String    @db.Uuid
+  requisitionId   Int
+  status          String    @default("PROPOSED") // PROPOSED | SENT | DISMISSED | EXPIRED
+  criteria        Json?
+  candidateIds    Json?
+  proposedCount   Int       @default(0)
+  invitedCount    Int       @default(0)
+  validityDays    Int       @default(30)
+  decidedById     Int?
+  decidedAt       DateTime?
+  dismissedReason String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([requisitionId])
+  @@index([tenantId, status])
+  @@map("talent_pool_nurture_runs")
+}
+
+// An employee's referral of a contact for a requisition; the bonus becomes
+// eligible referralBonusWaitDays after the referred hire starts.
+model InternalReferral {
+  id                 Int       @id @default(autoincrement())
+  tenantId           String    @db.Uuid
+  requisitionId      Int
+  referrerEmployeeId Int
+  candidateId        Int?
+  applicationId      Int?
+  relationship       String?
+  note               String?
+  status             String    @default("SUBMITTED") // SUBMITTED | IN_PROCESS | HIRED | REJECTED | WITHDRAWN | DUPLICATE
+  hiredAt            DateTime?
+  bonusStatus        String    @default("NOT_ELIGIBLE") // NOT_ELIGIBLE | PENDING | ELIGIBLE | APPROVED | PAID | FORFEITED
+  bonusEligibleAt    DateTime?
+  bonusAmount        Decimal?  @db.Decimal(18, 2)
+  bonusCurrency      String?
+  bonusDecidedById   Int?
+  bonusDecidedAt     DateTime?
+  version            Int       @default(0)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, referrerEmployeeId])
+  @@index([tenantId, bonusStatus])
+  @@index([applicationId])
+  @@map("internal_referrals")
+}
+
+// A recruitment agency the tenant works with.
+model RecruitmentAgency {
+  id            Int      @id @default(autoincrement())
+  tenantId      String   @db.Uuid
+  name          String
+  contactEmail  String?
+  status        String   @default("ACTIVE") // ACTIVE | SUSPENDED
+  ownershipDays Int      @default(180)
+  feePercent    Decimal? @db.Decimal(5, 2)
+  notes         String?
+  createdById   Int?
+  version       Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  users       RecruitmentAgencyUser[]
+  assignments RequisitionAgencyAssignment[]
+  submissions AgencySubmission[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, status])
+  @@map("recruitment_agencies")
+}
+
+// An agency login: the verified RBAC user id that acts for the agency.
+model RecruitmentAgencyUser {
+  id        Int      @id @default(autoincrement())
+  tenantId  String   @db.Uuid
+  agencyId  Int
+  userId    String
+  email     String?
+  status    String   @default("ACTIVE") // ACTIVE | REVOKED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agency RecruitmentAgency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([agencyId])
+  @@map("recruitment_agency_users")
+}
+
+// A requisition an agency may submit candidates to.
+model RequisitionAgencyAssignment {
+  id             Int       @id @default(autoincrement())
+  tenantId       String    @db.Uuid
+  requisitionId  Int
+  agencyId       Int
+  status         String    @default("ACTIVE") // ACTIVE | ENDED
+  maxSubmissions Int?
+  notes          String?
+  assignedById   Int?
+  assignedAt     DateTime  @default(now())
+  endedAt        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  agency RecruitmentAgency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@unique([requisitionId, agencyId])
+  @@index([tenantId, agencyId, status])
+  @@map("requisition_agency_assignments")
+}
+
+// A candidate an agency put forward for an assigned requisition; a recruiter
+// accepts it into the pipeline or rejects it.
+model AgencySubmission {
+  id                 Int       @id @default(autoincrement())
+  tenantId           String    @db.Uuid
+  agencyId           Int
+  requisitionId      Int
+  submittedByUserId  String
+  candidateId        Int?
+  applicationId      Int?
+  status             String    @default("PENDING_REVIEW") // PENDING_REVIEW | ACCEPTED | REJECTED | DUPLICATE | WITHDRAWN
+  candidateSnapshot  Json
+  note               String?
+  reviewedById       Int?
+  reviewedAt         DateTime?
+  rejectionReason    String?
+  ownershipExpiresAt DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  agency RecruitmentAgency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agencyId, status])
+  @@index([tenantId, requisitionId, status])
+  @@map("agency_submissions")
+}
+
+// One run of the candidate retention job for a tenant: what a dry-run would
+// erase (the report the data-policy owner signs off) or what apply erased.
+model CandidateRetentionRun {
+  id                   Int       @id @default(autoincrement())
+  tenantId             String    @db.Uuid
+  mode                 String // DRY_RUN | APPLY
+  status               String    @default("COMPLETED") // COMPLETED | FAILED
+  asOf                 DateTime
+  wouldAnonymize       Int       @default(0)
+  anonymized           Int       @default(0)
+  suspendedByLegalHold Int       @default(0)
+  candidateIds         Json?
+  error                String?
+  reportSentAt         DateTime?
+  signedOffById        Int?
+  signedOffAt          DateTime?
+  createdAt            DateTime  @default(now())
+
+  @@index([tenantId, createdAt])
+  @@map("candidate_retention_runs")
+}
+
+// An analytics threshold breach for the recruiting lead, one per metric and
+// period; acknowledged or resolved when the metric is back under it.
+model RecruitmentAlert {
+  id               Int       @id @default(autoincrement())
+  tenantId         String    @db.Uuid
+  metric           String // TIME_TO_FILL | SLA_BREACHES | OFFER_DECLINE_RATE | FAILED_HANDOFFS
+  status           String    @default("OPEN") // OPEN | ACKNOWLEDGED | RESOLVED
+  periodStart      DateTime
+  value            Decimal   @db.Decimal(18, 4)
+  threshold        Decimal   @db.Decimal(18, 4)
+  details          Json?
+  firstSeenAt      DateTime  @default(now())
+  lastSeenAt       DateTime  @default(now())
+  acknowledgedById Int?
+  acknowledgedAt   DateTime?
+  resolvedAt       DateTime?
+
+  @@unique([tenantId, metric, periodStart])
+  @@index([tenantId, status])
+  @@map("recruitment_alerts")
 }
 

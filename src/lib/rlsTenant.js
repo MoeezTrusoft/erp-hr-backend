@@ -232,6 +232,16 @@ const RLS_MODELS = new Set([
     'CandidateEvaluationSummary',
     // Recruitment Phase 4 — IT provisioning requests raised on handoff.
     'OnboardingProvisioningRequest',
+    // Recruitment Phase 5 — talent nurture, referrals, agencies, retention runs
+    // and analytics alerts.
+    'TalentPoolNurtureRun',
+    'InternalReferral',
+    'RecruitmentAgency',
+    'RecruitmentAgencyUser',
+    'RequisitionAgencyAssignment',
+    'AgencySubmission',
+    'CandidateRetentionRun',
+    'RecruitmentAlert',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

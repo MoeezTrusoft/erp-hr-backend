@@ -239,6 +239,41 @@ const DEFINITIONS = Object.freeze({
         def: false,
         desc: "Employee-facing pre-boarding portal on the new hire's own checklist",
     },
+    // Phase 5 — a posted requisition gets a talent pool nurture proposal
+    // (skills and location); approved proposals invite with a 30-day validity.
+    talentNurture: {
+        env: "HR_RECRUITMENT_TALENT_NURTURE",
+        def: false,
+        desc: "Talent pool nurture proposals and approved invitations for posted requisitions",
+    },
+    // Phase 5 — employees see open roles in self-service, apply internally and
+    // refer contacts; referral bonus eligibility is tracked.
+    internalBoard: {
+        env: "HR_RECRUITMENT_INTERNAL_BOARD",
+        def: false,
+        desc: "Internal job board, internal applications and employee referrals",
+    },
+    // Phase 5 — agencies log in, see only the requisitions assigned to them and
+    // submit candidates with ownership recorded.
+    agencyPortal: {
+        env: "HR_RECRUITMENT_AGENCY_PORTAL",
+        def: false,
+        desc: "Recruitment agencies, requisition assignment, agency submissions and ownership",
+    },
+    // Phase 5 — data-subject requests from the careers portal (verified by an
+    // emailed link), the 30-day SLA alert and the access export.
+    dsrPortal: {
+        env: "HR_RECRUITMENT_DSR_PORTAL",
+        def: false,
+        desc: "Portal intake of data-subject requests, SLA alerts and access exports",
+    },
+    // Phase 5 — per-tenant thresholds on time to fill, SLA breaches, offer
+    // decline rate and failed handoffs, alerting the recruiting lead.
+    analyticsAlerts: {
+        env: "HR_RECRUITMENT_ANALYTICS_ALERTS",
+        def: false,
+        desc: "Recruitment analytics threshold alerts to the recruiting lead",
+    },
 });
 
 export const RECRUITMENT_FLAG_DEFINITIONS = DEFINITIONS;

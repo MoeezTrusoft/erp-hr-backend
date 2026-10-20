@@ -69,6 +69,11 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
             evaluationForms: "HR_RECRUITMENT_EVALUATION_FORMS",
             onboardingAutomation: "HR_ONBOARDING_AUTOMATION",
             onboardingSelfPortal: "HR_ONBOARDING_SELF_PORTAL",
+            talentNurture: "HR_RECRUITMENT_TALENT_NURTURE",
+            internalBoard: "HR_RECRUITMENT_INTERNAL_BOARD",
+            agencyPortal: "HR_RECRUITMENT_AGENCY_PORTAL",
+            dsrPortal: "HR_RECRUITMENT_DSR_PORTAL",
+            analyticsAlerts: "HR_RECRUITMENT_ANALYTICS_ALERTS",
         };
         for (const [key, env] of Object.entries(phase2)) {
             expect(RECRUITMENT_FLAG_DEFINITIONS[key].env).toBe(env);
@@ -123,10 +128,12 @@ describe("recruitmentFlags — snapshot", () => {
     it("exposes every flag with env, value, default and description", () => {
         const snap = recruitmentFlagSnapshot();
         expect(Object.keys(snap).sort()).toEqual([
-            "ai", "analytics", "approvalSla", "autoPublish", "calendarSync", "canonicalDashboard", "communications",
-            "decisionPrompts", "duplicates", "esign", "evaluationForms", "interviewReminders", "jobFeed", "knockout",
-            "offerExpiry", "offerHandoff", "offerLetters", "onboardingAutomation", "onboardingSelfPortal", "onsiteTest", "parseWorker", "portal", "postingExpiry",
-            "retention", "scoring", "selfScheduling", "workflow",
+            "agencyPortal", "ai", "analytics", "analyticsAlerts", "approvalSla", "autoPublish", "calendarSync",
+            "canonicalDashboard", "communications", "decisionPrompts", "dsrPortal", "duplicates", "esign",
+            "evaluationForms", "internalBoard", "interviewReminders", "jobFeed", "knockout", "offerExpiry",
+            "offerHandoff", "offerLetters", "onboardingAutomation", "onboardingSelfPortal", "onsiteTest",
+            "parseWorker", "portal", "postingExpiry", "retention", "scoring", "selfScheduling", "talentNurture",
+            "workflow",
         ]);
         for (const [key, entry] of Object.entries(snap)) {
             expect(entry.env).toBe(RECRUITMENT_FLAG_DEFINITIONS[key].env);
