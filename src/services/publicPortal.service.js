@@ -42,8 +42,9 @@ const fail = (message, status, code, details) =>
 // observable (§3.4).
 const SUBMITTED = Object.freeze({
     received: true,
-    // A reference the candidate can quote; it is the application row's id.
-    // Stable across the new/existing cases because both produce an application.
+    // D-16 — the response is byte-identical for a new and a repeated
+    // application. The candidate's reference travels in the confirmation email
+    // to the mailbox owner, never in the anonymous HTTP response.
 });
 
 export const submitPublicApplication = async ({ tenantId, requisitionId, body = {}, now = new Date() } = {}) => {
@@ -123,15 +124,28 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
             candidateId = created.id;
         }
 
-        // Duplicate application: same candidate, same requisition. Rejected with
-        // the SAME envelope as a success-minus-duplicate, so the endpoint cannot
-        // be used to test which emails have applied where.
+        // Duplicate application: same candidate, same requisition. D-16 — it is
+        // answered exactly like a new one (201, same body), so the endpoint
+        // cannot be used to test which emails have applied where. Nothing new
+        // is created; the mailbox owner gets a fresh status link and an
+        // "already received" email instead.
         const duplicate = await tx.application.findFirst({
             where: { candidateId, jobRequisitionId: reqId },
             select: { id: true },
         });
         if (duplicate) {
-            throw fail("Application already received", 409, "HR-PORTAL-DUPLICATE");
+            const statusLink = await issueStatusLink(tx, {
+                tenantId,
+                candidate: { id: candidateId, firstName: input.firstName },
+                email: input.email,
+            });
+            return {
+                applicationId: duplicate.id,
+                issued: null,
+                statusLink,
+                reconciled: true,
+                jobTitle: requisition.title,
+            };
         }
 
         // ── §3.5 per-requisition questions ───────────────────────────────────
@@ -299,7 +313,6 @@ export const submitPublicApplication = async ({ tenantId, requisitionId, body = 
 
     return {
         ...SUBMITTED,
-        applicationId: result.applicationId,
         requisitionId: reqId,
     };
 };

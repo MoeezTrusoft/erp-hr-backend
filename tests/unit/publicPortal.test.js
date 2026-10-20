@@ -279,7 +279,8 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
   it("creates a candidate, an application, a stage-history row and a PROCESSING consent in one transaction", async () => {
     const result = await submitPublicApplication({ tenantId: TENANT, requisitionId: 5, body: payload() });
 
-    expect(result).toMatchObject({ received: true, applicationId: 900, requisitionId: 5 });
+    // D-16 — no application id in the anonymous response.
+    expect(result).toEqual({ received: true, requisitionId: 5 });
     expect(prisma.candidate.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ email: "ayesha@example.com", consentStatus: "GRANTED" }),
@@ -335,12 +336,16 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
     expect(prisma.candidate.update).not.toHaveBeenCalled();
   });
 
-  it("refuses a duplicate application, and the refusal says nothing about the candidate", async () => {
+  it("answers a duplicate application exactly like a new one, and creates nothing", async () => {
     seed(liveRequisition(), [], [{ id: 555, candidateId: 1, jobRequisitionId: 5 }]);
-    await expect(
-      submitPublicApplication({ tenantId: TENANT, requisitionId: 5, body: payload() }),
-    ).rejects.toMatchObject({ status: 409, code: "HR-PORTAL-DUPLICATE" });
+    const duplicate = await submitPublicApplication({ tenantId: TENANT, requisitionId: 5, body: payload() });
+
+    // D-16 — same body as a first application: the endpoint is no oracle.
+    expect(duplicate).toEqual({ received: true, requisitionId: 5 });
     expect(prisma.application.create).not.toHaveBeenCalled();
+    // The mailbox owner, not the HTTP caller, learns it was already received.
+    const templates = sendCandidateEmail.mock.calls.map((c) => c[0].templateId);
+    expect(templates).toContain("hr.recruitment.portal_application_confirmed_existing");
   });
 
   it("404s an unknown job and a CLOSED job identically, so ids cannot be probed", async () => {
