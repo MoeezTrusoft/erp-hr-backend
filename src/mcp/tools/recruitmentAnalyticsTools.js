@@ -5,15 +5,16 @@
 // tenant-scoped via the request context and gated on the `hr:recruitment` RBAC
 // code (deny-by-default), matching the rest of the recruitment surface.
 //
-// IMPORTANT: every cost figure returned here is ILLUSTRATIVE (fixed constants,
-// not DB spend) — the payload carries `illustrativeCostData: true` and each
-// cost object carries `costModel: "illustrative"`. All other metrics (hires,
-// funnel, time-to-hire, offer-acceptance, source effectiveness) are real.
+// Phase 5 — no illustrative figures: every number comes from the tenant's rows.
+// Cost per hire is actual spend (the tenant's cost configuration plus referral
+// bonuses paid) or null with a reason; any metric with no data is null and the
+// payload's `reasons` map (or the metric's own `reason`) says why.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { exportRows } from "../../lib/export.util.js";
+import { assertNoAgencyExport, assertNotAgencyCaller } from "../../lib/agency-access.util.js";
 import { computeRecruitmentAnalytics, drillDownRecruitmentMetric } from "../../services/recruitmentAnalytics.service.js";
 
 function getCtx() {
@@ -27,7 +28,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 export function registerRecruitmentAnalyticsTools(server) {
   server.tool(
     "hr_recruitment_analytics_get",
-    "Compute tenant-scoped recruitment analytics: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, and an ILLUSTRATIVE cost-per-hire / cost breakdown (constants, not DB spend — flagged illustrativeCostData:true). Optional drill-down filters (FR-11): dateFrom/dateTo (ISO), requisitionIds, departmentId, stage, source.",
+    "Compute tenant-scoped recruitment analytics from live data only: total hires, time-to-hire (days), offer acceptance rate, hiring funnel, source effectiveness, per-hire metrics, actual cost per hire and its breakdown (null with a reason when no cost configuration exists or a filter is applied), plus the canonical block (time to fill, time to start, recruiter workload, SLA aging, ...). A metric with no data is null and `reasons` says why. Optional filters (FR-11): dateFrom/dateTo (ISO), requisitionIds, departmentId, stage, source.",
     {
       dateFrom: z.string().optional().describe("ISO date — include applications applied at or after this instant"),
       dateTo: z.string().optional().describe("ISO date — include applications applied at or before this instant"),
@@ -39,6 +40,7 @@ export function registerRecruitmentAnalyticsTools(server) {
     withToolError(async ({ dateFrom, dateTo, requisitionIds, departmentId, stage, source }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNotAgencyCaller(user);
       const filters = {
         ...(dateFrom ? { dateFrom } : {}),
         ...(dateTo ? { dateTo } : {}),
@@ -58,7 +60,7 @@ export function registerRecruitmentAnalyticsTools(server) {
   // that can silently disagree with it).
   server.tool(
     "hr_recruitment_analytics_drilldown",
-    "Return the ROW-LEVEL evidence behind one recruitment metric (NFR-12): pass the metric you are explaining plus the SAME filters the metric was computed with. Canonical metrics (totalHires, timeToFillDays, timeToFirstFillDays, timeToHireDays, stageConversion, dropOff, offerAcceptanceRate, sourceEffectiveness) or a group slice (funnel:<stage>, source:<name>, disposition:<code>). Returns the filter echo, total/returned counts, a truncated flag, and rows (applications, or requisitions for fill/rate metrics).",
+    "Return the ROW-LEVEL evidence behind one recruitment metric (NFR-12): pass the metric you are explaining plus the SAME filters the metric was computed with. Canonical metrics (totalHires, timeToFillDays, timeToFirstFillDays, timeToHireDays, stageConversion, dropOff, offerAcceptanceRate, sourceEffectiveness, timeToStartDays, recruiterWorkload, costPerHire) or a group slice (funnel:<stage>, source:<name>, disposition:<code>). Returns the filter echo, total/returned counts, a truncated flag, and rows (applications; requisitions for fill metrics; offers for acceptance; hires for time to start and cost per hire, with the cost components; recruiters for workload).",
     {
       metric: z.string().min(1).describe("Metric to explain, e.g. 'totalHires' or 'funnel:interview'"),
       dateFrom: z.string().optional().describe("Same filter the metric was computed with (ISO date)"),
@@ -72,6 +74,7 @@ export function registerRecruitmentAnalyticsTools(server) {
     withToolError(async ({ metric, dateFrom, dateTo, requisitionIds, departmentId, stage, source, limit }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNotAgencyCaller(user);
       const filters = {
         ...(dateFrom ? { dateFrom } : {}),
         ...(dateTo ? { dateTo } : {}),
@@ -96,6 +99,7 @@ export function registerRecruitmentAnalyticsTools(server) {
     withToolError(async ({ format }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNoAgencyExport(user);
       const analytics = await computeRecruitmentAnalytics(user.tenantId);
 
       // Flatten funnel (one row per stage) + source effectiveness (one row per

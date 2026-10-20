@@ -65,7 +65,8 @@ jest.unstable_mockModule("../../../src/services/requisitionPublication.service.j
   autoPublishApprovedRequisitions,
   closePostingsPastClosesAt,
 }));
-jest.unstable_mockModule("../../../src/services/talentPoolInvitation.service.js", () => ({ expireInvitations }));
+// The nurture service (scheduled by reminder.queue) imports inviteToApply.
+jest.unstable_mockModule("../../../src/services/talentPoolInvitation.service.js", () => ({ expireInvitations, inviteToApply: jest.fn() }));
 
 const {
   runRequisitionAutoCloseJob,
@@ -95,6 +96,11 @@ const {
   JOB_ONBOARDING_READINESS,
   JOB_ONBOARDING_SURVEYS,
   JOB_HANDOFF_WATCHDOG,
+  JOB_TALENT_NURTURE_PROPOSAL,
+  JOB_REFERRAL_BONUS,
+  JOB_DSR_SLA,
+  JOB_DSR_VERIFICATION_SWEEP,
+  JOB_RECRUITMENT_ALERTS,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -318,6 +324,23 @@ describe("Phase 3a jobs are scheduled", () => {
     await expect(processor({ name: JOB_ONBOARDING_READINESS, data: {} })).resolves.toBe("readiness");
     await expect(processor({ name: JOB_ONBOARDING_SURVEYS, data: {} })).resolves.toBe("surveys");
     await expect(processor({ name: JOB_HANDOFF_WATCHDOG, data: {} })).resolves.toBe("watchdog");
+  });
+
+  it("registers the Phase 5 jobs and dispatches each", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    const expected = [
+      [JOB_TALENT_NURTURE_PROPOSAL, "talentNurtureProposal", "45 * * * *"],
+      [JOB_REFERRAL_BONUS, "referralBonus", "30 2 * * *"],
+      [JOB_DSR_SLA, "dsrSla", "20 4 * * *"],
+      [JOB_DSR_VERIFICATION_SWEEP, "dsrVerificationSweep", "35 * * * *"],
+      [JOB_RECRUITMENT_ALERTS, "recruitmentAlerts", "7 * * * *"],
+    ];
+    const runners = Object.fromEntries(expected.map(([name, key]) => [key, jest.fn(async () => name)]));
+    const processor = buildReminderProcessor(runners);
+    for (const [name, , pattern] of expected) {
+      expect(byName[name].opts).toMatchObject({ jobId: `repeat:${name}`, repeat: { pattern } });
+      await expect(processor({ name, data: {} })).resolves.toBe(name);
+    }
   });
 });
 

@@ -14,6 +14,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { assertNotAgencyCaller } from "../../lib/agency-access.util.js";
 import { toListEnvelope } from "../utils/listEnvelope.js";
 import {
   listManagedPool,
@@ -51,6 +52,7 @@ export function registerTalentPoolMgmtTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNotAgencyCaller(user);
       const data = await listManagedPool({
         tenantId: user.tenantId,
         q: args.q,
@@ -76,6 +78,7 @@ export function registerTalentPoolMgmtTools(server) {
     withToolError(async ({ candidateId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNotAgencyCaller(user);
       const data = await getPoolProfile({ candidateId, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_talent_pool_profile_get")

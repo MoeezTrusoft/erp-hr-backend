@@ -101,10 +101,16 @@ afterEach(() => {
 
 describe("reception: arrivals and check-in", () => {
     it("lists today's assessment interviews at the site with names and no score or band", async () => {
-        const out = await as("reception", (access) => reception.listArrivals({ tenantId: TENANT, access, siteRef: "Lahore" }));
+        // The seed schedules from the wall clock; list the local day of
+        // interview 40 and keep 41 a minute after it, so both stay on one day
+        // whatever time the suite runs (late evening would push 41 past
+        // midnight in the tenant's zone).
+        const now = interviewOf(db, 40).scheduledAt;
+        interviewOf(db, 41).scheduledAt = new Date(now.getTime() + 60 * 1000);
+        const out = await as("reception", (access) => reception.listArrivals({ tenantId: TENANT, access, siteRef: "Lahore", now }));
         expect(out.items).toHaveLength(1);
         expect(out.items[0]).toMatchObject({ interviewId: 40, candidateName: "Ayesha Khan", assessmentStatus: "AWAITING_CHECK_IN", checkedIn: false, session: null });
-        const all = await as("recruiter", (access) => reception.listArrivals({ tenantId: TENANT, access }));
+        const all = await as("recruiter", (access) => reception.listArrivals({ tenantId: TENANT, access, now }));
         expect(all.items.map((i) => i.interviewId).sort()).toEqual([40, 41]);
     });
 

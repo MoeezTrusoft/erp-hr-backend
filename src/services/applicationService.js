@@ -2,7 +2,7 @@
 import prisma from "../config/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { transitionApplicationStage } from "./applicationWorkflow.service.js";
-import { applicationScopeWhere, maskCandidateForScope } from "../lib/recruitmentAccess.js";
+import { applicationScopeWhere, maskApplicationForScope, maskCandidateForScope } from "../lib/recruitmentAccess.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -44,7 +44,7 @@ const APPLICATION_INCLUDE = {
 export const getApplication = async ({ id, tenantId, scope = null }) => {
     const numericId = Number(id);
     if (!Number.isInteger(numericId) || numericId <= 0) return null;
-    return prisma.application.findFirst({
+    const row = await prisma.application.findFirst({
         where: {
             id: numericId,
             tenantId: tenantId ?? null,
@@ -52,6 +52,9 @@ export const getApplication = async ({ id, tenantId, scope = null }) => {
         },
         include: APPLICATION_INCLUDE,
     });
+    // Phase 5: an AGENCY caller reads the agency projection (no interviews,
+    // offer or internal requisition row); every other scope is untouched.
+    return scope ? maskApplicationForScope(row, scope) : row;
 };
 
 /**
@@ -86,7 +89,28 @@ export const deleteApplication = async ({ id, tenantId, scope = null }) => {
  * the message never echoes the address). The application records its source
  * channel (`sourceChannel`, default RECRUITER, TALENT_POOL for a pool move).
  */
-export const createApplication = async ({
+export const createApplication = async (args) => {
+    assertCreateApplicationArgs(args);
+    return tenantTransaction(prisma, async (tx) => await createApplicationInTx(tx, args));
+};
+
+function assertCreateApplicationArgs({ stage = "applied", tenantId } = {}) {
+    if (String(stage).toLowerCase() !== "applied") {
+        throw Object.assign(new Error("New applications must start in the applied stage"), { status: 409, code: "HR-RECRUITMENT-INITIAL-STAGE" });
+    }
+    if (tenantId === undefined || tenantId === null || tenantId === "") {
+        throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+    }
+}
+
+/**
+ * Recruitment Phase 5 — createApplication on the CALLER's tenant transaction,
+ * for intake paths that write their own rows in the same unit of work (the
+ * internal board's candidate + consent, a referral). Same gate, same rows,
+ * same event. `applicantEmployeeId` marks an internal applicant;
+ * `sourcePostingId` the posting the application answered.
+ */
+export async function createApplicationInTx(tx, {
     candidateId,
     jobRequisitionId,
     stage = "applied",
@@ -96,111 +120,107 @@ export const createApplication = async ({
     source = "application",
     sourceChannel,
     sourceDetail,
-}) => {
-    if (String(stage).toLowerCase() !== "applied") {
-        throw Object.assign(new Error("New applications must start in the applied stage"), { status: 409, code: "HR-RECRUITMENT-INITIAL-STAGE" });
-    }
-    if (tenantId === undefined || tenantId === null || tenantId === "") {
-        throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
-    }
-
-    return tenantTransaction(prisma, async (tx) => {
-        const requisition = await tx.jobRequisition.findFirst({
-            where: { id: Number(jobRequisitionId), tenantId: tenantId ?? null },
-            include: { postings: { where: { isActive: true } } },
-        });
-        if (!requisition) {
-            throw Object.assign(new Error(`Job requisition "${jobRequisitionId}" not found`), {
-                status: 404,
-                code: "HR-RECRUITMENT-REQUISITION-NOT-FOUND",
-            });
-        }
-
-        // §2.9 — the eligibility gate. Refused with the structured reason list so
-        // the caller can show "applications closed 2026-09-01" instead of a bare
-        // conflict, and with the §2.9a copy contract attached.
-        const evaluation = evaluateRequisitionEligibility(requisition, {
-            postings: requisition.postings,
-        });
-        if (!evaluation.eligible) {
-            throw Object.assign(
-                new Error(
-                    `This requisition is not accepting applications: ${evaluation.reasons.join(", ")}`,
-                ),
-                {
-                    status: 409,
-                    code: "HR-RECRUITMENT-APPLICATIONS-CLOSED",
-                    details: {
-                        reasons: evaluation.reasons,
-                        candidateMessage: closedApplicationMessage(requisition, evaluation),
-                    },
-                },
-            );
-        }
-
-        // D-11 — the candidate is read in this tenant (a foreign id is not
-        // found), and its address checked against the register.
-        const candidate = await tx.candidate.findFirst({
-            where: withTenant(tenantId, { id: Number(candidateId) }),
-            select: { id: true, email: true },
-        });
-        if (!candidate) {
-            throw Object.assign(new Error(`Candidate "${candidateId}" not found`), {
-                status: 404,
-                code: "HR-RECRUITMENT-CANDIDATE-NOT-FOUND",
-            });
-        }
-        await assertIntakeAllowed({ tenantId, email: candidate.email, tx });
-
-        const create = await tx.application.create({
-            data: {
-                // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
-                // numeric strings from the MCP boundary) to align with sibling services.
-                candidateId: Number(candidateId),
-                jobRequisitionId: Number(jobRequisitionId),
-                stage,
-                status,
-                tenantId: tenantId ?? null,
-                // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
-                // finite creator id, else null (createdById is nullable).
-                createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
-                sourceChannel: normalizeSourceChannel(sourceChannel, DEFAULT_CHANNEL_BY_SOURCE[source] ?? "RECRUITER"),
-                sourceDetail: normalizeSourceDetail(sourceDetail),
-            },
-            include: {
-                candidate: true,
-                jobRequisition: true,
-            },
-        });
-        await tx.applicationStageHistory.create({
-            data: {
-                applicationId: create.id,
-                tenantId,
-                fromStage: "applied",
-                toStage: "applied",
-                reason: "initial application",
-                actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
-                source,
-            },
-        });
-        // D-09 — every intake path announces the new applicant, not only the
-        // public portal: the hiring manager is routed from the requisition.
-        const event = applicationCreatedEvent(create, {
-            actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : undefined,
-        });
-        if (event) await enqueueHrDomainEvent(tx, event);
-        await logAction({
-            employeeId: createdById ?? null,
-            type: "CREATE",
-            module: "Application",
-            result: "SUCCESS",
-            notes: `Application "${create.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
-            tenantId: typeof tenantId !== "undefined" ? tenantId : null,
-        });
-
-        return create;
+    sourcePostingId,
+    applicantEmployeeId,
+} = {}) {
+    assertCreateApplicationArgs({ stage, tenantId });
+    const requisition = await tx.jobRequisition.findFirst({
+        where: { id: Number(jobRequisitionId), tenantId: tenantId ?? null },
+        include: { postings: { where: { isActive: true } } },
     });
-};
+    if (!requisition) {
+        throw Object.assign(new Error(`Job requisition "${jobRequisitionId}" not found`), {
+            status: 404,
+            code: "HR-RECRUITMENT-REQUISITION-NOT-FOUND",
+        });
+    }
+
+    // §2.9 — the eligibility gate. Refused with the structured reason list so
+    // the caller can show "applications closed 2026-09-01" instead of a bare
+    // conflict, and with the §2.9a copy contract attached.
+    const evaluation = evaluateRequisitionEligibility(requisition, {
+        postings: requisition.postings,
+    });
+    if (!evaluation.eligible) {
+        throw Object.assign(
+            new Error(
+                `This requisition is not accepting applications: ${evaluation.reasons.join(", ")}`,
+            ),
+            {
+                status: 409,
+                code: "HR-RECRUITMENT-APPLICATIONS-CLOSED",
+                details: {
+                    reasons: evaluation.reasons,
+                    candidateMessage: closedApplicationMessage(requisition, evaluation),
+                },
+            },
+        );
+    }
+
+    // D-11 — the candidate is read in this tenant (a foreign id is not
+    // found), and its address checked against the register.
+    const candidate = await tx.candidate.findFirst({
+        where: withTenant(tenantId, { id: Number(candidateId) }),
+        select: { id: true, email: true },
+    });
+    if (!candidate) {
+        throw Object.assign(new Error(`Candidate "${candidateId}" not found`), {
+            status: 404,
+            code: "HR-RECRUITMENT-CANDIDATE-NOT-FOUND",
+        });
+    }
+    await assertIntakeAllowed({ tenantId, email: candidate.email, tx });
+
+    const create = await tx.application.create({
+        data: {
+            // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
+            // numeric strings from the MCP boundary) to align with sibling services.
+            candidateId: Number(candidateId),
+            jobRequisitionId: Number(jobRequisitionId),
+            stage,
+            status,
+            tenantId: tenantId ?? null,
+            // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
+            // finite creator id, else null (createdById is nullable).
+            createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+            sourceChannel: normalizeSourceChannel(sourceChannel, DEFAULT_CHANNEL_BY_SOURCE[source] ?? "RECRUITER"),
+            sourceDetail: normalizeSourceDetail(sourceDetail),
+            ...(actorOf(sourcePostingId) ? { sourcePostingId: actorOf(sourcePostingId) } : {}),
+            ...(actorOf(applicantEmployeeId) ? { applicantEmployeeId: actorOf(applicantEmployeeId) } : {}),
+        },
+        include: {
+            candidate: true,
+            jobRequisition: true,
+        },
+    });
+    await tx.applicationStageHistory.create({
+        data: {
+            applicationId: create.id,
+            tenantId,
+            fromStage: "applied",
+            toStage: "applied",
+            reason: "initial application",
+            actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+            source,
+        },
+    });
+    // D-09 — every intake path announces the new applicant, not only the
+    // public portal: the hiring manager is routed from the requisition.
+    const event = applicationCreatedEvent(create, {
+        actorId: Number.isFinite(Number(createdById)) ? Number(createdById) : undefined,
+    });
+    if (event) await enqueueHrDomainEvent(tx, event);
+    await logAction({
+        employeeId: createdById ?? null,
+        type: "CREATE",
+        module: "Application",
+        result: "SUCCESS",
+        notes: `Application "${create.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
+        tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+    });
+
+    return create;
+}
 
 /**
  * Update stage of an application (the REST and hr_application_update_stage
@@ -342,7 +362,9 @@ export const listApplications = async ({
     // The candidate rides along on each application, so its internal notes are
     // masked here exactly as the candidate list masks them.
     const visible = scope
-        ? items.map((item) => ({ ...item, candidate: maskCandidateForScope(item.candidate, scope) }))
+        ? items.map((item) =>
+              maskApplicationForScope({ ...item, candidate: maskCandidateForScope(item.candidate, scope) }, scope),
+          )
         : items;
     return { items: visible, total, page, limit };
 };

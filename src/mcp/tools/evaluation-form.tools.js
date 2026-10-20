@@ -21,6 +21,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { resolveAssessmentAccess } from "../../lib/assessment-access.util.js";
+import { assertNoAgencyExport } from "../../lib/agency-access.util.js";
 import { FORM_RECOMMENDATIONS, INTERVIEW_DECISIONS, PANEL_ROLES } from "../../lib/evaluation-form.util.js";
 import { draftFormWithAi, getInterviewForm, saveScorecardDraft } from "../../services/evaluation-form.service.js";
 import { assertEvaluationFormsEnabled, exportEvaluationReport, getEvaluationSummary } from "../../services/evaluation-summary.service.js";
@@ -197,6 +198,7 @@ export function registerEvaluationFormTools(server) {
     },
     withToolError(async ({ interviewId, force }) => {
       const { user } = authorized("POST");
+      assertNoAgencyExport(user);
       return text(await exportEvaluationReport(user, { interviewId, force: force === true }));
     }, "hr_interview_evaluation_export"),
   );

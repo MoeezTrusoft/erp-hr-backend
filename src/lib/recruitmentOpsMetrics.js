@@ -52,7 +52,7 @@ const exportFormatLabel = (f) => (EXPORT_FORMATS.includes(String(f)) ? String(f)
 const EXPORT_OUTCOMES = Object.freeze(["ok", "denied", "failed"]);
 const exportOutcomeLabel = (o) => (EXPORT_OUTCOMES.includes(String(o)) ? String(o) : "failed");
 
-const RETENTION_OUTCOMES = Object.freeze(["dry-run", "applied", "refused-flag", "failed"]);
+const RETENTION_OUTCOMES = Object.freeze(["dry-run", "applied", "refused-flag", "refused-tenant", "failed"]);
 const retentionOutcomeLabel = (o) => (RETENTION_OUTCOMES.includes(String(o)) ? String(o) : "failed");
 
 // --- metric names (exported for tests/dashboards) ----------------------------

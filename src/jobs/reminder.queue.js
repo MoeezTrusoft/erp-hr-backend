@@ -50,6 +50,10 @@ import { runTestSessionJob } from '../services/test-session.service.js';
 import { runOnboardingReadinessJob } from '../services/onboarding-readiness.service.js';
 import { runOnboardingSurveyJob } from '../services/onboarding-survey.service.js';
 import { runHandoffWatchdogJob } from '../services/handoff-watchdog.service.js';
+import { runTalentNurtureProposalJob } from '../services/talent-nurture.service.js';
+import { runReferralBonusJob } from '../services/internal-referral.service.js';
+import { runDsrSlaJob, runDsrVerificationSweepJob } from '../services/dsr-portal.service.js';
+import { runRecruitmentAlertsJob } from '../services/recruitment-alerts.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -127,6 +131,18 @@ export const JOB_TEST_SESSIONS = 'test-sessions';
 export const JOB_ONBOARDING_READINESS = 'onboarding-readiness';
 export const JOB_ONBOARDING_SURVEYS = 'onboarding-surveys';
 export const JOB_HANDOFF_WATCHDOG = 'handoff-watchdog';
+// Recruitment Phase 5: talent pool nurture proposals for newly posted
+// requisitions (HR_RECRUITMENT_TALENT_NURTURE), the referral bonus clock
+// (HR_RECRUITMENT_INTERNAL_BOARD), data-subject request SLA alerts
+// (HR_RECRUITMENT_DSR_PORTAL), the sweep of unverified portal requests past
+// their link's expiry (never flag-gated, so rows do not linger after the flag
+// is turned off) and the analytics threshold alerts
+// (HR_RECRUITMENT_ANALYTICS_ALERTS).
+export const JOB_TALENT_NURTURE_PROPOSAL = 'talent-nurture-proposal';
+export const JOB_REFERRAL_BONUS = 'referral-bonus';
+export const JOB_DSR_SLA = 'dsr-sla';
+export const JOB_DSR_VERIFICATION_SWEEP = 'dsr-verification-sweep';
+export const JOB_RECRUITMENT_ALERTS = 'recruitment-alerts';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -306,6 +322,31 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:handoff-watchdog', repeat: { pattern: '*/5 * * * *' } },
         },
+        {
+            name: JOB_TALENT_NURTURE_PROPOSAL,
+            data: {},
+            opts: { jobId: 'repeat:talent-nurture-proposal', repeat: { pattern: '45 * * * *' } },
+        },
+        {
+            name: JOB_REFERRAL_BONUS,
+            data: {},
+            opts: { jobId: 'repeat:referral-bonus', repeat: { pattern: '30 2 * * *' } },
+        },
+        {
+            name: JOB_DSR_SLA,
+            data: {},
+            opts: { jobId: 'repeat:dsr-sla', repeat: { pattern: '20 4 * * *' } },
+        },
+        {
+            name: JOB_DSR_VERIFICATION_SWEEP,
+            data: {},
+            opts: { jobId: 'repeat:dsr-verification-sweep', repeat: { pattern: '35 * * * *' } },
+        },
+        {
+            name: JOB_RECRUITMENT_ALERTS,
+            data: {},
+            opts: { jobId: 'repeat:recruitment-alerts', repeat: { pattern: '7 * * * *' } },
+        },
     ];
 }
 
@@ -339,6 +380,11 @@ export function buildReminderProcessor({
     onboardingReadiness = runOnboardingReadinessJob,
     onboardingSurveys = runOnboardingSurveyJob,
     handoffWatchdog = runHandoffWatchdogJob,
+    talentNurtureProposal = runTalentNurtureProposalJob,
+    referralBonus = runReferralBonusJob,
+    dsrSla = runDsrSlaJob,
+    dsrVerificationSweep = runDsrVerificationSweepJob,
+    recruitmentAlerts = runRecruitmentAlertsJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -399,6 +445,16 @@ export function buildReminderProcessor({
                     return onboardingSurveys(data);
                 case JOB_HANDOFF_WATCHDOG:
                     return handoffWatchdog(data);
+                case JOB_TALENT_NURTURE_PROPOSAL:
+                    return talentNurtureProposal(data);
+                case JOB_REFERRAL_BONUS:
+                    return referralBonus(data);
+                case JOB_DSR_SLA:
+                    return dsrSla(data);
+                case JOB_DSR_VERIFICATION_SWEEP:
+                    return dsrVerificationSweep(data);
+                case JOB_RECRUITMENT_ALERTS:
+                    return recruitmentAlerts(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

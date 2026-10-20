@@ -52,6 +52,13 @@ import { registerOnboardingProvisioningTools } from "./tools/onboarding-provisio
 import { registerOnboardingSessionPlanTools } from "./tools/onboarding-session-plan.tools.js";
 import { registerOnboardingReadinessTools } from "./tools/onboarding-readiness.tools.js";
 import { registerOnboardingSelfTools } from "./tools/onboarding-self.tools.js";
+import { registerTalentNurtureTools } from "./tools/talent-nurture.tools.js";
+import { registerInternalBoardTools } from "./tools/internal-board.tools.js";
+import { registerInternalReferralTools } from "./tools/internal-referral.tools.js";
+import { registerRecruitmentAgencyTools } from "./tools/recruitment-agency.tools.js";
+import { registerAgencyPortalTools } from "./tools/agency-portal.tools.js";
+import { registerPrivacyOperationsTools } from "./tools/privacy-operations.tools.js";
+import { registerRecruitmentAlertTools } from "./tools/recruitment-alerts.tools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
 import { registerOnboardingScheduleTools } from "./tools/onboardingScheduleTools.js";
@@ -344,6 +351,16 @@ export function registerAllTools(server) {
   registerOnboardingReadinessTools(server);
   registerOnboardingSelfTools(server);
   registerCandidatePrivacyTools(server);
+  // Recruitment Phase 5: talent pool nurture, the internal job board and
+  // referrals, agencies and their portal, privacy operations (retention runs,
+  // sign-off, data request exports) and the analytics threshold alerts.
+  registerTalentNurtureTools(server);
+  registerInternalBoardTools(server);
+  registerInternalReferralTools(server);
+  registerRecruitmentAgencyTools(server);
+  registerAgencyPortalTools(server);
+  registerPrivacyOperationsTools(server);
+  registerRecruitmentAlertTools(server);
   registerOnboardingDashboardTools(server);
   registerOnboardingDetailTools(server);
   registerOnboardingScheduleTools(server);

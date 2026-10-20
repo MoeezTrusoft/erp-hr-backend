@@ -52,6 +52,13 @@ import { registerTestItemTools } from "../../../src/mcp/tools/test-item.tools.js
 import { registerReceptionTools } from "../../../src/mcp/tools/reception.tools.js";
 import { registerTestResultTools } from "../../../src/mcp/tools/test-result.tools.js";
 import { registerEvaluationFormTools } from "../../../src/mcp/tools/evaluation-form.tools.js";
+import { registerTalentNurtureTools } from "../../../src/mcp/tools/talent-nurture.tools.js";
+import { registerInternalBoardTools } from "../../../src/mcp/tools/internal-board.tools.js";
+import { registerInternalReferralTools } from "../../../src/mcp/tools/internal-referral.tools.js";
+import { registerRecruitmentAgencyTools } from "../../../src/mcp/tools/recruitment-agency.tools.js";
+import { registerAgencyPortalTools } from "../../../src/mcp/tools/agency-portal.tools.js";
+import { registerPrivacyOperationsTools } from "../../../src/mcp/tools/privacy-operations.tools.js";
+import { registerRecruitmentAlertTools } from "../../../src/mcp/tools/recruitment-alerts.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -98,6 +105,15 @@ const RECRUITMENT_REGISTRARS = [
   ["receptionTools", registerReceptionTools],
   ["testResultTools", registerTestResultTools],
   ["evaluationFormTools", registerEvaluationFormTools],
+  // Phase 5: talent pool nurture, internal board and referrals, agencies,
+  // privacy operations and analytics alerts.
+  ["talentNurtureTools", registerTalentNurtureTools],
+  ["internalBoardTools", registerInternalBoardTools],
+  ["internalReferralTools", registerInternalReferralTools],
+  ["recruitmentAgencyTools", registerRecruitmentAgencyTools],
+  ["agencyPortalTools", registerAgencyPortalTools],
+  ["privacyOperationsTools", registerPrivacyOperationsTools],
+  ["recruitmentAlertTools", registerRecruitmentAlertTools],
 ];
 
 function collect(register) {
@@ -151,6 +167,13 @@ const EXPECTED_PER_MODULE = Object.freeze({
   receptionTools: 8, // Phase 3b: arrivals, check-in, code issue, live grid, proctor controls
   testResultTools: 5, // Phase 3b: result report, list, decide, waive, analytics
   evaluationFormTools: 10, // Phase 3b: forms, drafts, question bank, AI draft, report, export, calibration
+  talentNurtureTools: 4, // Phase 5: nurture proposals list, get, send, dismiss
+  internalBoardTools: 5, // Phase 5: the employee's internal board and own referrals
+  internalReferralTools: 2, // Phase 5: HR referral list and bonus decisions
+  recruitmentAgencyTools: 11, // Phase 5: agencies, their users, assignments and submission review
+  agencyPortalTools: 4, // Phase 5: the agency's own portal (AGENCY scope only)
+  privacyOperationsTools: 6, // Phase 5: retention runs, sign-off, owner, data request export
+  recruitmentAlertTools: 4, // Phase 5: analytics alert thresholds, list, acknowledge
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -379,6 +402,43 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_interview_evaluation_export",
   "hr_rater_calibration_get",
   "hr_test_item_stats_get",
+  // Phase 5.
+  "hr_talent_nurture_runs_list",
+  "hr_talent_nurture_run_get",
+  "hr_talent_nurture_run_send",
+  "hr_talent_nurture_run_dismiss",
+  "hr_self_internal_jobs_list",
+  "hr_self_internal_job_get",
+  "hr_self_internal_job_apply",
+  "hr_self_referral_create",
+  "hr_self_referrals_list",
+  "hr_recruitment_referrals_list",
+  "hr_recruitment_referral_bonus_update",
+  "hr_recruitment_agencies_list",
+  "hr_recruitment_agency_get",
+  "hr_recruitment_agency_create",
+  "hr_recruitment_agency_update",
+  "hr_recruitment_agency_users_list",
+  "hr_recruitment_agency_user_add",
+  "hr_recruitment_agency_user_revoke",
+  "hr_requisition_agency_assign",
+  "hr_requisition_agency_unassign",
+  "hr_recruitment_agency_submissions_list",
+  "hr_recruitment_agency_submission_review",
+  "hr_recruitment_agency_portal_requisitions_list",
+  "hr_recruitment_agency_portal_requisition_get",
+  "hr_recruitment_agency_portal_submit",
+  "hr_recruitment_agency_portal_submissions_list",
+  "hr_candidate_retention_runs_list",
+  "hr_candidate_retention_run_get",
+  "hr_candidate_retention_signoff",
+  "hr_candidate_retention_apply_disable",
+  "hr_candidate_retention_owner_set",
+  "hr_candidate_request_export_generate",
+  "hr_recruitment_alert_thresholds_get",
+  "hr_recruitment_alert_thresholds_set",
+  "hr_recruitment_alerts_list",
+  "hr_recruitment_alert_acknowledge",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -425,7 +485,9 @@ describe("Recruitment MCP tool inventory", () => {
     // + 6 interview scheduling tools.
     // Phase 3b: + 9 blueprint tools, + 4 workstation tools, + 10 item bank tools.
     // Phase 4: + 17 onboarding tools (provisioning, sessions, readiness, self portal).
-    expect(all).toHaveLength(799);
+    // Phase 5: + 36 tools (nurture, internal board and referrals,
+    // agencies and their portal, privacy operations, analytics alerts).
+    expect(all).toHaveLength(835);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
@@ -438,7 +500,9 @@ describe("Recruitment MCP tool inventory", () => {
     // 15 = 14 + hr_talent_pool_retention_sweep (FR-10 residue), which the
     // /retention/ pattern catches and which IS a retention-surface tool: it acts
     // on the pool clock, so a resource-shaped registration would bypass the gate.
-    expect(privacy).toHaveLength(15);
+    // 21 with Phase 5's retention runs, sign-off, owner and the data request
+    // export (6).
+    expect(privacy).toHaveLength(21);
     for (const name of privacy) expect(allRecruitmentTools).toContain(name);
   });
 

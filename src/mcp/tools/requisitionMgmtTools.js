@@ -21,6 +21,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { assertNoAgencyExport } from "../../lib/agency-access.util.js";
 import {
   listManagedRequisitions,
   getManagedRequisition,
@@ -336,6 +337,7 @@ export function registerRequisitionMgmtTools(server) {
     withToolError(async ({ format, ...query }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNoAgencyExport(user);
       // An export must not become the way around the record scope.
       const data = await exportManagedRequisitions(query, user.tenantId, format, resolveRecruitmentScope(user));
       return { content: [{ type: "text", text: JSON.stringify(data) }] };

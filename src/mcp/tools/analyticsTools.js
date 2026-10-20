@@ -15,6 +15,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { assertNoAgencyExport } from "../../lib/agency-access.util.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -128,6 +129,7 @@ export function registerAnalyticsTools(server) {
       // the gateway never grants (it grants the code `hr:analytics`), so export
       // 403'd for every legitimate holder. Gate on the granted code instead.
       assertPermission(permissions, "POST", ANALYTICS_RESOURCE_CODE, user.isAdmin);
+      assertNoAgencyExport(user);
       const data = await mcpExportAnalyticsReport(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

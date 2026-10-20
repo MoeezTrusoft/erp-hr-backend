@@ -2,6 +2,7 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { getMcpServer } from "./mcpServer.js";
 import { mcpCtx, buildContextFromHeaders } from "./context.js";
+import { withAgencyContext } from "../lib/agency-access.util.js";
 import logger from "../lib/logger.js";
 import { toJsonRpcError } from "./utils/mcpErrorMap.js";
 import { normalizeError } from "../middlewares/error.middleware.js";
@@ -48,7 +49,11 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
   // HTML stack trace — DEFECT_LEAK). The catch below renders a leak-safe JSON-RPC
   // error carrying the normalized HTTP status.
   try {
-    ctx = buildContextFromHeaders(req);
+    // Recruitment Phase 5: an AGENCY caller's agency (RecruitmentAgencyUser,
+    // active agency, active assignments), looked up once per request so every
+    // scoped recruitment read sees the same agency. Non-agency callers pass
+    // through untouched; a failed lookup fails closed (no rows).
+    ctx = await withAgencyContext(buildContextFromHeaders(req));
 
     logger.info({ method: body?.method }, "hr: creating transport and server");
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

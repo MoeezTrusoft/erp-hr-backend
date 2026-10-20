@@ -9,6 +9,7 @@ import {
 } from "../../services/candidatePipeline.service.js";
 import { getCandidate360 } from "../../services/candidate-360.service.js";
 import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { assertNotAgencyCaller } from "../../lib/agency-access.util.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -34,6 +35,7 @@ export function registerCandidatePipelineTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNotAgencyCaller(user);
       const data = await getPipelineBoard({
         tenantId: user.tenantId,
         q: args.q,
@@ -66,6 +68,7 @@ export function registerCandidatePipelineTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      assertNotAgencyCaller(user);
       const { items, total, page, pageSize } = await listPipelineCards({
         tenantId: user.tenantId,
         q: args.q,
