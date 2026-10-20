@@ -17,20 +17,34 @@
 // ALL text-extraction imports stay LAZY (pdf-parse / mammoth are local, no
 // vendor bytes leave) so a missing optional dependency only breaks the resume
 // tools — core HR keeps working.
-import { createHash } from "node:crypto";
+//
+// Recruitment Phase 2 — no request ever sleeps between attempts. A request runs
+// ONE attempt (parseResumeWithRetry); a failure stores the next due time on the
+// ledger row (nextAttemptAt, the backoffDelayMs policy) and the asynchronous
+// worker (resume-parse-worker.service.js) runs it then, against the same row, so
+// the three-attempt ceiling and the per-tenant cache are shared by both paths.
+// The pieces both paths use live here: executeParseAttempt (one attempt on a
+// claimed row), completeParseAttempt, and projectParsedResumeOntoCandidate (the
+// candidate write plus its hr.recruitment.candidate_resume_parsed.v1 event).
+import { createHash, randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { withTenant } from "../lib/tenancy.js";
+import { eventContext } from "../lib/event-context.util.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { downloadDamAssetBuffer } from "./dam.media.service.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { recordResumeParse } from "../lib/recruitmentOpsMetrics.js";
-import { runAiTask } from "../lib/aiPlaneClient.js";
+import { runAiTask, collectAiResult } from "../lib/aiPlaneClient.js";
 import {
   PARSE_MAX_ATTEMPTS,
-  backoffDelayMs,
+  PARSE_LEASE_MS,
   hashResumeContent,
   isRetryableFailure,
-  storedErrorIsRetryable,
+  nextAttemptAfterFailure,
   decideParse,
 } from "../lib/parseRetry.js";
 
@@ -153,50 +167,61 @@ const normCert = (raw) => {
 // plane's registry — app/registry/prompts.py, key hr.resume.parse.v1 — and is
 // versioned there.)
 
-// Send the redacted-by-plane resume text to the AI plane (§7.1) and normalize
-// the output. The plane owns provider/model selection (its registry entry
-// hr.resume.parse.v1), PII redaction (§7.1a) and the token ceiling; HR owns
-// normalization and the §7.4 provenance that travels with the result.
-async function parseResumeText(text, { tenantId = null, candidateId = null, correlationId = null } = {}) {
-  if (!text || text.length < 20) {
-    return { skills: [], competencies: [], certifications: [], warning: "resume text was empty or too short" };
-  }
-  // Phase 15 — AI features are flag-gated (§7.1b): a disabled deployment gets
-  // the same typed 503 as a missing plane, so callers need no new error shape.
-  if (!isRecruitmentFlagEnabled("ai")) {
-    recordResumeParse({ kind: "CANDIDATE", outcome: "flag-disabled" });
-    throw Object.assign(new Error("Recruitment AI features are disabled (HR_RECRUITMENT_AI=off)"), {
-      status: 503,
-      code: "HR-RECRUITMENT-AI-DISABLED",
-    });
-  }
+const PROMPT_KEY = "hr.resume.parse.v1";
 
-  // §7.4 — provenance is captured at the boundary, not inferred later: hash the
-  // exact input we hand the plane, then record who/what answered.
-  const inputHash = createHash("sha256").update(String(text).slice(0, MAX_RESUME_CHARS)).digest("hex");
+// Phase 2 — a plane answer that misses the request's wait window is not lost:
+// the task id and the results-stream position are stored on the ledger row
+// (parsedJson.pendingAiTask) and the next attempt collects the answer instead
+// of paying for a second task. Past this window the answer is presumed gone
+// (trimmed off ai:results) and a fresh attempt runs.
+const LATE_RESULT_WINDOW_MS = parseInt(process.env.HR_RESUME_PARSE_LATE_RESULT_WINDOW_MS || "900000", 10);
+// How soon to look again for a late answer.
+const PENDING_POLL_MS = 30_000;
 
-  let res;
-  try {
-    res = await runAiTask({
-      promptKey: "hr.resume.parse.v1",
-      type: "hr.resume.parse",
-      tenantId,
-      input: { resumeText: String(text).slice(0, MAX_RESUME_CHARS) },
-      correlationId,
-    });
-  } catch (err) {
-    // The plane is unreachable/unconfigured — record the degraded attempt
-    // (§7.4: status/failure reason is provenance too) and rethrow the typed 503.
+export const PLANE_PENDING_CODE = "HR-RESUME-PLANE-PENDING";
+export const CANDIDATE_RESUME_PARSED_EVENT = "hr.recruitment.candidate_resume_parsed.v1";
+
+const RELEASE_CLAIM = Object.freeze({ claimedBy: null, claimExpiresAt: null });
+
+const ledgerError = (err) => `${err?.code ?? ""} ${err?.message ?? err}`.trim().slice(0, 500);
+
+const leaseIsLive = (row, now) =>
+  row?.status === "RUNNING" && row.claimExpiresAt && new Date(row.claimExpiresAt).getTime() > new Date(now).getTime();
+
+/** The late-answer marker on a non-completed ledger row, or null. */
+export function pendingMarkerOf(row) {
+  if (!row || row.status === "COMPLETED") return null;
+  const marker = row.parsedJson && typeof row.parsedJson === "object" ? row.parsedJson.pendingAiTask : null;
+  return marker?.taskId ? marker : null;
+}
+
+const exhaustedError = (attempts, reason = "MAX_ATTEMPTS") =>
+  Object.assign(new Error(`Resume parsing exhausted its ${PARSE_MAX_ATTEMPTS} attempts for this content`), {
+    status: 429,
+    code: "HR-RESUME-ATTEMPTS-EXHAUSTED",
+    details: { reason, attempts: attempts ?? 0 },
+  });
+
+// Normalize a plane answer and record its §7.4 provenance. Throws the typed
+// pending error when the wait window expired, and HR-RESUME-PLANE-FAILED on a
+// non-ok answer.
+async function finishPlaneResult(res, { inputHash, charsAnalyzed, tenantId, candidateId }) {
+  if (res?.pending) {
     await recordInference({
       kind: "resume-parse",
-      promptKey: "hr.resume.parse.v1",
+      promptKey: PROMPT_KEY,
       inputHash,
-      status: "degraded-unavailable",
-      errorMessage: `${err?.code ?? ""} ${err?.message ?? err}`.trim().slice(0, 500),
+      status: "pending",
+      errorMessage: "plane answer did not arrive within the wait window",
+      traceId: res.taskId,
       tenantId,
       candidateId,
     }).catch(() => {});
-    throw err;
+    throw Object.assign(new Error("The AI plane has not answered yet; the result will be collected later"), {
+      status: 504,
+      code: PLANE_PENDING_CODE,
+      details: { taskId: res.taskId, sinceId: res.sinceId ?? "-", inputHash, charsAnalyzed },
+    });
   }
 
   const output = res?.output ?? {};
@@ -206,7 +231,7 @@ async function parseResumeText(text, { tenantId = null, candidateId = null, corr
     taskId: res.taskId,
     provider: output.provider ?? null,
     model: output.model ?? null,
-    promptKey: "hr.resume.parse.v1",
+    promptKey: PROMPT_KEY,
     redactionCounts: output.redactionCounts ?? null,
     tokensUsed: res.tokensUsed ?? null,
     inputHash,
@@ -219,7 +244,7 @@ async function parseResumeText(text, { tenantId = null, candidateId = null, corr
       provider: provenance.provider,
       model: provenance.model,
       inputHash,
-      status: res.status === "pending" ? "pending" : "error",
+      status: "error",
       errorMessage: String(res.error ?? "plane returned non-ok status").slice(0, 500),
       tokensUsed: res.tokensUsed ?? null,
       traceId: res.taskId,
@@ -263,8 +288,78 @@ async function parseResumeText(text, { tenantId = null, candidateId = null, corr
     model: provenance.model,
     provider: provenance.provider,
     aiProvenance: provenance,
-    charsAnalyzed: Math.min(text.length, MAX_RESUME_CHARS),
+    charsAnalyzed,
   };
+}
+
+// Send the redacted-by-plane resume text to the AI plane (§7.1) and normalize
+// the output. The plane owns provider/model selection (its registry entry
+// hr.resume.parse.v1), PII redaction (§7.1a) and the token ceiling; HR owns
+// normalization and the §7.4 provenance that travels with the result.
+async function parseResumeText(text, { tenantId = null, candidateId = null, correlationId = null } = {}) {
+  if (!text || text.length < 20) {
+    return { skills: [], competencies: [], certifications: [], warning: "resume text was empty or too short" };
+  }
+  // Phase 15 — AI features are flag-gated (§7.1b): a disabled deployment gets
+  // the same typed 503 as a missing plane, so callers need no new error shape.
+  if (!isRecruitmentFlagEnabled("ai")) {
+    recordResumeParse({ kind: "CANDIDATE", outcome: "flag-disabled" });
+    throw Object.assign(new Error("Recruitment AI features are disabled (HR_RECRUITMENT_AI=off)"), {
+      status: 503,
+      code: "HR-RECRUITMENT-AI-DISABLED",
+    });
+  }
+
+  // §7.4 — provenance is captured at the boundary, not inferred later: hash the
+  // exact input we hand the plane, then record who/what answered.
+  const input = String(text).slice(0, MAX_RESUME_CHARS);
+  const inputHash = createHash("sha256").update(input).digest("hex");
+  const meta = { inputHash, charsAnalyzed: Math.min(text.length, MAX_RESUME_CHARS), tenantId, candidateId };
+
+  let res;
+  try {
+    res = await runAiTask({
+      promptKey: PROMPT_KEY,
+      type: "hr.resume.parse",
+      tenantId,
+      input: { resumeText: input },
+      correlationId,
+    });
+  } catch (err) {
+    // The plane is unreachable/unconfigured — record the degraded attempt
+    // (§7.4: status/failure reason is provenance too) and rethrow the typed 503.
+    await recordInference({
+      kind: "resume-parse",
+      promptKey: PROMPT_KEY,
+      inputHash,
+      status: "degraded-unavailable",
+      errorMessage: `${err?.code ?? ""} ${err?.message ?? err}`.trim().slice(0, 500),
+      tenantId,
+      candidateId,
+    }).catch(() => {});
+    throw err;
+  }
+  return finishPlaneResult(res, meta);
+}
+
+// Look for a late plane answer. Returns { result } when it arrived and was
+// usable, { error } when it arrived as a failure, {} when it has not arrived.
+// A transport error while looking is "not arrived": the window then decides.
+async function collectLateResult(marker, { tenantId, candidateId }) {
+  let res;
+  try {
+    res = await collectAiResult({ taskId: marker.taskId, sinceId: marker.sinceId ?? "-" });
+  } catch (err) {
+    logger.warn({ errCode: err?.code, taskId: marker.taskId }, "resume: late-result lookup failed");
+    return {};
+  }
+  if (res?.pending) return {};
+  try {
+    const meta = { inputHash: marker.inputHash, charsAnalyzed: marker.charsAnalyzed ?? null, tenantId, candidateId };
+    return { result: await finishPlaneResult(res, meta) };
+  } catch (err) {
+    return { error: err };
+  }
 }
 
 // §7.4 — persist one provenance row. Deliberately best-effort: a provenance
@@ -277,17 +372,158 @@ async function recordInference(data) {
   }
 }
 
-// Download a resume asset from DAM and parse it (no DB writes).
-// Phase 6 / §4.5a — the ledger-driven parse entrypoint. EVERY parse goes
-// through here (both ingestion kinds and the preview), so the content-hash
-// cache and the three-attempt ceiling are the only behaviour, not one surface
-// among several. The retry decision itself is pure policy (lib/parseRetry.js);
-// this wrapper owns: the DAM fetch, the hash, the ledger row, and the
-// attempt-loop that respects the backoff.
-export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenantId = null, candidateId = null, force = false } = {}) {
+// ── the ledger attempt (shared by the request path and the worker) ──────────
+//
+// Every ledger write after a claim is guarded by the claim token: a claimant
+// whose lease expired (and whose row someone else reclaimed) writes nothing.
+
+async function writeLedger(row, claimToken, data, client = prisma) {
+  const { count } = await client.resumeParseAttempt.updateMany({
+    where: { id: row.id, tenantId: row.tenantId, claimedBy: claimToken },
+    data,
+  });
+  return count === 1;
+}
+
+async function recordFailedAttempt({ row, claimToken, err, attempt, now }) {
+  recordResumeParse({ kind: row.kind, outcome: "failed" });
+  if (err?.code === PLANE_PENDING_CODE && err.details?.taskId) {
+    const nextAttemptAt = new Date(now.getTime() + PENDING_POLL_MS);
+    await writeLedger(row, claimToken, {
+      status: "FAILED",
+      lastError: ledgerError(err),
+      parsedJson: { pendingAiTask: { ...err.details, submittedAt: now.toISOString() } },
+      nextAttemptAt,
+      ...RELEASE_CLAIM,
+    });
+    return { outcome: "PENDING", error: err, attempt, nextAttemptAt };
+  }
+  const retryable = isRetryableFailure(err);
+  const nextAttemptAt = nextAttemptAfterFailure({ attempt, retryable, now });
+  await writeLedger(row, claimToken, {
+    status: "FAILED",
+    lastError: ledgerError(err),
+    parsedJson: Prisma.DbNull,
+    nextAttemptAt,
+    ...RELEASE_CLAIM,
+  });
+  const outcome = nextAttemptAt ? "RETRY_SCHEDULED" : retryable ? "EXHAUSTED" : "FAILED";
+  return { outcome, error: err, attempt, retryable, nextAttemptAt };
+}
+
+/**
+ * Run ONE parse attempt on a ledger row the caller has claimed (status RUNNING,
+ * claimedBy = claimToken). Never sleeps and never loops: a failure records when
+ * the next attempt is due (nextAttemptAt) and returns.
+ *
+ * Order: a stored late-answer marker is collected first (no new task, no new
+ * attempt); otherwise the attempt count is spent BEFORE the plane call, so a
+ * crash mid-attempt still counts against the three-attempt ceiling.
+ *
+ * Does NOT write COMPLETED: the caller does, in the transaction that projects
+ * the result (completeParseAttempt), so a completed row always has its projection.
+ *
+ * @param {object} args
+ * @param {object} args.row          the claimed ledger row
+ * @param {string} args.claimToken   its claimedBy value
+ * @param {string} args.tenantId
+ * @param {number|null} [args.candidateId]  provenance only
+ * @param {() => Promise<{buffer: Buffer, mimeType?: string, fileName?: string}>} args.loadContent
+ * @param {Date} [args.now]
+ * @returns {Promise<{ outcome: "COMPLETED"|"PENDING"|"RETRY_SCHEDULED"|"FAILED"|"EXHAUSTED"|"LEASE_LOST",
+ *   result?: object, error?: Error, attempt: number, nextAttemptAt?: Date|null, lateResult?: boolean }>}
+ */
+export async function executeParseAttempt({ row, claimToken, tenantId, candidateId = null, loadContent, now = new Date() }) {
+  const at = new Date(now);
+  const marker = pendingMarkerOf(row);
+  if (marker) {
+    const late = await collectLateResult(marker, { tenantId, candidateId });
+    if (late.result) {
+      logger.info({ parseAttemptId: row.id, taskId: marker.taskId }, "resume: collected a late plane answer");
+      return { outcome: "COMPLETED", result: late.result, attempt: row.attemptCount ?? 0, lateResult: true };
+    }
+    if (late.error) return recordFailedAttempt({ row, claimToken, err: late.error, attempt: row.attemptCount ?? 0, now: at });
+    const age = at.getTime() - new Date(marker.submittedAt ?? 0).getTime();
+    if (age < LATE_RESULT_WINDOW_MS) {
+      const nextAttemptAt = new Date(at.getTime() + PENDING_POLL_MS);
+      await writeLedger(row, claimToken, { status: "FAILED", nextAttemptAt, ...RELEASE_CLAIM });
+      return { outcome: "PENDING", error: pendingMarkerError(marker), attempt: row.attemptCount ?? 0, nextAttemptAt };
+    }
+    // Past the window the answer is presumed trimmed off the stream: a fresh
+    // attempt follows, if the ceiling allows one.
+  }
+
+  const attempt = (row.attemptCount ?? 0) + 1;
+  if (attempt > PARSE_MAX_ATTEMPTS) {
+    await writeLedger(row, claimToken, { status: "FAILED", nextAttemptAt: null, parsedJson: Prisma.DbNull, ...RELEASE_CLAIM });
+    recordResumeParse({ kind: row.kind, outcome: "exhausted" });
+    return { outcome: "EXHAUSTED", error: exhaustedError(row.attemptCount), attempt: row.attemptCount ?? 0 };
+  }
+
+  const owned = await writeLedger(row, claimToken, {
+    status: "RUNNING",
+    attemptCount: attempt,
+    lastError: null,
+    nextAttemptAt: null,
+    parsedJson: Prisma.DbNull,
+  });
+  if (!owned) return { outcome: "LEASE_LOST", attempt };
+
+  try {
+    const dl = await loadContent();
+    const text = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
+    const result = await parseResumeText(text, { tenantId, candidateId, correlationId: row.contentHash });
+    return { outcome: "COMPLETED", result, attempt };
+  } catch (err) {
+    return recordFailedAttempt({ row, claimToken, err, attempt, now: at });
+  }
+}
+
+const pendingMarkerError = (marker) =>
+  Object.assign(new Error("The AI plane has not answered yet; the result will be collected later"), {
+    status: 504,
+    code: PLANE_PENDING_CODE,
+    details: { taskId: marker.taskId },
+  });
+
+/**
+ * Mark a claimed row COMPLETED with its parse (the cache payload) and release
+ * the claim. Pass the transaction client when the projection is written in the
+ * same transaction. Throws HR-RESUME-LEASE-LOST when the claim is no longer ours.
+ */
+export async function completeParseAttempt(client, row, claimToken, result) {
+  const owned = await writeLedger(
+    row,
+    claimToken,
+    { status: "COMPLETED", parsedJson: result, lastError: null, nextAttemptAt: null, ...RELEASE_CLAIM },
+    client,
+  );
+  if (!owned) {
+    throw Object.assign(new Error("The parse attempt's claim expired before it completed"), {
+      status: 409,
+      code: "HR-RESUME-LEASE-LOST",
+    });
+  }
+}
+
+// Download a resume asset from DAM and parse it (no candidate writes).
+// Phase 6 / §4.5a — the ledger-driven parse entrypoint for REQUEST callers
+// (both ingestion kinds and the preview), so the content-hash cache and the
+// three-attempt ceiling are the only behaviour, not one surface among several.
+//
+// Phase 2 — ONE attempt per call. A failure records the backoff in
+// nextAttemptAt and throws; the caller (or, for a candidate, the asynchronous
+// worker) tries again once it is due. A call inside the backoff gets
+// HR-RESUME-BACKOFF, one past the ceiling HR-RESUME-ATTEMPTS-EXHAUSTED, as
+// before. The name is kept for its callers.
+export async function parseResumeWithRetry(
+  mediaId,
+  { kind = "CANDIDATE", tenantId = null, candidateId = null, force = false, now = null } = {},
+) {
   // D-13 — the cache is per tenant: the same bytes uploaded by two companies
   // are two ledger rows, so one tenant's parsed result never serves another.
   if (!tenantId) throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+  const at = now ? new Date(now) : new Date();
   const dl = await downloadDamAssetBuffer(mediaId);
   if (!dl?.buffer) {
     throw Object.assign(new Error(`Could not download resume asset ${mediaId} from DAM`), {
@@ -299,18 +535,22 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
   const contentHash = hashResumeContent(dl.buffer);
   const ledger = prisma.resumeParseAttempt;
 
-  // Retry/EXHAUSTED on an EXHAUSTED ledger row: an explicit force re-parse is
-  // the operator's "I know, run it again" — it resets the ceiling for THIS
-  // content only (a new row version), never silently.
   const cacheKey = { tenantId_kind_contentHash: { tenantId, kind, contentHash } };
   let prior = await ledger.findUnique({ where: cacheKey });
-  if (force && prior && prior.status === "COMPLETED") {
-    // Same content, completed, forced → re-run but keep ONE ledger row (reset).
+  // An explicit force re-parse is the operator's "I know, run it again": it
+  // resets the cache AND the ceiling for THIS content only (the row is
+  // recreated), never silently, and never under an attempt still in flight.
+  if (force && prior && !leaseIsLive(prior, at)) {
     await ledger.delete({ where: { id: prior.id } });
     prior = null;
   }
 
-  let decision = decideParse({ priorAttempt: prior, contentHash, now: new Date() });
+  // A stored late-answer marker is collected before anything else is decided:
+  // it costs no attempt and no new plane task.
+  const decision =
+    pendingMarkerOf(prior) && !leaseIsLive(prior, at)
+      ? { action: "RETRY", attempt: prior.attemptCount, reason: "LATE_RESULT" }
+      : decideParse({ priorAttempt: prior, contentHash, now: at });
 
   if (decision.action === "SKIP") {
     const cached = prior.parsedJson ?? null;
@@ -322,82 +562,74 @@ export async function parseResumeWithRetry(mediaId, { kind = "CANDIDATE", tenant
       mimeType: dl.mimeType,
       fromCache: true,
       contentHash,
+      parseAttemptId: prior.id,
       ...(cached ?? {}),
     };
   }
   if (decision.action === "EXHAUSTED") {
     recordResumeParse({ kind, outcome: "exhausted" });
-    throw Object.assign(new Error(`Resume parsing exhausted its ${PARSE_MAX_ATTEMPTS} attempts for this content`), {
-      status: 429,
-      code: "HR-RESUME-ATTEMPTS-EXHAUSTED",
-      details: { reason: decision.reason, attempts: prior?.attemptCount ?? 0 },
-    });
+    throw exhaustedError(prior?.attemptCount, decision.reason);
   }
-  if (decision.action === "RETRY_LATER") {
-    recordResumeParse({ kind, outcome: "throttled" });
-    throw Object.assign(new Error(`A prior parse attempt failed; retry is throttled (backoff ${Math.ceil(decision.waitMs / 1000)}s)`), {
-      status: 429,
-      code: "HR-RESUME-BACKOFF",
-      details: { retryAfterMs: decision.waitMs, attempt: decision.attempt },
-    });
-  }
+  if (decision.action === "RETRY_LATER") throw backoffError(kind, decision);
 
-  // PARSE or RETRY: mark RUNNING and go. attemptCount carried forward on retry.
-  const attemptNo = decision.attempt;
+  // PARSE or RETRY: claim the row for this request (a lease, like the worker's)
+  // and run one attempt. attemptCount is carried forward; the attempt spends it.
+  const claimToken = `request:${randomUUID()}`;
+  const claim = { status: "RUNNING", claimedBy: claimToken, claimExpiresAt: new Date(at.getTime() + PARSE_LEASE_MS) };
+  const media = Number(mediaId) || null;
+  const owner = Number(candidateId) || null;
   const row = await ledger.upsert({
     where: cacheKey,
-    create: { kind, contentHash, mediaId: Number(mediaId) || null, status: "RUNNING", attemptCount: 1, tenantId },
-    update: { status: "RUNNING", attemptCount: attemptNo, lastError: null, mediaId: Number(mediaId) || null },
+    create: { kind, contentHash, mediaId: media, attemptCount: 0, tenantId, candidateId: owner, ...claim },
+    // A candidate parse names its candidate so the worker can finish a retry
+    // the request left scheduled; a preview never clears an existing owner.
+    update: { ...claim, mediaId: media, ...(owner ? { candidateId: owner } : {}) },
   });
 
-  try {
-    const text = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
-    const result = await parseResumeText(text, { tenantId, candidateId, correlationId: contentHash });
-    await ledger.update({
-      where: { id: row.id },
-      data: { status: "COMPLETED", parsedJson: result, lastError: null },
-    });
-    recordResumeParse({ kind, outcome: "ok" });
-    return { mediaId: Number(mediaId), fileName: dl.fileName, mimeType: dl.mimeType, fromCache: false, contentHash, ...result };
-  } catch (err) {
-    const retryable = isRetryableFailure(err);
-    recordResumeParse({ kind, outcome: "failed" });
-    await ledger.update({
-      where: { id: row.id },
-      data: {
-        status: "FAILED",
-        lastError: `${err?.code ?? ""} ${err?.message ?? err}`.trim().slice(0, 500),
-      },
-    });
-    // §4.5a — the loop runs up to the ceiling HERE (synchronously), each retry
-    // after its backoff. A caller that wants async scheduling re-invokes; the
-    // ledger makes that safe and identical.
-    if (retryable && attemptNo < PARSE_MAX_ATTEMPTS) {
-      let nextAttempt = attemptNo + 1;
-      let waitMs = backoffDelayMs(attemptNo);
-      while (nextAttempt <= PARSE_MAX_ATTEMPTS) {
-        await sleep(waitMs);
-        try {
-          const text2 = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
-          const result2 = await parseResumeText(text2, { tenantId, candidateId, correlationId: contentHash });
-          await ledger.update({ where: { id: row.id }, data: { status: "COMPLETED", parsedJson: result2, lastError: null } });
-          return { mediaId: Number(mediaId), fileName: dl.fileName, mimeType: dl.mimeType, fromCache: false, contentHash, ...result2 };
-        } catch (err2) {
-          if (!isRetryableFailure(err2)) {
-            await ledger.update({ where: { id: row.id }, data: { lastError: `${err2?.code ?? ""} ${err2?.message ?? err2}`.trim().slice(0, 500) } });
-            throw err2;
-          }
-          await ledger.update({ where: { id: row.id }, data: { attemptCount: nextAttempt, lastError: `${err2?.code ?? ""} ${err2?.message ?? err2}`.trim().slice(0, 500) } });
-          waitMs = backoffDelayMs(nextAttempt);
-          nextAttempt += 1;
-        }
-      }
+  const out = await executeParseAttempt({
+    row: { ...row, tenantId, kind },
+    claimToken,
+    tenantId,
+    candidateId: owner,
+    loadContent: async () => dl,
+    now: at,
+  });
+
+  if (out.outcome === "COMPLETED") {
+    try {
+      await completeParseAttempt(prisma, { ...row, tenantId }, claimToken, out.result);
+    } catch (err) {
+      // Someone reclaimed the row while we parsed; our answer is still valid
+      // for this caller, the ledger simply keeps the other claimant's write.
+      if (err?.code !== "HR-RESUME-LEASE-LOST") throw err;
+      logger.warn({ parseAttemptId: row.id }, "resume: claim lost before completion; result returned uncached");
     }
-    throw err;
+    recordResumeParse({ kind, outcome: "ok" });
+    return {
+      mediaId: Number(mediaId),
+      fileName: dl.fileName,
+      mimeType: dl.mimeType,
+      fromCache: false,
+      contentHash,
+      parseAttemptId: row.id,
+      ...out.result,
+    };
   }
+  if (out.outcome === "LEASE_LOST") throw backoffError(kind, { action: "RETRY_LATER", attempt: out.attempt, waitMs: PARSE_LEASE_MS, reason: "IN_PROGRESS" });
+  throw Object.assign(out.error, { parseOutcome: out.outcome, nextAttemptAt: out.nextAttemptAt ?? null });
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function backoffError(kind, decision) {
+  recordResumeParse({ kind, outcome: "throttled" });
+  return Object.assign(
+    new Error(`A prior parse attempt is ${decision.reason === "IN_PROGRESS" ? "still running" : "throttled"} (retry in ${Math.ceil(decision.waitMs / 1000)}s)`),
+    {
+      status: 429,
+      code: "HR-RESUME-BACKOFF",
+      details: { retryAfterMs: decision.waitMs, attempt: decision.attempt, reason: decision.reason },
+    },
+  );
+}
 
 export async function parseResumePreview(mediaId, { tenantId = null } = {}) {
   return parseResumeWithRetry(mediaId, { kind: "CANDIDATE", tenantId });
@@ -410,11 +642,17 @@ export async function parseResumePreview(mediaId, { tenantId = null } = {}) {
  */
 export async function ingestEmployeeResume({ employeeId, mediaId, tenantId = null, actorId = null }) {
   const id = Number(employeeId);
-  const employee = await prisma.employee.findUnique({ where: { id }, select: { id: true, tenant_id: true } });
+  // The employee is read inside the caller's tenant (Employee keys it as
+  // tenant_id); a legacy call without a tenant falls back to the row's own.
+  const employee = await prisma.employee.findFirst({
+    where: tenantId ? { id, tenant_id: tenantId } : { id },
+    select: { id: true, tenant_id: true },
+  });
   if (!employee) throw Object.assign(new Error("Employee not found"), { status: 404 });
   const tenant = tenantId ?? employee.tenant_id ?? null;
 
-  const parsed = await parseResumePreview(mediaId);
+  // The ledger kind is EMPLOYEE: an employee's resume has its own cache row.
+  const parsed = await parseResumeWithRetry(mediaId, { kind: "EMPLOYEE", tenantId: tenant });
   const items = [...parsed.skills, ...parsed.competencies];
 
   const skillsWritten = [];
@@ -485,15 +723,130 @@ export async function ingestEmployeeResume({ employeeId, mediaId, tenantId = nul
   };
 }
 
+// ── the candidate projection (shared by the request path and the worker) ────
+
 /**
- * Parse a resume and persist to a CANDIDATE:
- *  - CandidateSkill rows (self-contained), upserted by (candidateId, name)
- *  - Candidate.parsedResume JSON snapshot (incl. certifications)
+ * The outbox args for hr.recruitment.candidate_resume_parsed.v1. Ids, the
+ * outcome and counts only: no skill names, no resume text, no PII. Emitted on
+ * COMPLETED and on a terminal FAILED/EXHAUSTED, so scoring and duplicate
+ * detection can react to a finished parse.
  */
-export async function ingestCandidateResume({ candidateId, mediaId, tenantId = null }) {
+export function candidateResumeParsedEvent(fields, ctx = {}) {
+  if (!fields?.tenantId || !fields?.candidateId) return null;
+  const count = (value) => (Number.isInteger(value) ? value : 0);
+  return {
+    eventName: CANDIDATE_RESUME_PARSED_EVENT,
+    tenantId: fields.tenantId,
+    aggregateType: "Candidate",
+    aggregateId: fields.candidateId,
+    actorId: ctx.actorId ?? null,
+    actorType: ctx.actorType ?? "service",
+    correlationId: ctx.correlationId,
+    payload: {
+      candidateId: String(fields.candidateId),
+      mediaId: fields.mediaId != null ? String(fields.mediaId) : null,
+      parseAttemptId: fields.parseAttemptId != null ? String(fields.parseAttemptId) : null,
+      status: fields.status,
+      skillCount: count(fields.skillCount),
+      competencyCount: count(fields.competencyCount),
+      certificationCount: count(fields.certificationCount),
+      fromCache: fields.fromCache === true,
+      attempts: Number.isInteger(fields.attempts) ? fields.attempts : null,
+    },
+  };
+}
+
+/**
+ * Write a parse onto a candidate, inside the caller's transaction:
+ *  - Candidate parse state COMPLETED + the parsedResume snapshot (incl.
+ *    certifications, since candidates have no Certification relation)
+ *  - CandidateSkill rows (self-contained), upserted by (candidateId, name)
+ *  - hr.recruitment.candidate_resume_parsed.v1 in the same transaction
+ * The candidate is matched with the tenant predicate; a miss is a 404 and the
+ * transaction rolls back.
+ */
+export async function projectParsedResumeOntoCandidate(
+  tx,
+  { tenantId, candidateId, mediaId, parsed, parseAttemptId = null, fromCache = false, attempts = null, ctx = {}, now = new Date() },
+) {
   const id = Number(candidateId);
-  const candidate = await prisma.candidate.findUnique({
-    where: { id },
+  const skills = parsed?.skills ?? [];
+  const competencies = parsed?.competencies ?? [];
+  const certifications = parsed?.certifications ?? [];
+
+  const { count } = await tx.candidate.updateMany({
+    where: withTenant(tenantId, { id }),
+    data: {
+      parseStatus: "COMPLETED",
+      parseError: null,
+      parsedAt: new Date(now),
+      parsedResume: {
+        mediaId: Number(mediaId),
+        contentHash: parsed?.contentHash,
+        model: parsed?.model,
+        skills,
+        competencies,
+        certifications,
+      },
+    },
+  });
+  if (!count) throw Object.assign(new Error("Candidate not found"), { status: 404 });
+
+  for (const item of [...skills, ...competencies]) {
+    await tx.candidateSkill.upsert({
+      where: { candidateId_name: { candidateId: id, name: item.name } },
+      create: {
+        candidateId: id,
+        name: item.name,
+        category: item.category,
+        score: item.score,
+        level: item.level,
+        source: "ai-resume",
+        tenantId,
+      },
+      update: { category: item.category, score: item.score, level: item.level, source: "ai-resume" },
+    });
+  }
+
+  const event = candidateResumeParsedEvent(
+    {
+      tenantId,
+      candidateId: id,
+      mediaId,
+      parseAttemptId,
+      status: "COMPLETED",
+      skillCount: skills.length,
+      competencyCount: competencies.length,
+      certificationCount: certifications.length,
+      fromCache,
+      attempts,
+    },
+    { ...eventContext(ctx), actorType: ctx.actorType },
+  );
+  if (event) await enqueueHrDomainEvent(tx, event);
+
+  return { skills: skills.length, competencies: competencies.length, certifications: certifications.length };
+}
+
+// The candidate-facing parse state a request-path failure leaves, or null when
+// the failure says nothing about the parse (a 400/404 before any attempt).
+function candidateStatusForFailure(err) {
+  if (err?.code === "HR-RESUME-ATTEMPTS-EXHAUSTED" || err?.parseOutcome === "EXHAUSTED") return "EXHAUSTED";
+  if (err?.code === PLANE_PENDING_CODE) return "PENDING";
+  if (err?.code === "HR-RESUME-BACKOFF" || err?.code === "HR-RESUME-BAD-JSON" || err?.status >= 500 || err?.parseOutcome) {
+    return "FAILED";
+  }
+  return null;
+}
+
+/**
+ * Parse a resume and persist to a CANDIDATE (the request path). The projection
+ * is projectParsedResumeOntoCandidate, the same function the worker uses.
+ */
+export async function ingestCandidateResume({ candidateId, mediaId, tenantId = null, actorId = null }) {
+  const id = Number(candidateId);
+  const candidate = await prisma.candidate.findFirst({
+    where: tenantId ? withTenant(tenantId, { id }) : { id },
     select: { id: true, tenantId: true, resumeMediaId: true },
   });
   if (!candidate) throw Object.assign(new Error("Candidate not found"), { status: 404 });
@@ -504,56 +857,35 @@ export async function ingestCandidateResume({ candidateId, mediaId, tenantId = n
   // Phase 6 / §4.5a — the parse goes through the ledger entrypoint; the
   // candidate row gets the parse-state projection (status/error/time) so the
   // candidate-facing UI can show "parsing…/parsed/failed" without reading the
-  // ledger. FAILED is a terminal projection until a successful re-parse — the
-  // ledger decides when a retry is allowed, not the candidate row.
+  // ledger. The ledger decides when a retry is allowed, not the candidate row.
   let parsed;
   try {
     parsed = await parseResumeWithRetry(resumeMediaId, { kind: "CANDIDATE", tenantId: tenant, candidateId: id });
-    await prisma.candidate.update({
-      where: { id },
-      data: { parseStatus: "COMPLETED", parseError: null, parsedAt: new Date() },
-    });
   } catch (err) {
-    const failed = err?.code === "HR-RESUME-ATTEMPTS-EXHAUSTED" || err?.code === "HR-RESUME-BACKOFF" || err?.code === "HR-RESUME-BAD-JSON" || err?.status >= 500;
-    if (failed) {
-      await prisma.candidate.update({
-        where: { id },
-        data: { parseStatus: "FAILED", parseError: String(err?.message ?? err).slice(0, 300) },
+    const status = candidateStatusForFailure(err);
+    if (status) {
+      await prisma.candidate.updateMany({
+        where: withTenant(tenant, { id }),
+        data: { parseStatus: status, parseError: String(err?.message ?? err).slice(0, 300) },
       });
     }
     throw err;
   }
-  const items = [...parsed.skills, ...parsed.competencies];
 
-  for (const item of items) {
-    await prisma.candidateSkill.upsert({
-      where: { candidateId_name: { candidateId: id, name: item.name } },
-      create: {
-        candidateId: id,
-        name: item.name,
-        category: item.category,
-        score: item.score,
-        level: item.level,
-        source: "ai-resume",
+  await tenantTransaction(
+    prisma,
+    async (tx) =>
+      await projectParsedResumeOntoCandidate(tx, {
         tenantId: tenant,
-      },
-      update: { category: item.category, score: item.score, level: item.level, source: "ai-resume" },
-    });
-  }
-
-  await prisma.candidate.update({
-    where: { id },
-    data: {
-      parsedResume: {
-        mediaId: Number(resumeMediaId),
-        contentHash: parsed.contentHash,
-        model: parsed.model,
-        skills: parsed.skills,
-        competencies: parsed.competencies,
-        certifications: parsed.certifications,
-      },
-    },
-  });
+        candidateId: id,
+        mediaId: resumeMediaId,
+        parsed,
+        parseAttemptId: parsed.parseAttemptId ?? null,
+        fromCache: parsed.fromCache === true,
+        ctx: { actorId },
+      }),
+    { tenantId: tenant },
+  );
 
   logger.info(
     { candidateId: id, mediaId: resumeMediaId, skills: parsed.skills.length, competencies: parsed.competencies.length },

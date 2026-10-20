@@ -21,8 +21,11 @@
 //   * THIS module — pure policy. Given history, decide: is a parse needed, how
 //     long to wait, should we retry this failure. No DB, no clock calls (now is
 //     injected), fully unit-testable.
-//   * resumeParsing.service — execution. Owns the attempts loop, the DB row and
-//     the vendor boundary.
+//   * resumeParsing.service — execution. Owns ONE attempt per call, the DB row
+//     and the vendor boundary. Phase 2: nothing sleeps in a request any more. A
+//     failed attempt records when the next one is due (nextAttemptAt, from
+//     backoffDelayMs) and the asynchronous worker
+//     (resume-parse-worker.service.js) runs it then.
 
 import { createHash } from "node:crypto";
 
@@ -32,6 +35,35 @@ export const PARSE_MAX_ATTEMPTS = 3;
 // Deliberately seconds-scale, not ms-scale: the vendor call itself takes tens of
 // seconds; the point is to outlive transient provider hiccups, not to hammer.
 export const backoffDelayMs = (attempt) => Math.round(Math.pow(attempt, 2) * 1000);
+
+// Phase 2 — how long one claimant (the worker, or a request running an attempt)
+// owns a ledger row. Longer than the plane wait (25s) plus the DAM download, so
+// a live attempt is never reclaimed; short enough that a crashed one is picked
+// up again within minutes.
+export const PARSE_LEASE_MS = 5 * 60 * 1000;
+
+// Phase 2 — a queue entry written before the file is downloaded carries this
+// placeholder instead of a content hash (the hash is unknown until the bytes
+// are read). It can never collide with a real key: a SHA-256 hex digest has no
+// colon. See resume-parse-queue.service.js for the full design.
+export const PARSE_TICKET_PREFIX = "pending:";
+export const parseTicketHash = (candidateId, mediaId) => `${PARSE_TICKET_PREFIX}c${Number(candidateId)}:m${Number(mediaId)}`;
+export const isParseTicket = (row) => String(row?.contentHash ?? "").startsWith(PARSE_TICKET_PREFIX);
+
+/** The error code a stored ledger string starts with, or null (never the text). */
+export function lastErrorCode(lastError) {
+    const first = String(lastError ?? "").trim().split(/\s+/)[0] ?? "";
+    return /^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$/.test(first) ? first : null;
+}
+
+/**
+ * When the next attempt is due after a failed attempt `attempt` (1-based), or
+ * null when there is none: a permanent failure, or the ceiling reached.
+ */
+export function nextAttemptAfterFailure({ attempt, retryable, now = new Date() }) {
+    if (!retryable || attempt >= PARSE_MAX_ATTEMPTS) return null;
+    return new Date(new Date(now).getTime() + backoffDelayMs(attempt));
+}
 
 export function hashResumeContent(buffer) {
     return createHash("sha256").update(buffer).digest("hex");
@@ -99,6 +131,17 @@ export function decideParse({ priorAttempt = null, contentHash, now = new Date()
         return { action: "SKIP", attempt: priorAttempt.attemptCount, waitMs: 0, reason: "CACHE_HIT" };
     }
 
+    const at = (now instanceof Date ? now : new Date(now)).getTime();
+
+    // Phase 2 — a RUNNING row whose lease has not expired is an attempt in
+    // flight (the worker or another request): wait for it, do not race it.
+    if (priorAttempt.status === "RUNNING" && priorAttempt.claimExpiresAt) {
+        const leaseLeft = new Date(priorAttempt.claimExpiresAt).getTime() - at;
+        if (leaseLeft > 0) {
+            return { action: "RETRY_LATER", attempt: (priorAttempt.attemptCount ?? 0) + 1, waitMs: leaseLeft, reason: "IN_PROGRESS" };
+        }
+    }
+
     // FAILED (or a stuck RUNNING row past its lease — treated as failed).
     const attempt = (priorAttempt.attemptCount ?? 0) + 1;
     if (attempt > PARSE_MAX_ATTEMPTS) {
@@ -111,11 +154,17 @@ export function decideParse({ priorAttempt = null, contentHash, now = new Date()
         return { action: "EXHAUSTED", attempt, waitMs: 0, reason: "NON_RETRYABLE" };
     }
 
-    const waitMs = backoffDelayMs(priorAttempt.attemptCount ?? 1);
-    const sinceLast = now instanceof Date ? now : new Date(now);
-    const elapsed = sinceLast.getTime() - new Date(priorAttempt.updatedAt ?? priorAttempt.startedAt ?? 0).getTime();
-    if (elapsed < waitMs) {
-        return { action: "RETRY_LATER", attempt, waitMs: waitMs - elapsed, reason: "BACKOFF" };
+    // Phase 2 — a scheduled retry (nextAttemptAt) is the authority on when it
+    // is due; older rows without one fall back to backoff since the last write.
+    if (priorAttempt.nextAttemptAt) {
+        const due = new Date(priorAttempt.nextAttemptAt).getTime() - at;
+        if (due > 0) return { action: "RETRY_LATER", attempt, waitMs: due, reason: "BACKOFF" };
+    } else {
+        const waitMs = backoffDelayMs(priorAttempt.attemptCount ?? 1);
+        const elapsed = at - new Date(priorAttempt.updatedAt ?? priorAttempt.startedAt ?? 0).getTime();
+        if (elapsed < waitMs) {
+            return { action: "RETRY_LATER", attempt, waitMs: waitMs - elapsed, reason: "BACKOFF" };
+        }
     }
 
     return { action: "RETRY", attempt, waitMs: 0, reason: priorAttempt.status === "RUNNING" ? "STALE_LEASE" : "PRIOR_FAILURE" };

@@ -6,8 +6,8 @@
 //     RETRY within the three-attempt ceiling, exponential backoff timing,
 //     non-retryable failure classification, EXHAUSTED at the ceiling
 //   * the service wrapper: a cache hit returns the stored payload without a
-//     second vendor call; force re-parse resets ONE content's row; the loop
-//     retries transient failures and stops on permanent ones
+//     second vendor call; force re-parse resets ONE content's row; (Phase 2)
+//     one attempt per call, the retry is scheduled, not slept
 //   * the candidate projection: COMPLETED stamps the row; a parse failure
 //     stamps FAILED without hiding the original error
 
@@ -97,6 +97,39 @@ describe("parseRetry pure policy (§4.5a)", () => {
         expect(isRetryableFailure(null)).toBe(false);
     });
 
+    it("waits for a RUNNING row whose lease is live (an attempt in flight)", () => {
+        const now = new Date("2026-10-20T10:00:00Z");
+        const d = decideParse({
+            priorAttempt: { contentHash: "abc", status: "RUNNING", attemptCount: 1, claimExpiresAt: new Date("2026-10-20T10:01:00Z"), updatedAt: now },
+            contentHash: "abc",
+            now,
+        });
+        expect(d).toMatchObject({ action: "RETRY_LATER", reason: "IN_PROGRESS", waitMs: 60000 });
+    });
+
+    it("uses a scheduled nextAttemptAt as the authority on when a retry is due", () => {
+        const now = new Date("2026-10-20T10:00:00Z");
+        const base = { contentHash: "abc", status: "FAILED", attemptCount: 1, lastError: "502", updatedAt: new Date("2026-10-20T09:00:00Z") };
+        expect(decideParse({ priorAttempt: { ...base, nextAttemptAt: new Date("2026-10-20T10:00:05Z") }, contentHash: "abc", now }))
+            .toMatchObject({ action: "RETRY_LATER", waitMs: 5000 });
+        expect(decideParse({ priorAttempt: { ...base, nextAttemptAt: new Date("2026-10-20T09:59:59Z") }, contentHash: "abc", now }))
+            .toMatchObject({ action: "RETRY", attempt: 2 });
+    });
+
+    it("schedules the next attempt with the backoff, and none at the ceiling or for a permanent failure", async () => {
+        const { nextAttemptAfterFailure, lastErrorCode, parseTicketHash, isParseTicket } = await import("../../src/lib/parseRetry.js");
+        const now = new Date("2026-10-20T10:00:00Z");
+        expect(nextAttemptAfterFailure({ attempt: 1, retryable: true, now })).toEqual(new Date("2026-10-20T10:00:01Z"));
+        expect(nextAttemptAfterFailure({ attempt: 2, retryable: true, now })).toEqual(new Date("2026-10-20T10:00:04Z"));
+        expect(nextAttemptAfterFailure({ attempt: 3, retryable: true, now })).toBeNull();
+        expect(nextAttemptAfterFailure({ attempt: 1, retryable: false, now })).toBeNull();
+        expect(lastErrorCode("HR-RESUME-PLANE-FAILED AI plane parse failed: x")).toBe("HR-RESUME-PLANE-FAILED");
+        expect(lastErrorCode("502 bad gateway")).toBeNull();
+        expect(parseTicketHash(7, 9)).toBe("pending:c7:m9");
+        expect(isParseTicket({ contentHash: "pending:c7:m9" })).toBe(true);
+        expect(isParseTicket({ contentHash: hash("x") })).toBe(false);
+    });
+
     it("treats a stuck RUNNING row as retryable only if its last error was", () => {
         expect(storedErrorIsRetryable("HR-RESUME-NO-KEY not configured")).toBe(false);
         expect(storedErrorIsRetryable("502 bad gateway")).toBe(true);
@@ -119,10 +152,12 @@ const prisma = {
         findUnique: jest.fn(),
         upsert: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(async () => ({ count: 1 })),
         delete: jest.fn(),
     },
-    candidate: { findUnique: jest.fn(), update: jest.fn() },
+    candidate: { findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn(async () => ({ count: 1 })) },
     candidateSkill: { upsert: jest.fn(async () => ({})) },
+    outboxEvent: { create: jest.fn(async () => ({})) },
 };
 const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 const downloadDamAssetBuffer = jest.fn();
@@ -130,6 +165,9 @@ const downloadDamAssetBuffer = jest.fn();
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/lib/logger.js", () => ({ default: logger }));
 jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({ downloadDamAssetBuffer }));
+jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({ tenantTransaction: async (client, fn) => await fn(client) }));
+const enqueueHrDomainEvent = jest.fn(async () => ({}));
+jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 
 const resumeService = await import("../../src/services/resumeParsing.service.js");
 
@@ -203,10 +241,7 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
             .mockResolvedValueOnce(completedRow(content)) // the force probe
             .mockResolvedValue(null); // after reset: no prior row
         prisma.resumeParseAttempt.delete.mockResolvedValue({});
-        prisma.resumeParseAttempt.upsert.mockResolvedValue({ id: 3, attemptCount: 1 });
-        prisma.resumeParseAttempt.update
-            .mockResolvedValueOnce({}) // RUNNING
-            .mockResolvedValueOnce({}); // COMPLETED
+        prisma.resumeParseAttempt.upsert.mockResolvedValue({ id: 3, attemptCount: 0, status: "RUNNING" });
 
         // Extract + vendor parse are the slow parts; stub the whole parse by
         // giving text that is too short → parseResumeText returns an empty-but-
@@ -216,6 +251,11 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
         expect(prisma.resumeParseAttempt.delete).toHaveBeenCalledWith({ where: { id: 1 } });
         expect(result.fromCache).toBe(false);
         expect(result.warning).toMatch(/empty or too short/);
+        // RUNNING (attempt 1) then COMPLETED, both guarded by this request's claim.
+        const writes = prisma.resumeParseAttempt.updateMany.mock.calls.map(([args]) => args);
+        expect(writes.map((w) => w.data.status)).toEqual(["RUNNING", "COMPLETED"]);
+        expect(writes[0].data.attemptCount).toBe(1);
+        expect(writes[0].where.claimedBy).toMatch(/^request:/);
     });
 
     it("throws EXHAUSTED (429) when the ceiling is already spent", async () => {
@@ -240,15 +280,16 @@ describe("ingestCandidateResume parse-state projection (§4.5a)", () => {
 
     it("stamps COMPLETED + parsedAt on a successful parse", async () => {
         const content = "enough resume text to matter for the projection test";
-        prisma.candidate.findUnique.mockResolvedValue({ id: 5, tenantId: "t-1", resumeMediaId: 88 });
+        prisma.candidate.findFirst.mockResolvedValue({ id: 5, tenantId: "t-1", resumeMediaId: 88 });
         downloadDamAssetBuffer.mockResolvedValue(damPayload(content));
         prisma.resumeParseAttempt.findUnique.mockResolvedValue(completedRow(content));
 
         await resumeService.ingestCandidateResume({ candidateId: 5, tenantId: "t-1" });
 
-        expect(prisma.candidate.update).toHaveBeenCalledWith(
+        expect(prisma.candidate.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 5, tenantId: "t-1" } }));
+        expect(prisma.candidate.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: { id: 5 },
+                where: { id: 5, tenantId: "t-1" },
                 data: expect.objectContaining({ parseStatus: "COMPLETED", parseError: null }),
             }),
         );
@@ -256,7 +297,7 @@ describe("ingestCandidateResume parse-state projection (§4.5a)", () => {
 
     it("stamps FAILED without swallowing the error when attempts exhaust", async () => {
         const content = "exhausted content";
-        prisma.candidate.findUnique.mockResolvedValue({ id: 5, tenantId: "t-1", resumeMediaId: 88 });
+        prisma.candidate.findFirst.mockResolvedValue({ id: 5, tenantId: "t-1", resumeMediaId: 88 });
         downloadDamAssetBuffer.mockResolvedValue(damPayload(content));
         prisma.resumeParseAttempt.findUnique.mockResolvedValue(
             completedRow(content, { status: "FAILED", attemptCount: 3, lastError: "502" }),
@@ -266,9 +307,11 @@ describe("ingestCandidateResume parse-state projection (§4.5a)", () => {
             resumeService.ingestCandidateResume({ candidateId: 5, tenantId: "t-1" }),
         ).rejects.toMatchObject({ code: "HR-RESUME-ATTEMPTS-EXHAUSTED" });
 
-        expect(prisma.candidate.update).toHaveBeenCalledWith(
+        // Phase 2 — the ceiling is its own candidate-facing state.
+        expect(prisma.candidate.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({
-                data: expect.objectContaining({ parseStatus: "FAILED", parseError: expect.stringContaining("attempts") }),
+                where: { id: 5, tenantId: "t-1" },
+                data: expect.objectContaining({ parseStatus: "EXHAUSTED", parseError: expect.stringContaining("attempts") }),
             }),
         );
     });

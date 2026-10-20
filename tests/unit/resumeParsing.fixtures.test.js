@@ -52,6 +52,8 @@ const prisma = {
         findUnique: jest.fn(async () => null), // first parse, no ledger history
         upsert: jest.fn(async ({ where, create }) => ({ id: 1, ...create })),
         update: jest.fn(async ({ data }) => ({ id: 1, ...data })),
+        // Phase 2 — attempt writes are guarded by the claim token (updateMany).
+        updateMany: jest.fn(async () => ({ count: 1 })),
         delete: jest.fn(async () => ({})),
     },
     aiInferenceRecord: { create: jest.fn(async (args) => ({ id: 1, ...args.data ?? args })) },
@@ -84,7 +86,7 @@ const runAiTask = jest.fn(async ({ input }) => ({
     },
 }));
 
-jest.unstable_mockModule("../../src/lib/aiPlaneClient.js", () => ({ runAiTask }));
+jest.unstable_mockModule("../../src/lib/aiPlaneClient.js", () => ({ runAiTask, collectAiResult: jest.fn() }));
 
 const { parseResumeWithRetry } = await import("../../src/services/resumeParsing.service.js");
 const { hashResumeContent } = await import("../../src/lib/parseRetry.js");
