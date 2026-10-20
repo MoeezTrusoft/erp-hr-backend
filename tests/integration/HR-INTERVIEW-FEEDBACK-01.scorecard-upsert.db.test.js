@@ -56,7 +56,16 @@ const made = { interviews: [], applications: [], candidates: [], requisitions: [
 async function seedInterview(tenantId) {
     return asSystem(async () => {
         const reviewer = await prisma.employee.create({
-            data: { tenant_id: tenantId, first_name: 'Rev', last_name: 'Iewer', status: 'active' },
+            // employee_code is NOT NULL and unique per tenant on main; a random
+            // fixture code keeps repeated runs from colliding.
+            data: {
+                tenant_id: tenantId,
+                first_name: 'Rev',
+                last_name: 'Iewer',
+                status: 'active',
+                employeeCategory: 'EMPLOYEE',
+                employee_code: `T-${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
+            },
         });
         const requisition = await prisma.jobRequisition.create({
             data: { tenantId, title: 'HR-INTERVIEW-FEEDBACK-01 role', requestedById: reviewer.id },
