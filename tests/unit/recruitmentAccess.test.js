@@ -84,15 +84,31 @@ describe("resolveRecruitmentScope", () => {
         expect(resolveRecruitmentScope(user(["INTERVIEWER", "HIRING_MANAGER"])).level).toBe(RECRUITMENT_SCOPE.MANAGED);
     });
 
-    it("cannot narrow a scoped role without an employee id to scope by", () => {
-        // Nothing to filter on: a manager with no employee link keeps the prior
-        // (org-wide) behaviour rather than silently seeing zero rows.
-        expect(resolveRecruitmentScope({ roles: ["HIRING_MANAGER"] }).level).toBe(RECRUITMENT_SCOPE.ORG);
+    it("gives a manager or interviewer claim without an employee id no rows", () => {
+        // Nothing to narrow by, so nothing is visible (Phase 6: never org-wide).
+        expect(resolveRecruitmentScope({ roles: ["HIRING_MANAGER"] }).level).toBe(RECRUITMENT_SCOPE.NONE);
+        expect(resolveRecruitmentScope({ roles: ["INTERVIEWER"] }).level).toBe(RECRUITMENT_SCOPE.NONE);
     });
 
-    it("falls back to org-wide for an unrecognised role vocabulary", () => {
-        expect(resolveRecruitmentScope(user(["SOMETHING_NEW"])).level).toBe(RECRUITMENT_SCOPE.ORG);
-        expect(resolveRecruitmentScope(user([])).level).toBe(RECRUITMENT_SCOPE.ORG);
+    it("gives an unrecognised role vocabulary no rows and no writes", () => {
+        for (const roles of [["SOMETHING_NEW"], [], ["EMPLOYEE"]]) {
+            const scope = resolveRecruitmentScope(user(roles));
+            expect(scope).toMatchObject({
+                level: RECRUITMENT_SCOPE.NONE,
+                unrestricted: false,
+                canSeeInternalNotes: false,
+                canSeeRequisitions: false,
+                canSeeCompensation: false,
+                canSeeCandidates: false,
+            });
+            const none = { id: { in: [] } };
+            expect(requisitionScopeWhere(scope)).toEqual(none);
+            expect(interviewScopeWhere(scope)).toEqual(none);
+            expect(candidateScopeWhere(scope)).toEqual(none);
+            expect(offerScopeWhere(scope)).toEqual(none);
+        }
+        // An admin claim still decides on its own.
+        expect(resolveRecruitmentScope({ roles: ["SOMETHING_NEW"], isAdmin: true }).level).toBe(RECRUITMENT_SCOPE.ORG);
     });
 });
 

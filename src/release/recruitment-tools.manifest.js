@@ -513,12 +513,13 @@ export function recruitmentGatewayToolMap() {
 //
 // Read this before seeding:
 //   * The permission opens the SURFACE; the role claim cuts the ROWS. A role
-//     claim the row-scope library does not know resolves to ORG (the whole
-//     tenant, recruitmentAccess.js choice 1). So hr:recruitment must only ever
-//     be granted to a role whose claim is in that vocabulary (scope below is
-//     not null). IT staff and plain employees get NO hr:recruitment.
+//     claim the row-scope library does not know resolves to NONE (no rows, no
+//     writes; recruitmentAccess.js choice 1), so a role RBAC grants
+//     hr:recruitment must carry a claim in that vocabulary (scope below is not
+//     null) or it sees nothing. IT staff and plain employees get NO
+//     hr:recruitment.
 //   * MANAGED and ASSIGNED need the employeeId claim: without it a hiring
-//     manager or interviewer claim falls through to ORG. The gateway must mint
+//     manager or interviewer claim resolves to NONE. The gateway must mint
 //     employeeId for every staff login.
 //   * The matrix's "HR admin only" lines (privacy operations, administration)
 //     are not separable by key today: those tools assert hr:recruitment like

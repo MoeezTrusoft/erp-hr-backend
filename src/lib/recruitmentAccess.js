@@ -26,15 +26,19 @@
 //   ASSESSMENT reception and assessment authors / reviewers (Phase 3b) — NO
 //             recruitment rows at all; their reach is the on-site assessment
 //             tools, which check src/lib/assessment-access.util.js instead.
+//   NONE      every other caller: a role claim this module does not know, and
+//             a manager or interviewer claim without an employee id. NO rows,
+//             no writes (Phase 6).
 //
 // Two deliberate choices:
 //
-//  1. UNKNOWN ROLES FALL BACK TO ORG, not to "no rows". F-02 has ALREADY decided
-//     the caller may use the hr:recruitment surface, and this service does not own
-//     the tenant's full role vocabulary. Denying rows to a role we simply do not
-//     recognise would take recruiting offline for every unfamiliar vocabulary
-//     while adding no security — an unrecognised role is not the threat model;
-//     a known manager reading someone else's requisition is.
+//  1. UNKNOWN ROLES SEE NOTHING (Phase 6 decision; plan section 14). Who may
+//     use the hr:recruitment surface and with which role is decided by RBAC,
+//     which issues the role claims; a claim this module does not recognise is
+//     not evidence of HR or recruiter standing, so it resolves to NONE, never
+//     to the organisation-wide view. A manager or interviewer claim without an
+//     employee id cannot be narrowed to its own rows, so it resolves to NONE
+//     too. New role names are added to the lists below, not inferred.
 //  2. Out-of-scope reads return NOT FOUND (404 / empty), never 403. Telling a
 //     hiring manager "forbidden" on an id they guessed confirms the row exists.
 //
@@ -51,6 +55,7 @@ export const RECRUITMENT_SCOPE = Object.freeze({
     FINANCE: "FINANCE",
     AGENCY: "AGENCY",
     ASSESSMENT: "ASSESSMENT",
+    NONE: "NONE",
 });
 
 // Roles that grant the organisation-wide view of recruitment.
@@ -145,9 +150,9 @@ export function resolveRecruitmentScope(user) {
                     : hasAny(roles, MANAGED_ROLES) && employeeId ? RECRUITMENT_SCOPE.MANAGED
                         : hasAny(roles, ASSIGNED_ROLES) && employeeId ? RECRUITMENT_SCOPE.ASSIGNED
                             : hasAny(roles, ASSESSMENT_ONLY_ROLES) ? RECRUITMENT_SCOPE.ASSESSMENT
-                            // Unknown or employee-only vocabulary: F-02 already granted the
-                            // surface, so do not invent a narrower rule than the tenant has.
-                            : RECRUITMENT_SCOPE.ORG;
+                            // Unknown or employee-only vocabulary, or a manager or
+                            // interviewer claim with no employee id: no rows (see header).
+                            : RECRUITMENT_SCOPE.NONE;
 
     const unrestricted = level === RECRUITMENT_SCOPE.ORG;
 
@@ -157,9 +162,11 @@ export function resolveRecruitmentScope(user) {
         unrestricted,
         canSeeInternalNotes: level === RECRUITMENT_SCOPE.ORG || level === RECRUITMENT_SCOPE.MANAGED,
         canSeeRequisitions:
-            level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.AGENCY && level !== RECRUITMENT_SCOPE.ASSESSMENT,
+            level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.AGENCY && level !== RECRUITMENT_SCOPE.ASSESSMENT
+            && level !== RECRUITMENT_SCOPE.NONE,
         canSeeCompensation: level === RECRUITMENT_SCOPE.ORG || level === RECRUITMENT_SCOPE.FINANCE,
-        canSeeCandidates: level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.ASSESSMENT,
+        canSeeCandidates:
+            level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.ASSESSMENT && level !== RECRUITMENT_SCOPE.NONE,
     };
     if (level !== RECRUITMENT_SCOPE.AGENCY) return scope;
 
@@ -364,7 +371,8 @@ export function attachmentAudience(scope) {
 
 /** Rows of `requisition_attachments` the caller may read. */
 export function requisitionAttachmentScopeWhere(scope) {
-    if (scope === RECRUITMENT_SCOPE.AGENCY) return { id: { in: [] } }; // no requisition view at all
+    // No requisition view at all for an agency or an unrecognised caller.
+    if (scope === RECRUITMENT_SCOPE.AGENCY || scope === RECRUITMENT_SCOPE.NONE) return { id: { in: [] } };
     return attachmentAudience(scope) === "INTERNAL" ? {} : { visibility: "HIRING_TEAM" };
 }
 

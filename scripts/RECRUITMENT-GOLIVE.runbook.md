@@ -126,10 +126,11 @@ Owner notes:
   onboarding screens and skills tools are `RECRUITMENT_LEGACY_TOOLS` and keep
   their existing entries. The gateway's own exposure test must list the same
   names.
-- **RBAC**: grant `hr:recruitment` only to roles whose claim the row-scope
-  library knows (scope not null in the table): any other claim resolves to the
-  whole tenant. Mint `employeeId` for every staff login (hiring manager and
-  interviewer scopes need it). The privacy and administration tools share
+- **RBAC**: RBAC issues the role claims and grants. Grant `hr:recruitment`
+  only to roles whose claim the row-scope library knows (scope not null in the
+  table): any other claim resolves to NONE and sees no recruitment rows. Mint
+  `employeeId` for every staff login (without it a hiring manager or
+  interviewer claim also sees nothing). The privacy and administration tools share
   `hr:recruitment` with the recruiter's tools today (open decision: a dedicated
   resource if the "HR admin only" line must be enforced by key).
 - **Notification Hub**: candidates are reached only through the

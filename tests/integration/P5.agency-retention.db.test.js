@@ -230,6 +230,29 @@ describe('Phase 5 exit gate: an agency user sees only its own rows', () => {
     }, 60_000);
 });
 
+describe('Phase 6 decision: an unrecognised role sees no recruitment rows', () => {
+    it('an unknown role claim, and a manager claim without an employee id, read nothing', async () => {
+        if (!ready) return;
+        for (const user of [
+            { userId: 'p6-unknown', roles: ['SOMETHING_NEW'], employeeId: null, tenantId: TENANT, isAdmin: false },
+            { userId: 'p6-manager', roles: ['HIRING_MANAGER'], employeeId: null, tenantId: TENANT, isAdmin: false },
+        ]) {
+            const scope = resolveRecruitmentScope(user);
+            expect(scope.level).toBe('NONE');
+            const seen = await mcpCtx.run({ user, permissions: AGENCY_PERMS }, async () => ({
+                apps: await listApplications({ tenantId: TENANT, scope, limit: 100 }),
+                app: await getApplication({ id: W.appInternal.id, tenantId: TENANT, scope }),
+                cands: await listCandidates({ tenantId: TENANT, scope, limit: 100 }),
+                cand: await getCandidate({ id: W.cInternal.id, tenantId: TENANT, scope }),
+            }));
+            expect(seen.apps.items).toEqual([]);
+            expect(seen.app).toBeNull();
+            expect(seen.cands.items ?? seen.cands.data ?? seen.cands).toEqual([]);
+            expect(seen.cand).toBeNull();
+        }
+    }, 60_000);
+});
+
 describe('Phase 5 exit gate: retention apply stays off until a signed-off dry-run', () => {
     const admin = () => ({ employeeId: W.owner.id, roles: ['HR_ADMIN'], isAdmin: true, tenantId: RETENTION_TENANT });
     const ORG = resolveRecruitmentScope({ roles: ['HR_ADMIN'] });

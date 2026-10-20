@@ -35,8 +35,8 @@ describe("assessment-only roles in the recruitment scope", () => {
             .toBe(RECRUITMENT_SCOPE.MANAGED);
     });
 
-    it("an unknown role still falls back to ORG, as before", () => {
-        expect(resolveRecruitmentScope({ roles: ["SOMETHING_NEW"] }).level).toBe(RECRUITMENT_SCOPE.ORG);
+    it("an unknown role sees no recruitment rows (Phase 6)", () => {
+        expect(resolveRecruitmentScope({ roles: ["SOMETHING_NEW"] }).level).toBe(RECRUITMENT_SCOPE.NONE);
     });
 });
 

@@ -265,23 +265,23 @@ describe("recruitment RBAC role table", () => {
         for (const [, def] of roles) {
             for (const claim of def.claims) {
                 const level = resolveRecruitmentScope({ roles: [claim], employeeId: 4242, tenantId: TENANT }).level;
-                // scope null = not a recruitment role: the library falls back
-                // to ORG for it, which is why such a role holds no hr:recruitment.
-                expect({ claim, level }).toEqual({ claim, level: def.scope ?? "ORG" });
+                // scope null = not a recruitment role: the library resolves it
+                // to NONE (no rows), and such a role holds no hr:recruitment.
+                expect({ claim, level }).toEqual({ claim, level: def.scope ?? "NONE" });
             }
         }
     });
 
-    it("a role outside the recruitment vocabulary never holds hr:recruitment (it would read the whole tenant)", () => {
+    it("a role outside the recruitment vocabulary never holds hr:recruitment (it would see nothing)", () => {
         for (const [, def] of roles.filter(([, d]) => d.scope === null)) {
             expect(def.grants.some((g) => g.resource === RECRUITMENT_RESOURCES.RECRUITMENT)).toBe(false);
         }
     });
 
-    it("MANAGED and ASSIGNED claims need the employeeId claim, or they resolve to ORG", () => {
+    it("MANAGED and ASSIGNED claims need the employeeId claim, or they see nothing", () => {
         // Pinned so the runbook's "mint employeeId for every staff login" stays true.
-        expect(resolveRecruitmentScope({ roles: ["HIRING_MANAGER"], tenantId: TENANT }).level).toBe("ORG");
-        expect(resolveRecruitmentScope({ roles: ["INTERVIEWER"], tenantId: TENANT }).level).toBe("ORG");
+        expect(resolveRecruitmentScope({ roles: ["HIRING_MANAGER"], tenantId: TENANT }).level).toBe("NONE");
+        expect(resolveRecruitmentScope({ roles: ["INTERVIEWER"], tenantId: TENANT }).level).toBe("NONE");
     });
 
     it("agency logins hold only hr:recruitment_agency", () => {
