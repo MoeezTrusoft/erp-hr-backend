@@ -31,7 +31,7 @@ import {
     candidateScopeWhere,
 } from "../lib/recruitmentAccess.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
-import { PORTAL_STATUS_PATH } from "./candidateVerification.service.js";
+import { PORTAL_STATUS_REQUEST_PATH } from "./candidateVerification.service.js";
 import {
     getCommunicationTemplate,
     listCommunicationTemplateSummaries,
@@ -109,7 +109,7 @@ export function candidateCommunicationSuppressedEvent(row, ctx = {}, extra = {})
 /** The portal status page (no token: the candidate requests a fresh link there). */
 export function statusPageUrlFor(settings, env = process.env) {
     const base = String(settings?.portalBaseUrl || env.HR_PORTAL_BASE_URL || "").trim().replace(/\/+$/, "");
-    return base ? `${base}${PORTAL_STATUS_PATH}` : null;
+    return base ? `${base}${PORTAL_STATUS_REQUEST_PATH}` : null;
 }
 
 const APPLICATION_SELECT = Object.freeze({

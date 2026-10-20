@@ -40,7 +40,8 @@ const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
 
 export const DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days from last save
-export const PORTAL_DRAFT_PATH = "/public/candidates/draft";
+// The careers portal page that resumes a draft (the token alone identifies it).
+export const PORTAL_DRAFT_PATH = "/drafts/resume";
 
 const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
 const newToken = () => crypto.randomBytes(32).toString("base64url");
@@ -161,7 +162,7 @@ export const saveApplicationDraft = async ({ tenantId, requisitionId, email, fir
 
     // Fail-soft delivery after commit.
     const base = process.env.HR_PORTAL_BASE_URL || "";
-    const link = `${base}${PORTAL_DRAFT_PATH}?token=${token}&requisitionId=${reqId}`;
+    const link = `${base}${PORTAL_DRAFT_PATH}?token=${token}`;
     const send = await sendCandidateEmail({
         tenantId,
         email: address,

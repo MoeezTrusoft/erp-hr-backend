@@ -84,7 +84,7 @@ describe("buildData", () => {
             interviewers: [{ name: "Ali" }],
         },
         previousScheduledAt: "2026-11-01T10:00:00Z",
-        statusPageUrl: "https://careers.example.com/public/candidates/status",
+        statusPageUrl: "https://careers.example.com/status",
         personalNote: "Looking forward to it",
         reason: "MINIMUM_REQUIREMENTS_NOT_MET",
     };

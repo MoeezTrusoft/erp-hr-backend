@@ -33,8 +33,13 @@ const newToken = () => crypto.randomBytes(32).toString("base64url");
 
 export const EMAIL_VERIFICATION_PURPOSES = Object.freeze(["APPLY_VERIFICATION", "STATUS_LINK"]);
 
-export const PORTAL_VERIFY_PATH = "/public/candidates/verify-email";
-export const PORTAL_STATUS_PATH = "/public/candidates/status";
+// The careers portal PAGES the emailed links open (apps/careers-web routes),
+// not the /public API routes those pages call: a candidate's browser must land
+// on HTML, whatever origin the API is served from.
+export const PORTAL_VERIFY_PATH = "/verify";
+export const PORTAL_STATUS_PATH = "/status/view";
+// The page where a candidate asks for a fresh status link (no token).
+export const PORTAL_STATUS_REQUEST_PATH = "/status";
 
 /**
  * §3.2 — mint a verification token for the candidate's email. TX-SCOPED and

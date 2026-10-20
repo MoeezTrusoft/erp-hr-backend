@@ -111,7 +111,7 @@ describe("Phase 5 / FR-04.07 — saving a draft", () => {
         expect(created.expiresAt.getTime()).toBeGreaterThan(NOW + 29 * 24 * 3600 * 1000);
         // The email carries the RAW token; the row never does.
         const url = sendCandidateEmail.mock.calls[0][0].data.draftUrl;
-        expect(url).toContain("/public/candidates/draft?token=");
+        expect(url).toContain("/drafts/resume?token=");
         expect(created.tokenHash).not.toBe(url);
     });
 

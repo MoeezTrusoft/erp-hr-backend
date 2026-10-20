@@ -21,7 +21,7 @@ jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", ()
 }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({
-    PORTAL_STATUS_PATH: "/public/candidates/status",
+    PORTAL_STATUS_REQUEST_PATH: "/status",
 }));
 
 const { runCandidateCommunicationDeliveryTick, deliveryBackoffMs, MAX_DELIVERY_ATTEMPTS } = await import(

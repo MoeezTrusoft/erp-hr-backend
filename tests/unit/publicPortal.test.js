@@ -259,7 +259,7 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
     const confirmation = sendCandidateEmail.mock.calls.find(
       (c) => c[0].templateId === "hr.recruitment.portal_application_confirmed",
     )[0];
-    expect(confirmation.data.statusUrl).toContain("/public/candidates/status?token=");
+    expect(confirmation.data.statusUrl).toContain("/status/view?token=");
     expect(confirmation.data.applicationRef).toBeTruthy();
   });
 

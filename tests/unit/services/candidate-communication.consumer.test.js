@@ -13,7 +13,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: logger }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
 jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({
-    PORTAL_STATUS_PATH: "/public/candidates/status",
+    PORTAL_STATUS_REQUEST_PATH: "/status",
 }));
 
 const {
@@ -104,7 +104,7 @@ describe("handleCandidateCommunicationEvent", () => {
             jobTitle: "Sales Lead",
             companyName: "Trusoft",
             candidateStatus: "CLOSED",
-            statusPageUrl: "https://careers.example.com/public/candidates/status",
+            statusPageUrl: "https://careers.example.com/status",
         });
         expect(JSON.stringify(row.data)).not.toMatch(/zoe@example|MINIMUM_REQUIREMENTS|rejected/);
         // Every query ran under the event's tenant (never SYSTEM, never none).

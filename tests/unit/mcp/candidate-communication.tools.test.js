@@ -12,7 +12,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: logger }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
 jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({
-    PORTAL_STATUS_PATH: "/public/candidates/status",
+    PORTAL_STATUS_REQUEST_PATH: "/status",
 }));
 
 const { registerCandidateCommunicationTools } = await import("../../../src/mcp/tools/candidate-communication.tools.js");
