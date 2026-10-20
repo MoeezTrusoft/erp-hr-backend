@@ -196,6 +196,20 @@ const RLS_MODELS = new Set([
     'CandidateLegalHold',
     'CandidateAnonymizationLog',
     'CandidateDataAccessRequest',
+    // Recruitment tables whose FORCE-RLS policies shipped in 20261021001600 and
+    // 20261021001700 without an entry here: ordinary reads of screenings, the
+    // shortlist, reason codes and the parse ledger ran with no GUC and read
+    // back empty under the hr_app role (the trap described above).
+    'ApplicationScreening',
+    'ShortlistEntry',
+    'DispositionReasonCode',
+    'ResumeParseAttempt',
+    // Recruitment Phase 2 (20261021003100) — NOT NULL tenant, FORCE RLS.
+    'TenantRecruitmentSettings',
+    'ScheduledDisposition',
+    'ApplicationScore',
+    'CandidateCommunication',
+    'CandidateDuplicateSuggestion',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

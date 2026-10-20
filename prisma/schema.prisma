@@ -3183,6 +3183,10 @@ model Candidate {
   applicationDrafts  ApplicationDraft[]
   // FR-10 residue — the invitation lifecycle rows.
   invitations        TalentPoolInvitation[]
+  // Phase 2 — the candidate communications log and duplicate suggestions.
+  communications        CandidateCommunication[]
+  duplicateSuggestionsA CandidateDuplicateSuggestion[] @relation("DuplicateCandidateA")
+  duplicateSuggestionsB CandidateDuplicateSuggestion[] @relation("DuplicateCandidateB")
 
   @@unique([tenantId, email])
   @@index([tenantId, status])
@@ -3238,6 +3242,17 @@ model Application {
   createdById       Int?
   appliedAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+  // Phase 2 — source attribution on intake: the channel the application came
+  // through (CAREER_SITE | LINKEDIN | INDEED | REFERRAL | AGENCY | TALENT_POOL |
+  // INTERNAL | RECRUITER | OTHER), the posting it answered when known, and a
+  // short campaign detail (utm_campaign or a feed reference; never PII).
+  sourceChannel     String?
+  sourcePostingId   Int?
+  sourceDetail      String?
+  // Phase 2 — deterministic answer total and the knockout outcome at intake.
+  answerScore       Int?
+  answerMaxScore    Int?
+  knockedOut        Boolean  @default(false)
 
   candidate      Candidate                 @relation(fields: [candidateId], references: [id])
   jobRequisition JobRequisition            @relation(fields: [jobRequisitionId], references: [id])
@@ -3249,6 +3264,10 @@ model Application {
   // Phase 6 / §4.1 + §4.3
   screenings ApplicationScreening[]
   shortlist  ShortlistEntry[]
+
+  // Phase 2 — delayed dispositions and the fit score.
+  scheduledDispositions ScheduledDisposition[]
+  score                 ApplicationScore?
 
   @@unique([candidateId, jobRequisitionId])
   @@index([candidateId])
@@ -3280,6 +3299,11 @@ model ApplicationQuestion {
   // scored question's ceiling is declared, not guessed. Null = unscored.
   weights       Json?
   maxScore      Int?
+  // Phase 2 — a knockout question disqualifies on a matching answer:
+  // knockoutRule is { values: [..] } for choice/BOOLEAN answers or
+  // { min, max } for NUMBER (an answer OUTSIDE the band knocks out).
+  knockout      Boolean  @default(false)
+  knockoutRule  Json?
   isActive      Boolean  @default(true)
   tenantId      String?  @db.Uuid
   createdAt     DateTime @default(now())
@@ -3303,6 +3327,7 @@ model ApplicationAnswer {
   questionId    Int
   value         Json? // string | number | boolean | string[] (multi) — null when skipped
   score         Int? // the deterministic score awarded; null when the question is unscored
+  knockedOut    Boolean  @default(false) // Phase 2 — this answer met the question's knockout rule
   answeredAt    DateTime @default(now())
 
   application Application         @relation(fields: [applicationId], references: [id], onDelete: Cascade)
@@ -3402,6 +3427,9 @@ model ShortlistEntry {
   note          String?
   addedById     Int?
   addedAt       DateTime @default(now())
+  // Phase 2 — MANUAL (a recruiter added it) | SCORING_PROPOSAL (a recruiter
+  // accepted the fit-score proposal).
+  source        String   @default("MANUAL")
 
   application Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])
@@ -3497,10 +3525,17 @@ model ResumeParseAttempt {
   tenantId     String?  @db.Uuid
   startedAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  // Phase 2 — the asynchronous parse worker: the candidate the result
+  // projects onto, when the next attempt is due, and the worker lease.
+  candidateId    Int?
+  nextAttemptAt  DateTime?
+  claimedBy      String?
+  claimExpiresAt DateTime?
 
   @@unique([tenantId, kind, contentHash])
   @@index([tenantId])
   @@index([status, updatedAt])
+  @@index([status, nextAttemptAt])
   @@map("resume_parse_attempts")
 }
 
@@ -6328,4 +6363,156 @@ model AttendanceAcceptanceEvidence {
   uploadedByCode String
   createdAt DateTime @default(now())
   @@index([tenantId, siteRef])
+}
+
+// ── Recruitment Phase 2 — intake and AI screening ──────────────────────────
+// Every Phase 2 table carries a NOT NULL tenant (FORCE RLS in
+// 20261021003100_recruitment_intake_screening): none of them has legacy
+// tenantless rows to keep writable.
+
+// One row per tenant; absent = defaults (the service returns them with
+// tenantId only). Read by the feed, the knockout and rejection delays, the
+// shortlist proposal and the communications delivery.
+model TenantRecruitmentSettings {
+  tenantId              String   @id @db.Uuid
+  // URL-free channels auto-publish uses; [] = the platform default (CAREER_SITE).
+  defaultChannels       String[] @default([])
+  // Hours a rejection notice waits before it is sent (recruiter can cancel).
+  rejectionDelayHours   Int      @default(48)
+  // Hours a knockout disposition waits before the application is rejected
+  // (reversible until then).
+  knockoutDelayHours    Int      @default(24)
+  // Fit score (0-100) at or above which an application is proposed for the
+  // shortlist, and the top share of a requisition's ranking proposed anyway.
+  shortlistThreshold    Int      @default(70)
+  shortlistTopPercent   Int      @default(10)
+  // Job board feed: off until the tenant opts in; the token is the feed URL's
+  // secret path segment (rotated by setting a new one).
+  feedEnabled           Boolean  @default(false)
+  feedToken             String?  @unique
+  // Employer facts the feed and the portal render.
+  companyName           String?
+  companyUrl            String?
+  companyLogoUrl        String?
+  portalBaseUrl         String?
+  version               Int      @default(1)
+  updatedById           Int?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("tenant_recruitment_settings")
+}
+
+// A disposition decided by the system but executed later, so a recruiter can
+// reverse it inside the window: today the knockout rejection
+// (MINIMUM_REQUIREMENTS_NOT_MET). One per application and source.
+model ScheduledDisposition {
+  id            Int       @id @default(autoincrement())
+  tenantId      String    @db.Uuid
+  applicationId Int
+  source        String // KNOCKOUT
+  reasonCode    String
+  status        String    @default("PENDING") // PENDING | EXECUTED | CANCELLED | FAILED
+  executeAt     DateTime
+  detail        Json? // { questionIds: [..] } — ids only, no answers
+  attempts      Int       @default(0)
+  lastError     String?
+  executedAt    DateTime?
+  cancelledAt   DateTime?
+  cancelledById Int?
+  cancelReason  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([applicationId, source])
+  @@index([status, executeAt])
+  @@index([tenantId])
+  @@map("scheduled_dispositions")
+}
+
+// The deterministic fit score of one application (latest computation). The
+// components carry each feature's contribution so the ranking is explainable;
+// no protected attribute is ever a feature.
+model ApplicationScore {
+  id                  Int       @id @default(autoincrement())
+  tenantId            String    @db.Uuid
+  applicationId       Int       @unique
+  requisitionId       Int
+  candidateId         Int
+  score               Float // 0-100
+  band                String // STRONG | GOOD | FAIR | WEAK
+  modelVersion        String
+  components          Json
+  inputsHash          String
+  shortlistProposedAt DateTime?
+  computedAt          DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, requisitionId, score])
+  @@map("application_scores")
+}
+
+// Every candidate-facing message the recruitment module sends or suppresses.
+// The dedupe key makes event-driven messages exactly-once per template; the
+// delivery loop claims due rows under a lease.
+model CandidateCommunication {
+  id               Int       @id @default(autoincrement())
+  tenantId         String    @db.Uuid
+  candidateId      Int
+  applicationId    Int?
+  requisitionId    Int?
+  eventId          String? // envelope id of the domain event that produced it
+  eventName        String?
+  templateId       String
+  channel          String    @default("email")
+  category         String // STATUS | INTERVIEW | OFFER | REJECTION | MANUAL
+  dedupeKey        String
+  status           String    @default("QUEUED") // QUEUED | SENT | SUPPRESSED | FAILED | CANCELLED
+  suppressedReason String? // DNC | CONSENT_WITHDRAWN | NO_EMAIL | ANONYMIZED | DISABLED
+  scheduledFor     DateTime  @default(now())
+  attempts         Int       @default(0)
+  nextAttemptAt    DateTime?
+  lastError        String?
+  claimedBy        String?
+  claimExpiresAt   DateTime?
+  sentAt           DateTime?
+  data             Json? // template variables — ids and display facts, never contact details
+  createdById      Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, dedupeKey])
+  @@index([status, scheduledFor])
+  @@index([tenantId, candidateId, createdAt])
+  @@map("candidate_communications")
+}
+
+// A pair of candidate rows that look like the same person. candidateAId is
+// always the lower id, so a pair is stored once.
+model CandidateDuplicateSuggestion {
+  id             Int       @id @default(autoincrement())
+  tenantId       String    @db.Uuid
+  candidateAId   Int
+  candidateBId   Int
+  score          Float
+  signals        Json // { email, phone, name, resumeHash } booleans — never the values
+  status         String    @default("OPEN") // OPEN | MERGED | DISMISSED
+  resolvedById   Int?
+  resolvedAt     DateTime?
+  resolutionNote String?
+  detectedAt     DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  candidateA Candidate @relation("DuplicateCandidateA", fields: [candidateAId], references: [id], onDelete: Cascade)
+  candidateB Candidate @relation("DuplicateCandidateB", fields: [candidateBId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, candidateAId, candidateBId])
+  @@index([tenantId, status])
+  @@map("candidate_duplicate_suggestions")
 }
