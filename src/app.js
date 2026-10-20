@@ -64,6 +64,7 @@ import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
 import publicPortalRoutes, { interviewSlotsRouter } from "./routes/publicPortal.routes.js";
 import { privacyPortalRouter } from "./routes/privacy-portal.routes.js";
+import { invitationResponseRouter } from "./routes/invitation-response.routes.js";
 import { jobFeedRouter } from "./routes/job-feed.routes.js";
 import { esignWebhookRouter } from "./routes/esign-webhook.routes.js";
 import { kioskRouter } from "./routes/kiosk.routes.js";
@@ -208,6 +209,9 @@ export const createApp = () => {
     // Recruitment Phase 5: data-subject requests filed from the careers portal
     // (HR_RECRUITMENT_DSR_PORTAL); every answer is neutral by construction.
     app.use("/public", privacyPortalRouter);
+    // Recruitment Phase 6: the candidate answers a talent pool invitation from
+    // the emailed link (HR_RECRUITMENT_INVITATION_LINKS); uniform answers.
+    app.use("/public", invitationResponseRouter);
     // Phase 3b — the on-site test kiosk. Outside the /api guard because a
     // kiosk browser cannot present a gateway service-JWT; the router checks
     // its own X-Kiosk-Token (workstation) and X-Kiosk-Session headers.

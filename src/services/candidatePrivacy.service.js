@@ -936,5 +936,10 @@ export async function listDataAccessRequests({ tenantId, status = null } = {}, o
   if (status) {
     where.status = requireEnum(status, Object.values(REQUEST_STATUS), "status", "HR-RECRUITMENT-DAR-STATUS-INVALID");
   }
-  return db.candidateDataAccessRequest.findMany({ where, orderBy: { receivedAt: "desc" } });
+  // Phase 6: the portal's verification token hash never leaves the service.
+  return db.candidateDataAccessRequest.findMany({
+    where,
+    orderBy: { receivedAt: "desc" },
+    omit: { verificationTokenHash: true },
+  });
 }

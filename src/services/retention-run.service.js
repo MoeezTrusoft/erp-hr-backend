@@ -35,6 +35,7 @@ import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { recordRetentionRun } from "../lib/recruitmentOpsMetrics.js";
 import { RECRUITMENT_SCOPE } from "../lib/recruitmentAccess.js";
 import {
     RETENTION_RUN_MODE,
@@ -206,6 +207,8 @@ export async function runTenantRetention({ tenantId, envMode, asOf, limit = 100 
         result = await applyRetention({ tenantId, asOf: at, dryRun: intendedMode !== RETENTION_RUN_MODE.APPLY, limit });
     } catch (err) {
         error = err;
+        // The page HrRecruitmentRetentionRunFailed watches this outcome.
+        recordRetentionRun("failed");
         log.error({ tenantId, intendedMode, errMessage: err?.message }, "retention run failed");
     }
 

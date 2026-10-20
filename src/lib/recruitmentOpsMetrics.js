@@ -37,6 +37,9 @@ const NOTIFY_EVENTS = Object.freeze([
     "requisition_submitted", "requisition_closed",
     // Portal candidate emails, counted once by the notification transport.
     "email_verification", "status_link", "application_confirmation", "mailbox_notice", "draft_link",
+    // Phase 5 events the go-live alert rules watch
+    // (observability/alerts/recruitment-golive.rules.yml).
+    "dsr_sla_at_risk", "agency_submission_received", "analytics_alert_raised",
 ]);
 const notifyEventLabel = (e) => (NOTIFY_EVENTS.includes(String(e)) ? String(e) : "other");
 
@@ -162,7 +165,7 @@ function retentionCounter() {
             client.register.getSingleMetric(RETENTION_METRIC) ||
             buildCounter(
                 RETENTION_METRIC,
-                "Retention runs, labeled by outcome (dry-run, applied, refused-flag, failed).",
+                "Retention runs, labeled by outcome (dry-run, applied, refused-flag, refused-tenant, failed).",
                 ["outcome"],
             );
     }

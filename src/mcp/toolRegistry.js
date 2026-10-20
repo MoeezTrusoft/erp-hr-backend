@@ -25,6 +25,7 @@ import { registerProfileActionTools } from "./tools/profileActionTools.js";
 import { registerRequisitionMgmtTools } from "./tools/requisitionMgmtTools.js";
 import { registerCandidatePipelineTools } from "./tools/candidatePipelineTools.js";
 import { registerInterviewMgmtTools } from "./tools/interviewMgmtTools.js";
+import { registerInterviewBulkCancelTools } from "./tools/interview-bulk-cancel.tools.js";
 import { registerOfferMgmtTools } from "./tools/offerMgmtTools.js";
 import { registerCandidatePrivacyTools } from "./tools/candidatePrivacyTools.js";
 import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
@@ -38,6 +39,7 @@ import { registerCandidateCommunicationTools } from "./tools/candidate-communica
 import { registerResumeParseStatusTools } from "./tools/resume-parse-status.tools.js";
 import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposition.tools.js";
 import { registerOfferLifecycleTools } from "./tools/offer-lifecycle.tools.js";
+import { registerOfferExtensionTools } from "./tools/offer-extension.tools.js";
 import { registerOfferLetterTools } from "./tools/offer-letter.tools.js";
 import { registerRecruitmentWorkspaceTools } from "./tools/recruitment-workspace.tools.js";
 import { registerInterviewSchedulingTools } from "./tools/interview-scheduling.tools.js";
@@ -45,6 +47,7 @@ import { registerTestBlueprintTools } from "./tools/test-blueprint.tools.js";
 import { registerTestWorkstationTools } from "./tools/test-workstation.tools.js";
 import { registerTestItemTools } from "./tools/test-item.tools.js";
 import { registerReceptionTools } from "./tools/reception.tools.js";
+import { registerKioskResumeTools } from "./tools/kiosk-resume.tools.js";
 import { registerTestResultTools } from "./tools/test-result.tools.js";
 import { registerEvaluationFormTools } from "./tools/evaluation-form.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
@@ -310,6 +313,8 @@ export function registerAllTools(server) {
   registerRequisitionMgmtTools(server);
   registerCandidatePipelineTools(server);
   registerInterviewMgmtTools(server);
+  // Phase 6 — bulk cancel with the same coded reason as a single cancel.
+  registerInterviewBulkCancelTools(server);
   registerOfferMgmtTools(server);
   registerTalentPoolMgmtTools(server);
   registerRecruitmentAnalyticsTools(server);
@@ -329,6 +334,8 @@ export function registerAllTools(server) {
   registerRecruitmentDispositionTools(server);
   // Phase 3a — offer decline capture, expiry extension and the grade band check.
   registerOfferLifecycleTools(server);
+  // Phase 6 — offer expiry extensions re-approved through the Approval Centre.
+  registerOfferExtensionTools(server);
   // Phase 3a — versioned offer letters and the e-signature round trip.
   registerOfferLetterTools(server);
   // Phase 3a — the interviewer and hiring manager workspaces.
@@ -340,6 +347,8 @@ export function registerAllTools(server) {
   registerTestWorkstationTools(server);
   registerTestItemTools(server);
   registerReceptionTools(server);
+  // Phase 6 — reception resumes a sitting after a kiosk crash.
+  registerKioskResumeTools(server);
   registerTestResultTools(server);
   registerEvaluationFormTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.

@@ -52,6 +52,9 @@ import { registerTestItemTools } from "../../../src/mcp/tools/test-item.tools.js
 import { registerReceptionTools } from "../../../src/mcp/tools/reception.tools.js";
 import { registerTestResultTools } from "../../../src/mcp/tools/test-result.tools.js";
 import { registerEvaluationFormTools } from "../../../src/mcp/tools/evaluation-form.tools.js";
+import { registerOfferExtensionTools } from "../../../src/mcp/tools/offer-extension.tools.js";
+import { registerKioskResumeTools } from "../../../src/mcp/tools/kiosk-resume.tools.js";
+import { registerInterviewBulkCancelTools } from "../../../src/mcp/tools/interview-bulk-cancel.tools.js";
 import { registerTalentNurtureTools } from "../../../src/mcp/tools/talent-nurture.tools.js";
 import { registerInternalBoardTools } from "../../../src/mcp/tools/internal-board.tools.js";
 import { registerInternalReferralTools } from "../../../src/mcp/tools/internal-referral.tools.js";
@@ -114,6 +117,10 @@ const RECRUITMENT_REGISTRARS = [
   ["agencyPortalTools", registerAgencyPortalTools],
   ["privacyOperationsTools", registerPrivacyOperationsTools],
   ["recruitmentAlertTools", registerRecruitmentAlertTools],
+  // Phase 6: offer extension re-approval, kiosk resume, bulk interview cancel.
+  ["offerExtensionTools", registerOfferExtensionTools],
+  ["kioskResumeTools", registerKioskResumeTools],
+  ["interviewBulkCancelTools", registerInterviewBulkCancelTools],
 ];
 
 function collect(register) {
@@ -144,11 +151,11 @@ const EXPECTED_PER_MODULE = Object.freeze({
   talentPoolMgmtTools: 8, // + the invitation lifecycle, segment and pool sweep (FR-10 residue)
   recruitmentAnalyticsTools: 3, // + hr_recruitment_analytics_drilldown (NFR-12)
   recruitmentExtraTools: 7, // + hr_candidate_merge (FR-04.10) + the 3 requisition attachment tools (§1.4 decision B2)
-  onboardingTemplateTools: 3, // FR-13 residue — list/set/deactivate
+  onboardingTemplateTools: 5, // FR-13 residue — list/set/deactivate; Phase 6: reactivate, default unset
   onboardingProvisioningTools: 3, // Phase 4: IT requests list, get, update
   onboardingSessionPlanTools: 3, // Phase 4: plan preview, invite re-sync, session delete
   onboardingReadinessTools: 3, // Phase 4: readiness get and list, survey completion
-  onboardingSelfTools: 8, // Phase 4: the new hire's portal (6) and HR document review (2)
+  onboardingSelfTools: 9, // Phase 4: the new hire's portal (6) and HR document review (2); Phase 6: own document download
   applicationTools: 15,
   resumeTools: 6,
   recruitmentSettingsTools: 3, // Phase 2: settings get/set + source report
@@ -174,6 +181,9 @@ const EXPECTED_PER_MODULE = Object.freeze({
   agencyPortalTools: 4, // Phase 5: the agency's own portal (AGENCY scope only)
   privacyOperationsTools: 6, // Phase 5: retention runs, sign-off, owner, data request export
   recruitmentAlertTools: 4, // Phase 5: analytics alert thresholds, list, acknowledge
+  offerExtensionTools: 2, // Phase 6: extension request get and withdraw
+  kioskResumeTools: 1, // Phase 6: resume code issue
+  interviewBulkCancelTools: 1, // Phase 6: bulk cancel with a coded reason
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -439,6 +449,14 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_recruitment_alert_thresholds_set",
   "hr_recruitment_alerts_list",
   "hr_recruitment_alert_acknowledge",
+  // Phase 6.
+  "hr_onboarding_template_reactivate",
+  "hr_onboarding_template_default_unset",
+  "hr_self_onboarding_document_download",
+  "hr_offer_expiry_extension_get",
+  "hr_offer_expiry_extension_withdraw",
+  "hr_test_session_resume_code_issue",
+  "hr_interviews_cancel_bulk",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -487,7 +505,9 @@ describe("Recruitment MCP tool inventory", () => {
     // Phase 4: + 17 onboarding tools (provisioning, sessions, readiness, self portal).
     // Phase 5: + 36 tools (nurture, internal board and referrals,
     // agencies and their portal, privacy operations, analytics alerts).
-    expect(all).toHaveLength(835);
+    // Phase 6: + 7 tools (template reactivate and default unset, own document
+    // download, offer extension get and withdraw, kiosk resume code, bulk cancel).
+    expect(all).toHaveLength(842);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
