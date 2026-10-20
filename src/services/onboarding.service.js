@@ -23,6 +23,12 @@ import {
 // param; folded into onboarding reads and stamped on creates, fail-closed so
 // tenant B never reads/mutates tenant A's onboarding checklists/tasks/documents.
 
+// Recruitment Phase 6 — the profile embedded for the hire and the buddy. It no
+// longer carries the home address (current_address, city): every hr:onboarding
+// reader got it, and the screen showed it as the office. Checklist reads return
+// the WORK location instead (workLocation, below); the hire's home address is
+// added only for a caller who may read employee records (hr:employee VIEW),
+// and the buddy's never.
 const employeeSelect = {
     id: true,
     employee_name: true,
@@ -32,9 +38,59 @@ const employeeSelect = {
     joining_date: true,
     hire_date: true,
     photo_url: true,
-    current_address: true,
-    city: true,
 };
+
+const HOME_ADDRESS_SELECT = Object.freeze({ current_address: true, city: true });
+// Read for workLocation only and removed from the embedded profile again.
+const WORK_LOCATION_SELECT = Object.freeze({ work_mode: true, region: { select: { name: true } } });
+
+const hireSelect = (includeHomeAddress) => ({
+    ...employeeSelect,
+    ...WORK_LOCATION_SELECT,
+    ...(includeHomeAddress === true ? HOME_ADDRESS_SELECT : {}),
+});
+
+const cleanText = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
+
+/**
+ * Phase 6 — where the hire will work, for the checklist screens:
+ *   1. the requisition's location of the offer whose handoff created this
+ *      checklist (OfferHandoff.checklistId), else of the hire's latest handoff;
+ *   2. else the employee's region (Employee.region.name);
+ *   3. else null.
+ * workMode is Employee.work_mode (Remote | Onsite | Hybrid). Attaches
+ * `workLocation: { location, workMode, source: "REQUISITION" | "REGION" | null }`
+ * to each checklist and strips the helper columns from the embedded employee.
+ * Only checklists whose hire profile was loaded are resolved.
+ */
+async function withWorkLocation(checklists, tenantId) {
+    if (!Array.isArray(checklists)) return checklists;
+    const rows = checklists.filter((c) => c && c.employee);
+    if (!rows.length) return checklists;
+    const checklistIds = rows.map((c) => c.id);
+    const employeeIds = [...new Set(rows.map((c) => c.employeeId ?? c.employee.id).filter((v) => v != null))];
+    const handoffs = await prisma.offerHandoff.findMany({
+        where: scopedWhere(tenantId, { OR: [{ checklistId: { in: checklistIds } }, { employeeId: { in: employeeIds } }] }),
+        orderBy: [{ updated_at: "desc" }, { id: "desc" }],
+        select: { checklistId: true, employeeId: true, offer: { select: { jobRequisition: { select: { location: true } } } } },
+    });
+    const locationOf = (h) => cleanText(h?.offer?.jobRequisition?.location);
+    for (const checklist of rows) {
+        const employee = checklist.employee;
+        const own = handoffs.find((h) => h.checklistId === checklist.id && locationOf(h));
+        const latest = handoffs.find((h) => h.employeeId === (checklist.employeeId ?? employee.id) && locationOf(h));
+        const requisitionLocation = locationOf(own ?? latest);
+        const region = cleanText(employee.region?.name);
+        checklist.workLocation = {
+            location: requisitionLocation ?? region ?? null,
+            workMode: cleanText(employee.work_mode),
+            source: requisitionLocation ? "REQUISITION" : region ? "REGION" : null,
+        };
+        delete employee.region;
+        delete employee.work_mode;
+    }
+    return checklists;
+}
 
 const mapSurveyType = (value) => {
     const normalized = String(value || "DAY_30").toUpperCase().replace(/-/g, "_");
@@ -125,7 +181,10 @@ export const createChecklist = async ({ employeeId, title, templateId, template,
     });
 };
 
-export const listChecklists = async ({ page = 1, limit = 20, tenantId } = {}) => {
+// Phase 6: `includeHomeAddress` (the caller holds hr:employee VIEW; decided by
+// the controller / MCP layer, never by the client) adds the hire's
+// current_address and city; every read carries workLocation.
+export const listChecklists = async ({ page = 1, limit = 20, tenantId, includeHomeAddress = false } = {}) => {
     const skip = (page - 1) * limit;
     const where = scopedWhere(tenantId, {});
     const [items, total] = await Promise.all([
@@ -135,40 +194,44 @@ export const listChecklists = async ({ page = 1, limit = 20, tenantId } = {}) =>
             take: limit,
             orderBy: { created_at: "desc" },
             include: {
-                employee: { select: employeeSelect },
+                employee: { select: hireSelect(includeHomeAddress) },
                 tasks: { orderBy: { sortOrder: "asc" } },
                 buddy: { include: { buddy: { select: employeeSelect } } },
             },
         }),
         prisma.onboardingChecklist.count({ where }),
     ]);
-    return { items, total, page, limit };
+    return { items: await withWorkLocation(items, tenantId), total, page, limit };
 };
 
-export const getChecklist = async (id, tenantId) => {
-    return prisma.onboardingChecklist.findFirst({
+export const getChecklist = async (id, tenantId, { includeHomeAddress = false } = {}) => {
+    const checklist = await prisma.onboardingChecklist.findFirst({
         where: scopedWhere(tenantId, { id: Number(id) }),
         include: {
-            employee: { select: employeeSelect },
+            employee: { select: hireSelect(includeHomeAddress) },
             tasks: { orderBy: { sortOrder: "asc" } },
             documents: true,
             buddy: { include: { buddy: { select: employeeSelect } } },
             surveys: true,
         },
     });
+    if (!checklist) return checklist;
+    const [shaped] = await withWorkLocation([checklist], tenantId);
+    return shaped;
 };
 
-export const getChecklistByEmployee = async (employeeId, tenantId) => {
-    return prisma.onboardingChecklist.findMany({
+export const getChecklistByEmployee = async (employeeId, tenantId, { includeHomeAddress = false } = {}) => {
+    const checklists = await prisma.onboardingChecklist.findMany({
         where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
         include: {
-            employee: { select: employeeSelect },
+            employee: { select: hireSelect(includeHomeAddress) },
             tasks: { orderBy: { sortOrder: "asc" } },
             documents: true,
             buddy: { include: { buddy: { select: employeeSelect } } },
         },
         orderBy: { created_at: "desc" },
     });
+    return withWorkLocation(checklists, tenantId);
 };
 
 export const updateChecklist = async (id, data, tenantId, ctx = {}) => {

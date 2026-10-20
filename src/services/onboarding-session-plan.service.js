@@ -209,13 +209,21 @@ const WEEKDAYS = Object.freeze(["Sunday", "Monday", "Tuesday", "Wednesday", "Thu
  * the default template, a named one (templateId, active or not), or a draft
  * list (sessions) HR is about to save.
  */
-export async function previewOnboardingSessionPlan({ tenantId, startDate, templateId = null, sessions = undefined } = {}) {
+export async function previewOnboardingSessionPlan({ tenantId, startDate, templateId = null, sessions = undefined, baseline = false } = {}) {
     if (!tenantId) throw fail("Tenant context is required", 400, "HR-TENANT-REQUIRED");
     const start = DATE_RE.test(String(startDate ?? "")) ? toCalendarDate(startDate) : null;
     if (!start) throw fail("startDate must be a date (YYYY-MM-DD)", 400, "HR-ONBOARDING-SESSION-START-INVALID");
+    // Phase 6: baseline previews the built-in set, so it names no template
+    // and no draft (one source per preview, never a silent pick).
+    if (baseline === true && (templateId != null || (sessions !== undefined && sessions !== null))) {
+        throw fail("Preview the baseline, a template or a draft list, not more than one", 400, "HR-ONBOARDING-SESSION-PREVIEW-SOURCE");
+    }
 
     let plan;
-    if (sessions !== undefined && sessions !== null) {
+    if (baseline === true) {
+        // The built-in set, whatever the tenant's default template says.
+        plan = resolveSessionPlan(null);
+    } else if (sessions !== undefined && sessions !== null) {
         const verdict = validateTemplateSessions(sessions);
         if (!verdict.ok) {
             throw Object.assign(fail(`Invalid onboarding sessions: ${verdict.error}`, 422, "HR-ONBOARDING-TEMPLATE-INVALID"), {

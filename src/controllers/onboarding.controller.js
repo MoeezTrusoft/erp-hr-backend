@@ -1,5 +1,6 @@
 import * as svc from "../services/onboarding.service.js";
 import { respondServerError } from '../utils/httpError.js';
+import { hasPermission } from "../lib/assertPermission.js";
 
 // F-37 — onboarding WRITES run under the VERIFIED tenant (req.user.tenantId, set
 // from the signed service-JWT claim — never a header), like the recruitment
@@ -8,6 +9,10 @@ const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorCtx = (req) => ({ actorId: req.user?.employeeId ?? null });
 const tenantRequired = (res) => res.status(400).json({ success: false, message: "Tenant context is required" });
 const writeError = (res, e) => res.status(e.status || 400).json({ success: false, message: e.message, code: e.code });
+// Recruitment Phase 6 — checklist reads carry the hire's home address only for
+// a caller who may read employee records (the verified permission set, never a
+// client flag); everyone else gets the work location alone.
+const readOptions = (req) => ({ includeHomeAddress: hasPermission(req.user?.permissions, "hr:employee", "VIEW") });
 
 // ── Checklists ──────────────────────────────────────────────────────────────
 
@@ -25,7 +30,7 @@ export const createChecklist = async (req, res) => {
 export const listChecklists = async (req, res) => {
     try {
         const { page, limit } = req.query;
-        const result = await svc.listChecklists({ page: Number(page) || 1, limit: Number(limit) || 20 });
+        const result = await svc.listChecklists({ page: Number(page) || 1, limit: Number(limit) || 20, ...readOptions(req) });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
         respondServerError(req, res, e);
@@ -34,7 +39,7 @@ export const listChecklists = async (req, res) => {
 
 export const getChecklist = async (req, res) => {
     try {
-        const result = await svc.getChecklist(req.params.id);
+        const result = await svc.getChecklist(req.params.id, undefined, readOptions(req));
         if (!result) return res.status(404).json({ success: false, message: "Not found" });
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
@@ -44,7 +49,7 @@ export const getChecklist = async (req, res) => {
 
 export const getChecklistByEmployee = async (req, res) => {
     try {
-        const result = await svc.getChecklistByEmployee(req.params.employeeId);
+        const result = await svc.getChecklistByEmployee(req.params.employeeId, undefined, readOptions(req));
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
         res.status(400).json({ success: false, message: e.message });

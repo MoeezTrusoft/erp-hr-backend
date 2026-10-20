@@ -12,6 +12,11 @@
 // Recruitment Phase 4 — a template may also carry the orientation and
 // compliance `sessions` created on handoff. Optional on the set tool: omitted
 // leaves the stored list unchanged, null restores the baseline set.
+//
+// Recruitment Phase 6 — hr_onboarding_template_reactivate brings a deactivated
+// template back (optionally as the default), hr_onboarding_template_default_unset
+// stops using one as the default without deactivating it (new hires then get
+// the baseline). Both on the recruitment update grant, like the other writes.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -20,6 +25,8 @@ import {
   listTemplates,
   upsertTemplate,
   deactivateTemplate,
+  reactivateTemplate,
+  unsetDefaultTemplate,
 } from "../../services/onboardingTemplate.service.js";
 import { ONBOARDING_TASK_ASSIGNEES, ONBOARDING_TASK_STAGES } from "../../lib/onboardingDefaults.js";
 import { ONBOARDING_SESSION_ASSIGNEES, ONBOARDING_SESSION_TYPES } from "../../lib/onboarding-sessions.util.js";
@@ -109,5 +116,34 @@ export function registerOnboardingTemplateTools(server) {
       const data = await deactivateTemplate({ tenantId: user.tenantId, templateId });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
     }, "hr_onboarding_template_deactivate")
+  );
+
+  server.tool(
+    "hr_onboarding_template_reactivate",
+    "Reactivate a deactivated onboarding checklist template so it can be used again. It comes back as a plain active template; set makeDefault to also make it the tenant default (the previous default is cleared in the same transaction). Reactivating an active template changes nothing (changed false).",
+    {
+      templateId: z.string().min(1).describe("Template id; numeric string"),
+      makeDefault: z.coerce.boolean().optional().describe("Also promote it to the tenant default"),
+    },
+    withToolError(async ({ templateId, makeDefault }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await reactivateTemplate({ tenantId: user.tenantId, templateId, makeDefault: Boolean(makeDefault) });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_onboarding_template_reactivate")
+  );
+
+  server.tool(
+    "hr_onboarding_template_default_unset",
+    "Stop using an onboarding checklist template as the tenant default without deactivating it. With no default, newly provisioned hires get the documented baseline tasks and sessions. A template that is not the default changes nothing (changed false).",
+    {
+      templateId: z.string().min(1).describe("Template id; numeric string"),
+    },
+    withToolError(async ({ templateId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await unsetDefaultTemplate({ tenantId: user.tenantId, templateId });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
+    }, "hr_onboarding_template_default_unset")
   );
 }

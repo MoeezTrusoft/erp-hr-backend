@@ -8,7 +8,8 @@
 //     OnboardingChecklist.preboarding (Json). readyToCollect is DERIVED = every
 //     `readiness` + `itSetup` item is true.
 //   * feedback — persisted as an OnboardingSurvey row (responses = { ratings,
-//     comments }). SurveyType only carries DAY_30/DAY_60/DAY_90, so the "new
+//     comments }; the HR view also reads the flat question-id shape the self
+//     portal stores, see readSurveyAnswers). SurveyType only carries DAY_30/DAY_60/DAY_90, so the "new
 //     hire feedback" survey is stored under DAY_30 (the earliest touch-point);
 //     the [checklistId, type] unique means submit is an UPSERT (create/append).
 //   * notes / activity — appended to OnboardingChecklist.activityLog (Json
@@ -227,9 +228,65 @@ export const submitFeedback = async (input, tenantId) => {
   return created;
 };
 
+// Recruitment Phase 6 — survey answers come in two stored shapes, and the HR
+// view reads both (no data migration):
+//   * RATINGS: { ratings: { roleClarity, teamSupport, onboardingProcess },
+//     comments } — this service's submitFeedback;
+//   * FLAT: answers keyed by question id — the new hire's self portal
+//     (hr_self_onboarding_survey_submit) and the portal feedback form
+//     (hr_onboarding_survey_submit): q1_role_clarity, q2_team_support,
+//     q3_comments, q4_welcome_rating (DAY_30), q5_tools_ready (DAY_60),
+//     q6_settled_rating (DAY_90).
+// Each field is looked up under its RATINGS name first, then its question id
+// (inside `ratings` too, for a form that nested the flat keys).
+const SURVEY_FIELDS = Object.freeze({
+  roleClarity: "q1_role_clarity",
+  teamSupport: "q2_team_support",
+  onboardingProcess: null,
+  welcomeRating: "q4_welcome_rating",
+  toolsReady: "q5_tools_ready",
+  settledRating: "q6_settled_rating",
+});
+const COMMENTS_KEY = "q3_comments";
+
+const asObject = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+const present = (value) => value !== undefined && value !== null && value !== "";
+const firstPresent = (...values) => {
+  const hit = values.find(present);
+  return hit === undefined ? null : hit;
+};
+
+/**
+ * Normalise one stored survey `responses` blob (either shape) into the fields
+ * the HR feedback table shows. Exported for the tests.
+ * @param {unknown} stored
+ */
+export function readSurveyAnswers(stored) {
+  const responses = asObject(stored);
+  const ratings = asObject(responses.ratings);
+  const answers = {};
+  for (const [field, questionId] of Object.entries(SURVEY_FIELDS)) {
+    answers[field] = firstPresent(
+      ratings[field],
+      questionId ? ratings[questionId] : undefined,
+      questionId ? responses[questionId] : undefined,
+    );
+  }
+  const comments = firstPresent(
+    typeof responses.comments === "string" ? responses.comments : undefined,
+    responses[COMMENTS_KEY],
+    ratings[COMMENTS_KEY],
+  );
+  const nested = Object.keys(ratings).length > 0;
+  const flat = Object.keys(responses).some((key) => /^q\d+_/.test(key));
+  return { ...answers, comments, format: nested ? "RATINGS" : flat ? "FLAT" : null };
+}
+
 /**
  * Tool 4 — view feedback surveys for a checklist, shaped for the FE feedback
- * table. Reads every survey on the checklist and parses responses.ratings.
+ * table. Reads every answered survey on the checklist, in either stored shape
+ * (readSurveyAnswers); an issued survey with no answers yet is not feedback
+ * and is left out.
  * @param {number|string} checklistId
  * @param {string|null|undefined} tenantId
  */
@@ -251,7 +308,7 @@ export const viewFeedback = async (checklistId, tenantId) => {
       },
       surveys: {
         orderBy: { submittedAt: "desc" },
-        select: { responses: true, submittedAt: true },
+        select: { type: true, responses: true, submittedAt: true },
       },
     },
   });
@@ -260,19 +317,27 @@ export const viewFeedback = async (checklistId, tenantId) => {
   const candidate = employeeName(checklist.employee);
   const role = checklist.employee?.job_title ?? null;
 
-  return (checklist.surveys || []).map((survey) => {
-    const responses = survey.responses && typeof survey.responses === "object" ? survey.responses : {};
-    const ratings = responses.ratings && typeof responses.ratings === "object" ? responses.ratings : {};
-    return {
-      candidate,
-      role,
-      roleClarity: ratings.roleClarity ?? null,
-      teamSupport: ratings.teamSupport ?? null,
-      onboardingProcess: ratings.onboardingProcess ?? null,
-      additionalComments: responses.comments ?? null,
-      submittedAt: survey.submittedAt ?? null,
-    };
-  });
+  return (checklist.surveys || [])
+    .filter((survey) => Object.keys(asObject(survey.responses)).length > 0)
+    .map((survey) => {
+      const answers = readSurveyAnswers(survey.responses);
+      return {
+        candidate,
+        role,
+        roleClarity: answers.roleClarity,
+        teamSupport: answers.teamSupport,
+        onboardingProcess: answers.onboardingProcess,
+        additionalComments: answers.comments,
+        submittedAt: survey.submittedAt ?? null,
+        // Phase 6 — additive: which survey, the self portal's per-type
+        // questions, and the stored shape the row was read from.
+        surveyType: survey.type ?? null,
+        welcomeRating: answers.welcomeRating,
+        toolsReady: answers.toolsReady,
+        settledRating: answers.settledRating,
+        answerFormat: answers.format,
+      };
+    });
 };
 
 /**

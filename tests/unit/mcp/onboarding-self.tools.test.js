@@ -18,6 +18,7 @@ const reopenMyTask = jest.fn(async () => ({ changed: true }));
 const uploadMyDocument = jest.fn(async () => ({ document: { id: 1 } }));
 const signMyDocument = jest.fn(async () => ({ document: { id: 1 } }));
 const submitMySurvey = jest.fn(async () => ({ survey: { id: 1 } }));
+const downloadMyDocument = jest.fn(async () => ({ document: { id: 7 }, fileName: "a.pdf", mimeType: "application/pdf", size: 5, contentBase64: "JVBERi0=" }));
 const reviewOnboardingDocument = jest.fn(async () => ({ document: { id: 1 } }));
 const listPendingOnboardingDocuments = jest.fn(async () => ({ items: [], total: 0 }));
 
@@ -31,6 +32,7 @@ jest.unstable_mockModule("../../../src/services/onboarding-self.service.js", () 
     assertDocumentReviewEnabled,
     assertSelfPortalEnabled,
     completeMyTask,
+    downloadMyDocument,
     getMyOnboarding,
     listPendingOnboardingDocuments,
     reopenMyTask,
@@ -59,6 +61,7 @@ const SELF_TOOLS = [
     ["hr_self_onboarding_task_reopen", { taskId: 5 }, reopenMyTask],
     ["hr_self_onboarding_document_upload", { title: "CNIC", fileName: "a.pdf", mimeType: "application/pdf", contentBase64: "JVBERi0=" }, uploadMyDocument],
     ["hr_self_onboarding_document_sign", { documentId: 7 }, signMyDocument],
+    ["hr_self_onboarding_document_download", { documentId: 7 }, downloadMyDocument],
     ["hr_self_onboarding_survey_submit", { type: "DAY_30", responses: { q1: 4 } }, submitMySurvey],
 ];
 const HR_TOOLS = [
@@ -72,7 +75,7 @@ beforeEach(() => {
 });
 
 describe("registration", () => {
-    it("registers exactly the eight portal tools", () => {
+    it("registers exactly the nine portal tools", () => {
         expect([...handlers.keys()].sort()).toEqual([...SELF_TOOLS.map(([n]) => n), ...HR_TOOLS.map(([n]) => n)].sort());
     });
 });

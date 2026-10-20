@@ -79,8 +79,11 @@ describe("hr_onboarding_template_set", () => {
     const call = (args) =>
         mcpCtx.run({ user: { tenantId: TENANT, isAdmin: false, employeeId: 5 }, permissions: { "hr:recruitment": ["EDIT"] } }, () => handlers.get("hr_onboarding_template_set")(args));
 
-    it("still registers three tools; sessions are optional in the schema", () => {
-        expect([...handlers.keys()]).toEqual(["hr_onboarding_template_list", "hr_onboarding_template_set", "hr_onboarding_template_deactivate"]);
+    it("registers the three Phase 4 tools plus the two Phase 6 ones; sessions are optional in the schema", () => {
+        expect([...handlers.keys()]).toEqual([
+            "hr_onboarding_template_list", "hr_onboarding_template_set", "hr_onboarding_template_deactivate",
+            "hr_onboarding_template_reactivate", "hr_onboarding_template_default_unset",
+        ]);
         expect(schemas.get("hr_onboarding_template_set").sessions.isOptional()).toBe(true);
     });
 

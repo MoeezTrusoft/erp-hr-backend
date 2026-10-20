@@ -12,7 +12,7 @@ const uploadFileToDAM = jest.fn();
 const deleteDamAsset = jest.fn(async () => ({ ok: true }));
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: dbProxy, prisma: dbProxy }));
-jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM, deleteDamAsset }));
+jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM, deleteDamAsset, downloadDamAssetBuffer: jest.fn() }));
 
 const svc = await import("../../../src/services/onboarding-self.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");

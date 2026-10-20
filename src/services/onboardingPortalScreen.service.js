@@ -133,9 +133,8 @@ export async function getOnboardingPortal({ tenantId, employeeId, checklistId } 
   });
 
   const location =
-    employee.region?.name ||
-    [employee.city, employee.country].filter(Boolean).join(", ") ||
-    null;
+    // Phase 6: the work region only, never the hire's home city.
+    employee.region?.name || null;
 
   const rows = tasks.map(taskRow);
   const doneCount = rows.filter((r) => r.done).length;

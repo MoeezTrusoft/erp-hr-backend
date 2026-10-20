@@ -16,6 +16,9 @@
 //
 // Every tool answers 503 HR-ONBOARDING-SELF-PORTAL-DISABLED while the
 // onboardingSelfPortal flag is off.
+//
+// Phase 6: hr_self_onboarding_document_download reads one of the caller's own
+// documents back from DAM (the same pin; another hire's id is a plain 404).
 import { z } from "zod";
 
 import { mcpCtx as mcpRequestContext } from "../context.js";
@@ -35,6 +38,7 @@ import {
   assertDocumentReviewEnabled,
   assertSelfPortalEnabled,
   completeMyTask,
+  downloadMyDocument,
   getMyOnboarding,
   listPendingOnboardingDocuments,
   reopenMyTask,
@@ -156,6 +160,16 @@ export function registerOnboardingSelfTools(server) {
       const caller = selfCaller(employeeId);
       return text(await signMyDocument({ ...caller, documentId }));
     }, "hr_self_onboarding_document_sign"),
+  );
+
+  server.tool(
+    "hr_self_onboarding_document_download",
+    "Open one of your own onboarding documents: a document HR gave you to read or sign (for example a policy), or a file you uploaded. Returns the file as base64 with its MIME type and file name (at most 15 MB). Only documents on your own checklist; any other id reads as not found.",
+    { documentId: idInput.describe("Onboarding document id (from hr_self_onboarding_get)"), employeeId: selfEmployeeInput },
+    withToolError(async ({ documentId, employeeId }) => {
+      const caller = selfCaller(employeeId);
+      return text(await downloadMyDocument({ ...caller, documentId }));
+    }, "hr_self_onboarding_document_download"),
   );
 
   server.tool(

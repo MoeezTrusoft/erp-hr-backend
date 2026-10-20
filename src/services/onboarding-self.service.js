@@ -19,6 +19,8 @@
 //   * upload a document (validated by lib/onboarding-upload.util.js, stored in
 //     DAM, recorded with source NEW_HIRE and reviewStatus PENDING);
 //   * sign an HR-supplied document that requires a signature;
+//   * (Phase 6) read one of their own documents back from DAM, base64, size
+//     bounded, owner check before anything reaches DAM;
 //   * submit an issued, unsubmitted 30/60/90 day survey.
 // HR (hr:onboarding) verifies or rejects an upload and lists the uploads that
 // wait for review.
@@ -35,11 +37,11 @@ import { scopedWhere, scopedData, scopedEmployeeWhere, requireTenant } from "../
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { eventContext } from "../lib/event-context.util.js";
-import { validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
+import { cleanFileName, fileExtension, normalizeMimeType, validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
 import { liveSessionWhere } from "../lib/onboarding-sessions.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { onboardingTaskUpdatedEvent, onboardingSurveySubmittedEvent } from "./hrEvents.js";
-import { uploadFileToDAM, deleteDamAsset } from "./dam.media.service.js";
+import { uploadFileToDAM, deleteDamAsset, downloadDamAssetBuffer } from "./dam.media.service.js";
 
 export const DOCUMENT_SOURCE = Object.freeze({ HR: "HR", NEW_HIRE: "NEW_HIRE" });
 export const REVIEW_STATUS = Object.freeze({ PENDING: "PENDING", VERIFIED: "VERIFIED", REJECTED: "REJECTED" });
@@ -474,6 +476,83 @@ export async function signMyDocument({ tenantId, employeeId, documentId, now = n
         await enqueueHrDomainEvent(tx, onboardingDocumentSignedEvent({ ...signed, tenantId: signed.tenantId ?? tenantId }, evtCtx, { hrOwnerId }));
         return { document: documentView(signed) };
     }, { tenantId });
+}
+
+// ── 4b. download (Phase 6) ──────────────────────────────────────────────────
+
+// The largest file the portal hands back in one JSON-RPC answer (about 20 MB of
+// base64). HR's policy PDFs are well under it; a bigger asset is refused rather
+// than pushed through the gateway.
+export const DOCUMENT_DOWNLOAD_MAX_BYTES = 15 * 1024 * 1024;
+
+// Leading bytes of the types the portal deals in; DAM's content type is only
+// used when the bytes are none of these (a presigned URL often answers
+// application/octet-stream).
+const SNIFFED_TYPES = Object.freeze([
+    { mimeType: "application/pdf", extension: "pdf", signature: [0x25, 0x50, 0x44, 0x46, 0x2d] },
+    { mimeType: "image/png", extension: "png", signature: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+    { mimeType: "image/jpeg", extension: "jpg", signature: [0xff, 0xd8, 0xff] },
+]);
+
+const sniffType = (buffer) =>
+    SNIFFED_TYPES.find((t) => buffer.length >= t.signature.length && t.signature.every((b, i) => buffer[i] === b)) ?? null;
+
+function downloadName(doc, damFileName, extension) {
+    // DAM's own name when it is a real one ("asset-<id>" is its placeholder),
+    // else the document's title; always cleaned, always with an extension.
+    const fromDam = typeof damFileName === "string" && !/^asset-\d+$/.test(damFileName) && fileExtension(damFileName)
+        ? damFileName
+        : null;
+    return cleanFileName(fromDam ?? doc.title ?? "document", extension);
+}
+
+/**
+ * Read one of the caller's own onboarding documents back from DAM: an HR
+ * document they are asked to read and sign, or a file they uploaded. The
+ * document must sit on one of the caller's checklists AND name the caller;
+ * anything else (another hire's, a missing id, no stored file) is the same
+ * 404, so ids cannot be probed. Completed checklists still count: reading a
+ * signed policy after day one is fine.
+ * @returns {Promise<{ document: object, fileName: string, mimeType: string, size: number, contentBase64: string }>}
+ */
+export async function downloadMyDocument({ tenantId, employeeId, documentId } = {}) {
+    assertSelfPortalEnabled();
+    requireTenant(tenantId);
+    const id = positiveInt(documentId, "document id");
+
+    // Owner check first: nothing reaches DAM for a row that is not the caller's.
+    const self = await loadSelf(prisma, tenantId, employeeId);
+    const checklistIds = (await ownChecklists(prisma, tenantId, self.id)).map((c) => c.id);
+    const doc = checklistIds.length
+        ? await prisma.onboardingDocument.findFirst({
+            where: scopedWhere(tenantId, { id, employeeId: self.id, checklistId: { in: checklistIds } }),
+            select: documentSelect,
+        })
+        : null;
+    const mediaId = Number(doc?.mediaId);
+    if (!doc || !Number.isInteger(mediaId) || mediaId <= 0) throw notFound("Document");
+
+    // DAM reads are fail-soft (null on failure); a throw is treated the same.
+    const file = await downloadDamAssetBuffer(mediaId).catch(() => null);
+    const buffer = file?.buffer;
+    if (!buffer?.length) {
+        logger.warn({ tenantId, documentId: id, mediaId }, "onboarding self download: DAM returned no content");
+        throw fail("The document could not be read just now; please try again", 502, "HR-ONBOARDING-DAM-UNAVAILABLE");
+    }
+    if (buffer.length > DOCUMENT_DOWNLOAD_MAX_BYTES) {
+        throw fail("This document is too large to open here; please ask HR for a copy", 413, "HR-ONBOARDING-DOCUMENT-TOO-LARGE");
+    }
+
+    const sniffed = sniffType(buffer);
+    const damType = normalizeMimeType(file.mimeType);
+    const mimeType = sniffed?.mimeType ?? (/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(damType) ? damType : "application/octet-stream");
+    return {
+        document: documentView(doc),
+        fileName: downloadName(doc, file.fileName, sniffed?.extension ?? ""),
+        mimeType,
+        size: buffer.length,
+        contentBase64: buffer.toString("base64"),
+    };
 }
 
 // ── 5. survey ───────────────────────────────────────────────────────────────

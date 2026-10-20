@@ -1,7 +1,6 @@
 import { runController } from "./_runner.js";
 import {
   createChecklist,
-  listChecklists,
   updateChecklist,
   addTask,
   updateTask,
@@ -12,8 +11,23 @@ import {
   getSurveys,
 } from "../../controllers/onboarding.controller.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { listChecklists as listChecklistsService } from "../../services/onboarding.service.js";
 
-export const mcpListOnboardingChecklists = (user) => runController(listChecklists, { user });
+// Recruitment Phase 6 — the checklist list reads the service directly: the
+// controller runner cannot carry the caller's permission set, and the home
+// address depends on it (the resource passes includeHomeAddress from
+// hr:employee VIEW). Same envelope as the controller; scoped to the verified
+// tenant.
+export const mcpListOnboardingChecklists = async (user, { includeHomeAddress = false } = {}) => ({
+  success: true,
+  message: "Success",
+  data: await listChecklistsService({
+    page: 1,
+    limit: 20,
+    ...(user?.tenantId != null ? { tenantId: user.tenantId } : {}),
+    includeHomeAddress: includeHomeAddress === true,
+  }),
+});
 export const mcpListOnboardingSurveys = async (user, employeeId) =>
   runController(getSurveys, {
     user,

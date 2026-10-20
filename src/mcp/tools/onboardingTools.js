@@ -12,7 +12,7 @@ import {
   mcpUpdateOnboardingTask,
 } from "../controllers/onboardingMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 
 function getCtx() {
@@ -33,7 +33,11 @@ export function registerOnboardingTools(server) {
       // Resources are not gated by the tool wrapper: assert the same grant the
       // list tool checks, so resources/read is not a way around it.
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
-      const data = await mcpListOnboardingChecklists(user);
+      // Phase 6: the hire's home address only for an employee-record reader;
+      // every reader gets the work location (checklist.workLocation).
+      const data = await mcpListOnboardingChecklists(user, {
+        includeHomeAddress: hasPermission(permissions, "hr:employee", "VIEW"),
+      });
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
   );

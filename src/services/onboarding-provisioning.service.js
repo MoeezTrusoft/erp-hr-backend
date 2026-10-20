@@ -378,12 +378,12 @@ export function buildProvisioningListWhere({ tenantId, status, kind, employeeId,
  * IT's queue, soonest due first, paged.
  * @returns {Promise<{ items: object[], total: number, page: number, limit: number }>}
  */
-export async function listProvisioningRequests({ tenantId, page = 1, limit = 50, now = new Date(), ...filters } = {}) {
+export async function listProvisioningRequests({ tenantId, page = 1, limit = 50, now = new Date(), includeHires = false, ...filters } = {}) {
     requireTenant(tenantId);
     const where = buildProvisioningListWhere({ tenantId, now, ...filters });
     const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const current = Math.max(Number(page) || 1, 1);
-    const [rows, total] = await Promise.all([
+    const [rows, total, hires] = await Promise.all([
         prisma.onboardingProvisioningRequest.findMany({
             where,
             orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { id: "asc" }],
@@ -391,8 +391,52 @@ export async function listProvisioningRequests({ tenantId, page = 1, limit = 50,
             take,
         }),
         prisma.onboardingProvisioningRequest.count({ where }),
+        includeHires === true ? listProvisioningHires(prisma, tenantId) : null,
     ]);
-    return { items: await shapeRows(prisma, tenantId, rows, now), total, page: current, limit: take };
+    return {
+        items: await shapeRows(prisma, tenantId, rows, now),
+        total,
+        page: current,
+        limit: take,
+        ...(hires ? { hires } : {}),
+    };
+}
+
+// The most hires the facet lists; an IT queue with more open hires than this
+// filters by id (employeeId) instead.
+export const PROVISIONING_HIRE_FACET_MAX = 500;
+
+/**
+ * Phase 6 — the hire facet for IT's queue: the distinct hires that have an
+ * OPEN request (REQUESTED or IN_PROGRESS), in the caller's tenant, as
+ * { employeeId, name } only (nothing else from the checklist or the employee
+ * record), sorted by name. It ignores the page's own filters so the hire
+ * picker stays the same while IT filters. Exported for the tests.
+ * @returns {Promise<Array<{ employeeId: number, name: string|null }>>}
+ */
+export async function listProvisioningHires(db, tenantId) {
+    requireTenant(tenantId);
+    const open = await db.onboardingProvisioningRequest.findMany({
+        where: withTenant(tenantId, { status: { in: OPEN_PROVISIONING_STATUSES } }),
+        distinct: ["employeeId"],
+        select: { employeeId: true },
+        orderBy: { employeeId: "asc" },
+        take: PROVISIONING_HIRE_FACET_MAX,
+    });
+    const employeeIds = [...new Set(open.map((row) => row.employeeId).filter((id) => id != null))];
+    if (!employeeIds.length) return [];
+    const employees = await db.employee.findMany({
+        where: scopedEmployeeWhere(tenantId, { id: { in: employeeIds } }),
+        select: { id: true, employee_name: true, first_name: true, last_name: true },
+    });
+    const nameOf = new Map(employees.map((employee) => [employee.id, employeeName(employee)]));
+    return employeeIds
+        .map((employeeId) => ({ employeeId, name: nameOf.get(employeeId) ?? null }))
+        // By name, unnamed last, then by id.
+        .sort((a, b) =>
+            Number(a.name == null) - Number(b.name == null)
+            || (a.name ?? "").localeCompare(b.name ?? "")
+            || a.employeeId - b.employeeId);
 }
 
 export async function getProvisioningRequest({ tenantId, requestId, now = new Date() } = {}) {

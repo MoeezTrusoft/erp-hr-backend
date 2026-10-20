@@ -4,8 +4,9 @@
 // the orientation and compliance sessions created on handoff:
 //
 //   hr_onboarding_session_plan_preview     GET    what a template would
-//       create for a start date (the default template, a named one, or a
-//       draft list), so HR can check it before it reaches a new hire
+//       create for a start date (the default template, a named one, a draft
+//       list, or the built-in baseline with baseline: true, Phase 6), so HR
+//       can check it before it reaches a new hire
 //   hr_onboarding_session_calendar_resync  POST   requeue one session's
 //       calendar invite (create, update or cancel as its state needs)
 //   hr_onboarding_session_delete           DELETE remove a session; one with
@@ -55,15 +56,22 @@ const draftSession = z.object({
 export function registerOnboardingSessionPlanTools(server) {
   server.tool(
     "hr_onboarding_session_plan_preview",
-    "Preview the orientation and compliance sessions a new hire starting on startDate would get: from the tenant's default onboarding template (or the baseline when it has none), a named template (templateId), or a draft list (sessions) before saving it. Each session's date is placed on a working day. Writes nothing.",
+    "Preview the orientation and compliance sessions a new hire starting on startDate would get: from the tenant's default onboarding template (or the baseline when it has none), a named template (templateId), a draft list (sessions) before saving it, or the built-in baseline set (baseline: true, source DEFAULT) whatever the default template is. Each session's date is placed on a working day. Writes nothing.",
     {
       startDate: z.string().min(1).describe("The hire's start date, YYYY-MM-DD"),
       templateId: z.coerce.number().int().positive().optional().describe("Preview this template instead of the default"),
       sessions: z.array(draftSession).max(20).optional().describe("Preview this draft list instead of a stored template"),
+      baseline: z.boolean().optional().describe("Preview the built-in baseline sessions without a template; not with templateId or sessions"),
     },
-    withToolError(async ({ startDate, templateId, sessions }) => {
+    withToolError(async ({ startDate, templateId, sessions, baseline }) => {
       const user = authorized("GET");
-      const data = await previewOnboardingSessionPlan({ tenantId: user.tenantId, startDate, templateId: templateId ?? null, sessions });
+      const data = await previewOnboardingSessionPlan({
+        tenantId: user.tenantId,
+        startDate,
+        templateId: templateId ?? null,
+        sessions,
+        ...(baseline === true ? { baseline: true } : {}),
+      });
       return text(data);
     }, "hr_onboarding_session_plan_preview"),
   );

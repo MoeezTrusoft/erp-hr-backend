@@ -9,6 +9,10 @@
 //   hr_onboarding_document_add     — create an OnboardingDocument (DAM mediaId
 //                                    is passed in; upload happens elsewhere)
 //
+// Recruitment Phase 6: create and update take `required`, and the host can be
+// removed (assigneeId null or blank clears it). A host change re-marks the
+// session's calendar invite, like a move does (onboardingSchedule.service.js).
+//
 // Auth: every handler runs getCtx() → assertPermission(METHOD, "hr:onboarding")
 // → service(..., user.tenantId), matching the existing onboardingTools.js
 // surface. All reads/writes are tenant-scoped by the verified user.tenantId.
@@ -23,6 +27,14 @@ import {
   listDocuments,
   addDocument,
 } from "../../services/onboardingSchedule.service.js";
+
+// The session host: a positive employee id, or null for none. A blank string
+// is "no host" too (a cleared form field), never the employee id 0 that
+// z.coerce.number() used to turn it into.
+const hostInput = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+  z.coerce.number().int().positive().nullable().optional(),
+);
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -62,7 +74,8 @@ export function registerOnboardingScheduleTools(server) {
       toTime: z.string().optional().describe('End time, free-form "HH:mm" e.g. "10:00"'),
       sessionType: z.string().optional().describe("Free-form session type e.g. orientation | training | meeting"),
       location: z.string().optional().describe("Room name or meeting link"),
-      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner (references Employee)"),
+      assigneeId: hostInput.describe("Employee id of the session host (references Employee); null or blank for no host"),
+      required: z.boolean().optional().describe("Attendance is required (default false)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -83,7 +96,8 @@ export function registerOnboardingScheduleTools(server) {
       toTime: z.string().optional().describe('End time, free-form "HH:mm" e.g. "12:00"'),
       sessionType: z.string().optional().describe("Free-form session type e.g. orientation | training | meeting"),
       location: z.string().optional().describe("Room name or meeting link"),
-      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner (references Employee)"),
+      assigneeId: hostInput.describe("Employee id of the session host (references Employee); null (or blank) removes the host, omit to keep it"),
+      required: z.boolean().optional().describe("Attendance is required; omit to keep it"),
     },
     withToolError(async ({ id, ...patch }) => {
       const { user, permissions } = getCtx();

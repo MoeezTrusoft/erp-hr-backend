@@ -28,6 +28,12 @@
 // becomes a CANCEL tombstone, hidden from the schedule, which the worker
 // removes once the event is cancelled. With the flags off nothing is marked
 // and the create / update results are what they always were.
+//
+// RECRUITMENT PHASE 6 — create and update take `required`, and an update can
+// clear the host (assigneeId null). Changing, adding or removing the host, or
+// `required`, re-marks the invite like a move (the host is an attendee and the
+// invite says whether attendance is required). Sessions carry no version
+// column and emit no events; that is unchanged.
 import prisma from "../lib/prisma.js";
 import {
   SESSION_CALENDAR_ACTION,
@@ -58,6 +64,16 @@ const toDate = (value) => {
 
 const notFound = (message) => Object.assign(new Error(message), { status: 404 });
 const badRequest = (message) => Object.assign(new Error(message), { status: 400 });
+
+// Phase 6 — the session host: null, undefined or a blank string mean "no host"
+// (a blank used to become employee id 0); anything else must be a positive
+// employee id.
+const toHostId = (value) => {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return null;
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) throw badRequest("Invalid assigneeId");
+  return id;
+};
 
 // Load a checklist within the caller's tenant, including the candidate employee.
 // Throws 404 when missing or cross-tenant.
@@ -132,7 +148,7 @@ export async function listSchedule(checklistId, tenantId) {
 // Create an OnboardingSession under a checklist. Tenant-scoped: the checklist is
 // validated within the caller's tenant, and the row inherits that tenantId.
 export async function createSession(input, tenantId) {
-  const { checklistId, title, sessionDate, fromTime, toTime, sessionType, location, assigneeId } = input;
+  const { checklistId, title, sessionDate, fromTime, toTime, sessionType, location, assigneeId, required } = input;
   const checklist = await loadChecklist(checklistId, tenantId);
   if (!title || !String(title).trim()) throw badRequest("title is required");
 
@@ -148,15 +164,19 @@ export async function createSession(input, tenantId) {
       toTime: toTime ?? null,
       sessionType: sessionType ?? null,
       location: location ?? null,
-      assigneeId: assigneeId != null ? Number(assigneeId) : null,
+      assigneeId: toHostId(assigneeId),
+      // Phase 6: a manual session can be marked required, like template ones.
+      ...(required !== undefined ? { required: required === true } : {}),
       tenantId,
       ...mark,
     },
   });
 }
 
-// The fields a calendar invite is built from: changing one re-sends it.
-const CALENDAR_FIELDS = Object.freeze(["title", "sessionDate", "fromTime", "toTime", "location", "assigneeId"]);
+// The fields a calendar invite is built from: changing one re-sends it. The
+// host (assigneeId) is an attendee, so adding, changing or removing the host
+// re-syncs; `required` is printed in the invite ("Attendance: required").
+const CALENDAR_FIELDS = Object.freeze(["title", "sessionDate", "fromTime", "toTime", "location", "assigneeId", "required"]);
 
 // Phase 4: the calendar mark for an update, or {} when there is nothing to
 // tell a calendar (flags off, no invite-relevant field, or an undated
@@ -188,7 +208,8 @@ export async function updateSession(id, patch, tenantId) {
   if (patch.toTime !== undefined) data.toTime = patch.toTime ?? null;
   if (patch.sessionType !== undefined) data.sessionType = patch.sessionType ?? null;
   if (patch.location !== undefined) data.location = patch.location ?? null;
-  if (patch.assigneeId !== undefined) data.assigneeId = patch.assigneeId != null ? Number(patch.assigneeId) : null;
+  if (patch.assigneeId !== undefined) data.assigneeId = toHostId(patch.assigneeId);
+  if (patch.required !== undefined) data.required = patch.required === true;
 
   return prisma.onboardingSession.update({ where: { id: sessionId }, data: { ...data, ...updateMark(existing, data) } });
 }

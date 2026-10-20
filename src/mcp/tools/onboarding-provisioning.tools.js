@@ -11,6 +11,10 @@
 // request to IN_PROGRESS, FULFILLED or REJECTED and record its reference and
 // notes, but not cancel it; HR may do everything. The rows carry the hire's
 // display name and the task title only, nothing else from the checklist.
+//
+// Phase 6: the list takes includeHires and then also answers `hires`, the
+// distinct hires with an open request ({ employeeId, name }), so the IT
+// screen can offer a hire filter without reading checklists.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -52,7 +56,7 @@ const idInput = z.coerce.number().int().positive();
 export function registerOnboardingProvisioningTools(server) {
   server.tool(
     "hr_onboarding_provisioning_requests_list",
-    "IT's provisioning queue: requests for an account, email, device, access or workspace raised from new hires' onboarding checklists, soonest due first. Filter by status, kind, employee, checklist, overdue (open and past due) or due before a date. Each row carries the new hire's display name, the task title, the version to send back on update and the transitions allowed from its status.",
+    "IT's provisioning queue: requests for an account, email, device, access or workspace raised from new hires' onboarding checklists, soonest due first. Filter by status, kind, employee, checklist, overdue (open and past due) or due before a date. Each row carries the new hire's display name, the task title, the version to send back on update and the transitions allowed from its status. With includeHires, also lists the hires that have open requests (id and name) for a hire filter.",
     {
       status: z.enum(PROVISIONING_STATUSES).optional().describe("REQUESTED | IN_PROGRESS | FULFILLED | REJECTED | CANCELLED"),
       kind: z.enum(PROVISIONING_KINDS).optional().describe("ACCOUNT | EMAIL | DEVICE | ACCESS | WORKSPACE | OTHER"),
@@ -62,6 +66,7 @@ export function registerOnboardingProvisioningTools(server) {
       dueBefore: z.string().min(1).optional().describe("ISO 8601 date or instant; requests due strictly before it"),
       page: z.coerce.number().int().positive().optional(),
       limit: z.coerce.number().int().positive().max(200).optional(),
+      includeHires: z.boolean().optional().describe("Also return `hires`: the distinct new hires with an open request (employeeId and display name only), for a hire filter; independent of the other filters"),
     },
     withToolError(async (args) => {
       const { user } = authorized("GET");
