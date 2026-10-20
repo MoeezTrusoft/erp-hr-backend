@@ -85,6 +85,7 @@ const {
   JOB_RECRUITMENT_SCHEDULED_DISPOSITION,
   JOB_RECRUITMENT_SCORING,
   JOB_CANDIDATE_DUPLICATE_DETECTION,
+  JOB_OFFER_EXPIRY,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -231,6 +232,16 @@ describe("Phase 2 intake and screening jobs are scheduled", () => {
     await expect(processor({ name: JOB_RECRUITMENT_SCORING, data: {} })).resolves.toBe("scoring");
     await expect(processor({ name: JOB_CANDIDATE_DUPLICATE_DETECTION, data: { lookbackHours: 2 } })).resolves.toBe("duplicates");
     expect(candidateDuplicateDetection).toHaveBeenCalledWith(expect.objectContaining({ lookbackHours: 2 }));
+  });
+});
+
+describe("Phase 3a jobs are scheduled", () => {
+  it("registers offer expiry hourly at :35 and dispatches it", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_OFFER_EXPIRY].opts).toMatchObject({ jobId: "repeat:offer-expiry", repeat: { pattern: "35 * * * *" } });
+    const offerExpiry = jest.fn(async () => "expiry");
+    const processor = buildReminderProcessor({ offerExpiry });
+    await expect(processor({ name: JOB_OFFER_EXPIRY, data: {} })).resolves.toBe("expiry");
   });
 });
 

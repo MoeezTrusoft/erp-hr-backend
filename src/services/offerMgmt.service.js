@@ -12,8 +12,16 @@
 // manual crypto. Sensitive-value MASKING (salary + compensation.baseSalary) is
 // a presentation concern handled here via the `showSensitive` flag the tool
 // layer computes from hr:payroll VIEW; encryption ≠ authorization.
+//
+// Phase 3a — GRADE BAND WARNING. A draft's base salary is compared with the
+// band of the requisition's grade (JobRequisition.gradeLevelId, else the
+// position's band label matched to a GradeLevel name). Outside the band is a
+// WARNING in the response, never a block: the band is guidance and the
+// approval chain is where an exception is judged. The band figures are payroll
+// data, so they are returned only to callers who may see compensation.
 import prisma from "../lib/prisma.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import logger from "../lib/logger.js";
+import { scopedWhere, scopedData, withTenant } from "../lib/tenancy.js";
 import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
 
 const MASK = "••••••";
@@ -348,8 +356,92 @@ export const createOfferFull = async (input, { tenantId, createdById, showSensit
     return created;
   });
 
-  return getOfferManage(created.id, { tenantId, showSensitive });
+  const detail = await getOfferManage(created.id, { tenantId, showSensitive });
+  const check = await safeBandCheck({ tenantId, jobRequisitionId: jobRequisitionIdNum, salary: baseSalary, currency });
+  return { ...detail, ...bandWarningsView(check, showSensitive) };
 };
+
+// ── grade band check (Phase 3a) ─────────────────────────────────────────────
+
+export const SALARY_BAND_WARNING = Object.freeze({
+  BELOW: "SALARY_BELOW_BAND",
+  ABOVE: "SALARY_ABOVE_BAND",
+});
+
+const GRADE_BAND_SELECT = { id: true, name: true, minSalary: true, maxSalary: true, bandCurrency: true };
+
+// { requisitionFound, band }: band is null when the requisition has no grade or
+// the grade has no band.
+const loadRequisitionBand = async ({ tenantId, jobRequisitionId }, { db = prisma } = {}) => {
+  const id = num(jobRequisitionId);
+  if (!Number.isInteger(id) || id <= 0) return { requisitionFound: false, band: null };
+  const requisition = await db.jobRequisition.findFirst({
+    where: withTenant(tenantId, { id }),
+    select: { id: true, gradeLevelId: true, position: { select: { band: true } } },
+  });
+  if (!requisition) return { requisitionFound: false, band: null };
+  let grade = null;
+  if (requisition.gradeLevelId) {
+    grade = await db.gradeLevel.findFirst({
+      where: withTenant(tenantId, { id: requisition.gradeLevelId }),
+      select: GRADE_BAND_SELECT,
+    });
+  } else if (requisition.position?.band) {
+    // Position.band is a free-text grade label; it names a GradeLevel only
+    // when the tenant uses the same vocabulary, so a miss is "no band".
+    grade = await db.gradeLevel.findFirst({
+      where: withTenant(tenantId, { name: requisition.position.band }),
+      select: GRADE_BAND_SELECT,
+    });
+  }
+  const min = num(grade?.minSalary);
+  const max = num(grade?.maxSalary);
+  if (!grade || (min == null && max == null)) return { requisitionFound: true, band: null };
+  return {
+    requisitionFound: true,
+    band: { gradeLevelId: grade.id, gradeName: grade.name, min, max, currency: grade.bandCurrency ?? null },
+  };
+};
+
+/** The requisition's salary band, or null (no requisition, grade or band). */
+export const resolveRequisitionBand = async (args, options = {}) => (await loadRequisitionBand(args, options)).band;
+
+// Pure comparison. A band in another currency is not comparable (no FX here),
+// so it yields no warning rather than a wrong one.
+export const compareSalaryToBand = (salary, currency, band) => {
+  const amount = num(salary);
+  if (!band) return { hasBand: false, comparable: false, reason: "NO_BAND", warnings: [] };
+  if (amount == null) return { hasBand: true, comparable: false, reason: "NO_SALARY", warnings: [] };
+  if (band.currency && currency && String(band.currency).toUpperCase() !== String(currency).toUpperCase()) {
+    return { hasBand: true, comparable: false, reason: "CURRENCY_MISMATCH", warnings: [] };
+  }
+  const warnings = [];
+  if (band.min != null && amount < band.min) warnings.push({ code: SALARY_BAND_WARNING.BELOW, min: band.min, max: band.max });
+  if (band.max != null && amount > band.max) warnings.push({ code: SALARY_BAND_WARNING.ABOVE, min: band.min, max: band.max });
+  return { hasBand: true, comparable: true, reason: null, warnings };
+};
+
+export const checkOfferSalaryBand = async ({ tenantId, jobRequisitionId, salary, currency }, options = {}) => {
+  const { requisitionFound, band } = await loadRequisitionBand({ tenantId, jobRequisitionId }, options);
+  return { requisitionFound, band, ...compareSalaryToBand(salary, currency, band) };
+};
+
+// The band check must never block (or fail) an offer write: a lookup error is
+// logged and reads as "no warning".
+export const safeBandCheck = async (args, options = {}) => {
+  try {
+    return await checkOfferSalaryBand(args, options);
+  } catch (err) {
+    logger.warn({ errMessage: err?.message, jobRequisitionId: args?.jobRequisitionId }, "offer band check failed; no warning returned");
+    return { band: null, hasBand: false, comparable: false, reason: "CHECK_FAILED", warnings: [] };
+  }
+};
+
+// What a create response carries. A caller who may not see compensation gets
+// no band figures (and so no warning: the code alone places the salary
+// relative to a band they may not read).
+export const bandWarningsView = (check, canSeeCompensation) =>
+  canSeeCompensation ? { warnings: check?.warnings ?? [] } : { warnings: [], warningsRedacted: true };
 
 // ── pre-boarding transition ──────────────────────────────────────────────────
 

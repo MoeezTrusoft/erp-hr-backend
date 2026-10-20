@@ -14,15 +14,54 @@ import { offerAcceptedEvent, offerCreatedEvent, offerUpdatedEvent, offerWithdraw
 import { eventContext } from "../lib/event-context.util.js";
 
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import logger from "../lib/logger.js";
+import { withTenant } from "../lib/tenancy.js";
+import { DECLINE_REASON_NOT_RECORDED, normalizeDeclineInput } from "../lib/offer-decline.util.js";
+import { bandWarningsView, safeBandCheck } from "./offerMgmt.service.js";
 
 const EMPLOYEE_CATEGORIES = new Set(["MANAGEMENT", "EMPLOYEE", "INTERNEE"]);
+
+// Phase 3a — the candidate turned the offer down. ids-only plus the decline
+// reason CODE (never the free-text note, which can carry personal detail) and
+// the owning recruiter for routing, as on offer_accepted / offer_withdrawn.
+export const OFFER_DECLINED_EVENT = "hr.recruitment.offer_declined.v1";
+export const TALENT_POOL_SOURCE_OFFER_DECLINED = "offer_declined";
+
+const idStr = (value) => (value != null ? String(value) : null);
+
+export function offerDeclinedEvent(offer, ctx = {}) {
+    const tenantId = offer?.tenantId ?? null;
+    if (!tenantId) return null;
+    return {
+        eventName: OFFER_DECLINED_EVENT,
+        tenantId,
+        aggregateType: "Offer",
+        aggregateId: offer?.id,
+        actorId: ctx?.actorId,
+        correlationId: ctx?.correlationId,
+        payload: {
+            offerId: String(offer?.id),
+            applicationId: idStr(offer?.applicationId),
+            candidateId: idStr(offer?.candidateId),
+            jobRequisitionId: idStr(offer?.jobRequisitionId),
+            status: "DECLINED",
+            version: offer?.version ?? null,
+            declineReasonCode: offer?.declineReasonCode ?? null,
+            createdById: idStr(offer?.createdById),
+        },
+    };
+}
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
 // param; folded into reads and stamped on creates. Offer mutations pre-read
 // tenant-scoped so a cross-tenant id is never sent/responded/updated
 // (fail-closed); offers carry compensation, so isolation is sensitive.
 
-export const createOffer = async ({ applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, createdById, tenantId }) => {
+// Phase 3a — the response carries `warnings` (grade band, never blocking). An
+// optional `scope` that may not see compensation gets them redacted; without a
+// scope the caller already receives the salary in the row, so the band is not
+// a further disclosure.
+export const createOffer = async ({ applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, createdById, tenantId, scope = null }) => {
     const candidateFk = Number(candidateId);
     if (!Number.isFinite(candidateFk)) throw new Error("candidateId is required");
     const requisitionFk = Number(jobRequisitionId);
@@ -32,7 +71,7 @@ export const createOffer = async ({ applicationId, candidateId, jobRequisitionId
         throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
     }
 
-    return tenantTransaction(prisma, async (tx) => {
+    const created = await tenantTransaction(prisma, async (tx) => {
         const [candidate, requisition] = await Promise.all([
             tx.candidate.findFirst({ where: scopedWhere(tenantId, { id: candidateFk }), select: { id: true } }),
             tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: requisitionFk }), select: { id: true } }),
@@ -72,6 +111,9 @@ export const createOffer = async ({ applicationId, candidateId, jobRequisitionId
         );
         return created;
     });
+    // After the commit: a failed band lookup inside the transaction would abort it.
+    const check = await safeBandCheck({ tenantId, jobRequisitionId: requisitionFk, salary, currency: currency || "USD" });
+    return { ...created, ...bandWarningsView(check, scope ? scope.canSeeCompensation === true : true) };
 };
 
 // Phase 1.4 — `scope` narrows which offers a caller may read: a hiring manager
@@ -149,6 +191,11 @@ export const sendOffer = async (id, tenantId, ctx = {}) => {
     });
 };
 
+// Signature and acceptance behaviour are unchanged (the offer letter / e-sign
+// stream calls this for acceptance). Phase 3a adds decline-only ctx fields:
+// declineReasonCode, declineNote, talentPoolOptIn, and requireDeclineReason
+// (true for callers that must name a reason). A decline result additionally
+// carries `declineReason` (the code, or NOT_RECORDED) and `talentPool`.
 export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
     if (!tenantId) throw Object.assign(new Error("Verified company is required"), { status: 403, code: "HR-TENANT-REQUIRED" });
     const acceptedFlag = accepted === true || accepted === "true" || accepted === "ACCEPTED";
@@ -170,6 +217,15 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
             { status: 422, code: "HR-RECRUITMENT-OFFER-CATEGORY-REQUIRED" },
         );
     }
+
+    // Phase 3a — decline capture, validated before any write. Acceptance never
+    // reads these fields, so an acceptance behaves exactly as before.
+    const decline = acceptedFlag
+        ? null
+        : normalizeDeclineInput(
+            { declineReasonCode: ctx.declineReasonCode, declineNote: ctx.declineNote, talentPoolOptIn: ctx.talentPoolOptIn },
+            { requireCode: ctx.requireDeclineReason === true },
+        );
 
     const outcome = await tenantTransaction(prisma, async (tx) => {
         // Serialize concurrent responses: the second waits, then sees the first.
@@ -198,7 +254,7 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
             data: {
                 status: desired,
                 respondedAt: new Date(),
-                ...(acceptedFlag ? { employeeCategory } : {}),
+                ...(acceptedFlag ? { employeeCategory } : decline),
             },
         });
         // Acceptance closes the pipeline: offer to hired. The canonical workflow
@@ -206,6 +262,11 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
         // "accepted offer required" invariant holds here too.
         if (acceptedFlag) {
             await enqueueHrDomainEvent(tx, offerAcceptedEvent(row, { actorId: ctx.actorId }));
+        } else {
+            await enqueueHrDomainEvent(
+                tx,
+                offerDeclinedEvent({ ...row, tenantId: row.tenantId ?? existing.tenantId ?? tenantId }, eventContext({ actorId: ctx.actorId })),
+            );
         }
         if (acceptedFlag && row.applicationId) {
             await transitionApplicationStageInTransaction({
@@ -220,7 +281,19 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
         return { row, replayed: false };
     }, { tenantId });
 
-    if (!acceptedFlag) return { offer: outcome.row, handoff: null, replayed: outcome.replayed };
+    if (!acceptedFlag) {
+        // A replay re-reports what was stored and never re-runs the pool add.
+        const talentPool = outcome.replayed
+            ? null
+            : await addDeclinedCandidateToPool({ offer: outcome.row, tenantId, actorId: ctx.actorId });
+        return {
+            offer: outcome.row,
+            handoff: null,
+            replayed: outcome.replayed,
+            declineReason: outcome.row?.declineReasonCode ?? DECLINE_REASON_NOT_RECORDED,
+            talentPool,
+        };
+    }
     if (outcome.replayed) {
         return {
             offer: outcome.row,
@@ -234,6 +307,93 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
     const { handoff } = await runOfferHandoff({ offerId: outcome.row.id, tenantId, actorId: ctx.actorId });
     return { offer: outcome.row, handoff, replayed: false };
 };
+
+// ── Phase 3a: talent pool opt-in on decline ──────────────────────────────────
+//
+// Runs AFTER the decline commits, through talentPool.service (which owns the
+// membership row, its event and the TALENT_POOL retention clock). Idempotent:
+// an existing (candidate, pool) row is reported, not duplicated, and a lost
+// race on the unique key reads the same. Fail-soft: the decline is the
+// candidate's decision and stands even if the pool add cannot run.
+//
+// Never added when a do-not-contact entry is active, processing consent is
+// withdrawn (assertCommunicationsAllowed), the latest TALENT_POOL consent is
+// WITHDRAWN, or the candidate was anonymized. The opt-in is the candidate's
+// answer captured by the recruiter; it does not override an earlier explicit
+// withdrawal.
+
+const POOL_BLOCK_BY_CODE = Object.freeze({
+    "HR-RECRUITMENT-DNC-BLOCKED": "DNC_ACTIVE",
+    "HR-RECRUITMENT-CONSENT-WITHDRAWN": "CONSENT_WITHDRAWN",
+});
+
+const talentPoolBlock = async (tenantId, candidateId) => {
+    try {
+        await assertCommunicationsAllowed({ tenantId, candidateId, purpose: "TALENT_POOL" });
+    } catch (err) {
+        if (POOL_BLOCK_BY_CODE[err?.code]) return POOL_BLOCK_BY_CODE[err.code];
+        throw err;
+    }
+    const latest = await prisma.candidateConsent.findFirst({
+        where: withTenant(tenantId, { candidateId: Number(candidateId), purpose: "TALENT_POOL" }),
+        orderBy: { occurredAt: "desc" },
+        select: { status: true },
+    });
+    return latest?.status === "WITHDRAWN" ? "TALENT_POOL_CONSENT_WITHDRAWN" : null;
+};
+
+// The pool is named after the requisition's department (the "keep in touch for
+// this team" list), else the requisition title.
+const declinedPoolName = async (tenantId, jobRequisitionId) => {
+    const requisition = await prisma.jobRequisition.findFirst({
+        where: withTenant(tenantId, { id: Number(jobRequisitionId) }),
+        select: { title: true, departmentId: true },
+    });
+    if (requisition?.departmentId) {
+        const unit = await prisma.businessUnit.findFirst({
+            where: withTenant(tenantId, { id: requisition.departmentId }),
+            select: { name: true },
+        });
+        if (unit?.name) return unit.name;
+    }
+    return requisition?.title || "Offer declined";
+};
+
+export async function addDeclinedCandidateToPool({ offer, tenantId, actorId = null }) {
+    if (offer?.talentPoolOptIn !== true) return null;
+    const candidateId = Number(offer.candidateId);
+    let poolName = null;
+    try {
+        const candidate = await prisma.candidate.findFirst({
+            where: withTenant(tenantId, { id: candidateId }),
+            select: { id: true, anonymizedAt: true },
+        });
+        if (!candidate || candidate.anonymizedAt) return { added: false, reason: "CANDIDATE_UNAVAILABLE" };
+        const blocked = await talentPoolBlock(tenantId, candidateId);
+        if (blocked) return { added: false, reason: blocked };
+        poolName = await declinedPoolName(tenantId, offer.jobRequisitionId);
+        const existing = await prisma.talentPool.findFirst({
+            where: withTenant(tenantId, { candidateId, poolName }),
+            select: { id: true },
+        });
+        if (existing) return { added: false, reason: "ALREADY_IN_POOL", poolName, entryId: existing.id };
+        // Loaded on demand: only an opted-in decline needs the pool module, so
+        // the send / accept paths keep their import graph.
+        const { addToPool } = await import("./talentPool.service.js");
+        const entry = await addToPool({
+            candidateId,
+            poolName,
+            notes: `Source: ${TALENT_POOL_SOURCE_OFFER_DECLINED} (offer #${offer.id})`,
+            addedById: actorId,
+            tenantId,
+        });
+        return { added: true, poolName, entryId: entry?.id ?? null, source: TALENT_POOL_SOURCE_OFFER_DECLINED };
+    } catch (err) {
+        if (err?.code === "P2002") return { added: false, reason: "ALREADY_IN_POOL", poolName };
+        logger.warn({ errMessage: err?.message, offerId: offer?.id, tenantId }, "offer decline: talent pool add failed");
+        return { added: false, reason: "FAILED", poolName };
+    }
+}
 
 export const uploadOfferLetter = async (id, file, tenantId) => {
     await assertOfferInTenant(id, tenantId);

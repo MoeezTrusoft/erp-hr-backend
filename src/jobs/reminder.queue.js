@@ -40,6 +40,7 @@ import {
 import { runScheduledDispositionJob } from '../services/scheduled-disposition.service.js';
 import { runApplicationScoringJob } from '../services/application-scoring.service.js';
 import { runCandidateDuplicateDetectionJob } from '../services/candidate-duplicate.service.js';
+import { runOfferExpiryJob } from '../services/offer-expiry.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -91,6 +92,9 @@ export const JOB_RECRUITMENT_APPROVAL_SLA = 'recruitment-approval-sla';
 export const JOB_RECRUITMENT_SCHEDULED_DISPOSITION = 'recruitment-scheduled-disposition';
 export const JOB_RECRUITMENT_SCORING = 'recruitment-scoring';
 export const JOB_CANDIDATE_DUPLICATE_DETECTION = 'candidate-duplicate-detection';
+// Phase 3a — interview and offer orchestration; each body checks its own flag
+// (all default OFF): offer expiry reminders and expiry (HR_RECRUITMENT_OFFER_EXPIRY).
+export const JOB_OFFER_EXPIRY = 'offer-expiry';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -206,6 +210,13 @@ export function repeatableJobs() {
             data: { lookbackHours: 2 },
             opts: { jobId: 'repeat:candidate-duplicate-detection', repeat: { pattern: '40 * * * *' } },
         },
+        {
+            // Hourly at :35 — the expiry date is a day, so an hour of slack is
+            // invisible to the candidate; the reminder window is days.
+            name: JOB_OFFER_EXPIRY,
+            data: {},
+            opts: { jobId: 'repeat:offer-expiry', repeat: { pattern: '35 * * * *' } },
+        },
     ];
 }
 
@@ -229,6 +240,7 @@ export function buildReminderProcessor({
     scheduledDisposition = runScheduledDispositionJob,
     applicationScoring = runApplicationScoringJob,
     candidateDuplicateDetection = runCandidateDuplicateDetectionJob,
+    offerExpiry = runOfferExpiryJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -269,6 +281,8 @@ export function buildReminderProcessor({
                     return applicationScoring(data);
                 case JOB_CANDIDATE_DUPLICATE_DETECTION:
                     return candidateDuplicateDetection(data);
+                case JOB_OFFER_EXPIRY:
+                    return offerExpiry(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

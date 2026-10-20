@@ -37,6 +37,7 @@ import { registerRecruitmentScoringTools } from "./tools/recruitment-scoring.too
 import { registerCandidateCommunicationTools } from "./tools/candidate-communication.tools.js";
 import { registerResumeParseStatusTools } from "./tools/resume-parse-status.tools.js";
 import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposition.tools.js";
+import { registerOfferLifecycleTools } from "./tools/offer-lifecycle.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -306,6 +307,8 @@ export function registerAllTools(server) {
   registerResumeParseStatusTools(server);
   // Phase 2 — scheduled (reversible) knockout dispositions.
   registerRecruitmentDispositionTools(server);
+  // Phase 3a — offer decline capture, expiry extension and the grade band check.
+  registerOfferLifecycleTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);

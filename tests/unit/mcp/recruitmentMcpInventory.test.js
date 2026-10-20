@@ -38,6 +38,7 @@ import { registerRecruitmentScoringTools } from "../../../src/mcp/tools/recruitm
 import { registerCandidateCommunicationTools } from "../../../src/mcp/tools/candidate-communication.tools.js";
 import { registerResumeParseStatusTools } from "../../../src/mcp/tools/resume-parse-status.tools.js";
 import { registerRecruitmentDispositionTools } from "../../../src/mcp/tools/recruitment-disposition.tools.js";
+import { registerOfferLifecycleTools } from "../../../src/mcp/tools/offer-lifecycle.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -66,6 +67,8 @@ const RECRUITMENT_REGISTRARS = [
   ["candidateCommunicationTools", registerCandidateCommunicationTools],
   ["resumeParseStatusTools", registerResumeParseStatusTools],
   ["recruitmentDispositionTools", registerRecruitmentDispositionTools],
+  // Phase 3a — interview and offer orchestration.
+  ["offerLifecycleTools", registerOfferLifecycleTools],
 ];
 
 function collect(register) {
@@ -105,6 +108,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   candidateCommunicationTools: 4, // Phase 2: list, send, cancel, templates
   resumeParseStatusTools: 2, // Phase 2: parse status + re-queue
   recruitmentDispositionTools: 2, // Phase 2: scheduled disposition list + cancel
+  offerLifecycleTools: 4, // Phase 3a: decline record + reasons, expiry extend, band check
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -248,6 +252,11 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_candidate_resume_parse_retry",
   "hr_application_scheduled_disposition_list",
   "hr_application_scheduled_disposition_cancel",
+  // Phase 3a — interview and offer orchestration.
+  "hr_offer_band_check",
+  "hr_offer_decline_reasons_list",
+  "hr_offer_decline_record",
+  "hr_offer_expiry_extend",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -290,7 +299,8 @@ describe("Recruitment MCP tool inventory", () => {
     // Phase 2: + 3 settings and source report tools, + 3 duplicate tools,
     // + 5 scoring tools, + 4 communication tools, + 2 parse status tools,
     // + 2 scheduled disposition tools.
-    expect(all).toHaveLength(716);
+    // Phase 3a: + 4 offer lifecycle tools.
+    expect(all).toHaveLength(720);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
