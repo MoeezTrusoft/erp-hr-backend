@@ -7,10 +7,11 @@
 // how the whole candidate-privacy family, offer approval/handoff, the
 // application list and the analytics export ended up exposed-but-ungated.
 //
-// The gateway side pins the same 73 names in
-// erp-gateway-backend/tests/hr-recruitment-mcp-exposure.test.js. Adding or
-// removing a Recruitment tool must update BOTH files; this one fails first,
-// naming the delta, so the gateway map cannot be forgotten.
+// The gateway side must pin the same names in
+// erp-gateway-backend/tests/hr-recruitment-mcp-exposure.test.js (that count is
+// not visible from this repository; check it there). Adding or removing a
+// Recruitment tool must update BOTH files; this one fails first, naming the
+// delta, so the gateway map cannot be forgotten.
 //
 // `resource(...)` registrations are intentionally NOT collected: a resource is
 // served by resources/read, which the gateway does not gate by permission, and
@@ -212,7 +213,7 @@ const EXPECTED_TOOLS = Object.freeze([
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
 
 describe("Recruitment MCP tool inventory", () => {
-  it("registers exactly the pinned 105 tools — no more, no less", () => {
+  it(`registers exactly the pinned ${EXPECTED_TOOLS.length} tools — no more, no less`, () => {
     expect([...allRecruitmentTools].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
