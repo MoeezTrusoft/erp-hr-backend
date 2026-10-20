@@ -224,6 +224,21 @@ const DEFINITIONS = Object.freeze({
         def: false,
         desc: "Job-specific interview evaluation forms and the candidate evaluation report",
     },
+    // Phase 4 — the handoff raises IT provisioning requests and creates the
+    // orientation and compliance sessions; the day-one readiness check and the
+    // 30/60/90 day surveys run on their jobs.
+    onboardingAutomation: {
+        env: "HR_ONBOARDING_AUTOMATION",
+        def: false,
+        desc: "Provisioning requests, orientation sessions, day-one readiness check and onboarding surveys",
+    },
+    // Phase 4 — the new hire's own onboarding through hr:self (tasks assigned
+    // to them, document upload to DAM, signing, sessions, surveys).
+    onboardingSelfPortal: {
+        env: "HR_ONBOARDING_SELF_PORTAL",
+        def: false,
+        desc: "Employee-facing pre-boarding portal on the new hire's own checklist",
+    },
 });
 
 export const RECRUITMENT_FLAG_DEFINITIONS = DEFINITIONS;

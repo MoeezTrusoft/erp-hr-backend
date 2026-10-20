@@ -67,6 +67,8 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
             offerExpiry: "HR_RECRUITMENT_OFFER_EXPIRY",
             onsiteTest: "HR_RECRUITMENT_ONSITE_TEST",
             evaluationForms: "HR_RECRUITMENT_EVALUATION_FORMS",
+            onboardingAutomation: "HR_ONBOARDING_AUTOMATION",
+            onboardingSelfPortal: "HR_ONBOARDING_SELF_PORTAL",
         };
         for (const [key, env] of Object.entries(phase2)) {
             expect(RECRUITMENT_FLAG_DEFINITIONS[key].env).toBe(env);
@@ -123,7 +125,7 @@ describe("recruitmentFlags — snapshot", () => {
         expect(Object.keys(snap).sort()).toEqual([
             "ai", "analytics", "approvalSla", "autoPublish", "calendarSync", "canonicalDashboard", "communications",
             "decisionPrompts", "duplicates", "esign", "evaluationForms", "interviewReminders", "jobFeed", "knockout",
-            "offerExpiry", "offerHandoff", "offerLetters", "onsiteTest", "parseWorker", "portal", "postingExpiry",
+            "offerExpiry", "offerHandoff", "offerLetters", "onboardingAutomation", "onboardingSelfPortal", "onsiteTest", "parseWorker", "portal", "postingExpiry",
             "retention", "scoring", "selfScheduling", "workflow",
         ]);
         for (const [key, entry] of Object.entries(snap)) {

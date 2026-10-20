@@ -3623,6 +3623,10 @@ model OnboardingChecklistTemplate {
   // [{ title, description, stage, category, assigneeType, dueInDays }] — the
   // shape is validated by lib/onboardingTemplates.js on write, never trusted.
   tasks       Json
+  // Phase 4 — orientation and compliance sessions created on handoff:
+  // [{ key, title, sessionType, dayOffset, fromTime, toTime, location,
+  // required, assigneeType }]; validated on write. Null = the baseline set.
+  sessions    Json?
   isActive    Boolean  @default(true)
   isDefault   Boolean  @default(false)
   createdById Int?
@@ -3651,11 +3655,19 @@ model OnboardingChecklist {
   preboarding       Json? // { readiness:{}, itSetup:{}, engagement:{}, workspace:{} } booleans
   memberAssignments Json? // [{ employeeId, name, role }]
   activityLog       Json? // [{ at, actor, text }]
+  // Phase 4 — day-one readiness: the last check's verdict (READY | AT_RISK),
+  // its gaps [{ kind, id, title, dueDate }] and when HR and the manager were
+  // last alerted (one alert per check day).
+  readinessStatus    String?
+  readinessCheckedAt DateTime?
+  readinessGaps      Json?
+  readinessAlertedAt DateTime?
   created_at        DateTime         @default(now())
   updated_at        DateTime         @updatedAt
 
   employee       Employee             @relation(fields: [employeeId], references: [id])
   tasks          OnboardingTask[]
+  provisioningRequests OnboardingProvisioningRequest[]
   documents      OnboardingDocument[]
   surveys        OnboardingSurvey[]
   sessions       OnboardingSession[]
@@ -3679,6 +3691,22 @@ model OnboardingSession {
   sessionType String? // orientation | training | meeting
   location    String? // room or link
   assigneeId  Int?
+  // Phase 4 — sessions created from the template on handoff carry its key
+  // (one per checklist and key) and whether attendance is required.
+  templateKey String?
+  required    Boolean   @default(false)
+  // Phase 4 — calendar invite linkage, the same shape and claim protocol as
+  // Interview's (PENDING rows are written by the sync worker).
+  calendarProvider       String?
+  calendarEventId        String?
+  calendarSyncedAt       DateTime?
+  calendarSyncStatus     String? // PENDING | SYNCED | FAILED
+  calendarSyncAction     String? // CREATE | UPDATE | CANCEL
+  calendarSyncAttempts   Int       @default(0)
+  calendarNextAttemptAt  DateTime?
+  calendarLastError      String?
+  calendarClaimedBy      String?
+  calendarClaimExpiresAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -3686,8 +3714,10 @@ model OnboardingSession {
 
   tenantId String? @db.Uuid
 
+  @@unique([checklistId, templateKey])
   @@index([checklistId])
   @@index([tenantId])
+  @@index([calendarSyncStatus, calendarNextAttemptAt])
   @@map("onboarding_sessions")
 }
 
@@ -3730,6 +3760,13 @@ model OnboardingDocument {
   requiresSign  Boolean   @default(false)
   signedAt      DateTime?
   signedByEmpId Int?
+  // Phase 4 — who supplied it (HR, or the NEW_HIRE through the self portal)
+  // and HR's review of a new hire's upload (PENDING | VERIFIED | REJECTED).
+  source        String    @default("HR")
+  reviewStatus  String?
+  reviewedAt    DateTime?
+  reviewedById  Int?
+  reviewNote    String?
   created_at    DateTime  @default(now())
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
@@ -3764,6 +3801,11 @@ model OnboardingSurvey {
   type        SurveyType
   responses   Json?
   submittedAt DateTime?
+  // Phase 4 — issued by the survey job at start + 30/60/90 days, due a week
+  // later, reminded once.
+  issuedAt    DateTime?
+  dueAt       DateTime?
+  remindedAt  DateTime?
   created_at  DateTime   @default(now())
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
@@ -6489,6 +6531,8 @@ model TenantRecruitmentSettings {
   // Phase 3b — whether the kiosk shows the candidate their score at the end
   // (default: a neutral thank-you only).
   kioskShowScore          Boolean @default(false)
+  // Phase 4 — days before the start date the day-one readiness check runs.
+  onboardingReadinessLeadDays Int @default(2)
   version               Int      @default(1)
   updatedById           Int?
   createdAt             DateTime @default(now())
@@ -7070,3 +7114,37 @@ model CandidateEvaluationSummary {
   @@index([tenantId, requisitionId])
   @@map("candidate_evaluation_summaries")
 }
+
+// ==================== RECRUITMENT PHASE 4 (handoff and onboarding) ====================
+
+// A request to IT for something day one needs (account, email, device,
+// access, workspace), raised from a checklist task of category
+// IT_ACCESS_SETUP or WORKSPACE_EQUIPMENT. Fulfilling it completes the task.
+model OnboardingProvisioningRequest {
+  id             Int       @id @default(autoincrement())
+  tenantId       String    @db.Uuid
+  checklistId    Int
+  taskId         Int?      @unique
+  employeeId     Int
+  kind           String // ACCOUNT | EMAIL | DEVICE | ACCESS | WORKSPACE | OTHER
+  title          String
+  status         String    @default("REQUESTED") // REQUESTED | IN_PROGRESS | FULFILLED | REJECTED | CANCELLED
+  dueDate        DateTime?
+  requestedAt    DateTime  @default(now())
+  acknowledgedAt DateTime?
+  fulfilledAt    DateTime?
+  fulfilledById  Int?
+  externalRef    String?
+  notes          String?
+  version        Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([tenantId, dueDate])
+  @@index([checklistId])
+  @@map("onboarding_provisioning_requests")
+}
+

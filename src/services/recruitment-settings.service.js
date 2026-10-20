@@ -33,6 +33,8 @@ const INT_RANGES = Object.freeze({
     feedbackNudgeHours: [0, 168],
     feedbackEscalationHours: [1, 720],
     offerReminderDays: [0, 30],
+    // Phase 4 — the day-one readiness check runs this many days before start.
+    onboardingReadinessLeadDays: [0, 14],
 });
 
 // HH:MM in the tenant's time zone; the migration's CHECK holds the same rule
@@ -61,6 +63,7 @@ export const RECRUITMENT_SETTINGS_DEFAULTS = Object.freeze({
     feedbackNudgeHours: 2,
     feedbackEscalationHours: 24,
     offerReminderDays: 3,
+    onboardingReadinessLeadDays: 2,
 });
 
 export function defaultRecruitmentSettings(tenantId = null) {

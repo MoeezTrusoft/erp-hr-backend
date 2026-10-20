@@ -230,6 +230,8 @@ const RLS_MODELS = new Set([
     'CandidateTestResult',
     'InterviewQuestion',
     'CandidateEvaluationSummary',
+    // Recruitment Phase 4 — IT provisioning requests raised on handoff.
+    'OnboardingProvisioningRequest',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
