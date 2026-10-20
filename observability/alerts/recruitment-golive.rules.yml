@@ -1,0 +1,95 @@
+# observability/alerts/recruitment-golive.rules.yml
+#
+# Recruitment Phase 6 (go-live, plan 13.1: "all seven existing counters plus
+# the new ones are visible in Prometheus with the alerts in the runbook
+# configured"). The Phase 4 handoff pages live in recruitment-onboarding.rules.yml;
+# this file covers the Phase 5 surfaces on the counters in
+# src/lib/recruitmentOpsMetrics.js:
+#
+#   hr_recruitment_retention_runs_total{outcome="dry-run"|"applied"|"refused-flag"|"refused-tenant"|"failed"}
+#   hr_recruitment_notifications_total{event, outcome="enqueued"|"dropped-flag"|"dropped-error"}
+#     (event = the hr.recruitment.<event>.v1 name without prefix and version,
+#      counted when the outbox row is enqueued; dsr_sla_at_risk,
+#      agency_submission_received and analytics_alert_raised need the
+#      NOTIFY_EVENTS allowlist entries in scratchpad p6-notes/E.md section 6,
+#      until then they collapse to event="other")
+#
+# Counters are per process: every expression sums across instances.
+# tests/unit/release/recruitment-alert-rules.test.js parses every rules file
+# here and checks each metric name and label value against the code.
+#
+# Severity: page = someone acts now; ticket = a privacy or recruiting owner
+# acts within the business day (route to the HR engineering queue).
+groups:
+  - name: hr-recruitment-golive-recording
+    rules:
+      # Retention runs per outcome per day: the dashboard behind the 13.1 line
+      # "retention runs in dry-run with a reviewed report; apply mode remains
+      # off until the data-policy owner enables it per tenant".
+      - record: hr_recruitment:retention_runs:increase1d
+        expr: sum by (outcome) (increase(hr_recruitment_retention_runs_total[1d]))
+      - record: hr_recruitment:dsr_sla_at_risk:increase1d
+        expr: sum(increase(hr_recruitment_notifications_total{event="dsr_sla_at_risk",outcome="enqueued"}[1d]))
+      # Volume only: agency submissions are reviewed in the product
+      # (hr_recruitment_agency_submissions_list), not paged.
+      - record: hr_recruitment:agency_submissions:increase1d
+        expr: sum(increase(hr_recruitment_notifications_total{event="agency_submission_received",outcome="enqueued"}[1d]))
+      # Volume only: an analytics alert already notifies its recipient through
+      # the hub; Prometheus keeps the trend.
+      - record: hr_recruitment:analytics_alerts_raised:increase1d
+        expr: sum(increase(hr_recruitment_notifications_total{event="analytics_alert_raised",outcome="enqueued"}[1d]))
+
+  - name: hr-recruitment-golive
+    rules:
+      - alert: HrRecruitmentRetentionRunFailed
+        expr: sum(increase(hr_recruitment_retention_runs_total{outcome="failed"}[1h])) > 0
+        labels:
+          severity: page
+          team: hr-engineering
+          service: erp-hr-backend
+          oncall: hr-engineering
+        annotations:
+          summary: "A candidate retention run failed in the last hour"
+          description: "{{ $value | humanize }} retention run(s) failed. The run is recorded FAILED with its error; nothing after the failure was erased."
+          runbook: "MCP: hr_candidate_retention_runs_list {status: FAILED} -> hr_candidate_retention_run_get {runId} (error) -> fix the cause; the next scheduled run (04:00 UTC) retries. See scripts/RECRUITMENT-GOLIVE.runbook.md."
+      - alert: HrRecruitmentRetentionApplyRefused
+        expr: sum(increase(hr_recruitment_retention_runs_total{outcome="refused-tenant"}[1h])) > 0
+        labels:
+          severity: ticket
+          team: hr-engineering
+          service: erp-hr-backend
+        annotations:
+          summary: "Retention APPLY was asked for a tenant whose data-policy owner has not signed off"
+          description: "{{ $value | humanize }} apply request(s) ran as a dry-run instead (reason tenant-not-signed-off). Expected only while a tenant is being moved to apply mode."
+          runbook: "MCP: hr_candidate_retention_runs_list -> confirm with the tenant's data-policy owner; sign-off is hr_candidate_retention_signoff on a dry-run from the last 7 days. Do not switch apply on for them."
+      - alert: HrRecruitmentRetentionApplied
+        expr: sum(increase(hr_recruitment_retention_runs_total{outcome="applied"}[1h])) > 0
+        labels:
+          severity: ticket
+          team: hr-engineering
+          service: erp-hr-backend
+        annotations:
+          summary: "Candidate data was erased by a retention APPLY run"
+          description: "{{ $value | humanize }} apply run(s) in the last hour. Erasure is irreversible: confirm the tenant's apply mode was enabled by its data-policy owner."
+          runbook: "MCP: hr_candidate_retention_runs_list {mode: APPLY} -> hr_candidate_retention_run_get {runId}; to stop: hr_candidate_retention_apply_disable."
+      - alert: HrRecruitmentDsrSlaAtRisk
+        expr: sum(increase(hr_recruitment_notifications_total{event="dsr_sla_at_risk",outcome="enqueued"}[1h])) > 0
+        labels:
+          severity: ticket
+          team: hr-engineering
+          service: erp-hr-backend
+        annotations:
+          summary: "A candidate data-subject request is close to (or past) its legal deadline"
+          description: "{{ $value | humanize }} data-subject request(s) flagged by the daily SLA check (04:20 UTC). The handler and the data-policy owner were notified through the hub."
+          runbook: "MCP: hr_candidate_request_list -> hr_candidate_request_export_generate {requestId} for access requests -> hr_candidate_request_close {id, status}."
+      - alert: HrRecruitmentNotificationsDropped
+        expr: sum(increase(hr_recruitment_notifications_total{outcome="dropped-error"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: ticket
+          team: hr-engineering
+          service: erp-hr-backend
+        annotations:
+          summary: "Recruitment notifications are being dropped"
+          description: "{{ $value | humanize }} recruitment event(s) or candidate emails in 15 minutes were not enqueued or not accepted by the Notification Hub (missing tenant, outbox unavailable, hub error). Candidates or staff were not told."
+          runbook: "Logs: 'hr domain event' / 'notification' warnings with the event name; check NOTIFICATION_HUB_URL and the outbox dispatcher (scripts/outbox-dispatch.js)."
