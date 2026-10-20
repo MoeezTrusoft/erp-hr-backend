@@ -160,6 +160,10 @@ export const createApp = () => {
             "X-Internal-Secret",
             // C.2 / T-P2.2 — clients send Idempotency-Key on mutating HR calls.
             "Idempotency-Key",
+            // Phase 3b — the assessment kiosk app (its own origin, listed in
+            // ALLOWED_DOMAINS) sends its workstation and session tokens.
+            "X-Kiosk-Token",
+            "X-Kiosk-Session",
         ],
         optionsSuccessStatus: 204,
     }));

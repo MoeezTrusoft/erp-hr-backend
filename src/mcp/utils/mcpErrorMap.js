@@ -42,6 +42,17 @@ export function toJsonRpcError(err) {
 
     const data = { code: norm.code };
     if (norm.details !== undefined) data.details = norm.details;
+    // A domain code (HR-RECRUITMENT-*, HR-ONBOARDING-* ...) collapses to its
+    // HR-nnnn class above; a client-facing (< 500) one also rides along as
+    // details.code, so a screen can tell "assessment required" from any other
+    // 409 without parsing the message. 5xx stays generic (ERR-3).
+    const domainCode = typeof err?.code === 'string' && /^HR-[A-Z][A-Z0-9-]{1,80}$/.test(err.code) ? err.code : null;
+    if (domainCode && domainCode !== norm.code && Number(norm.httpStatus) < 500) {
+        if (data.details === undefined) data.details = { code: domainCode };
+        else if (data.details && typeof data.details === 'object' && !Array.isArray(data.details) && data.details.code === undefined) {
+            data.details = { ...data.details, code: domainCode };
+        }
+    }
     // Appendix B extras, surfaced from the error when the domain set them.
     if (err && err.currentVersion !== undefined) data.currentVersion = err.currentVersion;
     if (err && err.permission !== undefined) data.permission = err.permission;
