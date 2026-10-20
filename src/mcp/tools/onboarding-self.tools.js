@@ -32,6 +32,7 @@ import {
   REVIEW_NOTE_MAX_LENGTH,
   SELF_SURVEY_TYPES,
   SURVEY_RESPONSES_SCHEMA,
+  assertDocumentReviewEnabled,
   assertSelfPortalEnabled,
   completeMyTask,
   getMyOnboarding,
@@ -94,7 +95,7 @@ function selfCaller(explicitEmployeeId) {
 function hrCaller(method) {
   const { user, permissions } = getCtx();
   assertPermission(permissions, method, HR_RESOURCE, user.isAdmin);
-  assertSelfPortalEnabled();
+  assertDocumentReviewEnabled();
   const reviewer = Number(user.employeeId);
   return { tenantId: user.tenantId, reviewerId: Number.isInteger(reviewer) && reviewer > 0 ? reviewer : null };
 }

@@ -8,6 +8,10 @@ const flag = { on: true };
 const assertSelfPortalEnabled = jest.fn(() => {
     if (!flag.on) throw Object.assign(new Error("The onboarding self portal is turned off"), { status: 503, code: "HR-ONBOARDING-SELF-PORTAL-DISABLED" });
 });
+// HR review has its own gate (either onboarding flag); here it follows the same switch.
+const assertDocumentReviewEnabled = jest.fn(() => {
+    if (!flag.on) throw Object.assign(new Error("Onboarding document review is turned off"), { status: 503, code: "HR-ONBOARDING-DOCUMENT-REVIEW-DISABLED" });
+});
 const getMyOnboarding = jest.fn(async () => ({ checklist: null }));
 const completeMyTask = jest.fn(async () => ({ changed: true }));
 const reopenMyTask = jest.fn(async () => ({ changed: true }));
@@ -24,6 +28,7 @@ jest.unstable_mockModule("../../../src/services/onboarding-self.service.js", () 
     REVIEW_NOTE_MAX_LENGTH: 1000,
     SELF_SURVEY_TYPES: ["DAY_30", "DAY_60", "DAY_90"],
     SURVEY_RESPONSES_SCHEMA: z.record(z.string(), z.unknown()),
+    assertDocumentReviewEnabled,
     assertSelfPortalEnabled,
     completeMyTask,
     getMyOnboarding,

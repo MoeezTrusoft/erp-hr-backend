@@ -201,6 +201,15 @@ describe("hr_onboarding_readiness_get / _list services", () => {
         expect(after.stored).toMatchObject({ status: "AT_RISK", checkedAt: NOW, alertedAt: NOW });
     });
 
+    it("get lists the hire's 30/60/90 surveys without their responses", async () => {
+        db.state.tables.onboardingSurvey = [
+            { id: 900, tenantId: A, checklistId: 100, employeeId: 1, type: "DAY_30", issuedAt: NOW, dueAt: NOW, remindedAt: null, submittedAt: null, responses: { q1: 5 } },
+            { id: 901, tenantId: A, checklistId: 999, employeeId: 2, type: "DAY_30", issuedAt: NOW, dueAt: NOW, remindedAt: null, submittedAt: null },
+        ];
+        const out = await asA(() => svc.getOnboardingReadiness({ tenantId: A, checklistId: 100, now: NOW }));
+        expect(out.surveys).toEqual([{ id: 900, type: "DAY_30", issuedAt: NOW, dueAt: NOW, remindedAt: null, submittedAt: null }]);
+    });
+
     it("get is tenant-scoped and flag-gated", async () => {
         await expect(asA(() => svc.getOnboardingReadiness({ tenantId: A, checklistId: 200, now: NOW }))).rejects.toMatchObject({
             status: 404, code: "HR-ONBOARDING-NOT-FOUND",

@@ -295,6 +295,13 @@ export async function getOnboardingReadiness({ tenantId, checklistId, now = new 
             if (!inputs) throw fail("Onboarding checklist not found", 404, "HR-ONBOARDING-NOT-FOUND");
             const { checklist } = inputs;
             const live = evaluate(inputs);
+            // Phase 4 — the hire's 30/60/90 surveys for the day-one view (no
+            // responses: HR reads those through the survey tools).
+            const surveys = await tx.onboardingSurvey.findMany({
+                where: withTenant(tenantId, { checklistId: checklist.id }),
+                select: { id: true, type: true, issuedAt: true, dueAt: true, remindedAt: true, submittedAt: true },
+                orderBy: [{ type: "asc" }],
+            });
             return {
                 checklistId: checklist.id,
                 employeeId: checklist.employeeId,
@@ -312,6 +319,7 @@ export async function getOnboardingReadiness({ tenantId, checklistId, now = new 
                     managerId: live.managerId,
                 },
                 stored: storedVerdict(checklist),
+                surveys,
             };
         },
         { tenantId },

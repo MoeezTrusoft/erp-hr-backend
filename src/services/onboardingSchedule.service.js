@@ -116,6 +116,16 @@ export async function listSchedule(checklistId, tenantId) {
     sessionType: s.sessionType,
     location: s.location,
     assignee: s.assigneeId != null ? assigneeById.get(s.assigneeId) ?? null : null,
+    // Phase 4 — what the day-one view needs: the host, whether attendance is
+    // required, the template key and the invite state (never the sync error).
+    assigneeId: s.assigneeId ?? null,
+    required: s.required === true,
+    templateKey: s.templateKey ?? null,
+    calendar: {
+      syncStatus: s.calendarSyncStatus ?? null,
+      syncAction: s.calendarSyncAction ?? null,
+      nextAttemptAt: s.calendarNextAttemptAt ?? null,
+    },
   }));
 }
 
@@ -244,6 +254,13 @@ export async function listDocuments(checklistId, tenantId) {
     uploadedDate: d.created_at ?? null,
     status: documentStatus(d),
     mediaId: d.mediaId,
+    // Phase 4 — who supplied it and HR's review of a new hire's upload.
+    requiresSign: d.requiresSign === true,
+    signedAt: d.signedAt ?? null,
+    source: d.source ?? "HR",
+    reviewStatus: d.reviewStatus ?? null,
+    reviewNote: d.reviewNote ?? null,
+    reviewedAt: d.reviewedAt ?? null,
   }));
 }
 

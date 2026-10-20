@@ -102,12 +102,23 @@ describe("the flag", () => {
             () => svc.uploadMyDocument({ tenantId: T1, employeeId: HIRE, title: "x", fileName: "a.pdf", mimeType: "application/pdf", contentBase64: PDF_B64 }),
             () => svc.signMyDocument({ tenantId: T1, employeeId: HIRE, documentId: ids.policy }),
             () => svc.submitMySurvey({ tenantId: T1, employeeId: HIRE, type: "DAY_30", responses: { q1: 5 } }),
-            () => svc.reviewOnboardingDocument({ tenantId: T1, reviewerId: HR, documentId: ids.rejected, decision: "VERIFIED" }),
-            () => svc.listPendingOnboardingDocuments({ tenantId: T1 }),
         ];
         for (const call of calls) {
             expect(await failure(asUser(call))).toMatchObject({ status: 503, code: "HR-ONBOARDING-SELF-PORTAL-DISABLED" });
         }
+        // HR's review serves both rollouts: off only when the automation flag is off too.
+        const prior = process.env.HR_ONBOARDING_AUTOMATION;
+        process.env.HR_ONBOARDING_AUTOMATION = "false";
+        for (const call of [
+            () => svc.reviewOnboardingDocument({ tenantId: T1, reviewerId: HR, documentId: ids.rejected, decision: "VERIFIED" }),
+            () => svc.listPendingOnboardingDocuments({ tenantId: T1 }),
+        ]) {
+            expect(await failure(asUser(call))).toMatchObject({ status: 503, code: "HR-ONBOARDING-DOCUMENT-REVIEW-DISABLED" });
+        }
+        process.env.HR_ONBOARDING_AUTOMATION = "true";
+        await expect(asUser(() => svc.listPendingOnboardingDocuments({ tenantId: T1 }))).resolves.toBeDefined();
+        if (prior === undefined) delete process.env.HR_ONBOARDING_AUTOMATION;
+        else process.env.HR_ONBOARDING_AUTOMATION = prior;
         expect(uploadFileToDAM).not.toHaveBeenCalled();
         expect(fake.current.events()).toHaveLength(0);
     });

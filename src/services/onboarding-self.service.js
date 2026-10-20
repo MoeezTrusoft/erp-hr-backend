@@ -68,6 +68,14 @@ const fail = (message, status, code) => Object.assign(new Error(message), { stat
 const notFound = (what) => fail(`${what} not found`, 404, "HR-ONBOARDING-NOT-FOUND");
 
 /** 503 while the portal flag is off (clients see HR-5031). */
+// HR's review of a new hire's upload belongs to both rollouts: the self
+// portal that produces uploads and the HR automation screens that review them.
+export function assertDocumentReviewEnabled() {
+    if (!isRecruitmentFlagEnabled("onboardingSelfPortal") && !isRecruitmentFlagEnabled("onboardingAutomation")) {
+        throw fail("Onboarding document review is turned off", 503, "HR-ONBOARDING-DOCUMENT-REVIEW-DISABLED");
+    }
+}
+
 export function assertSelfPortalEnabled() {
     if (!isRecruitmentFlagEnabled("onboardingSelfPortal")) {
         throw fail("The onboarding self portal is turned off", 503, "HR-ONBOARDING-SELF-PORTAL-DISABLED");
@@ -520,7 +528,7 @@ export async function submitMySurvey({ tenantId, employeeId, type, responses, no
  * on a rejection and reaches the new hire). Nobody reviews their own upload.
  */
 export async function reviewOnboardingDocument({ tenantId, reviewerId = null, documentId, decision, note, now = new Date() } = {}) {
-    assertSelfPortalEnabled();
+    assertDocumentReviewEnabled();
     requireTenant(tenantId);
     const id = positiveInt(documentId, "document id");
     const verdict = String(decision ?? "").toUpperCase();
@@ -564,7 +572,7 @@ export async function reviewOnboardingDocument({ tenantId, reviewerId = null, do
 
 /** HR: new hires' uploads waiting for review, oldest first. */
 export async function listPendingOnboardingDocuments({ tenantId, checklistId, employeeId, page = 1, limit = 50 } = {}) {
-    assertSelfPortalEnabled();
+    assertDocumentReviewEnabled();
     requireTenant(tenantId);
     const take = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const pageNo = Math.max(Number(page) || 1, 1);

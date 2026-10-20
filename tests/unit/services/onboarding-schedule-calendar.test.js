@@ -111,6 +111,9 @@ describe("deleteSession", () => {
         addSession({ tenantId: TENANT, checklistId: 70, title: "Synced", sessionDate: new Date("2026-10-27T00:00:00Z"), calendarSyncAction: "CREATE", calendarSyncStatus: "SYNCED" });
         const listed = await asTenant(() => schedule.listSchedule(70, TENANT));
         expect(listed.map((s) => s.title)).toEqual(["Plain", "Synced"]);
-        expect(Object.keys(listed[0]).sort()).toEqual(["assignee", "candidate", "fromTime", "id", "joiningDate", "location", "role", "sessionDate", "sessionType", "title", "toTime"]);
+        expect(Object.keys(listed[0]).sort()).toEqual(["assignee", "assigneeId", "calendar", "candidate", "fromTime", "id", "joiningDate", "location", "required", "role", "sessionDate", "sessionType", "templateKey", "title", "toTime"]);
+        expect(listed[1].calendar).toEqual({ syncStatus: "SYNCED", syncAction: "CREATE", nextAttemptAt: null });
+        // The sync error never leaves the service.
+        expect(JSON.stringify(listed)).not.toContain("calendarLastError");
     });
 });
