@@ -125,3 +125,13 @@ describe("createOffer warnings", () => {
         expect((await createOffer(args)).warnings).toEqual([]);
     });
 });
+
+describe("getOfferManage detail (Phase 3a panel)", () => {
+    it("carries the version for If-Match and the employee category for e-signature", async () => {
+        const { getOfferManage } = await import("../../../src/services/offerMgmt.service.js");
+        prisma.offer.findFirst.mockResolvedValue({ ...offerRow, version: 4, employeeCategory: "PERMANENT", candidate: { firstName: "A", lastName: "K" }, jobRequisition: { title: "Engineer" } });
+        await expect(getOfferManage(9, { tenantId: TENANT })).resolves.toMatchObject({ version: 4, employeeCategory: "PERMANENT" });
+        prisma.offer.findFirst.mockResolvedValue({ ...offerRow, candidate: null, jobRequisition: null });
+        await expect(getOfferManage(9, { tenantId: TENANT })).resolves.toMatchObject({ version: 0, employeeCategory: null });
+    });
+});

@@ -695,31 +695,61 @@ export async function getTestResultReport({ tenantId, scope, resultId, interview
 }
 
 /** Results for a requisition or an interview, cut to the interviews the caller can see. */
-export async function listTestResults({ tenantId, scope, requisitionId, interviewId, band, page = 1, limit = 50 }) {
+/**
+ * Results for a requisition, an interview or a candidate, within the caller's
+ * interview scope. `decisionPending` keeps the results still waiting for a
+ * recruiter (a FAILED, REVIEW or INCOMPLETE band with no decision). Each row
+ * carries the candidate's display name; scope already limits who reads it.
+ */
+export async function listTestResults({
+    tenantId, scope, requisitionId, interviewId, candidateId, band, decisionPending = false, page = 1, limit = 50,
+}) {
     requireTenant(tenantId);
     const reqId = positiveInt(requisitionId);
     const iid = positiveInt(interviewId);
-    if (!reqId && !iid) throw fail("requisitionId or interviewId is required", 400, "HR-RECRUITMENT-TEST-RESULT-ID-REQUIRED");
+    const cid = positiveInt(candidateId);
+    if (!reqId && !iid && !cid) {
+        throw fail("requisitionId, interviewId or candidateId is required", 400, "HR-RECRUITMENT-TEST-RESULT-ID-REQUIRED");
+    }
     const take = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const pageNo = Math.max(Number(page) || 1, 1);
+    const application = {
+        ...(reqId ? { jobRequisitionId: reqId } : {}),
+        ...(cid ? { candidateId: cid } : {}),
+    };
     const interviews = await prisma.interview.findMany({
         where: withTenant(tenantId, {
             ...interviewScopeWhere(scope),
             ...(iid ? { id: iid } : {}),
-            ...(reqId ? { application: { jobRequisitionId: reqId } } : {}),
+            ...(Object.keys(application).length ? { application } : {}),
         }),
         select: { id: true },
         take: 5000,
     });
-    const where = withTenant(tenantId, {
-        interviewId: { in: interviews.map((i) => i.id) },
-        ...(band ? { band: String(band).trim().toUpperCase() } : {}),
-    });
+    const wanted = band ? String(band).trim().toUpperCase() : null;
+    const pendingBands = wanted ? DECISION_REQUIRED_BANDS.filter((b) => b === wanted) : [...DECISION_REQUIRED_BANDS];
+    const bandWhere = decisionPending
+        ? { band: { in: pendingBands }, decision: null }
+        : wanted ? { band: wanted } : {};
+    const where = withTenant(tenantId, { interviewId: { in: interviews.map((i) => i.id) }, ...bandWhere });
     const [rows, total] = await Promise.all([
         prisma.candidateTestResult.findMany({ where, select: RESULT_SUMMARY, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: (pageNo - 1) * take, take }),
         prisma.candidateTestResult.count({ where }),
     ]);
-    return { items: rows.map(summarize), total, page: pageNo, limit: take };
+    const candidateIds = [...new Set(rows.map((r) => r.candidateId).filter(Boolean))];
+    const people = candidateIds.length
+        ? await prisma.candidate.findMany({
+            where: withTenant(tenantId, { id: { in: candidateIds } }),
+            select: { id: true, firstName: true, lastName: true },
+        })
+        : [];
+    const nameOf = new Map(people.map((p) => [p.id, [p.firstName, p.lastName].filter(Boolean).join(" ") || null]));
+    return {
+        items: rows.map((row) => ({ ...summarize(row), candidateName: nameOf.get(row.candidateId) ?? null })),
+        total,
+        page: pageNo,
+        limit: take,
+    };
 }
 
 const pct = (part, whole) => (whole ? Math.round((part / whole) * 1000) / 10 : null);

@@ -63,11 +63,13 @@ export function registerTestResultTools(server) {
 
   server.tool(
     "hr_test_results_list",
-    "On-site test results for a requisition or an interview (band, score, integrity flags, decision, validity), limited to the interviews you can see.",
+    "On-site test results for a requisition, an interview or a candidate (band, score, integrity flags, decision, validity, candidate name), limited to the interviews you can see. decisionPending keeps FAILED, REVIEW and INCOMPLETE results with no decision yet.",
     {
       requisitionId: idInput.optional().describe("Requisition id"),
       interviewId: idInput.optional().describe("Interview id"),
+      candidateId: idInput.optional().describe("Candidate id (every attempt across applications)"),
       band: z.enum(Object.values(RESULT_BAND)).optional().describe("Filter by band"),
+      decisionPending: z.boolean().optional().describe("Only results still waiting for a recruiter decision"),
       page: z.coerce.number().int().positive().optional(),
       limit: z.coerce.number().int().positive().max(100).optional().describe("Page size (default 50, max 100)"),
     },

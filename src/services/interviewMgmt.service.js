@@ -200,6 +200,20 @@ const feedbackSummary = (interview) => {
 const shapeDetail = (interview) => ({
   ...shapeRow(interview),
   durationMinutes: interview.durationMinutes ?? null,
+  // Phase 3a — the manage panel lists the application's slot offers and shows
+  // the calendar linkage and day-of state; the sync error text stays internal.
+  applicationId: interview.applicationId ?? null,
+  calendar: {
+    provider: interview.calendarProvider ?? null,
+    eventId: interview.calendarEventId ?? null,
+    syncStatus: interview.calendarSyncStatus ?? null,
+    syncAction: interview.calendarSyncAction ?? null,
+    nextAttemptAt: interview.calendarNextAttemptAt ?? null,
+  },
+  noShowAt: interview.noShowAt ?? null,
+  remindersPausedAt: interview.remindersPausedAt ?? null,
+  assessmentRequired: interview.assessmentRequired === true,
+  assessmentStatus: interview.assessmentStatus ?? null,
   scorecards: (interview.scorecards || []).map((card) => ({
     reviewer: employeeName(card.reviewer),
     reviewerId: card.reviewerId,

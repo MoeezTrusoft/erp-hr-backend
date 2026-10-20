@@ -606,6 +606,21 @@ describe("the test report and its scope", () => {
         await expect(list("reception")).resolves.toMatchObject({ total: 0 });
     });
 
+    it("lists by candidate, carries the candidate's name and filters what still needs a decision", async () => {
+        const { result } = await scoredWithWeakSafety();
+        const list = (args) => as("recruiter", (access) => results.listTestResults({ tenantId: TENANT, scope: access.scope, ...args }));
+        const byCandidate = await list({ candidateId: 5 });
+        expect(byCandidate).toMatchObject({ total: 1, items: [{ resultId: result.id, candidateName: "Ayesha Khan" }] });
+        await expect(list({ candidateId: 6 })).resolves.toMatchObject({ total: 0 });
+
+        // The weak-safety sitting fails a must-pass section, so it waits for a recruiter.
+        await expect(list({ requisitionId: 21, decisionPending: true })).resolves.toMatchObject({ total: 1 });
+        await decide("recruiter", result.id, "PROCEED", "Panel insists");
+        await expect(list({ requisitionId: 21, decisionPending: true })).resolves.toMatchObject({ total: 0 });
+        await expect(list({ requisitionId: 21 })).resolves.toMatchObject({ total: 1 });
+        await expect(list({})).rejects.toMatchObject({ status: 400 });
+    });
+
     it("reports a waiver when there is no result", async () => {
         await as("recruiter", (access) => results.waiveAssessment({ tenantId: TENANT, access, actorId: 1, interviewId: 40, reason: "Senior role" }));
         await expect(report("panelist", { interviewId: 40 })).resolves.toMatchObject({ assessmentStatus: "WAIVED", waiver: { reason: "Senior role" }, result: null });

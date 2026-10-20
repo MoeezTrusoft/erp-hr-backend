@@ -226,6 +226,10 @@ export const getOfferManage = async (id, { tenantId, showSensitive = false }) =>
 
   const detail = toManageRow(offer, showSensitive);
   detail.notes = offer.notes ?? null;
+  // Phase 3a — the detail panel extends with If-Match (version) and sends for
+  // signature with the category chosen at acceptance (employeeCategory).
+  detail.version = offer.version ?? 0;
+  detail.employeeCategory = offer.employeeCategory ?? null;
   detail.approvals = {
     ...detail.approvals,
     stages: offer.approvals ?? null,

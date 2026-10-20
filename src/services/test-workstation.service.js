@@ -106,10 +106,22 @@ export async function registerTestWorkstation({ tenantId, access, actorId = null
 }
 
 export async function listTestWorkstations({ tenantId, access, siteRef, status, page = 1, limit = 50 } = {}) {
-    guard({ tenantId, access });
+    // Reception picks the kiosk a code is issued for, so it may list the
+    // ACTIVE kiosks too; revoked ones and every other workstation action stay
+    // with HR admins. The select never carries the token.
+    const admin = access?.admin === true;
+    if (admin) guard({ tenantId, access });
+    else {
+        assertEnabled();
+        if (!tenantId) throw fail("Tenant context is required", 400, "HR-TENANT-REQUIRED");
+        assertAssessmentCapability(access, "reception", "Only an HR admin or reception lists kiosk workstations");
+    }
     const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const pageNo = Math.max(Number(page) || 1, 1);
-    const where = withTenant(tenantId, { ...(siteRef ? { siteRef: String(siteRef) } : {}), ...(status ? { status } : {}) });
+    const shownStatus = admin ? status : WORKSTATION_STATUS.ACTIVE;
+    // Sites are free text, matched case-insensitively like every other site check.
+    const site = typeof siteRef === "string" && siteRef.trim() ? { siteRef: { equals: siteRef.trim(), mode: "insensitive" } } : {};
+    const where = withTenant(tenantId, { ...site, ...(shownStatus ? { status: shownStatus } : {}) });
     const [items, total] = await Promise.all([
         prisma.testWorkstation.findMany({ where, select: WORKSTATION_SELECT, orderBy: [{ siteRef: "asc" }, { label: "asc" }, { id: "asc" }], skip: (pageNo - 1) * take, take }),
         prisma.testWorkstation.count({ where }),

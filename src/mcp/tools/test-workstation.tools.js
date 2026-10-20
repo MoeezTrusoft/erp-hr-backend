@@ -53,7 +53,7 @@ export function registerTestWorkstationTools(server) {
 
   server.tool(
     "hr_test_workstations_list",
-    "List registered kiosk workstations with site, status, last seen and token rotation time (never the token).",
+    "List registered kiosk workstations with site, status, last seen and token rotation time (never the token). Reception sees ACTIVE kiosks only, to pick one for a code.",
     {
       siteRef: z.string().max(100).optional().describe("Only this site"),
       status: z.enum(Object.values(WORKSTATION_STATUS)).optional().describe("ACTIVE or REVOKED"),

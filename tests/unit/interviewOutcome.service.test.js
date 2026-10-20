@@ -27,7 +27,7 @@ jest.unstable_mockModule("../../src/services/interview-scorecard.service.js", ()
   upsertInterviewScorecard: jest.fn(),
 }));
 
-const { setInterviewOutcome } = await import("../../src/services/interviewMgmt.service.js");
+const { setInterviewOutcome, getInterviewManaged } = await import("../../src/services/interviewMgmt.service.js");
 
 describe("Interview outcome rules (Phase 3.4)", () => {
   beforeEach(() => {
@@ -127,5 +127,24 @@ describe("Interview outcome rules (Phase 3.4)", () => {
     prisma.interview.findFirst.mockResolvedValue(null);
     await expect(setInterviewOutcome({ interviewId: 99, decision: "HOLD", tenantId: "t" }))
       .rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("getInterviewManaged detail (Phase 3a manage panel)", () => {
+  it("carries the application id, the calendar linkage and the day-of state, never the sync error", async () => {
+    prisma.interview.findFirst.mockResolvedValue({
+      id: 7, applicationId: 9, status: "SCHEDULED", scheduledAt: new Date("2026-11-02T05:00:00Z"), durationMinutes: 45,
+      calendarProvider: "GOOGLE", calendarEventId: "evt-1", calendarSyncStatus: "FAILED", calendarSyncAction: "UPDATE",
+      calendarNextAttemptAt: null, calendarLastError: "token expired for host x", noShowAt: null, remindersPausedAt: null,
+      assessmentRequired: true, assessmentStatus: "REQUIRED", interviewers: [], scorecards: [],
+    });
+    const detail = await getInterviewManaged({ id: 7, tenantId: "t-1" });
+    expect(detail).toMatchObject({
+      applicationId: 9,
+      calendar: { provider: "GOOGLE", eventId: "evt-1", syncStatus: "FAILED", syncAction: "UPDATE" },
+      assessmentRequired: true,
+      assessmentStatus: "REQUIRED",
+    });
+    expect(JSON.stringify(detail)).not.toContain("token expired");
   });
 });

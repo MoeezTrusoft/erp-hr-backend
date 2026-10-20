@@ -33,6 +33,7 @@ const TENANT = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
 const admin = () => ({ tenantId: TENANT, access: resolveAssessmentAccess({ roles: ["HR_ADMIN"], employeeId: 8 }), actorId: 8 });
 const recruiter = () => ({ tenantId: TENANT, access: resolveAssessmentAccess({ roles: ["RECRUITER"], employeeId: 7 }), actorId: 7 });
+const reception = () => ({ tenantId: TENANT, access: resolveAssessmentAccess({ roles: ["RECEPTION"], employeeId: 9 }), actorId: 9 });
 const inTenant = (fn, tenantId = TENANT) => mcpCtx.run({ user: { tenantId } }, async () => await fn());
 const sha = (t) => createHash("sha256").update(t).digest("hex");
 const refusal = async (promise) => {
@@ -71,6 +72,19 @@ describe("admin tools", () => {
         expect((await refusal(inTenant(() => svc.registerTestWorkstation({ ...recruiter(), label: "x", siteRef: "y" })))).status).toBe(403);
         delete process.env.HR_RECRUITMENT_ONSITE_TEST;
         expect(await refusal(inTenant(() => svc.listTestWorkstations(admin())))).toMatchObject({ status: 503, code: "HR-RECRUITMENT-ONSITE-TEST-DISABLED" });
+    });
+
+    it("reception lists only ACTIVE kiosks, to pick one for a code, and manages none", async () => {
+        const a = await inTenant(() => svc.registerTestWorkstation({ ...admin(), label: "Desk 1", siteRef: "LHR" }));
+        await inTenant(() => svc.registerTestWorkstation({ ...admin(), label: "Desk 2", siteRef: "LHR" }));
+        await inTenant(() => svc.revokeTestWorkstation({ ...admin(), workstationId: a.workstation.id, reason: "Broken" }));
+        const seen = await inTenant(() => svc.listTestWorkstations({ ...reception(), status: "REVOKED" }));
+        expect(seen.items.map((w) => w.label)).toEqual(["Desk 2"]);
+        expect(JSON.stringify(seen)).not.toMatch(/deviceToken|[0-9a-f]{64}/);
+        await expect(inTenant(() => svc.listTestWorkstations(admin()))).resolves.toMatchObject({ total: 2 });
+        await expect(inTenant(() => svc.listTestWorkstations({ ...reception(), siteRef: " lhr " }))).resolves.toMatchObject({ total: 1 });
+        expect((await refusal(inTenant(() => svc.registerTestWorkstation({ ...reception(), label: "x", siteRef: "y" })))).status).toBe(403);
+        expect((await refusal(inTenant(() => svc.rotateTestWorkstationToken({ ...reception(), workstationId: a.workstation.id })))).status).toBe(403);
     });
 
     it("revoke stops the token at once and records the reason in the audit log", async () => {
