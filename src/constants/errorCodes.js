@@ -41,6 +41,10 @@ export const HR_ERRORS = {
 
     // ---- internal / unexpected (ERR-3: generic client message only) ----
     INTERNAL: { code: 'HR-5000', httpStatus: 500, message: 'Internal server error' },
+    // A capability switched off by its rollout flag (a 503 whose code ends in
+    // -DISABLED, e.g. HR-RECRUITMENT-SCORING-DISABLED). Operational and safe to
+    // name, so clients can show "turned off" instead of a generic failure.
+    FEATURE_DISABLED: { code: 'HR-5031', httpStatus: 503, message: 'This feature is turned off' },
 };
 
 // Fast reverse lookup: HR-nnnn code string → definition. Lets the terminal

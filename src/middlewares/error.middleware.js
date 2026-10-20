@@ -117,6 +117,17 @@ export function normalizeError(err) {
     if (err instanceof AppError || numericStatus) {
         const httpStatus = numericStatus || 500;
         const hasHrCode = typeof err?.code === 'string' && /^HR-\d{4}$/.test(err.code);
+        // A rollout flag that is off is not a failure: keep it distinguishable
+        // (HR-5031, its fixed safe message) instead of collapsing it to HR-5000.
+        if (httpStatus === 503 && typeof err?.code === 'string' && /-DISABLED$/.test(err.code)) {
+            return {
+                httpStatus,
+                code: HR_ERRORS.FEATURE_DISABLED.code,
+                message: HR_ERRORS.FEATURE_DISABLED.message,
+                details: undefined,
+                isOperational: true,
+            };
+        }
         if (httpStatus >= 500) {
             return {
                 httpStatus,
