@@ -81,14 +81,21 @@ export async function getRecruitmentSettings({ tenantId, includeFeedToken = fals
 }
 
 function normalizeUrl(key, raw) {
-    if (raw === null || raw === "") return null;
+    // A blank (or whitespace-only) value clears the field, like null.
+    const text = raw === null ? "" : String(raw).trim();
+    if (!text) return null;
     let url;
     try {
-        url = new URL(String(raw).trim());
+        url = new URL(text);
     } catch {
         throw fail(`${key} must be an absolute https URL`, "HR-RECRUITMENT-SETTINGS-INVALID");
     }
     if (url.protocol !== "https:") throw fail(`${key} must be an https URL`, "HR-RECRUITMENT-SETTINGS-INVALID");
+    // These URLs are published (feed, portal links); a credential in one would
+    // be published with it.
+    if (url.username || url.password) {
+        throw fail(`${key} must not contain a user name or password`, "HR-RECRUITMENT-SETTINGS-INVALID");
+    }
     const value = url.toString();
     if (value.length > 500) throw fail(`${key} is too long`, "HR-RECRUITMENT-SETTINGS-INVALID");
     return value;
@@ -117,7 +124,10 @@ export function normalizeRecruitmentSettingsInput(input = {}) {
     const data = {};
     for (const [key, [min, max]] of Object.entries(INT_RANGES)) {
         if (input[key] === undefined) continue;
-        const n = Number(input[key]);
+        // Number() would read null, "", true and [] as 0 or 1; only a number or
+        // a numeric string is a value here.
+        const raw = input[key];
+        const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : Number.NaN;
         if (!Number.isInteger(n) || n < min || n > max) {
             throw fail(`${key} must be a whole number between ${min} and ${max}`, "HR-RECRUITMENT-SETTINGS-INVALID");
         }

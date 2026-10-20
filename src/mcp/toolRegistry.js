@@ -31,6 +31,7 @@ import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
 import { registerRecruitmentExtraTools } from "./tools/recruitmentExtraTools.js";
+import { registerRecruitmentSettingsTools } from "./tools/recruitment-settings.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -288,6 +289,8 @@ export function registerAllTools(server) {
   registerRecruitmentAnalyticsTools(server);
   registerOnboardingMgmtTools(server);
   registerRecruitmentExtraTools(server);
+  // Phase 2 — tenant recruitment settings, job feed URLs and the source report.
+  registerRecruitmentSettingsTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);

@@ -63,6 +63,7 @@ import trainingRoutes from "./routes/trainingRoutes.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
 import publicPortalRoutes from "./routes/publicPortal.routes.js";
+import { jobFeedRouter } from "./routes/job-feed.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
@@ -185,6 +186,10 @@ export const createApp = () => {
     // gateway service-JWT; the router carries its own guards (tenant pinning,
     // rate limiting, uniform failures) and exposes only the two read shapes and
     // the one write the portal needs — never the recruiter surface.
+    // Phase 2 — the per-tenant XML job feed for job boards. Before the portal
+    // mount so /public/feeds never reaches the portal router; the feed router
+    // answers every not-found reason with the same plain 404.
+    app.use("/public/feeds", jobFeedRouter);
     app.use("/public", publicPortalRoutes);
 
     app.use("/api", internalServiceGuard);

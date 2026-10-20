@@ -32,6 +32,7 @@ import { registerRecruitmentExtraTools } from "../../../src/mcp/tools/recruitmen
 import { registerApplicationTools } from "../../../src/mcp/tools/applicationTools.js";
 import { registerResumeTools } from "../../../src/mcp/tools/resumeTools.js";
 import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboardingTemplateTools.js";
+import { registerRecruitmentSettingsTools } from "../../../src/mcp/tools/recruitment-settings.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -53,6 +54,8 @@ const RECRUITMENT_REGISTRARS = [
   // tools serve the recruitment handoff's checklist seeding, so they belong to
   // this inventory (the gateway edge map gates them with the rest).
   ["onboardingTemplateTools", registerOnboardingTemplateTools],
+  // Phase 2 — intake and screening.
+  ["recruitmentSettingsTools", registerRecruitmentSettingsTools],
 ];
 
 function collect(register) {
@@ -86,6 +89,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   onboardingTemplateTools: 3, // FR-13 residue — list/set/deactivate
   applicationTools: 15,
   resumeTools: 6,
+  recruitmentSettingsTools: 3, // Phase 2: settings get/set + source report
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -209,6 +213,10 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_talent_pool_remove",
   "hr_talent_pool_retention_sweep",
   "hr_talent_pool_segment",
+  // Phase 2 — intake and screening.
+  "hr_recruitment_settings_get",
+  "hr_recruitment_settings_set",
+  "hr_recruitment_source_report",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -248,7 +256,8 @@ describe("Recruitment MCP tool inventory", () => {
     // the fork (approval, assessment, separation, company setup, attendance,
     // payroll finance), counted after the merge with no duplicates.
     // 697 with hr_candidate_360_get (F-14).
-    expect(all).toHaveLength(697);
+    // Phase 2: + 3 settings and source report tools.
+    expect(all).toHaveLength(700);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
