@@ -17,7 +17,12 @@
 //             them, the candidate they are meeting).
 //   FINANCE   compensation views only; no candidate notes, no requisition
 //             administration.
-//   AGENCY    external agency — no internal notes and no requisition view.
+//   AGENCY    external agency (Phase 5, flag agencyPortal) — a registered,
+//             active agency user reaches the applications and candidates their
+//             agency owns (ownerAgencyId) and, through the agency portal only,
+//             the requisitions assigned to it. No internal notes, no interviews,
+//             no offers, no internal requisition rows. Without the flag, or for
+//             a caller with no active mapping to an active agency, no rows.
 //   ASSESSMENT reception and assessment authors / reviewers (Phase 3b) — NO
 //             recruitment rows at all; their reach is the on-site assessment
 //             tools, which check src/lib/assessment-access.util.js instead.
@@ -34,6 +39,10 @@
 //     hiring manager "forbidden" on an id they guessed confirms the row exists.
 //
 // Pure functions only — no DB, no I/O — so the whole matrix is unit-testable.
+// (The AGENCY membership is looked up by src/lib/agency-access.util.js and
+// handed in on the user under AGENCY_MEMBERSHIP; this module only reads it.)
+
+import { isRecruitmentFlagEnabled } from "./recruitmentFlags.js";
 
 export const RECRUITMENT_SCOPE = Object.freeze({
     ORG: "ORG",
@@ -89,6 +98,35 @@ const employeeIdOf = (user) => {
     return Number.isInteger(id) && id > 0 ? id : null;
 };
 
+// Phase 5 — where agency-access.util.js puts the caller's resolved agency
+// membership ({ agencyId, tenantId, userId, requisitionIds }, or null when the
+// caller has none). A module-private Symbol, not a string key: a property copied
+// from a token claim or a tool argument can never carry it, and JSON never
+// serializes it into a log line or a response.
+export const AGENCY_MEMBERSHIP = Symbol("hr.recruitment.agencyMembership");
+
+const positiveIntOrNull = (value) => (Number.isInteger(value) && value > 0 ? value : null);
+
+/**
+ * The agency this AGENCY caller acts for, or null. The membership counts only
+ * while the agencyPortal flag is on and only for the exact verified user and
+ * tenant it was resolved for, so a membership object that strays onto another
+ * user (or a context copied across tenants) grants nothing.
+ */
+function agencyMembershipOf(user) {
+    if (!isRecruitmentFlagEnabled("agencyPortal")) return null;
+    const membership = user?.[AGENCY_MEMBERSHIP];
+    if (!membership || typeof membership !== "object") return null;
+    const agencyId = positiveIntOrNull(membership.agencyId);
+    const tenantId = typeof user?.tenantId === "string" ? user.tenantId : null;
+    if (!agencyId || !tenantId || membership.tenantId !== tenantId) return null;
+    if (user?.userId == null || String(membership.userId) !== String(user.userId)) return null;
+    const requisitionIds = Array.isArray(membership.requisitionIds)
+        ? [...new Set(membership.requisitionIds.filter((id) => positiveIntOrNull(id)))]
+        : [];
+    return { agencyId, requisitionIds };
+}
+
 /**
  * Resolve the caller's recruitment row scope.
  * @param {object} user - verified actor ({ roles|role, employeeId, isAdmin })
@@ -113,7 +151,7 @@ export function resolveRecruitmentScope(user) {
 
     const unrestricted = level === RECRUITMENT_SCOPE.ORG;
 
-    return {
+    const scope = {
         level,
         employeeId,
         unrestricted,
@@ -123,7 +161,22 @@ export function resolveRecruitmentScope(user) {
         canSeeCompensation: level === RECRUITMENT_SCOPE.ORG || level === RECRUITMENT_SCOPE.FINANCE,
         canSeeCandidates: level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.ASSESSMENT,
     };
+    if (level !== RECRUITMENT_SCOPE.AGENCY) return scope;
+
+    // Phase 5 — the agency the caller acts for and the requisitions assigned to
+    // it. An agency reads its own submissions' records, never the internal
+    // candidate profile (Candidate 360, workspace cards): canSeeCandidates off.
+    const membership = agencyMembershipOf(user);
+    return {
+        ...scope,
+        canSeeCandidates: false,
+        agencyId: membership?.agencyId ?? null,
+        agencyRequisitionIds: membership?.requisitionIds ?? [],
+    };
 }
+
+const agencyIdOf = (scope) =>
+    scope?.level === RECRUITMENT_SCOPE.AGENCY ? positiveIntOrNull(scope.agencyId) : null;
 
 // A predicate that can never match, used instead of throwing: a list endpoint
 // returns an empty page and a detail endpoint returns not-found.
@@ -140,7 +193,35 @@ export function requisitionScopeWhere(scope) {
     }
     // FINANCE and AGENCY administer nothing here; ASSIGNED interviewers do not
     // create or edit openings. Deny rather than 403 (see module header).
+    // AGENCY stays denied on purpose even with a membership: every reader of
+    // this predicate returns the INTERNAL requisition row (budget, approval
+    // chain, grade band, cost centre). An agency reads its assigned
+    // requisitions only through agencyRequisitionScopeWhere and the portal's
+    // agencyRequisitionView projection.
     return { ...MATCH_NONE };
+}
+
+/**
+ * Phase 5 — the requisitions assigned to the caller's agency (the ACTIVE
+ * assignments resolved with the membership). Used by the agency portal only,
+ * together with agencyRequisitionView; any other scope matches none here.
+ */
+export function agencyRequisitionScopeWhere(scope) {
+    const ids = agencyIdOf(scope) && Array.isArray(scope.agencyRequisitionIds) ? scope.agencyRequisitionIds : [];
+    return ids.length ? { id: { in: [...ids] } } : { ...MATCH_NONE };
+}
+
+// The requisition fields an agency may see: what a candidate would read on a
+// job ad. Never the salary band, budget, approvals, internal notes, the hiring
+// team or other agencies.
+const AGENCY_REQUISITION_FIELDS = Object.freeze(["id", "title", "description", "location", "employmentType", "closesAt"]);
+
+/** The agency-safe projection of a requisition row (null-tolerant). */
+export function agencyRequisitionView(requisition) {
+    if (!requisition) return requisition ?? null;
+    const out = {};
+    for (const key of AGENCY_REQUISITION_FIELDS) out[key] = requisition[key] ?? null;
+    return out;
 }
 
 /** Where-clause fragment restricting interviews to the caller's scope. */
@@ -179,6 +260,10 @@ export function candidateScopeWhere(scope) {
             },
         };
     }
+    // Phase 5 — the candidates the caller's agency owns. One key, so a caller
+    // that spreads its own OR / AND next to this fragment cannot replace it.
+    const agencyId = agencyIdOf(scope);
+    if (agencyId) return { ownerAgencyId: agencyId };
     return { ...MATCH_NONE };
 }
 
@@ -188,9 +273,9 @@ export function candidateScopeWhere(scope) {
  * The application is the join that grants a manager or an interviewer their view,
  * so the rule mirrors candidateScopeWhere: MANAGED reaches applications on the
  * requisitions they own, ASSIGNED reaches the applications they sit on a panel for.
- * FINANCE and AGENCY reach none — a pricing reviewer has no business reading
- * candidate submissions, and a submission-level agency boundary needs an
- * ownership column that does not exist (see the module header).
+ * FINANCE reaches none — a pricing reviewer has no business reading candidate
+ * submissions. AGENCY (Phase 5) reaches the applications its agency owns
+ * (Application.ownerAgencyId, recorded when a recruiter accepts a submission).
  */
 export function applicationScopeWhere(scope) {
     if (scope.unrestricted) return {};
@@ -204,6 +289,9 @@ export function applicationScopeWhere(scope) {
     if (scope.level === RECRUITMENT_SCOPE.ASSIGNED && scope.employeeId) {
         return { interviews: { some: { interviewers: { some: { employeeId: scope.employeeId } } } } };
     }
+    // Phase 5 — the applications created from the agency's accepted submissions.
+    const agencyId = agencyIdOf(scope);
+    if (agencyId) return { ownerAgencyId: agencyId };
     return { ...MATCH_NONE };
 }
 
@@ -287,11 +375,68 @@ export function canManageRequisitionAttachments(scope) {
 
 export function maskCandidateForScope(candidate, scope) {
     if (!candidate || scope.canSeeInternalNotes) return candidate;
+    if (scope.level === RECRUITMENT_SCOPE.AGENCY) return agencyCandidateView(candidate, scope);
     // Copy-then-delete rather than rest-destructuring: the discarded binding in
     // `const { notes, ...rest }` trips no-unused-vars here (only args are exempt).
     const masked = { ...candidate, notes: null, notesRedacted: true };
     return masked;
 }
+
+// Phase 5 — what an agency may read of a candidate it introduced: the contact
+// details it submitted and the ownership it holds. An allow-list, not a strip
+// list, so a column added to Candidate later is not exposed by default (tags,
+// parsed resume, privacy and retention state are the recruiter's).
+const AGENCY_CANDIDATE_FIELDS = Object.freeze([
+    "id", "firstName", "lastName", "email", "phone", "location", "resumeMediaId",
+    "ownerAgencyId", "ownershipExpiresAt", "createdAt",
+]);
+const AGENCY_APPLICATION_FIELDS = Object.freeze([
+    "id", "candidateId", "jobRequisitionId", "stage", "status", "appliedAt", "updatedAt",
+    "sourceChannel", "ownerAgencyId", "ownershipExpiresAt",
+]);
+
+const pick = (row, fields) => {
+    const out = {};
+    for (const key of fields) if (row[key] !== undefined) out[key] = row[key];
+    return out;
+};
+
+function agencyCandidateView(candidate, scope) {
+    const out = { ...pick(candidate, AGENCY_CANDIDATE_FIELDS), notes: null, notesRedacted: true };
+    if (Array.isArray(candidate.applications)) {
+        // Only the agency's own applications ride along: the same person may be
+        // in process elsewhere through another channel or another agency.
+        const agencyId = agencyIdOf(scope);
+        out.applications = candidate.applications
+            .filter((app) => agencyId && app?.ownerAgencyId === agencyId)
+            .map((app) => agencyApplicationView(app, scope, { withCandidate: false }));
+    }
+    return out;
+}
+
+function agencyApplicationView(application, scope, { withCandidate = true } = {}) {
+    const out = pick(application, AGENCY_APPLICATION_FIELDS);
+    if (application.jobRequisition !== undefined) out.jobRequisition = agencyRequisitionView(application.jobRequisition);
+    if (withCandidate && application.candidate !== undefined) {
+        out.candidate = application.candidate ? agencyCandidateView(application.candidate, scope) : null;
+    }
+    return out;
+}
+
+/**
+ * Phase 5 — field masking for an application row (and what rides on it). Every
+ * scope but AGENCY gets the row back untouched; an AGENCY caller gets the
+ * allow-listed application fields, the agency projection of the requisition and
+ * of the candidate, and never the interviews, offer, score, answers or history.
+ */
+export function maskApplicationForScope(application, scope) {
+    if (!application || scope?.level !== RECRUITMENT_SCOPE.AGENCY) return application;
+    return agencyApplicationView(application, scope);
+}
+
+/** Same treatment for a page/list of applications. */
+export const maskApplicationsForScope = (applications, scope) =>
+    !scope || !Array.isArray(applications) ? applications : applications.map((a) => maskApplicationForScope(a, scope));
 
 /**
  * Same treatment for interview rows. An interview read also carries the
