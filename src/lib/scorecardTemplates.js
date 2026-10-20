@@ -28,6 +28,13 @@
 export const TEMPLATE_SCOPES = ["REQUISITION", "STAGE", "JOB_FAMILY"];
 
 /**
+ * Phase 3b — the evaluation-form scopes (flag evaluationForms). INTERVIEW_TYPE
+ * and PANEL_ROLE are vocabulary keys carried in scopeKey, like STAGE.
+ */
+export const FORM_TEMPLATE_SCOPES = [...TEMPLATE_SCOPES, "INTERVIEW_TYPE", "PANEL_ROLE"];
+export const KEYED_SCOPES = ["STAGE", "INTERVIEW_TYPE", "PANEL_ROLE"];
+
+/**
  * Validate a criteria list. Ordered, non-empty, unique keys; optional numeric
  * weight > 0; required defaults to true? No — §5.5b says each criterion IS
  * required/optional, and the safer default for evidence is REQUIRED: a tenant
@@ -200,17 +207,62 @@ export function validateScreeningAgainstTemplate({ criteria = [], templateCriter
  * @returns {Promise<object|null>} the winning template WITH its criteria, or null
  */
 export function resolveTemplate(links = [], ctx = {}) {
-    const pick = (scopeType, match) => {
+    // Phase 3b — a template that declares an interview type or a panel role
+    // applies only there; within a rung the one matching the panel role, then
+    // the interview type, wins before the lowest id. Templates from before
+    // forms declare neither, so for them this is the plain lowest-id rule.
+    const applies = (t) =>
+        (!t.interviewType || !ctx.interviewType || t.interviewType === ctx.interviewType) &&
+        (!t.panelRole || !ctx.panelRole || t.panelRole === ctx.panelRole);
+    const specificity = (t) =>
+        (ctx.panelRole && t.panelRole === ctx.panelRole ? 2 : 0) + (ctx.interviewType && t.interviewType === ctx.interviewType ? 1 : 0);
+    const pick = (match) => {
         const hits = links
-            .filter((l) => l.scopeType === scopeType && match(l))
-            .sort((a, b) => a.template.id - b.template.id);
+            .filter((l) => match(l) && applies(l.template))
+            .sort((a, b) => specificity(b.template) - specificity(a.template) || a.template.id - b.template.id);
         return hits[0]?.template ?? null;
     };
+    const keyed = (scopeType, value) => (l) => l.scopeType === scopeType && value != null && l.scopeKey === value;
 
     return (
-        pick("REQUISITION", (l) => l.scopeId === ctx.jobRequisitionId) ??
-        pick("STAGE", (l) => l.scopeKey === ctx.interviewType) ??
-        pick("JOB_FAMILY", (l) => l.scopeId === ctx.positionId) ??
+        pick((l) => l.scopeType === "REQUISITION" && l.scopeId === ctx.jobRequisitionId) ??
+        // Phase 3b — interview type and panel role: a template linked by both
+        // beats one linked by either.
+        pickBoth(links, ctx, applies) ??
+        pick(keyed("INTERVIEW_TYPE", ctx.interviewType)) ??
+        pick(keyed("PANEL_ROLE", ctx.panelRole)) ??
+        // STAGE has always been keyed by the interview type; the application's
+        // stage matches too, so existing STAGE links keep resolving.
+        pick((l) => l.scopeType === "STAGE" && (l.scopeKey === ctx.interviewType || (ctx.stage != null && l.scopeKey === ctx.stage))) ??
+        pick((l) => l.scopeType === "JOB_FAMILY" && l.scopeId === ctx.positionId) ??
         null
     );
+}
+
+/** A template linked to BOTH the interview type and the panel role. */
+function pickBoth(links, ctx, applies) {
+    if (!ctx.interviewType || !ctx.panelRole) return null;
+    const byType = new Set(
+        links.filter((l) => l.scopeType === "INTERVIEW_TYPE" && l.scopeKey === ctx.interviewType).map((l) => l.template.id),
+    );
+    const hits = links
+        .filter((l) => l.scopeType === "PANEL_ROLE" && l.scopeKey === ctx.panelRole && byType.has(l.template.id) && applies(l.template))
+        .sort((a, b) => a.template.id - b.template.id);
+    return hits[0]?.template ?? null;
+}
+
+/**
+ * Phase 3b — versions share a templateKey and a link points at one version
+ * row. Resolution follows a link to the latest PUBLISHED version of its key,
+ * so publishing a new version never needs relinking; a template without a key
+ * (Phase 7) is its own only version.
+ *
+ * @param {object} template      the linked row
+ * @param {object[]} published   PUBLISHED, active rows sharing keys
+ */
+export function latestPublishedVersion(template, published = []) {
+    if (!template?.templateKey) return template;
+    const versions = published.filter((t) => t.templateKey === template.templateKey);
+    if (!versions.length) return null;
+    return versions.reduce((best, t) => (Number(t.version) > Number(best.version) ? t : best));
 }

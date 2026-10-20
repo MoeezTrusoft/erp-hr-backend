@@ -35,6 +35,10 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
 import { withToolError } from "../utils/toolError.js";
+import { isRecruitmentFlagEnabled } from "../../lib/recruitmentFlags.js";
+import { resolveAssessmentAccess } from "../../lib/assessment-access.util.js";
+import { FORM_RECOMMENDATIONS, PANEL_ROLES } from "../../lib/evaluation-form.util.js";
+import { submitEvaluationScorecard } from "../../services/evaluation-form.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -49,7 +53,66 @@ const ratingsSchema = z.object({
   cultureFit: z.coerce.number().int().min(1).max(5).describe("Integer 1-5"),
 });
 
+// Phase 3b — evaluation forms (flag evaluationForms). The extra inputs are
+// part of the tool schemas only when the flag is on at registration, so with
+// it off every tool here takes exactly the inputs it took before.
+const LEGACY_RECOMMENDATIONS = ["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"];
+const FORM_TEMPLATE_SCOPE_TYPES = ["REQUISITION", "STAGE", "JOB_FAMILY", "INTERVIEW_TYPE", "PANEL_ROLE"];
+
+const criterionScoresInput = z.array(z.object({
+  key: z.string().min(1).describe("Criterion key"),
+  rating: z.union([z.number(), z.boolean(), z.enum(["YES", "NO"])]).nullable().optional().describe("Rating on the criterion's scale (1-5, 1-4, or YES/NO)"),
+  notAssessed: z.boolean().optional().describe("Not assessed (only on non-required criteria; excluded from the weighted score)"),
+  note: z.string().max(5000).optional().describe("Evidence note; required for extreme ratings (1, 2 or 5) and every must-have criterion"),
+})).max(100);
+
+const formSectionsInput = z.array(z.object({
+  key: z.string().min(1).optional(),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  panelRoles: z.array(z.enum(PANEL_ROLES)).optional().describe("Panel roles that rate this section (empty: everyone)"),
+  criteria: z.array(z.object({
+    key: z.string().min(1),
+    label: z.string().optional(),
+    description: z.string().optional(),
+    competencyKey: z.string().min(1),
+    weight: z.number().positive().optional(),
+    required: z.boolean().optional(),
+    mustHave: z.boolean().optional(),
+    mustHaveThreshold: z.number().int().optional().describe("A rating at or below this fails the must-have"),
+    scale: z.union([z.string(), z.record(z.string(), z.unknown())]).optional().describe("Criterion scale override: 1-5, 1-4 or YES_NO"),
+    anchors: z.record(z.string(), z.string()).optional().describe("Behavioural anchor per level: { \"1\": ..., \"5\": ... } or { YES, NO }"),
+    questionKeys: z.array(z.string()).optional().describe("Linked interview question bank keys"),
+  })).min(1),
+})).min(1);
+
+const formTemplateFields = {
+  templateKey: z.string().min(1).max(80).optional().describe("Version family key (generated when omitted)"),
+  interviewType: z.enum(["PHONE_SCREEN", "TECHNICAL", "BEHAVIORAL", "PANEL", "FINAL", "ONSITE", "VIDEO"]).nullable().optional(),
+  panelRole: z.enum(PANEL_ROLES).nullable().optional(),
+  scale: z.union([z.enum(["1-5", "1-4", "YES_NO"]), z.record(z.string(), z.unknown())]).optional().describe("Rating scale (default 1-5)"),
+  sections: formSectionsInput.optional().describe("Form sections with weighted, anchored criteria"),
+  evidenceRules: z.object({ extremeRatings: z.array(z.number().int()).optional(), mustHave: z.boolean().optional() }).optional(),
+  requiresTrainedInterviewer: z.boolean().optional().describe("Only trained interviewers may fill this form"),
+  status: z.enum(["DRAFT", "PUBLISHED", "RETIRED"]).optional().describe("DRAFT edits in place; PUBLISHED is immutable (a change makes the next version); RETIRED stops resolving"),
+};
+
+const pickFormFields = (args) =>
+  Object.fromEntries(Object.keys(formTemplateFields).filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
+
+// Form templates are HR configuration: recruiters (ORG) and HR admins.
+function assertFormAdmin(user, args) {
+  if (!Object.keys(pickFormFields(args)).length) return;
+  const access = resolveAssessmentAccess(user);
+  if (!access.recruiter && !access.admin) {
+    throw Object.assign(new Error("Evaluation forms are managed by HR and recruiters"), { status: 403, code: "HR-RECRUITMENT-ASSESSMENT-FORBIDDEN" });
+  }
+}
+
+const badRequest = (message, code) => Object.assign(new Error(message), { status: 400, code });
+
 export function registerInterviewMgmtTools(server) {
+  const forms = isRecruitmentFlagEnabled("evaluationForms");
   server.tool(
     "hr_interviews_manage_list",
     "List interviews for the HR Interview Management screen: candidate, role, interviewers, status/decision, schedule and ratings averaged across scorecards. Supports candidate-name search, status/interviewType/decision filters, scheduledAt sort and pagination.",
@@ -112,21 +175,44 @@ export function registerInterviewMgmtTools(server) {
 
   server.tool(
     "hr_interview_score",
-    "Submit interview feedback: upsert the caller's scorecard (ratings, overall score, recommendation, comments) and set the interview decision/outcome. A scorecard that has already been submitted is LOCKED — changing it requires amendmentReason, and an identical resubmit is a no-op.",
+    forms
+      ? "Submit interview feedback. When the interview has an evaluation form (flag evaluationForms), this submits the caller's form: criterion ratings with evidence notes, the overall recommendation (STRONG_HIRE | HIRE | NO_HIRE | STRONG_NO_HIRE), the panelist's decision and the conflict-of-interest declaration; it validates, scores, flags prohibited topics to HR and locks the form, and does NOT record the interview outcome (the hiring manager does, with hr_interview_set_outcome). Without a form: upsert the caller's scorecard (ratings, recommendation, comments) and set the interview outcome. A submitted scorecard is LOCKED; changing it needs amendmentReason."
+      : "Submit interview feedback: upsert the caller's scorecard (ratings, overall score, recommendation, comments) and set the interview decision/outcome. A scorecard that has already been submitted is LOCKED — changing it requires amendmentReason, and an identical resubmit is a no-op.",
     {
       interviewId: z.coerce.number().int().positive().describe("Interview id (references Interview)"),
-      ratings: ratingsSchema.describe("Scorecard ratings; each of technicalSkills, problemSolving, communication, cultureFit is an integer 1-5. Stored as the NOT-NULL scores JSON; overallScore is their average."),
+      ratings: forms
+        ? ratingsSchema.optional().describe("Scorecard ratings for an interview without an evaluation form (technicalSkills, problemSolving, communication, cultureFit, integers 1-5)")
+        : ratingsSchema.describe("Scorecard ratings; each of technicalSkills, problemSolving, communication, cultureFit is an integer 1-5. Stored as the NOT-NULL scores JSON; overallScore is their average."),
       decision: z.enum(["NEXT_ROUND", "HOLD", "REJECTED"]).describe("Interview outcome decision — one of NEXT_ROUND | HOLD | REJECTED"),
-      recommendation: z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]).describe("Reviewer recommendation — one of STRONG_HIRE | HIRE | HOLD | REJECTED"),
+      recommendation: forms
+        ? z.enum([...new Set([...LEGACY_RECOMMENDATIONS, ...FORM_RECOMMENDATIONS])]).describe("Reviewer recommendation: STRONG_HIRE | HIRE | NO_HIRE | STRONG_NO_HIRE on an evaluation form; STRONG_HIRE | HIRE | HOLD | REJECTED otherwise")
+        : z.enum(["STRONG_HIRE", "HIRE", "HOLD", "REJECTED"]).describe("Reviewer recommendation — one of STRONG_HIRE | HIRE | HOLD | REJECTED"),
       reason: z.string().optional().describe("Required when decision is REJECTED"),
       overrideReason: z.string().optional().describe("Required only when recording a decisive outcome with no scorecard on file — the override is stamped on the interview and audited"),
       comments: z.string().optional().describe("Free-text reviewer comments (stored as the scorecard notes)"),
       reviewerId: z.coerce.number().int().positive().optional().describe("Reviewer employee id (references Employee); defaults to the caller's employeeId. Provide when the caller has no employeeId (e.g. an admin scoring on someone's behalf) — the service 400s if neither is present."),
       amendmentReason: z.string().optional().describe("Required only to CHANGE a scorecard that has already been submitted (Phase 3.4 lock). Without it a changed payload is refused with HR-RECRUITMENT-SCORECARD-LOCKED; the reason is appended to the scorecard's amendment log with the values it replaced. Resending the identical payload never needs one."),
+      ...(forms
+        ? {
+          criterionScores: criterionScoresInput.optional().describe("Evaluation form ratings (merged over the saved draft)"),
+          coiDeclared: z.boolean().optional().describe("Conflict-of-interest declaration; must be true to submit a form"),
+        }
+        : {}),
     },
-    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId, reason, overrideReason, amendmentReason }) => {
+    withToolError(async ({ interviewId, ratings, decision, recommendation, comments, reviewerId, reason, overrideReason, amendmentReason, criterionScores, coiDeclared }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
+      if (isRecruitmentFlagEnabled("evaluationForms")) {
+        const form = await submitEvaluationScorecard(user, {
+          interviewId, reviewerId, criterionScores, comments, recommendation, decision, coiDeclared, amendmentReason,
+        });
+        if (form.handled) return { content: [{ type: "text", text: JSON.stringify(form.data) }] };
+        // No form applies: the pre-form path, with its own required inputs.
+        if (!ratings) throw badRequest("ratings are required for an interview without an evaluation form", "HR-RECRUITMENT-SCORECARD-RATINGS-REQUIRED");
+        if (!LEGACY_RECOMMENDATIONS.includes(recommendation)) {
+          throw badRequest(`recommendation must be one of ${LEGACY_RECOMMENDATIONS.join(", ")} without an evaluation form`, "HR-RECRUITMENT-SCORECARD-RECOMMENDATION-INVALID");
+        }
+      }
       await scoreInterview({
         interviewId,
         reviewerId: reviewerId ?? user.employeeId,
@@ -135,6 +221,8 @@ export function registerInterviewMgmtTools(server) {
         comments,
         tenantId: user.tenantId,
         amendmentReason,
+        // Phase 3b — the assessment gate runs before the scorecard is written.
+        decision,
       });
       const data = await setInterviewOutcome({
         interviewId,
@@ -308,45 +396,52 @@ export function registerInterviewMgmtTools(server) {
 
   // ── Phase 7 / §5.5–5.5b — scorecard templates ───────────────────────────
 
+  const criteriaInput = z.array(z.object({
+    key: z.string().min(1),
+    label: z.string().optional(),
+    weight: z.number().positive().optional(),
+    required: z.boolean().optional(),
+  })).min(1);
+
   server.tool(
     "hr_scorecard_template_create",
-    "Create a tenant scorecard template: an ordered criteria list [{ key, label?, weight?, required? }]. Weights are optional per §5.5a but all-or-none; equal weighting is the default; required defaults to true.",
+    forms
+      ? "Create a tenant scorecard template: an ordered criteria list [{ key, label?, weight?, required? }], or an evaluation form (sections of criteria with competency, weight, required, must-have threshold, anchors for every level of the scale and linked questions; panel roles per section; scale 1-5, 1-4 or YES_NO; evidence rules; trained-interviewer flag). A form starts DRAFT unless status PUBLISHED."
+      : "Create a tenant scorecard template: an ordered criteria list [{ key, label?, weight?, required? }]. Weights are optional per §5.5a but all-or-none; equal weighting is the default; required defaults to true.",
     {
       name: z.string().min(1).describe("Template name"),
       description: z.string().optional(),
-      criteria: z.array(z.object({
-        key: z.string().min(1),
-        label: z.string().optional(),
-        weight: z.number().positive().optional(),
-        required: z.boolean().optional(),
-      })).min(1).describe("Ordered criteria"),
+      criteria: forms
+        ? criteriaInput.optional().describe("Ordered criteria (a plain template; a form uses sections)")
+        : criteriaInput.describe("Ordered criteria"),
+      ...(forms ? formTemplateFields : {}),
     },
-    withToolError(async ({ name, description, criteria }) => {
+    withToolError(async ({ name, description, criteria, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:recruitment", user.isAdmin);
-      const data = await createTemplate({ name, description: description ?? null, criteria, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      assertFormAdmin(user, rest);
+      const data = await createTemplate({ name, description: description ?? null, criteria, tenantId: user.tenantId, actorId: user.employeeId ?? null, ...pickFormFields(rest) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_scorecard_template_create")
   );
 
   server.tool(
     "hr_scorecard_template_update",
-    "Update a template's name/description/criteria. History note: submitted scorecards keep the §5.5c lock — updating a template never rewrites past submissions.",
+    forms
+      ? "Update a template or evaluation form. A DRAFT version changes in place; a PUBLISHED version is immutable, so a change creates the next version (DRAFT for a form). status PUBLISHED publishes (validating the whole form and retiring the previous version); status RETIRED retires. Interviews keep the version pinned when they were scheduled."
+      : "Update a template's name/description/criteria. History note: submitted scorecards keep the §5.5c lock — updating a template never rewrites past submissions.",
     {
       templateId: z.coerce.number().int().positive(),
       name: z.string().min(1).optional(),
       description: z.string().optional(),
-      criteria: z.array(z.object({
-        key: z.string().min(1),
-        label: z.string().optional(),
-        weight: z.number().positive().optional(),
-        required: z.boolean().optional(),
-      })).min(1).optional(),
+      criteria: criteriaInput.optional(),
+      ...(forms ? formTemplateFields : {}),
     },
-    withToolError(async ({ templateId, name, description, criteria }) => {
+    withToolError(async ({ templateId, name, description, criteria, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await updateTemplate({ templateId, name, description, criteria, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      assertFormAdmin(user, rest);
+      const data = await updateTemplate({ templateId, name, description, criteria, tenantId: user.tenantId, actorId: user.employeeId ?? null, ...pickFormFields(rest) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_scorecard_template_update")
   );
@@ -365,10 +460,12 @@ export function registerInterviewMgmtTools(server) {
 
   server.tool(
     "hr_scorecard_template_link",
-    "Attach a template to a scope: REQUISITION (scopeId = requisition id), STAGE (scopeKey = interview type) or JOB_FAMILY (scopeId = position id). Resolution is most-specific-first: requisition → stage → job family.",
+    forms
+      ? "Attach a template to a scope: REQUISITION (scopeId = requisition id), INTERVIEW_TYPE (scopeKey = interview type), PANEL_ROLE (scopeKey = TECHNICAL | HIRING_MANAGER | HR | CULTURE), STAGE (scopeKey = interview type or application stage) or JOB_FAMILY (scopeId = position id). Resolution: requisition → interview type and panel role → stage → job family; links follow the template's latest PUBLISHED version."
+      : "Attach a template to a scope: REQUISITION (scopeId = requisition id), STAGE (scopeKey = interview type) or JOB_FAMILY (scopeId = position id). Resolution is most-specific-first: requisition → stage → job family.",
     {
       templateId: z.coerce.number().int().positive(),
-      scopeType: z.enum(["REQUISITION", "STAGE", "JOB_FAMILY"]),
+      scopeType: forms ? z.enum(FORM_TEMPLATE_SCOPE_TYPES) : z.enum(["REQUISITION", "STAGE", "JOB_FAMILY"]),
       scopeId: z.coerce.number().int().positive().optional(),
       scopeKey: z.string().min(1).optional(),
     },
@@ -382,12 +479,17 @@ export function registerInterviewMgmtTools(server) {
 
   server.tool(
     "hr_scorecard_template_resolve",
-    "Which template governs one interview? Most-specific-first resolution (requisition → stage → job family); null means free-form scoring.",
-    { interviewId: z.coerce.number().int().positive().describe("Interview id") },
-    withToolError(async ({ interviewId }) => {
+    forms
+      ? "Which template or evaluation form governs one interview (optionally for one panel role)? Resolution: requisition → interview type and panel role → stage → job family, latest PUBLISHED version; null means free-form scoring. The form pinned on a scheduled interview is what its panel fills (hr_interview_form_get)."
+      : "Which template governs one interview? Most-specific-first resolution (requisition → stage → job family); null means free-form scoring.",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+      ...(forms ? { panelRole: z.enum(PANEL_ROLES).optional().describe("Resolve for one panel role") } : {}),
+    },
+    withToolError(async ({ interviewId, panelRole }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
-      const data = await resolveForInterview({ interviewId, tenantId: user.tenantId });
+      const data = await resolveForInterview({ interviewId, tenantId: user.tenantId, ...(panelRole ? { panelRole } : {}) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_scorecard_template_resolve")
   );

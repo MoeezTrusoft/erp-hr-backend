@@ -19,10 +19,16 @@ import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { interviewOutcomeRecordedEvent } from "./hrEvents.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { RECRUITMENT_SCOPE } from "../lib/recruitmentAccess.js";
+import { assertAssessmentGate } from "../lib/evaluation-form.util.js";
 
 // Phase 3a — loaded lazily: the decision-prompt service consolidates feedback
 // through this module, so a static import would be a cycle.
 const loadDecisionPrompts = () => import("./interview-decision-prompt.service.js");
+
+// Phase 3b — the evaluation report is loaded only with evaluationForms on, so
+// a tenant without forms runs exactly the code it ran before.
+const loadEvaluationSummary = () => import("./evaluation-summary.service.js");
 
 const RATING_KEYS = ["technicalSkills", "problemSolving", "communication", "cultureFit"];
 
@@ -304,6 +310,7 @@ export const scoreInterview = async ({
   comments,
   tenantId,
   amendmentReason = null,
+  decision = null,
 } = {}) => {
   const idNum = Number(interviewId);
   const reviewer = Number(reviewerId);
@@ -316,11 +323,15 @@ export const scoreInterview = async ({
 
   const interview = await prisma.interview.findFirst({
     where: scopedWhere(tenantId, { id: idNum }),
-    select: { id: true },
+    select: { id: true, assessmentRequired: true, assessmentStatus: true },
   });
   if (!interview) {
     throw Object.assign(new Error("Interview not found"), { status: 404 });
   }
+  // Phase 3b (7.7) — hr_interview_score records the outcome right after this
+  // write, so a submission that carries a decision passes the assessment gate
+  // first; otherwise the scorecard would land and the outcome then refuse.
+  if (decision) assertAssessmentGate(interview);
 
   const scores = {};
   for (const key of RATING_KEYS) {
@@ -410,6 +421,9 @@ export const setInterviewOutcome = async ({
       tenantId: true,
       // Phase 3a — the auto-advance acts on a CHANGE to NEXT_ROUND only.
       decision: true,
+      // Phase 3b — the assessment gate (7.7).
+      assessmentRequired: true,
+      assessmentStatus: true,
       interviewers: {
         select: {
           status: true,
@@ -422,6 +436,11 @@ export const setInterviewOutcome = async ({
   if (!interview) {
     throw Object.assign(new Error("Interview not found"), { status: 404 });
   }
+
+  // Phase 3b (7.7) — when the on-arrival test is required, an outcome waits
+  // for it to be passed (or borderline), overridden or waived. Independent of
+  // the evaluationForms flag: only the onsiteTest flow sets assessmentRequired.
+  assertAssessmentGate(interview);
 
   const overrideText = String(overrideReason || "").trim();
   let overriddenWithoutFeedback = false;
@@ -503,6 +522,19 @@ export const setInterviewOutcome = async ({
       ),
     );
 
+    // Phase 3b — the hiring manager's decisive outcome freezes the candidate
+    // evaluation report in the same transaction (once per interview), so a
+    // later template or weight change never rewrites what the decision saw.
+    if (DECISIVE_DECISIONS.has(normalizedDecision) && isRecruitmentFlagEnabled("evaluationForms")) {
+      const { freezeEvaluationSummary } = await loadEvaluationSummary();
+      await freezeEvaluationSummary(tx, {
+        tenantId: interview.tenantId ?? null,
+        interviewId: idNum,
+        actorId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+        decision: normalizedDecision,
+      });
+    }
+
     // Phase 3a — a NEXT_ROUND decision advances the application (or asks for
     // the next round) in the same transaction, so the decision and its
     // consequence commit together. REJECTED never auto-rejects.
@@ -549,7 +581,17 @@ export const consolidateInterviewFeedback = async ({ id, tenantId, scope = null 
     throw Object.assign(new Error("Interview not found"), { status: 404 });
   }
 
-  const submitted = submittedCards(interview);
+  // Phase 3b — independent scoring (7.4.4): with evaluation forms on, a
+  // panelist who has not submitted sees only their own scorecard here, never
+  // a peer's rating. Recruiters and the requisition's manager see the panel.
+  const forms = isRecruitmentFlagEnabled("evaluationForms");
+  const viewerId = Number(scope?.employeeId);
+  const panelist = forms && scope && !scope.unrestricted &&
+    (interview.interviewers || []).some((link) => Number(link.employee?.id) === viewerId);
+  const ownsRequisition = Number(interview.application?.jobRequisition?.requestedById) === viewerId;
+  const peersHidden = panelist && !ownsRequisition &&
+    !submittedCards(interview).some((card) => Number(card.reviewerId) === viewerId);
+  const submitted = peersHidden ? [] : submittedCards(interview);
 
   const criteria = {};
   for (const key of RATING_KEYS) {
@@ -580,7 +622,20 @@ export const consolidateInterviewFeedback = async ({ id, tenantId, scope = null 
     (key) => (criteria[key].spread ?? 0) >= DIVERGENCE_THRESHOLD,
   );
 
+  // Phase 3b — the evaluation form view: per-criterion average, min, max,
+  // spread and divergence over the form's criteria, must-have alerts, the
+  // recommendation tally and the composite with the test. For recruiters and
+  // the requisition's manager only; a panelist reads their own form instead.
+  let evaluation;
+  if (forms && scope && (scope.unrestricted || (scope.level === RECRUITMENT_SCOPE.MANAGED && ownsRequisition))) {
+    const { buildEvaluationReport, reportForViewer } = await loadEvaluationSummary();
+    const report = await buildEvaluationReport(prisma, { tenantId: interview.tenantId ?? tenantId, interviewId: interview.id });
+    evaluation = reportForViewer(report, { hr: scope.unrestricted });
+  }
+
   return {
+    ...(peersHidden ? { peersHidden: true } : {}),
+    ...(evaluation ? { evaluation } : {}),
     interviewId: interview.id,
     candidateName: candidateName(interview.application?.candidate),
     role: interview.application?.jobRequisition?.title ?? null,

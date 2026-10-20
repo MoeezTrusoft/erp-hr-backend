@@ -225,6 +225,18 @@ describe("interview.service marks", () => {
         await asTenant(() => interviews.updateInterview(40, { status: "CANCELLED" }, TENANT));
         expectMarked(row(), "CANCEL");
     });
+
+    it("Phase 3b: updateInterview refuses a decision until the on-site assessment lets it proceed", async () => {
+        addInterview({ assessmentRequired: true, assessmentStatus: "FAILED" });
+        await expect(
+            asTenant(() => interviews.updateInterview(40, { decision: "HOLD" }, TENANT)),
+        ).rejects.toMatchObject({ status: 409, code: "HR-RECRUITMENT-ASSESSMENT-REQUIRED" });
+        expect(row().decision).toBeNull();
+
+        row().assessmentStatus = "WAIVED";
+        await asTenant(() => interviews.updateInterview(40, { decision: "HOLD" }, TENANT));
+        expect(row().decision).toBe("HOLD");
+    });
 });
 
 describe("stream B hooks", () => {

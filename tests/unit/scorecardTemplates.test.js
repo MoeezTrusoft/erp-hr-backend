@@ -135,7 +135,7 @@ describe("scorecardTemplates.resolveTemplate (§5.5)", () => {
 
 const prisma = {
     scorecardTemplate: { create: jest.fn(), findFirst: jest.fn(), update: jest.fn(), delete: jest.fn(), findMany: jest.fn() },
-    scorecardTemplateLink: { upsert: jest.fn(), findFirst: jest.fn(), deleteMany: jest.fn(), findMany: jest.fn() },
+    scorecardTemplateLink: { create: jest.fn(), update: jest.fn(), findFirst: jest.fn(), deleteMany: jest.fn(), findMany: jest.fn() },
     interview: { findFirst: jest.fn() },
     interviewScorecard: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
 };
@@ -199,9 +199,23 @@ describe("scorecardTemplate service (§5.5)", () => {
             service.linkTemplate({ templateId: 1, scopeType: "STAGE", tenantId: tenant }),
         ).rejects.toMatchObject({ details: { code: "HR-RECRUITMENT-TEMPLATE-SCOPE-INVALID" } });
 
-        prisma.scorecardTemplateLink.upsert.mockResolvedValue({ id: 5 });
+        prisma.scorecardTemplateLink.findFirst.mockResolvedValue(null);
+        prisma.scorecardTemplateLink.create.mockResolvedValue({ id: 5 });
         const row = await service.linkTemplate({ templateId: 1, scopeType: "STAGE", scopeKey: "TECHNICAL", tenantId: tenant });
         expect(row.id).toBe(5);
+        expect(prisma.scorecardTemplateLink.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ templateId: 1, scopeType: "STAGE", scopeId: null, scopeKey: "TECHNICAL" }),
+        });
+    });
+
+    it("re-linking an existing address reactivates it instead of adding a row", async () => {
+        prisma.scorecardTemplate.findFirst.mockResolvedValue({ id: 1 });
+        prisma.scorecardTemplateLink.findFirst.mockResolvedValue({ id: 6, isActive: false });
+        prisma.scorecardTemplateLink.update.mockResolvedValue({ id: 6, isActive: true });
+        const row = await service.linkTemplate({ templateId: 1, scopeType: "REQUISITION", scopeId: 42, tenantId: tenant });
+        expect(row).toEqual({ id: 6, isActive: true });
+        expect(prisma.scorecardTemplateLink.update).toHaveBeenCalledWith({ where: { id: 6 }, data: { isActive: true } });
+        expect(prisma.scorecardTemplateLink.create).not.toHaveBeenCalled();
     });
 
     it("validateSubmission refuses missing required criteria with their keys", () => {

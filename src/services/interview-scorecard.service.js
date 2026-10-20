@@ -146,6 +146,10 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
 
     const tenant = tenantId ?? currentTenantId();
 
+    // Phase 3b — the status column mirrors submittedAt (rows submitted before
+    // it existed were backfilled SUBMITTED by the migration).
+    if (data.submittedAt && data.status === undefined) data = { ...data, status: 'SUBMITTED' };
+
     // Phase 7 / §5.5b — if a template governs this interview, the submission
     // must complete every REQUIRED criterion and may not invent criteria the
     // template does not define; the overall becomes the template's weighted
@@ -232,5 +236,90 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
     await afterScorecardWrite(updated, tenant);
     return updated;
 };
+
+// ── Phase 3b — the evaluation-form writer ───────────────────────────────────
+//
+// The form's draft autosave and submit write the scorecard INSIDE the tenant
+// transaction that also enqueues their events, so a scorecard and its
+// announcement commit together. The lock rules are the ones above, applied to
+// the form's fields as well (criterion ratings and notes, the declaration).
+// A legacy tenant-less row is adopted first, outside the transaction, the way
+// the writer above adopts it (RLS hides such a row from a tenant transaction).
+
+const FORM_COMPARABLE_FIELDS = ["scores", "overallScore", "recommendation", "notes", "criterionScores", "coiDeclared"];
+
+const formComparable = (row = {}) =>
+    FORM_COMPARABLE_FIELDS.reduce((acc, field) => {
+        if (row[field] !== undefined) acc[field] = row[field];
+        return acc;
+    }, {});
+
+/** True when a form payload would change anything the reviewer owns. */
+export const formPayloadChanged = (existing, data = {}) => {
+    const before = stable(formComparable(existing));
+    const after = stable(formComparable(data));
+    return FORM_COMPARABLE_FIELDS.some(
+        (field) => data[field] !== undefined && JSON.stringify(before[field] ?? null) !== JSON.stringify(after[field] ?? null),
+    );
+};
+
+/**
+ * Adopt a tenant-less legacy scorecard row for (interview, reviewer) into the
+ * tenant, so a tenant transaction can see it. The caller has already read the
+ * interview under the tenant (the same contract as upsertInterviewScorecard).
+ */
+export async function adoptTenantlessScorecard({ interviewId, reviewerId, tenantId } = {}) {
+    if (!tenantId) return null;
+    const row = await asSystem(async () =>
+        await prisma.interviewScorecard.findUnique({
+            where: { interviewId_reviewerId: { interviewId: Number(interviewId), reviewerId: Number(reviewerId) } },
+            select: { id: true, tenantId: true },
+        }),
+    );
+    if (!row || row.tenantId) return row;
+    return asSystem(async () =>
+        await prisma.interviewScorecard.update({ where: { id: row.id }, data: { tenantId }, select: { id: true, tenantId: true } }),
+    );
+}
+
+/**
+ * Write the (interview, reviewer) scorecard inside a tenant transaction.
+ *
+ * @returns {Promise<{ row: object, action: "created"|"updated"|"amended"|"unchanged", previous: object|null }>}
+ */
+export async function writeScorecardInTx(tx, { interviewId, reviewerId, tenantId, data = {}, amendment = null } = {}) {
+    const existing = await tx.interviewScorecard.findFirst({
+        where: { interviewId: Number(interviewId), reviewerId: Number(reviewerId), tenantId },
+    });
+    if (!existing) {
+        const row = await tx.interviewScorecard.create({
+            data: { interviewId: Number(interviewId), reviewerId: Number(reviewerId), tenantId, ...data },
+        });
+        return { row, action: "created", previous: null };
+    }
+    if (!existing.submittedAt) {
+        const row = await tx.interviewScorecard.update({ where: { id: existing.id }, data });
+        return { row, action: "updated", previous: existing };
+    }
+    if (!formPayloadChanged(existing, data)) return { row: existing, action: "unchanged", previous: existing };
+
+    const reason = typeof amendment?.reason === "string" ? amendment.reason.trim() : "";
+    if (!reason) throw lockedError();
+    const entry = { at: new Date().toISOString(), by: amendment?.by ?? null, reason, replaced: formComparable(existing) };
+    // The original submittedAt stays: lastAmendedAt is what shows it moved.
+    const { submittedAt: _ignored, startedAt: _started, ...changes } = data;
+    const row = await tx.interviewScorecard.update({
+        where: { id: existing.id },
+        data: {
+            ...changes,
+            amendmentLog: [...(Array.isArray(existing.amendmentLog) ? existing.amendmentLog : []), entry],
+            lastAmendedAt: new Date(),
+        },
+    });
+    return { row, action: "amended", previous: existing };
+}
+
+/** The decision-prompt hook, for writers that commit outside this module. */
+export const afterFormScorecardSubmitted = (row, tenantId) => afterScorecardWrite(row, tenantId);
 
 export default upsertInterviewScorecard;

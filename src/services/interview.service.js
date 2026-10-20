@@ -29,6 +29,8 @@ import { applyDecisionAutoAdvance } from "./interview-decision-prompt.service.js
 // published test blueprint is marked assessment-required in its own
 // transaction (flag onsiteTest; a no-op otherwise).
 import { markInterviewAssessmentInTransaction } from "./test-blueprint.service.js";
+import { pinEvaluationFormForInterview } from "./scorecardTemplate.service.js";
+import { assertAssessmentGate } from "../lib/evaluation-form.util.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
@@ -180,6 +182,9 @@ export const scheduleInterviewInTransaction = async (tx, {
     const assessment = await markInterviewAssessmentInTransaction(tx, {
         interview, application: applicationRow, tenantId, now,
     });
+    // Phase 3b — the evaluation form in force now is the one the panel fills,
+    // whatever the templates do later. A no-op with the flag off.
+    await pinEvaluationFormForInterview(tx, { tenantId, interviewId: interview.id });
     return assessment ? { ...interview, ...assessment.fields } : interview;
 };
 
@@ -394,6 +399,17 @@ export const updateInterview = async (id, data = {}, tenantId, ctx = {}) => {
         });
     };
 
+    // Phase 3b — an outcome waits for the on-site assessment, the same gate as
+    // setInterviewOutcome. Checked before the feedback write so a refused
+    // decision leaves nothing behind, and again inside the transaction.
+    if (normalizedDecision) {
+        const gate = await prisma.interview.findFirst({
+            where: scopedWhere(tenantId, { id: interviewId }),
+            select: { assessmentRequired: true, assessmentStatus: true },
+        });
+        if (gate) assertAssessmentGate(gate);
+    }
+
     const feedbackFirst = Boolean(feedback && normalizedDecision);
     if (feedback && feedbackFirst) await writeFeedback();
 
@@ -411,11 +427,14 @@ export const updateInterview = async (id, data = {}, tenantId, ctx = {}) => {
                 durationMinutes: true,
                 location: true,
                 calendarEventId: true,
+                assessmentRequired: true,
+                assessmentStatus: true,
                 application: { select: { candidateId: true } },
                 interviewers: { select: { employeeId: true } },
             },
         });
         if (!before) throw new Error("Interview not found");
+        if (normalizedDecision) assertAssessmentGate(before);
         // The columns the caller edited, before any bookkeeping is added.
         const editedFields = Object.keys(updateData);
 

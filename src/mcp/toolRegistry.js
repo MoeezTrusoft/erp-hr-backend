@@ -46,6 +46,7 @@ import { registerTestWorkstationTools } from "./tools/test-workstation.tools.js"
 import { registerTestItemTools } from "./tools/test-item.tools.js";
 import { registerReceptionTools } from "./tools/reception.tools.js";
 import { registerTestResultTools } from "./tools/test-result.tools.js";
+import { registerEvaluationFormTools } from "./tools/evaluation-form.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -329,6 +330,7 @@ export function registerAllTools(server) {
   registerTestItemTools(server);
   registerReceptionTools(server);
   registerTestResultTools(server);
+  registerEvaluationFormTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);
