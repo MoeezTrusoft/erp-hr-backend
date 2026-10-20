@@ -3,6 +3,7 @@ import { employee } from "../separation/base.js";
 import { assertAttendancePeriodOpen, lockAttendancePeriod } from "../attendancePeriod.service.js";
 import { assertNoPayrollLoanReservation } from "../payrollLoans.service.js";
 import { enqueueHrDomainEvent } from "../hrDomainEvent.service.js";
+import { isOfferExtensionRef, offerExtensionSnapshot } from "../../lib/offer-extension.util.js";
 
 export const fail = (message, status = 409) => {
   throw Object.assign(new Error(`HR-4200: ${message}`), {
@@ -337,7 +338,11 @@ export async function loadSource(
   });
   if (!row) fail("Request not found", 404);
   const status = row.status ?? row.state;
-  if (pending && d.pending && !d.pending.includes(status))
+  // Recruitment Phase 6 — an OFFER expiry extension ("<id>@x...") is about a
+  // SENT offer; whether it still applies is decided at APPROVE, in the
+  // recruitment adapter (offer-expiry.service.js applyOfferExtensionDecision).
+  const offerExtension = kind === "OFFER" && isOfferExtensionRef(ref);
+  if (pending && d.pending && !offerExtension && !d.pending.includes(status))
     fail("The source is not ready for approval");
   if (
     ["DEVELOPMENT", "JOB_DESCRIPTION"].includes(kind) &&
@@ -370,6 +375,8 @@ export async function loadSource(
   if (!who?.employee_code)
     fail("The request requires an employee initiator with an employee code");
   const data = pick(row, d.fields);
+  // The proposed date is part of what the approvers sign (it is in the digest).
+  if (offerExtension) data.extension = offerExtensionSnapshot(ref);
   if (kind === "NOTICE_CHANGE") data.payload = row.payload.pending;
   if (kind === "SHIFT_SWAP" && row.targetId) {
     const target = await tx.employee.findFirst({
@@ -546,6 +553,13 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
   const { kind } = request,
     row = s.row,
     status = approved ? "APPROVED" : "REJECTED";
+  // Recruitment Phase 6 — an offer expiry extension is applied (or, on REJECT,
+  // left alone) in this decision's transaction by the recruitment adapter,
+  // which sets the finalizing marker itself.
+  if (kind === "OFFER" && isOfferExtensionRef(request.sourceRef)) {
+    const { applyOfferExtensionDecision } = await import("../offer-expiry.service.js");
+    return applyOfferExtensionDecision(tx, env, request, s, approved, reason);
+  }
   // More specialised execution keeps its existing validations and permissions.
   // The approval binds to this exact source revision, and is consumed by its native action.
   if (

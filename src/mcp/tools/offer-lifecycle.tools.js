@@ -11,6 +11,11 @@
 //     transition, event and replay rule as every other response.
 //   * hr_offer_decline_reasons_list (GET): any recruitment scope.
 //   * hr_offer_expiry_extend (PUT): ORG only (offer-expiry.service.js rules).
+//     Phase 6: with HR_RECRUITMENT_OFFER_EXTENSION_APPROVAL on, an offer whose
+//     approval stands is not refused; the offer's creator gets a new HR
+//     Approval Centre request (pendingApproval: true, extensionApproval) and
+//     the date applies when it is approved (offer-extension.tools.js reads and
+//     withdraws it).
 //   * hr_offer_band_check (GET): scopes that may see compensation (ORG,
 //     FINANCE) only; band figures are payroll data and a narrower caller could
 //     otherwise bisect the band.
@@ -84,11 +89,12 @@ export function registerOfferLifecycleTools(server) {
 
     server.tool(
         "hr_offer_expiry_extend",
-        `Extend an offer's expiry (recruiters only): a SENT offer gets a later expiryDate; an EXPIRED offer goes back to SENT only within ${REOPEN_WINDOW_DAYS} days of expiring while its requisition is open. The new date must be in the future and at most ${MAX_EXTENSION_DAYS} days ahead; the candidate is reminded again before it`,
+        `Extend an offer's expiry (recruiters only): a SENT offer gets a later expiryDate; an EXPIRED offer goes back to SENT only within ${REOPEN_WINDOW_DAYS} days of expiring while its requisition is open. The new date must be in the future and at most ${MAX_EXTENSION_DAYS} days ahead; the candidate is reminded again before it. When the offer's terms were approved in the HR Approval Centre and re-approval is enabled, the offer stays as it is and its creator's extension request goes to the Centre (pendingApproval: true, extensionApproval); the new date applies once it is approved`,
         {
             id: idInput.describe("Offer id"),
             expiryDate: z.string().min(1).describe("New expiry, ISO 8601 date or date-time"),
             expectedVersion: z.number().int().optional().describe("Optimistic-concurrency guard; the version you last read. A stale value returns -32009"),
+            reason: z.string().max(1000).optional().describe("Why the extension is needed; shown to the approvers when it goes to the HR Approval Centre"),
         },
         withToolError(async (args) => {
             const { user, permissions } = getCtx();
@@ -100,6 +106,7 @@ export function registerOfferLifecycleTools(server) {
                 id: args.id,
                 expiryDate: args.expiryDate,
                 expectedVersion: args.expectedVersion,
+                reason: args.reason,
                 scope,
                 actorId: scope.employeeId,
             });

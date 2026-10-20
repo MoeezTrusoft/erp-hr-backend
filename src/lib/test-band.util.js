@@ -76,6 +76,9 @@ export const INTEGRITY_TYPE = Object.freeze({
     DEVICE_CHANGE: "DEVICE_CHANGE",
     PROCTOR_PAUSE: "PROCTOR_PAUSE",
     PROCTOR_VOID: "PROCTOR_VOID",
+    // Phase 6: reception resumed the sitting on another kiosk after a crash.
+    // On the timeline, but not the candidate's flag (a crash is not cheating).
+    KIOSK_RESUME: "KIOSK_RESUME",
 });
 
 // The candidate-side signals that count as integrity flags. Proctor actions

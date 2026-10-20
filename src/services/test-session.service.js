@@ -27,6 +27,18 @@
 //   * THE JOB. runTestSessionJob (every minute) expires unused codes, submits
 //     sittings past their deadline and closes sittings abandoned before the
 //     clock started.
+//   * CRASH RESUME (Phase 6, flag kioskResume with onsiteTest). When a kiosk
+//     dies mid-sitting, reception issues a RESUME code for the same
+//     IN_PROGRESS (or PAUSED) session on another kiosk at the same site
+//     (reception.service.js issueKioskResumeCode): the old session token is
+//     revoked there and then, the session is bound to the new kiosk, and the
+//     code's hash sits on the session row (sessionCodeHash / codeExpiresAt,
+//     the columns start uses for ISSUED rows, so no migration). The new kiosk
+//     exchanges the code here (resumeKioskSession, POST sessions/resume) for
+//     a fresh token. Nothing about the sitting changes: the same drawn items
+//     (itemOrder), the saved answers, and the server clock exactly where it
+//     is (a running clock kept running through the crash; a paused one stays
+//     paused until reception resumes it), so a resume never adds time.
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 
 import prisma from "../lib/prisma.js";
@@ -80,6 +92,30 @@ export function assertOnsiteTestEnabled() {
         throw fail("The on-site test is disabled", 503, "HR-RECRUITMENT-ONSITE-TEST-DISABLED");
     }
 }
+
+/** Phase 6 — 503 while HR_RECRUITMENT_KIOSK_RESUME is off (mapped to HR-5031). */
+export function assertKioskResumeEnabled() {
+    assertOnsiteTestEnabled();
+    if (!isRecruitmentFlagEnabled("kioskResume")) {
+        throw fail("Kiosk crash resume is disabled", 503, "HR-RECRUITMENT-KIOSK-RESUME-DISABLED");
+    }
+}
+
+/** At most this many resumes per sitting; after that the session is voided and retested. */
+export const MAX_KIOSK_RESUMES = 2;
+
+/** The sitting states a resume code may be issued for and exchanged in. */
+export const RESUMABLE_SESSION_STATUSES = Object.freeze([SESSION_STATUS.IN_PROGRESS, SESSION_STATUS.PAUSED]);
+
+/**
+ * A resume is recorded as a PROCTOR-sourced KIOSK_RESUME (the sitting moved
+ * kiosk on reception's word; server-detected device changes stay SERVER-sourced
+ * DEVICE_CHANGE), so the count is that row's, with no new column. It is on the
+ * integrity timeline but is not one of the candidate's flags: a kiosk crash
+ * must not push a sitting into REVIEW.
+ */
+export const resumeEventWhere = (tenantId, sessionId) =>
+    withTenant(tenantId, { sessionId, type: INTEGRITY_TYPE.KIOSK_RESUME, source: "PROCTOR" });
 
 // ── Codes and tokens ─────────────────────────────────────────────────────────
 
@@ -332,6 +368,100 @@ export async function startKioskSession({ tenantId, workstation, code, consent, 
             screenReader: checkIn?.accommodations?.screenReader === true,
         },
         practiceItem: practiceView(),
+    };
+}
+
+/**
+ * POST sessions/resume { code } — Phase 6. Exchange a reception-issued resume
+ * code on the kiosk it names for a fresh session token. The sitting comes
+ * back as it was: status, the server clock, the drawn items and which of them
+ * were served, answered and flagged (the items and saved answers themselves
+ * through GET items/:n). A sitting whose time ran out meanwhile is submitted
+ * and the answer is the uniform 404, as is every bad code or binding.
+ */
+export async function resumeKioskSession({ tenantId, workstation, code, now = new Date() }) {
+    if (!isRecruitmentFlagEnabled("kioskResume")) throw kioskNotFound();
+    const digits = String(code ?? "");
+    if (!/^\d{6}$/.test(digits)) throw kioskNotFound();
+    const token = randomBytes(32).toString("base64url");
+
+    const candidates = await prisma.candidateTestSession.findMany({
+        where: withTenant(tenantId, {
+            status: { in: [...RESUMABLE_SESSION_STATUSES] },
+            workstationId: workstation.id,
+            codeExpiresAt: { gt: now },
+            sessionCodeHash: { not: null },
+        }),
+    });
+    const match = candidates.find((s) => sameHash(hashSessionCode({ tenantId, sessionId: s.id, code: digits }), s.sessionCodeHash));
+    if (!match) throw kioskNotFound();
+    // Out of time while the kiosk was down: submit, never reopen.
+    const current = await closeIfTimedOut(match, now);
+    if (!RESUMABLE_SESSION_STATUSES.includes(current?.status)) throw kioskNotFound();
+
+    const claimed = await tenantTransaction(
+        prisma,
+        async (tx) => {
+            // Single use: whichever request clears the code first owns the token.
+            const claim = await tx.candidateTestSession.updateMany({
+                where: withTenant(tenantId, {
+                    id: match.id,
+                    status: { in: [...RESUMABLE_SESSION_STATUSES] },
+                    workstationId: workstation.id,
+                    sessionCodeHash: match.sessionCodeHash,
+                }),
+                // A fresh heartbeat: the crash is on the timeline as the resume,
+                // not again as a network loss on the first beat.
+                data: { sessionCodeHash: null, sessionTokenHash: hashSessionToken(token), lastHeartbeatAt: now },
+            });
+            if (!claim.count) return null;
+            return await tx.candidateTestSession.findFirst({ where: withTenant(tenantId, { id: match.id }) });
+        },
+        { tenantId },
+    );
+    if (!claimed) throw kioskNotFound();
+
+    const blueprint = await loadBlueprint(prisma, tenantId, claimed.blueprintId);
+    if (!blueprint) throw kioskNotFound();
+    const [responses, checkIn] = await Promise.all([
+        prisma.candidateTestResponse.findMany({
+            where: withTenant(tenantId, { sessionId: claimed.id }),
+            select: { itemId: true, answer: true, flagged: true },
+        }),
+        claimed.checkInId
+            ? prisma.candidateCheckIn.findFirst({ where: withTenant(tenantId, { id: claimed.checkInId }), select: { accommodations: true } })
+            : null,
+    ]);
+    const byItem = new Map(responses.map((r) => [Number(r.itemId), r]));
+    const order = orderOf(claimed);
+    const seconds = sittingSeconds(blueprint.durationMin, claimed.extraTimePct);
+    logger.info({ component: COMPONENT, sessionId: claimed.id, workstationId: workstation.id }, "kiosk session resumed");
+    return {
+        sessionId: claimed.id,
+        sessionToken: token,
+        resumed: true,
+        status: claimed.status,
+        instructions: instructions(blueprint, order.length, seconds),
+        totalItems: order.length,
+        durationMin: blueprint.durationMin,
+        durationSec: seconds,
+        remainingSec: remainingSeconds(claimed, now, blueprint.durationMin),
+        started: Boolean(claimed.startedAt),
+        practiceDone: Boolean(claimed.practiceDoneAt),
+        answered: responses.filter((r) => hasAnswer(r.answer)).length,
+        currentItem: maxServed(order) || null,
+        navigation: blueprint.navigation,
+        flagForReview: blueprint.flagForReview !== false,
+        accommodations: {
+            largeText: checkIn?.accommodations?.largeText === true,
+            screenReader: checkIn?.accommodations?.screenReader === true,
+        },
+        // Positions only: the item and the saved answer come from GET items/:n.
+        progress: order.map((e) => {
+            const r = byItem.get(Number(e.itemId));
+            return { n: e.n, served: Boolean(e.servedAt), answered: hasAnswer(r?.answer), flagged: r?.flagged === true };
+        }),
+        ...(claimed.startedAt ? {} : { practiceItem: practiceView() }),
     };
 }
 
@@ -649,6 +779,7 @@ export async function runTestSessionJob({ now = new Date(), limit = 200 } = {}) 
 
 export default {
     startKioskSession,
+    resumeKioskSession,
     getKioskSessionState,
     getKioskItem,
     saveKioskResponse,

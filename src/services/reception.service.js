@@ -26,6 +26,14 @@
 // six digits, single use and valid for 15 minutes on one kiosk; one live
 // session per interview; a void needs a reason and leaves the result
 // INCOMPLETE; an extension is the recruiter's, with a reason, within the cap.
+//
+// Crash resume (Phase 6, flag kioskResume). A kiosk that dies mid-sitting no
+// longer forces a void and a RETEST: reception issues a resume code for the
+// same session on an active kiosk at the session's site (issueKioskResumeCode).
+// The old kiosk's token is revoked at once, the session moves to the new
+// kiosk, and the exchange (test-session.service.js resumeKioskSession) gives
+// the same items, answers and clock back. At most MAX_KIOSK_RESUMES per
+// sitting; each one is a PROCTOR DEVICE_CHANGE on the integrity timeline.
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -38,12 +46,21 @@ import {
     LIVE_SESSION_STATUSES,
     SESSION_STATUS,
     extendDeadline,
+    isPastDeadline,
     remainingSeconds,
 } from "../lib/test-band.util.js";
 import { logAction } from "../utils/logs.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { assessmentEvent, loadInterviewContext, recordIncompleteResult } from "./test-result.service.js";
-import { SESSION_CODE_TTL_MS, generateSessionCode, hashSessionCode } from "./test-session.service.js";
+import {
+    MAX_KIOSK_RESUMES,
+    RESUMABLE_SESSION_STATUSES,
+    SESSION_CODE_TTL_MS,
+    assertKioskResumeEnabled,
+    generateSessionCode,
+    hashSessionCode,
+    resumeEventWhere,
+} from "./test-session.service.js";
 
 const COMPONENT = "reception";
 const AUDIT_MODULE = "Recruitment Assessment";
@@ -453,7 +470,7 @@ export async function listLiveSessions({ tenantId, access, siteRef, now = new Da
         select: {
             id: true, interviewId: true, candidateId: true, blueprintId: true, workstationId: true, siteRef: true, status: true,
             issuedAt: true, codeExpiresAt: true, startedAt: true, deadlineAt: true, pausedAt: true, pausedTotalSec: true,
-            extraTimePct: true, itemOrder: true, attemptNo: true,
+            extraTimePct: true, itemOrder: true, attemptNo: true, sessionCodeHash: true,
         },
         orderBy: [{ issuedAt: "asc" }, { id: "asc" }],
         take: 500,
@@ -469,14 +486,15 @@ export async function listLiveSessions({ tenantId, access, siteRef, now = new Da
             : [],
         ids.length ? prisma.candidateTestResponse.findMany({ where: withTenant(tenantId, { sessionId: { in: ids } }), select: { sessionId: true, answer: true } }) : [],
         ids.length
-            ? prisma.candidateTestIntegrityEvent.findMany({ where: withTenant(tenantId, { sessionId: { in: ids }, type: { in: [...FLAG_INTEGRITY_TYPES] } }), select: { sessionId: true } })
+            ? prisma.candidateTestIntegrityEvent.findMany({ where: withTenant(tenantId, { sessionId: { in: ids }, type: { in: [...FLAG_INTEGRITY_TYPES, INTEGRITY_TYPE.KIOSK_RESUME] } }), select: { sessionId: true, type: true, source: true } })
             : [],
     ]);
     const labelOf = new Map(kiosks.map((k) => [k.id, k.label]));
     const durationOf = new Map(blueprints.map((b) => [b.id, b.durationMin]));
     const count = (rows, pick = () => true) => rows.reduce((m, r) => (pick(r) ? m.set(r.sessionId, (m.get(r.sessionId) ?? 0) + 1) : m), new Map());
     const answered = count(responses, (r) => r.answer && Object.keys(r.answer).length > 0);
-    const flagged = count(flags);
+    const flagged = count(flags, (f) => f.type !== INTEGRITY_TYPE.KIOSK_RESUME);
+    const resumes = count(flags, (f) => f.type === INTEGRITY_TYPE.KIOSK_RESUME && f.source === "PROCTOR");
 
     return {
         siteRef: site,
@@ -496,6 +514,11 @@ export async function listLiveSessions({ tenantId, access, siteRef, now = new Da
                 remainingSec: live && s.status !== SESSION_STATUS.ISSUED ? remainingSeconds(s, now, durationOf.get(s.blueprintId) ?? 0) : null,
                 codeExpiresAt: s.status === SESSION_STATUS.ISSUED ? s.codeExpiresAt : null,
                 integrityFlagCount: flagged.get(s.id) ?? 0,
+                resumeCount: resumes.get(s.id) ?? 0,
+                // A resume code waiting for its kiosk (never the code itself).
+                resumeCodeExpiresAt: RESUMABLE_SESSION_STATUSES.includes(s.status) && s.sessionCodeHash && s.codeExpiresAt && new Date(s.codeExpiresAt) > now
+                    ? s.codeExpiresAt
+                    : null,
             };
         }),
     };
@@ -596,6 +619,100 @@ export async function voidTestSession({ tenantId, access, actorId = null, sessio
 }
 
 /**
+ * Phase 6 — resume a sitting interrupted by a kiosk crash on another (or the
+ * restarted) ACTIVE kiosk at the session's site. Returns a six-digit code ONCE
+ * (single use, 15 minutes, only on that kiosk); only its salted hash is
+ * stored, on the session row. The old kiosk's session token stops working
+ * now. The clock is not touched: no time is added or given back.
+ */
+export async function issueKioskResumeCode({ tenantId, access, actorId = null, sessionId, workstationId, reason, siteRef, now = new Date() }) {
+    requireTenant(tenantId);
+    assertKioskResumeEnabled();
+    assertAssessmentCapability(access, "reception");
+    const site = siteFor(access, siteRef);
+    const note = text(reason);
+    const actor = positiveInt(actorId);
+    const code = generateSessionCode();
+
+    return tenantTransaction(
+        prisma,
+        async (tx) => {
+            const session = await sessionForDesk(tx, { tenantId, access, sessionId, site });
+            if (!RESUMABLE_SESSION_STATUSES.includes(session.status)) throw stateConflict(session.status);
+            if (isPastDeadline(session, now)) {
+                throw fail("The sitting's time is up; it is submitted as it stands", 409, "HR-RECRUITMENT-TEST-SESSION-STATE");
+            }
+            const used = await tx.candidateTestIntegrityEvent.count({ where: resumeEventWhere(tenantId, session.id) });
+            if (used >= MAX_KIOSK_RESUMES) {
+                throw fail(`This sitting has been resumed ${MAX_KIOSK_RESUMES} times; void it and ask the recruiter for a retest`, 409, "HR-RECRUITMENT-KIOSK-RESUME-LIMIT");
+            }
+
+            // The sitting stays at its own site, whoever issues the code.
+            const workstation = await tx.testWorkstation.findFirst({
+                where: withTenant(tenantId, { id: positiveInt(workstationId) ?? 0, status: "ACTIVE" }),
+                select: { id: true, label: true, siteRef: true },
+            });
+            if (!workstation || !sameSite(workstation.siteRef, session.siteRef)) {
+                throw fail("No active kiosk with that id at this site", 404, "HR-RECRUITMENT-TEST-WORKSTATION-NOT-FOUND");
+            }
+            const busy = await tx.candidateTestSession.count({
+                where: withTenant(tenantId, { workstationId: workstation.id, id: { not: session.id }, status: { in: [...LIVE_SESSION_STATUSES] } }),
+            });
+            if (busy) throw fail("That kiosk is in use", 409, "HR-RECRUITMENT-TEST-WORKSTATION-BUSY");
+
+            const codeExpiresAt = new Date(now.getTime() + SESSION_CODE_TTL_MS);
+            const moved = await tx.candidateTestSession.updateMany({
+                where: withTenant(tenantId, { id: session.id, status: session.status }),
+                data: {
+                    workstationId: workstation.id,
+                    sessionTokenHash: null,
+                    sessionCodeHash: hashSessionCode({ tenantId, sessionId: session.id, code }),
+                    codeExpiresAt,
+                },
+            });
+            if (!moved.count) throw stateConflict(session.status);
+            const resumeNo = used + 1;
+            await proctorEvent(tx, session, INTEGRITY_TYPE.KIOSK_RESUME, {
+                reason: "KIOSK_RESUME",
+                resumeNo,
+                fromWorkstationId: session.workstationId ?? null,
+                toWorkstationId: workstation.id,
+                byId: actor,
+                ...(note ? { note } : {}),
+            }, now);
+            await enqueueHrDomainEvent(
+                tx,
+                assessmentEvent("test_session_resumed", {
+                    tenantId,
+                    aggregateType: "CandidateTestSession",
+                    aggregateId: session.id,
+                    actorId: actor,
+                    payload: {
+                        sessionId: String(session.id),
+                        interviewId: String(session.interviewId),
+                        applicationId: String(session.applicationId),
+                        candidateId: String(session.candidateId),
+                        workstationId: String(workstation.id),
+                        previousWorkstationId: session.workstationId != null ? String(session.workstationId) : null,
+                        resumeNo,
+                    },
+                }),
+            );
+            return {
+                sessionId: session.id,
+                code,
+                codeExpiresAt,
+                workstation: { id: workstation.id, label: workstation.label },
+                status: session.status,
+                resumeNo,
+                resumesLeft: MAX_KIOSK_RESUMES - resumeNo,
+            };
+        },
+        { tenantId },
+    );
+}
+
+/**
  * Extend a sitting by some minutes (recruiter only, with a reason), never past
  * duration x (1 + maxExtraTimePct). Before the clock starts the extension is
  * added to the session's extra time instead.
@@ -648,4 +765,5 @@ export default {
     resumeTestSession,
     voidTestSession,
     extendTestSession,
+    issueKioskResumeCode,
 };

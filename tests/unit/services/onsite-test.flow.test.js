@@ -656,7 +656,10 @@ describe("proctoring: live grid and void", () => {
         await submit(s, at(6));
         const after = await as("reception", (access) => reception.listLiveSessions({ tenantId: TENANT, access, siteRef: "Lahore", now: at(7) }));
         expect(after.items[0]).toMatchObject({ status: "COMPLETED", note: reception.COMPLETED_NOTE });
-        const arrivals = await as("reception", (access) => reception.listArrivals({ tenantId: TENANT, access, siteRef: "Lahore", now: at(7) }));
+        // Arrivals list the interview's local day (the seed schedules from the
+        // wall clock, T0 is a fixed date).
+        const arrivals = await as("reception", (access) =>
+            reception.listArrivals({ tenantId: TENANT, access, siteRef: "Lahore", now: interviewOf(db, 40).scheduledAt }));
         expect(arrivals.items[0]).toMatchObject({ assessmentStatus: "COMPLETED", session: { status: "COMPLETED" } });
         expect(json([live, after, arrivals])).not.toMatch(/scorePct|band|FAILED|PASSED/);
     });

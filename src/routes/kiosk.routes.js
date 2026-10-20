@@ -12,10 +12,14 @@
 //   * SESSION TOKEN. Every route but start also carries X-Kiosk-Session, the
 //     bearer token start returned once; the session must belong to the calling
 //     workstation (test-session.service.js records a DEVICE_CHANGE otherwise).
-//   * RATE LIMITS. Fixed windows per IP and per workstation, in memory like
-//     the portal's (per pod; moving them to Redis is the follow-up so a
-//     scaled deployment shares one budget). Start has the strictest budget:
-//     it is the six-digit code's guessing surface.
+//   * RATE LIMITS. Fixed windows per IP and per workstation, shared by every
+//     pod through Redis (lib/rate-limit.util.js; memory when Redis is down,
+//     never unlimited). Start has the strictest budget: it is the six-digit
+//     code's guessing surface.
+//   * RESUME (Phase 6, flag kioskResume). POST sessions/resume { code }
+//     exchanges a reception-issued resume code for a fresh session token after
+//     a kiosk crash; it shares start's budget (the same six-digit guessing
+//     surface) and, like start, carries no session token.
 //   * UNIFORM FAILURES. A bad workstation token, code, session token, binding
 //     or state, and the feature flag being off, are all the same 404 body. A
 //     malformed body is a 400, too many requests a 429, and nothing else
@@ -23,6 +27,7 @@
 import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import logger from "../lib/logger.js";
+import { consumeRateLimit, resetRateLimitMemory } from "../lib/rate-limit.util.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { verifyWorkstationToken } from "../services/test-workstation.service.js";
 import {
@@ -30,6 +35,7 @@ import {
     getKioskSessionState,
     kioskHeartbeat,
     recordKioskIntegrityEvents,
+    resumeKioskSession,
     saveKioskResponse,
     startKioskSession,
     submitKioskSession,
@@ -37,7 +43,7 @@ import {
 
 const router = express.Router();
 
-// ── Rate limiting (fixed window, in memory) ─────────────────────────────────
+// ── Rate limiting (fixed window, shared through Redis) ──────────────────────
 const WINDOW_MS = 60_000;
 // Per minute: [per IP, per workstation].
 const LIMITS = Object.freeze({
@@ -45,27 +51,15 @@ const LIMITS = Object.freeze({
     session: { ip: 600, workstation: 300 },
 });
 
-const buckets = new Map(); // key -> { count, resetAt }
-let lastSweep = Date.now();
-
-/** Count one hit against `key`; false once the window's budget is spent. */
-function consume(key, limit, now = Date.now()) {
-    if (now - lastSweep > WINDOW_MS) {
-        for (const [k, v] of buckets) if (v.resetAt <= now) buckets.delete(k);
-        lastSweep = now;
-    }
-    const bucket = buckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-        buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
-        return true;
-    }
-    bucket.count += 1;
-    return bucket.count <= limit;
+/** Count one hit against `key` (hashed by the util); false once the window's budget is spent. */
+async function consume(routeClass, key, limit) {
+    const result = await consumeRateLimit({ routeClass, key, limit, windowMs: WINDOW_MS });
+    return result.allowed;
 }
 
-/** Tests only: forget every window. */
+/** Tests only: forget every in-memory window. */
 export function resetKioskRateLimits() {
-    buckets.clear();
+    resetRateLimitMemory();
 }
 
 const NOT_FOUND = Object.freeze({ success: false, message: "Not found" });
@@ -88,11 +82,11 @@ async function workstationFor(req) {
 
 function guard(routeClass, handler) {
     return async (req, res) => {
-        if (!consume(`ip:${routeClass}:${req.ip ?? "unknown"}`, LIMITS[routeClass].ip)) return tooMany(res);
+        if (!(await consume(`kiosk:${routeClass}:ip`, req.ip ?? "unknown", LIMITS[routeClass].ip))) return tooMany(res);
         if (!isRecruitmentFlagEnabled("onsiteTest")) return notFound(res);
         const workstation = await workstationFor(req);
         if (!workstation) return notFound(res);
-        if (!consume(`ws:${routeClass}:${workstation.id}`, LIMITS[routeClass].workstation)) return tooMany(res);
+        if (!(await consume(`kiosk:${routeClass}:ws`, String(workstation.id), LIMITS[routeClass].workstation))) return tooMany(res);
         const tenantId = workstation.tenantId;
         const sessionToken = req.get("X-Kiosk-Session") ?? null;
         try {
@@ -122,6 +116,12 @@ router.post(
     "/sessions/start",
     guard("start", async ({ req, tenantId, workstation, now }) =>
         await startKioskSession({ tenantId, workstation, code: req.body?.code, consent: req.body?.consent, now })),
+);
+
+router.post(
+    "/sessions/resume",
+    guard("start", async ({ req, tenantId, workstation, now }) =>
+        await resumeKioskSession({ tenantId, workstation, code: req.body?.code, now })),
 );
 
 router.get(
