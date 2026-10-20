@@ -1,0 +1,47 @@
+# observability/alerts/recruitment-onboarding.rules.yml
+#
+# Recruitment Phase 4 — "failures page someone". Prometheus alerting rules on
+# the handoff counter exported by src/lib/recruitmentOpsMetrics.js:
+#
+#   hr_recruitment_handoffs_total{outcome="completed"|"failed"}
+#
+# "failed" is recorded by runOfferHandoff's failure path (provisioning rolled
+# back) and by the handoff watchdog (src/services/handoff-watchdog.service.js)
+# when a handoff stalls IN_PROGRESS for over 30 minutes (a crash mid-handoff),
+# so both kinds of failure page. The counter is per process: sum() across
+# instances. tests/unit/lib/recruitment-onboarding-alert-rules.test.js checks
+# these expressions against the metric name and label in code.
+#
+# Runbook (MCP, hr:recruitment):
+#   1. hr_offer_handoffs_failed_list            the FAILED handoffs, oldest first
+#   2. hr_offer_handoff_get { id: <offerId> }   lastError and the attempt trail
+#      ("stalled" = the watchdog settled a crashed run; nothing was provisioned)
+#   3. fix the cause (e.g. a missing employee category), then
+#      hr_offer_handoff_retry { id: <offerId>[, employeeCategory] }
+#      (idempotent: a completed handoff is replayed unchanged)
+groups:
+  - name: hr-recruitment-onboarding
+    rules:
+      - alert: HrRecruitmentHandoffFailed
+        expr: sum(increase(hr_recruitment_handoffs_total{outcome="failed"}[15m])) > 0
+        labels:
+          severity: page
+          team: hr-engineering
+          service: erp-hr-backend
+          oncall: hr-engineering
+        annotations:
+          summary: "An accepted-offer handoff failed in the last 15 minutes"
+          description: "{{ $value | humanize }} hire handoff failure(s) in 15 minutes: an accepted offer did not produce its employee, terms, assignment and onboarding checklist. Nothing partial was kept; the handoff is FAILED and retryable."
+          runbook: "MCP: hr_offer_handoffs_failed_list -> hr_offer_handoff_get {id} (lastError, attempts) -> fix -> hr_offer_handoff_retry {id[, employeeCategory]}. See observability/alerts/recruitment-onboarding.rules.yml header."
+      - alert: HrRecruitmentHandoffFailuresSustained
+        expr: sum(increase(hr_recruitment_handoffs_total{outcome="failed"}[1h])) >= 3
+        for: 15m
+        labels:
+          severity: page
+          team: hr-engineering
+          service: erp-hr-backend
+          oncall: hr-engineering
+        annotations:
+          summary: "Hire handoffs keep failing (3 or more in an hour)"
+          description: "{{ $value | humanize }} handoff failures in the last hour: likely a systemic cause (payroll provisioning, employee code allocation, database) rather than one bad offer."
+          runbook: "MCP: hr_offer_handoffs_failed_list; compare lastError across rows before retrying any (hr_offer_handoff_retry)."
