@@ -404,6 +404,18 @@ export function registerInterviewMgmtTools(server) {
   })).min(1);
 
   server.tool(
+    "hr_scorecard_templates_list",
+    "List the tenant's scorecard templates with their active links, oldest first. With evaluation forms on, every version of a form is a row (group by templateKey; status DRAFT, PUBLISHED or RETIRED).",
+    { includeInactive: z.boolean().optional().describe("Include deactivated templates") },
+    withToolError(async ({ includeInactive }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await listTemplates({ tenantId: user.tenantId, includeInactive: includeInactive === true });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_scorecard_templates_list")
+  );
+
+  server.tool(
     "hr_scorecard_template_create",
     forms
       ? "Create a tenant scorecard template: an ordered criteria list [{ key, label?, weight?, required? }], or an evaluation form (sections of criteria with competency, weight, required, must-have threshold, anchors for every level of the scale and linked questions; panel roles per section; scale 1-5, 1-4 or YES_NO; evidence rules; trained-interviewer flag). A form starts DRAFT unless status PUBLISHED."

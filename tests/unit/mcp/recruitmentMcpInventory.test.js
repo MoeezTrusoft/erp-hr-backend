@@ -112,7 +112,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentTools: 23, // + hr_offer_handoffs_failed_list (Phase 9 operator fleet view)
   requisitionMgmtTools: 14,
   candidatePipelineTools: 3, // + hr_candidate_360_get (F-14)
-  interviewMgmtTools: 16,
+  interviewMgmtTools: 17,
   offerMgmtTools: 7, // + hr_offer_approval_policy_get/_set (FR-09 residue)
   candidatePrivacyTools: 15,
   talentPoolMgmtTools: 8, // + the invitation lifecycle, segment and pool sweep (FR-10 residue)
@@ -193,6 +193,7 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_interview_reschedule_confirm",
   "hr_interview_reschedule_request",
   "hr_interview_score",
+  "hr_scorecard_templates_list",
   "hr_scorecard_template_create",
   "hr_scorecard_template_deactivate",
   "hr_scorecard_template_link",
@@ -392,7 +393,7 @@ describe("Recruitment MCP tool inventory", () => {
     // Phase 3a: + 4 offer lifecycle tools, + 7 offer letter tools, + 2 workspaces,
     // + 6 interview scheduling tools.
     // Phase 3b: + 9 blueprint tools, + 4 workstation tools, + 10 item bank tools.
-    expect(all).toHaveLength(781);
+    expect(all).toHaveLength(782);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
