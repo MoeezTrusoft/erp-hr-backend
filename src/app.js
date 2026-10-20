@@ -65,6 +65,7 @@ import recruitmentRoutes from "./routes/recruitment.routes.js";
 import publicPortalRoutes, { interviewSlotsRouter } from "./routes/publicPortal.routes.js";
 import { jobFeedRouter } from "./routes/job-feed.routes.js";
 import { esignWebhookRouter } from "./routes/esign-webhook.routes.js";
+import { kioskRouter } from "./routes/kiosk.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
@@ -199,6 +200,10 @@ export const createApp = () => {
     app.use("/public", publicPortalRoutes);
     // Phase 3a — the candidate picks an interview slot (its own rate classes).
     app.use("/public", interviewSlotsRouter);
+    // Phase 3b — the on-site test kiosk. Outside the /api guard because a
+    // kiosk browser cannot present a gateway service-JWT; the router checks
+    // its own X-Kiosk-Token (workstation) and X-Kiosk-Session headers.
+    app.use("/kiosk/v1", kioskRouter);
 
     app.use("/api", internalServiceGuard);
     // Bind the verified tenant to the async context so the Prisma tenant-scope

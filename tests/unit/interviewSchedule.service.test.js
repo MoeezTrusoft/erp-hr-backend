@@ -112,6 +112,24 @@ describe("interviewSchedule.cancelInterview (§5.4)", () => {
             service.cancelInterview({ interviewId: 404, reasonCode: "BUSINESS_REQUEST", tenantId: tenant }),
         ).rejects.toMatchObject({ status: 404, details: "HR-RECRUITMENT-SCHEDULE-NOT-FOUND" });
     });
+
+    it("Phase 3b: a passed db is used as-is, so a test release can compose the cancel", async () => {
+        const db = {
+            interview: { findFirst: jest.fn(async () => interviewRow()), update: jest.fn(async () => ({ id: 500 })) },
+            interviewLifecycleEvent: { create: jest.fn(async () => ({ id: 3 })) },
+        };
+        const row = await service.cancelInterview({
+            interviewId: 500,
+            reasonCode: "ASSESSMENT_NOT_PASSED",
+            tenantId: tenant,
+            actorId: 12,
+            db,
+        });
+        expect(row).toMatchObject({ status: "CANCELLED", reasonCode: "ASSESSMENT_NOT_PASSED" });
+        expect(db.interview.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: "CANCELLED" } }));
+        expect(prisma.interview.update).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
 });
 
 // ── §5.3 request ─────────────────────────────────────────────────────────────
@@ -149,6 +167,20 @@ describe("interviewSchedule.requestReschedule (§5.3)", () => {
         await expect(
             service.requestReschedule({ interviewId: 500, reasonCode: "CANDIDATE_REQUEST", tenantId: tenant }),
         ).rejects.toMatchObject({ status: 409 });
+    });
+
+    it("Phase 3b: ASSESSMENT_NOT_PASSED is a cancel reason only, never a reschedule reason", async () => {
+        prisma.interview.findFirst.mockResolvedValue(interviewRow());
+        await expect(
+            service.requestReschedule({ interviewId: 500, reasonCode: "ASSESSMENT_NOT_PASSED", tenantId: tenant }),
+        ).rejects.toMatchObject({ status: 400, details: { code: "HR-RECRUITMENT-SCHEDULE-REASON-INVALID" } });
+        await expect(
+            service.confirmReschedule({
+                interviewId: 500, scheduledAt: "2026-10-05T09:00:00Z", reasonCode: "ASSESSMENT_NOT_PASSED", tenantId: tenant,
+            }),
+        ).rejects.toMatchObject({ status: 400 });
+        expect(prisma.interviewLifecycleEvent.create).not.toHaveBeenCalled();
+        expect(prisma.interview.update).not.toHaveBeenCalled();
     });
 });
 

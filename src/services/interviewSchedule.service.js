@@ -46,6 +46,7 @@ import {
 } from "./hrEvents.js";
 import {
     LIFECYCLE_EVENTS,
+    RESCHEDULE_REASONS,
     blockedInterviewers,
     validateConflictOverride,
     validateLifecycleReason,
@@ -205,11 +206,14 @@ function assertNotTerminal(interview) {
  * @param {string} p.reasonCode  one of RESCHEDULE_REASONS
  * @param {string|null} p.notes  required when reasonCode is OTHER
  */
-export const cancelInterview = async ({ interviewId, reasonCode, notes, tenantId, actorId }) => {
+export const cancelInterview = async ({ interviewId, reasonCode, notes, tenantId, actorId, db = null }) => {
     const reason = validateLifecycleReason({ reasonCode, notes });
     if (!reason.ok) throw fail(reason.error, 400, { code: "HR-RECRUITMENT-SCHEDULE-REASON-INVALID" });
 
-    return tenantTransaction(prisma, async (tx) => {
+    // Phase 3b — a test release composes the cancel into its own transaction,
+    // so the cancel and the rejection commit or roll back together.
+    const inTx = (fn) => (db ? fn(db) : tenantTransaction(prisma, fn));
+    return inTx(async (tx) => {
         const id = toInt(interviewId);
         const interview = await tx.interview.findFirst({
             where: scopedWhere(tenantId, { id: id ?? 0 }),
@@ -330,7 +334,7 @@ export const checkInterviewerAvailability = async ({ scheduledAt, durationMinute
  * stored on the event row for the recruiter to confirm against.
  */
 export const requestReschedule = async ({ interviewId, reasonCode, notes, requestedFor, tenantId, actorId }) => {
-    const reason = validateLifecycleReason({ reasonCode, notes });
+    const reason = validateLifecycleReason({ reasonCode, notes, allowed: RESCHEDULE_REASONS });
     if (!reason.ok) throw fail(reason.error, 400, { code: "HR-RECRUITMENT-SCHEDULE-REASON-INVALID" });
     const when = requestedFor ? toDate(requestedFor) : null;
     if (requestedFor && !when) throw fail("requestedFor must be a valid ISO 8601 datetime", 400);
@@ -403,7 +407,7 @@ export const requestReschedule = async ({ interviewId, reasonCode, notes, reques
  * event fires (§5.3a).
  */
 export const confirmReschedule = async ({ interviewId, scheduledAt, reasonCode, notes, override, overrideReason, tenantId, actorId }) => {
-    const reason = validateLifecycleReason({ reasonCode, notes });
+    const reason = validateLifecycleReason({ reasonCode, notes, allowed: RESCHEDULE_REASONS });
     if (!reason.ok) throw fail(reason.error, 400, { code: "HR-RECRUITMENT-SCHEDULE-REASON-INVALID" });
     const when = toDate(scheduledAt);
     if (!when) throw fail("scheduledAt must be a valid ISO 8601 datetime", 400);

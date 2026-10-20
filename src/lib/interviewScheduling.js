@@ -29,17 +29,30 @@ export const RESCHEDULE_REASONS = [
     "OTHER",
 ];
 
+/**
+ * Phase 3b — cancel reasons only the system writes: a released candidate's
+ * interview is cancelled with ASSESSMENT_NOT_PASSED (the CHECK in migration
+ * 20261021003400 allows it). A cancel accepts them; a reschedule does not, so
+ * the reschedule paths pass `allowed: RESCHEDULE_REASONS`.
+ */
+export const SYSTEM_CANCEL_REASONS = ["ASSESSMENT_NOT_PASSED"];
+
+/** Every reason a cancel may carry. */
+export const CANCEL_REASONS = [...RESCHEDULE_REASONS, ...SYSTEM_CANCEL_REASONS];
+
 /** Lifecycle event kinds (the ledger's eventType column). */
 export const LIFECYCLE_EVENTS = ["CANCELLED", "RESCHEDULED", "RESCHEDULE_REQUESTED"];
 
 /**
  * Validate a §5.4 cancel/reschedule reason.
+ * @param {{ reasonCode: string, notes?: string|null, allowed?: string[] }} input
+ *   allowed defaults to CANCEL_REASONS; a reschedule passes RESCHEDULE_REASONS
  * @returns {{ ok: true, code: string, notes: string|null } | { ok: false, error: string }}
  */
-export function validateLifecycleReason({ reasonCode, notes }) {
+export function validateLifecycleReason({ reasonCode, notes, allowed = CANCEL_REASONS }) {
     const code = String(reasonCode ?? "").trim();
     if (!code) return { ok: false, error: "A reason code is required" };
-    if (!RESCHEDULE_REASONS.includes(code)) {
+    if (!allowed.includes(code)) {
         return { ok: false, error: `Unknown reason code "${code}"` };
     }
     const trimmedNotes = typeof notes === "string" ? notes.trim() : "";

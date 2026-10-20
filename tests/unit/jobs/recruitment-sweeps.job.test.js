@@ -91,6 +91,7 @@ const {
   JOB_INTERVIEW_DECISION_PROMPTS,
   JOB_INTERVIEW_SLOT_OFFER_EXPIRY,
   JOB_TEST_ITEM_STATS,
+  JOB_TEST_SESSIONS,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -291,6 +292,14 @@ describe("Phase 3a jobs are scheduled", () => {
     const testItemStats = jest.fn(async () => "stats");
     const processor = buildReminderProcessor({ testItemStats });
     await expect(processor({ name: JOB_TEST_ITEM_STATS, data: {} })).resolves.toBe("stats");
+  });
+
+  it("registers the every-minute kiosk session sweep and dispatches it", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_TEST_SESSIONS].opts).toMatchObject({ jobId: "repeat:test-sessions", repeat: { pattern: "* * * * *" } });
+    const testSessions = jest.fn(async () => "sessions");
+    const processor = buildReminderProcessor({ testSessions });
+    await expect(processor({ name: JOB_TEST_SESSIONS, data: {} })).resolves.toBe("sessions");
   });
 });
 

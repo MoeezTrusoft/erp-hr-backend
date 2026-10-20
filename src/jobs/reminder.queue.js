@@ -46,6 +46,7 @@ import { runInterviewReminderJob } from '../services/interview-reminder.service.
 import { runDecisionPromptJob } from '../services/interview-decision-prompt.service.js';
 import { runSlotOfferExpiryJob } from '../services/interview-slot-offer.service.js';
 import { runTestItemStatsJob } from '../services/test-item-stats.service.js';
+import { runTestSessionJob } from '../services/test-session.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -113,6 +114,9 @@ export const JOB_INTERVIEW_DECISION_PROMPTS = 'interview-decision-prompts';
 export const JOB_INTERVIEW_SLOT_OFFER_EXPIRY = 'interview-slot-offer-expiry';
 // Phase 3b — nightly item statistics and quality flags (HR_RECRUITMENT_ONSITE_TEST).
 export const JOB_TEST_ITEM_STATS = 'test-item-stats';
+// Phase 3b — expires unused kiosk codes, auto-submits sittings past their
+// deadline and closes abandoned ones (HR_RECRUITMENT_ONSITE_TEST).
+export const JOB_TEST_SESSIONS = 'test-sessions';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -268,6 +272,13 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:test-item-stats', repeat: { pattern: '40 3 * * *' } },
         },
+        {
+            // Every minute — a sitting's deadline is minute-grained, so a
+            // timed-out candidate is submitted within a minute of the clock.
+            name: JOB_TEST_SESSIONS,
+            data: {},
+            opts: { jobId: 'repeat:test-sessions', repeat: { pattern: '* * * * *' } },
+        },
     ];
 }
 
@@ -297,6 +308,7 @@ export function buildReminderProcessor({
     interviewDecisionPrompts = runDecisionPromptJob,
     interviewSlotOfferExpiry = runSlotOfferExpiryJob,
     testItemStats = runTestItemStatsJob,
+    testSessions = runTestSessionJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -349,6 +361,8 @@ export function buildReminderProcessor({
                     return interviewSlotOfferExpiry(data);
                 case JOB_TEST_ITEM_STATS:
                     return testItemStats(data);
+                case JOB_TEST_SESSIONS:
+                    return testSessions(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

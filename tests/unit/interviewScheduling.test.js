@@ -14,6 +14,8 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
     RESCHEDULE_REASONS,
+    CANCEL_REASONS,
+    SYSTEM_CANCEL_REASONS,
     LIFECYCLE_EVENTS,
     validateLifecycleReason,
     evaluateInterviewerAvailability,
@@ -67,6 +69,29 @@ describe("interviewScheduling — §5.4 reason vocabulary", () => {
             "VC bridge down",
         );
         expect(validateLifecycleReason({ reasonCode: "TECHNICAL_ISSUE", notes: "   " }).notes).toBeNull();
+    });
+
+    it("Phase 3b: a cancel accepts ASSESSMENT_NOT_PASSED, a reschedule does not", () => {
+        expect(SYSTEM_CANCEL_REASONS).toEqual(["ASSESSMENT_NOT_PASSED"]);
+        expect(CANCEL_REASONS).toEqual([...RESCHEDULE_REASONS, "ASSESSMENT_NOT_PASSED"]);
+        expect(RESCHEDULE_REASONS).not.toContain("ASSESSMENT_NOT_PASSED");
+        expect(validateLifecycleReason({ reasonCode: "ASSESSMENT_NOT_PASSED" })).toMatchObject({
+            ok: true,
+            code: "ASSESSMENT_NOT_PASSED",
+            notes: null,
+        });
+        expect(validateLifecycleReason({ reasonCode: "ASSESSMENT_NOT_PASSED", allowed: RESCHEDULE_REASONS }).ok).toBe(false);
+        expect(validateLifecycleReason({ reasonCode: "TECHNICAL_ISSUE", allowed: RESCHEDULE_REASONS }).ok).toBe(true);
+    });
+
+    it("Phase 3b: every cancel reason is allowed by the lifecycle reason CHECK", async () => {
+        const { readFileSync } = await import("node:fs");
+        const sql = readFileSync(
+            new URL("../../prisma/migrations/20261021003400_recruitment_onsite_assessment/migration.sql", import.meta.url),
+            "utf8",
+        );
+        const check = sql.slice(sql.indexOf('"interview_lifecycle_events_reasoncode_check"\n'));
+        for (const code of CANCEL_REASONS) expect(check).toContain(`'${code}'`);
     });
 
     it("keeps the lifecycle kinds closed", () => {
