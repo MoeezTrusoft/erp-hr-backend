@@ -23,6 +23,16 @@ describe("templateForEvent", () => {
         expect(templateForEvent(EVENTS.REQUISITION_CLOSED, {}).id).toBe("requisition.closed");
     });
 
+    it("maps only the candidate's interview reminders, by kind, and the offer expiry reminder", () => {
+        const reminder = (payload) => templateForEvent(EVENTS.INTERVIEW_REMINDER, payload)?.id ?? null;
+        expect(reminder({ recipientType: "CANDIDATE", kind: "REMINDER_24H" })).toBe("interview.reminder_24h");
+        expect(reminder({ recipientType: "CANDIDATE", kind: "REMINDER_1H" })).toBe("interview.reminder_1h");
+        expect(reminder({ recipientType: "INTERVIEWER", kind: "REMINDER_24H" })).toBeNull();
+        expect(reminder({ recipientType: "RECRUITER", kind: "FEEDBACK_ESCALATION" })).toBeNull();
+        expect(reminder({ recipientType: "CANDIDATE", kind: "FEEDBACK_NUDGE" })).toBeNull();
+        expect(templateForEvent(EVENTS.OFFER_EXPIRY_REMINDER, {}).id).toBe("offer.expiry_reminder");
+    });
+
     it("maps stage changes the candidate can see", () => {
         expect(stage("applied", "screening")).toBe("application.stage.screening");
         expect(stage("interview", "rejected")).toBe("application.rejected");

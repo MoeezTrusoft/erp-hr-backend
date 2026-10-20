@@ -75,7 +75,7 @@ async function resolveInterviewTargets(tenantId, payload) {
     return application ? [{ application, extra: { interview, previousScheduledAt: payload.previousScheduledAt ?? null } }] : [];
 }
 
-async function resolveOfferTargets(tenantId, payload) {
+async function resolveOfferTargets(tenantId, payload, extra = {}) {
     const offer = await prisma.offer.findFirst({
         where: withTenant(tenantId, { id: positiveInt(payload.offerId) ?? -1 }),
         select: { id: true, applicationId: true, status: true },
@@ -83,7 +83,7 @@ async function resolveOfferTargets(tenantId, payload) {
     // An offer withdrawn before the event was handled is not announced.
     if (!offer || offer.status !== "SENT") return [];
     const application = await loadApplicationForCommunication({ tenantId, applicationId: offer.applicationId });
-    return application ? [{ application, extra: {} }] : [];
+    return application ? [{ application, extra }] : [];
 }
 
 // Every still-open application on the requisition hears that it closed;
@@ -126,7 +126,12 @@ async function isPortalIntake(tenantId, applicationId) {
 async function resolveTargets(tenantId, eventName, payload) {
     if (eventName === EVENTS.REQUISITION_CLOSED) return resolveRequisitionTargets(tenantId, payload);
     if (eventName === EVENTS.OFFER_SENT) return resolveOfferTargets(tenantId, payload);
-    if ([EVENTS.INTERVIEW_SCHEDULED, EVENTS.INTERVIEW_RESCHEDULED, EVENTS.INTERVIEW_CANCELLED].includes(eventName)) {
+    if (eventName === EVENTS.OFFER_EXPIRY_REMINDER) {
+        return resolveOfferTargets(tenantId, payload, { expiryDate: payload.expiryDate ?? null });
+    }
+    if (
+        [EVENTS.INTERVIEW_SCHEDULED, EVENTS.INTERVIEW_RESCHEDULED, EVENTS.INTERVIEW_CANCELLED, EVENTS.INTERVIEW_REMINDER].includes(eventName)
+    ) {
         return resolveInterviewTargets(tenantId, payload);
     }
     const application = await loadApplicationForCommunication({ tenantId, applicationId: payload.applicationId });
@@ -141,6 +146,8 @@ function skipTarget(template, eventName, { application, extra }) {
     if (template.appliesTo && !template.appliesTo(extra)) return true;
     const interview = extra.interview;
     if (interview && eventName !== EVENTS.INTERVIEW_CANCELLED && interview.status === "CANCELLED") return true;
+    // A reminder is only for an interview that is still going ahead.
+    if (interview && eventName === EVENTS.INTERVIEW_REMINDER && interview.status !== "SCHEDULED") return true;
     return false;
 }
 

@@ -247,6 +247,47 @@ describe("handleCandidateCommunicationEvent", () => {
         expect(auto[0]).toMatchObject({ category: "OFFER", templateId: "offer.sent" });
     });
 
+    it("queues the candidate's interview reminder for a scheduled interview only", async () => {
+        store.applications.push(application({ stage: "interview" }));
+        store.interviews.push(
+            { id: 351, tenantId: TENANT, applicationId: 901, status: "SCHEDULED", scheduledAt: new Date("2026-11-02T10:00:00Z"), durationMinutes: 45, interviewType: "PANEL" },
+            { id: 352, tenantId: TENANT, applicationId: 901, status: "CANCELLED", scheduledAt: new Date("2026-11-03T10:00:00Z"), interviewType: "PANEL" },
+        );
+        await handleCandidateCommunicationEvent(
+            envelope("hr.recruitment.interview_reminder.v1", { interviewId: "351", applicationId: "901", kind: "REMINDER_1H", recipientType: "CANDIDATE" }),
+            { now: NOW },
+        );
+        const panel = await handleCandidateCommunicationEvent(
+            envelope("hr.recruitment.interview_reminder.v1", { interviewId: "351", kind: "REMINDER_1H", recipientType: "INTERVIEWER", recipientEmployeeId: "8" }),
+            { now: NOW },
+        );
+        const cancelled = await handleCandidateCommunicationEvent(
+            envelope("hr.recruitment.interview_reminder.v1", { interviewId: "352", kind: "REMINDER_24H", recipientType: "CANDIDATE" }),
+            { now: NOW },
+        );
+        expect(panel.outcome).toBe("NO_MESSAGE");
+        expect(cancelled.outcome).toBe("NO_MESSAGE");
+        expect(store.communications.map((r) => r.templateId)).toEqual(["interview.reminder_1h"]);
+        expect(store.communications[0].data).toMatchObject({ interviewAt: "2026-11-02T10:00:00.000Z", interviewType: "Panel interview" });
+    });
+
+    it("reminds about an offer that is still SENT, with its expiry date and no compensation", async () => {
+        store.applications.push(application({ id: 1, stage: "offer" }), application({ id: 2, stage: "offer" }));
+        store.offers.push(
+            { id: 11, tenantId: TENANT, applicationId: 1, status: "SENT", salary: "250000" },
+            { id: 12, tenantId: TENANT, applicationId: 2, status: "ACCEPTED" },
+        );
+        for (const offerId of ["11", "12"]) {
+            await handleCandidateCommunicationEvent(
+                envelope("hr.recruitment.offer_expiry_reminder.v1", { offerId, expiryDate: "2026-11-05T00:00:00.000Z" }),
+                { now: NOW },
+            );
+        }
+        expect(store.communications.map((r) => [r.applicationId, r.templateId])).toEqual([[1, "offer.expiry_reminder"]]);
+        expect(store.communications[0].data).toMatchObject({ offerExpiresAt: "2026-11-05T00:00:00.000Z" });
+        expect(JSON.stringify(store.communications[0].data)).not.toMatch(/250000|salary/);
+    });
+
     it("fans a closed requisition out to its open applications, one key each", async () => {
         store.applications.push(
             application({ id: 1, stage: "screening" }),

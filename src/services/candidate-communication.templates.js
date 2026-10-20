@@ -34,6 +34,10 @@ export const EVENTS = Object.freeze({
     INTERVIEW_CANCELLED: "hr.recruitment.interview_cancelled.v1",
     OFFER_SENT: "hr.recruitment.offer_sent.v1",
     REQUISITION_CLOSED: "hr.recruitment.requisition_closed.v1",
+    // Phase 3a — the reminder job's event (candidate rows only map) and the
+    // offer expiry reminder.
+    INTERVIEW_REMINDER: "hr.recruitment.interview_reminder.v1",
+    OFFER_EXPIRY_REMINDER: "hr.recruitment.offer_expiry_reminder.v1",
 });
 
 // The interview type a candidate may see. Unknown types render as null rather
@@ -177,6 +181,33 @@ const CATALOGUE = Object.freeze({
         personalNote: true,
         buildData: (context) => withNote(baseData(context, "offer"), context),
     }),
+    "interview.reminder_24h": template({
+        id: "interview.reminder_24h",
+        category: "INTERVIEW",
+        events: [EVENTS.INTERVIEW_REMINDER],
+        hubTemplateId: "hr.recruitment.candidate_interview_reminder_24h",
+        description: "A reminder the day before an interview (time and type only)",
+        manual: false,
+        buildData: (context) => ({ ...baseData(context, "interview"), ...interviewData(context) }),
+    }),
+    "interview.reminder_1h": template({
+        id: "interview.reminder_1h",
+        category: "INTERVIEW",
+        events: [EVENTS.INTERVIEW_REMINDER],
+        hubTemplateId: "hr.recruitment.candidate_interview_reminder_1h",
+        description: "A reminder an hour before an interview (time and type only)",
+        manual: false,
+        buildData: (context) => ({ ...baseData(context, "interview"), ...interviewData(context) }),
+    }),
+    "offer.expiry_reminder": template({
+        id: "offer.expiry_reminder",
+        category: "OFFER",
+        events: [EVENTS.OFFER_EXPIRY_REMINDER],
+        hubTemplateId: "hr.recruitment.candidate_offer_expiry_reminder",
+        description: "The offer is still waiting and expires soon (the date only, no compensation)",
+        manual: false,
+        buildData: (context) => ({ ...baseData(context, "offer"), offerExpiresAt: isoOrNull(context?.expiryDate) }),
+    }),
     "requisition.closed": template({
         id: "requisition.closed",
         category: "STATUS",
@@ -243,6 +274,15 @@ function templateForStageChange(payload = {}) {
     return null;
 }
 
+// The reminder job emits one event per recipient; only the candidate's map to
+// a candidate message (panel and recruiter reminders go through the hub).
+function templateForInterviewReminder(payload = {}) {
+    if (payload.recipientType !== "CANDIDATE") return null;
+    if (payload.kind === "REMINDER_24H") return CATALOGUE["interview.reminder_24h"];
+    if (payload.kind === "REMINDER_1H") return CATALOGUE["interview.reminder_1h"];
+    return null;
+}
+
 /**
  * The template an event maps to, or null (most events map to nothing).
  * @param {string} eventName
@@ -264,6 +304,10 @@ export function templateForEvent(eventName, payload = {}) {
             return CATALOGUE["offer.sent"];
         case EVENTS.REQUISITION_CLOSED:
             return CATALOGUE["requisition.closed"];
+        case EVENTS.INTERVIEW_REMINDER:
+            return templateForInterviewReminder(payload);
+        case EVENTS.OFFER_EXPIRY_REMINDER:
+            return CATALOGUE["offer.expiry_reminder"];
         default:
             return null;
     }
