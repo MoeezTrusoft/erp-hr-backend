@@ -24,6 +24,14 @@
 //      lawful basis, so the pool sweep EXPIRES their pool memberships instead,
 //      dry-run by default and flag-gated for apply exactly like the applicant
 //      sweep.
+//
+// Phase 6 (invitationLinks) — the candidate can answer through an emailed,
+// single-use link (services/invitation-response.service.js). Every answer goes
+// through respondToInvitation, so a nurture acceptance creates the application
+// whichever way it arrives; `respondedVia` records who answered (RECRUITER by
+// default, CANDIDATE_LINK from the link), and any terminal status clears the
+// link's hash and expiry, so an answered, withdrawn or expired invitation has
+// no live link left.
 import prisma from "../config/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -52,6 +60,13 @@ const requireTenant = (tenantId) => {
 };
 
 // ── The invitation lifecycle ────────────────────────────────────────────────
+
+// Phase 6 — what callers (tools, REST, events) get back: never the link's hash.
+const presentInvitation = (row) => {
+  if (!row) return row;
+  const { responseTokenHash: _hash, ...rest } = row;
+  return rest;
+};
 
 /**
  * Invite a candidate to apply.
@@ -104,7 +119,7 @@ export async function inviteToApply({
   const open = await db.talentPoolInvitation.findFirst({
     where: scopedWhere(tenantId, { candidateId: cId, jobRequisitionId: rId, status: "INVITED" }),
   });
-  if (open && !isInvitationExpired(open)) return { invitation: open, reused: true };
+  if (open && !isInvitationExpired(open)) return { invitation: presentInvitation(open), reused: true };
 
   const invitedAt = new Date();
   const expiresAt = invitationExpiry({ invitedAt, validityDays });
@@ -124,11 +139,33 @@ export async function inviteToApply({
     }),
   });
 
-  return { invitation, reused: false };
+  return { invitation: presentInvitation(invitation), reused: false };
 }
 
-/** Move an OPEN invitation to a terminal status, enforcing the one-way map. */
-const transitionInvitation = async ({ tenantId, invitationId, to, responseNote = null, actorId = null, db = prisma }) => {
+// Who answered: a recruiter recording the answer, or the candidate's link.
+export const INVITATION_RESPONDED_VIA = Object.freeze({ RECRUITER: "RECRUITER", CANDIDATE_LINK: "CANDIDATE_LINK" });
+const ANSWER_STATUSES = Object.freeze(["ACCEPTED", "DECLINED"]);
+
+const linkNoLongerValid = () =>
+  poolError("This invitation link is no longer valid", "HR-RECRUITMENT-INVITATION-LINK-INVALID", 404);
+
+/**
+ * Move an OPEN invitation to a terminal status, enforcing the one-way map.
+ *
+ * Every target status is terminal, so the response link's hash and expiry are
+ * cleared with the move. With `tokenHash` (the candidate's link) the write is a
+ * guarded claim on that hash: of two concurrent answers through one link,
+ * exactly one lands and the other is refused as an invalid link.
+ */
+const transitionInvitation = async ({
+  tenantId,
+  invitationId,
+  to,
+  responseNote = null,
+  via = INVITATION_RESPONDED_VIA.RECRUITER,
+  tokenHash = null,
+  db = prisma,
+}) => {
   requireTenant(tenantId);
   const invitation = await db.talentPoolInvitation.findFirst({
     where: scopedWhere(tenantId, { id: Number(invitationId) }),
@@ -139,14 +176,31 @@ const transitionInvitation = async ({ tenantId, invitationId, to, responseNote =
   if (!move.ok) throw poolError(move.error, move.code);
 
   const note = responseNote === null || responseNote === undefined ? null : String(responseNote).trim();
-  return db.talentPoolInvitation.update({
-    where: { id: invitation.id },
-    data: {
-      status: to,
-      respondedAt: new Date(),
-      responseNote: note && note.length ? note : invitation.responseNote,
-    },
+  const respondedAt = new Date();
+  const data = {
+    status: to,
+    respondedAt,
+    responseNote: note && note.length ? note : invitation.responseNote,
+    // Single-use: no terminal invitation keeps a live link.
+    responseTokenHash: null,
+    responseTokenExpiresAt: null,
+    // Only an answer has a responder; a withdrawal or a lapse does not.
+    ...(ANSWER_STATUSES.includes(to) ? { respondedVia: via } : {}),
+  };
+  if (!tokenHash) {
+    return presentInvitation(await db.talentPoolInvitation.update({ where: { id: invitation.id }, data }));
+  }
+  const claim = await db.talentPoolInvitation.updateMany({
+    where: scopedWhere(tenantId, {
+      id: invitation.id,
+      status: invitation.status,
+      responseTokenHash: tokenHash,
+      responseTokenExpiresAt: { gt: respondedAt },
+    }),
+    data,
   });
+  if (Number(claim?.count ?? 0) !== 1) throw linkNoLongerValid();
+  return presentInvitation(await db.talentPoolInvitation.findFirst({ where: scopedWhere(tenantId, { id: invitation.id }) }));
 };
 
 /**
@@ -160,32 +214,47 @@ const transitionInvitation = async ({ tenantId, invitationId, to, responseNote =
  * application under `application`. Other invitations are unchanged: a
  * role-specific invitation from hr_talent_pool_invite already moved the
  * candidate into the pipeline when it was sent.
+ *
+ * Phase 6 — `via` records who answered (RECRUITER unless the candidate's link
+ * calls this with CANDIDATE_LINK and the link's `tokenHash`, which makes the
+ * answer a guarded single-use claim on that link).
  */
-export const respondToInvitation = async ({ tenantId, invitationId, response, note = null, db = prisma } = {}) => {
+export const respondToInvitation = async ({
+  tenantId,
+  invitationId,
+  response,
+  note = null,
+  via = INVITATION_RESPONDED_VIA.RECRUITER,
+  tokenHash = null,
+  db = prisma,
+} = {}) => {
   const to = resolveInvitationResponse(response);
+  const answeredBy = Object.values(INVITATION_RESPONDED_VIA).includes(via) ? via : INVITATION_RESPONDED_VIA.RECRUITER;
   if (to === "ACCEPTED" && isRecruitmentFlagEnabled("talentNurture")) {
-    return acceptInvitation({ tenantId, invitationId, note, db });
+    return acceptInvitation({ tenantId, invitationId, note, via: answeredBy, tokenHash, db });
   }
-  return transitionInvitation({ tenantId, invitationId, to, responseNote: note, db });
+  return transitionInvitation({ tenantId, invitationId, to, responseNote: note, via: answeredBy, tokenHash, db });
 };
 
-const acceptInvitation = async ({ tenantId, invitationId, note, db }) => {
+const acceptInvitation = async ({ tenantId, invitationId, note, via, tokenHash, db }) => {
   requireTenant(tenantId);
   const invitation = await db.talentPoolInvitation.findFirst({
     where: scopedWhere(tenantId, { id: Number(invitationId) }),
   });
   if (!invitation?.nurtureRunId || !invitation.jobRequisitionId) {
-    return transitionInvitation({ tenantId, invitationId, to: "ACCEPTED", responseNote: note, db });
+    return transitionInvitation({ tenantId, invitationId, to: "ACCEPTED", responseNote: note, via, tokenHash, db });
   }
   // Refuse an illegal answer before any application is created.
   const move = checkInvitationTransition(invitation.status, "ACCEPTED");
   if (!move.ok) throw poolError(move.error, move.code);
+  // A link answer is refused before the intake, too, once the link is spent.
+  if (tokenHash && invitation.responseTokenHash !== tokenHash) throw linkNoLongerValid();
 
   // Loaded on demand: the nurture service depends on this module (inviteToApply),
   // and only a flag-on nurture acceptance needs it.
   const { intakeAcceptedNurtureInvitation } = await import("./talent-nurture.service.js");
   const application = await intakeAcceptedNurtureInvitation({ tenantId, invitation });
-  const updated = await transitionInvitation({ tenantId, invitationId, to: "ACCEPTED", responseNote: note, db });
+  const updated = await transitionInvitation({ tenantId, invitationId, to: "ACCEPTED", responseNote: note, via, tokenHash, db });
   return { ...updated, application };
 };
 
@@ -209,7 +278,7 @@ export async function listInvitations({ tenantId, status = null, candidateId = n
   // the clock has already left.
   const asOf = new Date();
   return {
-    items: items.map((row) => ({ ...row, expired: isInvitationExpired(row, asOf) })),
+    items: items.map((row) => ({ ...presentInvitation(row), expired: isInvitationExpired(row, asOf) })),
     total: items.length,
   };
 }

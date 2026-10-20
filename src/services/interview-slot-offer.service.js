@@ -23,6 +23,14 @@
 //             contact gate, stage move, interview_scheduled event, calendar
 //             CREATE mark) with source "candidate.self_schedule".
 //   expire    a job turns SENT offers past expiresAt into EXPIRED.
+//   decline   Phase 6 — the candidate declines EVERY offered slot from the same
+//             link, with an optional coded reason (SLOT_DECLINE_REASONS). The
+//             offer becomes CANCELLED with cancelReason "CANDIDATE_DECLINED" or
+//             "CANDIDATE_DECLINED:<code>" (no new column: the status CHECK
+//             already has CANCELLED), the link stops working, and the
+//             recruiter hears of it through hr.recruitment.interview_slots_
+//             declined.v1 (ids and the code only). Unknown, expired, used or
+//             cancelled links are the same null as for read and confirm.
 //
 // Public surface rules (the portal routes): the token is looked up under
 // SYSTEM context (the caller is anonymous and has no tenant), then everything
@@ -87,7 +95,17 @@ export const SLOT_OFFER_EVENTS = Object.freeze({
     CONFIRMED: "hr.recruitment.interview_slot_confirmed.v1",
     EXPIRED: "hr.recruitment.interview_slot_offer_expired.v1",
     CANCELLED: "hr.recruitment.interview_slot_offer_cancelled.v1",
+    // Phase 6 — the candidate declined every offered slot. A separate event
+    // (not CANCELLED) so the recruiter is told and nothing tells the
+    // candidate their own decline was a withdrawal.
+    DECLINED: "hr.recruitment.interview_slots_declined.v1",
 });
+
+// Phase 6 — the coded reasons a candidate may give for declining every slot.
+// Codes only: a free-text note from an anonymous link would be unvetted text
+// in front of a recruiter.
+export const SLOT_DECLINE_REASONS = Object.freeze(["NONE_SUIT", "NO_LONGER_INTERESTED", "ACCEPTED_OTHER_OFFER", "OTHER"]);
+export const CANDIDATE_DECLINED = "CANDIDATE_DECLINED";
 
 const MAX_PANEL = 10;
 const MAX_SLOTS = 10; // the interview_slot_offers_slots_check bound
@@ -372,12 +390,23 @@ const OFFER_SELECT = Object.freeze({
     updatedAt: true,
 });
 
+/** Phase 6 — the candidate's decline, read back from cancelReason, or null. */
+export function candidateDeclineOf(cancelReason) {
+    const text = typeof cancelReason === "string" ? cancelReason : "";
+    if (text !== CANDIDATE_DECLINED && !text.startsWith(`${CANDIDATE_DECLINED}:`)) return null;
+    const code = text.slice(CANDIDATE_DECLINED.length + 1);
+    return { reasonCode: SLOT_DECLINE_REASONS.includes(code) ? code : null };
+}
+
 /** The recruiter-facing view: never the token hash; the cancel note follows the internal-notes rule. */
 export function presentSlotOffer(row, scope = null) {
     if (!row) return null;
     const { tokenHash: _hash, tenantId: _tenant, ...rest } = row;
     const showNotes = !scope || scope.canSeeInternalNotes === true;
-    return { ...rest, cancelReason: showNotes ? rest.cancelReason ?? null : null };
+    const view = { ...rest, cancelReason: showNotes ? rest.cancelReason ?? null : null };
+    // A candidate's decline is a coded fact, not a note: every reader sees it.
+    const decline = candidateDeclineOf(rest.cancelReason);
+    return decline ? { ...view, declinedByCandidate: true, declineReason: decline.reasonCode } : view;
 }
 
 // ── Propose ──────────────────────────────────────────────────────────────────
@@ -697,7 +726,7 @@ const LIVE_OFFER_SELECT = Object.freeze({
             stage: true,
             candidateId: true,
             candidate: { select: { firstName: true, anonymizedAt: true } },
-            jobRequisition: { select: { title: true } },
+            jobRequisition: { select: { title: true, recruiterId: true } },
         },
     },
 });
@@ -825,6 +854,65 @@ async function confirmInTransaction({ ref, offer, start, end, calendarBusyList, 
     );
 }
 
+// ── Decline (public, Phase 6) ────────────────────────────────────────────────
+
+/** An optional coded reason: absent -> null; unknown -> 400 (checked before the token). */
+export function normalizeDeclineReason(reason) {
+    if (reason == null || (typeof reason === "string" && reason.trim() === "")) return null;
+    const code = String(reason).trim().toUpperCase();
+    if (!SLOT_DECLINE_REASONS.includes(code)) {
+        throw fail(`reason must be one of ${SLOT_DECLINE_REASONS.join(", ")}`, 400, "HR-RECRUITMENT-SLOT-DECLINE-REASON-INVALID");
+    }
+    return code;
+}
+
+/**
+ * The candidate declines every offered slot. Returns { declined: true } for a
+ * live offer and null for every not-found case (the same set as read and
+ * confirm). A second decline of the same link is that same null.
+ */
+export async function declineSlotOffer({ token, reason, tenantId = null, now = new Date() } = {}) {
+    const code = normalizeDeclineReason(reason);
+    if (!isRecruitmentFlagEnabled("selfScheduling")) return null;
+    const at = new Date(now);
+    const ref = await findOfferRef(token, tenantId);
+    if (!ref) return null;
+    return asTenant(ref.tenantId, async () => {
+        const offer = await loadLiveOffer(prisma, ref, at);
+        if (!offer) return null;
+        return tenantTransaction(
+            prisma,
+            async (tx) => {
+                // The guarded claim: one decline (or one confirm) wins the link.
+                const { count } = await tx.interviewSlotOffer.updateMany({
+                    where: withTenant(ref.tenantId, { id: offer.id, status: SLOT_OFFER_STATUS.SENT, expiresAt: { gt: at } }),
+                    data: {
+                        status: SLOT_OFFER_STATUS.CANCELLED,
+                        cancelledAt: at,
+                        cancelReason: code ? `${CANDIDATE_DECLINED}:${code}` : CANDIDATE_DECLINED,
+                        tokenHash: null,
+                        version: { increment: 1 },
+                    },
+                });
+                if (!count) return null;
+                await enqueueHrDomainEvent(tx, slotOfferEvent(SLOT_OFFER_EVENTS.DECLINED, offer, {
+                    candidateId: offer.application?.candidateId ?? null,
+                    reasonCode: code,
+                    // Routing: the recruiter who sent the offer, else the
+                    // requisition's recruiter.
+                    offeredById: offer.createdById != null ? String(offer.createdById) : null,
+                    recruiterId: offer.application?.jobRequisition?.recruiterId != null
+                        ? String(offer.application.jobRequisition.recruiterId)
+                        : null,
+                }));
+                log.info({ tenantId: ref.tenantId, slotOfferId: offer.id, reasonCode: code }, "slot offer declined by the candidate");
+                return { declined: true };
+            },
+            { tenantId: ref.tenantId },
+        );
+    });
+}
+
 // ── The expiry job ───────────────────────────────────────────────────────────
 
 /**
@@ -881,5 +969,6 @@ export default {
     listSlotOffers,
     getSlotOfferForCandidate,
     confirmSlotOffer,
+    declineSlotOffer,
     runSlotOfferExpiryJob,
 };

@@ -8,7 +8,7 @@ import request from "supertest";
 const getSlotOfferForCandidate = jest.fn();
 const confirmSlotOffer = jest.fn();
 
-jest.unstable_mockModule("../../../src/services/interview-slot-offer.service.js", () => ({ getSlotOfferForCandidate, confirmSlotOffer }));
+jest.unstable_mockModule("../../../src/services/interview-slot-offer.service.js", () => ({ getSlotOfferForCandidate, confirmSlotOffer, declineSlotOffer: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/publicPortal.service.js", () => ({
     listPublicJobs: jest.fn(),
     getPublicJob: jest.fn(),
@@ -115,7 +115,7 @@ describe("POST /public/candidates/interview-slots/confirm", () => {
 
     it("leaves the portal router's own route list untouched", () => {
         const paths = (r) => r.stack.filter((l) => l.route).map((l) => `${Object.keys(l.route.methods)[0].toUpperCase()} ${l.route.path}`).sort();
-        expect(paths(interviewSlotsRouter)).toEqual(["GET /candidates/interview-slots", "POST /candidates/interview-slots/confirm"]);
+        expect(paths(interviewSlotsRouter)).toEqual(["GET /candidates/interview-slots", "POST /candidates/interview-slots/confirm", "POST /candidates/interview-slots/decline"]);
         expect(paths(router).some((p) => p.includes("interview-slots"))).toBe(false);
     });
 });

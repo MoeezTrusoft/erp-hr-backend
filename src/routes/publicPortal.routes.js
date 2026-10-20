@@ -12,11 +12,11 @@
 //     X-Portal-Tenant header set by the trusted edge. Never from a
 //     candidate-supplied body field; a request with no resolvable tenant is 404
 //     like any unknown site, not an error that confirms the portal exists.
-//   * RATE LIMITING — an in-memory fixed-window limiter, keyed by IP and route
-//     class. Deliberately dependency-free: the deploy has Redis, but the portal
-//     must degrade to "closed" rather than "open" if Redis is down, and a
-//     per-process limiter still caps the blast radius of a credential-stuffing
-//     sweep against one pod. The application endpoint gets the strictest class.
+//   * RATE LIMITING — a fixed-window limiter keyed by IP and route class,
+//     shared by every pod through Redis (lib/rate-limit.util.js). If Redis is
+//     down it degrades to per-process memory windows, never to "open", so a
+//     credential-stuffing sweep is still capped per pod. The application
+//     endpoint gets the strictest class.
 //   * UNIFORM FAILURES — unknown job, closed job and cross-tenant job all
 //     return the same 404 body, so the API cannot be probed for internal ids
 //     (§3.4's rule, applied to jobs as well as emails).
@@ -33,6 +33,9 @@
 //     cancelled or confirmed link (and an offer from another tenant than the
 //     portal's) is the same 404; a slot that is no longer free is the same
 //     409 "pick another" whatever made it unavailable.
+//   * Recruitment Phase 6 — the same link can decline every offered slot
+//     (POST /candidates/interview-slots/decline { token, reason? }): one 200
+//     for a live link, the same 404 for every other one.
 import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
@@ -43,8 +46,9 @@ import {
     loadApplicationDraft,
     submitApplicationDraft,
 } from "../services/applicationDraft.service.js";
-import { getSlotOfferForCandidate, confirmSlotOffer } from "../services/interview-slot-offer.service.js";
+import { getSlotOfferForCandidate, confirmSlotOffer, declineSlotOffer } from "../services/interview-slot-offer.service.js";
 import logger from "../lib/logger.js";
+import { rateLimit as sharedRateLimit } from "../lib/rate-limit.util.js";
 
 const router = express.Router();
 
@@ -80,7 +84,7 @@ export function resolvePortalTenant(req) {
     return null;
 }
 
-// ── Rate limiting (fixed window, in memory) ─────────────────────────────────
+// ── Rate limiting (fixed window, shared through Redis) ──────────────────────
 const WINDOW_MS = 60_000;
 const LIMITS = Object.freeze({
     read: 120, // listing/detail — generous, cached pages
@@ -89,38 +93,17 @@ const LIMITS = Object.freeze({
     // choosing a time never spends (or is blocked by) the application budget.
     slotRead: 60,
     slotConfirm: 10,
+    // Phase 6 — declining every slot has its own budget too.
+    slotDecline: 10,
 });
 
-const buckets = new Map(); // key → { count, resetAt }
-let lastSweep = Date.now();
-
-function rateLimit(routeClass) {
-    return (req, res, next) => {
-        const key = `${routeClass}:${req.ip ?? "unknown"}`;
-        const now = Date.now();
-        // Occasional sweep so the map cannot grow without bound under a
-        // distributed sweep with spoofed IPs.
-        if (now - lastSweep > WINDOW_MS) {
-            for (const [k, v] of buckets) if (v.resetAt <= now) buckets.delete(k);
-            lastSweep = now;
-        }
-        const bucket = buckets.get(key);
-        if (!bucket || bucket.resetAt <= now) {
-            buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
-            res.setHeader("X-RateLimit-Limit", String(LIMITS[routeClass]));
-            res.setHeader("X-RateLimit-Remaining", String(LIMITS[routeClass] - 1));
-            return next();
-        }
-        bucket.count += 1;
-        res.setHeader("X-RateLimit-Limit", String(LIMITS[routeClass]));
-        res.setHeader("X-RateLimit-Remaining", String(Math.max(0, LIMITS[routeClass] - bucket.count)));
-        if (bucket.count > LIMITS[routeClass]) {
-            res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
-            return res.status(429).json({ success: false, message: "Too many requests" });
-        }
-        return next();
-    };
-}
+const limiters = Object.freeze(Object.fromEntries(
+    Object.entries(LIMITS).map(([routeClass, limit]) => [
+        routeClass,
+        sharedRateLimit({ routeClass: `portal:${routeClass}`, limit, windowMs: WINDOW_MS }),
+    ]),
+));
+const rateLimit = (routeClass) => limiters[routeClass];
 
 const guard = (routeClass, handler) => [
     rateLimit(routeClass),
@@ -352,6 +335,28 @@ interviewSlotsRouter.post(
         } catch (err) {
             if (err?.code === "HR-RECRUITMENT-SLOT-UNAVAILABLE") return res.status(409).json(SLOT_TAKEN);
             logger.error({ err: err?.message, code: err?.code }, "interview slot confirm failed");
+            return res.status(404).json(SLOT_LINK_NOT_FOUND);
+        }
+    }),
+);
+
+// POST /public/candidates/interview-slots/decline { token, reason? } — Phase 6:
+// the candidate declines every offered slot (reason: one of
+// SLOT_DECLINE_REASONS, optional). A malformed reason is a 400 checked before
+// the token is looked at; every not-found link is the same 404.
+interviewSlotsRouter.post(
+    "/candidates/interview-slots/decline",
+    express.json({ limit: "4kb" }),
+    ...guard("slotDecline", async (req, res, tenantId) => {
+        try {
+            const result = await declineSlotOffer({ token: req.body?.token, reason: req.body?.reason, tenantId });
+            if (!result) return res.status(404).json(SLOT_LINK_NOT_FOUND);
+            return res.json({ success: true, data: { declined: true } });
+        } catch (err) {
+            if (err?.code === "HR-RECRUITMENT-SLOT-DECLINE-REASON-INVALID") {
+                return res.status(400).json({ success: false, message: err.message });
+            }
+            logger.error({ err: err?.message, code: err?.code }, "interview slot decline failed");
             return res.status(404).json(SLOT_LINK_NOT_FOUND);
         }
     }),

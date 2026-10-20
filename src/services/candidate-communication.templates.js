@@ -22,6 +22,14 @@
 // workflow only enters that stage once an interview is scheduled, and the
 // interview.scheduled message already tells the candidate (two mails in the
 // same second would say the same thing). Recruiters can still send it by hand.
+//
+// Phase 6 (invitationLinks) — talentPool.invitation is the one template that
+// is not about an application: it invites a talent pool member to apply. Its
+// target is the invitation (the consumer resolves it), its data is the first
+// name, the plain role title, the company and the expiry (no stage, no
+// status, no score), and its accept/decline link is added by the delivery
+// loop at send time (`responseLink`), because the link carries a single-use
+// token that must never be stored.
 import { projectCandidateStatus } from "../lib/candidateStatusView.js";
 
 export const COMMUNICATION_CATEGORIES = Object.freeze(["STATUS", "INTERVIEW", "OFFER", "REJECTION", "MANUAL"]);
@@ -38,7 +46,14 @@ export const EVENTS = Object.freeze({
     // offer expiry reminder.
     INTERVIEW_REMINDER: "hr.recruitment.interview_reminder.v1",
     OFFER_EXPIRY_REMINDER: "hr.recruitment.offer_expiry_reminder.v1",
+    // Phase 6 — a talent pool invitation was created (or re-sent).
+    TALENT_POOL_INVITATION_SENT: "hr.recruitment.talent_pool_invitation_sent.v1",
 });
+
+// Phase 6 — how a template's target is resolved, and the link the delivery
+// loop adds at send time.
+export const COMMUNICATION_TARGETS = Object.freeze({ APPLICATION: "APPLICATION", INVITATION: "INVITATION" });
+export const RESPONSE_LINKS = Object.freeze({ INVITATION_RESPONSE: "INVITATION_RESPONSE" });
 
 // The interview type a candidate may see. Unknown types render as null rather
 // than leaking an enum the template has no copy for.
@@ -217,6 +232,26 @@ const CATALOGUE = Object.freeze({
         manual: false,
         buildData: (context) => baseData(context, "rejected"),
     }),
+    "talentPool.invitation": template({
+        id: "talentPool.invitation",
+        category: "STATUS",
+        events: [EVENTS.TALENT_POOL_INVITATION_SENT],
+        hubTemplateId: "hr.recruitment.candidate_talent_pool_invitation",
+        description: "Invites a talent pool member to apply, with a single-use accept or decline link (added at send time, never stored)",
+        manual: false,
+        target: COMMUNICATION_TARGETS.INVITATION,
+        responseLink: RESPONSE_LINKS.INVITATION_RESPONSE,
+        buildData: (context) => ({
+            candidateFirstName: textOrNull(context?.candidate?.firstName),
+            jobTitle: textOrNull(context?.requisition?.title),
+            companyName: textOrNull(context?.settings?.companyName),
+            statusPageUrl: textOrNull(context?.statusPageUrl),
+            invitationExpiresAt: isoOrNull(context?.invitation?.expiresAt),
+            // Routing for the delivery loop (which strips it before the hub
+            // call and adds the link in its place).
+            invitationId: context?.invitation?.id != null ? String(context.invitation.id) : null,
+        }),
+    }),
     "general.update": template({
         id: "general.update",
         category: "MANUAL",
@@ -308,6 +343,8 @@ export function templateForEvent(eventName, payload = {}) {
             return templateForInterviewReminder(payload);
         case EVENTS.OFFER_EXPIRY_REMINDER:
             return CATALOGUE["offer.expiry_reminder"];
+        case EVENTS.TALENT_POOL_INVITATION_SENT:
+            return CATALOGUE["talentPool.invitation"];
         default:
             return null;
     }

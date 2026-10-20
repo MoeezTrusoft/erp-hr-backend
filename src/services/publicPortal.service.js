@@ -84,6 +84,9 @@ const positiveInt = (value) => {
     return Number.isInteger(n) && n > 0 ? n : null;
 };
 
+// The channels an anonymous portal applicant may not tag themselves with.
+export const PORTAL_UNCLAIMABLE_CHANNELS = Object.freeze([...INTERNAL_ONLY_CHANNELS, "REFERRAL"]);
+
 /**
  * Source attribution from the apply link the job feed published
  * (`<portalBaseUrl>/jobs/<id>?source=<CHANNEL>&posting=<postingId>`), sent by
@@ -95,9 +98,11 @@ export function parseSourceAttribution(body = {}, { postings = [], defaultChanne
     const postingId = positiveInt(body?.sourcePostingId);
     // Recruitment Phase 5 — an anonymous applicant cannot claim the internal
     // channel: INTERNAL attribution belongs to the employees' own board.
+    // Phase 6 — nor REFERRAL: a referral only comes from an employee through
+    // that board, so a self-tagged one would credit (and pay) nobody's referral.
     const claimed = normalizeSourceChannel(body?.sourceChannel, defaultChannel);
     return {
-        sourceChannel: INTERNAL_ONLY_CHANNELS.includes(claimed) ? defaultChannel : claimed,
+        sourceChannel: PORTAL_UNCLAIMABLE_CHANNELS.includes(claimed) ? defaultChannel : claimed,
         sourcePostingId: postingId && postings.some((p) => p.id === postingId && p.isActive !== false) ? postingId : null,
         sourceDetail: normalizeSourceDetail(body?.sourceDetail),
     };

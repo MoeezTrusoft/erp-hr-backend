@@ -23,6 +23,12 @@
 // and the payload is trusted for ids only: the application, candidate and
 // requisition are re-read under that tenant, so an event can never address a
 // candidate of another tenant.
+//
+// Phase 6 (invitationLinks) — talent_pool_invitation_sent resolves to the
+// INVITATION, not an application: the open invitation and its candidate are
+// re-read under the tenant, and the row is queued with no application. With
+// the flag off, or for an invitation that is no longer open, it maps to
+// nothing.
 import Redis from "ioredis";
 
 import prisma from "../lib/prisma.js";
@@ -31,7 +37,8 @@ import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { HR_EVENTS_STREAM } from "../jobs/outbox.dispatcher.js";
-import { EVENTS, isReinstatement, templateForEvent } from "./candidate-communication.templates.js";
+import { COMMUNICATION_TARGETS, EVENTS, isReinstatement, templateForEvent } from "./candidate-communication.templates.js";
+import { isInvitationExpired } from "../lib/talentPoolPolicy.js";
 import {
     COMMUNICATION_STATUS,
     buildCommunicationRow,
@@ -115,6 +122,37 @@ async function resolveRequisitionTargets(tenantId, payload) {
     }
 }
 
+// Phase 6 — the open invitation, shaped as an application-less target: the row
+// keeps the candidate and the requisition, the template renders the first
+// name, the role title and the expiry.
+async function resolveInvitationTargets(tenantId, payload) {
+    if (!isRecruitmentFlagEnabled("invitationLinks")) return [];
+    const invitation = await prisma.talentPoolInvitation.findFirst({
+        where: withTenant(tenantId, { id: positiveInt(payload.invitationId) ?? -1 }),
+        select: {
+            id: true,
+            candidateId: true,
+            jobRequisitionId: true,
+            status: true,
+            expiresAt: true,
+            candidate: { select: { id: true, firstName: true, anonymizedAt: true } },
+            jobRequisition: { select: { id: true, title: true } },
+        },
+    });
+    if (!invitation || invitation.status !== "INVITED" || isInvitationExpired(invitation)) return [];
+    if (!invitation.candidate || invitation.candidate.anonymizedAt) return [];
+    const target = {
+        id: null,
+        candidateId: invitation.candidateId,
+        jobRequisitionId: invitation.jobRequisitionId ?? null,
+        stage: null,
+        candidate: { id: invitation.candidate.id, firstName: invitation.candidate.firstName },
+        jobRequisition: invitation.jobRequisition ?? null,
+        offer: null,
+    };
+    return [{ application: target, extra: { invitation: { id: invitation.id, expiresAt: invitation.expiresAt ?? null } } }];
+}
+
 async function isPortalIntake(tenantId, applicationId) {
     const row = await prisma.applicationStageHistory.findFirst({
         where: withTenant(tenantId, { applicationId, source: "public-portal" }),
@@ -123,7 +161,8 @@ async function isPortalIntake(tenantId, applicationId) {
     return Boolean(row);
 }
 
-async function resolveTargets(tenantId, eventName, payload) {
+async function resolveTargets(tenantId, eventName, payload, template) {
+    if (template?.target === COMMUNICATION_TARGETS.INVITATION) return resolveInvitationTargets(tenantId, payload);
     if (eventName === EVENTS.REQUISITION_CLOSED) return resolveRequisitionTargets(tenantId, payload);
     if (eventName === EVENTS.OFFER_SENT) return resolveOfferTargets(tenantId, payload);
     if (eventName === EVENTS.OFFER_EXPIRY_REMINDER) {
@@ -221,7 +260,7 @@ export async function handleCandidateCommunicationEvent(envelope, { now = new Da
         }
         if (!template) return { outcome: cancelled ? "CANCELLED" : "NO_MESSAGE", cancelled };
 
-        const targets = await resolveTargets(tenantId, envelope.name, payload);
+        const targets = await resolveTargets(tenantId, envelope.name, payload, template);
         const rows = await buildRows({ tenantId, envelope, template, targets, now });
         if (!rows.length) return { outcome: "NO_MESSAGE", cancelled };
         const { queued, duplicates } = await queueCommunicationRows(tenantId, rows);

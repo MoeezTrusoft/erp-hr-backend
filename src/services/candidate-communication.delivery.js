@@ -22,6 +22,13 @@
 // reason) in the same transaction as the status change. The address is read
 // here and passed to the hub only: it is never stored, never logged, never in
 // an event.
+//
+// Phase 6 — a template with a `responseLink` (talentPool.invitation) gets its
+// single-use link minted right before the hub call (invitation-response
+// .service.js): the raw token goes into that one call's data and nowhere
+// else. An invitation that closed while the message waited cancels it; a
+// missing portal address is a retryable failure. Each mint gets its own hub
+// dedupe key, so a retry never replays an email whose link was replaced.
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
@@ -32,7 +39,7 @@ import { sendCandidateEmail } from "../lib/notificationClient.js";
 import { generateWorkerId, sanitiseWorkerId } from "../jobs/outbox.dispatcher.js";
 import { CONSENT_STATUS, findActiveDnc, normalizeEmail } from "./candidatePrivacy.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { getCommunicationTemplate } from "./candidate-communication.templates.js";
+import { RESPONSE_LINKS, getCommunicationTemplate } from "./candidate-communication.templates.js";
 import {
     COMMUNICATION_STATUS,
     candidateCommunicationSentEvent,
@@ -153,16 +160,38 @@ async function recordFailure(tenantId, row, workerId, reason, now) {
     return failed ? "failed" : "retry";
 }
 
+// Phase 6 — the data and dedupe key of a message whose template carries a
+// response link, or the outcome to settle instead of sending.
+async function withResponseLink(tenantId, row, template, now) {
+    const { invitationId, ...data } = row.data && typeof row.data === "object" ? row.data : {};
+    if (template.responseLink !== RESPONSE_LINKS.INVITATION_RESPONSE) return { skip: "unknown-link" };
+    // Loaded on demand: only an invitation message needs the invitation service.
+    const { issueInvitationResponseLink } = await import("./invitation-response.service.js");
+    const link = await issueInvitationResponseLink({ tenantId, invitationId, now });
+    if (!link.ok) return link.retry ? { fail: link.reason } : { cancel: link.reason };
+    return {
+        data: { ...data, respondUrl: link.url, invitationExpiresAt: link.expiresAt.toISOString() },
+        dedupeKey: `hr-candidate-communication:${row.id}:${link.tokenHash.slice(0, 16)}`,
+    };
+}
+
 async function deliver(tenantId, row, workerId, email, now) {
     const template = getCommunicationTemplate(row.templateId);
     if (!template) return recordFailure(tenantId, row, workerId, "unknown-template", now);
+    // The hub replays rather than duplicates a retried row.
+    let message = { data: row.data ?? {}, dedupeKey: `hr-candidate-communication:${row.id}` };
+    if (template.responseLink) {
+        const linked = await withResponseLink(tenantId, row, template, now);
+        if (linked.cancel) return cancelStale(tenantId, row, workerId, linked.cancel, now);
+        if (linked.fail || linked.skip) return recordFailure(tenantId, row, workerId, linked.fail ?? linked.skip, now);
+        message = linked;
+    }
     const result = await sendCandidateEmail({
         tenantId,
         email,
         templateId: template.hubTemplateId,
-        data: row.data ?? {},
-        // The hub replays rather than duplicates a retried row.
-        dedupeKey: `hr-candidate-communication:${row.id}`,
+        data: message.data,
+        dedupeKey: message.dedupeKey,
         category: row.category,
     });
     if (!result?.sent) return recordFailure(tenantId, row, workerId, result?.reason, now);
