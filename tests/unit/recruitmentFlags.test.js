@@ -50,6 +50,23 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
         expect(isRecruitmentFlagEnabled("approvalSla")).toBe(false); // unknown → default off
     });
 
+    it("every Phase 2 intake and screening switch defaults OFF and flips from env", () => {
+        const phase2 = {
+            knockout: "HR_RECRUITMENT_KNOCKOUT",
+            jobFeed: "HR_RECRUITMENT_JOB_FEED",
+            parseWorker: "HR_RECRUITMENT_PARSE_WORKER",
+            scoring: "HR_RECRUITMENT_SCORING",
+            communications: "HR_RECRUITMENT_COMMUNICATIONS",
+            duplicates: "HR_RECRUITMENT_DUPLICATES",
+        };
+        for (const [key, env] of Object.entries(phase2)) {
+            expect(RECRUITMENT_FLAG_DEFINITIONS[key].env).toBe(env);
+            expect(isRecruitmentFlagEnabled(key)).toBe(false);
+            process.env[env] = "on";
+            expect(isRecruitmentFlagEnabled(key)).toBe(true);
+        }
+    });
+
     it("an unknown key fails closed to off", () => {
         expect(isRecruitmentFlagEnabled("nonexistent")).toBe(false);
     });
@@ -94,7 +111,10 @@ describe("recruitmentFlags — env parsing", () => {
 describe("recruitmentFlags — snapshot", () => {
     it("exposes every flag with env, value, default and description", () => {
         const snap = recruitmentFlagSnapshot();
-        expect(Object.keys(snap).sort()).toEqual(["ai", "analytics", "approvalSla", "autoPublish", "canonicalDashboard", "offerHandoff", "portal", "postingExpiry", "retention", "workflow"]);
+        expect(Object.keys(snap).sort()).toEqual([
+            "ai", "analytics", "approvalSla", "autoPublish", "canonicalDashboard", "communications", "duplicates",
+            "jobFeed", "knockout", "offerHandoff", "parseWorker", "portal", "postingExpiry", "retention", "scoring", "workflow",
+        ]);
         for (const [key, entry] of Object.entries(snap)) {
             expect(entry.env).toBe(RECRUITMENT_FLAG_DEFINITIONS[key].env);
             expect(typeof entry.enabled).toBe("boolean");

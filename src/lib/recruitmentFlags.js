@@ -100,6 +100,54 @@ const DEFINITIONS = Object.freeze({
         def: false,
         desc: "Automatic closing of postings on requisitions past their closesAt",
     },
+    // Phase 2 — intake and screening. Every switch below changes what happens
+    // to an applicant without a recruiter action, so each is OFF until a tenant
+    // has reviewed its settings. DNC at intake is not here: it is a legal
+    // control and always on (see retention above).
+    //
+    // Knockout questions: an answer outside a question's knockout rule
+    // schedules a MINIMUM_REQUIREMENTS_NOT_MET rejection after the tenant's
+    // knockoutDelayHours, cancellable until it runs. Off records the knockout
+    // on the answer but schedules nothing.
+    knockout: {
+        env: "HR_RECRUITMENT_KNOCKOUT",
+        def: false,
+        desc: "Scheduled, reversible rejection of applications that fail a knockout question",
+    },
+    // The per-tenant XML job feed for job boards. Off serves 404 for every
+    // feed URL, whatever the tenant's own feedEnabled says.
+    jobFeed: {
+        env: "HR_RECRUITMENT_JOB_FEED",
+        def: false,
+        desc: "Per-tenant XML job feed for job boards",
+    },
+    // Resume parsing on a queue (the parse worker) instead of in the request.
+    // Off leaves queued parses PENDING; the synchronous parse tools still work.
+    parseWorker: {
+        env: "HR_RECRUITMENT_PARSE_WORKER",
+        def: false,
+        desc: "Asynchronous resume parse worker",
+    },
+    // Fit score, ranking and shortlist proposals.
+    scoring: {
+        env: "HR_RECRUITMENT_SCORING",
+        def: false,
+        desc: "Application fit score, requisition ranking and shortlist proposals",
+    },
+    // Templated candidate emails driven by recruitment events, with a log, the
+    // rejection delay and DNC checked again at send.
+    communications: {
+        env: "HR_RECRUITMENT_COMMUNICATIONS",
+        def: false,
+        desc: "Templated candidate communications from recruitment events",
+    },
+    // Duplicate candidate detection and merge suggestions (never merges on
+    // its own; a recruiter accepts a suggestion).
+    duplicates: {
+        env: "HR_RECRUITMENT_DUPLICATES",
+        def: false,
+        desc: "Duplicate candidate detection and merge suggestions",
+    },
 });
 
 export const RECRUITMENT_FLAG_DEFINITIONS = DEFINITIONS;
