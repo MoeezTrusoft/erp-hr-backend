@@ -146,18 +146,27 @@ export function registerOnboardingTools(server) {
 
   server.tool(
     "hr_onboarding_document_sign",
-    "Mark an onboarding document as signed",
+    "Mark an onboarding document as signed (recorded under the calling HR user; a new hire signs their own documents with hr_self_onboarding_document_sign)",
     {
       docId: z.string().min(1).describe("Onboarding document id (references OnboardingDocument; Number()-coerced)"),
       signedBy: z
         .string()
         .optional()
-        .describe("Employee id of the signer (references Employee; persisted to OnboardingDocument.signedByEmpId)"),
+        .describe("Must be the caller's own employee id when given; a signature is never recorded in someone else's name"),
     },
-    withToolError(async ({ docId, ...rest }) => {
+    withToolError(async ({ docId, signedBy }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
-      const data = await mcpSignOnboardingDocument(user, docId, rest);
+      // Phase 4 — the signer is the verified caller, never a supplied id, so
+      // HR cannot record a signature in a new hire's name.
+      const callerId = user.employeeId != null && String(user.employeeId) !== "" ? String(user.employeeId) : null;
+      if (signedBy != null && String(signedBy) !== "" && String(signedBy) !== callerId) {
+        throw Object.assign(new Error("A signature can only be recorded under your own employee id"), {
+          status: 403,
+          code: "HR-ONBOARDING-SIGNER-MISMATCH",
+        });
+      }
+      const data = await mcpSignOnboardingDocument(user, docId, { signedBy: callerId ?? undefined });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

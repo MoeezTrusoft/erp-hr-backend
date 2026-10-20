@@ -123,3 +123,22 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
     expect(parse(res).status).toBe(403);
   });
 });
+
+describe('hr_onboarding_document_sign — the signer is the verified caller (Phase 4)', () => {
+  const grant = { 'hr:onboarding': ['EDIT'] };
+  beforeEach(() => jest.clearAllMocks());
+
+  it("records the caller's own employee id, whatever the input omits", async () => {
+    const { mcpSignOnboardingDocument } = await import('../../../src/mcp/controllers/onboardingMcpController.js');
+    await call('hr_onboarding_document_sign', { docId: '1' }, { permissions: grant });
+    expect(mcpSignOnboardingDocument).toHaveBeenCalledWith(USER, '1', { signedBy: '7' });
+  });
+
+  it('refuses to record a signature in another employee\'s name', async () => {
+    const { mcpSignOnboardingDocument } = await import('../../../src/mcp/controllers/onboardingMcpController.js');
+    const res = await call('hr_onboarding_document_sign', { docId: '1', signedBy: '99' }, { permissions: grant });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('HR-ONBOARDING-SIGNER-MISMATCH');
+    expect(mcpSignOnboardingDocument).not.toHaveBeenCalled();
+  });
+});

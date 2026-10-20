@@ -32,6 +32,10 @@ import { registerRecruitmentExtraTools } from "../../../src/mcp/tools/recruitmen
 import { registerApplicationTools } from "../../../src/mcp/tools/applicationTools.js";
 import { registerResumeTools } from "../../../src/mcp/tools/resumeTools.js";
 import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboardingTemplateTools.js";
+import { registerOnboardingProvisioningTools } from "../../../src/mcp/tools/onboarding-provisioning.tools.js";
+import { registerOnboardingSessionPlanTools } from "../../../src/mcp/tools/onboarding-session-plan.tools.js";
+import { registerOnboardingReadinessTools } from "../../../src/mcp/tools/onboarding-readiness.tools.js";
+import { registerOnboardingSelfTools } from "../../../src/mcp/tools/onboarding-self.tools.js";
 import { registerRecruitmentSettingsTools } from "../../../src/mcp/tools/recruitment-settings.tools.js";
 import { registerCandidateDuplicateTools } from "../../../src/mcp/tools/candidate-duplicate.tools.js";
 import { registerRecruitmentScoringTools } from "../../../src/mcp/tools/recruitment-scoring.tools.js";
@@ -69,6 +73,12 @@ const RECRUITMENT_REGISTRARS = [
   // tools serve the recruitment handoff's checklist seeding, so they belong to
   // this inventory (the gateway edge map gates them with the rest).
   ["onboardingTemplateTools", registerOnboardingTemplateTools],
+  // Phase 4 — the handoff's provisioning, orientation, readiness and the new
+  // hire's own portal.
+  ["onboardingProvisioningTools", registerOnboardingProvisioningTools],
+  ["onboardingSessionPlanTools", registerOnboardingSessionPlanTools],
+  ["onboardingReadinessTools", registerOnboardingReadinessTools],
+  ["onboardingSelfTools", registerOnboardingSelfTools],
   // Phase 2 — intake and screening.
   ["recruitmentSettingsTools", registerRecruitmentSettingsTools],
   ["candidateDuplicateTools", registerCandidateDuplicateTools],
@@ -119,6 +129,10 @@ const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentAnalyticsTools: 3, // + hr_recruitment_analytics_drilldown (NFR-12)
   recruitmentExtraTools: 7, // + hr_candidate_merge (FR-04.10) + the 3 requisition attachment tools (§1.4 decision B2)
   onboardingTemplateTools: 3, // FR-13 residue — list/set/deactivate
+  onboardingProvisioningTools: 3, // Phase 4: IT requests list, get, update
+  onboardingSessionPlanTools: 3, // Phase 4: plan preview, invite re-sync, session delete
+  onboardingReadinessTools: 3, // Phase 4: readiness get and list, survey completion
+  onboardingSelfTools: 8, // Phase 4: the new hire's portal (6) and HR document review (2)
   applicationTools: 15,
   resumeTools: 6,
   recruitmentSettingsTools: 3, // Phase 2: settings get/set + source report
@@ -219,6 +233,23 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_onboarding_template_deactivate",
   "hr_onboarding_template_list",
   "hr_onboarding_template_set",
+  "hr_onboarding_provisioning_requests_list",
+  "hr_onboarding_provisioning_request_get",
+  "hr_onboarding_provisioning_request_update",
+  "hr_onboarding_session_plan_preview",
+  "hr_onboarding_session_calendar_resync",
+  "hr_onboarding_session_delete",
+  "hr_onboarding_readiness_get",
+  "hr_onboarding_readiness_list",
+  "hr_onboarding_survey_completion_get",
+  "hr_self_onboarding_get",
+  "hr_self_onboarding_task_complete",
+  "hr_self_onboarding_task_reopen",
+  "hr_self_onboarding_document_upload",
+  "hr_self_onboarding_document_sign",
+  "hr_self_onboarding_survey_submit",
+  "hr_onboarding_document_review",
+  "hr_onboarding_documents_pending_list",
   "hr_recruitment_analytics_drilldown",
   "hr_recruitment_analytics_export",
   "hr_recruitment_analytics_get",
@@ -393,13 +424,16 @@ describe("Recruitment MCP tool inventory", () => {
     // Phase 3a: + 4 offer lifecycle tools, + 7 offer letter tools, + 2 workspaces,
     // + 6 interview scheduling tools.
     // Phase 3b: + 9 blueprint tools, + 4 workstation tools, + 10 item bank tools.
-    expect(all).toHaveLength(782);
+    // Phase 4: + 17 onboarding tools (provisioning, sessions, readiness, self portal).
+    expect(all).toHaveLength(799);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
   it("every privacy tool is registered as a TOOL (resources would bypass the gateway gate)", () => {
     const privacy = EXPECTED_TOOLS.filter((n) =>
-      /consent|dnc|legal_hold|retention|anonymize|request_/.test(n)
+      // candidate_request_ (data-subject requests), not Phase 4's IT
+      // provisioning requests.
+      /consent|dnc|legal_hold|retention|anonymize|candidate_request_/.test(n)
     );
     // 15 = 14 + hr_talent_pool_retention_sweep (FR-10 residue), which the
     // /retention/ pattern catches and which IS a retention-surface tool: it acts

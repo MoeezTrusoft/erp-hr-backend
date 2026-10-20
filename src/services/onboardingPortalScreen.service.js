@@ -18,6 +18,11 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { onboardingTaskReminderEvent } from "./hrEvents.js";
 import {
+  cancelProvisioningForTaskInTx,
+  ensureProvisioningRequestForTaskInTx,
+  syncProvisioningFromTaskInTx,
+} from "./onboarding-provisioning.service.js";
+import {
   ONBOARDING_TASK_CATEGORIES,
   ONBOARDING_FEEDBACK_QUESTIONS,
   onboardingCategoryLabel,
@@ -184,19 +189,29 @@ export async function createPortalTask({
   stage,
 } = {}) {
   const checklist = await resolveChecklist({ tenantId, checklistId, employeeId });
-  const created = await prisma.onboardingTask.create({
-    data: scopedData(tenantId, {
-      checklistId: checklist.id,
-      title,
-      description: description ?? null,
-      category: category ?? "OTHER",
-      stage: stage ?? null,
-      assigneeId: responsibleId != null ? Number(responsibleId) : null,
-      dueDate: deadline ? new Date(deadline) : null,
-      completed: false,
-    }),
-    include: { assignee: { select: employeeProfileSelect } },
-  });
+  // Phase 4 — the task and its provisioning request (an IT or workspace
+  // category) commit together.
+  const created = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      const row = await tx.onboardingTask.create({
+        data: scopedData(tenantId, {
+          checklistId: checklist.id,
+          title,
+          description: description ?? null,
+          category: category ?? "OTHER",
+          stage: stage ?? null,
+          assigneeId: responsibleId != null ? Number(responsibleId) : null,
+          dueDate: deadline ? new Date(deadline) : null,
+          completed: false,
+        }),
+        include: { assignee: { select: employeeProfileSelect } },
+      });
+      await ensureProvisioningRequestForTaskInTx(tx, { tenantId, task: row });
+      return row;
+    },
+    { tenantId },
+  );
   return taskRow(created);
 }
 
@@ -209,7 +224,7 @@ async function loadTaskScoped(tenantId, taskId) {
 }
 
 export async function updatePortalTask({ tenantId, taskId, ...patch } = {}) {
-  await loadTaskScoped(tenantId, taskId);
+  const existing = await loadTaskScoped(tenantId, taskId);
   const data = {};
   if (patch.title !== undefined) data.title = patch.title;
   if (patch.description !== undefined) data.description = patch.description;
@@ -222,11 +237,26 @@ export async function updatePortalTask({ tenantId, taskId, ...patch } = {}) {
     data.completed = !!patch.done;
     data.completedAt = patch.done ? new Date() : null;
   }
-  const updated = await prisma.onboardingTask.update({
-    where: { id: Number(taskId) },
-    data,
-    include: { assignee: { select: employeeProfileSelect } },
-  });
+  // Phase 4 — a task moved into an IT or workspace category raises its
+  // request; completing or reopening it keeps the request in step.
+  const updated = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      const row = await tx.onboardingTask.update({
+        where: { id: Number(taskId) },
+        data,
+        include: { assignee: { select: employeeProfileSelect } },
+      });
+      if (data.category !== undefined && data.category !== existing.category) {
+        await ensureProvisioningRequestForTaskInTx(tx, { tenantId, task: row });
+      }
+      if (data.completed !== undefined && data.completed !== existing.completed) {
+        await syncProvisioningFromTaskInTx(tx, { tenantId, taskId: row.id, completed: row.completed });
+      }
+      return row;
+    },
+    { tenantId },
+  );
   return taskRow(updated);
 }
 
@@ -236,7 +266,14 @@ export async function completePortalTask({ tenantId, taskId, done = true } = {})
 
 export async function deletePortalTask({ tenantId, taskId } = {}) {
   await loadTaskScoped(tenantId, taskId);
-  await prisma.onboardingTask.delete({ where: { id: Number(taskId) } });
+  await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await cancelProvisioningForTaskInTx(tx, { tenantId, taskId: Number(taskId) });
+      await tx.onboardingTask.delete({ where: { id: Number(taskId) } });
+    },
+    { tenantId },
+  );
   return { deleted: true, id: Number(taskId) };
 }
 

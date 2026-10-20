@@ -13,6 +13,11 @@ import {
     onboardingSurveySubmittedEvent,
 } from "./hrEvents.js";
 import { eventContext } from "../lib/event-context.util.js";
+import {
+    cancelProvisioningForTaskInTx,
+    ensureProvisioningRequestForTaskInTx,
+    syncProvisioningFromTaskInTx,
+} from "./onboarding-provisioning.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
 // param; folded into onboarding reads and stamped on creates, fail-closed so
@@ -205,6 +210,8 @@ export const addTask = async ({ checklistId, title, description, assigneeType, d
             }),
         });
         await enqueueHrDomainEvent(tx, onboardingTaskAddedEvent(created, evtCtx));
+        // Phase 4 — an IT or workspace task raises its provisioning request.
+        await ensureProvisioningRequestForTaskInTx(tx, { tenantId, task: created, actorId: evtCtx.actorId });
         return created;
     });
 };
@@ -223,6 +230,10 @@ export const updateTask = async (taskId, data, tenantId, ctx = {}) => {
             data: update,
         });
         await enqueueHrDomainEvent(tx, onboardingTaskUpdatedEvent({ ...updated, tenantId: existing.tenantId }, evtCtx));
+        // Phase 4 — completing or reopening the task keeps its request in step.
+        if (update.completed !== undefined && update.completed !== existing.completed) {
+            await syncProvisioningFromTaskInTx(tx, { tenantId, taskId: updated.id, completed: updated.completed, actorId: evtCtx.actorId });
+        }
         return updated;
     });
 };
@@ -233,6 +244,8 @@ export const deleteTask = async (taskId, tenantId, ctx = {}) => {
     return writeTx(tenantId, async (tx) => {
         const existing = await tx.onboardingTask.findFirst({ where: withTenant(tenantId, { id: Number(taskId) }) });
         if (!existing) throw new Error("Task not found");
+        // Phase 4 — the task's open provisioning request is cancelled with it.
+        await cancelProvisioningForTaskInTx(tx, { tenantId, taskId: existing.id, actorId: evtCtx.actorId });
         const removed = await tx.onboardingTask.delete({ where: { id: Number(taskId) } });
         await enqueueHrDomainEvent(tx, onboardingTaskDeletedEvent({ ...existing, ...(removed ?? {}), tenantId: existing.tenantId }, evtCtx));
         return removed;

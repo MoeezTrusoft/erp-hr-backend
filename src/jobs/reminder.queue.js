@@ -47,6 +47,9 @@ import { runDecisionPromptJob } from '../services/interview-decision-prompt.serv
 import { runSlotOfferExpiryJob } from '../services/interview-slot-offer.service.js';
 import { runTestItemStatsJob } from '../services/test-item-stats.service.js';
 import { runTestSessionJob } from '../services/test-session.service.js';
+import { runOnboardingReadinessJob } from '../services/onboarding-readiness.service.js';
+import { runOnboardingSurveyJob } from '../services/onboarding-survey.service.js';
+import { runHandoffWatchdogJob } from '../services/handoff-watchdog.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -117,6 +120,13 @@ export const JOB_TEST_ITEM_STATS = 'test-item-stats';
 // Phase 3b — expires unused kiosk codes, auto-submits sittings past their
 // deadline and closes abandoned ones (HR_RECRUITMENT_ONSITE_TEST).
 export const JOB_TEST_SESSIONS = 'test-sessions';
+// Phase 4 — day-one readiness and the 30/60/90 day surveys
+// (HR_ONBOARDING_AUTOMATION); the handoff watchdog fails handoffs stalled
+// IN_PROGRESS so the failed-handoff alert covers a crash too
+// (HR_RECRUITMENT_OFFER_HANDOFF).
+export const JOB_ONBOARDING_READINESS = 'onboarding-readiness';
+export const JOB_ONBOARDING_SURVEYS = 'onboarding-surveys';
+export const JOB_HANDOFF_WATCHDOG = 'handoff-watchdog';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -279,6 +289,23 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:test-sessions', repeat: { pattern: '* * * * *' } },
         },
+        {
+            // 02:00 UTC = 07:00 in Asia/Karachi; each tenant's window and
+            // "alerted today" use its own time zone.
+            name: JOB_ONBOARDING_READINESS,
+            data: {},
+            opts: { jobId: 'repeat:onboarding-readiness', repeat: { pattern: '0 2 * * *' } },
+        },
+        {
+            name: JOB_ONBOARDING_SURVEYS,
+            data: {},
+            opts: { jobId: 'repeat:onboarding-surveys', repeat: { pattern: '15 2 * * *' } },
+        },
+        {
+            name: JOB_HANDOFF_WATCHDOG,
+            data: {},
+            opts: { jobId: 'repeat:handoff-watchdog', repeat: { pattern: '*/5 * * * *' } },
+        },
     ];
 }
 
@@ -309,6 +336,9 @@ export function buildReminderProcessor({
     interviewSlotOfferExpiry = runSlotOfferExpiryJob,
     testItemStats = runTestItemStatsJob,
     testSessions = runTestSessionJob,
+    onboardingReadiness = runOnboardingReadinessJob,
+    onboardingSurveys = runOnboardingSurveyJob,
+    handoffWatchdog = runHandoffWatchdogJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -363,6 +393,12 @@ export function buildReminderProcessor({
                     return testItemStats(data);
                 case JOB_TEST_SESSIONS:
                     return testSessions(data);
+                case JOB_ONBOARDING_READINESS:
+                    return onboardingReadiness(data);
+                case JOB_ONBOARDING_SURVEYS:
+                    return onboardingSurveys(data);
+                case JOB_HANDOFF_WATCHDOG:
+                    return handoffWatchdog(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

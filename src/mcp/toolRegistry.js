@@ -48,6 +48,10 @@ import { registerReceptionTools } from "./tools/reception.tools.js";
 import { registerTestResultTools } from "./tools/test-result.tools.js";
 import { registerEvaluationFormTools } from "./tools/evaluation-form.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
+import { registerOnboardingProvisioningTools } from "./tools/onboarding-provisioning.tools.js";
+import { registerOnboardingSessionPlanTools } from "./tools/onboarding-session-plan.tools.js";
+import { registerOnboardingReadinessTools } from "./tools/onboarding-readiness.tools.js";
+import { registerOnboardingSelfTools } from "./tools/onboarding-self.tools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
 import { registerOnboardingScheduleTools } from "./tools/onboardingScheduleTools.js";
@@ -333,6 +337,12 @@ export function registerAllTools(server) {
   registerEvaluationFormTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
+  // Recruitment Phase 4 — provisioning requests, orientation sessions,
+  // readiness and surveys, and the new hire's own portal.
+  registerOnboardingProvisioningTools(server);
+  registerOnboardingSessionPlanTools(server);
+  registerOnboardingReadinessTools(server);
+  registerOnboardingSelfTools(server);
   registerCandidatePrivacyTools(server);
   registerOnboardingDashboardTools(server);
   registerOnboardingDetailTools(server);

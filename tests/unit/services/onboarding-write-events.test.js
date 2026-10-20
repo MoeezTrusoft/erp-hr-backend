@@ -17,6 +17,8 @@ const makeClient = () => ({
     onboardingTask: { create: jest.fn(), findFirst: jest.fn(), update: jest.fn(), delete: jest.fn() },
     onboardingBuddy: { upsert: jest.fn() },
     onboardingSurvey: { upsert: jest.fn() },
+    // Phase 4 — task writes keep their provisioning request in step (none here).
+    onboardingProvisioningRequest: { findFirst: jest.fn(async () => null), updateMany: jest.fn() },
 });
 const prisma = makeClient();
 const tx = makeClient();

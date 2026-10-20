@@ -92,6 +92,9 @@ const {
   JOB_INTERVIEW_SLOT_OFFER_EXPIRY,
   JOB_TEST_ITEM_STATS,
   JOB_TEST_SESSIONS,
+  JOB_ONBOARDING_READINESS,
+  JOB_ONBOARDING_SURVEYS,
+  JOB_HANDOFF_WATCHDOG,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -300,6 +303,21 @@ describe("Phase 3a jobs are scheduled", () => {
     const testSessions = jest.fn(async () => "sessions");
     const processor = buildReminderProcessor({ testSessions });
     await expect(processor({ name: JOB_TEST_SESSIONS, data: {} })).resolves.toBe("sessions");
+  });
+
+  it("registers the Phase 4 onboarding jobs and the handoff watchdog, and dispatches each", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_ONBOARDING_READINESS].opts).toMatchObject({ jobId: "repeat:onboarding-readiness", repeat: { pattern: "0 2 * * *" } });
+    expect(byName[JOB_ONBOARDING_SURVEYS].opts).toMatchObject({ jobId: "repeat:onboarding-surveys", repeat: { pattern: "15 2 * * *" } });
+    expect(byName[JOB_HANDOFF_WATCHDOG].opts).toMatchObject({ jobId: "repeat:handoff-watchdog", repeat: { pattern: "*/5 * * * *" } });
+    const processor = buildReminderProcessor({
+      onboardingReadiness: jest.fn(async () => "readiness"),
+      onboardingSurveys: jest.fn(async () => "surveys"),
+      handoffWatchdog: jest.fn(async () => "watchdog"),
+    });
+    await expect(processor({ name: JOB_ONBOARDING_READINESS, data: {} })).resolves.toBe("readiness");
+    await expect(processor({ name: JOB_ONBOARDING_SURVEYS, data: {} })).resolves.toBe("surveys");
+    await expect(processor({ name: JOB_HANDOFF_WATCHDOG, data: {} })).resolves.toBe("watchdog");
   });
 });
 

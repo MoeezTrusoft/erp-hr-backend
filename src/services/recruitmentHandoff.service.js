@@ -23,6 +23,8 @@ import { provisionHireCompensation } from "./payrollService.js";
 import { materializeOnboardingTaskRows } from "../lib/onboardingDefaults.js";
 import { resolveTasksForProvisioning } from "./onboardingTemplate.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { createProvisioningRequestsInTx } from "./onboarding-provisioning.service.js";
+import { createOrientationSessionsInTx } from "./onboarding-session-plan.service.js";
 import { offerHandoffCompletedEvent, offerHandoffFailedEvent, candidateHiredEvent } from "./hrEvents.js";
 import { prepareEmployeeInsert } from "./employee-code.service.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
@@ -303,8 +305,49 @@ export async function runOfferHandoff({ offerId, tenantId, actorId = null, emplo
           status: "OK",
           error: taskPlan.source === "TEMPLATE" ? `template:${taskPlan.templateId}` : "baseline",
         });
+        // Phase 4 — orientation and compliance sessions from the template (or
+        // the baseline set), seeded with the tasks so a replay cannot add more.
+        const sessionPlan = await createOrientationSessionsInTx(tx, {
+          tenantId,
+          checklistId: checklist.id,
+          employeeId: employee.id,
+          startDate: hireDate,
+          now: new Date(),
+          offerId: offer.id,
+          actorId,
+        });
+        await recordAttempt(tx, {
+          handoffId: handoff.id,
+          tenantId,
+          step: "orientation_sessions",
+          status: "OK",
+          error: sessionPlan.skipped
+            ? "skipped: onboarding automation off"
+            : `${sessionPlan.created} created, ${sessionPlan.existing} existing, ${sessionPlan.source === "TEMPLATE" ? `template:${sessionPlan.templateId}` : "baseline"}${sessionPlan.calendarQueued ? ", invites queued" : ""}`,
+        });
       }
       await recordAttempt(tx, { handoffId: handoff.id, tenantId, step: "onboarding_checklist", status: "OK" });
+
+      // Phase 4 — IT provisioning requests from the IT and workspace tasks.
+      // Outside the fresh-checklist branch: idempotent per task, so a handoff
+      // replayed after the flag is switched on raises them once.
+      const provisioning = await createProvisioningRequestsInTx(tx, {
+        tenantId,
+        checklistId: checklist.id,
+        employeeId: employee.id,
+        startDate: hireDate,
+        now: new Date(),
+        actorId,
+      });
+      await recordAttempt(tx, {
+        handoffId: handoff.id,
+        tenantId,
+        step: "provisioning_requests",
+        status: "OK",
+        error: provisioning.skipped
+          ? `skipped: ${provisioning.skipped}`
+          : `created ${provisioning.created}, existing ${provisioning.existing}`,
+      });
 
       const completed = await tx.offerHandoff.update({
         where: { id: handoff.id },
