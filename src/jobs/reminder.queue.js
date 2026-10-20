@@ -42,6 +42,8 @@ import { runApplicationScoringJob } from '../services/application-scoring.servic
 import { runCandidateDuplicateDetectionJob } from '../services/candidate-duplicate.service.js';
 import { runOfferExpiryJob } from '../services/offer-expiry.service.js';
 import { runEsignWebhookRetryJob } from '../services/offer-esign.service.js';
+import { runInterviewReminderJob } from '../services/interview-reminder.service.js';
+import { runDecisionPromptJob } from '../services/interview-decision-prompt.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -99,6 +101,11 @@ export const JOB_OFFER_EXPIRY = 'offer-expiry';
 // Retries e-signature deliveries that failed or were abandoned mid-apply
 // (HR_RECRUITMENT_ESIGN, and only with a provider configured).
 export const JOB_ESIGN_WEBHOOK_RETRY = 'esign-webhook-retry';
+// Interview reminders, feedback nudges, escalation and the no-show prompt
+// (HR_RECRUITMENT_INTERVIEW_REMINDERS); the hiring manager's decision prompt
+// (HR_RECRUITMENT_DECISION_PROMPTS).
+export const JOB_INTERVIEW_REMINDERS = 'interview-reminders';
+export const JOB_INTERVIEW_DECISION_PROMPTS = 'interview-decision-prompts';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -227,6 +234,20 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:esign-webhook-retry', repeat: { pattern: '4,19,34,49 * * * *' } },
         },
+        {
+            // Every 15 minutes: the 1 h reminder's window is an hour wide, so a
+            // quarter-hour cadence always lands inside it.
+            name: JOB_INTERVIEW_REMINDERS,
+            data: {},
+            opts: { jobId: 'repeat:interview-reminders', repeat: { pattern: '*/15 * * * *' } },
+        },
+        {
+            // Every 15 minutes, offset; the submit path prompts at once and this
+            // is the backstop.
+            name: JOB_INTERVIEW_DECISION_PROMPTS,
+            data: {},
+            opts: { jobId: 'repeat:interview-decision-prompts', repeat: { pattern: '11,26,41,56 * * * *' } },
+        },
     ];
 }
 
@@ -252,6 +273,8 @@ export function buildReminderProcessor({
     candidateDuplicateDetection = runCandidateDuplicateDetectionJob,
     offerExpiry = runOfferExpiryJob,
     esignWebhookRetry = runEsignWebhookRetryJob,
+    interviewReminders = runInterviewReminderJob,
+    interviewDecisionPrompts = runDecisionPromptJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -296,6 +319,10 @@ export function buildReminderProcessor({
                     return offerExpiry(data);
                 case JOB_ESIGN_WEBHOOK_RETRY:
                     return esignWebhookRetry(data);
+                case JOB_INTERVIEW_REMINDERS:
+                    return interviewReminders(data);
+                case JOB_INTERVIEW_DECISION_PROMPTS:
+                    return interviewDecisionPrompts(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

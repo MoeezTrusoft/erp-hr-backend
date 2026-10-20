@@ -18,6 +18,11 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { interviewOutcomeRecordedEvent } from "./hrEvents.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+
+// Phase 3a — loaded lazily: the decision-prompt service consolidates feedback
+// through this module, so a static import would be a cycle.
+const loadDecisionPrompts = () => import("./interview-decision-prompt.service.js");
 
 const RATING_KEYS = ["technicalSkills", "problemSolving", "communication", "cultureFit"];
 
@@ -403,6 +408,8 @@ export const setInterviewOutcome = async ({
       notes: true,
       applicationId: true,
       tenantId: true,
+      // Phase 3a — the auto-advance acts on a CHANGE to NEXT_ROUND only.
+      decision: true,
       interviewers: {
         select: {
           status: true,
@@ -495,6 +502,20 @@ export const setInterviewOutcome = async ({
         },
       ),
     );
+
+    // Phase 3a — a NEXT_ROUND decision advances the application (or asks for
+    // the next round) in the same transaction, so the decision and its
+    // consequence commit together. REJECTED never auto-rejects.
+    if (isRecruitmentFlagEnabled("decisionPrompts")) {
+      const { applyDecisionAutoAdvance } = await loadDecisionPrompts();
+      await applyDecisionAutoAdvance(tx, {
+        tenantId: interview.tenantId ?? null,
+        interviewId: idNum,
+        decision: normalizedDecision,
+        previousDecision: interview.decision ?? null,
+        actorId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+      });
+    }
   });
 
   return getInterviewManaged({ id: idNum, tenantId });

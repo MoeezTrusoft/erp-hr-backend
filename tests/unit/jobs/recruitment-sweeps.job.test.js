@@ -87,6 +87,8 @@ const {
   JOB_CANDIDATE_DUPLICATE_DETECTION,
   JOB_OFFER_EXPIRY,
   JOB_ESIGN_WEBHOOK_RETRY,
+  JOB_INTERVIEW_REMINDERS,
+  JOB_INTERVIEW_DECISION_PROMPTS,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -254,6 +256,20 @@ describe("Phase 3a jobs are scheduled", () => {
     const esignWebhookRetry = jest.fn(async () => "retry");
     const processor = buildReminderProcessor({ esignWebhookRetry });
     await expect(processor({ name: JOB_ESIGN_WEBHOOK_RETRY, data: {} })).resolves.toBe("retry");
+  });
+
+  it("registers interview reminders and decision prompts every 15 minutes and dispatches them", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_INTERVIEW_REMINDERS].opts).toMatchObject({ jobId: "repeat:interview-reminders", repeat: { pattern: "*/15 * * * *" } });
+    expect(byName[JOB_INTERVIEW_DECISION_PROMPTS].opts).toMatchObject({
+      jobId: "repeat:interview-decision-prompts",
+      repeat: { pattern: "11,26,41,56 * * * *" },
+    });
+    const interviewReminders = jest.fn(async () => "reminders");
+    const interviewDecisionPrompts = jest.fn(async () => "prompts");
+    const processor = buildReminderProcessor({ interviewReminders, interviewDecisionPrompts });
+    await expect(processor({ name: JOB_INTERVIEW_REMINDERS, data: {} })).resolves.toBe("reminders");
+    await expect(processor({ name: JOB_INTERVIEW_DECISION_PROMPTS, data: {} })).resolves.toBe("prompts");
   });
 });
 

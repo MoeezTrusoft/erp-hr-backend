@@ -39,6 +39,7 @@ import { registerResumeParseStatusTools } from "./tools/resume-parse-status.tool
 import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposition.tools.js";
 import { registerOfferLifecycleTools } from "./tools/offer-lifecycle.tools.js";
 import { registerOfferLetterTools } from "./tools/offer-letter.tools.js";
+import { registerRecruitmentWorkspaceTools } from "./tools/recruitment-workspace.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -312,6 +313,8 @@ export function registerAllTools(server) {
   registerOfferLifecycleTools(server);
   // Phase 3a — versioned offer letters and the e-signature round trip.
   registerOfferLetterTools(server);
+  // Phase 3a — the interviewer and hiring manager workspaces.
+  registerRecruitmentWorkspaceTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);

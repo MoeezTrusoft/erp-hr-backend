@@ -25,8 +25,28 @@
 import prisma from '../lib/prisma.js';
 import { mcpCtx } from '../mcp/context.js';
 import { resolveForInterview, validateSubmission } from './scorecardTemplate.service.js';
+import { isRecruitmentFlagEnabled } from '../lib/recruitmentFlags.js';
+import logger from '../lib/logger.js';
 
 const asSystem = (fn) => mcpCtx.run({ system: true }, fn);
+
+// Phase 3a — when the LAST panel scorecard is submitted, the hiring manager is
+// prompted to decide at once rather than on the next job run. The prompt
+// service consolidates feedback through interviewMgmt.service.js, which imports
+// this module, so it is loaded lazily (and only with the flag on). The hook is
+// fail-soft: the scorecard is already written, and the decision-prompt job is
+// the backstop for any prompt this misses.
+const loadDecisionPrompts = () => import('./interview-decision-prompt.service.js');
+
+async function afterScorecardWrite(row, tenant) {
+    if (!row?.submittedAt || !tenant || !isRecruitmentFlagEnabled('decisionPrompts')) return;
+    try {
+        const { promptDecisionAfterScorecard } = await loadDecisionPrompts();
+        await promptDecisionAfterScorecard({ tenantId: tenant, interviewId: row.interviewId });
+    } catch (err) {
+        logger.warn({ interviewId: row.interviewId, errMessage: err?.message }, 'decision prompt hook failed after scorecard write');
+    }
+}
 
 const currentTenantId = () => {
     const raw = mcpCtx.getStore()?.user?.tenantId;
@@ -154,9 +174,11 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
     );
 
     if (!existing) {
-        return prisma.interviewScorecard.create({
+        const created = await prisma.interviewScorecard.create({
             data: { interviewId: interview, reviewerId: reviewer, ...data, ...(tenant ? { tenantId: tenant } : {}) },
         });
+        await afterScorecardWrite(created, tenant);
+        return created;
     }
 
     if (tenant && existing.tenantId && existing.tenantId !== tenant) {
@@ -185,6 +207,8 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
         // Ours, or a legacy tenant-less row on our interview: amend and adopt it.
         // The log is appended, never overwritten, and the ORIGINAL submittedAt is
         // preserved so `lastAmendedAt` is what shows a record has moved.
+        // An amendment changes evidence that was already in, so it never
+        // completes a panel and needs no prompt.
         return asSystem(async () =>
             prisma.interviewScorecard.update({
                 where: { id: existing.id },
@@ -199,12 +223,14 @@ export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data =
     }
 
     // Ours, or a legacy tenant-less row on our interview: update and adopt it.
-    return asSystem(async () =>
+    const updated = await asSystem(async () =>
         prisma.interviewScorecard.update({
             where: { id: existing.id },
             data: { ...data, ...(tenant ? { tenantId: tenant } : {}) },
         }),
     );
+    await afterScorecardWrite(updated, tenant);
+    return updated;
 };
 
 export default upsertInterviewScorecard;
