@@ -2,17 +2,26 @@
 //
 // Recruitment Analytics — tenant-scoped computation of hiring KPIs from the
 // recruitment tables (Application / Candidate / Offer / Interview /
-// JobRequisition). The DB carries NO cost data, so every cost figure exposed
-// here is derived from clearly-labelled ILLUSTRATIVE constants (see
-// ILLUSTRATIVE_COST_BREAKDOWN) — the object is stamped `illustrativeCostData:
-// true` and each cost sub-object carries `costModel: "illustrative"` so no
-// consumer mistakes them for real spend. All real metrics (hires, funnel,
-// time-to-hire, offer-acceptance, source effectiveness) are computed from live
-// rows.
+// JobRequisition / OfferHandoff / InternalReferral / RecruitmentCostConfig).
+//
+// Phase 5 — NO ILLUSTRATIVE DATA. Every figure in the answer comes from the
+// tenant's own rows. A metric with nothing to measure answers null and names
+// why in `reasons` (or in its own `reason`), never a placeholder number: cost
+// per hire is null without a cost configuration (the old fixed PKR sample
+// breakdown is gone), offer acceptance is null when no offer was extended,
+// time to hire counts only hires with an accepted offer, and an unconfigured
+// SLA reports breached: null rather than 0.
+//
+// Phase 5 additions to the canonical block (definitions in
+// src/lib/recruitmentMetrics.js, each at definition version 1; no v1
+// definition changed): timeToStart, recruiterWorkload and costPerHire, each
+// also reachable through the drill-down with the same filters.
 //
 // The dataset is tiny (~24 applications/tenant), so we fetch the applications
 // once with the relations we need and compute in JS to avoid N+1 round-trips.
 import prisma from "../lib/prisma.js";
+import logger from "../lib/logger.js";
+import { scopedEmployeeWhere } from "../lib/tenancy.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { getCostConfig } from "./recruitmentCost.service.js";
 // Phase 12 / decision record §6 — the FROZEN, versioned KPI definitions. The
@@ -20,16 +29,25 @@ import { getCostConfig } from "./recruitmentCost.service.js";
 import {
   aggregateTimeToFill,
   aggregateTimeToHire,
-  finalApprovalAt,
+  aggregateTimeToStart,
+  costPerHire as costPerHireMetric,
   metricsVersionBlock,
+  NULL_REASONS,
   offerAcceptance,
+  recruiterWorkload,
   slaAging,
-  sourceEffectiveness,
+  // Aliased: the legacy block below has a local `sourceEffectiveness` array
+  // that used to shadow this function, so the canonical block always threw
+  // and reported unavailable.
+  sourceEffectiveness as sourceEffectivenessMetric,
   stageFunnel,
   timeInStageForApplication,
   timeToFillForRequisition,
   timeToHireForApplication,
+  timeToStartForHire,
 } from "../lib/recruitmentMetrics.js";
+
+const log = logger.child({ component: "recruitment-analytics" });
 
 // Stage constants (Application.stage is stored lower-case per schema).
 const STAGE_HIRED = "hired";
@@ -39,17 +57,14 @@ const SCREENED_STAGES = new Set(["screening", "interview", "offer", "hired"]);
 // and reached a terminal / in-flight outcome). WITHDRAWN/DRAFT are excluded.
 const EXTENDED_OFFER_STATUSES = new Set(["SENT", "ACCEPTED", "DECLINED", "EXPIRED"]);
 
-// ── ILLUSTRATIVE cost model ───────────────────────────────────────────────
-// NOT sourced from the DB. Fixed PKR constants used only to demonstrate the
-// cost-per-hire shape. Do not treat as real spend.
-export const ILLUSTRATIVE_COST_BREAKDOWN = Object.freeze({
-  jobAds: 50000,
-  agencyFees: 120000,
-  tools: 30000,
-  other: 20000,
-});
-
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+// Recruiter workload counts interviews inside the requested window, or the
+// last 30 days when the caller gave none.
+export const DEFAULT_WORKLOAD_PERIOD_DAYS = 30;
+
+// The only cost configuration period the cost tool writes (recruitmentCost.service).
+const COST_PERIOD = "all";
 
 function round1(n) {
   return Math.round(n * 10) / 10;
@@ -152,7 +167,17 @@ export async function loadFilteredApplications(tenantId, n = {}) {
       // D-15 — `id` is what the requisitionIds filter and the drill-down read.
       jobRequisition: { select: { id: true, title: true, departmentId: true } },
       interviews: { select: { id: true } },
-      offer: { select: { id: true, status: true, respondedAt: true, sentAt: true } },
+      // Phase 5 — startDate and the handoff feed Time to Start.
+      offer: {
+        select: {
+          id: true,
+          status: true,
+          respondedAt: true,
+          sentAt: true,
+          startDate: true,
+          handoff: { select: { status: true, employeeId: true } },
+        },
+      },
     },
   });
 
@@ -198,6 +223,10 @@ export const DRILLDOWN_METRICS = Object.freeze([
   "offerAcceptanceRate",
   "sourceEffectiveness",
   "funnel",
+  // Phase 5
+  "timeToStartDays",
+  "recruiterWorkload",
+  "costPerHire",
 ]);
 
 const isKnownMetric = (metric) =>
@@ -215,7 +244,7 @@ const isKnownMetric = (metric) =>
  * @returns {Promise<{metric: string, filters: object, total: number,
  *   returned: number, truncated: boolean, rows: object[]}>}
  */
-export async function drillDownRecruitmentMetric(tenantId, metric, filters = {}, { limit = 100 } = {}) {
+export async function drillDownRecruitmentMetric(tenantId, metric, filters = {}, { limit = 100, now = new Date() } = {}) {
   const key = String(metric || "").trim();
   if (!key || !isKnownMetric(key)) {
     throw Object.assign(
@@ -230,6 +259,51 @@ export async function drillDownRecruitmentMetric(tenantId, metric, filters = {},
   const [group, value] = key.includes(":") ? key.split(/:(.+)/) : [null, null];
   let selected = applications;
   let basis = key;
+  const page = (unit, rows, extra = {}) => ({
+    metric: key,
+    basis,
+    filters: serializeFilters(normalized),
+    unit,
+    ...extra,
+    total: rows.length,
+    returned: Math.min(rows.length, limit),
+    truncated: rows.length > limit,
+    rows: rows.slice(0, limit),
+  });
+
+  // Phase 5 — the three added metrics answer with the rows their number used,
+  // computed by the same helpers the payload calls.
+  if (key === "timeToStartDays") {
+    const { rows } = await timeToStartFor(tenantId, applications, now);
+    return page("hire", rows);
+  }
+  if (key === "recruiterWorkload") {
+    const workload = await loadRecruiterWorkload(tenantId, normalized, now);
+    return page("recruiter", workload.recruiters, { period: workload.period });
+  }
+  if (key === "costPerHire") {
+    const hired = applications.filter((a) => a.stage === STAGE_HIRED);
+    const cost = await loadCostPerHire(tenantId, normalized, hired.length);
+    const rows = cost.value === null && cost.reason === NULL_REASONS.COST_NOT_ATTRIBUTABLE_TO_FILTER
+      ? []
+      : hired.map((a) => ({
+        applicationId: a.id,
+        candidateId: a.candidate?.id ?? null,
+        requisitionId: a.jobRequisition?.id ?? null,
+        requisitionTitle: a.jobRequisition?.title ?? null,
+      }));
+    return page("hire", rows, {
+      value: cost.value,
+      reason: cost.reason,
+      components: {
+        costConfigId: cost.costConfigId ?? null,
+        period: cost.period ?? null,
+        currency: cost.currency ?? null,
+        breakdown: cost.breakdown ?? null,
+        referralBonuses: cost.referralBonuses ?? [],
+      },
+    });
+  }
 
   if (key === "totalHires" || key === "timeToHireDays") {
     selected = applications.filter((a) => a.stage === STAGE_HIRED);
@@ -336,7 +410,134 @@ const serializeFilters = (n) => ({
   ...(n.source ? { source: n.source } : {}),
 });
 
-export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
+/**
+ * Phase 5 — the hire's start dates. A handoff that adopted an existing employee
+ * leaves that person's older hire date in place; timeToStartForHire ignores a
+ * start before the acceptance, so only this hire's start counts.
+ */
+async function loadEmployeeStartDates(tenantId, employeeIds) {
+  const ids = [...new Set(employeeIds.filter((id) => Number.isInteger(id)))];
+  if (!ids.length) return new Map();
+  const employees = await prisma.employee.findMany({
+    where: scopedEmployeeWhere(tenantId, { id: { in: ids } }),
+    select: { id: true, hire_date: true, joining_date: true },
+  });
+  return new Map(employees.map((e) => [e.id, e.hire_date ?? e.joining_date ?? null]));
+}
+
+/**
+ * Phase 5 — Time to Start rows over the given (already filtered) applications:
+ * one per ACCEPTED offer whose handoff COMPLETED. Accepted offers still waiting
+ * for their handoff are counted, not measured.
+ */
+async function timeToStartFor(tenantId, applications, now) {
+  const accepted = applications.filter((a) => a.offer?.status === "ACCEPTED" && a.offer?.respondedAt);
+  const handedOff = accepted.filter((a) => a.offer.handoff?.status === "COMPLETED");
+  const starts = await loadEmployeeStartDates(tenantId, handedOff.map((a) => a.offer.handoff.employeeId));
+  const rows = handedOff.map((a) => {
+    const measured = timeToStartForHire(
+      {
+        acceptedAt: a.offer.respondedAt,
+        employeeStartAt: starts.get(a.offer.handoff.employeeId) ?? null,
+        offerStartAt: a.offer.startDate ?? null,
+      },
+      now,
+    );
+    return {
+      applicationId: a.id,
+      offerId: a.offer.id ?? null,
+      requisitionId: a.jobRequisition?.id ?? null,
+      employeeId: a.offer.handoff.employeeId ?? null,
+      acceptedAt: a.offer.respondedAt,
+      ...measured,
+    };
+  });
+  return { rows, awaitingHandoff: accepted.length - handedOff.length };
+}
+
+/**
+ * Phase 5 — recruiter workload. The requisition-level filters (ids,
+ * department) narrow the requisitions; stage and source narrow the
+ * applications counted; the date window is the period interviews are counted
+ * in (default: the last 30 days). Open requisitions and active applications
+ * are as of now.
+ */
+export async function loadRecruiterWorkload(tenantId, n = {}, now = new Date()) {
+  requireAnalyticsTenant(tenantId);
+  const to = n.dateTo ?? new Date(now);
+  const from = n.dateFrom ?? new Date(new Date(to).getTime() - DEFAULT_WORKLOAD_PERIOD_DAYS * MS_PER_DAY);
+  const where = { tenantId };
+  if (n.requisitionIds?.length) where.id = { in: n.requisitionIds };
+  if (n.departmentId != null) where.departmentId = n.departmentId;
+  const requisitions = await prisma.jobRequisition.findMany({
+    where,
+    select: {
+      id: true,
+      status: true,
+      recruiterId: true,
+      applications: {
+        select: {
+          id: true,
+          stage: true,
+          candidate: { select: { source: true } },
+          interviews: { select: { id: true, scheduledAt: true, status: true } },
+        },
+      },
+    },
+  });
+  const narrowed = requisitions.map((r) => ({
+    ...r,
+    applications: (r.applications ?? []).filter((a) => {
+      if (n.stage && a.stage !== n.stage) return false;
+      if (n.source && (a.candidate?.source ?? "Unknown") !== n.source) return false;
+      return true;
+    }),
+  }));
+  return {
+    period: { from: new Date(from).toISOString(), to: new Date(to).toISOString() },
+    recruiters: recruiterWorkload(narrowed, { from, to }),
+  };
+}
+
+/**
+ * Phase 5 — cost per hire from actual spend. Costs are recorded per tenant for
+ * the configuration's whole period, so they cannot be attributed to a filtered
+ * slice: with any filter the answer is null with that reason rather than an
+ * all-time cost divided by a narrowed hire count.
+ */
+export async function loadCostPerHire(tenantId, n = {}, hires = 0) {
+  requireAnalyticsTenant(tenantId);
+  if (n.hasDateFilter || n.hasRowFilter) {
+    return {
+      value: null,
+      reason: NULL_REASONS.COST_NOT_ATTRIBUTABLE_TO_FILTER,
+      currency: null,
+      totalCost: null,
+      hires,
+      period: null,
+      breakdown: null,
+      referralBonuses: [],
+    };
+  }
+  const config = await getCostConfig(tenantId, COST_PERIOD);
+  const paid = config
+    ? await prisma.internalReferral.findMany({
+      where: { tenantId, bonusStatus: "PAID" },
+      select: { id: true, applicationId: true, bonusAmount: true, bonusCurrency: true },
+      orderBy: { id: "asc" },
+    })
+    : [];
+  const referralBonuses = paid.map((r) => ({
+    referralId: r.id,
+    applicationId: r.applicationId ?? null,
+    amount: r.bonusAmount == null ? 0 : Number(String(r.bonusAmount)),
+    currency: r.bonusCurrency ?? null,
+  }));
+  const result = costPerHireMetric({ config, paidReferralBonuses: referralBonuses, hires });
+  return { ...result, costConfigId: config?.id ?? null, referralBonuses };
+}
+
+export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now = new Date() } = {}) {
   // FR-11 + NFR-12 — ONE normalizer and ONE loader for the payload AND the
   // drill-down, so a reported number and the rows behind it can never come from
   // two slightly different queries.
@@ -352,17 +553,24 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
   const hiredApps = filteredApplications.filter((a) => a.stage === STAGE_HIRED);
   const totalHires = hiredApps.length;
 
+  // Why a top-level figure is null (Phase 5: never a placeholder instead).
+  const reasons = {};
+
   // ── timeToHireDays ──────────────────────────────────────────────────────
-  // hireDate = offer.respondedAt when the offer was ACCEPTED, else the
-  // application's updatedAt. Average (hireDate - appliedAt) in days over hires.
+  // Average (offer.respondedAt - appliedAt) in days over hires with an
+  // ACCEPTED offer. Phase 5: a hire without one used to borrow the
+  // application's updatedAt as its hire date; that is not a hire date, so such
+  // hires are left out (and with none left the figure is null).
+  const measuredHires = hiredApps.filter((a) => a.offer?.status === "ACCEPTED" && a.offer?.respondedAt && a.appliedAt);
   let timeToHireDays = null;
-  if (totalHires > 0) {
-    const totalDays = hiredApps.reduce((sum, a) => {
-      const accepted = a.offer?.status === "ACCEPTED" && a.offer?.respondedAt;
-      const hireDate = accepted ? a.offer.respondedAt : a.updatedAt;
-      return sum + (new Date(hireDate).getTime() - new Date(a.appliedAt).getTime()) / MS_PER_DAY;
-    }, 0);
-    timeToHireDays = round1(totalDays / totalHires);
+  if (measuredHires.length > 0) {
+    const totalDays = measuredHires.reduce(
+      (sum, a) => sum + (new Date(a.offer.respondedAt).getTime() - new Date(a.appliedAt).getTime()) / MS_PER_DAY,
+      0,
+    );
+    timeToHireDays = round1(totalDays / measuredHires.length);
+  } else {
+    reasons.timeToHireDays = totalHires > 0 ? NULL_REASONS.NO_ACCEPTED_OFFERS : NULL_REASONS.NO_HIRES;
   }
 
   // ── offerAcceptanceRatePct ──────────────────────────────────────────────
@@ -375,22 +583,21 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
     if (EXTENDED_OFFER_STATUSES.has(status)) extended += 1;
     if (status === "ACCEPTED") accepted += 1;
   }
-  const offerAcceptanceRatePct = extended > 0 ? Math.round((accepted / extended) * 100) : 0;
+  // Phase 5: no offer extended is "no data", not a 0% acceptance rate.
+  const offerAcceptanceRatePct = extended > 0 ? Math.round((accepted / extended) * 100) : null;
+  if (offerAcceptanceRatePct === null) reasons.offerAcceptanceRatePct = NULL_REASONS.NO_OFFERS_EXTENDED;
 
-  // ── cost model: real (from RecruitmentCostConfig) if configured, else illustrative ──
-  const costCfg = await getCostConfig(tenantId, "all");
-  const costModel = costCfg ? "actual" : "illustrative";
-  const costCurrency = costCfg?.currency ?? "PKR";
-  const costParts = costCfg
-    ? { jobAds: costCfg.jobAds, agencyFees: costCfg.agencyFees, tools: costCfg.tools, other: costCfg.other }
-    : { ...ILLUSTRATIVE_COST_BREAKDOWN };
-  const totalCost = Object.values(costParts).reduce((s, v) => s + v, 0);
+  // ── cost per hire: actual spend only (Phase 5; no illustrative fallback) ──
+  const cost = await loadCostPerHire(tenantId, normalized, totalHires);
   const costPerHire = {
-    value: totalHires > 0 ? Math.round(totalCost / totalHires) : null,
-    totalCost,
-    currency: costCurrency,
-    costModel,
+    value: cost.value,
+    totalCost: cost.totalCost,
+    currency: cost.currency,
+    hires: cost.hires,
+    period: cost.period,
+    reason: cost.reason,
   };
+  if (cost.value === null) reasons.costPerHire = cost.reason;
 
   // ── hiringFunnel ────────────────────────────────────────────────────────
   const hiringFunnel = {
@@ -423,19 +630,17 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
   }
   const sourceEffectiveness = [...bySource.values()].sort((x, y) => y.candidates - x.candidates);
 
-  // ── costBreakdown (real if configured, else illustrative) ───────────────
-  const costBreakdown = {
-    ...costParts,
-    currency: costCurrency,
-    costModel,
-  };
+  // ── costBreakdown: the actual components, or null with the same reason ──
+  const costBreakdown = cost.breakdown ? { ...cost.breakdown, currency: cost.currency } : null;
+  if (!costBreakdown) reasons.costBreakdown = cost.reason;
 
   // ── metrics (per hired application) ─────────────────────────────────────
+  // The hire date is the accepted offer's response; a hire without one has no
+  // recorded hire date (null), not the row's last-touched time.
   const metrics = hiredApps.map((a) => {
     const accepted = a.offer?.status === "ACCEPTED" && a.offer?.respondedAt;
-    const hireDate = accepted ? a.offer.respondedAt : a.updatedAt;
     return {
-      hireDate,
+      hireDate: accepted ? a.offer.respondedAt : null,
       role: a.jobRequisition?.title ?? null,
       department: a.jobRequisition?.departmentId ?? null,
     };
@@ -453,7 +658,7 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
   // off reports as unavailable rather than disappearing, so consumers keep the
   // same payload shape during a staged rollout.
   let canonical = null;
-  if (!isRecruitmentFlagEnabled("analytics")) canonical = { version: null, unavailable: true, reason: "flag-disabled" };
+  if (!isRecruitmentFlagEnabled("analytics")) canonical = { version: null, unavailable: true, reason: "flag-disabled", reasonCode: NULL_REASONS.FLAG_DISABLED };
   else try {
     // FR-11 — the canonical requisition fetch is narrowed by the SAME row-level
     // predicates (ids/department) so time-to-fill per requisition agrees with
@@ -522,7 +727,8 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
 
     const offerRows = allApplications.map((a) => a.offer).filter(Boolean);
 
-    const slaByStage = getSlaConfig();
+    const slaByStage = getStageSlaConfig();
+    const slaConfigured = Object.keys(slaByStage).length > 0;
     const slaRows = allApplications
       .map((a) => {
         const durations = timeInStageForApplication(a.stageHistory, a.stage, a.appliedAt);
@@ -530,6 +736,10 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
         return current ? slaAging(current.stage, current.daysInStage, slaByStage) : null;
       })
       .filter(Boolean);
+
+    // Phase 5 — over the SAME filtered applications the drill-down reads.
+    const startRows = await timeToStartFor(tenantId, filteredApplications, now);
+    const workload = await loadRecruiterWorkload(tenantId, normalized, now);
 
     canonical = {
       ...metricsVersionBlock(),
@@ -549,7 +759,7 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
       timeToHire: aggregateTimeToHire(tthPerApp),
       stageFunnel: funnel,
       offerAcceptance: offerAcceptance(offerRows),
-      sourceEffectiveness: sourceEffectiveness(
+      sourceEffectiveness: sourceEffectivenessMetric(
         allApplications.map((a) => ({
           source: a.candidate?.source ?? null,
           applicationId: a.id,
@@ -562,9 +772,12 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
         })),
       ),
       slaAging: {
-        configured: Object.keys(slaByStage).length > 0,
+        configured: slaConfigured,
         openApplications: slaRows.length,
-        breached: slaRows.filter((s) => s.breached).length,
+        // Phase 5: with no SLA configured nothing can breach it; that is
+        // "not measured" (null), not zero breaches.
+        breached: slaConfigured ? slaRows.filter((s) => s.breached).length : null,
+        ...(slaConfigured ? {} : { reason: NULL_REASONS.SLA_NOT_CONFIGURED }),
         byStage: slaRows.reduce((acc, s) => {
           acc[s.stage] ??= { open: 0, breached: 0, worstAgingDays: null };
           acc[s.stage].open += 1;
@@ -575,15 +788,29 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
           return acc;
         }, {}),
       },
+      // Phase 5 additions (definition version 1 each).
+      timeToStart: { ...aggregateTimeToStart(startRows.rows), awaitingHandoff: startRows.awaitingHandoff },
+      recruiterWorkload: workload,
+      costPerHire: {
+        value: cost.value,
+        reason: cost.reason,
+        currency: cost.currency,
+        totalCost: cost.totalCost,
+        hires: cost.hires,
+        period: cost.period,
+        breakdown: cost.breakdown,
+        referralBonusesCount: cost.referralBonuses?.length ?? 0,
+      },
     };
-  } catch {
+    if (canonical.timeToStart.startsMeasured === 0) canonical.timeToStart.reason = NULL_REASONS.NO_STARTS;
+  } catch (err) {
     // §6.3 — the canonical block is additive: a failure computing it must not
     // take the legacy payload down. It reports as unavailable, not as zeros.
-    canonical = { version: null, unavailable: true };
+    log.error({ tenantId, code: err?.code, errMessage: err?.message }, "canonical recruitment metrics failed");
+    canonical = { version: null, unavailable: true, reasonCode: NULL_REASONS.COMPUTATION_FAILED };
   }
 
   return {
-    illustrativeCostData: costModel === "illustrative",
     totalHires,
     timeToHireDays,
     offerAcceptanceRatePct,
@@ -593,11 +820,15 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}) {
     costBreakdown,
     metrics,
     canonicalMetrics: canonical,
+    reasons,
   };
 }
 
-/** §6 row 5 — SLA days per stage, from configuration (HR_RECRUITMENT_STAGE_SLA_DAYS). */
-function getSlaConfig() {
+/**
+ * §6 row 5 — SLA days per stage, from configuration (HR_RECRUITMENT_STAGE_SLA_DAYS).
+ * Exported for the Phase 5 SLA-breach alert, which must read the same SLA.
+ */
+export function getStageSlaConfig() {
   const raw = process.env.HR_RECRUITMENT_STAGE_SLA_DAYS;
   if (!raw) return {};
   try {

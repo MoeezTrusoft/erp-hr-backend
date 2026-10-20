@@ -51,9 +51,53 @@ export function metricsVersionBlock() {
             offerAcceptanceRate: "ACCEPTED offers ÷ offers reaching a final outcome (SENT in-flight included in the denominator only as 'pending'; DECLINED and EXPIRED reported separately).",
             sourceEffectiveness: "Applications, qualified (≥ interview), hires, conversion rate and median time-to-hire grouped by candidate source; no composite score.",
             openPositions: "Openings still to fill on APPROVED or POSTED requisitions: required openings minus accepted offers, counted per seat (a requisition awaiting approval is not open).",
+            // Phase 5 additions (definition version 1 each; nothing above changed).
+            timeToStartDays: "Accepted offer (offer.respondedAt) → the hire's start date, in whole UTC days, over hires whose handoff COMPLETED: the provisioned employee's hire date when on or after acceptance, else the offer's start date; starts still in the future are counted as upcoming, not averaged.",
+            recruiterWorkload: "Per requisition recruiter: open (APPROVED or POSTED) requisitions, active applications on them (applied, screening, interview or offer) as of now, and interviews scheduled in the period (cancelled ones excluded).",
+            costPerHire: "Actual recruitment spend from the tenant's cost configuration (agency fees + job board spend + other) plus referral bonuses PAID, divided by hires (applications in the hired stage) in the configuration's period; null with a reason when no configuration, no hires, or mixed currencies.",
         }),
+        // Each definition's own version. A change to one definition bumps its
+        // entry here AND METRICS_VERSION; adding a definition adds an entry at 1
+        // and changes neither, because no v1 number moves.
+        definitionVersions: DEFINITION_VERSIONS,
     };
 }
+
+export const DEFINITION_VERSIONS = Object.freeze({
+    timeToFillDays: 1,
+    timeToFirstFillDays: 1,
+    timeToHireDays: 1,
+    timeInStage: 1,
+    slaAging: 1,
+    stageConversion: 1,
+    dropOff: 1,
+    offerAcceptanceRate: 1,
+    sourceEffectiveness: 1,
+    openPositions: 1,
+    timeToStartDays: 1,
+    recruiterWorkload: 1,
+    costPerHire: 1,
+});
+
+/**
+ * Why a metric answers null. A metric with no data is null with one of these,
+ * never a placeholder number (Phase 5 exit gate: no illustrative figures).
+ */
+export const NULL_REASONS = Object.freeze({
+    NO_DATA: "NO_DATA",
+    NO_HIRES: "NO_HIRES",
+    NO_FINAL_OFFERS: "NO_FINAL_OFFERS",
+    NO_OFFERS_EXTENDED: "NO_OFFERS_EXTENDED",
+    NO_ACCEPTED_OFFERS: "NO_ACCEPTED_OFFERS",
+    NO_FILLS: "NO_FILLS",
+    NO_STARTS: "NO_STARTS",
+    NO_COST_CONFIG: "NO_COST_CONFIG",
+    MIXED_CURRENCY: "MIXED_CURRENCY",
+    COST_NOT_ATTRIBUTABLE_TO_FILTER: "COST_NOT_ATTRIBUTABLE_TO_FILTER",
+    SLA_NOT_CONFIGURED: "SLA_NOT_CONFIGURED",
+    FLAG_DISABLED: "FLAG_DISABLED",
+    COMPUTATION_FAILED: "COMPUTATION_FAILED",
+});
 
 const round1 = (n) => Math.round(n * 10) / 10;
 const daysBetween = (a, b) => (new Date(b).getTime() - new Date(a).getTime()) / MS_PER_DAY;
@@ -410,4 +454,156 @@ export function sourceEffectiveness(rows = []) {
             medianTimeToHireDays: median(e.tthValues),
         }))
         .sort((a, b) => b.applications - a.applications);
+}
+
+// ── Phase 5: Time to Start ───────────────────────────────────────────────────
+
+const utcDay = (value) => {
+    const d = new Date(value);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+};
+const isValidDate = (value) => value != null && !Number.isNaN(new Date(value).getTime());
+
+/**
+ * Time to Start for ONE hire: accepted offer → start date, whole UTC days.
+ *
+ * The start date is the provisioned employee's hire date when it falls on or
+ * after the acceptance (an adopted, already-employed person keeps an older
+ * hire date, which is not this hire's start), else the offer's start date on
+ * the same condition. A start still in the future is UPCOMING: it has a planned
+ * duration but nobody has started, so it is not averaged.
+ *
+ * @param {{ acceptedAt: Date|string|null, employeeStartAt?: Date|string|null,
+ *           offerStartAt?: Date|string|null }} hire
+ * @param {Date} [now]
+ * @returns {{ startAt: Date|null, startSource: "EMPLOYEE"|"OFFER"|null,
+ *             timeToStartDays: number|null, status: "STARTED"|"UPCOMING"|"UNKNOWN" }}
+ */
+export function timeToStartForHire({ acceptedAt, employeeStartAt = null, offerStartAt = null } = {}, now = new Date()) {
+    const unknown = { startAt: null, startSource: null, timeToStartDays: null, status: "UNKNOWN" };
+    if (!isValidDate(acceptedAt)) return unknown;
+    const acceptedDay = utcDay(acceptedAt);
+    const candidates = [
+        ["EMPLOYEE", employeeStartAt],
+        ["OFFER", offerStartAt],
+    ];
+    for (const [source, value] of candidates) {
+        if (!isValidDate(value) || utcDay(value) < acceptedDay) continue;
+        const startAt = new Date(value);
+        const days = Math.round((utcDay(startAt) - acceptedDay) / MS_PER_DAY);
+        const status = utcDay(startAt) > utcDay(now) ? "UPCOMING" : "STARTED";
+        return { startAt, startSource: source, timeToStartDays: status === "STARTED" ? days : null, status };
+    }
+    return unknown;
+}
+
+/** Mean and median over the STARTED hires; upcoming and unknown counted apart. */
+export function aggregateTimeToStart(perHire = []) {
+    const started = perHire.filter((h) => h.status === "STARTED" && h.timeToStartDays !== null).map((h) => h.timeToStartDays);
+    return {
+        meanTimeToStartDays: started.length ? round1(started.reduce((s, v) => s + v, 0) / started.length) : null,
+        medianTimeToStartDays: median(started),
+        startsMeasured: started.length,
+        upcomingStarts: perHire.filter((h) => h.status === "UPCOMING").length,
+        unknownStarts: perHire.filter((h) => h.status === "UNKNOWN").length,
+    };
+}
+
+// ── Phase 5: Recruiter workload ─────────────────────────────────────────────
+
+/** The stages an application is being actively worked in (on_hold is paused). */
+export const ACTIVE_APPLICATION_STAGES = Object.freeze(["applied", "screening", "interview", "offer"]);
+
+/**
+ * Per recruiter (JobRequisition.recruiterId; null = no recruiter assigned):
+ * open requisitions, active applications on those open requisitions, and the
+ * interviews scheduled inside [period.from, period.to] on any of the
+ * recruiter's requisitions, cancelled ones excluded.
+ *
+ * @param {Array<{ id: number, status: string, recruiterId: number|null,
+ *   applications?: Array<{ id: number, stage: string,
+ *     interviews?: Array<{ id: number, scheduledAt: Date|string, status: string }> }> }>} requisitions
+ * @param {{ from: Date, to: Date }} period
+ */
+export function recruiterWorkload(requisitions = [], period = {}) {
+    const from = period.from ? new Date(period.from).getTime() : -Infinity;
+    const to = period.to ? new Date(period.to).getTime() : Infinity;
+    const byRecruiter = new Map();
+    const entry = (recruiterId) => {
+        const key = recruiterId ?? null;
+        if (!byRecruiter.has(key)) {
+            byRecruiter.set(key, {
+                recruiterId: key,
+                openRequisitions: 0,
+                activeApplications: 0,
+                interviewsThisPeriod: 0,
+                requisitionIds: [],
+            });
+        }
+        return byRecruiter.get(key);
+    };
+    for (const req of requisitions) {
+        const isOpen = OPEN_REQUISITION_STATUSES.includes(req.status);
+        const apps = req.applications || [];
+        const interviews = apps.flatMap((a) => a.interviews || []).filter((i) => {
+            if (i.status === "CANCELLED" || !isValidDate(i.scheduledAt)) return false;
+            const at = new Date(i.scheduledAt).getTime();
+            return at >= from && at <= to;
+        });
+        const active = isOpen ? apps.filter((a) => ACTIVE_APPLICATION_STAGES.includes(a.stage)).length : 0;
+        // A closed requisition with no interviews in the period is not workload.
+        if (!isOpen && interviews.length === 0) continue;
+        const e = entry(req.recruiterId);
+        if (isOpen) e.openRequisitions += 1;
+        e.activeApplications += active;
+        e.interviewsThisPeriod += interviews.length;
+        e.requisitionIds.push(req.id);
+    }
+    return [...byRecruiter.values()].sort((a, b) => {
+        if (a.recruiterId === null) return 1;
+        if (b.recruiterId === null) return -1;
+        return a.recruiterId - b.recruiterId;
+    });
+}
+
+// ── Phase 5: Cost per hire ──────────────────────────────────────────────────
+
+const toAmount = (value) => {
+    if (value === null || value === undefined) return 0;
+    const n = Number(String(value));
+    return Number.isFinite(n) ? n : 0;
+};
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/**
+ * Cost per hire from ACTUAL spend only: the tenant's cost configuration
+ * (agency fees, job board spend, other) plus the referral bonuses PAID,
+ * divided by the hires in the configuration's period. Tool subscriptions are
+ * overhead and are not part of it. Null with a reason, never a number, when
+ * there is no configuration, no hire, or a paid bonus in another currency (no
+ * conversion is guessed).
+ *
+ * @param {{ config: { jobAds?: any, agencyFees?: any, other?: any, currency?: string, period?: string }|null,
+ *           paidReferralBonuses?: Array<{ amount: any, currency: string|null }>,
+ *           hires: number }} input
+ */
+export function costPerHire({ config, paidReferralBonuses = [], hires = 0 } = {}) {
+    if (!config) {
+        return { value: null, reason: NULL_REASONS.NO_COST_CONFIG, currency: null, totalCost: null, hires, period: null, breakdown: null };
+    }
+    const currency = config.currency || null;
+    const foreign = paidReferralBonuses.filter((b) => b.currency && currency && b.currency !== currency);
+    const breakdown = {
+        agencyFees: round2(toAmount(config.agencyFees)),
+        jobAds: round2(toAmount(config.jobAds)),
+        referralBonusesPaid: round2(paidReferralBonuses.reduce((s, b) => s + toAmount(b.amount), 0)),
+        other: round2(toAmount(config.other)),
+    };
+    const base = { currency, hires, period: config.period ?? null, breakdown, referralBonusesCount: paidReferralBonuses.length };
+    if (foreign.length) {
+        return { ...base, value: null, reason: NULL_REASONS.MIXED_CURRENCY, totalCost: null };
+    }
+    const totalCost = round2(Object.values(breakdown).reduce((s, v) => s + v, 0));
+    if (!hires) return { ...base, value: null, reason: NULL_REASONS.NO_HIRES, totalCost };
+    return { ...base, value: Math.round(totalCost / hires), reason: null, totalCost };
 }
