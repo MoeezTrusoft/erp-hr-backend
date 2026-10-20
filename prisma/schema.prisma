@@ -3972,7 +3972,7 @@ model InterviewPacketItem {
 model InterviewLifecycleEvent {
   id                  Int      @id @default(autoincrement())
   interviewId         Int
-  eventType           String // CANCELLED | RESCHEDULED | RESCHEDULE_REQUESTED
+  eventType           String // CANCELLED | RESCHEDULED | RESCHEDULE_REQUESTED | NO_SHOW
   reasonCode          String
   notes               String?
   previousScheduledAt DateTime?

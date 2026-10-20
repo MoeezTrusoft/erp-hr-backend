@@ -37,6 +37,7 @@ import { startAttendanceExportWorker } from './jobs/attendance-export.loop.js';
 import { startAttendanceEscalationWorker } from './jobs/attendance-escalation.loop.js';
 import { startCandidateCommunicationWorker } from "./jobs/candidate-communication.loop.js";
 import { startResumeParseWorker } from "./jobs/resume-parse.loop.js";
+import { startInterviewCalendarSyncWorker } from "./jobs/interview-calendar-sync.loop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -102,6 +103,8 @@ const attendanceExportWorker = startAttendanceExportWorker();
 const candidateCommsWorker = startCandidateCommunicationWorker();
 // Phase 2 — asynchronous resume parsing (no-op unless HR_RESUME_PARSE_WORKER_ENABLED=true).
 const resumeParseWorker = startResumeParseWorker();
+// Phase 3a — interview calendar sync (no-op unless HR_INTERVIEW_CALENDAR_WORKER_ENABLED=true).
+const interviewCalendarWorker = startInterviewCalendarSyncWorker();
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
@@ -121,6 +124,7 @@ async function gracefulShutdown() {
   await attendanceExportWorker.stop();
   await candidateCommsWorker.stop();
   await resumeParseWorker.stop();
+  await interviewCalendarWorker.stop();
   stopAttendanceListener();
   // Stop the realtime health beat + release the attendance Redis client.
   try { realtimeHealth?.stop?.(); } catch { /* best effort */ }

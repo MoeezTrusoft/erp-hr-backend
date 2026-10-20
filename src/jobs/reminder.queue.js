@@ -44,6 +44,7 @@ import { runOfferExpiryJob } from '../services/offer-expiry.service.js';
 import { runEsignWebhookRetryJob } from '../services/offer-esign.service.js';
 import { runInterviewReminderJob } from '../services/interview-reminder.service.js';
 import { runDecisionPromptJob } from '../services/interview-decision-prompt.service.js';
+import { runSlotOfferExpiryJob } from '../services/interview-slot-offer.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -106,6 +107,9 @@ export const JOB_ESIGN_WEBHOOK_RETRY = 'esign-webhook-retry';
 // (HR_RECRUITMENT_DECISION_PROMPTS).
 export const JOB_INTERVIEW_REMINDERS = 'interview-reminders';
 export const JOB_INTERVIEW_DECISION_PROMPTS = 'interview-decision-prompts';
+// Expires interview slot offers the candidate did not answer in time
+// (HR_RECRUITMENT_SELF_SCHEDULING).
+export const JOB_INTERVIEW_SLOT_OFFER_EXPIRY = 'interview-slot-offer-expiry';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -248,6 +252,12 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:interview-decision-prompts', repeat: { pattern: '11,26,41,56 * * * *' } },
         },
+        {
+            // Every 15 minutes, offset; validity is hours.
+            name: JOB_INTERVIEW_SLOT_OFFER_EXPIRY,
+            data: {},
+            opts: { jobId: 'repeat:interview-slot-offer-expiry', repeat: { pattern: '8,23,38,53 * * * *' } },
+        },
     ];
 }
 
@@ -275,6 +285,7 @@ export function buildReminderProcessor({
     esignWebhookRetry = runEsignWebhookRetryJob,
     interviewReminders = runInterviewReminderJob,
     interviewDecisionPrompts = runDecisionPromptJob,
+    interviewSlotOfferExpiry = runSlotOfferExpiryJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -323,6 +334,8 @@ export function buildReminderProcessor({
                     return interviewReminders(data);
                 case JOB_INTERVIEW_DECISION_PROMPTS:
                     return interviewDecisionPrompts(data);
+                case JOB_INTERVIEW_SLOT_OFFER_EXPIRY:
+                    return interviewSlotOfferExpiry(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

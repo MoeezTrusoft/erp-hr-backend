@@ -40,6 +40,7 @@ import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposi
 import { registerOfferLifecycleTools } from "./tools/offer-lifecycle.tools.js";
 import { registerOfferLetterTools } from "./tools/offer-letter.tools.js";
 import { registerRecruitmentWorkspaceTools } from "./tools/recruitment-workspace.tools.js";
+import { registerInterviewSchedulingTools } from "./tools/interview-scheduling.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -315,6 +316,8 @@ export function registerAllTools(server) {
   registerOfferLetterTools(server);
   // Phase 3a — the interviewer and hiring manager workspaces.
   registerRecruitmentWorkspaceTools(server);
+  // Phase 3a — slot offers, no-show and calendar re-sync.
+  registerInterviewSchedulingTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);

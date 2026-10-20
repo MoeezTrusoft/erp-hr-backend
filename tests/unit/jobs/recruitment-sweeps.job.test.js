@@ -89,6 +89,7 @@ const {
   JOB_ESIGN_WEBHOOK_RETRY,
   JOB_INTERVIEW_REMINDERS,
   JOB_INTERVIEW_DECISION_PROMPTS,
+  JOB_INTERVIEW_SLOT_OFFER_EXPIRY,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -270,6 +271,17 @@ describe("Phase 3a jobs are scheduled", () => {
     const processor = buildReminderProcessor({ interviewReminders, interviewDecisionPrompts });
     await expect(processor({ name: JOB_INTERVIEW_REMINDERS, data: {} })).resolves.toBe("reminders");
     await expect(processor({ name: JOB_INTERVIEW_DECISION_PROMPTS, data: {} })).resolves.toBe("prompts");
+  });
+
+  it("registers the slot offer expiry every 15 minutes and dispatches it", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_INTERVIEW_SLOT_OFFER_EXPIRY].opts).toMatchObject({
+      jobId: "repeat:interview-slot-offer-expiry",
+      repeat: { pattern: "8,23,38,53 * * * *" },
+    });
+    const interviewSlotOfferExpiry = jest.fn(async () => "slots");
+    const processor = buildReminderProcessor({ interviewSlotOfferExpiry });
+    await expect(processor({ name: JOB_INTERVIEW_SLOT_OFFER_EXPIRY, data: {} })).resolves.toBe("slots");
   });
 });
 

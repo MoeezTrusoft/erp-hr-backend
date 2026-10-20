@@ -20,6 +20,19 @@
 //     interview maps to and its sync state. Recruitment never calls a provider
 //     directly (§5.1) — the Communication calendar-sync boundary consumes the
 //     domain events and writes back through markCalendarSync.
+//   * Recruitment Phase 3a — every change a calendar must hear about (create,
+//     a move, a cancel, a no-show) MARKS the interview for the calendar sync
+//     worker in the same transaction as the change (calendarSyncMark): status
+//     PENDING, the action the worker must take, attempts reset, due now. The
+//     worker (interview-calendar-sync.service.js) does the provider call
+//     through the Communication module. Marking happens whether or not the
+//     calendarSync flag is on, so switching it on later syncs what changed.
+//   * Phase 3a — a reschedule REQUEST pauses the interview's reminders
+//     (remindersPausedAt); the confirm and a cancel clear the pause.
+//   * Phase 3a — NO_SHOW: a SCHEDULED interview whose start has passed can be
+//     marked no-show; it records a NO_SHOW lifecycle event, cancels the
+//     calendar event and announces hr.recruitment.interview_no_show.v1 so the
+//     disposition prompt and the Communication module can react.
 
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -30,13 +43,14 @@ import {
     interviewCancelledEvent,
     interviewRescheduledEvent,
     interviewRescheduleRequestedEvent,
-    interviewScheduledEvent,
 } from "./hrEvents.js";
 import {
+    LIFECYCLE_EVENTS,
     blockedInterviewers,
     validateConflictOverride,
     validateLifecycleReason,
 } from "../lib/interviewScheduling.js";
+import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
 
 export class ScheduleError extends Error {
     constructor(message, status = 400, details = undefined) {
@@ -60,6 +74,95 @@ const toDate = (v) => {
 };
 
 const AUDIT_MODULE = "Interview Scheduling";
+
+// A ScheduleError that also carries the code on `.code` (the Phase 3a shape)
+// while keeping `.details` for callers of the older paths.
+const failCode = (message, status, code) => Object.assign(new ScheduleError(message, status, code), { code });
+
+// ── Phase 3a — lifecycle vocabulary and calendar sync marking ───────────────
+
+/**
+ * The lifecycle event kinds this service writes. NO_SHOW is new in Phase 3a
+ * and is not yet in lib/interviewScheduling.js's LIFECYCLE_EVENTS nor in the
+ * interview_lifecycle_events_eventtype_check constraint (see the stream A
+ * integration note for the migration).
+ */
+export const INTERVIEW_LIFECYCLE_EVENTS = Object.freeze([...new Set([...LIFECYCLE_EVENTS, "NO_SHOW"])]);
+
+/** The reason code a NO_SHOW lifecycle row carries (also needs the CHECK change). */
+export const NO_SHOW_REASON_CODE = "CANDIDATE_NO_SHOW";
+
+export const CALENDAR_SYNC_ACTION = Object.freeze({ CREATE: "CREATE", UPDATE: "UPDATE", CANCEL: "CANCEL" });
+export const CALENDAR_SYNC_STATUS = Object.freeze({ PENDING: "PENDING", SYNCED: "SYNCED", FAILED: "FAILED" });
+
+/** What the calendar must do next: cancel, or update an event it already has, or create one. */
+export function nextCalendarAction({ calendarEventId = null, cancel = false } = {}) {
+    if (cancel) return CALENDAR_SYNC_ACTION.CANCEL;
+    return calendarEventId ? CALENDAR_SYNC_ACTION.UPDATE : CALENDAR_SYNC_ACTION.CREATE;
+}
+
+/**
+ * The column data that queues an interview for the calendar sync worker:
+ * PENDING, the action, attempts reset, due now, no error. A claim a worker
+ * holds is left alone: the new calendarNextAttemptAt tells that worker the
+ * row changed under its call (it keeps the event id it got, releases the
+ * claim and leaves the newer mark for the next pass), and no second worker
+ * can start on the row while the first call is still in flight.
+ */
+// Loaded lazily: the reminder service pulls in the settings, privacy and
+// prisma graph, which the schedule paths (and their callers) otherwise never
+// need at import time.
+const loadReminders = () => import("./interview-reminder.service.js");
+
+/**
+ * Phase 3a (stream B) — drop the time-bound reminder rows of a slot that
+ * moved, so the new time is reminded afresh. Runs on the caller's
+ * transaction. A client without the interview_reminders model (an older
+ * unit-test double) has no rows to drop, so it is skipped rather than failed.
+ */
+export async function resetRemindersForReschedule(tx, { tenantId, interviewId }) {
+    if (typeof tx?.interviewReminder?.deleteMany !== "function") return 0;
+    const { resetInterviewRemindersForReschedule } = await loadReminders();
+    return resetInterviewRemindersForReschedule(tx, { tenantId, interviewId });
+}
+
+export function calendarSyncMark(action, now = new Date()) {
+    return {
+        calendarSyncStatus: CALENDAR_SYNC_STATUS.PENDING,
+        calendarSyncAction: action,
+        calendarSyncAttempts: 0,
+        calendarNextAttemptAt: new Date(now),
+        calendarLastError: null,
+    };
+}
+
+/**
+ * hr.recruitment.interview_no_show.v1 — ids only. recruiterId routes the
+ * disposition prompt; interviewerIds lets the panel's calendars and reminders
+ * be told. Null when the interview has no tenant.
+ */
+export function interviewNoShowEvent(interview, ctx = {}, extra = {}) {
+    if (!interview?.tenantId) return null;
+    const str = (v) => (v != null ? String(v) : null);
+    return {
+        eventName: "hr.recruitment.interview_no_show.v1",
+        tenantId: interview.tenantId,
+        aggregateType: "Interview",
+        aggregateId: interview.id,
+        actorId: ctx?.actorId ?? null,
+        correlationId: ctx?.correlationId,
+        payload: {
+            interviewId: String(interview.id),
+            applicationId: str(interview.applicationId),
+            candidateId: str(interview.candidateId),
+            requisitionId: str(interview.requisitionId),
+            recruiterId: str(extra.recruiterId),
+            scheduledAt: interview.scheduledAt ? new Date(interview.scheduledAt).toISOString() : null,
+            noShowAt: extra.noShowAt ? new Date(extra.noShowAt).toISOString() : null,
+            interviewerIds: (extra.interviewerIds ?? []).map(String),
+        },
+    };
+}
 
 /** The tenant's interview with its panel ids — the event routing list. */
 async function requireInterview(interviewId, tenantId) {
@@ -124,6 +227,12 @@ export const cancelInterview = async ({ interviewId, reasonCode, notes, tenantId
         await tx.interview.update({
             where: { id: interview.id },
             data: { status: "CANCELLED" },
+        });
+        // Phase 3a — the calendar event goes too, and any reminder pause ends
+        // with the interview. Same transaction as the cancel.
+        await tx.interview.update({
+            where: { id: interview.id },
+            data: { ...calendarSyncMark(CALENDAR_SYNC_ACTION.CANCEL), remindersPausedAt: null },
         });
         await tx.interviewLifecycleEvent.create({
             data: scopedData(tenantId, {
@@ -247,6 +356,12 @@ export const requestReschedule = async ({ interviewId, reasonCode, notes, reques
         // requestedBy; the event routes to them, never to the panel.
         const recruiterId = interview.application?.jobRequisition?.requestedById ?? null;
 
+        // Phase 3a — no reminder for a time the candidate has asked to move.
+        await tx.interview.update({
+            where: { id: interview.id },
+            data: { remindersPausedAt: new Date() },
+        });
+
         const event = await tx.interviewLifecycleEvent.create({
             data: scopedData(tenantId, {
                 interviewId: interview.id,
@@ -299,6 +414,7 @@ export const confirmReschedule = async ({ interviewId, scheduledAt, reasonCode, 
             where: scopedWhere(tenantId, { id: id ?? 0 }),
             select: {
                 id: true, tenantId: true, applicationId: true, scheduledAt: true, status: true, durationMinutes: true,
+                calendarEventId: true,
                 interviewers: { select: { employeeId: true } },
                 application: { select: { candidateId: true } },
             },
@@ -376,8 +492,16 @@ export const confirmReschedule = async ({ interviewId, scheduledAt, reasonCode, 
         const previous = interview.scheduledAt;
         await tx.interview.update({
             where: { id: interview.id },
-            data: { scheduledAt: when, calendarSyncStatus: "PENDING" },
+            // Phase 3a — the calendar follows the new time; the reminder pause
+            // a candidate's request set ends here.
+            data: {
+                scheduledAt: when,
+                ...calendarSyncMark(nextCalendarAction({ calendarEventId: interview.calendarEventId })),
+                remindersPausedAt: null,
+            },
         });
+        // Phase 3a — the old slot's reminders say nothing about the new one.
+        await resetRemindersForReschedule(tx, { tenantId, interviewId: interview.id });
         await tx.interviewLifecycleEvent.create({
             data: scopedData(tenantId, {
                 interviewId: interview.id,
@@ -408,6 +532,97 @@ export const confirmReschedule = async ({ interviewId, scheduledAt, reasonCode, 
         });
         return { interviewId: interview.id, previousScheduledAt: previous, newScheduledAt: when };
     });
+};
+
+// ── Phase 3a — no-show ───────────────────────────────────────────────────────
+
+const NO_SHOW_NOTES_MAX = 1000;
+
+/**
+ * Mark a candidate as not having attended. Only a SCHEDULED interview whose
+ * start has passed qualifies (a future interview cannot have been missed; a
+ * completed, cancelled or already no-show one is decided). The status write
+ * is guarded on SCHEDULED, so two concurrent marks record one fact.
+ *
+ * @param {object} p
+ * @param {object|null} [p.scope]  the caller's recruitment scope (interviewScopeWhere); null = unscoped
+ */
+export const markNoShow = async ({ interviewId, tenantId, actorId = null, notes = null, scope = null, now = new Date() }) => {
+    const text = typeof notes === "string" ? notes.trim() : "";
+    if (text.length > NO_SHOW_NOTES_MAX) {
+        throw failCode(`notes must be at most ${NO_SHOW_NOTES_MAX} characters`, 400, "HR-RECRUITMENT-SCHEDULE-NOTES-TOO-LONG");
+    }
+    const at = new Date(now);
+    const actor = toInt(actorId);
+
+    return tenantTransaction(prisma, async (tx) => {
+        const interview = await tx.interview.findFirst({
+            where: scopedWhere(tenantId, { id: toInt(interviewId) ?? 0, ...(scope ? interviewScopeWhere(scope) : {}) }),
+            select: {
+                id: true, tenantId: true, applicationId: true, scheduledAt: true, status: true,
+                interviewers: { select: { employeeId: true } },
+                application: {
+                    select: { candidateId: true, jobRequisitionId: true, jobRequisition: { select: { requestedById: true } } },
+                },
+            },
+        });
+        if (!interview) throw failCode("Interview not found", 404, "HR-RECRUITMENT-SCHEDULE-NOT-FOUND");
+        if (interview.status !== "SCHEDULED") {
+            throw failCode(`Only a scheduled interview can be marked no-show (this one is ${String(interview.status).toLowerCase()})`, 409, "HR-RECRUITMENT-SCHEDULE-NOT-SCHEDULED");
+        }
+        if (new Date(interview.scheduledAt).getTime() > at.getTime()) {
+            throw failCode("The interview has not started yet", 409, "HR-RECRUITMENT-SCHEDULE-NOT-STARTED");
+        }
+
+        const claimed = await tx.interview.updateMany({
+            where: scopedWhere(tenantId, { id: interview.id, status: "SCHEDULED" }),
+            data: {
+                status: "NO_SHOW",
+                noShowAt: at,
+                ...calendarSyncMark(CALENDAR_SYNC_ACTION.CANCEL, at),
+            },
+        });
+        if (!claimed.count) {
+            throw failCode("The interview is no longer scheduled", 409, "HR-RECRUITMENT-SCHEDULE-NOT-SCHEDULED");
+        }
+
+        await tx.interviewLifecycleEvent.create({
+            data: scopedData(tenantId, {
+                interviewId: interview.id,
+                eventType: "NO_SHOW",
+                reasonCode: NO_SHOW_REASON_CODE,
+                notes: text || null,
+                previousScheduledAt: interview.scheduledAt,
+                actorId: actor,
+            }),
+        });
+        const interviewerIds = interview.interviewers.map((i) => i.employeeId);
+        await enqueueHrDomainEvent(
+            tx,
+            interviewNoShowEvent(
+                {
+                    ...interview,
+                    candidateId: interview.application?.candidateId ?? null,
+                    requisitionId: interview.application?.jobRequisitionId ?? null,
+                },
+                { actorId: actor },
+                {
+                    recruiterId: interview.application?.jobRequisition?.requestedById ?? null,
+                    noShowAt: at,
+                    interviewerIds,
+                },
+            ),
+        );
+        await logAction({
+            employeeId: actor ?? null,
+            type: "UPDATE",
+            module: AUDIT_MODULE,
+            result: "SUCCESS",
+            notes: `Interview "${interview.id}" marked no-show`,
+            tenantId: tenantId ?? null,
+        });
+        return { interviewId: interview.id, status: "NO_SHOW", noShowAt: at };
+    }, { tenantId });
 };
 
 // ── §5.1a/5.1b — the calendar linkage ────────────────────────────────────────

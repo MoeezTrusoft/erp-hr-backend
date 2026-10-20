@@ -62,7 +62,7 @@ import payrollRoutes from "./routes/payrollRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
-import publicPortalRoutes from "./routes/publicPortal.routes.js";
+import publicPortalRoutes, { interviewSlotsRouter } from "./routes/publicPortal.routes.js";
 import { jobFeedRouter } from "./routes/job-feed.routes.js";
 import { esignWebhookRouter } from "./routes/esign-webhook.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
@@ -197,6 +197,8 @@ export const createApp = () => {
     // answers every not-found reason with the same plain 404.
     app.use("/public/feeds", jobFeedRouter);
     app.use("/public", publicPortalRoutes);
+    // Phase 3a — the candidate picks an interview slot (its own rate classes).
+    app.use("/public", interviewSlotsRouter);
 
     app.use("/api", internalServiceGuard);
     // Bind the verified tenant to the async context so the Prisma tenant-scope

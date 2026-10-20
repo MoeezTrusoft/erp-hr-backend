@@ -28,6 +28,11 @@
 //   * Recruitment Phase 2 — D-11 / D-16: apply, draft save and status-link
 //     answer every accepted outcome (new, duplicate, do-not-contact) with the
 //     same status and body.
+//   * Recruitment Phase 3a — interview self-scheduling: the emailed choose
+//     link reads the offered slots and confirms one. An unknown, expired,
+//     cancelled or confirmed link (and an offer from another tenant than the
+//     portal's) is the same 404; a slot that is no longer free is the same
+//     409 "pick another" whatever made it unavailable.
 import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
@@ -38,6 +43,7 @@ import {
     loadApplicationDraft,
     submitApplicationDraft,
 } from "../services/applicationDraft.service.js";
+import { getSlotOfferForCandidate, confirmSlotOffer } from "../services/interview-slot-offer.service.js";
 import logger from "../lib/logger.js";
 
 const router = express.Router();
@@ -79,6 +85,10 @@ const WINDOW_MS = 60_000;
 const LIMITS = Object.freeze({
     read: 120, // listing/detail — generous, cached pages
     apply: 6, // applications — the abuse target
+    // Phase 3a — the interview slot link has its own budgets, so a candidate
+    // choosing a time never spends (or is blocked by) the application budget.
+    slotRead: 60,
+    slotConfirm: 10,
 });
 
 const buckets = new Map(); // key → { count, resetAt }
@@ -298,6 +308,51 @@ router.get(
             // A read failure must not distinguish itself from "nothing here".
             logger.error({ err: err?.message }, "status link read failed");
             return res.json(EMPTY);
+        }
+    }),
+);
+
+// ── Recruitment Phase 3a — interview self-scheduling ────────────────────────
+//
+// A separate router (mounted next to this one at /public) so the portal's
+// pinned route inventory stays as it is; it shares the guard above: tenant
+// pinning, the portal context, the limiter (its own classes) and uniform
+// failures.
+export const interviewSlotsRouter = express.Router();
+
+const SLOT_LINK_NOT_FOUND = Object.freeze({ success: false, message: "This interview link is not valid" });
+const SLOT_TAKEN = Object.freeze({ success: false, message: "This time is no longer available, please pick another" });
+
+// GET /public/candidates/interview-slots?token= — the slots offered to the
+// link's candidate. Every not-found reason is the same 404.
+interviewSlotsRouter.get(
+    "/candidates/interview-slots",
+    ...guard("slotRead", async (req, res, tenantId) => {
+        try {
+            const view = await getSlotOfferForCandidate({ token: req.query.token, tenantId });
+            if (!view) return res.status(404).json(SLOT_LINK_NOT_FOUND);
+            return res.json({ success: true, data: view });
+        } catch (err) {
+            logger.error({ err: err?.message }, "interview slot link read failed");
+            return res.status(404).json(SLOT_LINK_NOT_FOUND);
+        }
+    }),
+);
+
+// POST /public/candidates/interview-slots/confirm { token, slotStart } — the
+// candidate picks one slot; the interview is created.
+interviewSlotsRouter.post(
+    "/candidates/interview-slots/confirm",
+    express.json({ limit: "16kb" }),
+    ...guard("slotConfirm", async (req, res, tenantId) => {
+        try {
+            const result = await confirmSlotOffer({ token: req.body?.token, slotStart: req.body?.slotStart, tenantId });
+            if (!result) return res.status(404).json(SLOT_LINK_NOT_FOUND);
+            return res.json({ success: true, data: result });
+        } catch (err) {
+            if (err?.code === "HR-RECRUITMENT-SLOT-UNAVAILABLE") return res.status(409).json(SLOT_TAKEN);
+            logger.error({ err: err?.message, code: err?.code }, "interview slot confirm failed");
+            return res.status(404).json(SLOT_LINK_NOT_FOUND);
         }
     }),
 );
