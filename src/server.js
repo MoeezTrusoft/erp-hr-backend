@@ -35,6 +35,7 @@ import { startSystemAccountProvisioningWorker } from "./jobs/system-account-prov
 import { startAttendanceCaptureWorker } from './jobs/attendance-capture.loop.js';
 import { startAttendanceExportWorker } from './jobs/attendance-export.loop.js';
 import { startAttendanceEscalationWorker } from './jobs/attendance-escalation.loop.js';
+import { startCandidateCommunicationWorker } from "./jobs/candidate-communication.loop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -96,6 +97,8 @@ const accountProvisioningWorker = startSystemAccountProvisioningWorker();
 const attendanceEscalationWorker = startAttendanceEscalationWorker();
 const attendanceCaptureWorker = startAttendanceCaptureWorker();
 const attendanceExportWorker = startAttendanceExportWorker();
+// Phase 2 — candidate communications (no-op unless HR_CANDIDATE_COMMS_WORKER_ENABLED=true).
+const candidateCommsWorker = startCandidateCommunicationWorker();
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
@@ -113,6 +116,7 @@ async function gracefulShutdown() {
   attendanceEscalationWorker.stop();
   await attendanceCaptureWorker.stop();
   await attendanceExportWorker.stop();
+  await candidateCommsWorker.stop();
   stopAttendanceListener();
   // Stop the realtime health beat + release the attendance Redis client.
   try { realtimeHealth?.stop?.(); } catch { /* best effort */ }

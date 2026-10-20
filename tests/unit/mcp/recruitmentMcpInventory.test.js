@@ -35,6 +35,7 @@ import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboardi
 import { registerRecruitmentSettingsTools } from "../../../src/mcp/tools/recruitment-settings.tools.js";
 import { registerCandidateDuplicateTools } from "../../../src/mcp/tools/candidate-duplicate.tools.js";
 import { registerRecruitmentScoringTools } from "../../../src/mcp/tools/recruitment-scoring.tools.js";
+import { registerCandidateCommunicationTools } from "../../../src/mcp/tools/candidate-communication.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -60,6 +61,7 @@ const RECRUITMENT_REGISTRARS = [
   ["recruitmentSettingsTools", registerRecruitmentSettingsTools],
   ["candidateDuplicateTools", registerCandidateDuplicateTools],
   ["recruitmentScoringTools", registerRecruitmentScoringTools],
+  ["candidateCommunicationTools", registerCandidateCommunicationTools],
 ];
 
 function collect(register) {
@@ -96,6 +98,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentSettingsTools: 3, // Phase 2: settings get/set + source report
   candidateDuplicateTools: 3, // Phase 2: duplicate list/resolve/detect
   recruitmentScoringTools: 5, // Phase 2: score, rank, propose, confirm, dismiss
+  candidateCommunicationTools: 4, // Phase 2: list, send, cancel, templates
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -231,6 +234,10 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_requisition_shortlist_propose",
   "hr_application_shortlist_proposal_confirm",
   "hr_application_shortlist_proposal_dismiss",
+  "hr_candidate_communications_list",
+  "hr_candidate_communication_send",
+  "hr_candidate_communication_cancel",
+  "hr_recruitment_communication_templates_list",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -271,8 +278,8 @@ describe("Recruitment MCP tool inventory", () => {
     // payroll finance), counted after the merge with no duplicates.
     // 697 with hr_candidate_360_get (F-14).
     // Phase 2: + 3 settings and source report tools, + 3 duplicate tools,
-    // + 5 scoring tools.
-    expect(all).toHaveLength(708);
+    // + 5 scoring tools, + 4 communication tools.
+    expect(all).toHaveLength(712);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
