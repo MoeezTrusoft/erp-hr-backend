@@ -8,7 +8,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { applicationCreatedEvent } from "./hrEvents.js";
 import { withTenant } from "../lib/tenancy.js";
-import { assertIntakeAllowed, normalizeSourceChannel, normalizeSourceDetail } from "../lib/intake-dnc.util.js";
+import { assertIntakeAllowed, normalizeSourceChannel, normalizeSourceDetail } from "./intake-dnc.service.js";
 import { cancelPendingDispositionsForApplication } from "./scheduled-disposition.service.js";
 
 // Recruitment Phase 2 — the channel a recruiter-side intake path records when

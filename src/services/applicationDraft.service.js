@@ -34,7 +34,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { sendCandidateEmail } from "../lib/notificationClient.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { submitPublicApplication } from "./publicPortal.service.js";
-import { checkIntakeDnc, logIntakeSuppressed, normalizeSourceChannel, normalizeSourceDetail } from "../lib/intake-dnc.util.js";
+import { checkIntakeDnc, logIntakeSuppressed, normalizeSourceChannel, normalizeSourceDetail } from "./intake-dnc.service.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });

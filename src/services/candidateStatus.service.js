@@ -22,7 +22,7 @@ import { projectCandidateStatusList } from "../lib/candidateStatusView.js";
 import { issueStatusLink, sendStatusLinkEmail, resolveStatusLink } from "./candidateVerification.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
-import { checkIntakeDnc, logIntakeSuppressed } from "../lib/intake-dnc.util.js";
+import { checkIntakeDnc, logIntakeSuppressed } from "./intake-dnc.service.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });

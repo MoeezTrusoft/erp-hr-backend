@@ -1,4 +1,4 @@
-// src/lib/intake-dnc.util.js
+// src/services/intake-dnc.service.js
 //
 // Recruitment Phase 2 / D-11 — the do-not-contact register at EVERY intake
 // path, not only on offer send. One helper, two ways to answer a hit:
@@ -23,11 +23,11 @@
 // CHECK constraint enforces.
 import crypto from "node:crypto";
 
-import logger from "./logger.js";
+import logger from "../lib/logger.js";
 // Namespace import: the privacy service is a large module that several test
 // suites replace with a partial double; a named import of a missing export
 // fails at link time for every importer, a property read fails only here.
-import * as candidatePrivacy from "../services/candidatePrivacy.service.js";
+import * as candidatePrivacy from "./candidatePrivacy.service.js";
 
 export const INTAKE_DNC_CODE = "HR-RECRUITMENT-CANDIDATE-DNC";
 

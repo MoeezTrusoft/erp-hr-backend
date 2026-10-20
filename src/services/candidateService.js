@@ -11,7 +11,7 @@ import {
   nextCursorFrom,
 } from "../mcp/utils/cursorPagination.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
-import { assertIntakeAllowed } from "../lib/intake-dnc.util.js";
+import { assertIntakeAllowed } from "./intake-dnc.service.js";
 
 /**
  * Create candidate with optional tags (skill names).

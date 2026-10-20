@@ -82,6 +82,9 @@ const {
   JOB_REQUISITION_POSTING_EXPIRY,
   JOB_REQUISITION_AUTOPUBLISH,
   JOB_RECRUITMENT_APPROVAL_SLA,
+  JOB_RECRUITMENT_SCHEDULED_DISPOSITION,
+  JOB_RECRUITMENT_SCORING,
+  JOB_CANDIDATE_DUPLICATE_DETECTION,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -198,6 +201,36 @@ describe("F-02 / F-04 sweeps are scheduled", () => {
     await expect(processor({ name: JOB_REQUISITION_AUTOPUBLISH, data: {} })).resolves.toBe("publish");
     await expect(processor({ name: JOB_RECRUITMENT_APPROVAL_SLA, data: { correlationId: "c-1" } })).resolves.toBe("sla");
     expect(recruitmentApprovalSla).toHaveBeenCalledWith(expect.objectContaining({ correlationId: "c-1" }));
+  });
+});
+
+describe("Phase 2 intake and screening jobs are scheduled", () => {
+  it("registers the disposition, scoring and duplicate jobs with stable ids and their crons", () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_RECRUITMENT_SCHEDULED_DISPOSITION].opts).toMatchObject({
+      jobId: "repeat:recruitment-scheduled-disposition",
+      repeat: { pattern: "*/15 * * * *" },
+    });
+    expect(byName[JOB_RECRUITMENT_SCORING].opts).toMatchObject({
+      jobId: "repeat:recruitment-scoring",
+      repeat: { pattern: "7,22,37,52 * * * *" },
+    });
+    expect(byName[JOB_CANDIDATE_DUPLICATE_DETECTION]).toMatchObject({
+      data: { lookbackHours: 2 },
+      opts: { jobId: "repeat:candidate-duplicate-detection", repeat: { pattern: "40 * * * *" } },
+    });
+  });
+
+  it("the processor dispatches each Phase 2 job name to its body", async () => {
+    const scheduledDisposition = jest.fn(async () => "disposition");
+    const applicationScoring = jest.fn(async () => "scoring");
+    const candidateDuplicateDetection = jest.fn(async () => "duplicates");
+    const processor = buildReminderProcessor({ scheduledDisposition, applicationScoring, candidateDuplicateDetection });
+
+    await expect(processor({ name: JOB_RECRUITMENT_SCHEDULED_DISPOSITION, data: {} })).resolves.toBe("disposition");
+    await expect(processor({ name: JOB_RECRUITMENT_SCORING, data: {} })).resolves.toBe("scoring");
+    await expect(processor({ name: JOB_CANDIDATE_DUPLICATE_DETECTION, data: { lookbackHours: 2 } })).resolves.toBe("duplicates");
+    expect(candidateDuplicateDetection).toHaveBeenCalledWith(expect.objectContaining({ lookbackHours: 2 }));
   });
 });
 

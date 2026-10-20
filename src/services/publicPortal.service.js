@@ -60,7 +60,7 @@ import {
     logIntakeSuppressed,
     normalizeSourceChannel,
     normalizeSourceDetail,
-} from "../lib/intake-dnc.util.js";
+} from "./intake-dnc.service.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
 import { scheduleKnockoutDisposition } from "./scheduled-disposition.service.js";
 import { enqueueCandidateResumeParse } from "./resume-parse-queue.service.js";

@@ -37,6 +37,9 @@ import {
     runRequisitionAutoPublishJob,
     runRecruitmentApprovalSlaJob,
 } from '../services/reminderScheduler.service.js';
+import { runScheduledDispositionJob } from '../services/scheduled-disposition.service.js';
+import { runApplicationScoringJob } from '../services/application-scoring.service.js';
+import { runCandidateDuplicateDetectionJob } from '../services/candidate-duplicate.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -80,6 +83,14 @@ export const JOB_REQUISITION_POSTING_EXPIRY = 'requisition-posting-expiry';
 export const JOB_REQUISITION_AUTOPUBLISH = 'requisition-autopublish';
 // F-02 — requisition/offer approval SLA reminders and escalation.
 export const JOB_RECRUITMENT_APPROVAL_SLA = 'recruitment-approval-sla';
+// Phase 2 — intake and screening. Each body checks its own flag (all default
+// OFF) and returns { skipped: "FLAG_OFF" } until a tenant opts in:
+// knockout dispositions falling due (HR_RECRUITMENT_KNOCKOUT), fit scoring and
+// shortlist proposals (HR_RECRUITMENT_SCORING) and duplicate candidate
+// detection (HR_RECRUITMENT_DUPLICATES).
+export const JOB_RECRUITMENT_SCHEDULED_DISPOSITION = 'recruitment-scheduled-disposition';
+export const JOB_RECRUITMENT_SCORING = 'recruitment-scoring';
+export const JOB_CANDIDATE_DUPLICATE_DETECTION = 'candidate-duplicate-detection';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -173,6 +184,28 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:recruitment-approval-sla', repeat: { pattern: '*/30 * * * *' } },
         },
+        {
+            // Every 15 minutes — a knockout rejection runs within a quarter hour
+            // of its delay ending; the delay itself is hours.
+            name: JOB_RECRUITMENT_SCHEDULED_DISPOSITION,
+            data: {},
+            opts: { jobId: 'repeat:recruitment-scheduled-disposition', repeat: { pattern: '*/15 * * * *' } },
+        },
+        {
+            // Every 15 minutes, offset from the disposition run so the two never
+            // contend: a new application is scored and ranked shortly after it
+            // arrives (and after its resume is parsed).
+            name: JOB_RECRUITMENT_SCORING,
+            data: {},
+            opts: { jobId: 'repeat:recruitment-scoring', repeat: { pattern: '7,22,37,52 * * * *' } },
+        },
+        {
+            // Hourly at :40 over the last two hours of candidate changes; the
+            // overlap means a missed run is covered by the next one.
+            name: JOB_CANDIDATE_DUPLICATE_DETECTION,
+            data: { lookbackHours: 2 },
+            opts: { jobId: 'repeat:candidate-duplicate-detection', repeat: { pattern: '40 * * * *' } },
+        },
     ];
 }
 
@@ -193,6 +226,9 @@ export function buildReminderProcessor({
     requisitionPostingExpiry = runRequisitionPostingExpiryJob,
     requisitionAutoPublish = runRequisitionAutoPublishJob,
     recruitmentApprovalSla = runRecruitmentApprovalSlaJob,
+    scheduledDisposition = runScheduledDispositionJob,
+    applicationScoring = runApplicationScoringJob,
+    candidateDuplicateDetection = runCandidateDuplicateDetectionJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -227,6 +263,12 @@ export function buildReminderProcessor({
                     return requisitionAutoPublish(data);
                 case JOB_RECRUITMENT_APPROVAL_SLA:
                     return recruitmentApprovalSla(data);
+                case JOB_RECRUITMENT_SCHEDULED_DISPOSITION:
+                    return scheduledDisposition(data);
+                case JOB_RECRUITMENT_SCORING:
+                    return applicationScoring(data);
+                case JOB_CANDIDATE_DUPLICATE_DETECTION:
+                    return candidateDuplicateDetection(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

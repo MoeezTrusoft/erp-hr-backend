@@ -52,7 +52,7 @@ jest.unstable_mockModule("../../src/services/tagService.js", () => ({ upsertTags
 
 const { createApplication, updateApplicationStage, updateApplicationStatus } = await import("../../src/services/applicationService.js");
 const { createCandidate } = await import("../../src/services/candidateService.js");
-const { dncScopeBlocksIntake, checkIntakeDnc, hashEmailForLog } = await import("../../src/lib/intake-dnc.util.js");
+const { dncScopeBlocksIntake, checkIntakeDnc, hashEmailForLog } = await import("../../src/services/intake-dnc.service.js");
 
 const DNC = { id: 9, reasonCode: "CANDIDATE_REQUEST", scope: "ALL", status: "ACTIVE" };
 
