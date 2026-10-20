@@ -128,17 +128,32 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
 // Phase 1.4 — record scope. `scope` is resolved from the caller's role claim by
 // the controller/MCP layer; when omitted the tenant-wide read is retained so
 // internal callers (jobs, exports) are unaffected.
+// The people on a requisition are shown by name only: the full Employee row
+// carries national ID, tax number, date of birth and addresses that a
+// requisition list has no business returning.
+const REQUISITION_PERSON_SELECT = Object.freeze({
+  id: true,
+  employee_code: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  job_title: true,
+});
+// A list is bounded; the paged hr_requisitions_list tool serves deeper reads.
+export const REQUISITION_LIST_LIMIT = 500;
+
 export const getAllRequisitions = async (tenantId, scope = null) => {
   const scopeWhere = scope ? requisitionScopeWhere(scope) : {};
   return prisma.jobRequisition.findMany({
     where: scopedWhere(tenantId, scopeWhere),
     include: {
       position: true,
-      requestedBy: true,
-      approvedBy: true,
-      employee: true,
+      requestedBy: { select: REQUISITION_PERSON_SELECT },
+      approvedBy: { select: REQUISITION_PERSON_SELECT },
+      employee: { select: REQUISITION_PERSON_SELECT },
     },
     orderBy: { id: "desc" },
+    take: REQUISITION_LIST_LIMIT,
   });
 };
 

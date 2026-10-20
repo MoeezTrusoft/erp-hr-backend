@@ -2,7 +2,7 @@
 import prisma from "../config/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { transitionApplicationStage } from "./applicationWorkflow.service.js";
-import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
+import { applicationScopeWhere, maskCandidateForScope } from "../lib/recruitmentAccess.js";
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
@@ -258,7 +258,8 @@ export const listApplications = async ({
         prisma.application.findMany({
             where,
             include: {
-                candidate: true,
+                // The parsed resume is the candidate detail read's, not a list's.
+                candidate: { omit: { parsedResume: true } },
                 jobRequisition: true,
             },
             orderBy: { appliedAt: "desc" },
@@ -287,5 +288,10 @@ export const listApplications = async ({
         }
     }
 
-    return { items, total, page, limit };
+    // The candidate rides along on each application, so its internal notes are
+    // masked here exactly as the candidate list masks them.
+    const visible = scope
+        ? items.map((item) => ({ ...item, candidate: maskCandidateForScope(item.candidate, scope) }))
+        : items;
+    return { items: visible, total, page, limit };
 };

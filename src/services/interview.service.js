@@ -159,7 +159,7 @@ export const listInterviews = async ({ applicationId, page = 1, limit = 20, tena
             include: {
                 application: {
                     include: {
-                        candidate: true,
+                        candidate: { omit: { parsedResume: true } },
                         jobRequisition: { include: { position: true } },
                     },
                 },
@@ -175,8 +175,20 @@ export const listInterviews = async ({ applicationId, page = 1, limit = 20, tena
         }),
         prisma.interview.count({ where }),
     ]);
-    return { items: maskInterviewsForScope(items, scope), total, page, limit };
+    return { items: maskInterviewsForScope(items.map((item) => ownScorecardsOnly(item, scope)), scope), total, page, limit };
 };
+
+// Independent scoring: a panelist reads only their own scorecard until the
+// consolidation step, so an earlier reviewer's score cannot anchor theirs.
+// Recruiters (ORG) and hiring managers (MANAGED) see the whole panel.
+function ownScorecardsOnly(interview, scope) {
+    if (!scope || scope.unrestricted || scope.level !== "ASSIGNED") return interview;
+    const mine = String(scope.employeeId ?? "");
+    return {
+        ...interview,
+        scorecards: (interview.scorecards || []).filter((card) => String(card.reviewerId) === mine),
+    };
+}
 
 const interviewInclude = {
     application: {

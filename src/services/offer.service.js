@@ -89,7 +89,8 @@ export const listOffers = async ({ page = 1, limit = 20, tenantId, scope = null 
             skip,
             take: limit,
             orderBy: { created_at: "desc" },
-            include: { candidate: true, jobRequisition: { include: { position: true } }, application: true },
+            // The parsed resume is the candidate detail read's, not an offer list's.
+            include: { candidate: { omit: { parsedResume: true } }, jobRequisition: { include: { position: true } }, application: true },
         }),
         prisma.offer.count({ where }),
     ]);

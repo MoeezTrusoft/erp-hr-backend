@@ -29,7 +29,10 @@ export function registerOnboardingTools(server) {
     "hr://onboarding/checklists",
     { description: "List all onboarding checklists" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
       const data = await mcpListOnboardingChecklists(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }

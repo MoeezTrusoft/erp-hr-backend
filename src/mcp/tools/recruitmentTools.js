@@ -51,7 +51,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/requisitions",
     { description: "List all job requisitions" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListRequisitions(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -65,7 +68,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/requisitions/{id}/public-form",
     { description: "The application form (active questions, ordered) a candidate sees for one requisition" },
     async (uri, { id }) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await listQuestions(Number(id), user.tenantId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -76,7 +82,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/candidates",
     { description: "List all candidates" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListCandidates(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -87,7 +96,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/applications",
     { description: "List all job applications" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListApplications(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -98,7 +110,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/talent-pool",
     { description: "List talent pool entries" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListTalentPool(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -109,7 +124,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/tags",
     { description: "List all recruitment tags" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListRecruitmentTags(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -120,7 +138,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/interviews",
     { description: "List scheduled recruitment interviews" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListInterviews(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -131,7 +152,10 @@ export function registerRecruitmentTools(server) {
     "hr://recruitment/offers",
     { description: "List job offers" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      // Resources are not gated by the tool wrapper: assert the same grant the
+      // list tool checks, so resources/read is not a way around it.
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await mcpListOffers(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }

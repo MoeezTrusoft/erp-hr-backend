@@ -267,6 +267,8 @@ export const listCandidates = async ({
     const [items, total] = await Promise.all([
         prisma.candidate.findMany({
             where,
+            // The parsed resume is the detail read's; a list returns the profile.
+            omit: { parsedResume: true },
             include: {
                 tags: { include: { tag: true } },
             },
