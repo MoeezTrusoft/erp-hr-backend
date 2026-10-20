@@ -193,24 +193,31 @@ no `HR_ATTENDANCE_INTAKE_KEY`, which meant the biometric device was being 403'd
 and losing punches silently. The smoke asserts, in order:
 
 1. `GET /healthz` and `GET /readyz` both return 200.
-2. Attendance intake with **no** key returns 403.
-3. Attendance intake with a **wrong** registered-device key returns 403.
-4. A temporary registered device receives 202 and `summary.stored === 1`;
-   an identical retry returns the same receipt without another event.
-5. The synthetic identity remains unassigned and held for review.
-6. Tenant policy and the setup, biometric, evaluation and anomaly models read
+2. Attendance intake with **no** credential returns 403.
+3. Attendance intake with a **wrong** credential returns 403.
+4. A **correctly registered** device that has not been through the onsite
+   acceptance workflow returns 403 and no receipt.
+5. Tenant policy and the setup, biometric, evaluation and anomaly models read
    successfully through the generated Prisma client.
+
+Assertion 4 used to be a positive case: a temporary device registered by the
+smoke received 202 and a durable receipt. That stopped being producible when
+`b018020` and the `attendance_device_activation_guard` trigger made activation a
+reviewed workflow — an `APPROVED` acceptance site plus its session GUC, which a
+deployment cannot and must not mint. The smoke now pins the refusal instead. If
+you need the 202 path exercised, do it in an environment where a synthetic
+acceptance site can legitimately be approved; never fabricate one here.
 
 The negative cases run before the positive one on purpose: a route that 200s
 without a key is worse than one that 403s with a good key, because it means
 anyone inside the cluster can inject attendance.
 
 It needs `HR_ATTENDANCE_INTAKE_TENANT_ID`. It creates a temporary registered
-device with a random credential kept only in process memory, then submits one
-unassigned synthetic capture. No employee attendance is created. In a `finally`
-block it dismisses the synthetic event with a reason and deactivates the device.
-The original receipt, evidence and audit remain available; the smoke never
-deletes historical capture records. A cleanup failure fails the smoke.
+device with a random credential kept only in process memory and submits three
+refused captures. No employee attendance is created and no device is activated.
+In a `finally` block it deactivates the device. The registration audit remains
+available; the smoke never deletes historical capture records. A cleanup failure
+fails the smoke.
 
 **Verify:** exit code 0, and the final line reads `N passed, 0 failed`.
 
