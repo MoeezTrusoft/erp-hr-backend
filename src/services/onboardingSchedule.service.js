@@ -18,7 +18,24 @@
 //     `uploadedDate` maps to created_at; document list is ordered by
 //     created_at then id.
 //   * Session fromTime/toTime/sessionType/location/assigneeId are all nullable.
+//
+// RECRUITMENT PHASE 4 — calendar invites for sessions. With onboarding
+// automation and calendar sync both on, a manual create (with a date), a move
+// (date, time, title, place or host) and a delete MARK the session for the
+// calendar worker (onboarding-calendar-sync.service.js) in the same write:
+// CREATE when no event exists yet, UPDATE when one does, CANCEL on delete.
+// A session with an event (or a write in flight) is not deleted outright: it
+// becomes a CANCEL tombstone, hidden from the schedule, which the worker
+// removes once the event is cancelled. With the flags off nothing is marked
+// and the create / update results are what they always were.
 import prisma from "../lib/prisma.js";
+import {
+  SESSION_CALENDAR_ACTION,
+  isOnboardingCalendarEnabled,
+  liveSessionWhere,
+  nextSessionCalendarAction,
+  sessionCalendarMark,
+} from "../lib/onboarding-sessions.util.js";
 
 // Compose an employee display name from the split name columns, falling back to
 // preferred_name then a stable "Employee {id}" placeholder. Returns null when
@@ -69,7 +86,7 @@ export async function listSchedule(checklistId, tenantId) {
   const checklist = await loadChecklist(checklistId, tenantId);
 
   const sessions = await prisma.onboardingSession.findMany({
-    where: { checklistId: checklist.id, tenantId },
+    where: { checklistId: checklist.id, tenantId, ...liveSessionWhere() },
     orderBy: [{ sessionDate: "asc" }, { id: "asc" }],
   });
 
@@ -109,19 +126,37 @@ export async function createSession(input, tenantId) {
   const checklist = await loadChecklist(checklistId, tenantId);
   if (!title || !String(title).trim()) throw badRequest("title is required");
 
+  const date = toDate(sessionDate);
+  // Phase 4: a dated session gets an invite (nothing to invite to otherwise).
+  const mark = date && isOnboardingCalendarEnabled() ? sessionCalendarMark(SESSION_CALENDAR_ACTION.CREATE) : {};
   return prisma.onboardingSession.create({
     data: {
       checklistId: checklist.id,
       title: String(title).trim(),
-      sessionDate: toDate(sessionDate),
+      sessionDate: date,
       fromTime: fromTime ?? null,
       toTime: toTime ?? null,
       sessionType: sessionType ?? null,
       location: location ?? null,
       assigneeId: assigneeId != null ? Number(assigneeId) : null,
       tenantId,
+      ...mark,
     },
   });
+}
+
+// The fields a calendar invite is built from: changing one re-sends it.
+const CALENDAR_FIELDS = Object.freeze(["title", "sessionDate", "fromTime", "toTime", "location", "assigneeId"]);
+
+// Phase 4: the calendar mark for an update, or {} when there is nothing to
+// tell a calendar (flags off, no invite-relevant field, or an undated
+// session that never had an event).
+function updateMark(existing, data) {
+  if (!isOnboardingCalendarEnabled()) return {};
+  if (!CALENDAR_FIELDS.some((f) => f in data)) return {};
+  const dated = "sessionDate" in data ? data.sessionDate != null : existing.sessionDate != null;
+  if (!dated && !existing.calendarEventId) return {};
+  return sessionCalendarMark(nextSessionCalendarAction({ calendarEventId: existing.calendarEventId }));
 }
 
 // Update an OnboardingSession. Tenant-scoped by id+tenantId — a cross-tenant id
@@ -131,8 +166,8 @@ export async function updateSession(id, patch, tenantId) {
   if (!Number.isInteger(sessionId) || sessionId <= 0) throw badRequest("Invalid session id");
 
   const existing = await prisma.onboardingSession.findFirst({
-    where: { id: sessionId, tenantId },
-    select: { id: true },
+    where: { id: sessionId, tenantId, ...liveSessionWhere() },
+    select: { id: true, sessionDate: true, calendarEventId: true },
   });
   if (!existing) throw notFound("Onboarding session not found");
 
@@ -145,7 +180,34 @@ export async function updateSession(id, patch, tenantId) {
   if (patch.location !== undefined) data.location = patch.location ?? null;
   if (patch.assigneeId !== undefined) data.assigneeId = patch.assigneeId != null ? Number(patch.assigneeId) : null;
 
-  return prisma.onboardingSession.update({ where: { id: sessionId }, data });
+  return prisma.onboardingSession.update({ where: { id: sessionId }, data: { ...data, ...updateMark(existing, data) } });
+}
+
+// Delete an OnboardingSession (Phase 4). Tenant-scoped like update. A session
+// whose invite exists, or is being written right now, becomes a CANCEL
+// tombstone so the calendar worker can cancel the event before the row goes;
+// anything else is deleted at once.
+export async function deleteSession(id, tenantId, { now = new Date() } = {}) {
+  const sessionId = Number(id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) throw badRequest("Invalid session id");
+
+  const existing = await prisma.onboardingSession.findFirst({
+    where: { id: sessionId, tenantId, ...liveSessionWhere() },
+    select: { id: true, checklistId: true, calendarEventId: true, calendarClaimedBy: true, calendarClaimExpiresAt: true },
+  });
+  if (!existing) throw notFound("Onboarding session not found");
+
+  const at = new Date(now);
+  const writeInFlight = Boolean(existing.calendarClaimedBy) && existing.calendarClaimExpiresAt != null && new Date(existing.calendarClaimExpiresAt) > at;
+  if (existing.calendarEventId || writeInFlight) {
+    await prisma.onboardingSession.update({
+      where: { id: sessionId },
+      data: sessionCalendarMark(SESSION_CALENDAR_ACTION.CANCEL, at),
+    });
+    return { id: sessionId, checklistId: existing.checklistId, deleted: true, calendarCancelQueued: true };
+  }
+  await prisma.onboardingSession.delete({ where: { id: sessionId } });
+  return { id: sessionId, checklistId: existing.checklistId, deleted: true, calendarCancelQueued: false };
 }
 
 // ── DOCUMENTS ──────────────────────────────────────────────────────────────

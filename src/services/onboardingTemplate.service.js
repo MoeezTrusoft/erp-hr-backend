@@ -13,10 +13,17 @@
 //     by convention, because the resolver has to pick exactly one
 //   * deactivating the default leaves the tenant with no template, which the
 //     resolver reads as "use the baseline" — never as "no checklist"
+//   * Recruitment Phase 4 — a template may also carry the orientation and
+//     compliance `sessions` the handoff creates (lib/onboarding-sessions.util.js
+//     owns the shape). Omitted on a write leaves the stored list as it is;
+//     null clears it (the baseline set applies); a list, even an empty one,
+//     is validated and stored.
+import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { resolveChecklistTasks, validateTemplateTasks } from "../lib/onboardingTemplates.js";
+import { resolveSessionPlan, validateTemplateSessions } from "../lib/onboarding-sessions.util.js";
 
 const fail = (message, status, code) =>
     Object.assign(new Error(message), { status, code: code ?? "HR-ONBOARDING-TEMPLATE" });
@@ -45,6 +52,30 @@ export const resolveTasksForProvisioning = async (db, tenantId) => {
     return resolveChecklistTasks(template);
 };
 
+/**
+ * Phase 4 — the sessions a provisioned hire gets: the default template's
+ * validated `sessions`, else the baseline. Runs on the caller's transaction.
+ *
+ * @returns {Promise<{sessions: object[], source: string, templateId: number|null}>}
+ */
+export const resolveSessionsForProvisioning = async (db, tenantId) => {
+    const template = await findDefaultTemplate(db, tenantId);
+    return resolveSessionPlan(template);
+};
+
+// undefined = leave the column alone; null = clear (baseline); a list = store.
+function sessionsColumn(sessions) {
+    if (sessions === undefined) return {};
+    if (sessions === null) return { sessions: Prisma.DbNull };
+    const verdict = validateTemplateSessions(sessions);
+    if (!verdict.ok) {
+        throw Object.assign(fail(`Invalid onboarding template: ${verdict.error}`, 422, "HR-ONBOARDING-TEMPLATE-INVALID"), {
+            details: { reason: verdict.error },
+        });
+    }
+    return { sessions: verdict.sessions };
+}
+
 /** All templates for the tenant (newest first), optionally including inactive. */
 export const listTemplates = async ({ tenantId, includeInactive = false } = {}) => {
     if (!tenantId) throw fail("Tenant context is required", 400);
@@ -58,7 +89,7 @@ export const listTemplates = async ({ tenantId, includeInactive = false } = {}) 
  * Create or update a template by name (idempotent upsert on tenant+name), and
  * optionally make it the tenant's default.
  */
-export const upsertTemplate = async ({ tenantId, name, description = null, tasks, makeDefault = false, actorId = null } = {}) => {
+export const upsertTemplate = async ({ tenantId, name, description = null, tasks, sessions, makeDefault = false, actorId = null } = {}) => {
     if (!tenantId) throw fail("Tenant context is required", 400);
     const cleanName = typeof name === "string" ? name.trim() : "";
     if (!cleanName) throw fail("A template name is required", 400, "HR-ONBOARDING-TEMPLATE-NAME-REQUIRED");
@@ -67,6 +98,7 @@ export const upsertTemplate = async ({ tenantId, name, description = null, tasks
     if (!verdict.ok) {
         throw fail("Invalid onboarding template", 422, "HR-ONBOARDING-TEMPLATE-INVALID");
     }
+    const sessionData = sessionsColumn(sessions);
 
     return tenantTransaction(
         prisma,
@@ -91,6 +123,7 @@ export const upsertTemplate = async ({ tenantId, name, description = null, tasks
                     data: {
                         description,
                         tasks: verdict.tasks,
+                        ...sessionData,
                         ...(makeDefault ? { isDefault: true } : {}),
                         isActive: true,
                     },
@@ -102,6 +135,7 @@ export const upsertTemplate = async ({ tenantId, name, description = null, tasks
                     name: cleanName,
                     description,
                     tasks: verdict.tasks,
+                    ...sessionData,
                     isActive: true,
                     // The FIRST template a tenant creates becomes the default: an
                     // operator who authored one obviously means it to be used.

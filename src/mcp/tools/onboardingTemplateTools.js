@@ -8,6 +8,10 @@
 // Gating mirrors the rest of the recruitment surface: reads need the recruitment
 // read grant, writes the update grant — the gateway's edge map pins the same
 // permission, so a tool the edge lets through is one HR will accept.
+//
+// Recruitment Phase 4 — a template may also carry the orientation and
+// compliance `sessions` created on handoff. Optional on the set tool: omitted
+// leaves the stored list unchanged, null restores the baseline set.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -18,6 +22,7 @@ import {
   deactivateTemplate,
 } from "../../services/onboardingTemplate.service.js";
 import { ONBOARDING_TASK_ASSIGNEES, ONBOARDING_TASK_STAGES } from "../../lib/onboardingDefaults.js";
+import { ONBOARDING_SESSION_ASSIGNEES, ONBOARDING_SESSION_TYPES } from "../../lib/onboarding-sessions.util.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -32,6 +37,18 @@ const taskShape = z.object({
   category: z.string().min(1).describe("Task category (e.g. HR_DOCUMENTATION, IT_ACCESS_SETUP)"),
   assigneeType: z.enum(ONBOARDING_TASK_ASSIGNEES).describe("Who owns the task"),
   dueInDays: z.coerce.number().int().describe("Days relative to the hire date; negative = before day one"),
+});
+
+const sessionShape = z.object({
+  key: z.string().min(1).max(64).describe('Stable key, unique in the template (lowercase letters, digits, "-" or "_"); one session per hire and key'),
+  title: z.string().min(1).describe("Session title shown on the schedule and the calendar invite"),
+  sessionType: z.enum(ONBOARDING_SESSION_TYPES).describe("orientation | training | meeting | compliance"),
+  dayOffset: z.coerce.number().int().describe("Working days from the start date (0 = day one; weekends are skipped)"),
+  fromTime: z.string().optional().describe('Start time "HH:MM" in the company time zone'),
+  toTime: z.string().optional().describe('End time "HH:MM", after fromTime'),
+  location: z.string().optional().describe("Room or meeting link"),
+  required: z.boolean().optional().describe("Attendance is required (default false)"),
+  assigneeType: z.enum(ONBOARDING_SESSION_ASSIGNEES).describe("Who runs it: HR (the hire's recruiter), MANAGER, BUDDY or NEW_HIRE (no host)"),
 });
 
 export function registerOnboardingTemplateTools(server) {
@@ -57,8 +74,14 @@ export function registerOnboardingTemplateTools(server) {
       description: z.string().optional().describe("Optional description of when this template applies"),
       tasks: z.array(taskShape).min(1).describe("Ordered task definitions; at least one"),
       makeDefault: z.coerce.boolean().optional().describe("Promote this template to the tenant default"),
+      sessions: z
+        .array(sessionShape)
+        .max(20)
+        .nullable()
+        .optional()
+        .describe("Orientation and compliance sessions created on handoff; omit to keep the stored list, null for the baseline set, [] for none"),
     },
-    withToolError(async ({ name, description, tasks, makeDefault }) => {
+    withToolError(async ({ name, description, tasks, makeDefault, sessions }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const data = await upsertTemplate({
@@ -66,6 +89,7 @@ export function registerOnboardingTemplateTools(server) {
         name,
         description: description ?? null,
         tasks,
+        ...(sessions !== undefined ? { sessions } : {}),
         makeDefault: Boolean(makeDefault),
         actorId: user.employeeId ?? null,
       });
