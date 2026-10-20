@@ -9,14 +9,17 @@
 //   * rendered into the ONE canonical ErrorEnvelope (ERR-2):
 //       { error: { code:'HR-nnnn', message, details?, correlationId } }
 //   * with 5xx bodies carrying a GENERIC message + HR-5000 only — never the raw
-//     error.message / Prisma / RLS / stack detail (ERR-3 CRITICAL).
+//     error.message / Prisma / RLS / stack detail (ERR-3 CRITICAL). Two 5xx
+//     classes are operational and keep a fixed safe message instead: a flag
+//     that is off (HR-5031) and a dependency that is unavailable (HR-5032,
+//     the domain code in details.code, retryable).
 //
 // 4xx (operational) messages are client-safe and preserved; validation errors
 // (ZodError) map issues[] → details[] under HR-1000.
 import { ZodError } from 'zod';
 
 import { AppError } from '../utils/AppError.js';
-import { HR_ERRORS, GENERIC_INTERNAL } from '../constants/errorCodes.js';
+import { HR_ERRORS, GENERIC_INTERNAL, isDependencyUnavailableCode } from '../constants/errorCodes.js';
 import defaultLogger from '../lib/logger.js';
 
 // Map a bare 4xx status (no HR-nnnn on the error) to a registry code.
@@ -31,6 +34,27 @@ function defaultCodeForStatus(httpStatus) {
         case 428: return HR_ERRORS.PRECONDITION_REQUIRED.code;
         default: return HR_ERRORS.BAD_REQUEST.code;
     }
+}
+
+// Statuses a dependency outage may arrive with: its own 5xx (DAM 502, the AI
+// plane 503, a 504 wait), or a transport classification that carried the
+// upstream's 408 / 429 / 500 along.
+const DEPENDENCY_STATUSES = new Set([408, 429]);
+const OWN_DEPENDENCY_STATUSES = new Set([502, 503, 504]);
+
+/**
+ * HR-5032: a dependency was unavailable. The fixed generic message, the domain
+ * code in details.code and nothing else (the error's own details and message
+ * stay server-side, ERR-3).
+ */
+function dependencyUnavailable(err, status) {
+    return {
+        httpStatus: OWN_DEPENDENCY_STATUSES.has(status) ? status : HR_ERRORS.DEPENDENCY_UNAVAILABLE.httpStatus,
+        code: HR_ERRORS.DEPENDENCY_UNAVAILABLE.code,
+        message: HR_ERRORS.DEPENDENCY_UNAVAILABLE.message,
+        details: { code: err.code, retryable: true },
+        isOperational: true,
+    };
 }
 
 /**
@@ -128,6 +152,9 @@ export function normalizeError(err) {
                 isOperational: true,
             };
         }
+        if ((httpStatus >= 500 || DEPENDENCY_STATUSES.has(httpStatus)) && isDependencyUnavailableCode(err?.code)) {
+            return dependencyUnavailable(err, httpStatus);
+        }
         if (httpStatus >= 500) {
             return {
                 httpStatus,
@@ -145,6 +172,11 @@ export function normalizeError(err) {
             isOperational: err.isOperational ?? true,
         };
     }
+
+    // A client error with no status (e.g. CalendarClientError when the
+    // Communication service was unreachable) that names an unavailable
+    // dependency is HR-5032 too.
+    if (isDependencyUnavailableCode(err?.code)) return dependencyUnavailable(err, null);
 
     // Unknown / unexpected → generic 500 (ERR-3: never leak err.message).
     return {

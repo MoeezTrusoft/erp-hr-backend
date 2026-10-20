@@ -23,6 +23,20 @@
 // Events (ids only): hr.recruitment.referral_submitted.v1 (to the recruiter)
 // and hr.recruitment.referral_bonus_eligible.v1 (to HR). Their builders are
 // here so both services share one payload shape.
+//
+// Phase 6:
+//   * a FORFEITED bonus keeps its coded reason and note on the row
+//     (bonusForfeitReason, bonusNote), written by the HR decision and by the
+//     clock (HIRE_SEPARATED), and returned on the HR list;
+//   * the referrer's own view (selfReferralView) never shows a suppressed
+//     referral (do-not-contact, archived or consent-withdrawn contact) as
+//     closed at once: it reads SUBMITTED like any fresh referral and REJECTED
+//     only SUPPRESSED_REFERRAL_CLOSE_DAYS after it was made. HR sees the
+//     true status;
+//   * the agency rule at referral intake (recordAgencyOwnedReferralInTx): a
+//     referral of a candidate an agency owns inside its window is recorded as
+//     DUPLICATE with no application and no bonus, the same answer a second
+//     agency's submission gets (agency-submission.service.js).
 // The same singleton as lib/prisma.js, through the re-export the application
 // workflow uses: the workflow imports this module, and its suites replace
 // config/prisma.js (a direct lib/prisma import would load the real client).
@@ -47,6 +61,7 @@ import {
     normalizeForfeitReason,
     referralStatusForStage,
     toHrReferral,
+    toSelfReferral,
 } from "../lib/internal-mobility.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { logAction } from "../utils/logs.js";
@@ -99,7 +114,7 @@ function referralEvent(eventName, referral, ctx, payload) {
  * an applicant already in process). Routed to the requisition's recruiter,
  * falling back to its hiring manager.
  */
-export function referralSubmittedEvent(referral, ctx = {}, { recruiterId = null, requestedById = null } = {}) {
+export function referralSubmittedEvent(referral, ctx = {}, { recruiterId = null, requestedById = null, duplicateReason = null } = {}) {
     return referralEvent("hr.recruitment.referral_submitted.v1", referral, ctx, {
         referralId: idStr(referral?.id),
         requisitionId: idStr(referral?.requisitionId),
@@ -109,7 +124,103 @@ export function referralSubmittedEvent(referral, ctx = {}, { recruiterId = null,
         status: referral?.status ?? null,
         recruiterId: idStr(recruiterId),
         requestedById: idStr(requestedById),
+        // A coded reason, only on a DUPLICATE the agency rule made.
+        ...(duplicateReason ? { duplicateReason } : {}),
     });
+}
+
+// ── The referrer's own view ─────────────────────────────────────────────────
+
+// How long a suppressed referral reads as SUBMITTED to its referrer before it
+// reads REJECTED. A fixed delay, measured from the referral, so the closing
+// time says nothing about why: a normal referral can also be turned down at
+// screening within a few weeks, and one that is still open after this long is
+// just as plausible.
+export const SUPPRESSED_REFERRAL_CLOSE_DAYS = 21;
+
+/**
+ * A suppressed referral (pure): intake recorded it REJECTED with no candidate
+ * link and no application. Every other referral has a candidate (a DUPLICATE
+ * links the existing one; a SUBMITTED one its new application), so this shape
+ * is only ever the suppression path; no column is needed.
+ */
+export function isSuppressedReferral(row) {
+    return row?.status === REFERRAL_STATUS.REJECTED && row?.candidateId == null && row?.applicationId == null;
+}
+
+/**
+ * The referrer's own view (toSelfReferral) with the suppression masked: a
+ * suppressed referral is indistinguishable from a fresh SUBMITTED one (bonus
+ * NOT_ELIGIBLE, like every fresh referral) until SUPPRESSED_REFERRAL_CLOSE_DAYS
+ * after it was made, then reads REJECTED like any unsuccessful referral.
+ * The row needs status, candidateId, applicationId and createdAt.
+ */
+export function selfReferralView(row, { jobTitle = null, now = new Date() } = {}) {
+    const view = toSelfReferral(row, { jobTitle });
+    if (!isSuppressedReferral(row)) return view;
+    const made = row.createdAt ? new Date(row.createdAt) : null;
+    const closed = made && !Number.isNaN(made.getTime()) && new Date(now).getTime() >= addDays(made, SUPPRESSED_REFERRAL_CLOSE_DAYS).getTime();
+    return { ...view, status: closed ? REFERRAL_STATUS.REJECTED : REFERRAL_STATUS.SUBMITTED, bonusStatus: BONUS_STATUS.NOT_ELIGIBLE };
+}
+
+// ── The agency rule at referral intake ──────────────────────────────────────
+
+export const REFERRAL_DUPLICATE_AGENCY_OWNED = "AGENCY_OWNERSHIP";
+
+/**
+ * The agency's live claim on a candidate, or null (pure): an ownerAgencyId
+ * whose ownershipExpiresAt is still ahead. The same window the agency
+ * duplicate rule reads (agency-submission.service.js duplicateReasonFor).
+ */
+export function liveAgencyOwnership(candidate, now = new Date()) {
+    const agencyId = positiveInt(candidate?.ownerAgencyId);
+    const expires = candidate?.ownershipExpiresAt ? new Date(candidate.ownershipExpiresAt) : null;
+    if (!agencyId || !expires || Number.isNaN(expires.getTime())) return null;
+    return expires.getTime() > new Date(now).getTime() ? { agencyId, expiresAt: expires } : null;
+}
+
+/**
+ * On the referral's transaction, for an EXISTING candidate: when an agency
+ * owns them inside its window, record the referral as DUPLICATE (candidate
+ * linked, no application, so no bonus clock), tell the recruiter with the
+ * coded reason, and note the agency in the audit trail. Returns that referral,
+ * or null when no agency holds a live claim (the caller goes on as before).
+ *
+ * The referrer sees DUPLICATE, the same status as "already in process"; the
+ * agency is never named to them.
+ *
+ * @param {object} tx the referral's tenant transaction
+ * @param {{ tenantId: string, candidateId: number, base: object, ctx?: object, routing?: object, now?: Date }} args
+ *   base: the referral columns the caller built (tenantId, requisitionId,
+ *   referrerEmployeeId, relationship, note)
+ */
+export async function recordAgencyOwnedReferralInTx(tx, { tenantId, candidateId, base, ctx = {}, routing = {}, now = new Date() } = {}) {
+    const id = positiveInt(candidateId);
+    if (!tenantId || !id) return null;
+    const owner = await tx.candidate.findFirst({
+        where: withTenant(tenantId, { id }),
+        select: { id: true, ownerAgencyId: true, ownershipExpiresAt: true },
+    });
+    const claim = liveAgencyOwnership(owner, now);
+    if (!claim) return null;
+
+    const referral = await tx.internalReferral.create({
+        data: { ...base, tenantId, candidateId: id, status: REFERRAL_STATUS.DUPLICATE },
+    });
+    await enqueueHrDomainEvent(
+        tx,
+        referralSubmittedEvent(referral, ctx, { ...routing, duplicateReason: REFERRAL_DUPLICATE_AGENCY_OWNED }),
+    );
+    await logAction({
+        employeeId: positiveInt(base?.referrerEmployeeId),
+        type: "CREATE",
+        module: "InternalReferral",
+        result: "SUCCESS",
+        notes: `Referral "${referral.id}" recorded DUPLICATE: candidate #${id} is owned by agency ${claim.agencyId} until ${claim.expiresAt.toISOString()}`,
+        tenantId,
+    });
+    log.info({ tenantId, referralId: referral.id, agencyId: claim.agencyId }, "referral of an agency-owned candidate recorded as duplicate");
+    return referral;
 }
 
 /** A referral bonus's wait is over and the hire is still here: HR decides. */
@@ -282,10 +393,23 @@ export async function listReferrals({
     const titles = await requisitionTitles(tenantId, rows.map((r) => r.requisitionId));
     const canSeeCompensation = scope?.canSeeCompensation === true;
     return {
-        items: rows.map((row) => toHrReferral(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation })),
+        items: rows.map((row) => hrReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation })),
         total,
         page: pageNo,
         pageSize: size,
+    };
+}
+
+/**
+ * HR's view of a referral (toHrReferral) plus the Phase 6 forfeit columns: the
+ * coded reason for anyone who sees the row, the free-text note only for a
+ * compensation scope (it explains a pay decision).
+ */
+export function hrReferralView(row, { jobTitle = null, canSeeCompensation = false } = {}) {
+    return {
+        ...toHrReferral(row, { jobTitle, canSeeCompensation }),
+        bonusForfeitReason: row.bonusForfeitReason ?? null,
+        bonusNote: canSeeCompensation ? row.bonusNote ?? null : null,
     };
 }
 
@@ -307,8 +431,10 @@ export async function requisitionTitles(tenantId, ids, db = prisma) {
  * currency), PAID (from APPROVED), FORFEITED (from ELIGIBLE or APPROVED, with a
  * coded reason). The caller passes the version it read; a stale one is a 409.
  *
- * The forfeit reason has no column on internal_referrals: it is written to the
- * audit trail (logAction), see the Phase 5 note.
+ * A FORFEITED decision writes its coded reason and note on the row
+ * (bonusForfeitReason, bonusNote) and to the audit trail. FORFEITED is final
+ * (no decision leaves it), but every other decision clears both columns, so a
+ * row can never carry a reason for a status it is not in.
  */
 export async function updateReferralBonus({
     tenantId,
@@ -359,6 +485,8 @@ export async function updateReferralBonus({
                 where: withTenant(tenantId, { id, version: expected, bonusStatus: existing.bonusStatus }),
                 data: {
                     ...decision,
+                    bonusForfeitReason: forfeit ? forfeit.reason : null,
+                    bonusNote: forfeit ? forfeit.note : null,
                     bonusDecidedById: actor,
                     bonusDecidedAt: new Date(now),
                     version: { increment: 1 },
@@ -382,7 +510,7 @@ export async function updateReferralBonus({
     );
 
     const titles = await requisitionTitles(tenantId, [row.requisitionId]);
-    return toHrReferral(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation: true });
+    return hrReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation: true });
 }
 
 // ── The bonus clock ─────────────────────────────────────────────────────────
@@ -394,6 +522,9 @@ const clampLimit = (limit) => {
     const n = Number.isFinite(Number(limit)) ? Math.floor(Number(limit)) : DEFAULT_BONUS_JOB_LIMIT;
     return n <= 0 ? DEFAULT_BONUS_JOB_LIMIT : Math.min(n, MAX_BONUS_JOB_LIMIT);
 };
+
+// The clock's own forfeit: the referred hire has left (BONUS_FORFEIT_REASONS).
+export const AUTOMATIC_FORFEIT_REASON = "HIRE_SEPARATED";
 
 const EMPLOYMENT_SELECT = Object.freeze({ id: true, separatedAt: true, status: true, employement_status: true });
 
@@ -445,6 +576,8 @@ async function settleBonus(tenantId, referralId, now) {
                     ? { bonusStatus: BONUS_STATUS.ELIGIBLE, version: { increment: 1 } }
                     : {
                           bonusStatus: BONUS_STATUS.FORFEITED,
+                          bonusForfeitReason: AUTOMATIC_FORFEIT_REASON,
+                          bonusNote: null,
                           bonusDecidedAt: new Date(now),
                           bonusDecidedById: null,
                           version: { increment: 1 },
@@ -458,7 +591,7 @@ async function settleBonus(tenantId, referralId, now) {
                     type: "UPDATE",
                     module: "InternalReferral",
                     result: "SUCCESS",
-                    notes: `Referral "${referral.id}" bonus PENDING -> FORFEITED (reason HIRE_SEPARATED, automatic)`,
+                    notes: `Referral "${referral.id}" bonus PENDING -> FORFEITED (reason ${AUTOMATIC_FORFEIT_REASON}, automatic)`,
                     tenantId,
                 });
                 return "forfeited";

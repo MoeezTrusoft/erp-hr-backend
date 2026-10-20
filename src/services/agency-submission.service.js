@@ -30,6 +30,14 @@
 // application is tagged with sourceDetail "agency-submission:<id>", so a review
 // retried after a failure between the two resumes onto that application instead
 // of reading it as a duplicate.
+//
+// Phase 6 — the resume. An agency can no longer attach a DAM media id it typed
+// (any id, of any tenant, could be put on a candidate and parsed). It sends the
+// file with the submission instead (PDF, validated like a portal upload); this
+// service stores it in DAM under the tenant's context and records the id it got
+// back with resumeSource AGENCY_UPLOAD. A bare resumeMediaId is refused (400),
+// and ACCEPT carries a snapshot's resume onto the candidate only when this
+// flow uploaded it (a Phase 5 submission's typed id is dropped).
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -44,6 +52,8 @@ import { AGENCY_STATUS, ASSIGNMENT_STATUS } from "../lib/agency-access.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { createCandidate } from "./candidateService.js";
 import { createApplication } from "./applicationService.js";
+import { deleteDamAsset, uploadFileToDAM } from "./dam.media.service.js";
+import { validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
 import { assertAgencyPortalEnabled, isRequisitionOpenForAgencies } from "./recruitment-agency.service.js";
 
 const fail = (message, code, status = 400, details) =>
@@ -67,6 +77,47 @@ const COUNTED_STATUSES = Object.freeze(["PENDING_REVIEW", "ACCEPTED", "REJECTED"
 const LIVE_STATUSES = Object.freeze(["PENDING_REVIEW", "ACCEPTED"]);
 
 const submissionMarker = (id) => `agency-submission:${id}`;
+
+// The only resume an agency may attach is one this flow uploaded.
+export const AGENCY_RESUME_SOURCE = "AGENCY_UPLOAD";
+const AGENCY_RESUME_MIME = "application/pdf";
+
+/**
+ * Validate the agency's resume file (pure): a PDF, the portal upload rules
+ * (extension, base64, 10 MB, the %PDF- signature). null when none was sent.
+ */
+export function normalizeAgencyResume(resume) {
+    if (resume == null) return null;
+    if (typeof resume !== "object") throw fail("resume must be { fileName, mimeType, contentBase64 }", "HR-RECRUITMENT-AGENCY-RESUME-INVALID");
+    const mime = String(resume.mimeType ?? "").split(";")[0].trim().toLowerCase();
+    if (mime !== AGENCY_RESUME_MIME) throw fail("The resume must be a PDF file", "HR-RECRUITMENT-AGENCY-RESUME-INVALID");
+    try {
+        return validateOnboardingUpload({ fileName: resume.fileName, mimeType: mime, contentBase64: resume.contentBase64 });
+    } catch (err) {
+        throw fail(err?.message || "The resume file is not valid", "HR-RECRUITMENT-AGENCY-RESUME-INVALID");
+    }
+}
+
+/** Store the validated resume in DAM (under the caller's tenant context); its media id. */
+async function uploadAgencyResume(file) {
+    let uploaded = null;
+    try {
+        uploaded = await uploadFileToDAM({ buffer: file.buffer, mimetype: file.mimeType, originalname: file.fileName }, "document");
+    } catch {
+        uploaded = null;
+    }
+    const mediaId = Number(Array.isArray(uploaded) ? uploaded[0]?.id : uploaded?.id);
+    if (!Number.isInteger(mediaId) || mediaId <= 0) {
+        throw fail("The resume could not be stored; please try again", "HR-RECRUITMENT-AGENCY-RESUME-UPLOAD-UNAVAILABLE", 502);
+    }
+    return mediaId;
+}
+
+/** The resume a snapshot may carry onto a candidate: only one this flow uploaded. */
+export function verifiedSnapshotResume(snapshot) {
+    const id = Number(snapshot?.resumeMediaId);
+    return snapshot?.resumeSource === AGENCY_RESUME_SOURCE && Number.isInteger(id) && id > 0 ? id : null;
+}
 
 const positiveId = (value, what) => {
     const n = Number(value);
@@ -198,17 +249,21 @@ function text(value, key, max, { required = false } = {}) {
 export function normalizeSubmissionInput(input = {}) {
     const email = text(input.email, "email", 254, { required: true }).toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw fail("email must be an email address", "HR-RECRUITMENT-AGENCY-SUBMISSION-INVALID");
-    let resumeMediaId = null;
-    if (input.resumeMediaId != null) resumeMediaId = positiveId(input.resumeMediaId, "resume media");
+    // A typed media id cannot be verified as this tenant's or as uploaded by
+    // the agency: refuse it rather than attach it (the file goes in `resume`).
+    if (input.resumeMediaId != null && input.resumeMediaId !== "") {
+        throw fail("Attach the resume file itself; a media id cannot be attached to a submission", "HR-RECRUITMENT-AGENCY-RESUME-UNVERIFIED");
+    }
     return {
         snapshot: {
             firstName: text(input.firstName, "firstName", 100, { required: true }),
             lastName: text(input.lastName, "lastName", 100, { required: true }),
             email,
             phone: text(input.phone, "phone", 40),
-            resumeMediaId,
+            resumeMediaId: null,
         },
         note: text(input.note, "note", SUBMISSION_NOTE_MAX, { required: true }),
+        resume: normalizeAgencyResume(input.resume),
     };
 }
 
@@ -238,12 +293,34 @@ export async function submitAgencyCandidate({ tenantId, scope, userId, input = {
     assertAgencyPortalEnabled();
     assertAgencyScope(scope);
     const requisitionId = positiveId(input.requisitionId, "requisition");
-    const { snapshot, note } = normalizeSubmissionInput(input);
+    const { snapshot, note, resume } = normalizeSubmissionInput(input);
     const agencyId = agencyIdOf(scope);
     const notFound = () => fail("Requisition not found", "HR-RECRUITMENT-REQUISITION-NOT-FOUND", 404);
     if (!agencyId || !scope.agencyRequisitionIds?.includes(requisitionId)) throw notFound();
 
-    const row = await tenantTransaction(prisma, async (tx) => {
+    // The file is stored before the submission's transaction (no DAM call
+    // holds a lock); a submission that is then refused removes it again.
+    if (resume) {
+        snapshot.resumeMediaId = await uploadAgencyResume(resume);
+        snapshot.resumeSource = AGENCY_RESUME_SOURCE;
+    }
+
+    let row;
+    try {
+        row = await recordSubmission({ tenantId, agencyId, requisitionId, userId, snapshot, note, now, notFound });
+    } catch (err) {
+        if (snapshot.resumeMediaId) {
+            const removed = await deleteDamAsset(snapshot.resumeMediaId).catch(() => ({ ok: false }));
+            if (!removed?.ok) logger.warn({ tenantId, agencyId, requisitionId, mediaId: snapshot.resumeMediaId }, "agency submission refused; resume left in DAM");
+        }
+        throw err;
+    }
+    logger.info({ tenantId, agencyId, requisitionId, submissionId: row.id, withResume: Boolean(snapshot.resumeMediaId) }, "agency submission received");
+    return agencySubmissionView(row);
+}
+
+async function recordSubmission({ tenantId, agencyId, requisitionId, userId, snapshot, note, now, notFound }) {
+    return tenantTransaction(prisma, async (tx) => {
         // One submitter at a time per agency and requisition, so two concurrent
         // submissions cannot both squeeze under maxSubmissions.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:agency-submit:${agencyId}:${requisitionId}`}))`;
@@ -293,8 +370,6 @@ export async function submitAgencyCandidate({ tenantId, scope, userId, input = {
         }));
         return created;
     });
-    logger.info({ tenantId, agencyId, requisitionId, submissionId: row.id }, "agency submission received");
-    return agencySubmissionView(row);
 }
 
 /** The caller's agency's own submissions. */
@@ -436,7 +511,7 @@ export async function reviewAgencySubmission({ tenantId, actorId = null, id, dec
             email,
             phone: snap.phone ?? null,
             source: "AGENCY",
-            resumeMediaId: snap.resumeMediaId ?? null,
+            resumeMediaId: verifiedSnapshotResume(snap),
             tenantId,
             createdById: actorId,
         });

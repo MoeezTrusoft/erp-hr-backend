@@ -14,7 +14,9 @@
 // the same transaction as the row, routed to the recipient: the configured
 // alertRecipientId, else the tenant's recruiting lead when one can be found
 // (an active employee titled as leading recruiting / talent acquisition),
-// else null (the hub has nobody to notify; the alert is still listed).
+// else (Phase 6) the HR role: recipientId null with notifyRole "HR" on the
+// payload and the alert's details, the same HR-role path the referral bonus
+// event uses, so an alert is never announced to nobody.
 //
 // The metric arithmetic is the canonical one (src/lib/recruitmentMetrics.js):
 // time to fill per requisition, the offer outcome rates and the stage SLA the
@@ -93,6 +95,9 @@ const requireTenant = (tenantId) => {
 
 // ── Event ───────────────────────────────────────────────────────────────────
 
+/** Who an alert goes to when no recipient is configured and no lead is found. */
+export const ALERT_FALLBACK_ROLE = "HR";
+
 /** ids and figures only; the recipient is a routing id. */
 export function recruitmentAnalyticsAlertRaisedEvent(alert, ctx = {}, extra = {}) {
     if (!alert?.tenantId) return null;
@@ -110,6 +115,8 @@ export function recruitmentAnalyticsAlertRaisedEvent(alert, ctx = {}, extra = {}
             value: toNumber(alert.value),
             threshold: toNumber(alert.threshold),
             recipientId: extra?.recipientId != null ? String(extra.recipientId) : null,
+            // No person to route to: the Notification Hub sends it to the HR role.
+            ...(extra?.recipientId == null ? { notifyRole: ALERT_FALLBACK_ROLE } : {}),
         },
     };
 }
@@ -387,7 +394,8 @@ async function applyEvaluation({ tenantId, metric, value, threshold, details, wi
             : await tx.recruitmentAlert.findFirst({ where: withTenant(tenantId, { metric, periodStart: window.periodStart }) });
         const plan = planAlertTransition({ active, samePeriod, value, threshold });
         const at = new Date(now);
-        const stamped = { ...details, recipientId: recipientId ?? null };
+        const routing = (id) => (id == null ? { recipientId: null, notifyRole: ALERT_FALLBACK_ROLE } : { recipientId: id });
+        const stamped = { ...details, ...routing(recipientId ?? null) };
 
         let row = null;
         if (plan.action === "CREATE") {
@@ -423,7 +431,7 @@ async function applyEvaluation({ tenantId, metric, value, threshold, details, wi
             row = await tx.recruitmentAlert.update({
                 where: { id: active.id },
                 // The episode keeps the recipient its announcement went to.
-                data: { value, threshold, details: { ...details, recipientId: active.details?.recipientId ?? null }, lastSeenAt: at },
+                data: { value, threshold, details: { ...details, ...routing(active.details?.recipientId ?? null) }, lastSeenAt: at },
             });
         } else if (plan.action === "RESOLVE") {
             // value keeps the last breaching figure; the figure it resolved at

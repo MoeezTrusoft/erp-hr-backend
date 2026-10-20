@@ -14,49 +14,33 @@
 //   * UNIFORM 404 — unknown token, disabled feed, flag off, unknown channel and
 //     an upper-case channel segment all answer the same bodyless-detail 404,
 //     so the endpoint is not an oracle for which tokens exist.
-//   * RATE LIMITING — an in-memory fixed window per IP. The portal's limiter in
-//     publicPortal.routes.js is not exported, so this router carries a copy of
-//     the same idiom; a board crawls a feed a few times an hour.
+//   * RATE LIMITING — a fixed window per IP, shared by every pod through Redis
+//     (lib/rate-limit.util.js; memory when Redis is down); a board crawls a
+//     feed a few times an hour.
 //   * CACHING — a 200 is public for 15 minutes, which is as fresh as any board
 //     reads it and keeps a crawler from re-running the query on every hit.
 import express from "express";
 
 import logger from "../lib/logger.js";
+import { rateLimit, resetRateLimitMemory } from "../lib/rate-limit.util.js";
 import { getJobFeed } from "../services/job-feed.service.js";
 
 const WINDOW_MS = 60_000;
 const FEED_LIMIT = 30; // requests per IP per window
-const MAX_BUCKETS = 10_000;
 
-const buckets = new Map(); // ip -> { count, resetAt }
-let lastSweep = Date.now();
+// The feed answers plain text and has never sent X-RateLimit-* headers (its
+// 200s are publicly cached); only the 429 and its Retry-After are kept.
+const feedRateLimit = rateLimit({
+    routeClass: "feed",
+    limit: FEED_LIMIT,
+    windowMs: WINDOW_MS,
+    headers: false,
+    onLimited: (req, res) => res.status(429).type("text/plain").send("Too many requests"),
+});
 
-function feedRateLimit(req, res, next) {
-    const now = Date.now();
-    // Sweep expired windows so spoofed source addresses cannot grow the map
-    // without bound; a full map under a distributed flood is cleared outright.
-    if (now - lastSweep > WINDOW_MS || buckets.size > MAX_BUCKETS) {
-        for (const [key, bucket] of buckets) if (bucket.resetAt <= now) buckets.delete(key);
-        if (buckets.size > MAX_BUCKETS) buckets.clear();
-        lastSweep = now;
-    }
-    const key = req.ip ?? "unknown";
-    const bucket = buckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-        buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
-        return next();
-    }
-    bucket.count += 1;
-    if (bucket.count > FEED_LIMIT) {
-        res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
-        return res.status(429).type("text/plain").send("Too many requests");
-    }
-    return next();
-}
-
-/** Test seam: forget every rate-limit window. */
+/** Test seam: forget every in-memory rate-limit window. */
 export function resetJobFeedRateLimit() {
-    buckets.clear();
+    resetRateLimitMemory();
 }
 
 const notFound = (res) => res.status(404).type("text/plain").send("Not found");

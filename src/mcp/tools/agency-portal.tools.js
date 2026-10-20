@@ -95,7 +95,12 @@ export function registerAgencyPortalTools(server) {
             lastName: z.string().min(1).max(100),
             email: z.string().min(3).max(254),
             phone: z.string().max(40).optional(),
-            resumeMediaId: z.coerce.number().int().positive().optional().describe("DAM media id of the resume"),
+            // Phase 6: the file itself (a typed DAM media id is refused by the service).
+            resume: z.object({
+                fileName: z.string().min(1).max(255),
+                mimeType: z.literal("application/pdf"),
+                contentBase64: z.string().min(1).max(14_000_000).describe("The PDF, base64 (at most 10 MB decoded)"),
+            }).optional().describe("The candidate's resume as a PDF"),
             note: z.string().min(1).max(2000).describe("Why this candidate fits"),
         },
         withToolError(async (input) => {

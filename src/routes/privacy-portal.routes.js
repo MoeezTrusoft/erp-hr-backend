@@ -7,8 +7,9 @@
 //   * TENANT PINNING — the tenant comes from the portal host mapping (or the
 //     trusted edge header), via publicPortal.routes.js resolvePortalTenant;
 //     never from the body. No tenant is the same 404 as an unknown site.
-//   * RATE LIMITS — an in-memory fixed window per IP and route class, the
-//     intake class strict (it sends email), verification looser.
+//   * RATE LIMITS — a fixed window per IP and route class, shared by every
+//     pod through Redis (lib/rate-limit.util.js; memory when Redis is down),
+//     the intake class strict (it sends email), verification looser.
 //   * NO ORACLE — intake answers the same 202 whether or not the address is
 //     known; verification answers the same neutral page whatever the token
 //     was (live, used, expired, malformed, another tenant's).
@@ -21,44 +22,26 @@
 import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import logger from "../lib/logger.js";
+import { rateLimit as sharedRateLimit, resetRateLimitMemory } from "../lib/rate-limit.util.js";
 import { resolvePortalTenant } from "./publicPortal.routes.js";
 import { submitPortalDsr, verifyPortalDsr } from "../services/dsr-portal.service.js";
 
 export const privacyPortalRouter = express.Router();
 
-// ── Rate limiting (fixed window, in memory; same posture as the portal) ─────
+// ── Rate limiting (fixed window, shared through Redis: lib/rate-limit.util.js)
 const WINDOW_MS = 60_000;
 export const PRIVACY_PORTAL_LIMITS = Object.freeze({ dsrSubmit: 5, dsrVerify: 30 });
-const buckets = new Map();
-let lastSweep = Date.now();
 
-function rateLimit(routeClass) {
-    const limit = PRIVACY_PORTAL_LIMITS[routeClass];
-    return (req, res, next) => {
-        const now = Date.now();
-        if (now - lastSweep > WINDOW_MS) {
-            for (const [k, v] of buckets) if (v.resetAt <= now) buckets.delete(k);
-            lastSweep = now;
-        }
-        const key = `${routeClass}:${req.ip ?? "unknown"}`;
-        let bucket = buckets.get(key);
-        if (!bucket || bucket.resetAt <= now) {
-            bucket = { count: 0, resetAt: now + WINDOW_MS };
-            buckets.set(key, bucket);
-        }
-        bucket.count += 1;
-        res.setHeader("X-RateLimit-Limit", String(limit));
-        res.setHeader("X-RateLimit-Remaining", String(Math.max(0, limit - bucket.count)));
-        if (bucket.count > limit) {
-            res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
-            return res.status(429).json({ success: false, message: "Too many requests" });
-        }
-        return next();
-    };
-}
+const limiters = Object.freeze(Object.fromEntries(
+    Object.entries(PRIVACY_PORTAL_LIMITS).map(([routeClass, limit]) => [
+        routeClass,
+        sharedRateLimit({ routeClass: `privacy:${routeClass}`, limit, windowMs: WINDOW_MS }),
+    ]),
+));
+const rateLimit = (routeClass) => limiters[routeClass];
 
-/** Test hook: forget every bucket. */
-export const resetPrivacyPortalRateLimits = () => buckets.clear();
+/** Test hook: forget every in-memory window. */
+export const resetPrivacyPortalRateLimits = () => resetRateLimitMemory();
 
 const NOT_FOUND = Object.freeze({ success: false, message: "Not found" });
 const UNAVAILABLE = Object.freeze({ success: false, message: "Privacy requests are not available" });

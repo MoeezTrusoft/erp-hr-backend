@@ -45,7 +45,49 @@ export const HR_ERRORS = {
     // -DISABLED, e.g. HR-RECRUITMENT-SCORING-DISABLED). Operational and safe to
     // name, so clients can show "turned off" instead of a generic failure.
     FEATURE_DISABLED: { code: 'HR-5031', httpStatus: 503, message: 'This feature is turned off' },
+    // A service this request depends on (DAM, the AI plane, the calendar, the
+    // e-signature provider) could not be reached or did not answer in time.
+    // Operational and retryable: the message is generic and fixed, the domain
+    // code (one of DEPENDENCY_UNAVAILABLE_CODES) rides in details.code.
+    DEPENDENCY_UNAVAILABLE: {
+        code: 'HR-5032',
+        httpStatus: 503,
+        message: 'A service this request depends on is temporarily unavailable; please try again',
+    },
 };
+
+// The client-facing domain codes that mean "a dependency was unavailable",
+// reported as HR-5032 (with the domain code in details.code) when they are
+// thrown with a 5xx status, or with no status at all. Any other 5xx stays
+// HR-5000 with no detail (ERR-3). A 4xx with one of these codes (e.g. the 409
+// HR-RECRUITMENT-SLOT-UNAVAILABLE "pick another slot") is an ordinary 4xx.
+export const DEPENDENCY_UNAVAILABLE_CODES = Object.freeze([
+    'HR-AI-PLANE-UNAVAILABLE',
+    'HR-ONBOARDING-DAM-UNAVAILABLE',
+    'HR-RECRUITMENT-AI-UNAVAILABLE',
+    'HR-RECRUITMENT-CALENDAR-TIMEOUT',
+    'HR-RECRUITMENT-CALENDAR-UNAVAILABLE',
+    'HR-RECRUITMENT-DSR-EXPORT-UPLOAD-FAILED',
+    'HR-RECRUITMENT-ESIGN-PROVIDER-UNAVAILABLE',
+    'HR-RECRUITMENT-EVALUATION-UPLOAD-FAILED',
+    'HR-RECRUITMENT-OFFER-LETTER-DOCUMENT-UNAVAILABLE',
+    'HR-RECRUITMENT-OFFER-LETTER-UPLOAD-FAILED',
+    'HR-RESUME-DAM-FETCH',
+    'HR-RESUME-PLANE-PENDING',
+]);
+
+const DEPENDENCY_CODE_SET = new Set(DEPENDENCY_UNAVAILABLE_CODES);
+
+/**
+ * True for a domain code that names an unavailable dependency: one listed
+ * above, or any HR-*-UNAVAILABLE code (new dependency codes follow that
+ * naming). Only meaningful together with a 5xx (or missing) status.
+ * @param {unknown} code
+ */
+export function isDependencyUnavailableCode(code) {
+    if (typeof code !== 'string' || !/^HR-[A-Z][A-Z0-9-]{1,80}$/.test(code)) return false;
+    return DEPENDENCY_CODE_SET.has(code) || /-UNAVAILABLE$/.test(code);
+}
 
 // Fast reverse lookup: HR-nnnn code string → definition. Lets the terminal
 // handler and the MCP mapper resolve a code that arrived on an AppError.

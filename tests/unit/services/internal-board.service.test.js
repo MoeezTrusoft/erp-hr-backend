@@ -280,7 +280,8 @@ describe("referrals", () => {
         DNC.add("omar.khan@mail.test");
         const res = await refer();
         expect(Object.keys(res).sort()).toEqual(["bonusStatus", "id", "jobTitle", "relationship", "requisitionId", "status", "submittedAt"]);
-        expect(res.status).toBe("REJECTED");
+        // Phase 6: the referrer cannot tell a suppressed referral from a fresh one.
+        expect(res.status).toBe("SUBMITTED");
         expect(f.all("candidate")).toHaveLength(0);
         expect(f.all("application")).toHaveLength(0);
         expect(f.all("internalReferral")[0]).toMatchObject({ candidateId: null, applicationId: null, status: "REJECTED" });
@@ -290,7 +291,7 @@ describe("referrals", () => {
         DNC.clear();
         f.seed("candidate", { tenantId: T1, email: "lina@mail.test", firstName: "Lina", consentStatus: "WITHDRAWN" });
         const withdrawn = await refer({ email: "lina@mail.test", firstName: "Lina" });
-        expect(withdrawn.status).toBe("REJECTED");
+        expect(withdrawn.status).toBe("SUBMITTED");
         expect(f.all("application")).toHaveLength(0);
     });
 
@@ -315,5 +316,46 @@ describe("referrals", () => {
         expect(mine.items).toEqual([
             { id: expect.any(Number), requisitionId: ids.internal, jobTitle: "Backend Engineer", relationship: "Former colleague", status: "SUBMITTED", bonusStatus: "NOT_ELIGIBLE", submittedAt: expect.any(String) },
         ]);
+    });
+
+    // Phase 6 — the self list cannot tell a suppressed referral from a fresh one.
+    it("shows a suppressed referral exactly like a fresh one in the referrer's own list", async () => {
+        await refer();
+        DNC.add("hidden@mail.test");
+        await refer({ email: "hidden@mail.test", firstName: "Hidden" });
+        const rows = f.all("internalReferral");
+        expect(rows.map((r) => r.status).sort()).toEqual(["REJECTED", "SUBMITTED"]); // HR keeps the truth
+        const mine = await asUser(() => svc.listMyReferrals({ tenantId: T1, employeeId: ME }));
+        expect(mine.total).toBe(2);
+        const strip = ({ id, submittedAt, ...rest }) => rest;
+        expect(strip(mine.items[0])).toEqual(strip(mine.items[1]));
+        for (const item of mine.items) {
+            expect(Object.keys(item).sort()).toEqual(["bonusStatus", "id", "jobTitle", "relationship", "requisitionId", "status", "submittedAt"]);
+            expect(item).toMatchObject({ status: "SUBMITTED", bonusStatus: "NOT_ELIGIBLE" });
+        }
+    });
+
+    // Phase 6 — the agency rule at referral intake.
+    it("records a DUPLICATE with no application for a contact an agency owns inside its window", async () => {
+        const owned = f.seed("candidate", {
+            tenantId: T1, email: "omar.khan@mail.test", firstName: "O.", status: "active",
+            ownerAgencyId: 4, ownershipExpiresAt: new Date(NOW.getTime() + 10 * 24 * 60 * 60 * 1000),
+        });
+        const res = await refer();
+        expect(res.status).toBe("DUPLICATE");
+        expect(f.all("application")).toHaveLength(0);
+        expect(f.all("internalReferral")[0]).toMatchObject({ candidateId: owned.id, applicationId: null, status: "DUPLICATE" });
+        const event = f.events().find((e) => e.name === "hr.recruitment.referral_submitted.v1");
+        expect(event.payload).toMatchObject({ status: "DUPLICATE", duplicateReason: "AGENCY_OWNERSHIP" });
+    });
+
+    it("takes an expired agency window as free and refers the contact normally", async () => {
+        f.seed("candidate", {
+            tenantId: T1, email: "omar.khan@mail.test", firstName: "O.", status: "active",
+            ownerAgencyId: 4, ownershipExpiresAt: new Date(NOW.getTime() - 1000),
+        });
+        const res = await refer();
+        expect(res.status).toBe("SUBMITTED");
+        expect(f.all("application")).toHaveLength(1);
     });
 });

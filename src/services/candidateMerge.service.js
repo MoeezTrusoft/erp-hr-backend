@@ -25,6 +25,13 @@
 //     not be re-identified by being merged), either row under legal hold, and
 //     an ACTIVE application overlap (both non-terminal on one requisition)
 //     where the recruiter has not explicitly confirmed keep-target.
+//   * AGENCY OWNERSHIP (Phase 6) — the survivor carries the earliest LIVE
+//     ownership (ownerAgencyId with ownershipExpiresAt still ahead): the
+//     agency that introduced the person first keeps the claim, and a merge can
+//     neither drop a live claim nor extend one. Two live owners from DIFFERENT
+//     agencies are a conflict: the target's ownership stands and the audit
+//     trail records the source's. The moved applications keep their own
+//     ownerAgencyId (the fee is per application).
 import prisma from "../config/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -35,7 +42,46 @@ const fail = (message, status, code, details) =>
 
 const TERMINAL_STAGES = new Set(["hired", "rejected", "withdrawn"]);
 
-export const mergeCandidates = async ({ tenantId, sourceId, targetId, actorId, keepTargetOnConflict = true } = {}) => {
+const liveOwnership = (row, now) => {
+    const agencyId = Number(row?.ownerAgencyId);
+    const expires = row?.ownershipExpiresAt ? new Date(row.ownershipExpiresAt) : null;
+    if (!Number.isInteger(agencyId) || agencyId <= 0 || !expires || Number.isNaN(expires.getTime())) return null;
+    return expires.getTime() > now.getTime() ? { ownerAgencyId: agencyId, ownershipExpiresAt: expires } : null;
+};
+
+/**
+ * The agency ownership the survivor ends with (pure).
+ *
+ *   * neither row owned live: the target's columns stay as they are;
+ *   * one live owner: that ownership;
+ *   * two live owners, the same agency: the earliest introduction, i.e. the
+ *     window that ends first (a duplicate row never extends the claim);
+ *   * two live owners, different agencies: the target's, flagged as a conflict.
+ *
+ * @returns {{ data: object|null, conflict: object|null }} data is the
+ *   candidate update (null: leave the target's columns untouched)
+ */
+export function mergedAgencyOwnership(source, target, now = new Date()) {
+    const fromSource = liveOwnership(source, now);
+    const fromTarget = liveOwnership(target, now);
+    if (!fromSource) return { data: null, conflict: null };
+    if (!fromTarget) return { data: fromSource, conflict: null };
+    if (fromSource.ownerAgencyId === fromTarget.ownerAgencyId) {
+        const earliest = fromSource.ownershipExpiresAt < fromTarget.ownershipExpiresAt ? fromSource : fromTarget;
+        return { data: earliest === fromTarget ? null : earliest, conflict: null };
+    }
+    return {
+        data: null,
+        conflict: {
+            keptAgencyId: fromTarget.ownerAgencyId,
+            keptUntil: fromTarget.ownershipExpiresAt,
+            droppedAgencyId: fromSource.ownerAgencyId,
+            droppedUntil: fromSource.ownershipExpiresAt,
+        },
+    };
+}
+
+export const mergeCandidates = async ({ tenantId, sourceId, targetId, actorId, keepTargetOnConflict = true, now = new Date() } = {}) => {
     const sourceNum = Number(sourceId);
     const targetNum = Number(targetId);
     if (!Number.isInteger(sourceNum) || !Number.isInteger(targetNum) || sourceNum <= 0 || targetNum <= 0) {
@@ -95,6 +141,8 @@ export const mergeCandidates = async ({ tenantId, sourceId, targetId, actorId, k
         );
     }
 
+    const ownership = mergedAgencyOwnership(source, target, new Date(now));
+
     const result = await tenantTransaction(
         prisma,
         async (tx) => {
@@ -106,6 +154,7 @@ export const mergeCandidates = async ({ tenantId, sourceId, targetId, actorId, k
                     resumeMediaId: target.resumeMediaId ?? source.resumeMediaId ?? undefined,
                     source: target.source ?? source.source ?? undefined,
                     notes: source.notes ? `${target.notes ? `${target.notes}\n` : ""}[merged from #${sourceNum}] ${source.notes}` : target.notes,
+                    ...(ownership.data ?? {}),
                     version: { increment: 1 },
                 },
             });
@@ -179,10 +228,29 @@ export const mergeCandidates = async ({ tenantId, sourceId, targetId, actorId, k
                 targetId: targetNum,
                 transferredApplicationIds: transferable.map((a) => a.id),
                 keptOnSourceApplicationIds: conflicting.map((a) => a.id),
+                agencyOwnership: ownership.data
+                    ? { ownerAgencyId: ownership.data.ownerAgencyId, ownershipExpiresAt: ownership.data.ownershipExpiresAt, from: "source" }
+                    : ownership.conflict
+                      ? { ownerAgencyId: ownership.conflict.keptAgencyId, ownershipExpiresAt: ownership.conflict.keptUntil, from: "target", conflict: true }
+                      : null,
             };
         },
         { tenantId },
     );
+
+    if (ownership.conflict) {
+        // Both agencies held a live claim on the same person; the target's
+        // stands. Ids and dates only, so the trail names who lost the claim.
+        const c = ownership.conflict;
+        await logAction({
+            employeeId: actorId ?? null,
+            type: "UPDATE",
+            module: "Candidate",
+            result: "SUCCESS",
+            notes: `Agency ownership conflict merging #${sourceNum} into #${targetNum}: kept agency ${c.keptAgencyId} until ${c.keptUntil.toISOString()}, dropped agency ${c.droppedAgencyId} until ${c.droppedUntil.toISOString()}`,
+            tenantId,
+        });
+    }
 
     await logAction({
         employeeId: actorId ?? null,

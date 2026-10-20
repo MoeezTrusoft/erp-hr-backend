@@ -10,6 +10,9 @@
 //   conflict             HR-4090 → -32001
 //   precondition/stale   HR-4120 → -32009 (with currentVersion in data when known)
 //   internal / unknown   HR-5000 → -32603 (generic; NO raw detail — ERR-3)
+//   feature off          HR-5031 → -32603 (fixed safe message)
+//   dependency down      HR-5032 → -32603 (fixed safe message, retryable; the
+//                                          domain code in data.details.code)
 import { normalizeError } from '../../middlewares/error.middleware.js';
 
 const CODE_TO_JSONRPC = {
@@ -27,6 +30,7 @@ const CODE_TO_JSONRPC = {
     'HR-4303': -32001,
     'HR-5000': -32603,
     'HR-5031': -32603,
+    'HR-5032': -32603,
 };
 
 /**
@@ -45,7 +49,8 @@ export function toJsonRpcError(err) {
     // A domain code (HR-RECRUITMENT-*, HR-ONBOARDING-* ...) collapses to its
     // HR-nnnn class above; a client-facing (< 500) one also rides along as
     // details.code, so a screen can tell "assessment required" from any other
-    // 409 without parsing the message. 5xx stays generic (ERR-3).
+    // 409 without parsing the message. 5xx stays generic (ERR-3), except
+    // HR-5032, whose normalized details already carry the domain code.
     const domainCode = typeof err?.code === 'string' && /^HR-[A-Z][A-Z0-9-]{1,80}$/.test(err.code) ? err.code : null;
     if (domainCode && domainCode !== norm.code && Number(norm.httpStatus) < 500) {
         if (data.details === undefined) data.details = { code: domainCode };

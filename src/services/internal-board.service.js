@@ -46,11 +46,15 @@ import {
     normalizeEmail,
     referralSourceDetail,
     toBoardJob,
-    toSelfReferral,
 } from "../lib/internal-mobility.util.js";
 import { checkIntakeDnc, logIntakeSuppressed } from "./intake-dnc.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { referralSubmittedEvent, requisitionTitles } from "./internal-referral.service.js";
+import {
+    recordAgencyOwnedReferralInTx,
+    referralSubmittedEvent,
+    requisitionTitles,
+    selfReferralView,
+} from "./internal-referral.service.js";
 // Namespace import: createApplicationInTx is the transaction-composable half
 // of createApplication (see the Phase 5 note). A named import of a missing
 // export would fail at link time for every importer; a property read fails
@@ -364,7 +368,7 @@ export function normalizeReferralInput(input = {}) {
 
 /**
  * Refer a contact for a job on the caller's board.
- * @returns {Promise<object>} the referral as the referrer sees it (toSelfReferral)
+ * @returns {Promise<object>} the referral as the referrer sees it (selfReferralView)
  */
 export async function createReferral({ tenantId, employeeId, requisitionId, now = new Date(), ...form } = {}) {
     requireTenantId(tenantId);
@@ -457,6 +461,11 @@ export async function createReferral({ tenantId, employeeId, requisitionId, now 
                     await enqueueHrDomainEvent(tx, referralSubmittedEvent(referral, ctx, routing));
                     return { referral, jobTitle: requisition.title };
                 }
+
+                // Phase 6 — an agency owns this person inside its window: a
+                // DUPLICATE like a second agency's submission (no application).
+                const agencyOwned = await recordAgencyOwnedReferralInTx(tx, { tenantId, candidateId: existing.id, base, ctx, routing, now: at });
+                if (agencyOwned) return { referral: agencyOwned, jobTitle: requisition.title };
             }
 
             const candidate =
@@ -516,7 +525,7 @@ export async function createReferral({ tenantId, employeeId, requisitionId, now 
     if (outcome.suppressedReason) {
         logIntakeSuppressed({ tenantId, email: input.email, path: "internal.referral", reason: outcome.suppressedReason });
     }
-    return toSelfReferral(outcome.referral, { jobTitle: outcome.jobTitle });
+    return selfReferralView(outcome.referral, { jobTitle: outcome.jobTitle, now: at });
 }
 
 /** The caller's own referrals, newest first: status and bonus status only. */
@@ -529,7 +538,9 @@ export async function listMyReferrals({ tenantId, employeeId, page = 1, pageSize
         prisma.internalReferral.count({ where }),
         prisma.internalReferral.findMany({
             where,
-            select: { id: true, requisitionId: true, relationship: true, status: true, bonusStatus: true, createdAt: true },
+            // candidateId / applicationId: selfReferralView needs them to mask a
+            // suppressed referral; they never reach the referrer.
+            select: { id: true, requisitionId: true, relationship: true, status: true, bonusStatus: true, candidateId: true, applicationId: true, createdAt: true },
             orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             skip: (pageNo - 1) * size,
             take: size,
@@ -537,7 +548,7 @@ export async function listMyReferrals({ tenantId, employeeId, page = 1, pageSize
     ]);
     const titles = await requisitionTitles(tenantId, rows.map((r) => r.requisitionId));
     return {
-        items: rows.map((row) => toSelfReferral(row, { jobTitle: titles.get(row.requisitionId) ?? null })),
+        items: rows.map((row) => selfReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null })),
         total,
         page: pageNo,
         pageSize: size,
