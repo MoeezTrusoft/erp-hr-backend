@@ -3,14 +3,21 @@
 // BE-§9.4 — the cron job BODIES, extracted from node-cron into reusable async
 // processors that BullMQ drives. Proves they are idempotent-aware and return a
 // bounded summary (so a BullMQ job result is meaningful), using a mocked prisma.
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 
 const prismaMock = {
     performanceReview: { findMany: jest.fn() },
     reviewReminder: { findFirst: jest.fn(), create: jest.fn() },
     outboxEvent: { deleteMany: jest.fn() },
     candidateRetentionPolicy: { findMany: jest.fn() },
+    // Recruitment Phase 5 — each tenant's run is recorded and reads the
+    // tenant's apply switch (src/services/retention-run.service.js).
+    tenantRecruitmentSettings: { findUnique: jest.fn() },
+    candidateRetentionRun: { create: jest.fn(), updateMany: jest.fn() },
+    $transaction: jest.fn(async (fn) => fn(prismaMock)),
+    $executeRaw: jest.fn(async () => 1),
 };
+prismaMock.outboxEvent.create = jest.fn(async ({ data }) => ({ id: 1, ...data }));
 
 jest.unstable_mockModule('../../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../../src/config/prisma.js', () => ({ default: prismaMock }));
@@ -79,36 +86,75 @@ describe('reminder job processors', () => {
     });
 });
 
+// Tenants are RBAC Company UUIDs: the dry-run report event's envelope requires one.
+const TENANT_A = '11111111-1111-4111-8111-111111111111';
+const TENANT_B = '22222222-2222-4222-8222-222222222222';
+
 describe('Phase 10 (remainder) — candidate retention job', () => {
+    let nextRunId = 1;
     beforeEach(() => {
         jest.clearAllMocks();
         process.env.HR_CANDIDATE_RETENTION_MODE = '';
+        delete process.env.HR_RECRUITMENT_RETENTION_AUTOMATION;
+        nextRunId = 1;
+        prismaMock.tenantRecruitmentSettings.findUnique.mockResolvedValue(null);
+        prismaMock.candidateRetentionRun.create.mockImplementation(async ({ data }) => ({ id: nextRunId++, ...data }));
+        prismaMock.candidateRetentionRun.updateMany.mockResolvedValue({ count: 1 });
     });
+    afterEach(() => {
+        delete process.env.HR_RECRUITMENT_RETENTION_AUTOMATION;
+    });
+    // Recruitment Phase 5 — apply needs the flag AND the tenant's signed-off switch.
+    const signedOffTenant = () => {
+        process.env.HR_RECRUITMENT_RETENTION_AUTOMATION = 'true';
+        prismaMock.tenantRecruitmentSettings.findUnique.mockResolvedValue({ retentionApplyEnabled: true, dataPolicyOwnerId: 42, version: 2 });
+    };
 
     it('is a DRY RUN by default: a scheduled job must not erase without an explicit mode', async () => {
         prismaMock.candidateRetentionPolicy.findMany.mockResolvedValue([
-            { tenantId: 'tenant-a', appliesTo: 'APPLICANT', retentionMonths: 6 },
+            { tenantId: TENANT_A, appliesTo: 'APPLICANT', retentionMonths: 6 },
         ]);
         applyRetention.mockResolvedValue({ wouldAnonymize: [1, 2], suspendedByLegalHold: [] });
 
         const result = await runCandidateRetentionJob();
 
         expect(applyRetention).toHaveBeenCalledWith(
-            expect.objectContaining({ tenantId: 'tenant-a', dryRun: true, limit: 100 }),
+            expect.objectContaining({ tenantId: TENANT_A, dryRun: true, limit: 100 }),
         );
         expect(result).toMatchObject({ mode: 'dry-run', tenants: 1, wouldAnonymize: 2, anonymized: 0 });
+        // Recruitment Phase 5 — the run is recorded and its report is sent.
+        expect(prismaMock.candidateRetentionRun.create).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ tenantId: TENANT_A, mode: 'DRY_RUN', wouldAnonymize: 2 }) }),
+        );
+        expect(result.perTenant).toEqual([
+            { tenantId: TENANT_A, runId: 1, mode: 'DRY_RUN', wouldAnonymize: 2, suspendedByLegalHold: 0, reportSent: true },
+        ]);
     });
 
-    it('erases ONLY when the mode is explicitly apply', async () => {
+    it('erases ONLY when the mode is explicitly apply (and the tenant signed off)', async () => {
         prismaMock.candidateRetentionPolicy.findMany.mockResolvedValue([
-            { tenantId: 'tenant-a', appliesTo: 'APPLICANT', retentionMonths: 6 },
+            { tenantId: TENANT_A, appliesTo: 'APPLICANT', retentionMonths: 6 },
         ]);
-        applyRetention.mockResolvedValue({ anonymized: [1], suspendedByLegalHold: [] });
+        signedOffTenant();
+        applyRetention.mockResolvedValue({ dryRun: false, anonymized: [1], suspendedByLegalHold: [] });
 
         const result = await runCandidateRetentionJob({ mode: 'apply' });
 
         expect(applyRetention).toHaveBeenCalledWith(expect.objectContaining({ dryRun: false }));
         expect(result).toMatchObject({ mode: 'apply', anonymized: 1 });
+    });
+
+    it('dry-runs a tenant in apply mode until its data-policy owner signs off', async () => {
+        prismaMock.candidateRetentionPolicy.findMany.mockResolvedValue([
+            { tenantId: TENANT_A, appliesTo: 'APPLICANT', retentionMonths: 6 },
+        ]);
+        process.env.HR_RECRUITMENT_RETENTION_AUTOMATION = 'true';
+        applyRetention.mockResolvedValue({ dryRun: true, wouldAnonymize: [1], suspendedByLegalHold: [] });
+
+        const result = await runCandidateRetentionJob({ mode: 'apply' });
+
+        expect(applyRetention).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+        expect(result).toMatchObject({ mode: 'apply', anonymized: 0, wouldAnonymize: 1 });
     });
 
     it('falls back to dry-run on an unrecognized mode — a typo can never turn on erasure', async () => {
@@ -138,13 +184,14 @@ describe('Phase 10 (remainder) — candidate retention job', () => {
 
     it('de-duplicates tenants and keeps going when ONE tenant fails', async () => {
         prismaMock.candidateRetentionPolicy.findMany.mockResolvedValue([
-            { tenantId: 'tenant-a', appliesTo: 'APPLICANT', retentionMonths: 6 },
-            { tenantId: 'tenant-a', appliesTo: 'TALENT_POOL', retentionMonths: 24 },
-            { tenantId: 'tenant-b', appliesTo: 'APPLICANT', retentionMonths: 6 },
+            { tenantId: TENANT_A, appliesTo: 'APPLICANT', retentionMonths: 6 },
+            { tenantId: TENANT_A, appliesTo: 'TALENT_POOL', retentionMonths: 24 },
+            { tenantId: TENANT_B, appliesTo: 'APPLICANT', retentionMonths: 6 },
         ]);
+        signedOffTenant();
         applyRetention
             .mockRejectedValueOnce(new Error('DB blip'))
-            .mockResolvedValueOnce({ anonymized: [9], suspendedByLegalHold: [{ id: 3 }] });
+            .mockResolvedValueOnce({ dryRun: false, anonymized: [9], suspendedByLegalHold: [{ id: 3 }] });
 
         const result = await runCandidateRetentionJob({ mode: 'apply' });
 
@@ -152,8 +199,10 @@ describe('Phase 10 (remainder) — candidate retention job', () => {
         expect(result.anonymized).toBe(1);
         expect(result.suspendedByLegalHold).toBe(1);
         expect(result.perTenant).toEqual([
-            { tenantId: 'tenant-a', error: 'DB blip' },
-            { tenantId: 'tenant-b', anonymized: 1, suspendedByLegalHold: 1 },
+            { tenantId: TENANT_A, runId: 1, error: 'DB blip' },
+            { tenantId: TENANT_B, runId: 2, mode: 'APPLY', anonymized: 1, suspendedByLegalHold: 1 },
         ]);
+        // The failure is recorded too.
+        expect(prismaMock.candidateRetentionRun.create.mock.calls[0][0].data).toMatchObject({ tenantId: TENANT_A, status: 'FAILED', error: 'DB blip' });
     });
 });

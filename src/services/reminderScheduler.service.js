@@ -9,7 +9,9 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
-import { applyRetention } from "./candidatePrivacy.service.js";
+import { runTenantRetention } from "./retention-run.service.js";
+import { resolveRetentionMode } from "../lib/retention-run.util.js";
+import { mcpCtx } from "../lib/requestContext.js";
 import { purgeExpiredDrafts } from "./applicationDraft.service.js";
 import {
   autoCloseFilledRequisitions,
@@ -123,7 +125,7 @@ export async function runRetentionSweepJob({ retentionDays = 30 } = {}) {
 // policy was a document rather than a control: nothing ever acted on it. This is
 // the job body; BullMQ schedules it (src/jobs/reminder.queue.js).
 //
-// THREE DELIBERATE SAFETY PROPERTIES:
+// FOUR DELIBERATE SAFETY PROPERTIES:
 //
 //   1. MODE, never a boolean. `HR_CANDIDATE_RETENTION_MODE` is one of
 //      `off | dry-run | apply`, defaulting to **dry-run**. A scheduled job that is
@@ -137,21 +139,26 @@ export async function runRetentionSweepJob({ retentionDays = 30 } = {}) {
 //      enforces on the write path. It never invents a tenant or a window.
 //   3. PER-TENANT ISOLATION. One tenant's failure is caught and reported; it
 //      cannot abort the sweep for every other tenant.
+//   4. Recruitment Phase 5 (plan 6.9) — APPLY IS PER TENANT. Even with the mode
+//      at apply, a tenant applies only when the retention flag is on AND its
+//      data-policy owner switched apply on after signing off a dry-run
+//      (retentionApplyEnabled); every other tenant dry-runs. Every tenant's run
+//      is recorded as a CandidateRetentionRun, and each dry-run sends its report
+//      to the owner (src/services/retention-run.service.js).
 //
 // @param {object} [opts]
 // @param {'off'|'dry-run'|'apply'} [opts.mode]      defaults to the env value, then dry-run
-// @param {Date|string} [opts.asOf]                  evaluation instant (defaults to now)
+// @param {Date|string} [opts.asOf]                  evaluation instant (defaults to `now`)
+// @param {Date|string} [opts.now]                   the job clock (defaults to now)
 // @param {number} [opts.limit=100]                  max candidates erased per tenant per run
 // @returns {Promise<object>} a per-tenant summary
-const RETENTION_MODES = Object.freeze(["off", "dry-run", "apply"]);
-
 export async function runCandidateRetentionJob({
   mode = process.env.HR_CANDIDATE_RETENTION_MODE || "dry-run",
-  asOf = new Date(),
+  now = new Date(),
+  asOf = now,
   limit = 100,
 } = {}) {
-  const requested = String(mode).toLowerCase();
-  const resolved = RETENTION_MODES.includes(requested) ? requested : "dry-run";
+  const { requested, resolved } = resolveRetentionMode(mode);
   if (resolved !== requested) {
     reminderLog.warn(
       { requested, using: resolved },
@@ -163,10 +170,14 @@ export async function runCandidateRetentionJob({
     return { mode: "off", tenants: 0, wouldAnonymize: 0, anonymized: 0, suspendedByLegalHold: 0, perTenant: [] };
   }
 
-  const policies = await prisma.candidateRetentionPolicy.findMany({
-    where: { isActive: true },
-    select: { tenantId: true, appliesTo: true, retentionMonths: true },
-  });
+  // Cross-tenant discovery under the SYSTEM context; per-tenant work below runs
+  // under that tenant's own context.
+  const policies = await mcpCtx.run({ ...(mcpCtx.getStore() ?? {}), system: true }, async () =>
+    await prisma.candidateRetentionPolicy.findMany({
+      where: { isActive: true },
+      select: { tenantId: true, appliesTo: true, retentionMonths: true },
+    }),
+  );
   const tenants = [...new Set(policies.map((p) => p.tenantId).filter(Boolean))];
   if (tenants.length === 0) {
     reminderLog.info("candidate retention job: no tenant has an active retention policy — nothing to do");
@@ -174,7 +185,7 @@ export async function runCandidateRetentionJob({
   }
 
   const at = new Date(asOf);
-  const dryRun = resolved !== "apply";
+  const correlationId = mcpCtx.getStore()?.correlationId;
   const perTenant = [];
   let wouldAnonymize = 0;
   let anonymized = 0;
@@ -182,16 +193,14 @@ export async function runCandidateRetentionJob({
 
   for (const tenantId of tenants) {
     try {
-      const result = await applyRetention({ tenantId, asOf: at, dryRun, limit });
-      const held = result.suspendedByLegalHold?.length ?? 0;
-      suspendedByLegalHold += held;
-      if (dryRun) {
-        wouldAnonymize += result.wouldAnonymize?.length ?? 0;
-        perTenant.push({ tenantId, wouldAnonymize: result.wouldAnonymize?.length ?? 0, suspendedByLegalHold: held });
-      } else {
-        anonymized += result.anonymized?.length ?? 0;
-        perTenant.push({ tenantId, anonymized: result.anonymized?.length ?? 0, suspendedByLegalHold: held });
-      }
+      const outcome = await mcpCtx.run({ user: { tenantId }, correlationId }, async () =>
+        await runTenantRetention({ tenantId, envMode: resolved, asOf: at, limit }),
+      );
+      perTenant.push(retentionTenantSummary(tenantId, outcome));
+      if (outcome.error) continue;
+      suspendedByLegalHold += outcome.run.suspendedByLegalHold ?? 0;
+      wouldAnonymize += outcome.run.wouldAnonymize ?? 0;
+      anonymized += outcome.run.anonymized ?? 0;
     } catch (err) {
       // One tenant's failure is reported, never propagated: it must not abort the
       // sweep for every other tenant, and BullMQ must not retry the whole run.
@@ -205,6 +214,14 @@ export async function runCandidateRetentionJob({
     "candidate retention job: done",
   );
   return { mode: resolved, asOf: at, tenants: tenants.length, wouldAnonymize, anonymized, suspendedByLegalHold, perTenant };
+}
+
+// One tenant's line in the job summary: what it did, under which run row.
+function retentionTenantSummary(tenantId, { run, error, reportSent }) {
+  if (error) return { tenantId, runId: run?.id ?? null, error: error?.message ?? "unknown" };
+  const base = { tenantId, runId: run.id, mode: run.mode };
+  if (run.mode === "APPLY") return { ...base, anonymized: run.anonymized, suspendedByLegalHold: run.suspendedByLegalHold };
+  return { ...base, wouldAnonymize: run.wouldAnonymize, suspendedByLegalHold: run.suspendedByLegalHold, reportSent };
 }
 
 // ── D-07 — scheduled recruitment sweeps ──────────────────────────────────────

@@ -452,14 +452,21 @@ export async function computeRetentionUntil(
 export async function previewRetentionDue({ tenantId, asOf = new Date(), limit = 100 } = {}, options = {}) {
   requireTenant(tenantId);
   const db = options.db ?? prisma;
+  const cutoff = new Date(asOf);
+  // The closed-clock predicates run in the query, so `limit` bounds the DUE
+  // set rather than an arbitrary first page of every candidate (which hid due
+  // rows behind the first `limit` ids). The filter below stays as the rule.
   const due = await db.candidate.findMany({
-    where: withTenant(tenantId, {}),
+    where: withTenant(tenantId, {
+      retentionUntil: { lte: cutoff },
+      anonymizedAt: null,
+      OR: [{ retentionPopulation: null }, { retentionPopulation: { not: "TALENT_POOL" } }],
+    }),
     select: { id: true, email: true, retentionUntil: true, retentionPopulation: true, anonymizedAt: true },
     orderBy: { id: "asc" },
     take: Math.min(Number(limit) || 100, 500),
   });
 
-  const cutoff = new Date(asOf);
   // FR-10 residue — ONLY the applicant clock. A TALENT_POOL clock belongs to a
   // different lawful basis (kept on file for future roles), and its population's
   // action is to leave the pool, not to be erased. NULL is a pre-existing clock,
@@ -769,6 +776,17 @@ export async function archiveInactiveCandidates(
   return { dryRun: false, asOf: new Date(asOf), inactiveMonths: months, cutoff, archived: archivable };
 }
 
+// The per-tenant apply switch (TenantRecruitmentSettings.retentionApplyEnabled).
+// A client without the settings model (narrow test doubles) reads "off".
+async function isTenantRetentionApplyEnabled(db, tenantId) {
+  if (!db.tenantRecruitmentSettings?.findUnique) return false;
+  const row = await db.tenantRecruitmentSettings.findUnique({
+    where: { tenantId },
+    select: { retentionApplyEnabled: true },
+  });
+  return row?.retentionApplyEnabled === true;
+}
+
 /**
  * Apply retention. Defaults to a DRY RUN: erasure is irreversible, so the
  * destructive path has to be asked for explicitly.
@@ -790,6 +808,22 @@ export async function applyRetention({ tenantId, asOf = new Date(), actorId = nu
       dryRun: true,
       refused: true,
       reason: "flag-disabled",
+      asOf: preview.asOf,
+      wouldAnonymize: preview.due.map((c) => c.id),
+      suspendedByLegalHold: preview.suspendedByLegalHold,
+    };
+  }
+
+  // Recruitment Phase 5 (plan 6.9) — and per tenant: apply stays a dry-run
+  // until the tenant's data-policy owner has signed off a dry-run report and
+  // switched apply on (retention-run.service.js). Same refusal shape as the
+  // flag above, so callers need no new branch.
+  if (!(await isTenantRetentionApplyEnabled(options.db ?? prisma, tenantId))) {
+    recordRetentionRun("refused-tenant");
+    return {
+      dryRun: true,
+      refused: true,
+      reason: "tenant-not-signed-off",
       asOf: preview.asOf,
       wouldAnonymize: preview.due.map((c) => c.id),
       suspendedByLegalHold: preview.suspendedByLegalHold,
@@ -869,7 +903,9 @@ export async function closeDataAccessRequest(
   const existing = await db.candidateDataAccessRequest.findFirst({
     where: withTenant(tenantId, { id: requestId }),
   });
-  if (!existing) throw privacyError("Data access request not found", "HR-RECRUITMENT-DAR-NOT-FOUND", 404);
+  if (!existing || isUnverifiedPortalRequest(existing)) {
+    throw privacyError("Data access request not found", "HR-RECRUITMENT-DAR-NOT-FOUND", 404);
+  }
   if (CLOSED_REQUEST_STATUSES.includes(existing.status)) {
     throw privacyError(`Request ${requestId} is already ${existing.status}`, "HR-RECRUITMENT-DAR-ALREADY-CLOSED");
   }
@@ -886,10 +922,17 @@ export async function closeDataAccessRequest(
   });
 }
 
+// Recruitment Phase 5 — a request from the portal counts only once the
+// requester proved the mailbox (verifiedAt); until then it is not in the HR
+// queue and is swept when its link expires (dsr-portal.service.js).
+export const REQUEST_SOURCES = Object.freeze({ HR: "HR", PORTAL: "PORTAL" });
+const inHrQueue = () => ({ OR: [{ source: REQUEST_SOURCES.HR }, { verifiedAt: { not: null } }] });
+const isUnverifiedPortalRequest = (row) => row?.source === REQUEST_SOURCES.PORTAL && !row?.verifiedAt;
+
 export async function listDataAccessRequests({ tenantId, status = null } = {}, options = {}) {
   requireTenant(tenantId);
   const db = options.db ?? prisma;
-  const where = withTenant(tenantId, {});
+  const where = withTenant(tenantId, inHrQueue());
   if (status) {
     where.status = requireEnum(status, Object.values(REQUEST_STATUS), "status", "HR-RECRUITMENT-DAR-STATUS-INVALID");
   }
