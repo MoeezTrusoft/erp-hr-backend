@@ -54,7 +54,7 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
         const phase2 = {
             knockout: "HR_RECRUITMENT_KNOCKOUT",
             jobFeed: "HR_RECRUITMENT_JOB_FEED",
-            parseWorker: "HR_RECRUITMENT_PARSE_WORKER",
+            parseWorker: "HR_RESUME_PARSE_WORKER_ENABLED",
             scoring: "HR_RECRUITMENT_SCORING",
             communications: "HR_RECRUITMENT_COMMUNICATIONS",
             duplicates: "HR_RECRUITMENT_DUPLICATES",

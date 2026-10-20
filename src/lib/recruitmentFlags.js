@@ -123,8 +123,10 @@ const DEFINITIONS = Object.freeze({
     },
     // Resume parsing on a queue (the parse worker) instead of in the request.
     // Off leaves queued parses PENDING; the synchronous parse tools still work.
+    // The worker also needs HR_RECRUITMENT_AI on, since it parses through the
+    // AI plane (the name follows the *_WORKER_ENABLED convention).
     parseWorker: {
-        env: "HR_RECRUITMENT_PARSE_WORKER",
+        env: "HR_RESUME_PARSE_WORKER_ENABLED",
         def: false,
         desc: "Asynchronous resume parse worker",
     },
