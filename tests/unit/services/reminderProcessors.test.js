@@ -22,6 +22,15 @@ jest.unstable_mockModule('../../../src/services/documentExpiryAlert.service.js',
 // rules (mode gating, tenant discovery, isolation) rather than the erasure.
 const applyRetention = jest.fn();
 jest.unstable_mockModule('../../../src/services/candidatePrivacy.service.js', () => ({ applyRetention }));
+// The scheduler also hosts the D-07 recruitment sweeps; their services are
+// covered by tests/unit/jobs/recruitment-sweeps.job.test.js and stubbed here so
+// this suite's module graph stays limited to the reminder processors.
+jest.unstable_mockModule('../../../src/services/requisitionPublication.service.js', () => ({
+    autoCloseFilledRequisitions: jest.fn(async () => []),
+}));
+jest.unstable_mockModule('../../../src/services/talentPoolInvitation.service.js', () => ({
+    expireInvitations: jest.fn(async () => ({ dryRun: false, expired: [] })),
+}));
 
 const {
     runReviewReminderJob,
