@@ -207,6 +207,23 @@ const DEFINITIONS = Object.freeze({
         def: false,
         desc: "Offer expiry reminders and automatic expiry",
     },
+    // Phase 3b — interview day. The on-arrival test: item bank, blueprints,
+    // kiosk workstations, check-in, sessions, scoring and the assessment gate
+    // on the interview outcome. Enabled per site once its kiosks are
+    // registered and a job family's bank is deep enough.
+    onsiteTest: {
+        env: "HR_RECRUITMENT_ONSITE_TEST",
+        def: false,
+        desc: "On-arrival job-specific test: item bank, blueprints, kiosks, scoring and the assessment gate",
+    },
+    // The job-specific evaluation form: versioned templates with anchors,
+    // weights and must-haves, panel roles, autosaved drafts, test-informed
+    // probes, consolidation into the frozen evaluation report and its PDF.
+    evaluationForms: {
+        env: "HR_RECRUITMENT_EVALUATION_FORMS",
+        def: false,
+        desc: "Job-specific interview evaluation forms and the candidate evaluation report",
+    },
 });
 
 export const RECRUITMENT_FLAG_DEFINITIONS = DEFINITIONS;

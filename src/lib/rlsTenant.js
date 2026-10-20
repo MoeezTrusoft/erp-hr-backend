@@ -217,6 +217,19 @@ const RLS_MODELS = new Set([
     'OfferLetterTemplate',
     'OfferLetterVersion',
     'EsignWebhookEvent',
+    // Recruitment Phase 3b (20261021003400) — NOT NULL tenant, FORCE RLS.
+    'CandidateTestItem',
+    'CandidateTestItemStat',
+    'CandidateTestBlueprint',
+    'CandidateTestBlueprintLink',
+    'TestWorkstation',
+    'CandidateCheckIn',
+    'CandidateTestSession',
+    'CandidateTestResponse',
+    'CandidateTestIntegrityEvent',
+    'CandidateTestResult',
+    'InterviewQuestion',
+    'CandidateEvaluationSummary',
 ]);
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

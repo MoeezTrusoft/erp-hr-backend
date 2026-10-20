@@ -284,6 +284,9 @@ model DashboardLayout {
 }
 
 model Employee {
+  // Phase 3b — interviewer training on file; forms marked
+  // requiresTrainedInterviewer need it.
+  interviewerTrainedAt DateTime?
   employeeCategory EmploymentCategory?
   contractNoticeDays Int?
   separatedAt DateTime?
@@ -3867,6 +3870,16 @@ model Interview {
   decisionPromptedAt DateTime?
   // The candidate-chosen slot offer this interview was created from.
   slotOfferId        Int?
+  // Phase 3b — the on-arrival test (assessmentStatus vocabulary in
+  // lib/assessment-status.util.js; CHECK in the migration) and the evaluation
+  // form version pinned when the interview was scheduled.
+  assessmentRequired     Boolean @default(false)
+  assessmentStatus       String  @default("NOT_REQUIRED")
+  assessmentBlueprintId  Int?
+  assessmentWaivedReason String?
+  assessmentWaivedById   Int?
+  formTemplateId         Int?
+  formTemplateVersion    Int?
 
   application  Application            @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   interviewers InterviewInterviewer[]
@@ -3889,6 +3902,9 @@ model InterviewInterviewer {
   interviewId Int
   employeeId  Int
   status      String? // invited | accepted | declined | completed
+  // Phase 3b — TECHNICAL | HIRING_MANAGER | HR | CULTURE: which form sections
+  // this panelist rates.
+  panelRole   String?
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   employee  Employee  @relation(fields: [employeeId], references: [id])
@@ -3916,6 +3932,22 @@ model InterviewScorecard {
   // original submittedAt is preserved.
   amendmentLog   Json?
   lastAmendedAt  DateTime?
+  // Phase 3b — the evaluation form: the pinned template version, DRAFT until
+  // submitted (rows with submittedAt are backfilled SUBMITTED), per-criterion
+  // ratings and notes, the weighted score, must-have failure, the
+  // conflict-of-interest declaration, autosave stamps and the prohibited-topic
+  // flag on free-text notes (flagged to HR, never shown to the candidate).
+  templateId      Int?
+  templateVersion Int?
+  status          String    @default("DRAFT")
+  criterionScores Json?
+  weightedScore   Float?
+  mustHaveFailed  Boolean   @default(false)
+  coiDeclared     Boolean   @default(false)
+  startedAt       DateTime?
+  draftSavedAt    DateTime?
+  notesFlagged    Boolean   @default(false)
+  notesFlagTerms  String[]  @default([])
   created_at     DateTime  @default(now())
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
@@ -4008,6 +4040,19 @@ model ScorecardTemplate {
   name        String
   description String?
   criteria    Json // ordered [{ key, label, weight?, required }]
+  // Phase 3b — the full evaluation form definition. Versions are rows that
+  // share a templateKey; a PUBLISHED version is immutable and the one pinned
+  // to an interview never changes under it. Existing rows are PUBLISHED v1.
+  templateKey                String?
+  version                    Int      @default(1)
+  status                     String   @default("PUBLISHED") // DRAFT | PUBLISHED | RETIRED
+  interviewType              String?
+  panelRole                  String?
+  scale                      Json? // { min, max, labels } or { kind: "YES_NO" }
+  sections                   Json? // [{ key, label, panelRoles?, criteria: [{ key, label, description, competencyKey, weight, required, mustHave, mustHaveThreshold, anchors, questionKeys }] }]
+  evidenceRules              Json? // { extremeRatings: [1,2,5], mustHave: true }
+  requiresTrainedInterviewer Boolean  @default(false)
+  publishedAt                DateTime?
   isActive    Boolean  @default(true)
   createdById Int?
   created_at  DateTime @default(now())
@@ -4029,7 +4074,7 @@ model ScorecardTemplate {
 model ScorecardTemplateLink {
   id          Int      @id @default(autoincrement())
   templateId  Int
-  scopeType   String // REQUISITION | STAGE | JOB_FAMILY
+  scopeType   String // REQUISITION | STAGE | JOB_FAMILY | INTERVIEW_TYPE | PANEL_ROLE (Phase 3b)
   scopeId     Int? // requisition id / position id; null for STAGE (scopeKey carries it)
   scopeKey    String? // STAGE: the interview stage this template applies to
   isActive    Boolean  @default(true)
@@ -6441,6 +6486,9 @@ model TenantRecruitmentSettings {
   feedbackEscalationHours Int     @default(24)
   // Days before an offer's expiry the candidate is reminded.
   offerReminderDays       Int     @default(3)
+  // Phase 3b — whether the kiosk shows the candidate their score at the end
+  // (default: a neutral thank-you only).
+  kioskShowScore          Boolean @default(false)
   version               Int      @default(1)
   updatedById           Int?
   createdAt             DateTime @default(now())
@@ -6684,4 +6732,341 @@ model EsignWebhookEvent {
   @@unique([provider, providerEventId])
   @@index([tenantId])
   @@map("esign_webhook_events")
+}
+
+// ==================== RECRUITMENT PHASE 3b: ON-SITE ASSESSMENT AND EVALUATION FORMS ====================
+//
+// Names use a CandidateTest prefix to keep them apart from main's employee-keyed
+// Assessment models. Every table carries a NOT NULL tenant and FORCE RLS.
+
+// One version of a test item. A PUBLISHED version is immutable: editing creates
+// the next version, so a past attempt always points at what the candidate saw.
+// answerKey is JSON encrypted at rest (C4) and never leaves the server.
+model CandidateTestItem {
+  id               Int       @id @default(autoincrement())
+  tenantId         String    @db.Uuid
+  itemCode         String
+  version          Int       @default(1)
+  status           String    @default("DRAFT") // DRAFT | IN_REVIEW | PUBLISHED | RETIRED
+  type             String // SINGLE | MULTI | TRUE_FALSE | NUMERIC | IMAGE_SINGLE
+  stem             String    @db.Text
+  mediaId          Int?
+  options          Json? // [{ id, text, feedback? }], 2 to 6
+  answerKey        String // C4-encrypted JSON: { optionIds } or { value, tolerance }
+  scoringRule      Json? // { multi: ALL_OR_NOTHING | PARTIAL }
+  difficulty       String // EASY | MEDIUM | HARD
+  competencyKey    String
+  skillId          Int?
+  jobFamily        String?
+  gradeLevelIds    Int[]     @default([])
+  language         String    @default("en") // en | ur
+  timeEstimateSec  Int?
+  rationale        String?   @db.Text
+  discussionPrompt Boolean   @default(false)
+  aiDrafted        Boolean   @default(false)
+  authorId         Int?
+  reviewerId       Int?
+  reviewComment    String?
+  submittedAt      DateTime?
+  publishedAt      DateTime?
+  retiredAt        DateTime?
+  exposureCount    Int       @default(0)
+  exposureCap      Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  stats     CandidateTestItemStat[]
+  responses CandidateTestResponse[]
+
+  @@unique([tenantId, itemCode, version])
+  @@index([tenantId, status, competencyKey])
+  @@map("candidate_test_items")
+}
+
+// Nightly item statistics for one period.
+model CandidateTestItemStat {
+  id              Int      @id @default(autoincrement())
+  tenantId        String   @db.Uuid
+  itemId          Int
+  period          String // YYYY-MM-DD of the run (window in the job)
+  sampleSize      Int
+  difficulty      Float? // proportion correct
+  discrimination  Float? // point-biserial against the total score
+  distractorRates Json?
+  avgTimeSec      Float?
+  flags           String[] @default([]) // TOO_EASY | TOO_HARD | LOW_DISCRIMINATION | LEAKAGE_SUSPECTED
+  computedAt      DateTime @default(now())
+
+  item CandidateTestItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, period])
+  @@index([tenantId])
+  @@map("candidate_test_item_stats")
+}
+
+// How a test is assembled for a role. Published only after the hiring manager
+// and HR both approve it, and only when every section's pool is deep enough.
+model CandidateTestBlueprint {
+  id                        Int       @id @default(autoincrement())
+  tenantId                  String    @db.Uuid
+  blueprintKey              String
+  version                   Int       @default(1)
+  name                      String
+  status                    String    @default("DRAFT") // DRAFT | IN_APPROVAL | APPROVED | PUBLISHED | RETIRED
+  language                  String    @default("en")
+  jobFamily                 String?
+  durationMin               Int       @default(30)
+  passMarkPct               Int       @default(60)
+  borderlineBandPct         Int       @default(10)
+  hardFloorPct              Int?
+  autoReleaseBelowFloor     Boolean   @default(false)
+  negativeMarking           Boolean   @default(false)
+  negativeMarkFraction      Float?
+  navigation                String    @default("FREE") // FREE | FORWARD_ONLY
+  flagForReview             Boolean   @default(true)
+  sections                  Json // [{ key, label, competencyKey, itemCount, difficultyMix: { EASY, MEDIUM, HARD }, mustPass, sectionPassMarkPct, timeLimitMin? }]
+  retakeCooldownDays        Int       @default(180)
+  resultValidityDays        Int       @default(90)
+  testWeightPct             Int       @default(30)
+  integrityFlagThreshold    Int       @default(3)
+  maxExtraTimePct           Int       @default(50)
+  allowAnySiteKiosk         Boolean   @default(false)
+  approvedByHiringManagerId Int?
+  hiringManagerApprovedAt   DateTime?
+  approvedByHrId            Int?
+  hrApprovedAt              DateTime?
+  publishedAt               DateTime?
+  createdById               Int?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  links CandidateTestBlueprintLink[]
+
+  @@unique([tenantId, blueprintKey, version])
+  @@index([tenantId, status])
+  @@map("candidate_test_blueprints")
+}
+
+// Resolution most-specific-first: REQUISITION, then JOB_FAMILY_GRADE, then
+// JOB_FAMILY. One active link per scope (partial unique index in the migration).
+model CandidateTestBlueprintLink {
+  id          Int      @id @default(autoincrement())
+  tenantId    String   @db.Uuid
+  blueprintId Int
+  scopeType   String // REQUISITION | JOB_FAMILY_GRADE | JOB_FAMILY
+  scopeId     Int? // requisition id or grade level id
+  scopeKey    String? // job family
+  isActive    Boolean  @default(true)
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  blueprint CandidateTestBlueprint @relation(fields: [blueprintId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, scopeType, scopeId, scopeKey])
+  @@map("candidate_test_blueprint_links")
+}
+
+// A registered kiosk PC. The device holds a rotating token; only its hash is
+// stored, and a revoked workstation stops working at once.
+model TestWorkstation {
+  id              Int       @id @default(autoincrement())
+  tenantId        String    @db.Uuid
+  label           String
+  siteRef         String
+  deviceTokenHash String    @unique
+  tokenRotatedAt  DateTime  @default(now())
+  status          String    @default("ACTIVE") // ACTIVE | REVOKED
+  lastSeenAt      DateTime?
+  registeredById  Int?
+  revokedAt       DateTime?
+  revokedById     Int?
+  createdAt       DateTime  @default(now())
+
+  @@index([tenantId, siteRef, status])
+  @@map("test_workstations")
+}
+
+// The candidate's arrival: minimal identity data (ID type and last four only),
+// consent to the test, any accommodation granted with its reason.
+model CandidateCheckIn {
+  id                  Int       @id @default(autoincrement())
+  tenantId            String    @db.Uuid
+  interviewId         Int       @unique
+  applicationId       Int
+  candidateId         Int
+  siteRef             String?
+  arrivedAt           DateTime  @default(now())
+  idType              String?
+  idLast4             String?
+  verifiedById        Int?
+  consentAt           DateTime?
+  photoMediaId        Int?
+  accommodations      Json? // { extraTimePct, largeText, screenReader, language }
+  accommodationReason String?
+  createdAt           DateTime  @default(now())
+
+  @@index([tenantId, arrivedAt])
+  @@map("candidate_checkins")
+}
+
+// One sitting of the test on one kiosk. The six-digit code and the kiosk
+// session token are stored hashed; the drawn item versions and option orders
+// are frozen in itemOrder; the deadline is the server's.
+model CandidateTestSession {
+  id                Int       @id @default(autoincrement())
+  tenantId          String    @db.Uuid
+  applicationId     Int
+  interviewId       Int
+  candidateId       Int
+  checkInId         Int?
+  blueprintId       Int
+  blueprintVersion  Int
+  workstationId     Int?
+  siteRef           String?
+  sessionCodeHash   String?   @unique
+  codeExpiresAt     DateTime?
+  sessionTokenHash  String?   @unique
+  status            String    @default("ISSUED") // ISSUED | IN_PROGRESS | PAUSED | SUBMITTED | EXPIRED | VOIDED
+  attemptNo         Int       @default(1)
+  previousSessionId Int?
+  issuedAt          DateTime  @default(now())
+  issuedById        Int?
+  consentAt         DateTime?
+  practiceDoneAt    DateTime?
+  startedAt         DateTime?
+  deadlineAt        DateTime?
+  pausedAt          DateTime?
+  pausedTotalSec    Int       @default(0)
+  submittedAt       DateTime?
+  submitReason      String? // CANDIDATE | TIMEOUT | PROCTOR
+  voidedAt          DateTime?
+  voidReason        String?
+  extraTimePct      Int       @default(0)
+  itemOrder         Json? // [{ n, itemId, itemVersion, sectionKey, optionOrder }]
+  lastHeartbeatAt   DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  responses       CandidateTestResponse[]
+  integrityEvents CandidateTestIntegrityEvent[]
+  result          CandidateTestResult?
+
+  @@index([tenantId, interviewId])
+  @@index([status, codeExpiresAt])
+  @@index([status, deadlineAt])
+  @@map("candidate_test_sessions")
+}
+
+// One answer, saved on selection; a late answer is refused by the server.
+model CandidateTestResponse {
+  id           Int      @id @default(autoincrement())
+  tenantId     String   @db.Uuid
+  sessionId    Int
+  itemId       Int
+  itemVersion  Int
+  answer       Json
+  flagged      Boolean  @default(false)
+  answeredAt   DateTime @default(now())
+  timeSpentSec Int      @default(0)
+
+  session CandidateTestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  item    CandidateTestItem    @relation(fields: [itemId], references: [id])
+
+  @@unique([sessionId, itemId])
+  @@index([tenantId])
+  @@map("candidate_test_responses")
+}
+
+// Append-only integrity timeline.
+model CandidateTestIntegrityEvent {
+  id         Int      @id @default(autoincrement())
+  tenantId   String   @db.Uuid
+  sessionId  Int
+  type       String // FOCUS_LOST | FULLSCREEN_EXIT | NETWORK_LOSS | RAPID_ANSWER | DEVICE_CHANGE | PROCTOR_PAUSE | PROCTOR_VOID
+  source     String   @default("KIOSK") // KIOSK | PROCTOR | SERVER
+  occurredAt DateTime @default(now())
+  detail     Json?
+
+  session CandidateTestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([sessionId, occurredAt])
+  @@map("candidate_test_integrity_events")
+}
+
+// The scored attempt and the recruiter's decision on it.
+model CandidateTestResult {
+  id                 Int       @id @default(autoincrement())
+  tenantId           String    @db.Uuid
+  sessionId          Int       @unique
+  applicationId      Int
+  interviewId        Int
+  candidateId        Int
+  blueprintId        Int
+  jobFamily          String?
+  rawScore           Float
+  maxScore           Float
+  scorePct           Float
+  sectionScores      Json
+  mustPassFailed     Boolean   @default(false)
+  band               String // PASSED | BORDERLINE | FAILED | REVIEW | INCOMPLETE
+  percentile         Float?
+  integrityFlagCount Int       @default(0)
+  timeTakenSec       Int?
+  decision           String? // PROCEED | RELEASE | OVERRIDE | RETEST | WAIVE
+  decidedById        Int?
+  decisionReason     String?
+  decidedAt          DateTime?
+  validUntil         DateTime?
+  createdAt          DateTime  @default(now())
+
+  session CandidateTestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, interviewId])
+  @@index([tenantId, candidateId, jobFamily])
+  @@map("candidate_test_results")
+}
+
+// The interview question bank the forms link to (versions share questionKey).
+model InterviewQuestion {
+  id              Int      @id @default(autoincrement())
+  tenantId        String   @db.Uuid
+  questionKey     String
+  version         Int      @default(1)
+  status          String   @default("DRAFT") // DRAFT | PUBLISHED | RETIRED
+  competencyKey   String
+  prompt          String   @db.Text
+  followUps       Json?
+  goodAnswerGuide String?  @db.Text
+  level           String? // JUNIOR | MID | SENIOR
+  aiDrafted       Boolean  @default(false)
+  createdById     Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([tenantId, questionKey, version])
+  @@index([tenantId, status, competencyKey])
+  @@map("interview_questions")
+}
+
+// The candidate evaluation report frozen when the hiring manager records the
+// outcome, so later template or weight changes never rewrite it.
+model CandidateEvaluationSummary {
+  id                Int      @id @default(autoincrement())
+  tenantId          String   @db.Uuid
+  applicationId     Int
+  interviewId       Int      @unique
+  requisitionId     Int
+  snapshot          Json
+  testScorePct      Float?
+  interviewScorePct Float?
+  compositeScore    Float?
+  weights           Json
+  rankAtSnapshot    Int?
+  pdfMediaId        Int?
+  frozenAt          DateTime @default(now())
+  frozenById        Int?
+
+  @@index([tenantId, requisitionId])
+  @@map("candidate_evaluation_summaries")
 }

@@ -18,6 +18,9 @@
 //   FINANCE   compensation views only; no candidate notes, no requisition
 //             administration.
 //   AGENCY    external agency — no internal notes and no requisition view.
+//   ASSESSMENT reception and assessment authors / reviewers (Phase 3b) — NO
+//             recruitment rows at all; their reach is the on-site assessment
+//             tools, which check src/lib/assessment-access.util.js instead.
 //
 // Two deliberate choices:
 //
@@ -38,6 +41,7 @@ export const RECRUITMENT_SCOPE = Object.freeze({
     ASSIGNED: "ASSIGNED",
     FINANCE: "FINANCE",
     AGENCY: "AGENCY",
+    ASSESSMENT: "ASSESSMENT",
 });
 
 // Roles that grant the organisation-wide view of recruitment.
@@ -63,6 +67,10 @@ const ASSIGNED_ROLES = Object.freeze(["INTERVIEWER", "PANELIST", "PANEL_MEMBER"]
 
 const FINANCE_ROLES = Object.freeze(["FINANCE", "FINANCE_MANAGER", "FINANCE_ADMIN"]);
 const AGENCY_ROLES = Object.freeze(["EXTERNAL_AGENCY", "AGENCY", "AGENCY_USER"]);
+// Phase 3b — roles that exist for the interview-day assessment only. They must
+// never fall through to the unknown-role ORG default: a receptionist would
+// otherwise read every candidate, note and salary.
+export const ASSESSMENT_ONLY_ROLES = Object.freeze(["RECEPTION", "RECEPTIONIST", "ASSESSMENT_AUTHOR", "ASSESSMENT_REVIEWER"]);
 
 const normalizeRole = (role) => String(role ?? "").trim().toUpperCase();
 
@@ -98,6 +106,7 @@ export function resolveRecruitmentScope(user) {
                 : hasAny(roles, AGENCY_ROLES) ? RECRUITMENT_SCOPE.AGENCY
                     : hasAny(roles, MANAGED_ROLES) && employeeId ? RECRUITMENT_SCOPE.MANAGED
                         : hasAny(roles, ASSIGNED_ROLES) && employeeId ? RECRUITMENT_SCOPE.ASSIGNED
+                            : hasAny(roles, ASSESSMENT_ONLY_ROLES) ? RECRUITMENT_SCOPE.ASSESSMENT
                             // Unknown or employee-only vocabulary: F-02 already granted the
                             // surface, so do not invent a narrower rule than the tenant has.
                             : RECRUITMENT_SCOPE.ORG;
@@ -109,9 +118,10 @@ export function resolveRecruitmentScope(user) {
         employeeId,
         unrestricted,
         canSeeInternalNotes: level === RECRUITMENT_SCOPE.ORG || level === RECRUITMENT_SCOPE.MANAGED,
-        canSeeRequisitions: level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.AGENCY,
+        canSeeRequisitions:
+            level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.AGENCY && level !== RECRUITMENT_SCOPE.ASSESSMENT,
         canSeeCompensation: level === RECRUITMENT_SCOPE.ORG || level === RECRUITMENT_SCOPE.FINANCE,
-        canSeeCandidates: level !== RECRUITMENT_SCOPE.FINANCE,
+        canSeeCandidates: level !== RECRUITMENT_SCOPE.FINANCE && level !== RECRUITMENT_SCOPE.ASSESSMENT,
     };
 }
 

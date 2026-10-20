@@ -40,6 +40,7 @@ import {
 //   EmploymentTerms.baseSalary / bonusTarget — salary/comp
 //   BankDetail.accountNumber / routingNumber — bank
 //   Employee.nationality_id_no               — national id
+//   CandidateTestItem.answerKey              — the test's answer key (Phase 3b)
 //   Offer.salary                             — recruiting comp (the schema has
 //      no CompensationPackage model; Offer.salary is the salary field that sits
 //      where the conductor's ~L1573 pointer lands).
@@ -51,6 +52,9 @@ export const C4_FIELDS = {
     // ntn is a Pakistan tax registration id → encrypt like nationality_id_no.
     employee: { nationality_id_no: 'string', ntn: 'string' },
     offer: { salary: 'number' },
+    // Phase 3b — a test item's answer key (JSON text). Never sent to a kiosk;
+    // services read it only to score.
+    candidateTestItem: { answerKey: 'string' },
 };
 
 // Flat union of every C4 field name → kind, used to decrypt nested relation
