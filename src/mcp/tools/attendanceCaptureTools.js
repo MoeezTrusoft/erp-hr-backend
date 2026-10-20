@@ -24,11 +24,36 @@ import {
   biometricModality,
   biometricSlot,
 } from "../../lib/attendanceBiometric.js";
+import {
+  emitAttendanceCaptureChanged,
+  emitAttendanceDeviceChanged,
+} from "../../services/hrConfigEvents.js";
+
+// R15 — capture was poll-only on the frontend because no fabric event existed
+// for a review or a device change. These emitters are fail-soft (the write has
+// already committed); `event` names the family the frontend subscribes to.
+const publishCaptureEvent = async (event, { name, args, data, tenantId, actorId }) => {
+  if (event === "device") {
+    await emitAttendanceDeviceChanged({
+      tenantId,
+      actorId,
+      deviceId: args?.id ?? data?.device?.id ?? args?.sn,
+      action: name.replace("hr_attendance_", ""),
+    });
+    return;
+  }
+  await emitAttendanceCaptureChanged({
+    tenantId,
+    actorId,
+    captureId: args?.id ?? args?.items?.[0]?.id ?? data?.batchId,
+    action: name.replace("hr_attendance_", ""),
+  });
+};
 
 export function registerAttendanceCaptureTools(server) {
   registerAttendanceEvaluationTools(server);
   registerAttendanceRulesTools(server);
-  const tool = (name, description, schema, method, fn) =>
+  const tool = (name, description, schema, method, fn, event) =>
     server.tool(
       name,
       description,
@@ -47,6 +72,15 @@ export function registerAttendanceCaptureTools(server) {
           tenantId: user.tenantId,
           actorId: user.id || user.userId || user.employeeId,
         });
+        if (event) {
+          await publishCaptureEvent(event, {
+            name,
+            args,
+            data,
+            tenantId: user.tenantId,
+            actorId: user.id || user.userId || user.employeeId,
+          });
+        }
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
       }, name),
     );
@@ -98,6 +132,7 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     reviewCaptureEvents,
+    "capture",
   );
   tool(
     "hr_attendance_device_register",
@@ -110,6 +145,7 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     registerCaptureDevice,
+    "device",
   );
   tool(
     "hr_attendance_device_update",
@@ -122,6 +158,7 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     updateCaptureDevice,
+    "device",
   );
   tool(
     "hr_attendance_device_enrol",
@@ -136,6 +173,7 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     reEnrol,
+    "device",
   );
   tool(
     "hr_attendance_import_status",
@@ -157,6 +195,7 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     configureBiometricDevice,
+    "device",
   );
   tool(
     "hr_attendance_biometric_enrol_request",
@@ -170,6 +209,7 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     requestBiometricEnrolment,
+    "capture",
   );
   tool(
     "hr_attendance_biometric_profiles",
@@ -189,5 +229,6 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     revokeBiometricProfile,
+    "capture",
   );
 }

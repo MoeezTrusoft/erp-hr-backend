@@ -16,6 +16,7 @@ import {
   generateAttendanceImportTemplate,
   runAttendanceImport,
 } from "../../services/attendanceImport.service.js";
+import { emitAttendanceCaptureChanged } from "../../services/hrConfigEvents.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -57,13 +58,24 @@ export function registerAttendanceImportTools(server) {
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       if (args.replaceCorrected)
         assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const actorId = user.id || user.userId || user.employeeId;
       const data = await runAttendanceImport({
         ...args,
         mayReplaceCorrected:
           user.isAdmin || hasPermission(permissions, "hr:attendance", "EDIT"),
         tenantId: user.tenantId,
-        actorId: user.id || user.userId || user.employeeId,
+        actorId,
       });
+      // A committed batch changes attendance days and the capture queue; a dry
+      // run changes nothing, so it stays silent. Fail-soft inside the emitter.
+      if (!args.dryRun) {
+        await emitAttendanceCaptureChanged({
+          tenantId: user.tenantId,
+          actorId,
+          captureId: data?.batchId ?? args.batchId,
+          action: "import_committed",
+        });
+      }
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_import"),
   );
