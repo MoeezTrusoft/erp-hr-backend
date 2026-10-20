@@ -314,6 +314,20 @@ describe("listFailedHandoffs — the operator fleet view (Phase 9 residue)", () 
     expect(result.items[0].lastError).toBeUndefined();
   });
 
+  it("flags a failure that needs an employee category, never echoing the error", async () => {
+    const row = (id, lastError) => ({
+      id, offerId: id, status: "FAILED", attemptCount: 1, lastStep: null, lastError,
+      updated_at: new Date("2026-09-20T10:00:00Z"), offer: { id, status: "ACCEPTED", application: null },
+    });
+    prismaDouble.offerHandoff.findMany.mockResolvedValue([
+      row(1, "Employee category is required to provision a new employee; retry the handoff with employeeCategory"),
+      row(2, "Some other failure with a.person@example.com in it"),
+    ]);
+    const { items } = await listFailedHandoffs({ tenantId: TENANT });
+    expect(items.map((i) => i.needsEmployeeCategory)).toEqual([true, false]);
+    expect(JSON.stringify(items)).not.toContain("example.com");
+  });
+
   it("supports an unfiltered listing when status is empty", async () => {
     prismaDouble.offerHandoff.findMany.mockResolvedValue([]);
     await listFailedHandoffs({ tenantId: TENANT, status: "" });

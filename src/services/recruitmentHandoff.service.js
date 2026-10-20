@@ -71,7 +71,9 @@ export async function getOfferHandoff({ offerId, tenantId, db = prisma } = {}) {
  * handoff in the tenant, FAILED first (oldest failure first — the one that has
  * been silently broken the longest sorts first), with the identifying offer /
  * candidate / requisition context an operator needs to act. Ids + status only:
- * `lastError` is on the per-offer detail read, not the fleet surface.
+ * `lastError` is on the per-offer detail read, not the fleet surface. The one
+ * thing a retry needs to know up front, whether it must carry an employee
+ * category, rides along as a derived flag (never the error text).
  */
 export async function listFailedHandoffs({ tenantId, status = "FAILED", limit = 50 } = {}) {
   requireTenant(tenantId);
@@ -102,6 +104,7 @@ export async function listFailedHandoffs({ tenantId, status = "FAILED", limit = 
       status: h.status,
       attemptCount: h.attemptCount,
       lastStep: h.lastStep,
+      needsEmployeeCategory: h.status === HANDOFF_STATUS.FAILED && /employee category is required/i.test(String(h.lastError ?? "")),
       updatedAt: h.updated_at,
       offerId: h.offerId,
       offerStatus: h.offer?.status ?? null,
