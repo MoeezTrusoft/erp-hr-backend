@@ -116,6 +116,7 @@ describe("getCandidate360", () => {
     ]);
     expect(view.summary).toMatchObject({ applications: 1, activeApplications: 1, interviews: 1, offers: 1, averageInterviewScore: 3.5 });
     expect(view.privacy.consents).toHaveLength(1);
+    expect(view.viewer).toEqual({ scope: "ORG", recruiter: true });
     expect(view.privacy.doNotContact).toMatchObject({ active: true, reasonCode: "CANDIDATE_REQUEST" });
     expect(view.privacy.legalHold).toMatchObject({ active: true, reason: "Litigation" });
     expect(view.aiRecords).toHaveLength(1);
@@ -136,6 +137,7 @@ describe("getCandidate360", () => {
     expect(view.candidate.notes).toBe("Strong referral from the sales lead"); // MANAGED may read notes
     expect(view.offers[0]).toMatchObject({ salary: null, currency: null, compensation: null, compensationRedacted: true });
     expect(view.privacy.consents).toBeUndefined();
+    expect(view.viewer).toEqual({ scope: "MANAGED", recruiter: false });
     expect(view.privacy.retentionUntil).toBeUndefined();
     expect(view.privacy.doNotContact).toEqual({ active: true });
     expect(view.privacy.legalHold).toEqual({ active: true });

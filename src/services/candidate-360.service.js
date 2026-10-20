@@ -304,5 +304,9 @@ export async function getCandidate360({ candidateId, tenantId, scope }) {
                 : { active: false },
         },
         aiRecords: aiRecords,
+        // What the caller may do here, so a screen never infers it from which
+        // sections happen to be present: the recruiter (ORG) is the only scope
+        // that sends messages, merges duplicates or re-queues a parse.
+        viewer: { scope: scope.level ?? null, recruiter },
     };
 }
