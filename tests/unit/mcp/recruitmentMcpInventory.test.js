@@ -42,6 +42,8 @@ import { registerOfferLifecycleTools } from "../../../src/mcp/tools/offer-lifecy
 import { registerOfferLetterTools } from "../../../src/mcp/tools/offer-letter.tools.js";
 import { registerRecruitmentWorkspaceTools } from "../../../src/mcp/tools/recruitment-workspace.tools.js";
 import { registerInterviewSchedulingTools } from "../../../src/mcp/tools/interview-scheduling.tools.js";
+import { registerTestBlueprintTools } from "../../../src/mcp/tools/test-blueprint.tools.js";
+import { registerTestWorkstationTools } from "../../../src/mcp/tools/test-workstation.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -75,6 +77,9 @@ const RECRUITMENT_REGISTRARS = [
   ["offerLetterTools", registerOfferLetterTools],
   ["recruitmentWorkspaceTools", registerRecruitmentWorkspaceTools],
   ["interviewSchedulingTools", registerInterviewSchedulingTools],
+  // Phase 3b — on-site assessment and evaluation forms.
+  ["testBlueprintTools", registerTestBlueprintTools],
+  ["testWorkstationTools", registerTestWorkstationTools],
 ];
 
 function collect(register) {
@@ -118,6 +123,8 @@ const EXPECTED_PER_MODULE = Object.freeze({
   offerLetterTools: 7, // Phase 3a: letter templates, render, versions, e-signature send/void
   recruitmentWorkspaceTools: 2, // Phase 3a: interviewer and hiring manager workspaces
   interviewSchedulingTools: 6, // Phase 3a: slot offers, no-show, calendar re-sync
+  testBlueprintTools: 9, // Phase 3b: blueprints, dual approval, publish, link, resolve, preview
+  testWorkstationTools: 4, // Phase 3b: kiosk register, list, revoke, rotate
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -281,6 +288,20 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_interview_slot_offers_list",
   "hr_interview_no_show",
   "hr_interview_calendar_resync",
+  // Phase 3b — on-site assessment.
+  "hr_test_blueprints_list",
+  "hr_test_blueprint_get",
+  "hr_test_blueprint_create",
+  "hr_test_blueprint_update",
+  "hr_test_blueprint_approve",
+  "hr_test_blueprint_publish",
+  "hr_test_blueprint_link",
+  "hr_test_blueprint_resolve",
+  "hr_test_blueprint_preview",
+  "hr_test_workstation_register",
+  "hr_test_workstations_list",
+  "hr_test_workstation_revoke",
+  "hr_test_workstation_rotate",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -325,7 +346,8 @@ describe("Recruitment MCP tool inventory", () => {
     // + 2 scheduled disposition tools.
     // Phase 3a: + 4 offer lifecycle tools, + 7 offer letter tools, + 2 workspaces,
     // + 6 interview scheduling tools.
-    expect(all).toHaveLength(735);
+    // Phase 3b: + 9 blueprint tools, + 4 workstation tools.
+    expect(all).toHaveLength(748);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

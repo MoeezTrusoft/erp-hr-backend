@@ -25,6 +25,10 @@ import { CALENDAR_SYNC_ACTION, calendarSyncMark, nextCalendarAction, resetRemind
 // Recruitment Phase 3a (stream B) — a NEXT_ROUND decision may advance the
 // application in the decision's own transaction.
 import { applyDecisionAutoAdvance } from "./interview-decision-prompt.service.js";
+// Recruitment Phase 3b — an on-site interview whose requisition resolves a
+// published test blueprint is marked assessment-required in its own
+// transaction (flag onsiteTest; a no-op otherwise).
+import { markInterviewAssessmentInTransaction } from "./test-blueprint.service.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
 // object / trailing param; folded into reads and stamped on creates, fail-closed
@@ -122,11 +126,13 @@ export const scheduleInterviewInTransaction = async (tx, {
     // Hoisted for the event below (the lookup lives inside the branch, the
     // candidate id is needed after it).
     let applicationCandidateId = null;
+    let applicationRow = null;
     if (applicationId != null) {
         const application = await tx.application.findFirst({
             where: scopedWhere(tenantId, { id: Number(applicationId) }),
-            select: { id: true, stage: true, candidateId: true },
+            select: { id: true, stage: true, candidateId: true, jobRequisitionId: true },
         });
+        applicationRow = application;
         applicationCandidateId = application?.candidateId ?? null;
         if (!application) {
             throw Object.assign(new Error(`Application "${applicationId}" not found`), { status: 404 });
@@ -169,7 +175,12 @@ export const scheduleInterviewInTransaction = async (tx, {
         ),
     );
 
-    return interview;
+    // Phase 3b — the on-site test requirement, after the invitation event so
+    // consumers see the interview before its assessment status.
+    const assessment = await markInterviewAssessmentInTransaction(tx, {
+        interview, application: applicationRow, tenantId, now,
+    });
+    return assessment ? { ...interview, ...assessment.fields } : interview;
 };
 
 // Phase 1.4 — `scope` narrows the read to the caller's record scope (an
