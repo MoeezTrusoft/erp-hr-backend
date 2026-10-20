@@ -38,6 +38,7 @@ import { registerCandidateCommunicationTools } from "./tools/candidate-communica
 import { registerResumeParseStatusTools } from "./tools/resume-parse-status.tools.js";
 import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposition.tools.js";
 import { registerOfferLifecycleTools } from "./tools/offer-lifecycle.tools.js";
+import { registerOfferLetterTools } from "./tools/offer-letter.tools.js";
 import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
@@ -309,6 +310,8 @@ export function registerAllTools(server) {
   registerRecruitmentDispositionTools(server);
   // Phase 3a — offer decline capture, expiry extension and the grade band check.
   registerOfferLifecycleTools(server);
+  // Phase 3a — versioned offer letters and the e-signature round trip.
+  registerOfferLetterTools(server);
   // FR-13 residue — tenant-configurable onboarding checklist templates.
   registerOnboardingTemplateTools(server);
   registerCandidatePrivacyTools(server);

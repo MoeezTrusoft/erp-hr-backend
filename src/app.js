@@ -64,6 +64,7 @@ import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
 import publicPortalRoutes from "./routes/publicPortal.routes.js";
 import { jobFeedRouter } from "./routes/job-feed.routes.js";
+import { esignWebhookRouter } from "./routes/esign-webhook.routes.js";
 import emergencyContactRoutes from "./routes/emergencyContacts.routes.js";
 import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
@@ -125,6 +126,11 @@ export const createApp = () => {
 
     // Document uploads (employee/profile docs) can arrive as base64 in the JSON
     // body; the express default (100kb) trips them with 413. Env-tunable ceiling.
+    // Phase 3a — the e-signature provider's callback. Outside the /api guard
+    // (a provider has no service JWT; the HMAC over the raw body is the
+    // credential) and BEFORE express.json, so the router receives the bytes
+    // the signature covers.
+    app.use("/webhooks/esign", esignWebhookRouter);
     app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "25mb" }));
 
     const allowedOrigins = process.env.ALLOWED_DOMAINS

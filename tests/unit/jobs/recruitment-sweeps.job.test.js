@@ -86,6 +86,7 @@ const {
   JOB_RECRUITMENT_SCORING,
   JOB_CANDIDATE_DUPLICATE_DETECTION,
   JOB_OFFER_EXPIRY,
+  JOB_ESIGN_WEBHOOK_RETRY,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -242,6 +243,17 @@ describe("Phase 3a jobs are scheduled", () => {
     const offerExpiry = jest.fn(async () => "expiry");
     const processor = buildReminderProcessor({ offerExpiry });
     await expect(processor({ name: JOB_OFFER_EXPIRY, data: {} })).resolves.toBe("expiry");
+  });
+
+  it("registers the e-signature retry every 15 minutes and dispatches it", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_ESIGN_WEBHOOK_RETRY].opts).toMatchObject({
+      jobId: "repeat:esign-webhook-retry",
+      repeat: { pattern: "4,19,34,49 * * * *" },
+    });
+    const esignWebhookRetry = jest.fn(async () => "retry");
+    const processor = buildReminderProcessor({ esignWebhookRetry });
+    await expect(processor({ name: JOB_ESIGN_WEBHOOK_RETRY, data: {} })).resolves.toBe("retry");
   });
 });
 

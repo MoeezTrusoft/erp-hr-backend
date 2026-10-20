@@ -41,6 +41,7 @@ import { runScheduledDispositionJob } from '../services/scheduled-disposition.se
 import { runApplicationScoringJob } from '../services/application-scoring.service.js';
 import { runCandidateDuplicateDetectionJob } from '../services/candidate-duplicate.service.js';
 import { runOfferExpiryJob } from '../services/offer-expiry.service.js';
+import { runEsignWebhookRetryJob } from '../services/offer-esign.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -95,6 +96,9 @@ export const JOB_CANDIDATE_DUPLICATE_DETECTION = 'candidate-duplicate-detection'
 // Phase 3a — interview and offer orchestration; each body checks its own flag
 // (all default OFF): offer expiry reminders and expiry (HR_RECRUITMENT_OFFER_EXPIRY).
 export const JOB_OFFER_EXPIRY = 'offer-expiry';
+// Retries e-signature deliveries that failed or were abandoned mid-apply
+// (HR_RECRUITMENT_ESIGN, and only with a provider configured).
+export const JOB_ESIGN_WEBHOOK_RETRY = 'esign-webhook-retry';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -217,6 +221,12 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:offer-expiry', repeat: { pattern: '35 * * * *' } },
         },
+        {
+            // Every 15 minutes, offset from the other quarter-hour sweeps.
+            name: JOB_ESIGN_WEBHOOK_RETRY,
+            data: {},
+            opts: { jobId: 'repeat:esign-webhook-retry', repeat: { pattern: '4,19,34,49 * * * *' } },
+        },
     ];
 }
 
@@ -241,6 +251,7 @@ export function buildReminderProcessor({
     applicationScoring = runApplicationScoringJob,
     candidateDuplicateDetection = runCandidateDuplicateDetectionJob,
     offerExpiry = runOfferExpiryJob,
+    esignWebhookRetry = runEsignWebhookRetryJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -283,6 +294,8 @@ export function buildReminderProcessor({
                     return candidateDuplicateDetection(data);
                 case JOB_OFFER_EXPIRY:
                     return offerExpiry(data);
+                case JOB_ESIGN_WEBHOOK_RETRY:
+                    return esignWebhookRetry(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }
