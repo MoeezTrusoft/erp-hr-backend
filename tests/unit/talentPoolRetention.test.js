@@ -17,6 +17,10 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 const prisma = {
   talentPool: { create: jest.fn() },
   candidate: { updateMany: jest.fn() },
+  // F-37 — the pool entry is written inside a tenant transaction (with its
+  // outbox event); the double runs the callback on the same client.
+  $transaction: jest.fn(async (fn) => fn(prisma)),
+  $executeRaw: jest.fn(async () => 1),
 };
 
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));

@@ -1,15 +1,24 @@
 import * as svc from "../services/onboarding.service.js";
 import { respondServerError } from '../utils/httpError.js';
 
+// F-37 — onboarding WRITES run under the VERIFIED tenant (req.user.tenantId, set
+// from the signed service-JWT claim — never a header), like the recruitment
+// controllers. The acting employee rides along as the outbox event's actor.
+const tenantOf = (req) => req.user?.tenantId ?? null;
+const actorCtx = (req) => ({ actorId: req.user?.employeeId ?? null });
+const tenantRequired = (res) => res.status(400).json({ success: false, message: "Tenant context is required" });
+const writeError = (res, e) => res.status(e.status || 400).json({ success: false, message: e.message, code: e.code });
+
 // ── Checklists ──────────────────────────────────────────────────────────────
 
 export const createChecklist = async (req, res) => {
     try {
-        const createdById = req.headers["x-employee-id"] || null;
-        const result = await svc.createChecklist({ ...req.body, createdById });
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        const result = await svc.createChecklist({ ...req.body, tenantId }, actorCtx(req));
         res.status(201).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 
@@ -44,10 +53,12 @@ export const getChecklistByEmployee = async (req, res) => {
 
 export const updateChecklist = async (req, res) => {
     try {
-        const result = await svc.updateChecklist(req.params.id, req.body);
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        const result = await svc.updateChecklist(req.params.id, req.body, tenantId, actorCtx(req));
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 
@@ -55,28 +66,34 @@ export const updateChecklist = async (req, res) => {
 
 export const addTask = async (req, res) => {
     try {
-        const result = await svc.addTask({ ...req.body, checklistId: req.params.id });
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        const result = await svc.addTask({ ...req.body, checklistId: req.params.id, tenantId }, actorCtx(req));
         res.status(201).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 
 export const updateTask = async (req, res) => {
     try {
-        const result = await svc.updateTask(req.params.taskId, req.body);
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        const result = await svc.updateTask(req.params.taskId, req.body, tenantId, actorCtx(req));
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 
 export const deleteTask = async (req, res) => {
     try {
-        await svc.deleteTask(req.params.taskId);
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        await svc.deleteTask(req.params.taskId, tenantId, actorCtx(req));
         res.status(204).end();
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 
@@ -121,10 +138,12 @@ export const signDocument = async (req, res) => {
 
 export const assignBuddy = async (req, res) => {
     try {
-        const result = await svc.assignBuddy({ checklistId: req.params.id, buddyId: req.body.buddyId });
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        const result = await svc.assignBuddy({ checklistId: req.params.id, buddyId: req.body.buddyId, tenantId }, actorCtx(req));
         res.status(200).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 
@@ -141,11 +160,12 @@ export const getBuddy = async (req, res) => {
 
 export const submitSurvey = async (req, res) => {
     try {
-        const submittedById = req.headers["x-employee-id"] || null;
-        const result = await svc.submitSurvey({ ...req.body, submittedById });
+        const tenantId = tenantOf(req);
+        if (!tenantId) return tenantRequired(res);
+        const result = await svc.submitSurvey({ ...req.body, tenantId }, actorCtx(req));
         res.status(201).json({ success: true, message: "Success", data: result });
     } catch (e) {
-        res.status(400).json({ success: false, message: e.message });
+        writeError(res, e);
     }
 };
 

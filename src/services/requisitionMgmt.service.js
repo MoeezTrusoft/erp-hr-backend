@@ -31,6 +31,9 @@ import { logAction } from "../utils/logs.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { requisitionClosedEvent } from "./hrEvents.js";
+import { eventContext } from "../lib/event-context.util.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
 // the C4 client extension on the shared prisma singleton).
@@ -289,9 +292,10 @@ export const closeRequisition = async (id, tenantId, actorId = null, reason = nu
         closeReason: "REQUISITION_CLOSED",
         actorId,
       });
-      await tx.jobRequisition.update({
+      // F-37 — closedAt is the lifecycle stamp the close owns; it was never set.
+      const closed = await tx.jobRequisition.update({
         where: { id: Number(id) },
-        data: { status: "CLOSED" },
+        data: { status: "CLOSED", closedAt: new Date() },
       });
       await recordRequisitionTransition(tx, {
         requisitionId: Number(id),
@@ -302,6 +306,15 @@ export const closeRequisition = async (id, tenantId, actorId = null, reason = nu
         actorId,
         source: "requisition.close",
       });
+      // F-37 — announced in the same transaction (row tenant authoritative).
+      await enqueueHrDomainEvent(
+        tx,
+        requisitionClosedEvent(
+          { ...current, ...(closed ?? {}), id: Number(id), tenantId: closed?.tenantId ?? current.tenantId ?? null },
+          eventContext({ actorId }),
+          { reason },
+        ),
+      );
       if (closedPostings) {
         await logAction({
           employeeId: actorId,

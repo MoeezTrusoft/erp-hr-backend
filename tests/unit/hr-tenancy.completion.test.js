@@ -223,7 +223,10 @@ describe('C.2 onboarding — tenant scoping', () => {
 
     it('createChecklist stamps tenantId', async () => {
         prismaMock.onboardingChecklist.create.mockResolvedValue({ id: 1 });
+        // F-37 — the referenced employee must be found in the caller's tenant first.
+        prismaMock.employee.findFirst.mockResolvedValue({ id: 3 });
         await onboarding.createChecklist({ employeeId: 3, tenantId: TENANT_A });
+        expect(prismaMock.employee.findFirst.mock.calls[0][0].where.tenant_id).toBe(TENANT_A);
         expect(prismaMock.onboardingChecklist.create.mock.calls[0][0].data.tenantId).toBe(TENANT_A);
     });
 });

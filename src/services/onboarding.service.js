@@ -1,6 +1,18 @@
 import prisma from "../config/prisma.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { scopedWhere, scopedData, withTenant, requireTenant, scopedEmployeeWhere } from "../lib/tenancy.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import {
+    onboardingChecklistCreatedEvent,
+    onboardingChecklistUpdatedEvent,
+    onboardingTaskAddedEvent,
+    onboardingTaskUpdatedEvent,
+    onboardingTaskDeletedEvent,
+    onboardingBuddyAssignedEvent,
+    onboardingSurveySubmittedEvent,
+} from "./hrEvents.js";
+import { eventContext } from "../lib/event-context.util.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
 // param; folded into onboarding reads and stamped on creates, fail-closed so
@@ -56,19 +68,55 @@ const normalizeTaskUpdate = (data = {}) => {
     return update;
 };
 
+// ── F-37 write-path helpers ─────────────────────────────────────────────────
+// Every onboarding WRITE runs under the verified tenant (fail-closed), checks
+// that the ids it references belong to that tenant, and enqueues its outbox
+// event in the same transaction as the write.
+
+const notFound = (message) => Object.assign(new Error(message), { status: 404 });
+
+// Columns a caller may never move through a generic update.
+const stripControlFields = (data = {}) => {
+    const { tenantId: _tenantId, id: _id, ...rest } = data || {};
+    return rest;
+};
+
+const assertEmployeeInTenant = async (db, employeeId, tenantId, label = "Employee") => {
+    const id = Number(employeeId);
+    if (!Number.isInteger(id) || id <= 0) throw Object.assign(new Error(`${label} id is required`), { status: 400 });
+    const row = await db.employee.findFirst({ where: scopedEmployeeWhere(tenantId, { id }), select: { id: true } });
+    if (!row) throw notFound(`${label} not found`);
+    return row;
+};
+
+const assertChecklistInTenant = async (db, checklistId, tenantId, select = { id: true, employeeId: true, tenantId: true }) => {
+    const row = await db.onboardingChecklist.findFirst({ where: withTenant(tenantId, { id: Number(checklistId) }), select });
+    if (!row) throw notFound("Checklist not found");
+    return row;
+};
+
+const writeTx = (tenantId, fn) => tenantTransaction(prisma, fn, { tenantId });
+
 // ── Checklists ──────────────────────────────────────────────────────────────
 
-export const createChecklist = async ({ employeeId, title, templateId, template, startDate, targetCompletionDate, targetDate, notes, tenantId }) => {
-    return prisma.onboardingChecklist.create({
-        data: scopedData(tenantId, {
-            employeeId: Number(employeeId),
-            title: title || "Employee Onboarding",
-            template: templateId || template || null,
-            startDate: startDate ? new Date(startDate) : new Date(),
-            targetDate: targetCompletionDate || targetDate ? new Date(targetCompletionDate || targetDate) : null,
-            notes,
-        }),
-        include: { tasks: true, documents: true, buddy: { include: { buddy: { select: employeeSelect } } } },
+export const createChecklist = async ({ employeeId, title, templateId, template, startDate, targetCompletionDate, targetDate, notes, tenantId }, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
+    return writeTx(tenantId, async (tx) => {
+        await assertEmployeeInTenant(tx, employeeId, tenantId);
+        const created = await tx.onboardingChecklist.create({
+            data: scopedData(tenantId, {
+                employeeId: Number(employeeId),
+                title: title || "Employee Onboarding",
+                template: templateId || template || null,
+                startDate: startDate ? new Date(startDate) : new Date(),
+                targetDate: targetCompletionDate || targetDate ? new Date(targetCompletionDate || targetDate) : null,
+                notes,
+            }),
+            include: { tasks: true, documents: true, buddy: { include: { buddy: { select: employeeSelect } } } },
+        });
+        await enqueueHrDomainEvent(tx, onboardingChecklistCreatedEvent(created, evtCtx));
+        return created;
     });
 };
 
@@ -118,45 +166,77 @@ export const getChecklistByEmployee = async (employeeId, tenantId) => {
     });
 };
 
-export const updateChecklist = async (id, data, tenantId) => {
-    const existing = await prisma.onboardingChecklist.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw new Error("Checklist not found");
-    return prisma.onboardingChecklist.update({
-        where: { id: Number(id) },
-        data,
-        include: { tasks: true, buddy: { include: { buddy: { select: employeeSelect } } } },
+export const updateChecklist = async (id, data, tenantId, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
+    const changes = stripControlFields(data);
+    return writeTx(tenantId, async (tx) => {
+        const existing = await tx.onboardingChecklist.findFirst({ where: withTenant(tenantId, { id: Number(id) }) });
+        if (!existing) throw new Error("Checklist not found");
+        if (changes.employeeId !== undefined) await assertEmployeeInTenant(tx, changes.employeeId, tenantId);
+        const updated = await tx.onboardingChecklist.update({
+            where: { id: Number(id) },
+            data: changes,
+            include: { tasks: true, buddy: { include: { buddy: { select: employeeSelect } } } },
+        });
+        await enqueueHrDomainEvent(
+            tx,
+            onboardingChecklistUpdatedEvent({ ...updated, tenantId: existing.tenantId }, evtCtx, { changedFields: Object.keys(changes) }),
+        );
+        return updated;
     });
 };
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId, assigneeId, tenantId }) => {
-    return prisma.onboardingTask.create({
-        data: scopedData(tenantId, {
-            checklistId: Number(checklistId),
-            title,
-            description,
-            assigneeType: assigneeType || "HR",
-            dueDate: dueDate ? new Date(dueDate) : null,
-            assigneeId: assignedToId || assigneeId ? Number(assignedToId || assigneeId) : null,
-        }),
+export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId, assigneeId, tenantId }, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
+    return writeTx(tenantId, async (tx) => {
+        await assertChecklistInTenant(tx, checklistId, tenantId);
+        const created = await tx.onboardingTask.create({
+            data: scopedData(tenantId, {
+                checklistId: Number(checklistId),
+                title,
+                description,
+                assigneeType: assigneeType || "HR",
+                dueDate: dueDate ? new Date(dueDate) : null,
+                assigneeId: assignedToId || assigneeId ? Number(assignedToId || assigneeId) : null,
+            }),
+        });
+        await enqueueHrDomainEvent(tx, onboardingTaskAddedEvent(created, evtCtx));
+        return created;
     });
 };
 
-export const updateTask = async (taskId, data, tenantId) => {
-    const existing = await prisma.onboardingTask.findFirst({ where: scopedWhere(tenantId, { id: Number(taskId) }) });
-    if (!existing) throw new Error("Task not found");
-    const update = normalizeTaskUpdate(data);
-    return prisma.onboardingTask.update({
-        where: { id: Number(taskId) },
-        data: update,
+export const updateTask = async (taskId, data, tenantId, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
+    const update = normalizeTaskUpdate(stripControlFields(data));
+    return writeTx(tenantId, async (tx) => {
+        const existing = await tx.onboardingTask.findFirst({ where: withTenant(tenantId, { id: Number(taskId) }) });
+        if (!existing) throw new Error("Task not found");
+        // A task may only move to another checklist of the same tenant.
+        if (update.checklistId !== undefined) await assertChecklistInTenant(tx, update.checklistId, tenantId);
+        const updated = await tx.onboardingTask.update({
+            where: { id: Number(taskId) },
+            data: update,
+        });
+        await enqueueHrDomainEvent(tx, onboardingTaskUpdatedEvent({ ...updated, tenantId: existing.tenantId }, evtCtx));
+        return updated;
     });
 };
 
-export const deleteTask = async (taskId, tenantId) => {
-    const existing = await prisma.onboardingTask.findFirst({ where: scopedWhere(tenantId, { id: Number(taskId) }) });
-    if (!existing) throw new Error("Task not found");
-    return prisma.onboardingTask.delete({ where: { id: Number(taskId) } });
+export const deleteTask = async (taskId, tenantId, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
+    return writeTx(tenantId, async (tx) => {
+        const existing = await tx.onboardingTask.findFirst({ where: withTenant(tenantId, { id: Number(taskId) }) });
+        if (!existing) throw new Error("Task not found");
+        const removed = await tx.onboardingTask.delete({ where: { id: Number(taskId) } });
+        await enqueueHrDomainEvent(tx, onboardingTaskDeletedEvent({ ...existing, ...(removed ?? {}), tenantId: existing.tenantId }, evtCtx));
+        return removed;
+    });
 };
 
 // ── Documents ────────────────────────────────────────────────────────────────
@@ -204,18 +284,25 @@ export const signDocument = async (docId, { signedBy, tenantId } = {}) => {
 
 // ── Buddy ────────────────────────────────────────────────────────────────────
 
-export const assignBuddy = async ({ checklistId, buddyId, tenantId }) => {
-    // Scope the parent checklist so a buddy can't be attached cross-tenant.
-    const checklist = await prisma.onboardingChecklist.findFirst({
-        where: scopedWhere(tenantId, { id: Number(checklistId) }),
-        select: { id: true },
-    });
-    if (!checklist) throw new Error("Checklist not found");
-    return prisma.onboardingBuddy.upsert({
-        where: { checklistId: Number(checklistId) },
-        update: { buddyId: Number(buddyId) },
-        create: scopedData(tenantId, { checklistId: Number(checklistId), buddyId: Number(buddyId) }),
-        include: { buddy: { select: employeeSelect } },
+export const assignBuddy = async ({ checklistId, buddyId, tenantId }, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
+    return writeTx(tenantId, async (tx) => {
+        // Scope the parent checklist AND the buddy so neither can be attached
+        // cross-tenant (the response embeds the buddy's employee profile).
+        const checklist = await assertChecklistInTenant(tx, checklistId, tenantId);
+        await assertEmployeeInTenant(tx, buddyId, tenantId, "Buddy");
+        const buddy = await tx.onboardingBuddy.upsert({
+            where: { checklistId: Number(checklistId) },
+            update: { buddyId: Number(buddyId) },
+            create: scopedData(tenantId, { checklistId: Number(checklistId), buddyId: Number(buddyId) }),
+            include: { buddy: { select: employeeSelect } },
+        });
+        await enqueueHrDomainEvent(
+            tx,
+            onboardingBuddyAssignedEvent({ ...buddy, buddyId: buddy?.buddyId ?? Number(buddyId), tenantId: checklist.tenantId }, evtCtx),
+        );
+        return buddy;
     });
 };
 
@@ -228,38 +315,51 @@ export const getBuddy = async (checklistId, tenantId) => {
 
 // ── Surveys ──────────────────────────────────────────────────────────────────
 
-export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, responses, tenantId }) => {
+export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, responses, tenantId }, ctx = {}) => {
+    requireTenant(tenantId);
+    const evtCtx = eventContext(ctx);
     const resolvedType = mapSurveyType(surveyType || type);
-    let resolvedChecklistId = checklistId ? Number(checklistId) : null;
+    return writeTx(tenantId, async (tx) => {
+        await assertEmployeeInTenant(tx, employeeId, tenantId);
+        let checklist;
+        if (checklistId) {
+            // A caller-supplied checklist must be the tenant's.
+            checklist = await assertChecklistInTenant(tx, checklistId, tenantId);
+        } else {
+            checklist = await tx.onboardingChecklist.findFirst({
+                where: withTenant(tenantId, { employeeId: Number(employeeId) }),
+                orderBy: { created_at: "desc" },
+                select: { id: true, employeeId: true, tenantId: true },
+            });
+            if (!checklist) throw new Error("Onboarding checklist not found for employee");
+        }
+        const resolvedChecklistId = checklist.id;
 
-    if (!resolvedChecklistId) {
-        const checklist = await prisma.onboardingChecklist.findFirst({
-            where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
-            orderBy: { created_at: "desc" },
-            select: { id: true },
-        });
-        if (!checklist) throw new Error("Onboarding checklist not found for employee");
-        resolvedChecklistId = checklist.id;
-    }
-
-    return prisma.onboardingSurvey.upsert({
-        where: {
-            checklistId_type: {
-                checklistId: resolvedChecklistId,
-                type: resolvedType,
+        const survey = await tx.onboardingSurvey.upsert({
+            where: {
+                checklistId_type: {
+                    checklistId: resolvedChecklistId,
+                    type: resolvedType,
+                },
             },
-        },
-        update: {
-            responses,
-            submittedAt: new Date(),
-        },
-        create: scopedData(tenantId, {
-            checklistId: resolvedChecklistId,
-            employeeId: Number(employeeId),
-            type: resolvedType,
-            responses,
-            submittedAt: new Date(),
-        }),
+            update: {
+                responses,
+                submittedAt: new Date(),
+            },
+            create: scopedData(tenantId, {
+                checklistId: resolvedChecklistId,
+                employeeId: Number(employeeId),
+                type: resolvedType,
+                responses,
+                submittedAt: new Date(),
+            }),
+        });
+        // ids + survey type only — the employee's responses never reach the fabric.
+        await enqueueHrDomainEvent(
+            tx,
+            onboardingSurveySubmittedEvent({ ...survey, tenantId: survey?.tenantId ?? checklist.tenantId ?? null }, evtCtx),
+        );
+        return survey;
     });
 };
 

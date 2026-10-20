@@ -11,7 +11,8 @@ import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { requisitionDecisionEvent, requisitionPostedEvent } from "./hrEvents.js";
+import { requisitionDecisionEvent, requisitionPostedEvent, requisitionCreatedEvent, requisitionClosedEvent } from "./hrEvents.js";
+import { eventContext } from "../lib/event-context.util.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
 import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
@@ -102,6 +103,11 @@ export const createRequisition = async (data, requestedBy, tenantId) => {
         reason: "initial requisition",
         actorId: requesterId,
       });
+      // F-37 — the new requisition is announced in the transaction that wrote it.
+      await enqueueHrDomainEvent(
+        tx,
+        requisitionCreatedEvent({ ...created, tenantId: created.tenantId ?? tenantId ?? null }, eventContext({ actorId: requestedBy })),
+      );
       return created;
     },
     { tenantId },
@@ -320,6 +326,9 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   // matched a row (a lost race must not leave a transition nobody performed).
   const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
   const statusMove = updateData.status ? { from: existing.status, to: updateData.status } : null;
+  // F-37 — a close through this surface stamps the lifecycle column the close
+  // paths own (JobRequisition.closedAt), so it cannot read "closed, never".
+  if (statusMove?.to === "CLOSED") updateData.closedAt = new Date();
   const { count } = await tenantTransaction(
     prisma,
     async (tx) => {
@@ -348,6 +357,17 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
           actorId: updatedBy,
           source: "requisition.update",
         });
+        // F-37 — the closure is announced with the write (row tenant authoritative).
+        if (statusMove.to === "CLOSED") {
+          await enqueueHrDomainEvent(
+            tx,
+            requisitionClosedEvent(
+              { ...existing, ...updateData, id: Number(id), tenantId: existing.tenantId ?? null },
+              eventContext({ actorId: updatedBy }),
+              { reason: data.comments ?? data.reason ?? null },
+            ),
+          );
+        }
       }
       return result;
     },

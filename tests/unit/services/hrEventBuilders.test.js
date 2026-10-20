@@ -329,3 +329,50 @@ describe('hrEvents builders', () => {
         expect(payrollRunFinalizedEvent({ id: 1, tenantId: undefined }, ctx)).toBeNull();
     });
 });
+
+// F-37 (realtime) — the recruitment + onboarding WRITE fan-out builders. Each
+// must produce a contract-valid envelope (name grammar proven by the real
+// validate-before-write path), carry ids/state facts only, and return null for
+// a tenantless row so the caller's enqueue is a no-op.
+describe('F-37 realtime write builders', () => {
+    // Every row carries an explicit `extra` (4th column): with a shorter row,
+    // it.each hands jest's done-callback to the test in its place.
+    const cases = [
+        ['interviewUpdatedEvent', 'hr.recruitment.interview_updated.v1', { id: 40, applicationId: 9, status: 'SCHEDULED', scheduledAt: new Date('2026-11-01T09:00:00Z') }, { changedFields: ['location'], interviewerIds: [3] }],
+        ['offerCreatedEvent', 'hr.recruitment.offer_created.v1', { id: 70, applicationId: 9, candidateId: 5, jobRequisitionId: 21, status: 'DRAFT', version: 0, salary: '987654' }, {}],
+        ['offerUpdatedEvent', 'hr.recruitment.offer_updated.v1', { id: 70, status: 'DRAFT', version: 3, salary: '987654', compensation: { baseSalary: 987654 } }, {}],
+        ['offerWithdrawnEvent', 'hr.recruitment.offer_withdrawn.v1', { id: 70, status: 'SENT', version: 3, salary: '987654' }, { previousStatus: 'SENT' }],
+        ['requisitionCreatedEvent', 'hr.recruitment.requisition_created.v1', { id: 21, status: 'DRAFT', requestedById: 12, title: 'Backend Engineer' }, {}],
+        ['talentPoolAddedEvent', 'hr.recruitment.talent_pool_added.v1', { id: 8, candidateId: 5, poolName: 'Future roles', notes: 'great fit' }, {}],
+        ['talentPoolRemovedEvent', 'hr.recruitment.talent_pool_removed.v1', { id: 8, candidateId: 5 }, {}],
+        ['talentPoolInvitationSentEvent', 'hr.recruitment.talent_pool_invitation_sent.v1', { id: 31, candidateId: 5, status: 'INVITED', expiresAt: new Date('2026-12-01T00:00:00Z'), responseNote: 'hello' }, { reused: false }],
+        ['onboardingChecklistCreatedEvent', 'hr.onboarding.checklist_created.v1', { id: 2, employeeId: 7, status: 'NOT_STARTED', notes: 'private' }, {}],
+        ['onboardingChecklistUpdatedEvent', 'hr.onboarding.checklist_updated.v1', { id: 2, employeeId: 7, status: 'IN_PROGRESS' }, { changedFields: ['status'] }],
+        ['onboardingTaskAddedEvent', 'hr.onboarding.task_added.v1', { id: 30, checklistId: 2, completed: false, title: 'Sign NDA' }, {}],
+        ['onboardingTaskUpdatedEvent', 'hr.onboarding.task_updated.v1', { id: 30, checklistId: 2, completed: true }, {}],
+        ['onboardingTaskDeletedEvent', 'hr.onboarding.task_deleted.v1', { id: 30, checklistId: 2 }, {}],
+        ['onboardingBuddyAssignedEvent', 'hr.onboarding.buddy_assigned.v1', { id: 4, checklistId: 2, buddyId: 8, buddy: { employee_name: 'Pat' } }, {}],
+        ['onboardingSurveySubmittedEvent', 'hr.onboarding.survey_submitted.v1', { id: 6, checklistId: 2, employeeId: 7, type: 'DAY_30', responses: { q1: 'secret answer' } }, {}],
+    ];
+
+    it.each(cases)('%s → %s is contract-valid and carries no PII / free text / salary', async (builder, name, row, extra) => {
+        const mod = await import('../../../src/services/hrEvents.js');
+        const env = assertValid(mod[builder]({ ...row, tenantId: TENANT }, ctx, extra), name);
+        const text = JSON.stringify(env.payload);
+        for (const secret of ['987654', 'Backend Engineer', 'Future roles', 'great fit', 'hello', 'private', 'Sign NDA', 'Pat', 'secret answer']) {
+            expect(text).not.toContain(secret);
+        }
+        expect(text).not.toMatch(/salary|compensation|responses/i);
+    });
+
+    it.each(cases)('%s returns null for a tenantless row (fail-closed)', async (builder, _name, row, extra) => {
+        const mod = await import('../../../src/services/hrEvents.js');
+        expect(mod[builder]({ ...row, tenantId: null }, ctx, extra)).toBeNull();
+    });
+
+    it('task events state completion as both a flag and a status', async () => {
+        const { onboardingTaskUpdatedEvent } = await import('../../../src/services/hrEvents.js');
+        const env = assertValid(onboardingTaskUpdatedEvent({ id: 30, checklistId: 2, completed: true, tenantId: TENANT }, ctx), 'hr.onboarding.task_updated.v1');
+        expect(env.payload).toMatchObject({ completed: true, status: 'COMPLETED' });
+    });
+});

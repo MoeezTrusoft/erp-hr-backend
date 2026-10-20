@@ -2,6 +2,10 @@ import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 import { computeRetentionUntil } from "./candidatePrivacy.service.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { talentPoolAddedEvent, talentPoolRemovedEvent } from "./hrEvents.js";
+import { eventContext } from "../lib/event-context.util.js";
 
 // C.2-completion — verified tenant (T-P2.1) threaded via `tenantId`; folded into
 // talent-pool reads + stamped on creates, fail-closed so tenant B never reads or
@@ -18,13 +22,24 @@ export const listPools = async ({ page = 1, limit = 20, tenantId } = {}) => {
 };
 
 export const addToPool = async ({ candidateId, poolName, notes, addedById, tenantId }) => {
-    const entry = await prisma.talentPool.create({
-        data: scopedData(tenantId, {
-            candidateId: Number(candidateId),
-            poolName,
-            notes,
-            addedById: addedById ? Number(addedById) : null,
-        }),
+    // F-37 — the membership row and its outbox event commit together. The
+    // retention stamp below stays OUTSIDE this transaction on purpose: it is
+    // fail-soft, and a failed statement inside a Postgres transaction would abort
+    // it (and the pool entry with it) even though the error is caught.
+    const entry = await tenantTransaction(prisma, async (tx) => {
+        const created = await tx.talentPool.create({
+            data: scopedData(tenantId, {
+                candidateId: Number(candidateId),
+                poolName,
+                notes,
+                addedById: addedById ? Number(addedById) : null,
+            }),
+        });
+        await enqueueHrDomainEvent(
+            tx,
+            talentPoolAddedEvent({ ...created, tenantId: created.tenantId ?? tenantId ?? null }, eventContext({ actorId: addedById })),
+        );
+        return created;
     });
 
     // Phase 10 (remainder) — TALENT_POOL retention wiring.
@@ -64,10 +79,17 @@ export const addToPool = async ({ candidateId, poolName, notes, addedById, tenan
     }
 };
 
-export const removeFromPool = async (id, tenantId) => {
-    const existing = await prisma.talentPool.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw new Error("Talent pool entry not found");
-    return prisma.talentPool.delete({ where: { id: Number(id) } });
+export const removeFromPool = async (id, tenantId, ctx = {}) => {
+    const evtCtx = eventContext(ctx);
+    // F-37 — pre-read, delete and outbox event in one transaction.
+    return tenantTransaction(prisma, async (tx) => {
+        const existing = await tx.talentPool.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+        if (!existing) throw new Error("Talent pool entry not found");
+        const removed = await tx.talentPool.delete({ where: { id: Number(id) } });
+        // The pre-read row's tenant is authoritative (a legacy tenantless entry emits nothing).
+        await enqueueHrDomainEvent(tx, talentPoolRemovedEvent({ ...existing, ...(removed ?? {}), tenantId: existing.tenantId ?? null }, evtCtx));
+        return removed;
+    });
 };
 
 export const getCandidatesInPool = async (poolName, tenantId) => {

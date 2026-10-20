@@ -23,6 +23,10 @@ import prisma from "../lib/prisma.js";
 import { createApplication } from "./applicationService.js";
 import { scopedWhere, withTenant } from "../lib/tenancy.js";
 import { inviteToApply } from "./talentPoolInvitation.service.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { talentPoolInvitationSentEvent } from "./hrEvents.js";
+import { eventContext } from "../lib/event-context.util.js";
 
 // ── DERIVATION HELPERS ──────────────────────────────────────────────────────
 
@@ -305,52 +309,73 @@ export const moveToPipeline = async ({ candidateId, jobRequisitionId, tenantId, 
  */
 export const inviteCandidate = async ({ candidateId, jobRequisitionId, tenantId, addedById } = {}) => {
   const cId = Number(candidateId);
+  const evtCtx = eventContext({ actorId: addedById });
 
-  const candidate = await prisma.candidate.findFirst({
-    where: withTenant(tenantId, { id: cId }),
-  });
-  if (!candidate) {
-    const err = new Error("Candidate not found");
-    err.status = 404;
-    throw err;
-  }
-
-  // FR-10 residue — the invitation is now a LIFECYCLE row, not just a note. The
-  // note append below is kept for continuity (readers of the pool row still see
-  // the history in place), but the authority is the invocation record: it carries
-  // the status, the expiry and the answer, which a note cannot.
-  const lifecycle = await inviteToApply({
-    tenantId,
-    candidateId: cId,
-    jobRequisitionId: jobRequisitionId ?? null,
-    actorId: addedById,
-  });
-
-  const stamp = `Invited to apply ${new Date().toISOString().slice(0, 10)}`;
-
-  const appendNote = (prev) => (prev && prev.trim().length ? `${prev}\n${stamp}` : stamp);
-
-  const memberships = await prisma.talentPool.findMany({
-    where: withTenant(tenantId, { candidateId: cId }),
-    select: { id: true, notes: true },
-  });
-
-  let updatedMemberships = 0;
-  if (memberships.length) {
-    for (const m of memberships) {
-      await prisma.talentPool.update({
-        where: { id: m.id },
-        data: { notes: appendNote(m.notes) },
-      });
-      updatedMemberships += 1;
-    }
-  } else {
-    // No pool membership — fall back to the candidate's own notes column.
-    await prisma.candidate.update({
-      where: { id: cId },
-      data: { notes: appendNote(candidate.notes) },
+  // F-37 — the invitation row, the note stamps and the outbox event commit as
+  // ONE transaction. The optional move-to-pipeline below stays outside it: it
+  // runs the application intake, which owns its own transaction and event.
+  const { lifecycle, stamp, memberships, updatedMemberships } = await tenantTransaction(prisma, async (tx) => {
+    const candidateRow = await tx.candidate.findFirst({
+      where: withTenant(tenantId, { id: cId }),
     });
-  }
+    if (!candidateRow) {
+      const err = new Error("Candidate not found");
+      err.status = 404;
+      throw err;
+    }
+
+    // FR-10 residue — the invitation is now a LIFECYCLE row, not just a note. The
+    // note append below is kept for continuity (readers of the pool row still see
+    // the history in place), but the authority is the invocation record: it carries
+    // the status, the expiry and the answer, which a note cannot.
+    const invited = await inviteToApply({
+      tenantId,
+      candidateId: cId,
+      jobRequisitionId: jobRequisitionId ?? null,
+      actorId: addedById,
+      db: tx,
+    });
+
+    const noteStamp = `Invited to apply ${new Date().toISOString().slice(0, 10)}`;
+
+    const appendNote = (prev) => (prev && prev.trim().length ? `${prev}\n${noteStamp}` : noteStamp);
+
+    const poolRows = await tx.talentPool.findMany({
+      where: withTenant(tenantId, { candidateId: cId }),
+      select: { id: true, notes: true },
+    });
+
+    let updated = 0;
+    if (poolRows.length) {
+      for (const m of poolRows) {
+        await tx.talentPool.update({
+          where: { id: m.id },
+          data: { notes: appendNote(m.notes) },
+        });
+        updated += 1;
+      }
+    } else {
+      // No pool membership — fall back to the candidate's own notes column.
+      await tx.candidate.update({
+        where: { id: cId },
+        data: { notes: appendNote(candidateRow.notes) },
+      });
+    }
+
+    const invitation = invited?.invitation;
+    if (invitation) {
+      await enqueueHrDomainEvent(
+        tx,
+        talentPoolInvitationSentEvent(
+          { ...invitation, tenantId: invitation.tenantId ?? candidateRow.tenantId ?? null },
+          evtCtx,
+          { reused: invited.reused },
+        ),
+      );
+    }
+
+    return { lifecycle: invited, stamp: noteStamp, memberships: poolRows, updatedMemberships: updated };
+  });
 
   let pipeline = null;
   if (jobRequisitionId != null && `${jobRequisitionId}`.trim().length) {

@@ -481,7 +481,17 @@ export function registerRecruitmentTools(server) {
         .optional()
         .describe("InterviewStatus enum — one of SCHEDULED | COMPLETED | CANCELLED | NO_SHOW"),
       notes: z.string().optional().describe("Free-text interview notes"),
-      decision: z.string().optional().describe("Interview outcome: NEXT_ROUND | HOLD | REJECTED (appended to notes)"),
+      decision: z
+        .string()
+        .optional()
+        .describe(
+          "Interview outcome: NEXT_ROUND | HOLD | REJECTED. Written to the interview's decision (which the offer prerequisite reads) and noted. NEXT_ROUND and REJECTED need at least one submitted scorecard, else HR-RECRUITMENT-INTERVIEW-FEEDBACK-REQUIRED unless overrideReason is given",
+        ),
+      overrideReason: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Why a NEXT_ROUND or REJECTED decision is recorded without a submitted scorecard; stamped in the interview notes and flagged on the outcome event"),
       feedback: z
         .object({
           ratings: z.record(z.string(), z.union([z.string(), z.number()])).optional().describe("Map of criterion -> score, e.g. {technical:4, culture:5}"),

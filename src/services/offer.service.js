@@ -10,7 +10,8 @@ import { transitionApplicationStageInTransaction } from "./applicationWorkflow.s
 import { getOfferHandoff, runOfferHandoff } from "./recruitmentHandoff.service.js";
 import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
 import { offerScopeWhere, maskOfferForScope, maskOffersForScope } from "../lib/recruitmentAccess.js";
-import { offerAcceptedEvent } from "./hrEvents.js";
+import { offerAcceptedEvent, offerCreatedEvent, offerUpdatedEvent, offerWithdrawnEvent } from "./hrEvents.js";
+import { eventContext } from "../lib/event-context.util.js";
 
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 
@@ -63,6 +64,12 @@ export const createOffer = async ({ applicationId, candidateId, jobRequisitionId
                 source: "offer-create",
             }, tx);
         }
+        // F-37 — the new offer is announced in the transaction that wrote it
+        // (ids + status + version only; never the salary).
+        await enqueueHrDomainEvent(
+            tx,
+            offerCreatedEvent({ ...created, tenantId: created.tenantId ?? tenantId }, eventContext({ actorId: createdById })),
+        );
         return created;
     });
 };
@@ -238,50 +245,67 @@ export const uploadOfferLetter = async (id, file, tenantId) => {
     });
 };
 
-export const updateOffer = async (id, { applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, status, expectedVersion }, tenantId) => {
-    const existing = await assertOfferInTenant(id, tenantId);
-    // API-2 — optimistic-concurrency guard (opt-in). Absent ⇒ no reject.
-    const expected = normalizeExpectedVersion(expectedVersion);
-    const data = {};
-    if (applicationId !== undefined) data.applicationId = applicationId ? Number(applicationId) : null;
-    // candidateId / jobRequisitionId are NOT-NULL FKs: only overwrite when a truthy
-    // value is supplied so a partial update (or an explicit null) never clobbers
-    // them to 0/NaN.
-    if (candidateId) data.candidateId = Number(candidateId);
-    if (jobRequisitionId) data.jobRequisitionId = Number(jobRequisitionId);
-    if (salary !== undefined && salary != null && salary !== "") data.salary = String(salary); // NOT-NULL C4-encrypted String column
-    if (currency !== undefined) data.currency = currency || "USD";
-    if (startDate !== undefined) data.startDate = startDate ? new Date(startDate) : null;
-    if (expiryDate !== undefined) data.expiryDate = expiryDate ? new Date(expiryDate) : null;
-    if (notes !== undefined) data.notes = notes;
-    // D-10 — status is not a free field. It moves through send (Approval Centre),
-    // respond (accept / decline) or withdrawal; the generic update may only
-    // re-send the current status (a full-object PUT) or withdraw a live offer.
-    if (status !== undefined && status !== null && status !== "") {
-        const target = String(status).toUpperCase();
-        if (target !== existing.status) {
-            if (target !== "WITHDRAWN" || !["DRAFT", "SENT"].includes(existing.status)) {
-                throw Object.assign(
-                    new Error(`Offer status cannot move from ${existing.status} to ${target} through an update; use send, respond or withdraw`),
-                    { status: 409, code: "HR-RECRUITMENT-OFFER-STATUS-READONLY" },
-                );
+export const updateOffer = async (id, { applicationId, candidateId, jobRequisitionId, salary, currency, startDate, expiryDate, notes, status, expectedVersion }, tenantId, ctx = {}) => {
+    const evtCtx = eventContext(ctx);
+    // F-37 — the pre-read, the compare-and-set and the outbox event are ONE
+    // transaction, so the status the event reports is the one this write judged.
+    return tenantTransaction(prisma, async (tx) => {
+        const existing = await tx.offer.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+        if (!existing) throw new Error("Offer not found");
+        // API-2 — optimistic-concurrency guard (opt-in). Absent ⇒ no reject.
+        const expected = normalizeExpectedVersion(expectedVersion);
+        const data = {};
+        if (applicationId !== undefined) data.applicationId = applicationId ? Number(applicationId) : null;
+        // candidateId / jobRequisitionId are NOT-NULL FKs: only overwrite when a truthy
+        // value is supplied so a partial update (or an explicit null) never clobbers
+        // them to 0/NaN.
+        if (candidateId) data.candidateId = Number(candidateId);
+        if (jobRequisitionId) data.jobRequisitionId = Number(jobRequisitionId);
+        if (salary !== undefined && salary != null && salary !== "") data.salary = String(salary); // NOT-NULL C4-encrypted String column
+        if (currency !== undefined) data.currency = currency || "USD";
+        if (startDate !== undefined) data.startDate = startDate ? new Date(startDate) : null;
+        if (expiryDate !== undefined) data.expiryDate = expiryDate ? new Date(expiryDate) : null;
+        if (notes !== undefined) data.notes = notes;
+        // D-10 — status is not a free field. It moves through send (Approval Centre),
+        // respond (accept / decline) or withdrawal; the generic update may only
+        // re-send the current status (a full-object PUT) or withdraw a live offer.
+        if (status !== undefined && status !== null && status !== "") {
+            const target = String(status).toUpperCase();
+            if (target !== existing.status) {
+                if (target !== "WITHDRAWN" || !["DRAFT", "SENT"].includes(existing.status)) {
+                    throw Object.assign(
+                        new Error(`Offer status cannot move from ${existing.status} to ${target} through an update; use send, respond or withdraw`),
+                        { status: 409, code: "HR-RECRUITMENT-OFFER-STATUS-READONLY" },
+                    );
+                }
+                data.status = "WITHDRAWN";
             }
-            data.status = "WITHDRAWN";
         }
-    }
 
-    // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
-    const versionWhere = expected == null ? {} : { version: expected };
-    const { count } = await prisma.offer.updateMany({
-        where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
-        data: { ...data, version: { increment: 1 } },
-    });
-    if (count === 0 && expected != null) {
-        const fresh = await prisma.offer.findFirst({
-            where: scopedWhere(tenantId, { id: Number(id) }),
-            select: { version: true },
+        // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
+        const versionWhere = expected == null ? {} : { version: expected };
+        const { count } = await tx.offer.updateMany({
+            where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
+            data: { ...data, version: { increment: 1 } },
         });
-        throw preconditionFailedError(fresh?.version);
-    }
-    return prisma.offer.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+        if (count === 0 && expected != null) {
+            const fresh = await tx.offer.findFirst({
+                where: scopedWhere(tenantId, { id: Number(id) }),
+                select: { version: true },
+            });
+            throw preconditionFailedError(fresh?.version);
+        }
+        const updated = await tx.offer.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+        if (count > 0 && updated) {
+            // The row's tenant is authoritative: a legacy tenantless offer emits nothing.
+            const eventRow = { ...updated, tenantId: updated.tenantId ?? existing.tenantId ?? null };
+            await enqueueHrDomainEvent(
+                tx,
+                data.status === "WITHDRAWN"
+                    ? offerWithdrawnEvent(eventRow, evtCtx, { previousStatus: existing.status })
+                    : offerUpdatedEvent(eventRow, evtCtx),
+            );
+        }
+        return updated;
+    });
 };

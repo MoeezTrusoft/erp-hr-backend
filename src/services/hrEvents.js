@@ -489,6 +489,133 @@ export function interviewRescheduleRequestedEvent(interview, ctx = {}, extra = {
     });
 }
 
+// ── F-37 realtime — recruitment write fan-out ────────────────────────────────
+// Every recruitment WRITE the frontend performs announces itself in the same
+// transaction, so the gateway SSE stream can refresh other recruiters' screens.
+// Payloads are ids + state facts only: no names, no contact data, no salary.
+const idStr = (value) => (value != null ? String(value) : null);
+const isoStr = (value) => {
+    if (value == null) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+// An interview edit that is not a cancel, reschedule or outcome. `changedFields`
+// carries column NAMES only (never the values), so a consumer knows what to
+// re-read without the fabric carrying free-text notes.
+export function interviewUpdatedEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_updated.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: idStr(interview?.applicationId),
+            candidateId: idStr(interview?.candidateId),
+            status: interview?.status ?? null,
+            scheduledAt: isoStr(interview?.scheduledAt),
+            decision: interview?.decision ?? null,
+            changedFields: Array.isArray(extra?.changedFields) ? extra.changedFields.map(String) : [],
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+// Offer payloads never carry compensation: identity, status and the aggregate
+// version (so a consumer can tell a stale refresh from a fresh one).
+const offerPayload = (offer) => ({
+    offerId: String(offer?.id),
+    applicationId: idStr(offer?.applicationId),
+    candidateId: idStr(offer?.candidateId),
+    jobRequisitionId: idStr(offer?.jobRequisitionId),
+    status: offer?.status ?? null,
+    version: offer?.version ?? null,
+});
+
+export function offerCreatedEvent(offer, ctx = {}) {
+    return baseArgs('hr.recruitment.offer_created.v1', offer, ctx, {
+        aggregateType: 'Offer',
+        aggregateId: offer?.id,
+        payload: { ...offerPayload(offer), createdById: idStr(offer?.createdById) },
+    });
+}
+
+export function offerUpdatedEvent(offer, ctx = {}) {
+    return baseArgs('hr.recruitment.offer_updated.v1', offer, ctx, {
+        aggregateType: 'Offer',
+        aggregateId: offer?.id,
+        payload: offerPayload(offer),
+    });
+}
+
+// `createdById` is the routing id (the owning recruiter), as on offer_accepted.
+export function offerWithdrawnEvent(offer, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.offer_withdrawn.v1', offer, ctx, {
+        aggregateType: 'Offer',
+        aggregateId: offer?.id,
+        payload: {
+            ...offerPayload(offer),
+            status: 'WITHDRAWN',
+            previousStatus: extra?.previousStatus ?? null,
+            createdById: idStr(offer?.createdById),
+        },
+    });
+}
+
+export function requisitionCreatedEvent(requisition, ctx = {}) {
+    return baseArgs('hr.recruitment.requisition_created.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: requisition?.status ?? 'DRAFT',
+            departmentId: idStr(requisition?.departmentId),
+            positionId: idStr(requisition?.positionId),
+            requestedById: idStr(requisition?.requestedById),
+        },
+    });
+}
+
+export function talentPoolAddedEvent(entry, ctx = {}) {
+    return baseArgs('hr.recruitment.talent_pool_added.v1', entry, ctx, {
+        aggregateType: 'TalentPool',
+        aggregateId: entry?.id,
+        payload: {
+            talentPoolEntryId: String(entry?.id),
+            candidateId: idStr(entry?.candidateId),
+            addedById: idStr(entry?.addedById),
+        },
+    });
+}
+
+export function talentPoolRemovedEvent(entry, ctx = {}) {
+    return baseArgs('hr.recruitment.talent_pool_removed.v1', entry, ctx, {
+        aggregateType: 'TalentPool',
+        aggregateId: entry?.id,
+        payload: {
+            talentPoolEntryId: String(entry?.id),
+            candidateId: idStr(entry?.candidateId),
+        },
+    });
+}
+
+// `reused` is true when an open invitation already existed and this call only
+// re-stamped the pool notes: the screen still changed, but nothing new was sent.
+export function talentPoolInvitationSentEvent(invitation, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.talent_pool_invitation_sent.v1', invitation, ctx, {
+        aggregateType: 'TalentPoolInvitation',
+        aggregateId: invitation?.id,
+        payload: {
+            invitationId: String(invitation?.id),
+            candidateId: idStr(invitation?.candidateId),
+            jobRequisitionId: idStr(invitation?.jobRequisitionId),
+            status: invitation?.status ?? null,
+            expiresAt: isoStr(invitation?.expiresAt),
+            invitedById: idStr(invitation?.invitedById),
+            reused: Boolean(extra?.reused),
+        },
+    });
+}
+
 // ── Documents (compliance / expiry) ──────────────────────────────────────────
 // HR Reports → Document Expiry Alerts: a manually-sent reminder for an
 // employee's about-to-expire (or expired) document. HR only EMITS this event;
@@ -538,6 +665,90 @@ export function onboardingTaskReminderEvent(task, ctx = {}, extra = {}) {
             message: extra?.message ?? null,
             dueDate: task?.dueDate ?? null,
             channels: { inApp: true, email: extra?.emailEnabled === true },
+        },
+    });
+}
+
+// F-37 realtime — onboarding write fan-out. ids + state facts only; a survey
+// event never carries the employee's responses.
+export function onboardingChecklistCreatedEvent(checklist, ctx = {}) {
+    return baseArgs('hr.onboarding.checklist_created.v1', checklist, ctx, {
+        aggregateType: 'OnboardingChecklist',
+        aggregateId: checklist?.id,
+        payload: {
+            checklistId: String(checklist?.id),
+            employeeId: idStr(checklist?.employeeId),
+            status: checklist?.status ?? null,
+        },
+    });
+}
+
+export function onboardingChecklistUpdatedEvent(checklist, ctx = {}, extra = {}) {
+    return baseArgs('hr.onboarding.checklist_updated.v1', checklist, ctx, {
+        aggregateType: 'OnboardingChecklist',
+        aggregateId: checklist?.id,
+        payload: {
+            checklistId: String(checklist?.id),
+            employeeId: idStr(checklist?.employeeId),
+            status: checklist?.status ?? null,
+            changedFields: Array.isArray(extra?.changedFields) ? extra.changedFields.map(String) : [],
+        },
+    });
+}
+
+const onboardingTaskPayload = (task) => ({
+    taskId: String(task?.id),
+    checklistId: idStr(task?.checklistId),
+    assigneeId: idStr(task?.assigneeId),
+    completed: Boolean(task?.completed),
+    status: task?.completed ? 'COMPLETED' : 'PENDING',
+});
+
+export function onboardingTaskAddedEvent(task, ctx = {}) {
+    return baseArgs('hr.onboarding.task_added.v1', task, ctx, {
+        aggregateType: 'OnboardingTask',
+        aggregateId: task?.id,
+        payload: onboardingTaskPayload(task),
+    });
+}
+
+export function onboardingTaskUpdatedEvent(task, ctx = {}) {
+    return baseArgs('hr.onboarding.task_updated.v1', task, ctx, {
+        aggregateType: 'OnboardingTask',
+        aggregateId: task?.id,
+        payload: onboardingTaskPayload(task),
+    });
+}
+
+export function onboardingTaskDeletedEvent(task, ctx = {}) {
+    return baseArgs('hr.onboarding.task_deleted.v1', task, ctx, {
+        aggregateType: 'OnboardingTask',
+        aggregateId: task?.id,
+        payload: { taskId: String(task?.id), checklistId: idStr(task?.checklistId) },
+    });
+}
+
+export function onboardingBuddyAssignedEvent(buddy, ctx = {}) {
+    return baseArgs('hr.onboarding.buddy_assigned.v1', buddy, ctx, {
+        aggregateType: 'OnboardingBuddy',
+        aggregateId: buddy?.id,
+        payload: {
+            buddyAssignmentId: String(buddy?.id),
+            checklistId: idStr(buddy?.checklistId),
+            buddyId: idStr(buddy?.buddyId),
+        },
+    });
+}
+
+export function onboardingSurveySubmittedEvent(survey, ctx = {}) {
+    return baseArgs('hr.onboarding.survey_submitted.v1', survey, ctx, {
+        aggregateType: 'OnboardingSurvey',
+        aggregateId: survey?.id,
+        payload: {
+            surveyId: String(survey?.id),
+            checklistId: idStr(survey?.checklistId),
+            employeeId: idStr(survey?.employeeId),
+            surveyType: survey?.type ?? null,
         },
     });
 }
