@@ -40,6 +40,7 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
+import { emitWorkScheduleChanged } from "../../services/hrConfigEvents.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 // Build the `user` handed to an owner-gated write (time-entry update/delete).
@@ -492,6 +493,14 @@ export function registerAttendanceTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateWorkSchedule(user, args);
+      if (!args.dryRun) {
+        await emitWorkScheduleChanged({
+          tenantId: user.tenantId,
+          actorId: user.userId,
+          scheduleId: data?.id,
+          action: "created",
+        });
+      }
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -515,6 +524,14 @@ export function registerAttendanceTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateWorkSchedule(user, id, rest);
+      if (!rest.dryRun) {
+        await emitWorkScheduleChanged({
+          tenantId: user.tenantId,
+          actorId: user.userId,
+          scheduleId: id,
+          action: "updated",
+        });
+      }
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -527,6 +544,12 @@ export function registerAttendanceTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
       const data = await mcpDeleteWorkSchedule(user, id);
+      await emitWorkScheduleChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        scheduleId: id,
+        action: "deleted",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
