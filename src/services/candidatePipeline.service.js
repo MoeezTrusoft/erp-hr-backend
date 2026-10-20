@@ -50,7 +50,7 @@ function deriveYearsExperience(parsedResume) {
   return null;
 }
 
-function toCard(application, deptMap) {
+export function toCard(application, deptMap) {
   const candidate = application.candidate ?? {};
   const firstName = candidate.firstName ?? "";
   const lastName = candidate.lastName ?? "";
@@ -68,7 +68,13 @@ function toCard(application, deptMap) {
   return {
     applicationId: application.id,
     candidateId: application.candidateId,
+    // The board's Create Offer needs the requisition the application is for,
+    // and its drawer shows the candidate's contact line and source.
+    jobRequisitionId: application.jobRequisitionId ?? null,
     name,
+    email: candidate.email ?? null,
+    phone: candidate.phone ?? null,
+    source: candidate.source ?? null,
     position: application.jobRequisition?.title ?? null,
     departmentId,
     department,
