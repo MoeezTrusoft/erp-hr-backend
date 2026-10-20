@@ -2,6 +2,14 @@ import { logAction } from "../utils/logs.js";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import * as utils from '../utils/analyticsUtils.js';
+import { isRecruitmentFlagEnabled } from '../lib/recruitmentFlags.js';
+import {
+    aggregateTimeToFill,
+    metricsVersionBlock,
+    offerAcceptance,
+    openPositions as canonicalOpenPositions,
+    timeToFillForRequisition,
+} from '../lib/recruitmentMetrics.js';
 
 
 /**
@@ -635,6 +643,9 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
         const recruitmentData = await prisma.jobRequisition.findMany({
             where: {
                 ...dataScope,
+                // F-35 — scope by the verified tenant explicitly; the ORM tenant
+                // extension stays as the second line, not the only one.
+                ...(tenantId ? { tenantId } : {}),
                 createdAt: {
                     gte: startDate,
                     lte: endDate
@@ -645,6 +656,8 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
                 postings: true,
                 // HR-KPI-04 — approval timestamp anchor (latest APPROVED decision).
                 approvals: true,
+                // F-35 — the canonical fill clock starts at the last APPROVED transition.
+                transitions: { select: { fromStatus: true, toStatus: true, createdAt: true } },
                 // HR-KPI-04 / HR-REC-09 — accepted-offer anchor + funnel counts.
                 offers: true,
                 applications: {
@@ -710,20 +723,37 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
         const bottlenecks = utils.identifyRecruitmentBottlenecks(recruitmentFunnel.conversions);
 
         // HR-KPI-07 — flag KPIs that breach configured targets.
+        // F-35 — the same numbers by the canonical definitions the recruitment
+        // analytics tool reports (src/lib/recruitmentMetrics.js), so the two
+        // surfaces can no longer disagree once the dashboard flag is on.
+        const canonical = recruitmentDashboardCanonical(recruitmentData);
+        const useCanonical = canonical && isRecruitmentFlagEnabled('canonicalDashboard');
+
+        const headlineTimeToFill = useCanonical
+            ? { ...timeToFill, avgDays: canonical.timeToFill.meanTimeToFillDays, medianDays: canonical.timeToFill.medianTimeToFillDays, count: canonical.timeToFill.requisitionsFilled, definition: 'canonical' }
+            : timeToFill;
+        const headlineFunnel = useCanonical
+            ? { ...recruitmentFunnel, offerAcceptanceRate: canonical.offerAcceptance.acceptanceRatePct }
+            : recruitmentFunnel;
+
         const kpiAlerts = utils.evaluateKpiTargets({
-            timeToFillDays: timeToFill.avgDays,
-            offerAcceptanceRate: recruitmentFunnel.offerAcceptanceRate,
+            timeToFillDays: headlineTimeToFill.avgDays,
+            offerAcceptanceRate: headlineFunnel.offerAcceptanceRate,
         });
 
         return {
-            openPositions,
+            openPositions: useCanonical ? canonical.openPositions.openPositions : openPositions,
             filledPositions,
             totalRequisitions: recruitmentData.length,
-            stageCounts,
-            timeToFill, // { avgDays, medianDays, count, byCategory } — HR-KPI-04
-            recruitmentFunnel, // HR-REC-09 / HR-KPI-03
+            stageCounts: useCanonical
+                ? { ...stageCounts, approved: recruitmentData.filter(req => req.status === 'APPROVED').length }
+                : stageCounts,
+            timeToFill: headlineTimeToFill, // { avgDays, medianDays, count, byCategory } — HR-KPI-04
+            recruitmentFunnel: headlineFunnel, // HR-REC-09 / HR-KPI-03
             bottlenecks,
             kpiAlerts, // HR-KPI-07
+            ...(canonical ? { canonicalMetrics: canonical } : {}),
+            definitions: useCanonical ? 'canonical' : 'legacy',
         };
 
     } catch (error) {
@@ -731,6 +761,32 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
         throw error;
     }
 };
+
+// The canonical block of the recruitment dashboard (null when the analytics
+// flag is off). Pure over the rows the dashboard already loaded.
+function recruitmentDashboardCanonical(requisitions) {
+    if (!isRecruitmentFlagEnabled('analytics')) return null;
+    const perRequisition = requisitions.map((req) =>
+        timeToFillForRequisition(req.transitions || [], req.offers || [], req.openings)
+    );
+    const fills = perRequisition.filter((r) => r.timeToFillDays !== null).map((r) => r.timeToFillDays).sort((a, b) => a - b);
+    const mid = Math.floor(fills.length / 2);
+    const medianTimeToFillDays = fills.length
+        ? Math.round((fills.length % 2 ? fills[mid] : (fills[mid - 1] + fills[mid]) / 2) * 10) / 10
+        : null;
+    const aggregate = aggregateTimeToFill(perRequisition);
+    return {
+        ...metricsVersionBlock(),
+        openPositions: canonicalOpenPositions(requisitions),
+        timeToFill: {
+            meanTimeToFillDays: aggregate.meanTimeToFillDays,
+            meanTimeToFirstFillDays: aggregate.meanTimeToFirstFillDays,
+            medianTimeToFillDays,
+            requisitionsFilled: fills.length,
+        },
+        offerAcceptance: offerAcceptance(requisitions.flatMap((req) => req.offers || [])),
+    };
+}
 
 export const getPerformanceDashboard = async ({ tenantId, timeframe, userRole }) => {
     try {

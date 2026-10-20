@@ -66,6 +66,24 @@ describe("NFR-12 — metric drill-down", () => {
     expect(fill.rows[0]).toMatchObject({ requisitionId: 7, applicationIds: [1, 2, 3] });
   });
 
+  it("offer acceptance answers with the offers the canonical rate counts (F-35)", async () => {
+    prisma.application.findMany.mockResolvedValueOnce([
+      app(1, { offer: { id: 11, status: "ACCEPTED", respondedAt: new Date("2026-02-20T00:00:00Z") } }),
+      app(2, { offer: { id: 12, status: "DECLINED", respondedAt: new Date("2026-02-21T00:00:00Z") } }),
+      app(3, { offer: { id: 13, status: "SENT", respondedAt: null } }),
+      app(4, { offer: { id: 14, status: "WITHDRAWN", respondedAt: null } }),
+      app(5, { offer: { id: 15, status: "DRAFT", respondedAt: null } }),
+      app(6),
+    ]);
+    const result = await drillDownRecruitmentMetric("t-1", "offerAcceptanceRate");
+    expect(result.unit).toBe("offer");
+    expect(result.rows.map((r) => [r.offerId, r.outcome])).toEqual([
+      [11, "final"],
+      [12, "final"],
+      [13, "pending"],
+    ]);
+  });
+
   it("dispositions resolve through the screening ledger (the actual evidence)", async () => {
     const result = await drillDownRecruitmentMetric("t-1", "disposition:NOT_A_FIT");
     expect(prisma.applicationScreening.findMany).toHaveBeenCalledWith(

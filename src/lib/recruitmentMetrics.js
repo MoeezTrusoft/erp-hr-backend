@@ -50,6 +50,7 @@ export function metricsVersionBlock() {
             dropOff: "Applications exiting stage A without advancing ÷ entering A, classified by disposition reason code (§4.2).",
             offerAcceptanceRate: "ACCEPTED offers ÷ offers reaching a final outcome (SENT in-flight included in the denominator only as 'pending'; DECLINED and EXPIRED reported separately).",
             sourceEffectiveness: "Applications, qualified (≥ interview), hires, conversion rate and median time-to-hire grouped by candidate source; no composite score.",
+            openPositions: "Openings still to fill on APPROVED or POSTED requisitions: required openings minus accepted offers, counted per seat (a requisition awaiting approval is not open).",
         }),
     };
 }
@@ -320,6 +321,34 @@ export function stageFunnel(applications = []) {
         conversionPct: s.entered ? Math.round((s.advanced / s.entered) * 100) : null,
         dropOffPct: s.entered ? Math.round((s.dropped / s.entered) * 100) : null,
     }));
+}
+
+// ── Open Positions ──────────────────────────────────────────────────────────
+
+/** Requisition statuses whose openings are being recruited for right now. */
+export const OPEN_REQUISITION_STATUSES = Object.freeze(["APPROVED", "POSTED"]);
+
+/**
+ * Open Positions: openings still to fill on requisitions that are approved or
+ * posted. A requisition awaiting approval is not open yet, and a requisition
+ * with three openings and one accepted offer contributes two — the count is
+ * of seats, not of requisitions. A fill is an ACCEPTED offer, the same event
+ * Time to Fill measures.
+ * @param {{ status: string, openings?: number, offers?: { status: string }[] }[]} requisitions
+ */
+export function openPositions(requisitions = []) {
+    let openRequisitions = 0;
+    let openings = 0;
+    let filled = 0;
+    for (const req of requisitions) {
+        if (!OPEN_REQUISITION_STATUSES.includes(req.status)) continue;
+        const required = Math.max(1, Number(req.openings) || 1);
+        const accepted = (req.offers || []).filter((o) => o.status === "ACCEPTED").length;
+        openRequisitions += 1;
+        openings += required;
+        filled += Math.min(accepted, required);
+    }
+    return { openRequisitions, openings, filled, openPositions: openings - filled };
 }
 
 // ── Offer Acceptance ─────────────────────────────────────────────────────────

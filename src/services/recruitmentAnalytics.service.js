@@ -152,7 +152,7 @@ export async function loadFilteredApplications(tenantId, n = {}) {
       // D-15 — `id` is what the requisitionIds filter and the drill-down read.
       jobRequisition: { select: { id: true, title: true, departmentId: true } },
       interviews: { select: { id: true } },
-      offer: { select: { status: true, respondedAt: true, sentAt: true } },
+      offer: { select: { id: true, status: true, respondedAt: true, sentAt: true } },
     },
   });
 
@@ -250,7 +250,35 @@ export async function drillDownRecruitmentMetric(tenantId, metric, filters = {},
     const ids = new Set(screenings.map((s) => s.applicationId));
     selected = applications.filter((a) => ids.has(a.id));
     basis = `disposition:${value ?? "(any)"}`;
-  } else if (key === "timeToFillDays" || key === "timeToFirstFillDays" || key === "stageConversion" || key === "offerAcceptanceRate" || key === "dropOff") {
+  } else if (key === "offerAcceptanceRate") {
+    // F-35 — the evidence for the canonical rate is the offers that reached a
+    // final outcome (ACCEPTED, DECLINED, EXPIRED), plus the SENT offers the
+    // rate reports as pending. Withdrawn and draft offers are not in the rate,
+    // so they are not in its evidence either.
+    const counted = new Set(["ACCEPTED", "DECLINED", "EXPIRED", "SENT"]);
+    const rows = applications
+      .filter((a) => a.offer && counted.has(a.offer.status))
+      .map((a) => ({
+        offerId: a.offer.id ?? null,
+        applicationId: a.id,
+        candidateId: a.candidate?.id ?? null,
+        requisitionId: a.jobRequisition?.id ?? null,
+        requisitionTitle: a.jobRequisition?.title ?? null,
+        status: a.offer.status,
+        outcome: a.offer.status === "SENT" ? "pending" : "final",
+        respondedAt: a.offer.respondedAt ?? null,
+      }));
+    return {
+      metric: key,
+      basis,
+      filters: serializeFilters(normalized),
+      unit: "offer",
+      total: rows.length,
+      returned: Math.min(rows.length, limit),
+      truncated: rows.length > limit,
+      rows: rows.slice(0, limit),
+    };
+  } else if (key === "timeToFillDays" || key === "timeToFirstFillDays" || key === "stageConversion" || key === "dropOff") {
     // Requisition- and offer-shaped metrics: the drill-down answers with the
     // requisitions (the aggregate's unit), each carrying its own applications.
     const byRequisition = new Map();
