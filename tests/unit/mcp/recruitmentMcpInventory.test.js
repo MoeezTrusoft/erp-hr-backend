@@ -44,6 +44,7 @@ import { registerRecruitmentWorkspaceTools } from "../../../src/mcp/tools/recrui
 import { registerInterviewSchedulingTools } from "../../../src/mcp/tools/interview-scheduling.tools.js";
 import { registerTestBlueprintTools } from "../../../src/mcp/tools/test-blueprint.tools.js";
 import { registerTestWorkstationTools } from "../../../src/mcp/tools/test-workstation.tools.js";
+import { registerTestItemTools } from "../../../src/mcp/tools/test-item.tools.js";
 import { registerAllTools } from "../../../src/mcp/toolRegistry.js";
 
 // module → registrar. This is the Recruitment surface: the tool files the
@@ -80,6 +81,7 @@ const RECRUITMENT_REGISTRARS = [
   // Phase 3b — on-site assessment and evaluation forms.
   ["testBlueprintTools", registerTestBlueprintTools],
   ["testWorkstationTools", registerTestWorkstationTools],
+  ["testItemTools", registerTestItemTools],
 ];
 
 function collect(register) {
@@ -125,6 +127,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   interviewSchedulingTools: 6, // Phase 3a: slot offers, no-show, calendar re-sync
   testBlueprintTools: 9, // Phase 3b: blueprints, dual approval, publish, link, resolve, preview
   testWorkstationTools: 4, // Phase 3b: kiosk register, list, revoke, rotate
+  testItemTools: 10, // Phase 3b: item bank, review, import, AI draft, stats
 });
 
 const EXPECTED_TOOLS = Object.freeze([
@@ -302,6 +305,16 @@ const EXPECTED_TOOLS = Object.freeze([
   "hr_test_workstations_list",
   "hr_test_workstation_revoke",
   "hr_test_workstation_rotate",
+  "hr_test_items_list",
+  "hr_test_item_get",
+  "hr_test_item_create",
+  "hr_test_item_update",
+  "hr_test_item_submit_review",
+  "hr_test_item_review_decide",
+  "hr_test_item_retire",
+  "hr_test_items_import",
+  "hr_test_item_draft_ai",
+  "hr_test_item_stats_get",
 ]);
 
 const allRecruitmentTools = [...collected.values()].flatMap((c) => c.tools);
@@ -346,8 +359,8 @@ describe("Recruitment MCP tool inventory", () => {
     // + 2 scheduled disposition tools.
     // Phase 3a: + 4 offer lifecycle tools, + 7 offer letter tools, + 2 workspaces,
     // + 6 interview scheduling tools.
-    // Phase 3b: + 9 blueprint tools, + 4 workstation tools.
-    expect(all).toHaveLength(748);
+    // Phase 3b: + 9 blueprint tools, + 4 workstation tools, + 10 item bank tools.
+    expect(all).toHaveLength(758);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 

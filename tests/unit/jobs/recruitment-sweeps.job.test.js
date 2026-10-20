@@ -90,6 +90,7 @@ const {
   JOB_INTERVIEW_REMINDERS,
   JOB_INTERVIEW_DECISION_PROMPTS,
   JOB_INTERVIEW_SLOT_OFFER_EXPIRY,
+  JOB_TEST_ITEM_STATS,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -282,6 +283,14 @@ describe("Phase 3a jobs are scheduled", () => {
     const interviewSlotOfferExpiry = jest.fn(async () => "slots");
     const processor = buildReminderProcessor({ interviewSlotOfferExpiry });
     await expect(processor({ name: JOB_INTERVIEW_SLOT_OFFER_EXPIRY, data: {} })).resolves.toBe("slots");
+  });
+
+  it("registers the nightly item statistics and dispatches it", async () => {
+    const byName = Object.fromEntries(repeatableJobs().map((job) => [job.name, job]));
+    expect(byName[JOB_TEST_ITEM_STATS].opts).toMatchObject({ jobId: "repeat:test-item-stats", repeat: { pattern: "40 3 * * *" } });
+    const testItemStats = jest.fn(async () => "stats");
+    const processor = buildReminderProcessor({ testItemStats });
+    await expect(processor({ name: JOB_TEST_ITEM_STATS, data: {} })).resolves.toBe("stats");
   });
 });
 
