@@ -274,6 +274,27 @@ const DEFINITIONS = Object.freeze({
         def: false,
         desc: "Recruitment analytics threshold alerts to the recruiting lead",
     },
+    // Phase 6 — talent pool invitations are emailed with a single-use link the
+    // candidate answers on the careers portal (accept or decline).
+    invitationLinks: {
+        env: "HR_RECRUITMENT_INVITATION_LINKS",
+        def: false,
+        desc: "Emailed talent pool invitations with a candidate accept or decline link",
+    },
+    // Phase 6 — extending an offer whose approval stands goes back through the
+    // HR Approval Centre instead of being refused.
+    offerExtensionApproval: {
+        env: "HR_RECRUITMENT_OFFER_EXTENSION_APPROVAL",
+        def: false,
+        desc: "Offer expiry extensions re-approved through the HR Approval Centre",
+    },
+    // Phase 6 — a kiosk that crashed mid-test can resume the same session on
+    // a workstation at the same site, with the time already used kept.
+    kioskResume: {
+        env: "HR_RECRUITMENT_KIOSK_RESUME",
+        def: false,
+        desc: "Resume an interrupted on-site test session after a kiosk crash",
+    },
 });
 
 export const RECRUITMENT_FLAG_DEFINITIONS = DEFINITIONS;

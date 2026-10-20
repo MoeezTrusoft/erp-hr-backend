@@ -74,6 +74,9 @@ describe("recruitmentFlags — defaults (Phase 15)", () => {
             agencyPortal: "HR_RECRUITMENT_AGENCY_PORTAL",
             dsrPortal: "HR_RECRUITMENT_DSR_PORTAL",
             analyticsAlerts: "HR_RECRUITMENT_ANALYTICS_ALERTS",
+            invitationLinks: "HR_RECRUITMENT_INVITATION_LINKS",
+            offerExtensionApproval: "HR_RECRUITMENT_OFFER_EXTENSION_APPROVAL",
+            kioskResume: "HR_RECRUITMENT_KIOSK_RESUME",
         };
         for (const [key, env] of Object.entries(phase2)) {
             expect(RECRUITMENT_FLAG_DEFINITIONS[key].env).toBe(env);
@@ -130,10 +133,10 @@ describe("recruitmentFlags — snapshot", () => {
         expect(Object.keys(snap).sort()).toEqual([
             "agencyPortal", "ai", "analytics", "analyticsAlerts", "approvalSla", "autoPublish", "calendarSync",
             "canonicalDashboard", "communications", "decisionPrompts", "dsrPortal", "duplicates", "esign",
-            "evaluationForms", "internalBoard", "interviewReminders", "jobFeed", "knockout", "offerExpiry",
-            "offerHandoff", "offerLetters", "onboardingAutomation", "onboardingSelfPortal", "onsiteTest",
-            "parseWorker", "portal", "postingExpiry", "retention", "scoring", "selfScheduling", "talentNurture",
-            "workflow",
+            "evaluationForms", "internalBoard", "interviewReminders", "invitationLinks", "jobFeed", "kioskResume",
+            "knockout", "offerExpiry", "offerExtensionApproval", "offerHandoff", "offerLetters",
+            "onboardingAutomation", "onboardingSelfPortal", "onsiteTest", "parseWorker", "portal", "postingExpiry",
+            "retention", "scoring", "selfScheduling", "talentNurture", "workflow",
         ]);
         for (const [key, entry] of Object.entries(snap)) {
             expect(entry.env).toBe(RECRUITMENT_FLAG_DEFINITIONS[key].env);

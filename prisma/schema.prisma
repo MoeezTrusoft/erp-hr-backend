@@ -4547,6 +4547,12 @@ model TalentPoolInvitation {
   responseNote String?
   // Phase 5 — the nurture run whose approval sent this invitation.
   nurtureRunId Int?
+  // Phase 6 — the candidate answers through an emailed link: only a hash of
+  // the single-use token is stored, with its expiry; respondedVia records
+  // whether the candidate (CANDIDATE_LINK) or a recruiter (RECRUITER) answered.
+  responseTokenHash      String?   @unique
+  responseTokenExpiresAt DateTime?
+  respondedVia           String?
 
   candidate      Candidate       @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   jobRequisition JobRequisition? @relation(fields: [jobRequisitionId], references: [id])
@@ -7231,6 +7237,10 @@ model InternalReferral {
   bonusCurrency      String?
   bonusDecidedById   Int?
   bonusDecidedAt     DateTime?
+  // Phase 6 — the coded reason (and optional note) of a FORFEITED bonus, so
+  // HR can read it back on the row instead of only in the audit trail.
+  bonusForfeitReason String?
+  bonusNote          String?
   version            Int       @default(0)
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
