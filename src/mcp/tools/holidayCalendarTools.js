@@ -6,6 +6,10 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import {
+  emitHolidayCalendarChanged,
+  emitHolidayChanged,
+} from "../../services/hrConfigEvents.js";
+import {
   getHolidayCalendars,
   getHolidayCalendarById,
   createHolidayCalendar,
@@ -73,6 +77,12 @@ export function registerHolidayCalendarTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:holiday", user.isAdmin);
       const data = await createHolidayCalendar(args, user.employeeId || user.userId);
+      await emitHolidayCalendarChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId: data?.id,
+        action: "created",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_calendar_create")
   );
@@ -90,6 +100,12 @@ export function registerHolidayCalendarTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:holiday", user.isAdmin);
       const result = await updateHolidayCalendar(id, data, user.employeeId || user.userId);
+      await emitHolidayCalendarChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId: id,
+        action: "updated",
+      });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }, "hr_holiday_calendar_update")
   );
@@ -102,6 +118,12 @@ export function registerHolidayCalendarTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:holiday", user.isAdmin);
       const data = await deleteHolidayCalendar(id, user.employeeId || user.userId);
+      await emitHolidayCalendarChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId: id,
+        action: "deleted",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_calendar_delete")
   );
@@ -140,6 +162,13 @@ export function registerHolidayCalendarTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:holiday", user.isAdmin);
       const data = await createHoliday(args, user.employeeId || user.userId);
+      await emitHolidayChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId: args.holidayCalendarId,
+        date: args.date,
+        action: "created",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_create")
   );
@@ -160,6 +189,13 @@ export function registerHolidayCalendarTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:holiday", user.isAdmin);
       const result = await updateHoliday(calendarId, date, data, user.employeeId || user.userId);
+      await emitHolidayChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId,
+        date,
+        action: "updated",
+      });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }, "hr_holiday_update")
   );
@@ -175,6 +211,13 @@ export function registerHolidayCalendarTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:holiday", user.isAdmin);
       const data = await deleteHoliday(calendarId, date, user.employeeId || user.userId);
+      await emitHolidayChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId,
+        date,
+        action: "deleted",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_delete")
   );
@@ -226,6 +269,12 @@ export function registerHolidayCalendarTools(server) {
         effectiveTo ? new Date(effectiveTo) : null,
         user.employeeId || user.userId
       );
+      await emitHolidayCalendarChanged({
+        tenantId: user.tenantId,
+        actorId: user.userId,
+        calendarId,
+        action: "employee_assigned",
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_employee_assign")
   );
