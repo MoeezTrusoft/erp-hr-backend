@@ -21,6 +21,9 @@ const prismaMock = {
     shiftTemplate:{findMany:jest.fn(async()=>[])},
     shiftAssignment:{findMany:jest.fn(async()=>[])},
     attendanceSetupDraft:{findUnique:jest.fn(async()=>null)},
+    // ROSTER-REEVAL-01 — the roster write re-queues evaluation for the employee.
+    attendanceEvaluationJob:{updateMany:jest.fn(async()=>({count:1}))},
+    attendance:{count:jest.fn(async()=>0)},
     $executeRaw:jest.fn(),payrollRun:{findFirst:jest.fn(async()=>null)},
     employee: {
         findMany: jest.fn(async () => employeeRows),
@@ -85,6 +88,11 @@ const prismaMock = {
 
 jest.unstable_mockModule('../../src/lib/rlsTenant.js',()=>({tenantTransaction:async(_,fn)=>fn(prismaMock)}));
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
+// ROSTER-REEVAL-01 — the roster write now dynamically imports the finalization
+// service to queue re-evaluation; mock it so the suite stays unit-scoped.
+jest.unstable_mockModule('../../src/services/attendanceFinalization.service.js', () => ({
+  enqueueEvaluationRange: jest.fn(async () => undefined),
+}));
 jest.unstable_mockModule('../../src/lib/tenancy.js', () => ({
     scopedWhere: (_t, where) => where,
     scopedData: (_t, data) => data,

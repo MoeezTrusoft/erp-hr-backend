@@ -30,6 +30,9 @@ const prismaMock = {
     shiftTemplate:{findMany:jest.fn(async()=>[])},
     shiftAssignment:{findMany:jest.fn(async()=>[])},
     attendanceSetupDraft:{findUnique:jest.fn(async()=>null)},
+    // ROSTER-REEVAL-01 — the roster write re-queues evaluation for the employee.
+    attendanceEvaluationJob:{updateMany:jest.fn(async()=>({count:1}))},
+    attendance:{count:jest.fn(async()=>0)},
     $executeRaw: jest.fn(),
     employee: {findFirst:jest.fn(async()=>({id:EMPLOYEE}))},
     payrollRun: {findFirst:jest.fn(async()=>null)},
@@ -64,6 +67,11 @@ const prismaMock = {
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
+// ROSTER-REEVAL-01 — the roster change path dynamically imports the
+// finalization service to queue re-evaluation; mock it for this unit suite.
+jest.unstable_mockModule('../../src/services/attendanceFinalization.service.js', () => ({
+  enqueueEvaluationRange: jest.fn(async () => undefined),
+}));
 jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
     tenantTransaction: jest.fn(async (_c, fn) => fn(prismaMock)),
 }));
