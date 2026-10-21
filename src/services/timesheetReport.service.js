@@ -753,13 +753,41 @@ function toEnumStatus(raw) {
   }
 }
 
+// TS-EMP-CELL-02 (2026-10-21) — the timesheet's Employee column shows the
+// PERSON (avatar, full name, designation · department), not only the payroll
+// code. The row builder below previously selected the code alone, so the FE's
+// name/position/department fields were always empty and the cell fell back to
+// the code with a "—" detail line. Select the identity fields once here; the
+// payload is still one employee join per row.
 const EMPLOYEE_SELECT = {
   id: true,
   employee_code: true,
+  first_name: true,
+  middle_name: true,
+  last_name: true,
+  preferred_name: true,
+  employee_name: true,
+  photo_url: true,
+  job_title: true,
+  Position: { select: { title: true } },
+  businessUnit: { select: { name: true } },
 };
 
+// Display name precedence: preferred name wins, then the HR-managed full name,
+// then the structured name parts, then the directory's free-text name.
+const displayName = (emp) => {
+  if (!emp) return null;
+  const parts = [emp.preferred_name || emp.first_name, emp.middle_name, emp.last_name]
+    .filter((part) => typeof part === 'string' && part.trim())
+    .map((part) => part.trim());
+  const structured = parts.length ? parts.join(' ') : null;
+  return structured || emp.employee_name?.trim() || null;
+};
+
+const designationOf = (emp) => emp?.job_title?.trim() || emp?.Position?.title?.trim() || null;
+
 function fullName(emp) {
-  return emp?.employee_code || 'Employee code required';
+  return displayName(emp) || emp?.employee_code || 'Employee code required';
 }
 
 /**
@@ -1072,8 +1100,16 @@ export async function listCheckInOuts({
       evaluationVersion:a.evaluationVersion,
       date: a.date,
       employee: emp
-        ? { id: emp.id, code:emp.employee_code }
-        : { id: null, name: null, avatar: null },
+        ? {
+            id: emp.id,
+            code: emp.employee_code,
+            // TS-EMP-CELL-02 — person-first identity for the timesheet cell.
+            name: displayName(emp),
+            avatar: emp.photo_url ?? null,
+            position: designationOf(emp),
+            department: emp.businessUnit?.name ?? null,
+          }
+        : { id: null, name: null, avatar: null, position: null, department: null },
       status: STATUS_DISPLAY[a.status] ?? a.status,
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
