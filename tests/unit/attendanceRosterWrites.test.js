@@ -9,6 +9,12 @@ const db = {
   shiftTemplate:{findMany:jest.fn(async()=>[])},
   shiftAssignment:{findMany:jest.fn(async()=>[])},
   attendanceSetupDraft:{findUnique:jest.fn(async()=>null)},
+  // ROSTER-REEVAL-01 — re-evaluation queue and the impact projection read.
+  attendanceEvaluationJob: {
+    createMany: jest.fn(async () => ({ count: 0 })),
+    updateMany: jest.fn(async () => ({ count: 1 })),
+  },
+  attendance: { count: jest.fn(async () => 3) },
   workSchedule: {
     findMany: jest.fn(async () => structuredClone(rows)),
     findFirst: jest.fn(async ({ where }) =>
@@ -41,6 +47,13 @@ jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
     }
   }),
 }));
+// ROSTER-REEVAL-01 — mock the queue writer (it transitive imports the whole
+// evaluation graph); the args it receives are what the test asserts.
+const enqueueEvaluationRange = jest.fn(async () => undefined);
+jest.unstable_mockModule(
+  '../../src/services/attendanceFinalization.service.js',
+  () => ({ enqueueEvaluationRange }),
+);
 const { createWorkSchedule, updateWorkSchedule, deleteWorkSchedule } =
   await import('../../src/services/workScheduleService.js');
 const tenantId = 'tenant-a',
@@ -138,5 +151,95 @@ describe('atomic roster replacement', () => {
         tenantId,
       ),
     ).rejects.toThrow(/Recall or cancel/);
+    // ROSTER-REEVAL-01 — a rejected write queues nothing.
+    expect(enqueueEvaluationRange).not.toHaveBeenCalled();
+  });
+});
+
+describe('roster-write attendance re-evaluation (ROSTER-REEVAL-01)', () => {
+  const today = '2026-10-21';
+  const resetWhere = () =>
+    db.attendanceEvaluationJob.updateMany.mock.calls[0][0].where;
+
+  it('enqueues evaluation from the effective date through today when saving an in-force correction', async () => {
+    const saved = await updateWorkSchedule(
+      1,
+      {
+        correctionReason: 'Shift corrected',
+        schedule_pattern: { ...pattern, shift: { from: '15:00', to: '23:00' } },
+      },
+      null,
+      tenantId,
+    );
+    expect(saved.reevaluation).toEqual({ from: '2026-01-01', to: today, employeeId: 1 });
+    // One range job batch for the single employee, from the effective date.
+    expect(enqueueEvaluationRange).toHaveBeenCalledWith(
+      { tenantId, from: '2026-01-01', to: today, employeeIds: [1] },
+      db,
+    );
+    // DONE/FAILED/PROTECTED rows in the horizon are re-armed.
+    expect(resetWhere()).toMatchObject({ tenantId, employeeId: 1 });
+    expect(resetWhere().date).toEqual({
+      gte: new Date('2026-01-01T00:00:00.000Z'),
+      lte: new Date(`${today}T00:00:00.000Z`),
+    });
+    expect(db.attendanceEvaluationJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ state: 'PENDING', attempts: 0 }),
+      }),
+    );
+  });
+
+  it('skips the queue for a future-effective version', async () => {
+    const saved = await createWorkSchedule(replacement());
+    expect(saved.reevaluation).toBeUndefined();
+    expect(enqueueEvaluationRange).not.toHaveBeenCalled();
+    expect(db.attendanceEvaluationJob.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('projects the re-evaluation horizon in the dry-run preview without writing jobs', async () => {
+    const preview = await updateWorkSchedule(
+      1,
+      {
+        correctionReason: 'Fix',
+        schedule_pattern: { ...pattern, shift: { from: '20:00', to: '04:00' } },
+        dryRun: true,
+      },
+      null,
+      tenantId,
+    );
+    expect(preview.reevaluation).toEqual({
+      from: '2026-01-01',
+      to: today,
+      employeeId: 1,
+      affectedDays: 3,
+    });
+    expect(db.attendanceEvaluationJob.createMany).not.toHaveBeenCalled();
+    expect(db.attendanceEvaluationJob.updateMany).not.toHaveBeenCalled();
+    expect(enqueueEvaluationRange).not.toHaveBeenCalled();
+  });
+
+  it('rolls back with the roster write when the save fails before queueing', async () => {
+    failCreate = true;
+    await expect(createWorkSchedule(replacement({ effective_start_date: today }))).rejects.toThrow('insert failed');
+    expect(enqueueEvaluationRange).not.toHaveBeenCalled();
+    expect(db.attendanceEvaluationJob.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('caps a very old backdated roster to the 369-day evaluation window', async () => {
+    const { reevaluationHorizon } = await import(
+      '../../src/services/workScheduleService.js'
+    );
+    const horizon = reevaluationHorizon({
+      action: 'create',
+      previous: null,
+      row: { effective_start_date: '2020-01-01', effective_end_date: null },
+      today: '2026-10-21',
+    });
+    expect(horizon.from).toBe('2025-10-17');
+    expect(horizon.to).toBe('2026-10-21');
+    // The bounded range must satisfy the 370-day evaluation range guard.
+    const { dateRange } = await import('../../src/lib/attendanceDates.js');
+    expect(dateRange(horizon.from, horizon.to, 370)).toHaveLength(370);
   });
 });

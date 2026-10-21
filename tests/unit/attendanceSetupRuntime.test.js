@@ -234,3 +234,95 @@ describe('setup publication guards', () => {
     expect(db.attendanceSetupRelease.create).not.toHaveBeenCalled();
   });
 });
+
+describe('live roster overlay (ROSTER-REEVAL-01)', () => {
+  // The snapshot still carries the pre-versioning roster (old start, open end);
+  // the live table carries the corrected in-place history, the same rows the
+  // snapshot was built from, versioned or corrected.
+  const liveRosters = () => [
+    {
+      id: 1,
+      employeeId: 1,
+      effective_start_date: '2026-01-01',
+      effective_end_date: '2026-10-04',
+      schedule_pattern: { shift: { from: '09:00', to: '17:00' }, offDays: [] },
+    },
+    {
+      id: 2,
+      employeeId: 1,
+      effective_start_date: '2026-10-05',
+      effective_end_date: null,
+      schedule_pattern: { shift: { from: '15:00', to: '23:00' }, offDays: [] },
+    },
+  ];
+  const oneRelease = (grace = 5) => [
+    {
+      version: 1,
+      effectiveFrom: new Date('2026-10-01'),
+      coverageThrough: new Date('2026-10-31'),
+      config: released(1, grace),
+    },
+  ];
+
+  it('resolves the updated shift from the live roster without a re-publish', async () => {
+    const releases = oneRelease();
+    db.attendanceSetupRelease.findMany.mockImplementation(async () => releases);
+    db.workSchedule.findMany.mockResolvedValue(liveRosters());
+    const runtime = await loadAttendanceRuntime({
+      tenantId,
+      from: '2026-10-01',
+      to: '2026-10-31',
+    });
+    expect(db.workSchedule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ tenantId }) }),
+    );
+    // Before the version boundary the snapshot-era shift still applies.
+    const before = runtime.resolve(1, '2026-10-04');
+    expect(before.rosterSource).toBe('live');
+    expect(before.shift.start).toEqual(new Date('2026-10-04T09:00:00.000Z'));
+    // From the change's effective date the updated shift governs evaluation.
+    const after = runtime.resolve(1, '2026-10-06');
+    expect(after.working).toBe(true);
+    expect(after.rosterSource).toBe('live');
+    expect(after.shift.start).toEqual(new Date('2026-10-06T15:00:00.000Z'));
+    expect(after.shift.end).toEqual(new Date('2026-10-06T23:00:00.000Z'));
+    // The overlay never writes: the published snapshot survives resolution.
+    expect(JSON.stringify(releases)).toBe(JSON.stringify(oneRelease()));
+  });
+
+  it('keeps snapshot resolution when liveRosters: false is passed', async () => {
+    db.attendanceSetupRelease.findMany.mockResolvedValue(oneRelease());
+    db.workSchedule.findMany.mockResolvedValue(liveRosters());
+    const runtime = await loadAttendanceRuntime({
+      tenantId,
+      from: '2026-10-01',
+      to: '2026-10-31',
+      liveRosters: false,
+    });
+    expect(db.workSchedule.findMany).not.toHaveBeenCalled();
+    const info = runtime.resolve(1, '2026-10-06');
+    expect(info.rosterSource).toBeUndefined();
+    expect(info.shift.start).toEqual(new Date('2026-10-06T09:00:00.000Z'));
+  });
+
+  it('honours the ATTENDANCE_LIVE_ROSTERS=false rollback flag', async () => {
+    const previous = process.env.ATTENDANCE_LIVE_ROSTERS;
+    process.env.ATTENDANCE_LIVE_ROSTERS = 'false';
+    try {
+      db.attendanceSetupRelease.findMany.mockResolvedValue(oneRelease());
+      db.workSchedule.findMany.mockResolvedValue(liveRosters());
+      const runtime = await loadAttendanceRuntime({
+        tenantId,
+        from: '2026-10-01',
+        to: '2026-10-31',
+      });
+      expect(db.workSchedule.findMany).not.toHaveBeenCalled();
+      expect(runtime.resolve(1, '2026-10-06').shift.start).toEqual(
+        new Date('2026-10-06T09:00:00.000Z'),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.ATTENDANCE_LIVE_ROSTERS;
+      else process.env.ATTENDANCE_LIVE_ROSTERS = previous;
+    }
+  });
+});

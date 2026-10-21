@@ -28,6 +28,32 @@ const scheduleCovers = (r, d) =>
 const scheduleOverlaps = (a, b) =>
   overlaps(a, b, 'effective_start_date', 'effective_end_date');
 
+// ROSTER-REEVAL-01 — a roster write re-queues attendance evaluation for the
+// employee from the change's effective date. The horizon is the union of the
+// previous and new coverage, capped at operating "today": future days are not
+// evaluated yet and the daily planner owns them when they arrive. A horizon
+// reaching further back than the 370-day evaluation range guard allows is
+// bounded to its newest 369 days; older days keep the pre-change record.
+export function reevaluationHorizon({ action, previous, row, today }) {
+  if (action === 'delete') return null;
+  const start = [previous?.effective_start_date, row.effective_start_date]
+    .filter(Boolean)
+    .map(dateKey)
+    .sort()[0];
+  const end = [previous?.effective_end_date, row.effective_end_date, today]
+    .filter(Boolean)
+    .map(dateKey)
+    .sort()
+    .at(-1);
+  // A future-effective change touches no evaluated day; the planner enqueues
+  // that employee/day pair as usual once the date arrives.
+  if (start > end) return null;
+  // Numeric comparator: Date's default sort is by toString() (day names),
+  // which is not chronological and once leaked a 2020 start through the cap.
+  const bounded = [dateOnly(start), addDays(end, -369)].sort((a, b) => a - b).at(-1);
+  return { from: dateKey(bounded), to: end };
+}
+
 export const getWorkSchedules = ({ employeeId, tenantId }) =>
   prisma.workSchedule.findMany({
     where: {
@@ -207,7 +233,16 @@ export async function writeRoster({
       const reviewed = {...row,schedule_pattern:{...row.schedule_pattern,correctedAt:undefined}};
       const previewToken = createHash('sha256').update(JSON.stringify({rows,assignments,employee,impacts,reviewed})).digest('hex');
       if (data.previewToken && data.previewToken !== previewToken) throw badSetup('Roster or supervisor changed after preview. Review the new impact before saving.',409);
-      if (dryRun)
+      const draft=await tx.attendanceSetupDraft.findUnique({where:{tenantId}});
+      const today=dateKey(civilNow(new Date(),draft?.settings?.timeZone || 'Asia/Karachi'));
+      const horizon=reevaluationHorizon({action,previous:action==='update'?previous:null,row,today});
+      if (dryRun) {
+        // Impact preview only — projection of the re-evaluation horizon; no
+        // jobs are written until the reviewed save commits.
+        const reevaluation = horizon
+          ? { ...horizon, employeeId: eid,
+              affectedDays: await tx.attendance.count({ where: { tenantId, employeeId: eid, date: { gte: dateOnly(horizon.from), lte: dateOnly(horizon.to) } } }) }
+          : null;
         return {
           action,
           employeeId: eid,
@@ -216,7 +251,9 @@ export async function writeRoster({
           impacts,
           closes: close?.id ?? null,
           proposed: row,
+          reevaluation,
         };
+      }
       if (close)
         await tx.workSchedule.update({
           where: { id: close.id },
@@ -232,9 +269,21 @@ export async function writeRoster({
             data: { ...row, tenantId, employeeId: eid },
             include,
           });
-      const draft=await tx.attendanceSetupDraft.findUnique({where:{tenantId}});
-      await syncCurrentShiftSupervisors(tx,tenantId,dateKey(civilNow(new Date(),draft?.settings?.timeZone || 'Asia/Karachi')),{employeeIds:[eid]});
-      return saved;
+      // ROSTER-REEVAL-01 — inside the same transaction as the roster write so
+      // a queued job can never describe a change that did not commit, and the
+      // change can never commit without its re-evaluation queue entries.
+      let reevaluation = null;
+      if (horizon) {
+        const { enqueueEvaluationRange } = await import('./attendanceFinalization.service.js');
+        await enqueueEvaluationRange({ tenantId, from: horizon.from, to: horizon.to, employeeIds: [eid] }, tx);
+        await tx.attendanceEvaluationJob.updateMany({
+          where: { tenantId, employeeId: eid, date: { gte: dateOnly(horizon.from), lte: dateOnly(horizon.to) } },
+          data: { state: 'PENDING', attempts: 0, nextAttemptAt: new Date(), lastError: null, completedAt: null },
+        });
+        reevaluation = { ...horizon, employeeId: eid };
+      }
+      await syncCurrentShiftSupervisors(tx,tenantId,today,{employeeIds:[eid]});
+      return reevaluation ? { ...saved, reevaluation } : saved;
     },
     { tenantId, txOptions: { isolationLevel: 'Serializable' } },
   );
