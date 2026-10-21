@@ -14,8 +14,8 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-c
 
 FROM base AS deps
 WORKDIR /app
-COPY --from=contracts package.json /contracts/package.json
-COPY --from=contracts src /contracts/src
+COPY --from=contracts package.json /erp-contracts/package.json
+COPY --from=contracts src /erp-contracts/src
 COPY package.json package-lock.json .npmrc ./
 COPY prisma ./prisma
 RUN npm ci --omit=dev --ignore-scripts \
@@ -38,8 +38,8 @@ COPY --chown=nodeapp:nodeapp src ./src
 # smoke had to be hand-copied into a running pod to work at all.
 COPY --chown=nodeapp:nodeapp prisma.config.js ./
 COPY --chown=nodeapp:nodeapp scripts ./scripts
-COPY --chown=nodeapp:nodeapp --from=contracts package.json /contracts/package.json
-COPY --chown=nodeapp:nodeapp --from=contracts src /contracts/src
+COPY --chown=nodeapp:nodeapp --from=contracts package.json /erp-contracts/package.json
+COPY --chown=nodeapp:nodeapp --from=contracts src /erp-contracts/src
 USER nodeapp
 EXPOSE 3001
 CMD ["node", "src/server.js"]

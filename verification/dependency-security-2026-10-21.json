@@ -1,0 +1,39 @@
+{
+  "state": "bounded-service-checks-passed",
+  "service": "erp-hr-backend",
+  "testCheck": {
+    "name": "hr-security",
+    "state": "passed",
+    "tests": 3
+  },
+  "overallRunState": "failed",
+  "overallFailure": "extended-regression failed; inspect extended-regression.log",
+  "cleanup": {
+    "complete": true,
+    "pending": []
+  },
+  "receipt": "verification/linux-ci-20261021/extended-services-v5-results/sdev-live-191373a2a7fd477ea2ce6d5d46a6fd45/result.json",
+  "receiptSha256": "3212c6bdd0f0b91b27cae7725f3d0c02d1d38eb6931ceec2347c6d2e1a86b385",
+  "evidenceArchiveSha256": "f8f0d833aabdd0a6c5e625816462daa20fca4a2bd122afd8e96d5778c5530d8a",
+  "sourceArchiveSha256": "0da5cb1b45537776fb68c48a81eac582b957ecdea1e0a5bf10a21cccaca80c8e",
+  "exportDigest": "71ccff8d262e8bf387f062240014529c31dd8d60d5867b5981419b7c249594f4",
+  "exportedSourceHead": "14f2b829d9a770176981fbacd96c8f14b3f057f3",
+  "metadataChangesAfterRun": [],
+  "audit": {
+    "findings": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "sourceFile": "hr-final-security-audit.json",
+    "sha256": "a3cf4de7eecf4e57f2bf413032434b192a55057437499c72b9b0254caee35011"
+  },
+  "scopeAndLimits": [
+    "Three focused tests cover real DOCX/CLI extraction, ExcelJS workbook round-trip and the NYC YAML loader.",
+    "Full HR regression, migrations, and application image smoke remain pending.",
+    "No production deployment or migration. Full plan compliance is not asserted."
+  ]
+}
