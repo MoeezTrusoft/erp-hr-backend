@@ -1,3 +1,5 @@
+import { fixtureEmployeeCode } from '../helpers/employee-code.js';
+import { assertRequiredDatabaseReady } from '../helpers/required-database.js';
 // HR-01 / HR-10 (Roadmap T-P4.2) — C4 encrypted-at-rest, transparent decrypt,
 // blind index, deny-by-default + audit, and redaction.
 //
@@ -51,6 +53,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
         dbAvailable = false;
     }
 }));
+
+beforeAll(() => assertRequiredDatabaseReady(dbAvailable));
 
 afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (savedEncryptionKey !== undefined) process.env.HR_C4_ENCRYPTION_KEY = savedEncryptionKey;
@@ -142,7 +146,7 @@ describe('HR-01 employment terms salary — ciphertext at rest, number on read',
         if (skipIfNoDb()) return;
 
         const emp = await prisma.employee.create({
-            data: { tenant_id: TENANT, first_name: 'Sal', last_name: 'Test', status: 'active' },
+            data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT, first_name: 'Sal', last_name: 'Test', status: 'active' },
         });
         created.employees.push(emp.id);
 
@@ -184,7 +188,7 @@ describe('HR-01 bank detail — encrypted account, blind index lookup + uniquene
         if (skipIfNoDb()) return;
 
         const emp = await prisma.employee.create({
-            data: { tenant_id: TENANT, first_name: 'Bank', last_name: 'Test', status: 'active' },
+            data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT, first_name: 'Bank', last_name: 'Test', status: 'active' },
         });
         created.employees.push(emp.id);
 
@@ -235,7 +239,7 @@ describe('HR-01 employee national id — ciphertext at rest, plaintext on read',
 
         const NID = '42101-7654321-0';
         const emp = await prisma.employee.create({
-            data: { tenant_id: TENANT, first_name: 'Nat', last_name: 'Id', status: 'active', nationality_id_no: NID },
+            data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT, first_name: 'Nat', last_name: 'Id', status: 'active', nationality_id_no: NID },
         });
         created.employees.push(emp.id);
 

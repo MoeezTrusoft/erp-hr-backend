@@ -7,10 +7,12 @@
 //   * a different key runs the handler again;
 //   * the cache is namespaced by the verified tenant, so the same key under a
 //     different tenant does NOT replay across tenants.
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, afterAll } from '@jest/globals';
 import request from 'supertest';
 import express from 'express';
-import { idempotency } from '../../src/middlewares/idempotency.middleware.js';
+import { idempotency, _resetDefaultStoreForTests } from '../../src/middlewares/idempotency.middleware.js';
+
+afterAll(() => _resetDefaultStoreForTests());
 
 // A tiny app mirroring the production wiring: a guard that sets the VERIFIED
 // tenant on req.user (as internalServiceGuard does from the signed claim), then

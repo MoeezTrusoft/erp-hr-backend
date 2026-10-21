@@ -491,6 +491,8 @@ model Employee {
   @@index([gradeLevelId])
   @@index([managerId])
   @@index([reportToId])
+  fromAttendanceCallInEmployeeId AttendanceCallIn[] @relation("attendance_call_ins_employeeId_fkey")
+  fromAttendanceCorrectionRequestEmployeeId AttendanceCorrectionRequest[] @relation("attendance_correction_requests_employeeId_fkey")
 }
 
 model EmployeeMedia {
@@ -693,6 +695,7 @@ model AttendanceCallIn {
   @@unique([tenantId, employeeId, date], map: "attendance_call_ins_day_key")
   @@index([tenantId, date], map: "attendance_call_ins_tenant_date_idx")
   @@map("attendance_call_ins")
+  boundEmployeeId Employee @relation("attendance_call_ins_employeeId_fkey", fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "attendance_call_ins_employeeId_fkey")
 }
 
 model AttendanceSession {
@@ -805,6 +808,7 @@ model AttendanceDevicePunch {
   @@index([tenantId, deviceUserId, punchedAt(sort: Desc)], map: "attendance_device_punch_user_time_idx")
   @@index([tenantId, employeeId, punchedAt(sort: Desc)], map: "attendance_device_punch_emp_time_idx")
   @@map("attendance_device_punches")
+  boundCaptureEventId AttendanceCaptureEvent? @relation("capture_event_fk", fields: [captureEventId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "capture_event_fk")
 }
 
 // Attendance anomaly / correction request. Raised by an employee ("Inform
@@ -935,7 +939,7 @@ model AttendanceExportJob {
   generatedAt DateTime?
   expiresAt DateTime
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
   @@index([tenantId, ownerUserId, createdAt], map: "attendance_export_owner")
   @@index([status, leaseUntil], map: "attendance_export_queue")
   @@map("attendance_export_jobs")
@@ -949,7 +953,7 @@ model AttendanceSavedView {
   filters Json
   version Int @default(1)
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
   @@index([tenantId, ownerUserId], map: "attendance_view_owner")
   @@map("attendance_saved_views")
 }
@@ -970,9 +974,10 @@ model AttendanceCorrectionRequest {
   version Int @default(1)
   evaluationVersion Int
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
   @@index([tenantId, employeeId, date], map: "attendance_correction_scope")
   @@map("attendance_correction_requests")
+  boundEmployeeId Employee @relation("attendance_correction_requests_employeeId_fkey", fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "attendance_correction_requests_employeeId_fkey")
 }
 
 model AttendanceManualTime {
@@ -1702,7 +1707,7 @@ model AttendanceSetupDraft {
   tenantId String @id @db.Uuid
   version Int @default(1)
   settings Json @default("{}")
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
   @@map("attendance_setup_drafts")
 }
 
@@ -2229,7 +2234,7 @@ model PayrollFinanceSummary {
   approvedBy String?
   createdAt DateTime @default(now()) @db.Timestamptz
   approvedAt DateTime? @db.Timestamptz
-  run PayrollRun @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: Restrict)
+  run PayrollRun @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   @@unique([tenantId, month, revision])
   @@unique([tenantId, requestId])
   @@map("payroll_finance_summaries")
@@ -2445,6 +2450,7 @@ model EmployeeDeviceEnrolment {
   @@index([tenantId, deviceUserId, effectiveFrom])
   @@index([tenantId, employeeId, effectiveFrom])
   @@map("employee_device_enrolments")
+  @@index([tenantId, employeeId, isPrimary, effectiveFrom], map: "employee_device_enrolments_primary_idx")
 }
 
 /// HR-PAYROLL-EMPLOYMENT-PERIOD-01 — when someone was actually employed.
@@ -2580,7 +2586,7 @@ model LoanRepayment {
   // N-02 / T-1.2 — one repayment per (loan, run). Partial (NULL-run legacy rows
   // like the "Pre-system installment" history are allowed); the application
   // layer also checks before decrementing, this is the belt to the braces.
-  @@index([loanId, payrollRunId])
+  // The migration replaces the old full index with a SQL partial UNIQUE index.
   @@map("loan_repayments")
 }
 
@@ -4053,7 +4059,7 @@ model MonthlyPayrollAttendance {
   updatedById Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  employee Employee @relation(fields:[employeeId], references:[id])
+  employee Employee @relation(fields:[employeeId], references:[id], onDelete: NoAction, onUpdate: NoAction)
   @@unique([tenantId, employeeId, month])
   @@index([tenantId, month])
   @@map("monthly_payroll_attendance")
@@ -4103,6 +4109,7 @@ model AttendanceCaptureReceipt {
   @@unique([tenantId, source, requestKey])
   @@index([tenantId, createdAt])
   @@map("attendance_capture_receipts")
+  fromAttendanceCaptureEventReceiptId AttendanceCaptureEvent[] @relation("capture_receipt_fk")
 }
 model AttendanceCaptureEvent {
   id String @id @default(uuid()) @db.Uuid
@@ -4133,6 +4140,8 @@ model AttendanceCaptureEvent {
   @@index([tenantId, state, id])
   @@index([tenantId, employeeId, createdAt])
   @@map("attendance_capture_events")
+  boundReceiptId AttendanceCaptureReceipt @relation("capture_receipt_fk", fields: [receiptId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "capture_receipt_fk")
+  fromAttendanceDevicePunchCaptureEventId AttendanceDevicePunch? @relation("capture_event_fk")
 }
 
 // Templates never leave the recognition boundary through HR list/trace APIs.
@@ -4225,6 +4234,7 @@ model AssessmentIdentity {
   verifiedAt DateTime @default(now())
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, employeeRowId])
+  @@unique([tenantId, id], map: "AssessmentIdentity_tenant_id_guard")
 }
 model AssessmentCategory {
   id String @id @default(uuid()) @db.Uuid
@@ -4234,6 +4244,7 @@ model AssessmentCategory {
   active Boolean @default(true)
   version Int @default(1)
   @@unique([tenantId, categoryCode])
+  @@unique([tenantId, id], map: "AssessmentCategory_tenant_id_guard")
 }
 model AssessmentTaskVersion {
   id String @id @default(uuid()) @db.Uuid
@@ -4252,6 +4263,8 @@ model AssessmentTaskVersion {
   publishedAt DateTime?
   @@unique([tenantId, taskCode, taskVersion])
   @@index([tenantId, familyCode, status])
+  @@unique([tenantId, id], map: "AssessmentTaskVersion_tenant_id_guard")
+  fromAssessmentProfileTaskTaskRef AssessmentProfileTask[] @relation("AssessmentProfileTask_taskRef_tenant_fk")
 }
 model AssessmentProfileVersion {
   id String @id @default(uuid()) @db.Uuid
@@ -4274,6 +4287,11 @@ model AssessmentProfileVersion {
   publishedAt DateTime?
   @@unique([tenantId, profileCode, profileVersion])
   @@index([tenantId, departmentRef, categoryCode, positionRef, status])
+  @@unique([tenantId, id], map: "AssessmentProfileVersion_tenant_id_guard")
+  fromAssessmentProfileTaskProfileRef AssessmentProfileTask[] @relation("AssessmentProfileTask_profileRef_tenant_fk")
+  fromAssessmentGuideVersionProfileRef AssessmentGuideVersion[] @relation("AssessmentGuideVersion_profileRef_tenant_fk")
+  fromEmployeeAssessmentProfileProfileRef EmployeeAssessmentProfile[] @relation("EmployeeAssessmentProfile_profileRef_tenant_fk")
+  fromAssessmentAssignmentProfileRef AssessmentAssignment[] @relation("AssessmentAssignment_profileRef_tenant_fk")
 }
 model AssessmentProfileTask {
   id String @id @default(uuid()) @db.Uuid
@@ -4284,6 +4302,9 @@ model AssessmentProfileTask {
   requirement Json
   ordinal Int
   @@unique([tenantId, profileRef, taskCode])
+  @@unique([tenantId, id], map: "AssessmentProfileTask_tenant_id_guard")
+  boundProfileRef AssessmentProfileVersion @relation("AssessmentProfileTask_profileRef_tenant_fk", fields: [tenantId, profileRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentProfileTask_profileRef_tenant_fk")
+  boundTaskRef AssessmentTaskVersion @relation("AssessmentProfileTask_taskRef_tenant_fk", fields: [tenantId, taskRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentProfileTask_taskRef_tenant_fk")
 }
 model AssessmentGuideVersion {
   id String @id @default(uuid()) @db.Uuid
@@ -4295,6 +4316,8 @@ model AssessmentGuideVersion {
   digest String
   publishedAt DateTime @default(now())
   @@unique([tenantId, profileRef, locale, version])
+  @@unique([tenantId, id], map: "AssessmentGuideVersion_tenant_id_guard")
+  boundProfileRef AssessmentProfileVersion @relation("AssessmentGuideVersion_profileRef_tenant_fk", fields: [tenantId, profileRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentGuideVersion_profileRef_tenant_fk")
 }
 model EmployeeAssessmentProfile {
   id String @id @default(uuid()) @db.Uuid
@@ -4307,6 +4330,8 @@ model EmployeeAssessmentProfile {
   sourceEventRef String?
   version Int @default(1)
   @@index([tenantId, employeeCode, effectiveFrom])
+  @@unique([tenantId, id], map: "EmployeeAssessmentProfile_tenant_id_guard")
+  boundProfileRef AssessmentProfileVersion @relation("EmployeeAssessmentProfile_profileRef_tenant_fk", fields: [tenantId, profileRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "EmployeeAssessmentProfile_profileRef_tenant_fk")
 }
 model AssessmentQualification {
   id String @id @default(uuid()) @db.Uuid
@@ -4321,6 +4346,7 @@ model AssessmentQualification {
   completedAssessments Int @default(0)
   version Int @default(1)
   @@unique([tenantId, employeeCode, familyCode])
+  @@unique([tenantId, id], map: "AssessmentQualification_tenant_id_guard")
 }
 model AssessmentConfiguration {
   id String @id @default(uuid()) @db.Uuid
@@ -4334,6 +4360,7 @@ model AssessmentConfiguration {
   version Int @default(1)
   updatedByCode String
   updatedAt DateTime @updatedAt
+  @@unique([tenantId, id], map: "AssessmentConfiguration_tenant_id_guard")
 }
 model AssessmentTriggerPolicy {
   id String @id @default(uuid()) @db.Uuid
@@ -4344,6 +4371,7 @@ model AssessmentTriggerPolicy {
   enabled Boolean @default(false)
   version Int @default(1)
   @@unique([tenantId, triggerType])
+  @@unique([tenantId, id], map: "AssessmentTriggerPolicy_tenant_id_guard")
 }
 model AssessmentAssignment {
   id String @id @default(uuid()) @db.Uuid
@@ -4372,6 +4400,12 @@ model AssessmentAssignment {
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, raterCode, state, dueAt])
   @@index([tenantId, employeeCode, state])
+  @@unique([tenantId, id], map: "AssessmentAssignment_tenant_id_guard")
+  boundProfileRef AssessmentProfileVersion @relation("AssessmentAssignment_profileRef_tenant_fk", fields: [tenantId, profileRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentAssignment_profileRef_tenant_fk")
+  fromAssessmentRevisionAssessmentRef AssessmentRevision[] @relation("AssessmentRevision_assessmentRef_tenant_fk")
+  fromAssessmentObservationAssessmentRef AssessmentObservation[] @relation("AssessmentObservation_assessmentRef_tenant_fk")
+  fromAssessmentEvidenceLinkAssessmentRef AssessmentEvidenceLink[] @relation("AssessmentEvidenceLink_assessmentRef_tenant_fk")
+  fromAssessmentSignOffAssessmentRef AssessmentSignOff[] @relation("AssessmentSignOff_assessmentRef_tenant_fk")
 }
 model AssessmentRevision {
   id String @id @default(uuid()) @db.Uuid
@@ -4389,6 +4423,10 @@ model AssessmentRevision {
   publishedAt DateTime?
   sequence Int?
   @@unique([tenantId, assessmentRef, revisionNo])
+  @@unique([tenantId, id], map: "AssessmentRevision_tenant_id_guard")
+  boundAssessmentRef AssessmentAssignment @relation("AssessmentRevision_assessmentRef_tenant_fk", fields: [tenantId, assessmentRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentRevision_assessmentRef_tenant_fk")
+  fromAssessmentCapabilityRevisionRef AssessmentCapability[] @relation("AssessmentCapability_revisionRef_tenant_fk")
+  fromAssessmentAppraisalInputRevisionRef AssessmentAppraisalInput[] @relation("AssessmentAppraisalInput_revisionRef_tenant_fk")
 }
 model AssessmentObservation {
   id String @id @default(uuid()) @db.Uuid
@@ -4410,6 +4448,9 @@ model AssessmentObservation {
   observedAt DateTime @default(now())
   assessorCode String
   @@unique([tenantId, assessmentRef, revisionNo, taskCode])
+  @@unique([tenantId, id], map: "AssessmentObservation_tenant_id_guard")
+  boundAssessmentRef AssessmentAssignment @relation("AssessmentObservation_assessmentRef_tenant_fk", fields: [tenantId, assessmentRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentObservation_assessmentRef_tenant_fk")
+  fromAssessmentDimensionObservationRef AssessmentDimension[] @relation("AssessmentDimension_observationRef_tenant_fk")
 }
 model AssessmentDimension {
   id String @id @default(uuid()) @db.Uuid
@@ -4425,6 +4466,8 @@ model AssessmentDimension {
   calculation Json?
   expiresAt DateTime?
   @@unique([tenantId, observationRef, dimension])
+  @@unique([tenantId, id], map: "AssessmentDimension_tenant_id_guard")
+  boundObservationRef AssessmentObservation @relation("AssessmentDimension_observationRef_tenant_fk", fields: [tenantId, observationRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentDimension_observationRef_tenant_fk")
 }
 model AssessmentCase {
   id String @id @default(uuid()) @db.Uuid
@@ -4439,6 +4482,9 @@ model AssessmentCase {
   idempotencyKey String
   inputDigest String
   @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, id], map: "AssessmentCase_tenant_id_guard")
+  fromAssessmentEvidenceCaseRef AssessmentEvidence[] @relation("AssessmentEvidence_caseRef_tenant_fk")
+  fromAssessmentTimingSampleCaseRef AssessmentTimingSample[] @relation("AssessmentTimingSample_caseRef_tenant_fk")
 }
 model AssessmentEvidence {
   id String @id @default(uuid()) @db.Uuid
@@ -4470,6 +4516,10 @@ model AssessmentEvidence {
   legalHold Boolean @default(false)
   @@unique([tenantId, source, sourceRecordId, sourceVersion, employeeCode])
   @@index([tenantId, employeeCode, captureAt])
+  @@unique([tenantId, id], map: "AssessmentEvidence_tenant_id_guard")
+  boundCaseRef AssessmentCase @relation("AssessmentEvidence_caseRef_tenant_fk", fields: [tenantId, caseRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentEvidence_caseRef_tenant_fk")
+  fromAssessmentEvidenceLinkEvidenceRef AssessmentEvidenceLink[] @relation("AssessmentEvidenceLink_evidenceRef_tenant_fk")
+  fromAssessmentTimingSampleEvidenceRef AssessmentTimingSample[] @relation("AssessmentTimingSample_evidenceRef_tenant_fk")
 }
 model AssessmentEvidenceLink {
   id String @id @default(uuid()) @db.Uuid
@@ -4485,6 +4535,9 @@ model AssessmentEvidenceLink {
   behaviorCheck String?
   confirmedByCode String
   @@unique([tenantId, assessmentRef, revisionNo, taskCode, evidenceRef])
+  @@unique([tenantId, id], map: "AssessmentEvidenceLink_tenant_id_guard")
+  boundAssessmentRef AssessmentAssignment @relation("AssessmentEvidenceLink_assessmentRef_tenant_fk", fields: [tenantId, assessmentRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentEvidenceLink_assessmentRef_tenant_fk")
+  boundEvidenceRef AssessmentEvidence @relation("AssessmentEvidenceLink_evidenceRef_tenant_fk", fields: [tenantId, evidenceRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentEvidenceLink_evidenceRef_tenant_fk")
 }
 model AssessmentTimingSample {
   id String @id @default(uuid()) @db.Uuid
@@ -4513,6 +4566,9 @@ model AssessmentTimingSample {
   withdrawnAt DateTime?
   @@unique([tenantId, evidenceRef, taskCode])
   @@index([tenantId, taskCode, taskVersion, capturedAt])
+  @@unique([tenantId, id], map: "AssessmentTimingSample_tenant_id_guard")
+  boundEvidenceRef AssessmentEvidence @relation("AssessmentTimingSample_evidenceRef_tenant_fk", fields: [tenantId, evidenceRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentTimingSample_evidenceRef_tenant_fk")
+  boundCaseRef AssessmentCase @relation("AssessmentTimingSample_caseRef_tenant_fk", fields: [tenantId, caseRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentTimingSample_caseRef_tenant_fk")
 }
 model AssessmentBenchmark {
   id String @id @default(uuid()) @db.Uuid
@@ -4535,6 +4591,7 @@ model AssessmentBenchmark {
   reviewAt DateTime
   createdAt DateTime @default(now())
   @@unique([tenantId, taskCode, taskVersion, scopeKey, version])
+  @@unique([tenantId, id], map: "AssessmentBenchmark_tenant_id_guard")
 }
 model AssessmentSignOff {
   id String @id @default(uuid()) @db.Uuid
@@ -4550,6 +4607,8 @@ model AssessmentSignOff {
   metadata Json
   createdAt DateTime @default(now())
   @@index([tenantId, assessmentRef, revisionNo])
+  @@unique([tenantId, id], map: "AssessmentSignOff_tenant_id_guard")
+  boundAssessmentRef AssessmentAssignment @relation("AssessmentSignOff_assessmentRef_tenant_fk", fields: [tenantId, assessmentRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentSignOff_assessmentRef_tenant_fk")
 }
 model AssessmentRestriction {
   id String @id @default(uuid()) @db.Uuid
@@ -4564,6 +4623,7 @@ model AssessmentRestriction {
   restorationRef String?
   @@unique([tenantId, employeeCode, taskCode, cause, sourceRef])
   @@index([tenantId, employeeCode, liftedAt])
+  @@unique([tenantId, id], map: "AssessmentRestriction_tenant_id_guard")
 }
 model AssessmentCapability {
   id String @id @default(uuid()) @db.Uuid
@@ -4581,6 +4641,8 @@ model AssessmentCapability {
   publishedAt DateTime
   @@unique([tenantId, employeeCode, taskCode, scopeKey, dimension])
   @@index([tenantId, expiresAt])
+  @@unique([tenantId, id], map: "AssessmentCapability_tenant_id_guard")
+  boundRevisionRef AssessmentRevision @relation("AssessmentCapability_revisionRef_tenant_fk", fields: [tenantId, revisionRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentCapability_revisionRef_tenant_fk")
 }
 model AssessmentAudit {
   id String @id @default(uuid()) @db.Uuid
@@ -4594,6 +4656,7 @@ model AssessmentAudit {
   metadata Json
   createdAt DateTime @default(now())
   @@index([tenantId, aggregateRef, createdAt])
+  @@unique([tenantId, id], map: "AssessmentAudit_tenant_id_guard")
 }
 model AssessmentAutomationRun {
   id String @id @default(uuid()) @db.Uuid
@@ -4607,6 +4670,7 @@ model AssessmentAutomationRun {
   outcome String
   createdAt DateTime @default(now())
   @@unique([tenantId, runKey])
+  @@unique([tenantId, id], map: "AssessmentAutomationRun_tenant_id_guard")
 }
 model AssessmentException {
   id String @id @default(uuid()) @db.Uuid
@@ -4623,6 +4687,7 @@ model AssessmentException {
   version Int @default(1)
   @@unique([tenantId, key])
   @@index([tenantId, kind, status])
+  @@unique([tenantId, id], map: "AssessmentException_tenant_id_guard")
 }
 model AssessmentInboxEvent {
   id String @id @default(uuid()) @db.Uuid
@@ -4639,6 +4704,7 @@ model AssessmentInboxEvent {
   processedAt DateTime?
   @@unique([tenantId, eventId])
   @@index([status, nextAttemptAt])
+  @@unique([tenantId, id], map: "AssessmentInboxEvent_tenant_id_guard")
 }
 model AssessmentIntegration {
   id String @id @default(uuid()) @db.Uuid
@@ -4654,6 +4720,7 @@ model AssessmentIntegration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@unique([tenantId, kind, key])
+  @@unique([tenantId, id], map: "AssessmentIntegration_tenant_id_guard")
 }
 model AssessmentAppraisalInput {
   id String @id @default(uuid()) @db.Uuid
@@ -4665,6 +4732,8 @@ model AssessmentAppraisalInput {
   amendment Boolean @default(false)
   createdAt DateTime @default(now())
   @@unique([tenantId, employeeCode, cycleId, revisionRef])
+  @@unique([tenantId, id], map: "AssessmentAppraisalInput_tenant_id_guard")
+  boundRevisionRef AssessmentRevision @relation("AssessmentAppraisalInput_revisionRef_tenant_fk", fields: [tenantId, revisionRef], references: [tenantId, id], onDelete: Restrict, onUpdate: NoAction, map: "AssessmentAppraisalInput_revisionRef_tenant_fk")
 }
 model AssessmentCodeChange {
   id String @id @default(uuid()) @db.Uuid
@@ -4676,6 +4745,7 @@ model AssessmentCodeChange {
   changedAt DateTime @default(now())
   propagationState String @default("PENDING")
   @@unique([tenantId, oldCode])
+  @@unique([tenantId, id], map: "AssessmentCodeChange_tenant_id_guard")
 }
 model AssessmentNotification {
   id String @id @default(uuid()) @db.Uuid
@@ -4690,6 +4760,7 @@ model AssessmentNotification {
   payload Json
   @@unique([tenantId, key])
   @@index([tenantId, employeeCode, sentAt])
+  @@unique([tenantId, id], map: "AssessmentNotification_tenant_id_guard")
 }
 
 // Employee identity and separation. Business references are company + employee code.
@@ -5206,6 +5277,7 @@ model HrApprovalRequest {
   @@unique([tenantId, id])
   @@index([tenantId, stage, id])
   @@index([tenantId, employeeCode])
+  fromHrApprovalAuditApprovalRef HrApprovalAudit[] @relation("hr_approval_audit_parent")
 }
 model HrApprovalAudit {
   id String @id @default(uuid()) @db.Uuid
@@ -5221,6 +5293,7 @@ model HrApprovalAudit {
   sourceHash String
   createdAt DateTime @default(now())
   @@unique([tenantId, approvalRef, version])
+  boundApprovalRef HrApprovalRequest @relation("hr_approval_audit_parent", fields: [tenantId, approvalRef], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction, map: "hr_approval_audit_parent")
 }
 model HrApprovalReceipt {
   id String @id @default(uuid()) @db.Uuid

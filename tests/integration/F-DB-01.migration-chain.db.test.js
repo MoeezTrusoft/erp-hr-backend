@@ -10,7 +10,8 @@ function runPrisma(args, databaseUrl) {
   return spawnSync(process.execPath, ["node_modules/prisma/build/index.js", ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...process.env, DATABASE_URL: databaseUrl },
+    // Prisma prefers the direct URL: keep both endpoints on this disposable DB.
+    env: { ...process.env, DATABASE_URL: databaseUrl, DATABASE_DIRECT_URL: databaseUrl },
   });
 }
 

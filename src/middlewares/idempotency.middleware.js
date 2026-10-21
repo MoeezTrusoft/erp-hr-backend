@@ -33,6 +33,7 @@ function getSharedRedis() {
     if (!url) return null;
     const redis = new Redis(url, {
         lazyConnect: true,
+        connectTimeout: 2000,
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
     });
@@ -61,6 +62,7 @@ function getStore(ttl) {
 
 // Test seam: reset cached shared client + per-TTL store registry.
 export function _resetDefaultStoreForTests() {
+    _sharedRedis?.disconnect();
     _sharedRedis = null;
     _sharedRedisAttempted = false;
     _storeByTtl.clear();
@@ -182,20 +184,22 @@ export function idempotency({ store, ttlMs } = {}) {
             // 2xx response commits the cache; anything else releases it.
             const json = res.json.bind(res);
             res.json = (payload) => {
-                const result = json(payload);
                 const status = res.statusCode;
                 try {
-                    if (status >= 200 && status < 300) {
-                        Promise.resolve(activeStore.commit(key, { status, body: payload }))
-                            .catch((err) => logger.warn({ err, key }, 'idempotency commit failed'));
-                    } else {
-                        Promise.resolve(activeStore.release(key))
-                            .catch((err) => logger.warn({ err, key }, 'idempotency release failed'));
+                    const persisted = status >= 200 && status < 300
+                        ? activeStore.commit(key, { status, body: payload })
+                        : activeStore.release(key);
+                    if (persisted && typeof persisted.then === 'function') {
+                        persisted.then(() => json(payload), (err) => {
+                            logger.warn({ err, key }, 'idempotency post-response persistence failed');
+                            json(payload);
+                        });
+                        return res;
                     }
                 } catch (err) {
                     logger.warn({ err, key }, 'idempotency post-response handling threw');
                 }
-                return result;
+                return json(payload);
             };
             next();
         }

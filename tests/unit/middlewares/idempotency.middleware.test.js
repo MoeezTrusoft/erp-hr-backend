@@ -13,7 +13,7 @@
 // the same key is a DIFFERENT namespace (no cross-tenant replay).
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { idempotency } from '../../../src/middlewares/idempotency.middleware.js';
-import { createMemoryStore } from '../../../src/lib/idempotency-store.js';
+import { createMemoryStore, createRedisStore } from '../../../src/lib/idempotency-store.js';
 
 const TENANT_A = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
 const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
@@ -38,6 +38,41 @@ function mockReq({ key, tenantId = TENANT_A, method = 'POST', path = '/api/leave
 describe('idempotency middleware', () => {
     let store;
     beforeEach(() => { store = createMemoryStore({ ttlMs: 60000 }); });
+
+    it('awaits a shared lazy Redis connection before either reservation', async () => {
+        let connected;
+        const redis = {
+            status: 'wait',
+            connect: jest.fn(() => {
+                redis.status = 'connecting';
+                return new Promise(resolve => { connected = () => { redis.status = 'ready'; resolve(); }; });
+            }),
+            set: jest.fn(async () => 'OK'),
+        };
+        const shared = createRedisStore({ redis, ttlMs: 60000 });
+        const first = shared.reserve('one'), second = shared.reserve('two');
+        expect(redis.set).not.toHaveBeenCalled();
+        expect(redis.connect).toHaveBeenCalledTimes(1);
+        connected();
+        await expect(first).resolves.toEqual({ state: 'reserved' });
+        await expect(second).resolves.toEqual({ state: 'reserved' });
+        expect(redis.set).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not send success before an asynchronous cache commit finishes', async () => {
+        let commit;
+        const activeStore = {
+            reserve: () => ({ state: 'reserved' }),
+            commit: () => new Promise(resolve => { commit = resolve; }),
+        };
+        const res = mockRes();
+        idempotency({ store: activeStore })(mockReq({ key: 'delayed' }), res,
+            () => res.status(201).json({ id: 9 }));
+        expect(res.body).toBeUndefined();
+        commit();
+        await Promise.resolve();
+        expect(res.body).toEqual({ id: 9 });
+    });
 
     it('passes through when no Idempotency-Key is present', () => {
         const mw = idempotency({ store });

@@ -11,7 +11,8 @@ function runPrisma(args, databaseUrl) {
   return spawnSync(process.execPath, ["node_modules/prisma/build/index.js", ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...process.env, DATABASE_URL: databaseUrl },
+    // Never inherit another database's direct migration endpoint.
+    env: { ...process.env, DATABASE_URL: databaseUrl, DATABASE_DIRECT_URL: databaseUrl },
   });
 }
 

@@ -72,9 +72,20 @@ export function createMemoryStore({ ttlMs, max = 5000 } = {}) {
 export function createRedisStore({ redis, ttlMs }) {
     if (!redis) throw new Error('createRedisStore: redis client required');
     if (!ttlMs || ttlMs <= 0) throw new Error('createRedisStore: ttlMs must be > 0');
+    let connection;
+    const ready = async () => {
+        // A lazy ioredis client with its offline queue disabled rejects the
+        // first SET unless connection readiness is awaited explicitly.
+        if (connection) return connection;
+        if (redis.status === 'wait') {
+            connection = redis.connect();
+            try { await connection; } finally { connection = null; }
+        }
+    };
     return {
         name: 'redis',
         async reserve(key) {
+            await ready();
             // SET NX PX is the atomic primitive: returns 'OK' iff this caller
             // is the first to claim the key within the TTL window.
             const ok = await redis.set(
@@ -92,6 +103,7 @@ export function createRedisStore({ redis, ttlMs }) {
                 : { state: STATE_PENDING };
         },
         async commit(key, value) {
+            await ready();
             await redis.set(
                 key,
                 JSON.stringify({ state: STATE_COMPLETED, value }),
@@ -99,6 +111,7 @@ export function createRedisStore({ redis, ttlMs }) {
             );
         },
         async release(key) {
+            await ready();
             await redis.del(key);
         },
     };

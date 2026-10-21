@@ -1,0 +1,90 @@
+{
+  "service": "erp-hr-backend",
+  "state": "migrated-regressions-and-image-packaging-passed",
+  "suites": [
+    {
+      "name": "hr-security",
+      "state": "passed",
+      "tests": 3
+    },
+    {
+      "name": "hr-full-migrated",
+      "state": "passed",
+      "tests": 3371,
+      "files": 282,
+      "database": "actual migrations and concurrent indexes; mandatory fixture readiness including restricted-role RLS",
+      "limits": "Default Jest suite excludes the separately configured performance lane; native .mjs suites are separate."
+    },
+    {
+      "name": "hr-native-migrated",
+      "state": "passed",
+      "tests": 142,
+      "files": 27,
+      "database": "actual migration replay; native workflow, migration and RLS tests with restricted non-owner login",
+      "limits": "No browser/device/provider acceptance; deferred performance suite is separate."
+    }
+  ],
+  "crossServiceHttp": {
+    "tests": 14,
+    "pass": 14,
+    "fail": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "regression": {
+    "sourceArchiveSha256": "4a459b67bac3f64a8a34b7399c66c546521e324b57adac3735a97458cf424931",
+    "receiptSha256": "37532a0109c1f7019044c483f0a6ffca630966efaa70adebb48775c0429f8cd4",
+    "archiveSha256": "b3783a5851d87e970c20c2f4712cfe273609050d01f6d489c292016091e709bb"
+  },
+  "packaging": {
+    "images": [
+      {
+        "service": "erp-hr-backend",
+        "state": "passed",
+        "imageId": "sha256:78b983aa328a731ec0ee3a71c517ba6b225b4201decae0790a5a3fed389f8290"
+      }
+    ],
+    "receiptSha256": "5b37a55ed8cee4d6d0024a1e14138b8384294036437d9117b8581002ae3be808",
+    "archiveSha256": "4dad24f47887cf9a582d69633ca5ced27c307fcd078d272cc09b3a76f8399815"
+  },
+  "cleanup": {
+    "regression": {
+      "complete": true,
+      "pending": []
+    },
+    "packaging": {
+      "complete": true,
+      "pending": []
+    }
+  },
+  "audit": {
+    "packageManager": "npm",
+    "findings": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "reportSha256": "6f58b609fa110d9759a8ad109ac5ef4a806f681ba6b9e7282e511a4b1f0011da",
+    "manifestSha256": "47eab417a9a2210f66c723e0aa586fcb885d831fadb5bd46004e1b0a02174c90",
+    "lockfileSha256": "93188501a257dc82450e3865d796e6afe3f49df5b8cb774dd98b9fa1fb4d7f75"
+  },
+  "changes": [
+    "Add missing nullable attendance request actor snapshot columns without inventing historical identity.",
+    "Declare existing database foreign keys, tenant guards, indexes and defaults in Prisma; fresh migration replay has no schema drift.",
+    "Keep both Prisma URLs on each disposable migration database; require database fixtures to initialize instead of silently bypassing assertions.",
+    "Await lazy Redis connection and persist replay data before returning the response.",
+    "Exercise current independent Approval Centre payroll decisions, prevent self-approval and test recalculation without duplicate reservations.",
+    "Package the PostgreSQL client and invoke concurrent index SQL with connection secrets outside argv.",
+    "Require successful MCP tools/list and import separation contracts through the installed public package."
+  ],
+  "limits": [
+    "Default Jest and all native suites passed; the separately configured, deferred training performance suite is not included.",
+    "Redis-unavailable fail-open behavior is unchanged; this is not an exactly-once guarantee under cache failure.",
+    "The image check verifies non-root read-only packaging/imports, not operational entrypoint readiness or operating-system CVE status.",
+    "Methodology activation remains denied until every repository write boundary is enforced.",
+    "No production migration, deployment, registry push, browser/device/provider acceptance or full plan acceptance."
+  ]
+}

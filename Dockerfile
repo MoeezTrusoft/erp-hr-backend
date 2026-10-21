@@ -3,7 +3,7 @@
 FROM node:24-bookworm-slim AS base
 # The CLI is retained for deployment scripts. Refresh its bundled security patches
 # independently, without resolving npm's unpublished development-only packages.
-RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global npm@12.2.0 --ignore-scripts \
   && npm --prefix /tmp/npm-security install --no-save --package-lock=false --ignore-scripts brace-expansion@5.0.11 undici@6.28.1 \
@@ -16,9 +16,9 @@ FROM base AS deps
 WORKDIR /app
 COPY --from=contracts package.json /erp-contracts/package.json
 COPY --from=contracts src /erp-contracts/src
-COPY package.json package-lock.json .npmrc ./
+COPY package.json package-lock.json ./
 COPY prisma ./prisma
-RUN npm ci --omit=dev --ignore-scripts \
+RUN npm ci --install-links --omit=dev --ignore-scripts \
   && npx prisma generate \
   && npm cache clean --force
 
@@ -28,7 +28,7 @@ ENV NODE_ENV=production
 RUN groupadd --system --gid 10001 nodeapp \
   && useradd --system --uid 10001 --gid nodeapp --home-dir /app --shell /usr/sbin/nologin nodeapp
 COPY --chown=nodeapp:nodeapp --from=deps /app/node_modules ./node_modules
-COPY --chown=nodeapp:nodeapp package.json package-lock.json .npmrc ./
+COPY --chown=nodeapp:nodeapp package.json package-lock.json ./
 COPY --chown=nodeapp:nodeapp prisma ./prisma
 COPY --chown=nodeapp:nodeapp src ./src
 # REQ-HR-DEPLOY-HARDENING-2026-09-02 §3a. Without these the image cannot run its

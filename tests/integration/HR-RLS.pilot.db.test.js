@@ -1,3 +1,5 @@
+import { fixtureEmployeeCode } from '../helpers/employee-code.js';
+import { assertRequiredDatabaseReady } from '../helpers/required-database.js';
 // C.2 / T-P2.6 — RLS PILOT proof (defense-in-depth at the database).
 //
 // withTenant() is the primary, application-layer tenant fence. This test proves
@@ -28,6 +30,7 @@ const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
 
 // Build the hr_app DATABASE_URL from the app's URL by swapping the credentials.
 function hrAppUrl() {
+    if (process.env.HR_TEST_APP_DATABASE_URL) return process.env.HR_TEST_APP_DATABASE_URL;
     const base = process.env.DATABASE_URL;
     if (!base) return null;
     try {
@@ -60,8 +63,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
         return;
     }
 
-    const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'RLS', last_name: 'A', status: 'active' } });
-    const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'RLS', last_name: 'B', status: 'active' } });
+    const empA = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT_A, first_name: 'RLS', last_name: 'A', status: 'active' } });
+    const empB = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT_B, first_name: 'RLS', last_name: 'B', status: 'active' } });
     created.employees.push(empA.id, empB.id);
 
     const attA = await prisma.attendance.create({ data: { employeeId: empA.id, status: 'PRESENT', tenantId: TENANT_A } });
@@ -70,6 +73,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     created.attA = attA.id;
     created.attB = attB.id;
 }));
+
+beforeAll(() => assertRequiredDatabaseReady(ready));
 
 afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (created.attendance.length) await prisma.attendance.deleteMany({ where: { id: { in: created.attendance } } });

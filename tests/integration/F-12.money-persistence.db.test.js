@@ -1,3 +1,5 @@
+import { fixtureEmployeeCode } from '../helpers/employee-code.js';
+import { assertRequiredDatabaseReady } from '../helpers/required-database.js';
 // F-12 / ARCH-01 §2.3, §5.1 / ARCH-06 C-06, C-11.
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
@@ -30,7 +32,7 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
   }
 
   const employee = await prisma.employee.create({
-    data: { tenant_id: TENANT, first_name: 'Exact', last_name: 'Money', status: 'active' },
+    data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT, first_name: 'Exact', last_name: 'Money', status: 'active' },
   });
   ids.employee = employee.id;
   const earningType = await prisma.payrollEarningType.create({
@@ -42,6 +44,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
   ids.earningType = earningType.id;
   ids.deductionType = deductionType.id;
 }));
+
+beforeAll(() => assertRequiredDatabaseReady(dbAvailable));
 
 afterAll(async () => mcpCtx.run({ system: true }, async () => {
   if (dbAvailable) {

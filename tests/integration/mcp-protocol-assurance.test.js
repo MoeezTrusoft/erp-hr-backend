@@ -168,9 +168,9 @@ describe("MCP-PROTOCOL-01 — HR MCP protocol assurance", () => {
   it("tools/list returns a facade with hr_-prefixed tool names", async () => {
     const { body } = await rpc(app, "tools/list");
 
-    // The SDK may return an error for some Zod schemas on 333-tool facades.
-    // If the call succeeds, validate the structure.
-    if (body?.result?.tools) {
+    expect(body?.error).toBeUndefined();
+    expect(body?.result?.tools).toEqual(expect.any(Array));
+    {
       const { tools } = body.result;
       expect(Array.isArray(tools)).toBe(true);
       expect(tools.length).toBeGreaterThan(100);
@@ -180,19 +180,13 @@ describe("MCP-PROTOCOL-01 — HR MCP protocol assurance", () => {
         expect(tool.name).toMatch(/^hr_/);
         expect(tool.description).toBeTruthy();
       }
-    } else {
-      // If tools/list fails due to SDK Zod edge case, verify the error
-      // is a known -32603 (internal) and NOT a boundary auth failure
-      expect(body?.error).toBeDefined();
-      expect(body.error.code).toBe(-32603);
-      expect(body.error.message).not.toContain("Unauthenticated");
-      expect(body.error.message).not.toContain("403");
     }
   });
 
-  it("representative tools exist when tools/list succeeds", async () => {
+  it("representative tools exist in tools/list", async () => {
     const { body } = await rpc(app, "tools/list");
-    if (!body?.result?.tools) return; // skip if SDK Zod issue
+    expect(body?.error).toBeUndefined();
+    expect(body?.result?.tools).toEqual(expect.any(Array));
 
     const names = body.result.tools.map((t) => t.name);
     for (const name of [

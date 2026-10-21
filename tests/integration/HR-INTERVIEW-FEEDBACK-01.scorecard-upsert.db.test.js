@@ -1,3 +1,5 @@
+import { fixtureEmployeeCode } from '../helpers/employee-code.js';
+import { assertRequiredDatabaseReady } from '../helpers/required-database.js';
 // HR-INTERVIEW-FEEDBACK-01 — "Score and feed back" must be re-submittable.
 //
 // Reported (live capture, /hr/interview-management → Submit Feedback):
@@ -50,7 +52,7 @@ const made = { interviews: [], applications: [], candidates: [], requisitions: [
 async function seedInterview(tenantId) {
     return asSystem(async () => {
         const reviewer = await prisma.employee.create({
-            data: { tenant_id: tenantId, first_name: 'Rev', last_name: 'Iewer', status: 'active' },
+            data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: tenantId, first_name: 'Rev', last_name: 'Iewer', status: 'active' },
         });
         const requisition = await prisma.jobRequisition.create({
             data: { tenantId, title: 'HR-INTERVIEW-FEEDBACK-01 role', requestedById: reviewer.id },
@@ -97,6 +99,8 @@ beforeAll(async () => {
         ready = false;
     }
 });
+
+beforeAll(() => assertRequiredDatabaseReady(ready));
 
 afterAll(async () => {
     if (!ready) return;

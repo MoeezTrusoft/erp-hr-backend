@@ -1,3 +1,5 @@
+import { fixtureEmployeeCode } from '../helpers/employee-code.js';
+import { assertRequiredDatabaseReady } from '../helpers/required-database.js';
 // C.2 / T-P2.2 / T-P2.6 — seeded two-tenant DB probe for the NEWLY tenant-scoped
 // HR tables (leave is the representative family; the same column + withTenant
 // pattern covers attendance / performance / training / recruitment / …).
@@ -45,8 +47,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
         return;
     }
 
-    const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'Lv', last_name: 'A', status: 'active' } });
-    const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'Lv', last_name: 'B', status: 'active' } });
+    const empA = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT_A, first_name: 'Lv', last_name: 'A', status: 'active' } });
+    const empB = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT_B, first_name: 'Lv', last_name: 'B', status: 'active' } });
     created.employees.push(empA.id, empB.id);
 
     // A leave policy per tenant (createdById is a required FK to the tenant's employee).
@@ -71,6 +73,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     created.reqB = reqB.id;
     created.empA = empA.id;
 }));
+
+beforeAll(() => assertRequiredDatabaseReady(dbAvailable));
 
 afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (!dbAvailable) return;

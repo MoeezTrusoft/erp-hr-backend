@@ -1,3 +1,5 @@
+import { fixtureEmployeeCode } from '../helpers/employee-code.js';
+import { assertRequiredDatabaseReady } from '../helpers/required-database.js';
 // C.2 / T-P2.6 — CROSS-TENANT NEGATIVE suite across the full HR RLS surface.
 //
 // Extends HR-RLS.pilot.db.test.js (which proves the pattern on Attendance) to
@@ -23,6 +25,7 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import prisma from '../../src/lib/prisma.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 const TENANT_A = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
 const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
@@ -38,6 +41,7 @@ const RLS_TABLES = [
 ];
 
 function hrAppUrl() {
+    if (process.env.HR_TEST_APP_DATABASE_URL) return process.env.HR_TEST_APP_DATABASE_URL;
     const base = process.env.DATABASE_URL;
     if (!base) return null;
     try {
@@ -54,7 +58,7 @@ let ready = false;
 let appClient = null;
 const created = { employees: [], emergency: [], bank: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     const url = hrAppUrl();
     if (!url) return;
     try {
@@ -69,8 +73,8 @@ beforeAll(async () => {
     }
 
     try {
-        const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'RLS', last_name: 'FA', status: 'active' } });
-        const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'RLS', last_name: 'FB', status: 'active' } });
+        const empA = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT_A, first_name: 'RLS', last_name: 'FA', status: 'active' } });
+        const empB = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode(), employeeCategory: 'EMPLOYEE', tenant_id: TENANT_B, first_name: 'RLS', last_name: 'FB', status: 'active' } });
         created.employees.push(empA.id, empB.id);
 
         const ecA = await prisma.emergencyContacts.create({ data: { tenantId: TENANT_A, employee_Id: empA.id, Contact_name: 'A-kin', phone: '111' } });
@@ -91,15 +95,17 @@ beforeAll(async () => {
         // false so the substantive specs early-return instead of false-failing.
         ready = false;
     }
-});
+}));
 
-afterAll(async () => {
+beforeAll(() => assertRequiredDatabaseReady(ready));
+
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (created.bank.length) await prisma.bankDetail.deleteMany({ where: { id: { in: created.bank } } }).catch(() => {});
     if (created.emergency.length) await prisma.emergencyContacts.deleteMany({ where: { id: { in: created.emergency } } }).catch(() => {});
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } }).catch(() => {});
     if (appClient) await appClient.$disconnect();
     await prisma.$disconnect();
-});
+}));
 
 // SET app.tenant_id + SELECT in ONE transaction so they share a connection.
 async function visibleIdsAs(table, tenantId, ids) {
