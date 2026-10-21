@@ -142,16 +142,20 @@ export async function attendanceFilterOptions({user,from,to},db=prisma) {
   const [runtime,employees,departments] = await Promise.all([
     loadAttendanceRuntime({tenantId:user.tenantId,from,to,db}),
     db.employee.findMany({where:{tenant_id:user.tenantId,...(!isAttendanceHr(user)&&!isManagement(user)?{OR:[{id:Number(user.employeeId)||-1},{managerId:Number(user.employeeId)||-1}]}:{})},select:{id:true}}),
-    db.businessUnit.findMany({where:{tenantId:user.tenantId},select:{id:true,name:true}}),
+    db.businessUnit.findMany({where:{tenantId:user.tenantId},select:{id:true,name:true},orderBy:{name:'asc'}}),
   ]);
-  const sites=new Map(), shifts=new Set(), departmentIds=new Set();
+  const sites=new Map(), shifts=new Set();
   for(const employee of employees) for(const day of days) {
     const info=runtime.resolve(employee.id,day);
-    if(info.departmentId) departmentIds.add(info.departmentId);
     const key=shiftKey(info.shift); if(key) shifts.add(key);
     for(const site of info.sites||[]) if(info.siteAssignment?.siteIds?.includes(site.id)) sites.set(site.id,site.name);
   }
-  return {sites:[...sites].map(([id,name])=>({id,name})),departments:departments.filter(d=>departmentIds.has(d.id)),shifts:[...shifts].sort().map(key=>({id:key,name:key}))};
+  // Departments are the company's own list, not "departments seen in this
+  // window". The scope's department select must offer every department the
+  // company has (operator item 19): filtering to departments that happened to
+  // resolve for these dates hid a department with no scheduled staff yet, so an
+  // empty timesheet looked like a missing department rather than no rows.
+  return {sites:[...sites].map(([id,name])=>({id,name})),departments:departments.map(d=>({id:d.id,name:d.name})),shifts:[...shifts].sort().map(key=>({id:key,name:key}))};
 }
 export async function myAttendanceDay({user},db=prisma) {
   if(!user.employeeId) return {linked:false};
@@ -176,17 +180,29 @@ export async function exportAttendanceRecords({user,...filters},db=prisma) {
   return {reference:receipt.id,generatedAt,company:user.tenantId,filters,total:result.total,items:result.items.map(row=>({employeeCode:row.employee?.code,date:dateKey(row.date),calendar:row.calendarStatus,outcome:row.status,processing:row.processingState,checkIn:row.checkIn,checkOut:row.checkOut,decimalHours:row.totalHours,timeZone:row.timeZone}))};
 }
 export async function employeeCodeOptions({ user, q = '', page = 1, pageSize = 50 }, db = prisma) {
-  const where = { tenant_id: user.tenantId, employee_code: { contains: q, mode: 'insensitive' },
-    ...(!isAttendanceHr(user) && !isManagement(user) ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] } : {}),
-  };
-  const select = { id: true, employee_code: true, status:true, hire_date:true, businessUnit:{select:{name:true}} };
-  const exact = q ? await db.employee.findFirst({ where: {...where, employee_code:{equals:q,mode:'insensitive'}}, select }) : null;
+  // Operator item 19: search matches the employee's NAME as well as the code,
+  // so HR can type "Ayesha" instead of remembering EMP-014. Both predicates sit
+  // under AND with the permission scope — the scope is itself an OR, and a
+  // flat spread would let one OR overwrite the other and leak other managers'
+  // staff.
+  const scope = !isAttendanceHr(user) && !isManagement(user)
+    ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] }
+    : {};
+  const term = String(q || '').trim();
+  const match = term
+    ? { OR: ['employee_code', 'first_name', 'middle_name', 'last_name', 'preferred_name'].map((field) => ({ [field]: { contains: term, mode: 'insensitive' } })) }
+    : {};
+  const clauses = [scope, match].filter((clause) => Object.keys(clause).length);
+  const where = { tenant_id: user.tenantId, ...(clauses.length ? { AND: clauses } : {}) };
+  const select = { id: true, employee_code: true, first_name:true, middle_name:true, last_name:true, preferred_name:true, status:true, hire_date:true, businessUnit:{select:{name:true}} };
+  const exact = term ? await db.employee.findFirst({ where: {...where, employee_code:{equals:term,mode:'insensitive'}}, select }) : null;
   const [remaining, total] = await Promise.all([
     db.employee.findMany({ where: {...where,...(exact?{id:{not:exact.id}}:{})}, select, orderBy: { employee_code: 'asc' }, skip: Math.max(0,(page - 1) * pageSize - (exact ? 1 : 0)), take: pageSize - (exact && page === 1 ? 1 : 0) }),
     db.employee.count({ where }),
   ]);
   const rows = exact && page === 1 ? [exact,...remaining] : remaining;
-  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code,department:e.businessUnit?.name,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
+  const nameOf = (e) => [e.first_name, e.last_name].filter(Boolean).join(' ') || e.preferred_name || e.middle_name || null;
+  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code, name:nameOf(e), department:e.businessUnit?.name,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
 }
 export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
   const row = await db.attendanceAnomaly.findFirst({
