@@ -1,3 +1,7 @@
+import { isAppraisalApproval, appraisalApprovalPermission, canReadAppraisalApproval,
+  appraisalApprovalActions, appraisalApprovalSource, actAppraisalApproval } from "../appraisals/approval-bridge.js";
+import { has as hasAppraisal } from "../appraisals/base.js";
+import { transitionInTransaction } from "../appraisals/core.js";
 import { encryptString, decryptString } from "../../lib/crypto.js";
 import prisma from "../../lib/prisma.js";
 import { tenantTransaction } from "../../lib/rlsTenant.js";
@@ -51,9 +55,8 @@ async function execute(input, operation, fn) {
       const who = await actor(tx, ctx),
         env = { ctx, who, tenantId: ctx.user.tenantId, now: new Date() };
       if (
-        !["self", "manager", "verify", "approve", "read"].some((k) =>
-          permits(env, k),
-        )
+        !["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))
+        && !hasAppraisal(env, "hr.performance.read")
       )
         fail("Approval access required", 403);
       env.codeAliases = await tx.employeeCodeAlias.findMany({
@@ -90,8 +93,9 @@ async function execute(input, operation, fn) {
                 }[from];
           if (
             !current ||
-            !grant ||
-            !permits(env, grant) ||
+            (isAppraisalApproval(current)
+              ? !hasAppraisal(env, appraisalApprovalPermission(current))
+              : !grant || !permits(env, grant)) ||
             !(await canRead(tx, env, current))
           )
             fail("Approval access required", 403);
@@ -115,6 +119,7 @@ async function execute(input, operation, fn) {
   );
 }
 async function actionsFor(tx, env, row) {
+  if (isAppraisalApproval(row)) return appraisalApprovalActions(tx, env, row);
   if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
   const subject = await employee(tx, env.tenantId, row.employeeCode),
     self = ownsCode(env, row.employeeCode);
@@ -143,6 +148,7 @@ async function actionsFor(tx, env, row) {
   return [];
 }
 async function canRead(tx, env, row) {
+  if (isAppraisalApproval(row)) return canReadAppraisalApproval(tx, env, row);
   if (
     ownsCode(env, row.employeeCode) ||
     permits(env, "read") ||
@@ -183,7 +189,8 @@ async function view(tx, env, row, summary = false) {
     recommendation: row.recommendation,
     verification: row.verification,
     execution: row.execution,
-    source: summary ? {} : unseal(row.snapshot),
+    source: summary ? {} : isAppraisalApproval(row)
+      ? await appraisalApprovalSource(tx, env, row) : unseal(row.snapshot),
     leavePolicies,
     actions: summary ? [] : await actionsFor(tx, env, row),
     history: history.map(
@@ -248,7 +255,7 @@ async function audit(tx, env, before, after, action, reason) {
   });
   if (!queued) fail("Transactional approval event could not be recorded", 503);
 }
-export function submitApproval(raw) {
+export function submitApproval(raw, { prepare } = {}) {
   const input = ApprovalSubmit.parse(raw);
   return execute(input, "SUBMIT", async (tx, env) => {
     if (!permits(env, "self") || !ownsCode(env, input.employeeCode))
@@ -271,6 +278,7 @@ export function submitApproval(raw) {
         fail("Only a draft or returned request can be submitted");
     } else if (input.expectedVersion !== 0)
       fail("Request changed. Refresh before submission", 412);
+    if (prepare) await prepare(tx, env);
     const source = await loadSource(tx, env, input.kind, input.sourceRef, {
       lock: true,
     });
@@ -337,6 +345,10 @@ export function actApproval(raw) {
       where: { tenantId: env.tenantId, id: input.approvalRef },
     });
     if (!row) fail("Request not found", 404);
+    if (isAppraisalApproval(row)) {
+      const next = await actAppraisalApproval(tx, env, row, input, transitionInTransaction);
+      return { actorCode: env.who.employee_code, record: await view(tx, env, next) };
+    }
     if (!(await canRead(tx, env, row))) fail("Request not found", 404);
     assertVersion(row, input.expectedVersion);
     if (!(await actionsFor(tx, env, row)).includes(input.action))
@@ -471,12 +483,11 @@ export function listApprovals(raw) {
   const input = ApprovalList.parse(raw);
   return execute(input, "LIST", async (tx, env) => {
     if (
-      !["self", "manager", "verify", "approve", "read"].some((k) =>
-        permits(env, k),
-      )
+      !["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))
+      && !hasAppraisal(env, "hr.performance.read")
     )
       fail("Approval access required", 403);
-    if (input.scope === "ALL" && !permits(env, "read"))
+    if (input.scope === "ALL" && !permits(env, "read") && !hasAppraisal(env, "hr.performance.read.all"))
       fail("Approval audit access required", 403);
     const where = {
       tenantId: env.tenantId,
@@ -532,8 +543,42 @@ export function listApprovals(raw) {
           : []),
       ];
     }
+    const appraisalVisible = hasAppraisal(env, "hr.performance.read.all");
+    const normal = { NOT: { sourceRef: { startsWith: "perf:" } }, ...where };
+    if (!["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))) normal.id = { in: [] };
+    const appraisalWhere = { tenantId: env.tenantId, kind: "PERFORMANCE",
+      sourceRef: { startsWith: "perf:" }, ...(input.cursor ? { id: { gt: input.cursor } } : {}) };
+    if (input.kind && input.kind !== "PERFORMANCE") appraisalWhere.AND = [{ id: { in: [] } }];
+    if (input.scope === "QUEUE") {
+      appraisalWhere.stage = "MANAGEMENT";
+      appraisalWhere.employeeCode = { notIn: env.identityCodes };
+      appraisalWhere.managerActorCode = { notIn: env.identityCodes };
+      appraisalWhere.OR = [
+        ...(appraisalVisible && hasAppraisal(env, "hr.performance.approve")
+          ? [{ sourceRef: { startsWith: "perf:SENIOR:" } }] : []),
+        ...(appraisalVisible && hasAppraisal(env, "hr.performance.release")
+          ? [{ sourceRef: { startsWith: "perf:RELEASE:" } }] : []),
+      ];
+    } else if (!appraisalVisible || input.scope === "MINE") {
+      const visible = await tx.perfReview.findMany({ where: {
+        tenantId: env.tenantId, employeeId: env.who.id, releasedRevisionId: { not: null },
+      }, select: { id: true } });
+      const bindings = await tx.perfApprovalBinding.findMany({ where: {
+        tenantId: env.tenantId, reviewId: { in: visible.map((r) => r.id) },
+      }, select: { approvalRef: true } });
+      appraisalWhere.id = { in: bindings.map((b) => b.approvalRef) };
+    } else {
+      const unreleased = await tx.perfReview.findMany({ where: {
+        tenantId: env.tenantId, employeeId: env.who.id, releasedRevisionId: null,
+      }, select: { id: true } });
+      const bindings = await tx.perfApprovalBinding.findMany({ where: {
+        tenantId: env.tenantId, reviewId: { in: unreleased.map((r) => r.id) },
+      }, select: { approvalRef: true } });
+      appraisalWhere.NOT = { id: { in: bindings.map((b) => b.approvalRef) } };
+    }
+    const scopedWhere = { OR: [normal, appraisalWhere] };
     const rows = await tx.hrApprovalRequest.findMany({
-        where,
+        where: scopedWhere,
         orderBy: { id: "asc" },
         take: input.limit + 1,
       }),
@@ -544,7 +589,7 @@ export function listApprovals(raw) {
       actorCode: env.who.employee_code,
       items,
       candidates:
-        input.scope === "MINE"
+        input.scope === "MINE" && permits(env, "self")
           ? await sourceCandidates(tx, env, input.kind)
           : [],
       nextCursor: rows.length > input.limit ? page.at(-1).id : null,

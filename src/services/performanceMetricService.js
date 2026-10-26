@@ -72,6 +72,11 @@ export const upsertReviewItems = async ({ reviewId, tenantId, items }) => {
         if (!review) {
             throw new Error("Review not found for tenant");
         }
+        if(review.status==='FINALIZED')throw Object.assign(new Error('Finalized review items are immutable'),{status:409});
+        const ids=(items||[]).map(i=>i.metricId);
+        if(new Set(ids).size!==ids.length)throw Object.assign(new Error('Duplicate metric'),{status:422});
+        if(await tx.performanceMetric.count({where:{tenantId,id:{in:ids},isActive:true}})!==ids.length)throw Object.assign(new Error('Metric not found in this company'),{status:404});
+        if((items||[]).some(i=>i.rating!=null&&(!Number.isFinite(i.rating)||i.rating<1||i.rating>5)))throw Object.assign(new Error('Rating must be from 1 to 5'),{status:422});
 
         await tx.performanceReviewItem.deleteMany({
             where: { reviewId },
@@ -81,6 +86,7 @@ export const upsertReviewItems = async ({ reviewId, tenantId, items }) => {
 
         await tx.performanceReviewItem.createMany({
             data: items.map((it) => ({
+                tenantId,
                 reviewId,
                 metricId: it.metricId,
                 rating: it.rating ?? null,
@@ -94,7 +100,7 @@ export const upsertReviewItems = async ({ reviewId, tenantId, items }) => {
                 metric: true,
             },
         });
-    });
+    },{tenantId});
 };
 
 /**

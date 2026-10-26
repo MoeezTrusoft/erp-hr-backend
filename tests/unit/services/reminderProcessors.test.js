@@ -7,12 +7,16 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 const prismaMock = {
     performanceReview: { findMany: jest.fn() },
-    reviewReminder: { findFirst: jest.fn(), create: jest.fn() },
+    reviewReminder: { findMany: jest.fn(), createMany: jest.fn() },
+    $executeRaw: jest.fn(),
     outboxEvent: { deleteMany: jest.fn() },
 };
 
 jest.unstable_mockModule('../../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../../src/config/prisma.js', () => ({ default: prismaMock }));
+jest.unstable_mockModule('../../../src/lib/rlsTenant.js', () => ({
+    tenantTransaction: jest.fn(async (_db, callback) => callback(prismaMock)),
+}));
 jest.unstable_mockModule('../../../src/services/documentExpiryAlert.service.js', () => ({
     generateDocumentExpiryAlerts: jest.fn(async () => [{ id: 1 }, { id: 2 }]),
 }));
@@ -30,20 +34,29 @@ describe('reminder job processors', () => {
 
     it('runReviewReminderJob creates a reminder only for reviews not already reminded today', async () => {
         prismaMock.performanceReview.findMany.mockResolvedValue([
-            { id: 1, employeeId: 10 },
-            { id: 2, employeeId: 20 },
+            { id: 1, employeeId: 10, type: 'SELF' },
+            { id: 2, employeeId: 20, reviewerId: 30, type: 'MANAGER' },
         ]);
         // first review already reminded; second not.
-        prismaMock.reviewReminder.findFirst
-            .mockResolvedValueOnce({ id: 99 })
-            .mockResolvedValueOnce(null);
-        prismaMock.reviewReminder.create.mockResolvedValue({ id: 100 });
+        prismaMock.reviewReminder.findMany.mockResolvedValue([{ reviewId: 1, sentToId: 10 }]);
+        prismaMock.reviewReminder.createMany.mockResolvedValue({ count: 1 });
 
-        const res = await runReviewReminderJob();
+        const tenantId = '1380c465-af20-4290-a92c-aee3e9a62cf4';
+        const res = await runReviewReminderJob({ tenantIds: [tenantId] });
 
         expect(res.scanned).toBe(2);
         expect(res.created).toBe(1);
-        expect(prismaMock.reviewReminder.create).toHaveBeenCalledTimes(1);
+        expect(prismaMock.reviewReminder.createMany).toHaveBeenCalledWith({data: [
+            expect.objectContaining({tenantId, reviewId: 2, sentToId: 30, type: 'PENDING_REVIEW'}),
+        ]});
+        expect(prismaMock.performanceReview.findMany.mock.calls[0][0].where).toMatchObject({
+            tenantId, status: {in: ['DRAFT', 'IN_PROGRESS']},
+        });
+    });
+
+    it('does not scan companies without an explicit tenant allowlist', async () => {
+        expect(await runReviewReminderJob({tenantIds: []})).toMatchObject({disabled: true, scanned: 0});
+        expect(prismaMock.performanceReview.findMany).not.toHaveBeenCalled();
     });
 
     it('runDocumentExpiryJob delegates to the fleet-wide expiry sweep', async () => {

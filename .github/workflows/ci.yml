@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 0bb84b90383491d6252b54b6919400f0b2a9a8be # approved HR Finance and PM contracts (0.18.0)
+          ref: e2263981b04e88ac6f9fa34f51051363e85db026 # contracts 0.19.0 appraisal candidate (erp-contracts PR #19)
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -45,6 +45,48 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+  appraisals:
+    name: appraisal PostgreSQL and Redis recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: appraisal_admin
+          POSTGRES_DB: performance_appraisals_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["127.0.0.1:55443:5432"]
+        options: --health-cmd "pg_isready -U appraisal_admin -d performance_appraisals_test" --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["127.0.0.1:56379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TZ: UTC
+      DATABASE_URL: postgresql://appraisal_runtime@127.0.0.1:55443/performance_appraisals_test
+      APPRAISAL_TEST_REDIS_URL: redis://127.0.0.1:56379
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: MoeezTrusoft/erp-contracts
+          ref: e2263981b04e88ac6f9fa34f51051363e85db026
+          path: _contracts
+          ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
+          persist-credentials: false
+      - run: mv _contracts ../contracts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install prisma generate
+      - run: node tests/appraisals/prepare.mjs
+      - run: npm run test:appraisals
+      - run: node --test tests/appraisals/worker-recovery.mjs
   secrets:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest

@@ -242,7 +242,7 @@ export function registerPerformanceTools(server) {
 
   server.tool(
     "hr_calibration_update",
-    "Finalize a calibration session (marks it COMPLETED and finalizes its cycle's reviews)",
+    "Finalize a calibration session (marks the session COMPLETED; appraisal release remains in Approval Centre)",
     {
       id: z.string().min(1).describe("Calibration session id to finalize (references CalibrationSession.id)"),
     },
@@ -259,9 +259,10 @@ export function registerPerformanceTools(server) {
     "Submit a rating adjustment in a calibration session",
     {
       reviewId: z.string().min(1).describe("Performance review id being re-rated (references PerformanceReview.id)"),
-      old_rating: z.number().describe("The review's rating before calibration (RatingAdjustment.old_rating, NOT NULL)"),
-      new_rating: z.number().describe("The calibrated rating (RatingAdjustment.new_rating, NOT NULL)"),
-      justification: z.string().optional().describe("Reason for the adjustment"),
+      calibrationSessionId: z.string().min(1).describe("Open calibration session in the review cycle"),
+      old_rating: z.number().min(0).max(5).describe("The review's rating before calibration (RatingAdjustment.old_rating, NOT NULL)"),
+      new_rating: z.number().min(0).max(5).describe("The calibrated rating (RatingAdjustment.new_rating, NOT NULL)"),
+      justification: z.string().trim().min(1).max(4000).describe("Reason for the adjustment"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

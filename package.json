@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "test:appraisals": "node --test --test-concurrency=1 tests/appraisals/*.test.mjs",
+    "worker:appraisals": "node src/jobs/appraisals.worker.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "sync:k20:march": "node scripts/sync_k20_march_to_db.js --month 3",

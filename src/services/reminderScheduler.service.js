@@ -7,6 +7,8 @@
 // timer wiring so they are unit-testable and can be invoked from a BullMQ
 // worker, a one-shot script, or a request.
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { mcpCtx } from "../lib/requestContext.js";
 import logger from "../lib/logger.js";
 import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 
@@ -17,42 +19,28 @@ const reminderLog = logger.child({ component: "reminder-jobs" });
  * PENDING_REVIEW reminder row per pending review, idempotent within the day.
  * @returns {Promise<{ scanned: number, created: number }>}
  */
-export async function runReviewReminderJob() {
-  reminderLog.info("performance review reminder job: start");
-
-  const pendingReviews = await prisma.performanceReview.findMany({
-    where: { status: { in: ["PENDING", "IN_PROGRESS"] } },
-    include: { employee: true, reviewer: true, cycle: true },
-  });
-
-  let created = 0;
-  for (const review of pendingReviews) {
-    try {
-      const alreadySent = await prisma.reviewReminder.findFirst({
-        where: {
-          reviewId: review.id,
-          sentToId: review.employeeId,
-          sentAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-        },
-      });
-
-      if (alreadySent) continue;
-
-      await prisma.reviewReminder.create({
-        data: {
-          reviewId: review.id,
-          sentToId: review.employeeId,
-          type: "PENDING_REVIEW",
-        },
-      });
-      created += 1;
-    } catch (err) {
-      reminderLog.error({ err, reviewId: review.id }, "performance review reminder per-review failed");
+export async function runReviewReminderJob({tenantIds=String(process.env.APPRAISAL_LEGACY_TENANT_IDS||'').split(',').filter(Boolean),now=new Date()}={}) {
+  if(!tenantIds.length)return {scanned:0,created:0,disabled:true,reason:'No authorised tenant allowlist'};
+  if(tenantIds.some(id=>!/^[-a-f0-9]{36}$/i.test(id)))throw new Error('Invalid reminder tenant allowlist');
+  const day=new Date(now.toISOString().slice(0,10)+'T00:00:00Z');
+  let scanned=0,created=0;
+  for(const tenantId of [...new Set(tenantIds)]){
+    let cursor=0;
+    for(;;){
+      const page=await mcpCtx.run({user:{tenantId},servicePrincipal:'svc:legacy-review-reminders'},()=>tenantTransaction(prisma,async tx=>{
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId+':legacy-reminders:'+day.toISOString()},0))`;
+        const reviews=await tx.performanceReview.findMany({where:{tenantId,id:{gt:cursor},status:{in:['DRAFT','IN_PROGRESS']},period_end:{lte:now}},select:{id:true,employeeId:true,reviewerId:true,type:true},orderBy:{id:'asc'},take:250});
+        const sent=await tx.reviewReminder.findMany({where:{tenantId,reviewId:{in:reviews.map(r=>r.id)},sentAt:{gte:day}},select:{reviewId:true,sentToId:true}});
+        const keys=new Set(sent.map(r=>r.reviewId+':'+r.sentToId));
+        const data=reviews.map(r=>({tenantId,reviewId:r.id,sentToId:r.type==='SELF'?r.employeeId:r.reviewerId,type:'PENDING_REVIEW',sentAt:now})).filter(r=>r.sentToId&&!keys.has(r.reviewId+':'+r.sentToId));
+        if(data.length)await tx.reviewReminder.createMany({data});
+        return {count:reviews.length,created:data.length,cursor:reviews.at(-1)?.id};
+      },{tenantId}));
+      scanned+=page.count;created+=page.created;if(page.count<250)break;cursor=page.cursor;
     }
   }
-
-  reminderLog.info({ scanned: pendingReviews.length, created }, "performance review reminder job: done");
-  return { scanned: pendingReviews.length, created };
+  reminderLog.info({scanned,created},'Tenant-scoped legacy reminder intents recorded');
+  return {scanned,created};
 }
 
 /**

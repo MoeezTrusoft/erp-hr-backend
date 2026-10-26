@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, jest } from '@jest/globals';
+import { beforeEach, afterEach, describe, it, expect, jest } from '@jest/globals';
 let rows = [],
   failCreate = false;
 const db = {
@@ -158,6 +158,8 @@ describe('atomic roster replacement', () => {
 
 describe('roster-write attendance re-evaluation (ROSTER-REEVAL-01)', () => {
   const today = '2026-10-21';
+  beforeEach(() => jest.useFakeTimers({ now: new Date('2026-10-21T12:00:00Z') }));
+  afterEach(() => jest.useRealTimers());
   const resetWhere = () =>
     db.attendanceEvaluationJob.updateMany.mock.calls[0][0].where;
 

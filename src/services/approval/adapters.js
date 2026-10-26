@@ -743,12 +743,18 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
         details: `Management ${env.who.employee_code}: ${reason}`,
       },
     });
-  } else if (kind === "PERFORMANCE")
-    await tx.performanceReview.update({
+  } else if (kind === "PERFORMANCE") {
+    const updated = await tx.performanceReview.update({
       where: { id: row.id },
       data: { status: approved ? "FINALIZED" : "DRAFT" },
     });
-  else if (kind === "ATTENDANCE") {
+    if (approved) await enqueueHrDomainEvent(tx, {
+      eventName:'hr.performance.review_finalized.v1', tenantId:env.tenantId,
+      actorId:String(env.ctx.user.userId), actorType:'user', correlationId:env.ctx.correlationId,
+      aggregateType:'PerformanceReview', aggregateId:String(row.id),
+      payload:{reviewId:String(updated.id),employeeId:String(updated.employeeId),cycleId:updated.cycleId==null?null:String(updated.cycleId),rating:null},
+    });
+  } else if (kind === "ATTENDANCE") {
     if (row.rulesVersion !== 2)
       fail(
         "Re-evaluate this legacy attendance case under the current evidence rules",

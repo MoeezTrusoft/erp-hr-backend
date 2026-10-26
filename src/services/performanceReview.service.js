@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { getCtx } from '../mcp/context.js';
 import { actor } from './separation/base.js';
 import { legacySubmit } from "./approval/legacy.js";
@@ -13,31 +14,26 @@ import { performanceReviewFinalizedEvent } from "./hrEvents.js";
 
 // 1️⃣ Create or initiate reviews
 export const initiateReviewsService = async (cycleId, employeeIds, reviewedBy, tenantId) => {
-  const data = employeeIds.map(empId => scopedData(tenantId, {
-    employeeId: empId,
-    cycleId,
-    reviewerId: Number(reviewedBy),
-    type: "SELF",
-    status: "DRAFT",
-    reviewer: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    },
-  })
-
-  );
-
-  const create = await prisma.performanceReview.createMany({ data });
+  if(!tenantId || !Array.isArray(employeeIds) || !employeeIds.length || employeeIds.length>10000) throw Object.assign(new Error('Verified tenant and eligible employees are required'),{status:422});
+  const create=await tenantTransaction(prisma,async tx=>{
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId+':legacy-launch:'+cycleId},0))`;
+    const cycle=await tx.performanceCycle.findFirst({where:{id:Number(cycleId),tenantId}});
+    if(!cycle)throw Object.assign(new Error('Cycle not found'),{status:404});
+    const ids=[...new Set(employeeIds.map(Number))];
+    if(ids.some(id=>!Number.isSafeInteger(id)||id<1))throw Object.assign(new Error('Invalid employee identifiers'),{status:422});
+    const employees=await tx.employee.findMany({where:{tenant_id:tenantId,id:{in:ids}}});
+    if(employees.length!==ids.length)throw Object.assign(new Error('Employee not found'),{status:404});
+    const existing=await tx.performanceReview.findMany({where:{tenantId,cycleId:cycle.id,type:'SELF'},select:{employeeId:true}});
+    const seen=new Set(existing.map(r=>r.employeeId));
+    return tx.performanceReview.createMany({data:employees.filter(e=>!seen.has(e.id)).map(e=>({tenantId,employeeId:e.id,cycleId:cycle.id,reviewerId:e.managerId,type:'SELF',status:'DRAFT',period_start:cycle.start_date,period_end:cycle.end_date}))});
+  },{tenantId,txOptions:{isolationLevel:'Serializable'}});
 
   await logAction({
     employeeId: Number(reviewedBy),
     type: "Create", // 👈 changed from CREATE to UPDATE
     module: "Performance Review",
     result: "SUCCESS",
-    notes: `Performance Review "${create.id}" Created successfully`,
+    notes: `${create.count} performance reviews created`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
@@ -48,17 +44,23 @@ export const initiateReviewsService = async (cycleId, employeeIds, reviewedBy, t
 
 // 2️⃣ Submit self/manager/peer review
 export const submitReviewService = async (id, body, submittedBy, tenantId) => {
-  const ctx=getCtx();
-  if(!ctx.actorVerified)throw Object.assign(new Error('Verified employee identity required'),{status:401});
-  await tenantTransaction(prisma,async tx=>{
-    const who=await actor(tx,ctx);
-    const review=await tx.performanceReview.findFirst({where:{id:Number(id),tenantId:ctx.user.tenantId}});
-    if(!review || review.employeeId!==who.id)throw Object.assign(new Error('Only the employee initiator can submit this appraisal'),{status:403});
-    const request=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId:ctx.user.tenantId,kind:'PERFORMANCE',sourceRef:String(id)}}});
-    if(request&&request.stage!=='INITIATOR')throw Object.assign(new Error('The appraisal is already in review'),{status:409});
-    await tx.performanceReview.update({where:{id:review.id},data:{comments:body.comments,overall_rating:body.overall_rating}});
-  },{tenantId:ctx.user.tenantId});
-  return legacySubmit('PERFORMANCE',id);
+  const input = z.object({ comments: z.string().max(16000).optional(),
+    overall_rating: z.number().min(0).max(5).optional() }).strict().parse(body);
+  const ctx = getCtx();
+  if (!ctx.actorVerified || !ctx.user?.tenantId)
+    throw Object.assign(new Error('Verified employee identity required'), { status: 401 });
+  if (tenantId && tenantId !== ctx.user.tenantId)
+    throw Object.assign(new Error('Company mismatch'), { status: 403 });
+  return legacySubmit('PERFORMANCE', id, 'Employee submitted the appraisal', {
+    prepare: async (tx, env) => {
+      const review = await tx.performanceReview.findFirst({ where: { id: Number(id), tenantId: env.tenantId } });
+      if (!review || review.employeeId !== env.who.id)
+        throw Object.assign(new Error('Only the employee initiator can submit this appraisal'), { status: 403 });
+      if (review.status === 'FINALIZED')
+        throw Object.assign(new Error('Finalized appraisals are immutable'), { status: 409 });
+      await tx.performanceReview.update({ where: { id: review.id }, data: input });
+    },
+  });
 };
 
 // 3️⃣ Get all reviews for a cycle

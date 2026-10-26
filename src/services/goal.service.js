@@ -1,5 +1,6 @@
 import { legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
@@ -21,16 +22,9 @@ export const createGoalService = async (data, createdBy, tenantId) => {
       category,
       start_date: new Date(start_date),
       end_date: new Date(end_date),
-      target_value: target_value ? Number(target_value) : null,
+      target_value: target_value == null ? null : Number(target_value),
       status: "PENDING",
     }),
-     employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
   });
 
  await logAction({
@@ -69,14 +63,9 @@ export const updateGoalService = async (id, data,updatedBy,tenantId) => {
   const existing = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Goal not found");
 
-  //const targetValue = existing.target_value ?? 0;
-   let newCurrentValue = existing.current_value - progress;
-
-   if (newCurrentValue < progress){
-    throw new Error("Progress can not be greater than current progress value");
-
-   }
-
+  if (progress !== undefined && (!Number.isFinite(progress) || progress < 0 || progress > 100)) throw Object.assign(new Error('Progress must be from 0 to 100'), {status:422});
+  if (status === 'APPROVED' || status === 'REJECTED') throw Object.assign(new Error('Use the goal approval workflow'), {status:409});
+  const newCurrentValue = existing.current_value;
 
   // Update goal — API-2 atomic compare-and-set + version bump, tenant-scoped.
   const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
@@ -88,7 +77,7 @@ export const updateGoalService = async (id, data,updatedBy,tenantId) => {
       progress: progress ?? existing.progress,
       current_value: newCurrentValue,
       status: status ?? existing.status,
-      updatedById: Number(updatedBy),
+
       version: { increment: 1 },
     },
   });
@@ -122,37 +111,23 @@ export const approveGoalService = async (id, status, approvedBy, tenantId) => {
 export const addGoalProgressService = async (data,createdBy,tenantId) => {
   const { goalId, comment, progress, } = data;
 
-  const goal = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(goalId) }) });
-  if (!goal) throw new Error("Goal not found");
-
-  const newProgress = await prisma.goalProgress.create({
-    data: scopedData(tenantId, {
-      goalId: Number(goalId),
-      comment,
-      progress: Number(progress),
-      created_by: Number(createdBy),
-    }),
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-  });
-
-  // Update goal's overall progress
-  await prisma.goal.update({
-    where: { id: Number(goalId) },
-    data: { progress: Number(progress), updated_at: new Date() },
-  });
+  if (!Number.isFinite(Number(progress)) || Number(progress)<0 || Number(progress)>100) throw Object.assign(new Error('Progress must be from 0 to 100'),{status:422});
+  const newProgress=await tenantTransaction(prisma,async tx=>{
+    const goal=await tx.goal.findFirst({where:scopedWhere(tenantId,{id:Number(goalId)})});
+    if(!goal)throw Object.assign(new Error('Goal not found'),{status:404});
+    const expectedVersion=normalizeExpectedVersion(data.expectedVersion);
+    if(expectedVersion!==null && expectedVersion!==undefined && expectedVersion!==goal.version)throw preconditionFailedError(goal.version);
+    const changed=await tx.goal.updateMany({where:scopedWhere(tenantId,{id:goal.id,version:goal.version}),data:{progress:Number(progress),version:{increment:1}}});
+    if(changed.count!==1)throw preconditionFailedError();
+    return tx.goalProgress.create({data:scopedData(tenantId,{goalId:goal.id,comment,progress:Number(progress),created_by:Number(createdBy)})});
+  },{tenantId});
 
  await logAction({
     employeeId: Number(createdBy),
     type: "Add Goal Progres", // 👈 changed from CREATE to UPDATE
     module: "Goal",
     result: "SUCCESS",
-    notes: `Goal Progress"${id}" Added successfully`,
+    notes: `Goal Progress"${goalId}" Added successfully`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 

@@ -7,23 +7,18 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // mutates tenant A's performance templates.
 
 export const createPerformanceTemplate = async (data, createdBy) => {
-  const { name, description, overall_rating, tenantId } = data;
+  const { name, description, criteria, overall_rating, tenantId } = data;
   if (!name) throw new Error("Template name is required");
+  if(criteria!==undefined && (!Array.isArray(criteria)||criteria.some(c=>typeof c!=='string'||!c.trim())))throw Object.assign(new Error('Legacy template criteria must be an array of nonempty labels'),{status:422});
 
   const create = await prisma.performanceTemplate.create({
     data: scopedData(tenantId, {
       name,
       description,
+      criteria,
       overall_rating,
-      createdById: Number(createdBy)
+
     }),
-    createdBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    },
   });
   await logAction({
     employeeId: Number(createdBy),
@@ -58,17 +53,13 @@ export const updatePerformanceTemplate = async (id, data, updatedBy, tenantId) =
 
   const performanceTemplate = await prisma.performanceTemplate.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
   if (!performanceTemplate) throw new Error("Performance Template Not Found");
+  if(Object.keys(data).some(k=>!["name","description","criteria","overall_rating"].includes(k)))throw Object.assign(new Error('Unsupported template field'),{status:422});
+  if(await prisma.performanceCycle.count({where:scopedWhere(tenantId,{templateId:Number(id)})}))throw Object.assign(new Error('Referenced templates are immutable; create a new template version'),{status:409});
+  if(data.criteria!==undefined&&(!Array.isArray(data.criteria)||data.criteria.some(c=>typeof c!=='string'||!c.trim())))throw Object.assign(new Error('Invalid template criteria'),{status:422});
   const update = await prisma.performanceTemplate.update({
     where: { id: Number(id) },
-    data,
-    updatedById: Number(updatedBy),
-    updatedBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    },
+    data: Object.fromEntries(Object.entries(data).filter(([key]) => ["name", "description", "criteria", "overall_rating"].includes(key))),
+
   });
 
   await logAction({
