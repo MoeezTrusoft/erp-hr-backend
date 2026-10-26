@@ -10,7 +10,11 @@ Changes are in five isolated `codex/performance-appraisals` worktrees. Employee 
 
 The user will pull the coordinated changes manually when ready. **Do not pull this candidate into the live HR installation yet.** Draft branches are for review; pulling `main` will not include these unmerged changes. No protected-branch rule has been bypassed. Contracts CI run [40380096967](https://github.com/MoeezTrusoft/erp-contracts/actions/runs/40380096967) did not start because GitHub reported failed account payments or a spending-limit restriction. Local checks are evidence, not a replacement for required protected CI and independent review.
 
-Published dependencies: [contracts PR 19](https://github.com/MoeezTrusoft/erp-contracts/pull/19), [gateway PR 34](https://github.com/MoeezTrusoft/erp-gateway-backend/pull/34), and [RBAC PR 35](https://github.com/MoeezTrusoft/erp-rbac-backend/pull/35). The delivery folder's `RELEASE-MANIFEST.json` records the complete coordinated set, including the HR and frontend candidates after publication.
+Published drafts: [contracts PR 19](https://github.com/MoeezTrusoft/erp-contracts/pull/19), [gateway PR 34](https://github.com/MoeezTrusoft/erp-gateway-backend/pull/34), [RBAC PR 35](https://github.com/MoeezTrusoft/erp-rbac-backend/pull/35), [HR PR 52](https://github.com/MoeezTrusoft/erp-hr-backend/pull/52), and [frontend PR 115](https://github.com/MoeezTrusoft/erp-trusoft-frontend/pull/115). The delivery folder's `RELEASE-MANIFEST.json` and `MANUAL-PULL-RUNBOOK.md` identify the exact coordinated revisions and review checkout instructions.
+
+The HR pipeline did execute on its first published candidate: [run 40386490647](https://github.com/MoeezTrusoft/erp-hr-backend/actions/runs/40386490647) passed the appraisal PostgreSQL/Redis recovery job, ordinary test/lint/boundary gate, image build and secret scan. Its runtime audit found three high-severity dependency issues. The follow-up locks patched body-parser 2.4.0, multer 2.5.0 and Zod 4.6.7, and makes every supplementary consumer workflow use the same contracts revision. The separate Assessment workflow had imported the previous contracts export map; its pin is corrected. Follow-up CI still must pass; the earlier billing restriction must not be used to explain failures from jobs that actually ran.
+
+Dependency patch references: [body-parser advisory](https://github.com/advisories/GHSA-27r3-jxmh-p828), [multer advisory](https://github.com/advisories/GHSA-q7qp-rjg7-q26m), [Zod advisory](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5). The updated HR runtime audit reports zero high/critical findings and four moderate findings; it is not a zero-vulnerability claim.
 
 ## Implemented and verified
 
@@ -44,10 +48,12 @@ All database scenarios use synthetic identities in an isolated loopback PostgreS
 | Existing HR Jest suites | 278 passed; 3,354 tests passed; two suites/11 tests retain their existing skips | Tests do not certify every production integration |
 | Appraisal workflow and metric regressions | 41 Node test entries passed | Synthetic identities; not deployed gateway end-to-end acceptance |
 | Exact SQL migration files | All seven applied unchanged to a clean pinned pre-appraisal schema; 26 FORCE-RLS tables checked | No production-volume legacy import rehearsal |
+| Remote HR appraisal job | PostgreSQL migrations/workflows and real Redis recovery passed on the first published HR candidate | Supplementary workflow pins and dependency fixes require follow-up CI |
 | BullMQ + real Redis | 501-review post-commit crash/retry recovery passed; temporary pod removed | No production scale, disaster-recovery or HA certification |
 | Browser | Nine Playwright journeys passed, including automated WCAG checks on employee, peer and analytics views | Fixture transport; complete manual accessibility and Urdu review remain |
 | Shared contracts | 32 Vitest files / 712 tests and 57 Node tests passed; ESLint passed | Protected CI could not start because of the account restriction |
 | Gateway and RBAC | Nine gateway permission tests and three unassigned-role tests passed | Full service gates and real RBAC database acceptance remain |
+| Updated HR runtime audit | Zero high/critical findings; four moderate findings remain | Image scan and required follow-up CI remain required |
 | HR frontend regressions | 71 of 73 files / 913 tests passed in the broader run; both affected files / 12 tests passed on focused recheck | The original run had one timing failure and an existing missing Attendance approval-chain shortcut; the shortcut was restored and rechecked |
 | Frontend bundle and lint | Production bundle passed; appraisal and repaired attendance files linted separately | Wider all-domain Vitest run was interrupted after failures outside the appraisal journeys; no claim of a full green frontend gate |
 
