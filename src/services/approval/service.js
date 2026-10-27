@@ -19,6 +19,10 @@ import {
   hrRevertTarget,
 } from "@trusoft/contracts/hr-approval-rules";
 import {
+  requiresLineManager,
+  stageAfterSubmission,
+} from "../../lib/approvalStagePolicy.js";
+import {
   actor,
   employee,
   ownsCode,
@@ -255,12 +259,21 @@ async function audit(tx, env, before, after, action, reason) {
   });
   if (!queued) fail("Transactional approval event could not be recorded", 503);
 }
-export function submitApproval(raw, { prepare } = {}) {
-  const input = ApprovalSubmit.parse(raw);
-  return execute(input, "SUBMIT", async (tx, env) => {
-    if (!permits(env, "self") || !ownsCode(env, input.employeeCode))
-      fail("Only the employee initiator can submit", 403);
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${env.tenantId + ":approval-source:" + input.kind + ":" + input.sourceRef},0))`;
+// The shared submission body. `submitApproval` is the employee initiator's own
+// door (owner-only); `submitApprovalOnBehalf` is the HR door used by specialist
+// services that file a request FOR an employee.
+async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) {
+  if (onBehalf) {
+    // TS-ONBEHALF-01 — HR filing on an employee's behalf. The specialist
+    // service has already asserted that the caller may act for this employee;
+    // here we re-assert the grant the HR stage itself requires, so no role
+    // weaker than the verifier can open a request in someone else's name.
+    if (!permits(env, "verify"))
+      fail("Only HR may submit a request on an employee's behalf", 403);
+  } else if (!permits(env, "self") || !ownsCode(env, input.employeeCode)) {
+    fail("Only the employee initiator can submit", 403);
+  }
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${env.tenantId + ":approval-source:" + input.kind + ":" + input.sourceRef},0))`;
     let row = await tx.hrApprovalRequest.findUnique({
       where: {
         tenantId_kind_sourceRef: {
@@ -282,24 +295,38 @@ export function submitApproval(raw, { prepare } = {}) {
     const source = await loadSource(tx, env, input.kind, input.sourceRef, {
       lock: true,
     });
-    if (!ownsCode(env, source.who.employee_code))
+    if (onBehalf) {
+      // The owner always comes from the source, never from the caller: an
+      // on-behalf submission cannot attach a request to a third employee.
+      if (source.who.employee_code !== input.employeeCode)
+        fail("The request belongs to another employee", 403);
+    } else if (!ownsCode(env, source.who.employee_code)) {
       fail("Only the employee initiator can submit", 403);
-    const manager = await tx.employee.findFirst({
-      where: { tenant_id: env.tenantId, id: source.who.managerId ?? -1 },
-    });
+    }
+    // A paused manager stage needs no manager configured — the request enters
+    // the HR verification stage instead (see lib/approvalStagePolicy.js).
+    const needsManager = requiresLineManager(input.kind);
+    const manager = needsManager
+      ? await tx.employee.findFirst({
+          where: { tenant_id: env.tenantId, id: source.who.managerId ?? -1 },
+        })
+      : null;
     if (
-      !manager?.employee_code ||
-      manager.id === env.who.id ||
-      /inactive|terminated|exited|separated/i.test(
-        `${manager.status} ${manager.employement_status}`,
-      )
+      needsManager &&
+      (!manager?.employee_code ||
+        manager.id === env.who.id ||
+        /inactive|terminated|exited|separated/i.test(
+          `${manager.status} ${manager.employement_status}`,
+        ))
     )
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
     const data = {
-      employeeCode: env.who.employee_code,
-      stage: "LINE_MANAGER",
-      managerCode: manager.employee_code,
+      // The canonical owner code of the source, not the caller's: identical for
+      // a self submission, the employee's for an on-behalf one.
+      employeeCode: source.who.employee_code,
+      stage: stageAfterSubmission(input.kind),
+      managerCode: manager?.employee_code ?? null,
       managerActorCode: null,
       hrActorCode: null,
       recommendation: null,
@@ -335,8 +362,32 @@ export function submitApproval(raw, { prepare } = {}) {
       actorCode: env.who.employee_code,
       record: await view(tx, env, next),
     };
-  });
 }
+
+export function submitApproval(raw, { prepare } = {}) {
+  const input = ApprovalSubmit.parse(raw);
+  return execute(input, "SUBMIT", (tx, env) => submitWithin(tx, env, input, { prepare }));
+}
+
+// TS-ONBEHALF-01 — HR submits a request FOR an employee.
+//
+// `hr_approval_submit` is the employee initiator's door and stays owner-only.
+// This second door exists for the specialist services where HR acts for an
+// employee (the attendance anomaly resolution request is the first caller).
+// The CALLER MUST HAVE ALREADY ASSERTED ITS OWN PERMISSION — the attendance
+// rules service requires the HR role and an in-scope employee before it gets
+// here — because this function re-asserts only the approval-centre grant.
+//
+// The request's owner is the SUBJECT employee (input.employeeCode, checked
+// against the source), while HrApprovalAudit.actorCode records the FILER, so
+// the trail always distinguishes a self-filed request from an on-behalf one.
+export function submitApprovalOnBehalf(raw) {
+  const input = ApprovalSubmit.parse(raw);
+  return execute(input, "SUBMIT", (tx, env) =>
+    submitWithin(tx, env, input, { onBehalf: true }),
+  );
+}
+
 export function actApproval(raw) {
   const input = ApprovalAction.parse(raw);
   return execute(input, "ACTION", async (tx, env) => {

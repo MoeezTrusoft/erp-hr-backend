@@ -52,6 +52,35 @@ export function registerAttendanceRulesTools(server) {
       service.listRuleCases,
     ],
     ["detail", { anomalyId: id }, service.ruleCaseDetail],
+    // TS-REQUEST-HYBRID-01 — raise the resolution request for a case the rules
+    // engine detected. `raise` is the employee's own act; `raise_on_behalf` is
+    // HR's, for an employee who has not answered their case. Both take a single
+    // reason — type, date, times and route are all derived.
+    // The case is addressed by id (the Timesheet row knows it) or by day plus
+    // type (the employee's own dialog is about a day).
+    [
+      "raise",
+      {
+        anomalyId: id.optional(),
+        date: date.optional(),
+        type: z.enum(["LATE_CHECKIN", "MISSING_CHECKIN", "MISSING_CHECKOUT", "EARLY_CHECKOUT", "ABSENT"]).optional(),
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.raiseRuleRequest,
+    ],
+    [
+      "raise_on_behalf",
+      {
+        anomalyId: id.optional(),
+        date: date.optional(),
+        type: z.enum(["LATE_CHECKIN", "MISSING_CHECKIN", "MISSING_CHECKOUT", "EARLY_CHECKOUT", "ABSENT"]).optional(),
+        employeeId: id.optional().describe("The employee the case belongs to — required when the case is addressed by date rather than id"),
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.raiseRuleRequestOnBehalf,
+    ],
     [
       "comment",
       {
@@ -123,7 +152,21 @@ export function registerAttendanceRulesTools(server) {
       schema,
       withToolError(async (args) => {
         const { user, permissions } = getCtx();
-        assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+        // TS-REQUEST-HYBRID-01 — raising a resolution request is not part of
+        // the HR attendance READ surface:
+        //   • `raise` is the employee's own act. Its boundaries are ownership
+        //     of the case (asserted in the service) and the initiator grant the
+        //     HR Approval Centre requires to submit at all — deliberately NOT
+        //     hr:attendance, which an ordinary employee does not hold.
+        //   • `raise_on_behalf` is HR's act and keeps the attendance write
+        //     grant the legacy ops raise used; the centre re-asserts the
+        //     verification grant on submission.
+        // Every other action stays behind the GET hr:attendance gate.
+        if (action === 'raise_on_behalf') {
+          assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        } else if (action !== 'raise') {
+          assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+        }
         if (action === 'export_records') assertPermission(permissions,'EXPORT','hr:attendance',user.isAdmin);
         return {
           content: [
