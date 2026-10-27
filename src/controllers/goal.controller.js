@@ -1,71 +1,59 @@
-import *as goalService from "../services/goal.service.js";
-import { respondPreconditionAware } from "../utils/httpError.js";
+import * as goalService from "../services/goal.service.js";
+import { actorOf, respondPerformanceError, tenantOf } from "./performance.respond.js";
 
 export const createGoal = async (req, res) => {
   try {
-         const createdBy = req.headers['employee-id'];
-
-    const goal = await goalService.createGoalService(req.body,createdBy);
+    const goal = await goalService.createGoalService(req.body, actorOf(req), tenantOf(req));
     res.status(201).json({ success: true, goal });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    respondPerformanceError(req, res, error);
   }
 };
 
 export const getGoals = async (req, res) => {
   try {
-    const { employeeId } = req.query;
-    const goals = await goalService.getGoalsService(employeeId);
+    const { employeeId } = req.query || {};
+    const goals = await goalService.getGoalsService(employeeId, tenantOf(req));
     res.status(200).json({ success: true, goals });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    respondPerformanceError(req, res, error);
   }
 };
 
 export const updateGoal = async (req, res) => {
   try {
-    const { id } = req.params;
-         const updatedBy = req.headers['employee-id'];
-
-    const updated = await goalService.updateGoalService(id, req.body, updatedBy);
+    const updated = await goalService.updateGoalService(req.params.id, req.body, actorOf(req), tenantOf(req));
     res.status(200).json({ success: true, goal: updated });
   } catch (error) {
-    // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
-    if (respondPreconditionAware(res, error)) return;
-    res.status(400).json({ success: false, message: error.message });
+    // API-2 — a stale write surfaces as 412 (HR-4120) with currentVersion.
+    respondPerformanceError(req, res, error);
   }
 };
 
 export const approveGoal = async (req, res) => {
   try {
-    const { id } = req.params;
-         const approvedBy = req.headers['employee-id'];
-
-    const {status } = req.body;
-    const goal = await goalService.approveGoalService(id, status, approvedBy);
+    const { status } = req.body || {};
+    const goal = await goalService.approveGoalService(req.params.id, status, actorOf(req), tenantOf(req));
     res.status(200).json({ success: true, goal });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    respondPerformanceError(req, res, error);
   }
 };
 
 export const addGoalProgress = async (req, res) => {
   try {
-         const createdBy = req.headers['employee-id'];
-
-    const progress = await goalService.addGoalProgressService(req.body,createdBy);
+    const progress = await goalService.addGoalProgressService(req.body, actorOf(req), tenantOf(req));
     res.status(201).json({ success: true, progress });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    respondPerformanceError(req, res, error);
   }
 };
 
 export const getGoalProgress = async (req, res) => {
   try {
-    const { id } = req.params;
-    const updates = await goalService.getGoalProgressService(id);
+    const updates = await goalService.getGoalProgressService(req.params.id, tenantOf(req));
     res.status(200).json({ success: true, updates });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    respondPerformanceError(req, res, error);
   }
 };

@@ -41,7 +41,7 @@ jobs:
         env:
           ASSESSMENT_TEST_ADMIN_URL: postgresql://postgres:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
       - name: Exercise workflow and database invariants
-        run: node --test tests/assessment/*.test.mjs tests/separation/*.test.mjs tests/approval/*.test.mjs tests/company-setup/*.test.mjs tests/attendance/*.test.mjs tests/acceptance/*.test.mjs tests/payroll/*.test.mjs tests/payroll-finance.node.test.mjs tests/payroll-finance/*.test.mjs
+        run: node --test tests/assessment/*.test.mjs tests/separation/*.test.mjs tests/approval/*.test.mjs tests/performance/*.test.mjs tests/company-setup/*.test.mjs tests/attendance/*.test.mjs tests/acceptance/*.test.mjs tests/payroll/*.test.mjs tests/payroll-finance.node.test.mjs tests/payroll-finance/*.test.mjs
         env:
           ASSESSMENT_TEST_ADMIN_URL: postgresql://postgres:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test
           ASSESSMENT_TEST_DATABASE_URL: postgresql://assessment_test_user:assessment-local-test@127.0.0.1:5432/hr_task_assessment_test

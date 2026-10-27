@@ -1,5 +1,6 @@
 import * as templateService from "../services/performanceTemplateService.js";
 import { respondServerError } from '../utils/httpError.js';
+import { respondPerformanceError } from './performance.respond.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped template service so tenant B cannot read/mutate tenant A's templates.
@@ -9,17 +10,14 @@ export const createTemplate = async (req, res) => {
   try {
          const createdBy = req.headers['employee-id'];
 
-    const data = await templateService.createPerformanceTemplate({ ...req.body, tenantId: tenantOf(req) }, createdBy);
+    const data = await templateService.createPerformanceTemplate(req.body, createdBy, tenantOf(req));
     res.status(201).json({
       success: true,
       message: "Performance template created successfully",
       data,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message || "Failed to create performance template",
-    });
+    respondPerformanceError(req, res, error);
   }
 };
 
@@ -65,10 +63,7 @@ export const updateTemplate = async (req, res) => {
       data,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message || "Failed to update performance template",
-    });
+    respondPerformanceError(req, res, error);
   }
 };
 
@@ -82,9 +77,6 @@ const deletedBy = req.headers['employee-id'];
       message: "Performance template deleted successfully",
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message || "Failed to delete performance template",
-    });
+    respondPerformanceError(req, res, error);
   }
 };

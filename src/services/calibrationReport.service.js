@@ -1,76 +1,101 @@
 import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
+import { mean, round2 } from "../lib/performance-errors.js";
 
 // C.2-completion — verified tenant (T-P2.1) threaded via a trailing `tenantId`;
 // every calibration aggregate is computed over tenant-scoped reads only, so a
 // tenant never sees another tenant's ratings folded into its calibration stats.
+//
+// PERF-P0 (E-01 / D7): three of the four reports queried columns that do not
+// exist (Employee.currentRating, PerformanceReview.managerId) or a relation
+// under the wrong name (`review` instead of `performance_review`), so they threw
+// on every call. They now aggregate from the review rows themselves:
+//   * "before" = the rating a review carried before its FIRST adjustment (or its
+//     current rating when it was never adjusted),
+//   * "after"  = the current rating of every review in scope (a blended
+//     population mean, not the mean of adjusted rows only).
+
+const scopedRatedReviews = (tenantId, extra = {}) =>
+  prisma.performanceReview.findMany({
+    where: scopedWhere(tenantId, { overall_rating: { not: null }, ...extra }),
+    select: {
+      id: true,
+      overall_rating: true,
+      reviewerId: true,
+      cycleId: true,
+      // Employee carries no department column; the business unit is the org unit.
+      employee: { select: { businessUnitId: true } },
+      RatingAdjustment: {
+        select: { old_rating: true, new_rating: true, created_at: true },
+        orderBy: { created_at: "asc" },
+      },
+    },
+  });
+
+const beforeAfter = (reviews) => {
+  const before = [];
+  const after = [];
+  let adjusted = 0;
+  for (const r of reviews) {
+    const first = r.RatingAdjustment?.[0];
+    if (first) adjusted += 1;
+    before.push(first ? first.old_rating : r.overall_rating);
+    after.push(r.overall_rating);
+  }
+  const avgBefore = mean(before) ?? 0;
+  const avgAfter = mean(after) ?? 0;
+  return {
+    totalReviews: reviews.length,
+    adjustedReviews: adjusted,
+    averageBefore: round2(avgBefore),
+    averageAfter: round2(avgAfter),
+    improvement: round2(avgAfter - avgBefore),
+  };
+};
 
 /**
  * 1️⃣ Overall Distribution
  */
 export const getCalibrationOverviewService = async (tenantId) => {
-  const reviews = await prisma.performanceReview.findMany({
-    where: scopedWhere(tenantId, {}),
-    select: { overall_rating: true, cycleId: true, id: true },
-  });
-
-  const adjustments = await prisma.ratingAdjustment.findMany({
-    where: scopedWhere(tenantId, {}),
-    select: { new_rating: true },
-  });
-
-  const before = reviews.map(r => r.overall_rating).filter(Boolean);
-  const after = adjustments.map(a => a.new_rating).filter(Boolean);
-
-  const avgBefore = before.length
-    ? before.reduce((a, b) => a + b, 0) / before.length
-    : 0;
-  const avgAfter = after.length
-    ? after.reduce((a, b) => a + b, 0) / after.length
-    : 0;
-
-  return {
-    totalReviews: reviews.length,
-    adjustedReviews: adjustments.length,
-    averageBefore: avgBefore,
-    averageAfter: avgAfter,
-    improvement: avgAfter - avgBefore,
-  };
+  const reviews = await scopedRatedReviews(tenantId);
+  return beforeAfter(reviews);
 };
 
 /**
- * 2️⃣ Average by Department
+ * 2️⃣ Average by Department (the reviewed employee's business unit; the
+ *    `departmentId` key is kept for API compatibility)
  */
 export const getAverageByDepartmentService = async (tenantId) => {
-  const results = await prisma.employee.groupBy({
-    by: ["departmentId"],
-    // Employee carries the tenant on the snake_case column `tenant_id` (REQ-007).
-    where: tenantId === undefined ? undefined : { tenant_id: tenantId ?? null },
-    _avg: { currentRating: true },
-    _count: { id: true },
-  });
-
-  return results.map(r => ({
-    departmentId: r.departmentId,
-    averageRating: r._avg.currentRating,
-    totalEmployees: r._count.id,
+  const reviews = await scopedRatedReviews(tenantId);
+  const groups = new Map();
+  for (const r of reviews) {
+    const key = r.employee?.businessUnitId ?? null;
+    if (!groups.has(key)) groups.set(key, { ratings: [] });
+    const g = groups.get(key);
+    g.ratings.push(r.overall_rating);
+  }
+  return [...groups.entries()].map(([departmentId, g]) => ({
+    departmentId,
+    businessUnitId: departmentId,
+    averageRating: round2(mean(g.ratings) ?? 0),
+    totalReviews: g.ratings.length,
   }));
 };
 
 /**
- * 3️⃣ Average by Manager
+ * 3️⃣ Average by Manager (the reviewer who rated)
  */
 export const getAverageByManagerService = async (tenantId) => {
   const results = await prisma.performanceReview.groupBy({
-    by: ["managerId"],
-    where: tenantId === undefined ? undefined : scopedWhere(tenantId, {}),
+    by: ["reviewerId"],
+    where: scopedWhere(tenantId, { overall_rating: { not: null } }),
     _avg: { overall_rating: true },
     _count: { id: true },
   });
 
-  return results.map(r => ({
-    managerId: r.managerId,
-    averageRating: r._avg.overall_rating,
+  return results.map((r) => ({
+    managerId: r.reviewerId,
+    averageRating: r._avg.overall_rating == null ? null : round2(r._avg.overall_rating),
     totalReviews: r._count.id,
   }));
 };
@@ -79,28 +104,14 @@ export const getAverageByManagerService = async (tenantId) => {
  * 4️⃣ Cycle Comparison
  */
 export const getCycleComparisonService = async (cycleId, tenantId) => {
-  const reviews = await prisma.performanceReview.findMany({
-    where: scopedWhere(tenantId, { cycleId: Number(cycleId) }),
-    select: { id: true, overall_rating: true },
-  });
-
-  const adjusted = await prisma.ratingAdjustment.findMany({
-    where: scopedWhere(tenantId, { review: { cycleId: Number(cycleId) } }),
-    select: { reviewId: true, old_rating: true, new_rating: true },
-  });
-
-  const total = reviews.length;
-  const changed = adjusted.length;
-
-  const avgBefore = reviews.reduce((sum, r) => sum + (r.overall_rating || 0), 0) / (total || 1);
-  const avgAfter = adjusted.reduce((sum, a) => sum + (a.new_rating || 0), 0) / (changed || 1);
-
+  const reviews = await scopedRatedReviews(tenantId, { cycleId: Number(cycleId) });
+  const summary = beforeAfter(reviews);
   return {
     cycleId: Number(cycleId),
-    totalReviews: total,
-    calibratedReviews: changed,
-    avgBefore,
-    avgAfter,
-    improvement: avgAfter - avgBefore,
+    totalReviews: summary.totalReviews,
+    calibratedReviews: summary.adjustedReviews,
+    avgBefore: summary.averageBefore,
+    avgAfter: summary.averageAfter,
+    improvement: summary.improvement,
   };
 };

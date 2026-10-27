@@ -4,7 +4,7 @@ import { getGoals, createGoal, updateGoal, approveGoal, addGoalProgress } from "
 import { getAllCalibrationSessions, createCalibrationSession, finalizeCalibration, adjustRating } from "../../controllers/calibration.controller.js";
 import { createPlan } from "../../controllers/developmentPlan.controller.js";
 
-export const mcpListPerformanceReviews = (user) => runController(getAllReviews, { user });
+export const mcpListPerformanceReviews = (user, query = {}) => runController(getAllReviews, { user, query });
 export const mcpListGoals = (user) => runController(getGoals, { user });
 export const mcpListCalibrationSessions = (user) => runController(getAllCalibrationSessions, { user });
 // Analytics grid binds to this resource and categorises EMPLOYEES on a

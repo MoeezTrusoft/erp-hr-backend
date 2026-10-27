@@ -28,7 +28,8 @@
     "gate:p1": "bash scripts/gate-p1.sh",
     "test:assessment": "node --test tests/assessment/*.test.mjs",
     "test:payroll": "node --test tests/payroll/*.test.mjs",
-    "test:approval": "node --test tests/approval/*.test.mjs"
+    "test:approval": "node --test tests/approval/*.test.mjs",
+    "test:performance": "node --test tests/performance/*.test.mjs"
   },
   "keywords": [],
   "author": "",

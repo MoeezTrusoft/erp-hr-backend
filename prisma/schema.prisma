@@ -1771,6 +1771,9 @@ model PerformanceReview {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  // PERF-P0 (E-05): one review per (employee, cycle, type); NULL cycleId rows are
+  // de-duplicated in the service (NULLs are distinct for the index).
+  @@unique([tenantId, employeeId, cycleId, type])
   @@index([tenantId])
   @@index([employeeId])
   @@index([cycleId])
@@ -2060,6 +2063,7 @@ model PerformanceCycle {
   start_date  DateTime
   end_date    DateTime
   status      CycleStatus @default(DRAFT)
+  archivedAt  DateTime? // PERF-P0 (E-05): soft delete — reviews keep referencing the cycle
   created_at  DateTime    @default(now())
   updated_at  DateTime    @updatedAt
 
@@ -2080,6 +2084,7 @@ model PerformanceTemplate {
   description    String?
   criteria       Json?
   overall_rating Float?
+  archivedAt     DateTime? // PERF-P0 (E-05): soft delete — cycles keep referencing the template
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
 
@@ -2121,6 +2126,7 @@ model Goal {
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
   @@index([tenantId])
+  @@index([tenantId, employeeId])
 }
 
 model GoalProgress {
@@ -2141,9 +2147,10 @@ model GoalProgress {
 }
 
 model GoalAlignment {
-  id            Int  @id @default(autoincrement())
+  id            Int       @id @default(autoincrement())
   parentGoalId  Int?
   alignedGoalId Int?
+  archivedAt    DateTime? // PERF-P0 (E-05): an edge is archived, never deleted
 
   // Relations
   parentGoal  Goal? @relation("GoalAlignmentsParent", fields: [parentGoalId], references: [id])
@@ -2153,6 +2160,7 @@ model GoalAlignment {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, parentGoalId, alignedGoalId])
   @@index([tenantId])
 }
 
@@ -2973,6 +2981,9 @@ model PerformanceMetric {
   updatedAt   DateTime @updatedAt
 
   reviewItems PerformanceReviewItem[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model PerformanceReviewItem {

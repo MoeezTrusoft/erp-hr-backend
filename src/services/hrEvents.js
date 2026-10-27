@@ -203,7 +203,8 @@ export function performanceReviewFinalizedEvent(review, ctx = {}) {
             reviewId: String(review?.id),
             employeeId: review?.employeeId != null ? String(review.employeeId) : null,
             cycleId: review?.cycleId != null ? String(review.cycleId) : null,
-            rating: review?.rating ?? null,
+            rating: review?.overall_rating ?? review?.rating ?? null,
+            status: review?.status ?? 'FINALIZED',
         },
     });
 }

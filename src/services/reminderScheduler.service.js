@@ -13,41 +13,58 @@ import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 const reminderLog = logger.child({ component: "reminder-jobs" });
 
 /**
- * Performance review reminder sweep (was the 9 AM cron). Creates a
- * PENDING_REVIEW reminder row per pending review, idempotent within the day.
+ * Performance review reminder sweep (was the 9 AM cron). Creates one
+ * PENDING_REVIEW reminder row per open review per day.
+ *
+ * PERF-P0 (E-01 / D14): the sweep used to filter `status in [PENDING, …]`
+ * (PENDING is not a ReviewStatus, so Prisma rejected the query), ran one
+ * findFirst per review (N+1) and stamped no tenant on the rows it created.
+ * It now selects open reviews (DRAFT / IN_PROGRESS) that still have an
+ * employee, reads today's reminders in one query, and inserts the missing
+ * rows in one createMany with each review's own tenantId — the job runs in
+ * the SYSTEM context, so nothing injects the tenant for it.
  * @returns {Promise<{ scanned: number, created: number }>}
  */
-export async function runReviewReminderJob() {
+export async function runReviewReminderJob({ now = new Date() } = {}) {
   reminderLog.info("performance review reminder job: start");
 
   const pendingReviews = await prisma.performanceReview.findMany({
-    where: { status: { in: ["PENDING", "IN_PROGRESS"] } },
-    include: { employee: true, reviewer: true, cycle: true },
+    where: { status: { in: ["DRAFT", "IN_PROGRESS"] }, employeeId: { not: null } },
+    select: { id: true, employeeId: true, tenantId: true },
   });
+  if (pendingReviews.length === 0) {
+    reminderLog.info({ scanned: 0, created: 0 }, "performance review reminder job: done");
+    return { scanned: 0, created: 0 };
+  }
+
+  const startOfDay = new Date(now);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const sentToday = await prisma.reviewReminder.findMany({
+    where: {
+      type: "PENDING_REVIEW",
+      sentAt: { gte: startOfDay },
+      reviewId: { in: pendingReviews.map((r) => r.id) },
+    },
+    select: { reviewId: true, sentToId: true },
+  });
+  const already = new Set(sentToday.map((r) => `${r.reviewId}:${r.sentToId}`));
+
+  const data = pendingReviews
+    .filter((r) => !already.has(`${r.id}:${r.employeeId}`))
+    .map((r) => ({
+      reviewId: r.id,
+      sentToId: r.employeeId,
+      type: "PENDING_REVIEW",
+      tenantId: r.tenantId ?? null,
+    }));
 
   let created = 0;
-  for (const review of pendingReviews) {
+  if (data.length) {
     try {
-      const alreadySent = await prisma.reviewReminder.findFirst({
-        where: {
-          reviewId: review.id,
-          sentToId: review.employeeId,
-          sentAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-        },
-      });
-
-      if (alreadySent) continue;
-
-      await prisma.reviewReminder.create({
-        data: {
-          reviewId: review.id,
-          sentToId: review.employeeId,
-          type: "PENDING_REVIEW",
-        },
-      });
-      created += 1;
+      const result = await prisma.reviewReminder.createMany({ data });
+      created = result.count;
     } catch (err) {
-      reminderLog.error({ err, reviewId: review.id }, "performance review reminder per-review failed");
+      reminderLog.error({ err, count: data.length }, "performance review reminder createMany failed");
     }
   }
 

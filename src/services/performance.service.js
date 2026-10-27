@@ -1,71 +1,150 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { conflict, isUniqueViolation, mean, notFound, round2 } from "../lib/performance-errors.js";
+import {
+  feedbackCreateSchema,
+  feedbackUpdateSchema,
+  parsePerformancePayload,
+  reviewCreateSchema,
+  reviewUpdateSchema,
+} from "../validators/performance.schema.js";
 
 // C.2 — the verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the
 // controller as a trailing `tenantId` and folded into every read predicate and
 // stamped on every create. `undefined` = legacy/no-scope (back-compat for
 // existing callers/tests); a present value (incl. null) is fail-closed so
 // tenant B can never read/mutate tenant A's performance rows for the same id.
+//
+// PERF-P0 (E-01/E-02/E-04): every payload is parsed against
+// src/validators/performance.schema.js; the create/update calls no longer carry
+// the phantom `createdById` / `updatedById` columns or a top-level `createdBy`
+// select (D1) — both made Prisma reject the query, so review creation and
+// feedback never worked. Review STATUS is no longer writable here (D4): the
+// only path to FINALIZED is the PERFORMANCE adapter of the HR Approval Centre.
+
+export const DEFAULT_PAGE_SIZE = 50;
+export const MAX_PAGE_SIZE = 200;
+
+// Nine-box: an employee whose mean rating is below this is plotted as HIGH
+// risk. Kept as a named constant (was an inline 2.5) until a template-defined
+// band map lands (P1 scope).
+export const NINE_BOX_RISK_THRESHOLD = 2.5;
+
+const pageArgs = ({ page, limit, pageSize } = {}) => {
+  const size = Number(limit ?? pageSize);
+  const take = Number.isFinite(size) && size > 0 ? Math.min(size, MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
+  const p = Number(page);
+  const current = Number.isFinite(p) && p > 0 ? Math.floor(p) : 1;
+  return { take, skip: (current - 1) * take, page: current };
+};
+
+const assertEmployee = async (db, tenantId, employeeId, what = "Employee") => {
+  const employee = await db.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(employeeId) }),
+    select: { id: true },
+  });
+  if (!employee) throw notFound(what);
+  return employee;
+};
+
+const assertOpenCycle = async (db, tenantId, cycleId) => {
+  const cycle = await db.performanceCycle.findFirst({
+    where: scopedWhere(tenantId, { id: Number(cycleId), archivedAt: null }),
+    select: { id: true, status: true, start_date: true, end_date: true },
+  });
+  if (!cycle) throw notFound("Performance cycle");
+  if (cycle.status === "CLOSED") throw conflict("The performance cycle is closed");
+  return cycle;
+};
 
 // ✅ Create new performance review
-export const createPerformanceReview = async (data,createdBy,tenantId) => {
-  const { employeeId, reviewerId, period_start, period_end,cycleId, comments, reviewType } = data;
+export const createPerformanceReview = async (data, createdBy, tenantId) => {
+  const input = parsePerformancePayload(reviewCreateSchema, data);
+  const { employeeId, reviewerId, period_start, period_end, cycleId, comments, reviewType } = input;
+  const type = reviewType ?? "SELF";
 
-  if (!employeeId || !period_start || !period_end)
-    throw new Error("employeeId, period_start, and period_end are required");
-  // Employee carries `tenant_id` (snake_case, REQ-007) not `tenantId`; scope the
-  // existence guard by it so we never confirm an employee from another tenant.
-  const employee = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(employeeId)})})
-  if(!employee) throw new Error("Employee not Found");
+  const create = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await assertEmployee(tx, tenantId, employeeId);
+      if (reviewerId != null) await assertEmployee(tx, tenantId, reviewerId, "Reviewer");
+      if (cycleId != null) await assertOpenCycle(tx, tenantId, cycleId);
 
+      // One review per (employee, cycle, type). The DB unique index is the
+      // race-proof guard for a cycle-bound review; a review with no cycle is
+      // de-duplicated here (NULL cycleId is distinct for the index).
+      const duplicate = await tx.performanceReview.findFirst({
+        where: scopedWhere(tenantId, {
+          employeeId: Number(employeeId),
+          cycleId: cycleId != null ? Number(cycleId) : null,
+          type,
+        }),
+        select: { id: true },
+      });
+      if (duplicate)
+        throw conflict(`A ${type} review already exists for this employee in this cycle`);
 
-  const create = await prisma.performanceReview.create({
-    data: scopedData(tenantId, {
-      employeeId: Number(employeeId),
-      reviewerId: reviewerId ? Number(reviewerId) : null,
-      cycleId: cycleId ? Number(cycleId) :null,
-      period_start: new Date(period_start),
-      period_end: new Date(period_end),
-      comments,
-      ...(reviewType ? { type: reviewType } : {}),
-      createdById: Number(createdBy)
-    }),
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-  });
-  // Log the update action
+      try {
+        return await tx.performanceReview.create({
+          data: scopedData(tenantId, {
+            employeeId: Number(employeeId),
+            reviewerId: reviewerId != null ? Number(reviewerId) : null,
+            cycleId: cycleId != null ? Number(cycleId) : null,
+            period_start: new Date(period_start),
+            period_end: new Date(period_end),
+            comments: comments ?? null,
+            type,
+          }),
+        });
+      } catch (err) {
+        if (isUniqueViolation(err))
+          throw conflict(`A ${type} review already exists for this employee in this cycle`);
+        throw err;
+      }
+    },
+    { tenantId }
+  );
+
   await logAction({
     employeeId: createdBy,
-    type: "Performance Create", // 👈 changed from CREATE to UPDATE
-    module: "performance",
+    type: "CREATE",
+    module: "Performance Review",
     result: "SUCCESS",
-    notes: `Performance "${employeeId}" created successfully`,
+    notes: `Performance review ${create.id} created for employee ${employeeId}`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
 };
 
-// ✅ Get all reviews (admin or HR)
-export const getAllReviews = async (tenantId) => {
-  return prisma.performanceReview.findMany({
-    where: scopedWhere(tenantId, {}),
-    include: {
-      employee: true,
-      reviewer: true,
-      feedbacks: true,
-      // Per-metric scored items back the Strength / Development-area panels:
-      // high-rated metrics are strengths, low-rated ones are development areas.
-      performanceReviewItems: { include: { metric: { select: { name: true, category: true } } } },
-    },
-    orderBy: { updated_at: "desc" },
+// ✅ Get all reviews (admin or HR) — paginated at the database (D17).
+export const getAllReviews = async (tenantId, query = {}) => {
+  const { take, skip, page } = pageArgs(query);
+  const where = scopedWhere(tenantId, {
+    ...(query.cycleId ? { cycleId: Number(query.cycleId) } : {}),
+    ...(query.status ? { status: String(query.status) } : {}),
+    ...(query.employeeId ? { employeeId: Number(query.employeeId) } : {}),
   });
+  const [items, total] = await Promise.all([
+    prisma.performanceReview.findMany({
+      where,
+      include: {
+        employee: true,
+        reviewer: true,
+        feedbacks: true,
+        // Per-metric scored items back the Strength / Development-area panels:
+        // high-rated metrics are strengths, low-rated ones are development areas.
+        performanceReviewItems: { include: { metric: { select: { name: true, category: true } } } },
+      },
+      orderBy: [{ updated_at: "desc" }, { id: "desc" }],
+      take,
+      skip,
+    }),
+    prisma.performanceReview.count({ where }),
+  ]);
+  return { items, total, page, limit: take };
 };
 
 // Per-employee nine-box aggregate for the Performance Analytics grid.
@@ -74,14 +153,19 @@ export const getAllReviews = async (tenantId) => {
 // per-employee ratings — so the grid rendered empty. Here we derive each
 // employee's ratings from their scored reviews (tenant-scoped, fail-closed):
 //   • performanceRating — mean overall_rating across the employee's reviews
+//                          (optionally one cycle via `cycleId`)
 //   • potentialRating   — mean rating of "Leadership"/"Potential" competency
 //                          items (falls back to performanceRating when none)
-//   • riskLevel         — HIGH when performanceRating < 2.5, else LOW
+//   • riskLevel         — HIGH when performanceRating < NINE_BOX_RISK_THRESHOLD
 // Returns a `{ items }` envelope shaped for the FE `mapPerformanceMetric`
 // aliasing (name / performanceRating / potentialRating / riskLevel).
-export const getEmployeeNineBox = async (tenantId) => {
+export const getEmployeeNineBox = async (tenantId, { cycleId } = {}) => {
   const reviews = await prisma.performanceReview.findMany({
-    where: scopedWhere(tenantId, { employeeId: { not: null } }),
+    where: scopedWhere(tenantId, {
+      employeeId: { not: null },
+      overall_rating: { not: null },
+      ...(cycleId ? { cycleId: Number(cycleId) } : {}),
+    }),
     select: {
       employeeId: true,
       overall_rating: true,
@@ -91,9 +175,6 @@ export const getEmployeeNineBox = async (tenantId) => {
       },
     },
   });
-
-  const mean = (nums) =>
-    nums.length ? nums.reduce((sum, n) => sum + n, 0) / nums.length : null;
 
   const byEmployee = new Map();
   for (const review of reviews) {
@@ -124,9 +205,9 @@ export const getEmployeeNineBox = async (tenantId) => {
     items.push({
       id: employee?.id,
       name,
-      performanceRating: Math.round(performanceRating * 100) / 100,
-      potentialRating: Math.round(potentialRating * 100) / 100,
-      riskLevel: performanceRating < 2.5 ? "HIGH" : "LOW",
+      performanceRating: round2(performanceRating),
+      potentialRating: round2(potentialRating),
+      riskLevel: performanceRating < NINE_BOX_RISK_THRESHOLD ? "HIGH" : "LOW",
     });
   }
 
@@ -135,144 +216,123 @@ export const getEmployeeNineBox = async (tenantId) => {
 
 // ✅ Get reviews by employee (for employee dashboard)
 export const getReviewsByEmployee = async (employeeId, tenantId) => {
-   const employee = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(employeeId)})})
-  if(!employee) throw new Error("Employee not Found");
+  await assertEmployee(prisma, tenantId, employeeId);
 
   return prisma.performanceReview.findMany({
     where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
-    include: { reviewer: true, feedbacks: true },
-    orderBy: { updated_at: "desc" },
+    include: { reviewer: true, feedbacks: true, cycle: { select: { id: true, name: true, status: true } } },
+    orderBy: [{ updated_at: "desc" }, { id: "desc" }],
   });
 };
 
-// ✅ Update review (e.g., finalize)
-export const updateReview = async (id, data,updatedBy,tenantId) => {
+// ✅ Update review narrative / rating. STATUS is intentionally not accepted
+// (E-02): finalisation is the Approval Centre's PERFORMANCE adapter only.
+export const updateReview = async (id, data, updatedBy, tenantId) => {
+  const input = parsePerformancePayload(reviewUpdateSchema, data);
+
   // Tenant-scoped pre-read: a cross-tenant id resolves to not-found, never
   // another tenant's review — and we never mutate it (fail-closed).
   const existing = await prisma.performanceReview.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!existing) throw new Error("Review not found");
+  if (!existing) throw notFound("Review");
+  if (existing.status === "FINALIZED")
+    throw conflict("A finalized review is immutable; open a correction through the Approval Centre");
 
+  const nextRating = input.overallRating ?? input.overall_rating;
   const updated = await prisma.performanceReview.update({
     where: { id: Number(id) },
     data: {
-      // Tool sends `overallRating`; accept the snake_case alias too for back-compat.
-      overall_rating: data.overallRating ?? data.overall_rating ?? existing.overall_rating,
-      comments: data.comments ?? existing.comments,
-      status: data.status ?? existing.status,
-      updatedById: Number(updatedBy),
+      overall_rating: nextRating ?? existing.overall_rating,
+      comments: input.comments ?? existing.comments,
     },
-     updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      }
   });
 
-  // Log the update action
   await logAction({
     employeeId: updatedBy,
-    type: "UPDATE", // 👈 changed from CREATE to UPDATE
-    module: "Review in Performnace",
+    type: "UPDATE",
+    module: "Performance Review",
     result: "SUCCESS",
-    notes: `Performance "${id}" updated successfully`,
+    notes: `Performance review ${id} updated`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return updated;
 };
 
 // ✅ Add feedback to a review
-export const addFeedback = async (data,createdBy,tenantId) => {
-  const { reviewId, reviewerId, feedback, rating } = data;
-  if (!reviewId || !reviewerId || !feedback)
-    throw new Error("reviewId, reviewerId, and feedback are required");
+export const addFeedback = async (data, createdBy, tenantId) => {
+  const { reviewId, reviewerId, feedback, rating } = parsePerformancePayload(
+    feedbackCreateSchema,
+    data
+  );
 
-   const review = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(reviewId)})})
-  if(!review) throw new Error("Employee not Found");
-
-     const reviewer = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(reviewerId)})})
-  if(!reviewer) throw new Error("Employee not Found");
+  // D5: the review id used to be validated as an EMPLOYEE id.
+  const review = await prisma.performanceReview.findFirst({
+    where: scopedWhere(tenantId, { id: Number(reviewId) }),
+    select: { id: true, status: true },
+  });
+  if (!review) throw notFound("Review");
+  await assertEmployee(prisma, tenantId, reviewerId, "Reviewer");
 
   const create = await prisma.reviewFeedback.create({
     data: scopedData(tenantId, {
       reviewId: Number(reviewId),
       reviewerId: Number(reviewerId),
       feedback,
-      rating: rating ? Number(rating) : null,
-      createdById : Number(createdBy),
+      rating: rating ?? null,
     }),
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
   });
-  // Log the update action
+
   await logAction({
     employeeId: createdBy,
-    type: "Create Feed Back", // 👈 changed from CREATE to UPDATE
-    module: "Performance",
+    type: "CREATE",
+    module: "Performance Feedback",
     result: "SUCCESS",
-    notes: `Feed Back "${reviewId}" updated successfully`,
+    notes: `Feedback ${create.id} added to review ${reviewId}`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
 };
 
-
 export const updateFeedback = async (id, data, updatedBy, tenantId) => {
-  const { reviewId, reviewerId, feedback, rating } = data;
+  const input = parsePerformancePayload(feedbackUpdateSchema, data);
 
   const existing = await prisma.reviewFeedback.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!existing) throw new Error("Feed Back not found");
+  if (!existing) throw notFound("Feedback");
 
   const updated = await prisma.reviewFeedback.update({
     where: { id: Number(id) },
     data: {
-      reviewId: existing.reviewId,
-      reviewerId: existing.reviewerId,
-      feedback,
-      rating: Number(rating),
-      updatedById: Number(updatedBy),
+      feedback: input.feedback ?? existing.feedback,
+      // D-list: `Number(undefined)` used to write NaN; an omitted rating keeps
+      // the stored one, an explicit null clears it.
+      rating: input.rating === undefined ? existing.rating : input.rating,
     },
-     updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      }
   });
-  // Log the update action
+
   await logAction({
     employeeId: updatedBy,
-    type: "UPDATE", // 👈 changed from CREATE to UPDATE
-    module: "Performance Feed Back",
+    type: "UPDATE",
+    module: "Performance Feedback",
     result: "SUCCESS",
-    notes: `Feed back "${id}" updated successfully`,
+    notes: `Feedback ${id} updated`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return updated;
 };
 
-export const deleteFeedback = async (id,deletedBy,tenantId) => {
+export const deleteFeedback = async (id, deletedBy, tenantId) => {
   const existing = await prisma.reviewFeedback.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-  if (!existing) throw new Error("FeedBack not found");
+  if (!existing) throw notFound("Feedback");
 
   const deleted = await prisma.reviewFeedback.delete({ where: { id: Number(id) } });
 
- // Log the update action
   await logAction({
     employeeId: deletedBy,
-    type: "UPDATE", // 👈 changed from CREATE to UPDATE
-    module: "Performance Feed Back",
+    type: "DELETE",
+    module: "Performance Feedback",
     result: "SUCCESS",
-    notes: `Feed Back "${id}" Deleted successfully`,
+    notes: `Feedback ${id} deleted`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
-  return deleted;
+  return { ...deleted, message: `Feedback ${id} deleted` };
 };

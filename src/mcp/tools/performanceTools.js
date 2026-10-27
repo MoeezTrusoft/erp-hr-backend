@@ -90,7 +90,8 @@ export function registerPerformanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
-      const data = await mcpListPerformanceReviews(user);
+      // PERF-P0 (D17): page at the database, not in memory over every row.
+      const data = await mcpListPerformanceReviews(user, { page: args.page, limit: args.pageSize });
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_performance_reviews_list")
   );
@@ -189,13 +190,15 @@ export function registerPerformanceTools(server) {
     })
   );
 
+  // PERF-P0 (E-02): `status` is no longer accepted — a review becomes FINALIZED
+  // only through the HR Approval Centre (hr_approval_submit / hr_approval_action,
+  // kind PERFORMANCE); a DB trigger rejects any other FINALIZED write.
   server.tool(
     "hr_performance_review_update",
-    "Update a performance review",
+    "Update a performance review's narrative or rating (status is governed by the HR Approval Centre)",
     {
       id: z.string().min(1).describe("Performance review id (references PerformanceReview.id)"),
-      status: z.enum(["IN_PROGRESS", "FINALIZED", "DRAFT"]).optional().describe("Review status — one of IN_PROGRESS | FINALIZED | DRAFT"),
-      overallRating: z.number().optional().describe("Overall rating score (maps to PerformanceReview.overall_rating)"),
+      overallRating: z.number().min(0).max(5).optional().describe("Overall rating score 0-5 (maps to PerformanceReview.overall_rating)"),
       comments: z.string().optional(),
     },
     withToolError(async ({ id, ...rest }) => {
@@ -240,9 +243,11 @@ export function registerPerformanceTools(server) {
     })
   );
 
+  // Alias of hr_calibration_finalize kept for callers bound to the old name. It
+  // completes the SESSION only; reviews are finalized by the Approval Centre.
   server.tool(
     "hr_calibration_update",
-    "Finalize a calibration session (marks it COMPLETED and finalizes its cycle's reviews)",
+    "Alias of hr_calibration_finalize: mark a calibration session COMPLETED (does not finalize reviews)",
     {
       id: z.string().min(1).describe("Calibration session id to finalize (references CalibrationSession.id)"),
     },
@@ -259,8 +264,9 @@ export function registerPerformanceTools(server) {
     "Submit a rating adjustment in a calibration session",
     {
       reviewId: z.string().min(1).describe("Performance review id being re-rated (references PerformanceReview.id)"),
-      old_rating: z.number().describe("The review's rating before calibration (RatingAdjustment.old_rating, NOT NULL)"),
-      new_rating: z.number().describe("The calibrated rating (RatingAdjustment.new_rating, NOT NULL)"),
+      calibrationSessionId: z.string().optional().describe("Calibration session to record the adjustment under (defaults to the newest open session of the review's cycle)"),
+      old_rating: z.number().min(0).max(5).describe("The rating as last read — must equal the stored rating or the call is rejected (409)"),
+      new_rating: z.number().min(0).max(5).describe("The calibrated rating (RatingAdjustment.new_rating, NOT NULL)"),
       justification: z.string().optional().describe("Reason for the adjustment"),
     },
     withToolError(async (args) => {

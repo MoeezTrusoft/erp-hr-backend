@@ -7,8 +7,8 @@ import {
 
 const router = express.Router();
 
-router.post("/", createGoalAlignment);           // Create alignment
-router.get("/:id", getGoalAlignments);       // Get all alignments (for a specific goal)
-router.delete("/:id", deleteGoalAlignment);      // Delete alignment
+router.post("/", createGoalAlignment);             // Create alignment (parent → child)
+router.get("/:goalId", getGoalAlignments);         // All active alignments touching a goal
+router.delete("/:id", deleteGoalAlignment);        // Archive an alignment edge
 
 export default router;

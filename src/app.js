@@ -187,7 +187,6 @@ export const createApp = () => {
         ["/api/hr", hrContractRoutes],
         ["/api/employee", hrRoutes],
         ["/api/attendance", attendanceRoutes],
-        ["/api/performance", performanceRoutes],
         ["/api/positions", positionRoutes],
         ["/api/requisitions", requisitionRoutes],
         ["/api/train_cat", traningCategoryRoutes],
@@ -196,6 +195,9 @@ export const createApp = () => {
         ["/api/log", logRoutes],
         ["/api/performance/cycles", performanceCycleRoutes],
         ["/api/performance/templates", performanceTemplateRoutes],
+        // PERF-P0 (D15): mounted AFTER cycles/templates so `/api/performance/:employeeId`
+        // can no longer capture `/cycles` and `/templates`.
+        ["/api/performance", performanceRoutes],
         ["/api/goals", goalsRoutes],
         ["/api/goal-alignments", goalAllignmentRoutes],
         ["/api/PerformanceReview", performanceReviewRoutes],

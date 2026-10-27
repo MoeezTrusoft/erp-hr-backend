@@ -92,6 +92,8 @@ jest.unstable_mockModule('../../src/services/hrDomainEvent.service.js', () => ({
 jest.unstable_mockModule('../../src/services/hrEvents.js', () => ({
     leaveApprovedEvent: jest.fn(() => null),
     leaveRejectedEvent: jest.fn(() => null),
+    // PERF-P0 (E-03): the PERFORMANCE adapter imports the finalized-event builder.
+    performanceReviewFinalizedEvent: jest.fn(() => null),
 }));
 // workingDay derivation is stubbed with a canned Map — its internals are
 // covered by HR-ATT-POLICY-01.working-day.test.js.

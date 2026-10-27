@@ -3,11 +3,16 @@
 // BE-§9.4 — the cron job BODIES, extracted from node-cron into reusable async
 // processors that BullMQ drives. Proves they are idempotent-aware and return a
 // bounded summary (so a BullMQ job result is meaningful), using a mocked prisma.
+//
+// PERF-P0 (D14): the review reminder sweep is now SET-BASED — one findMany for
+// open reviews, one findMany for today's reminders, one createMany for the
+// missing rows — and stamps each review's tenantId (the job runs in the SYSTEM
+// context, so nothing injects it). It filters on real ReviewStatus values.
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 const prismaMock = {
     performanceReview: { findMany: jest.fn() },
-    reviewReminder: { findFirst: jest.fn(), create: jest.fn() },
+    reviewReminder: { findMany: jest.fn(), createMany: jest.fn() },
     outboxEvent: { deleteMany: jest.fn() },
 };
 
@@ -28,22 +33,35 @@ describe('reminder job processors', () => {
         jest.clearAllMocks();
     });
 
-    it('runReviewReminderJob creates a reminder only for reviews not already reminded today', async () => {
+    it('runReviewReminderJob creates a reminder only for reviews not already reminded today, stamped with the review tenant', async () => {
         prismaMock.performanceReview.findMany.mockResolvedValue([
-            { id: 1, employeeId: 10 },
-            { id: 2, employeeId: 20 },
+            { id: 1, employeeId: 10, tenantId: 'tenant-a' },
+            { id: 2, employeeId: 20, tenantId: 'tenant-b' },
         ]);
-        // first review already reminded; second not.
-        prismaMock.reviewReminder.findFirst
-            .mockResolvedValueOnce({ id: 99 })
-            .mockResolvedValueOnce(null);
-        prismaMock.reviewReminder.create.mockResolvedValue({ id: 100 });
+        // first review already reminded today; second not.
+        prismaMock.reviewReminder.findMany.mockResolvedValue([{ reviewId: 1, sentToId: 10 }]);
+        prismaMock.reviewReminder.createMany.mockResolvedValue({ count: 1 });
 
         const res = await runReviewReminderJob();
 
         expect(res.scanned).toBe(2);
         expect(res.created).toBe(1);
-        expect(prismaMock.reviewReminder.create).toHaveBeenCalledTimes(1);
+        const where = prismaMock.performanceReview.findMany.mock.calls[0][0].where;
+        expect(where.status.in).toEqual(['DRAFT', 'IN_PROGRESS']);
+        expect(prismaMock.reviewReminder.createMany).toHaveBeenCalledTimes(1);
+        expect(prismaMock.reviewReminder.createMany.mock.calls[0][0].data).toEqual([
+            { reviewId: 2, sentToId: 20, type: 'PENDING_REVIEW', tenantId: 'tenant-b' },
+        ]);
+    });
+
+    it('runReviewReminderJob is a no-op write when every open review was reminded today', async () => {
+        prismaMock.performanceReview.findMany.mockResolvedValue([{ id: 1, employeeId: 10, tenantId: 'tenant-a' }]);
+        prismaMock.reviewReminder.findMany.mockResolvedValue([{ reviewId: 1, sentToId: 10 }]);
+
+        const res = await runReviewReminderJob();
+
+        expect(res).toEqual({ scanned: 1, created: 0 });
+        expect(prismaMock.reviewReminder.createMany).not.toHaveBeenCalled();
     });
 
     it('runDocumentExpiryJob delegates to the fleet-wide expiry sweep', async () => {

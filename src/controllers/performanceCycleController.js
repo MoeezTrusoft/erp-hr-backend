@@ -1,5 +1,6 @@
 import * as service from "../services/performanceCycleService.js";
 import { respondServerError } from '../utils/httpError.js';
+import { respondPerformanceError } from './performance.respond.js';
 
 // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded into the
 // scoped cycle service so tenant B cannot read/mutate tenant A's cycles.
@@ -9,17 +10,14 @@ export const createCycle = async (req, res) => {
   try {
          const createdBy = req.headers['employee-id'];
 
-    const data = await service.createPerformanceCycle({ ...req.body, tenantId: tenantOf(req) }, createdBy);
+    const data = await service.createPerformanceCycle(req.body, createdBy, tenantOf(req));
     res.status(201).json({
       success: true,
       message: "Performance cycle created successfully",
       data,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message || "Failed to create performance cycle",
-    });
+    respondPerformanceError(req, res, error);
   }
 };
 
@@ -65,10 +63,7 @@ export const updateCycle = async (req, res) => {
       data,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message || "Failed to update performance cycle",
-    });
+    respondPerformanceError(req, res, error);
   }
 };
 
@@ -82,9 +77,6 @@ export const deleteCycle = async (req, res) => {
       message: "Performance cycle deleted successfully",
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message || "Failed to delete performance cycle",
-    });
+    respondPerformanceError(req, res, error);
   }
 };

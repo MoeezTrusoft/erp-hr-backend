@@ -66,11 +66,14 @@ export function registerPerformanceConfigTools(server) {
       startDate: z.string().describe("Start date (ISO 8601)"),
       endDate: z.string().describe("End date (ISO 8601)"),
       description: z.string().optional().describe("Cycle description"),
+      templateId: z.union([z.number(), z.string()]).optional().describe("Performance template id (references PerformanceTemplate.id)"),
+      status: z.enum(["DRAFT", "ACTIVE"]).optional().describe("Initial status (default DRAFT)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await createPerformanceCycle(args, user.employeeId || user.userId);
+      // PERF-P0 (D11): the service parses startDate/endDate → start_date/end_date.
+      const data = await createPerformanceCycle(args, user.employeeId || user.userId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_cycle_create")
   );
@@ -83,7 +86,9 @@ export function registerPerformanceConfigTools(server) {
       name: z.string().optional().describe("Cycle name"),
       startDate: z.string().optional().describe("Start date"),
       endDate: z.string().optional().describe("End date"),
-      status: z.string().optional().describe("Cycle status"),
+      description: z.string().optional().describe("Cycle description"),
+      templateId: z.union([z.number(), z.string()]).optional().describe("Performance template id"),
+      status: z.enum(["DRAFT", "ACTIVE", "CLOSED"]).optional().describe("Cycle status — DRAFT → ACTIVE → CLOSED only"),
     },
     withToolError(async ({ id, ...data }) => {
       const { user, permissions } = getCtx();
@@ -136,12 +141,24 @@ export function registerPerformanceConfigTools(server) {
     {
       name: z.string().min(1).describe("Template name"),
       description: z.string().optional().describe("Template description"),
-      criteria: z.array(z.string()).optional().describe("Evaluation criteria"),
+      criteria: z
+        .array(
+          z.union([
+            z.string().min(1),
+            z.object({
+              name: z.string().min(1),
+              description: z.string().optional(),
+              weight: z.number().min(0).max(100).optional(),
+            }),
+          ])
+        )
+        .optional()
+        .describe("Evaluation criteria — labels or { name, description?, weight? }; weights, when given, sum to 100"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await createPerformanceTemplate(args, user.employeeId || user.userId);
+      const data = await createPerformanceTemplate(args, user.employeeId || user.userId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_template_create")
   );
@@ -153,7 +170,19 @@ export function registerPerformanceConfigTools(server) {
       id: z.union([z.number(), z.string()]).describe("Template ID"),
       name: z.string().optional().describe("Template name"),
       description: z.string().optional().describe("Template description"),
-      criteria: z.array(z.string()).optional().describe("Evaluation criteria"),
+      criteria: z
+        .array(
+          z.union([
+            z.string().min(1),
+            z.object({
+              name: z.string().min(1),
+              description: z.string().optional(),
+              weight: z.number().min(0).max(100).optional(),
+            }),
+          ])
+        )
+        .optional()
+        .describe("Evaluation criteria — labels or { name, description?, weight? }; weights, when given, sum to 100"),
     },
     withToolError(async ({ id, ...data }) => {
       const { user, permissions } = getCtx();

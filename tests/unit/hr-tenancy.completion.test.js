@@ -57,6 +57,9 @@ const prismaMock = Object.fromEntries(models.map((m) => [m, mk()]));
 prismaMock.$transaction = jest.fn(async (arg) =>
     typeof arg === 'function' ? arg(prismaMock) : Promise.all(arg)
 );
+// PERF-P0: services that write through tenantTransaction set the tenant GUC first.
+prismaMock.$executeRaw = jest.fn(async () => 1);
+prismaMock.$queryRaw = jest.fn(async () => []);
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/utils/logs.js', () => ({ logAction: jest.fn().mockResolvedValue(undefined) }));
@@ -131,7 +134,9 @@ describe('C.2 performance — tenant scoping', () => {
     it('updateReview returns/throws not-found for a cross-tenant review (no mutation)', async () => {
         prismaMock.performanceReview.findFirst.mockImplementation(async ({ where }) =>
             where.id === 7 && where.tenantId === TENANT_A ? { id: 7, tenantId: TENANT_A } : null);
-        await expect(perf.updateReview(7, { status: 'FINALIZED' }, 99, TENANT_B)).rejects.toThrow(/not found/i);
+        // PERF-P0 (E-02): `status` is no longer a writable field, so the probe
+        // carries a narrative edit; the cross-tenant read still resolves not-found.
+        await expect(perf.updateReview(7, { comments: 'probe' }, 99, TENANT_B)).rejects.toThrow(/not found/i);
         expect(prismaMock.performanceReview.update).not.toHaveBeenCalled();
     });
 });

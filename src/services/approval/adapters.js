@@ -3,6 +3,7 @@ import { employee } from "../separation/base.js";
 import { assertAttendancePeriodOpen, lockAttendancePeriod } from "../attendancePeriod.service.js";
 import { assertNoPayrollLoanReservation } from "../payrollLoans.service.js";
 import { enqueueHrDomainEvent } from "../hrDomainEvent.service.js";
+import { performanceReviewFinalizedEvent } from "../hrEvents.js";
 
 export const fail = (message, status = 409) => {
   throw Object.assign(new Error(`HR-4200: ${message}`), {
@@ -743,12 +744,23 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
         details: `Management ${env.who.employee_code}: ${reason}`,
       },
     });
-  } else if (kind === "PERFORMANCE")
-    await tx.performanceReview.update({
+  } else if (kind === "PERFORMANCE") {
+    // PERF-P0 (E-02/E-03): hr_approval_guard (20261015120000) makes this adapter
+    // the only path to a FINALIZED review; the finalized domain event rides the
+    // same transaction through the outbox (E-03).
+    const review = await tx.performanceReview.update({
       where: { id: row.id },
       data: { status: approved ? "FINALIZED" : "DRAFT" },
     });
-  else if (kind === "ATTENDANCE") {
+    if (approved)
+      await enqueueHrDomainEvent(
+        tx,
+        performanceReviewFinalizedEvent(review, {
+          actorId: env.who.employee_code,
+          correlationId: env.ctx?.correlationId,
+        }),
+      );
+  } else if (kind === "ATTENDANCE") {
     if (row.rulesVersion !== 2)
       fail(
         "Re-evaluate this legacy attendance case under the current evidence rules",
