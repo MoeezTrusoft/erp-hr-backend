@@ -198,6 +198,29 @@ describe("Recruitment offer approvals", () => {
       data: { isActive: false },
     });
     expect(tx.offerApprovalRule.create).toHaveBeenCalledTimes(1);
-    expect(saved).toEqual([{ stepOrder: 1, stage: "hrHead" }]);
+    // Phase 7 (B10) — the saved rules carry their author's display name.
+    expect(saved).toEqual([{ stepOrder: 1, stage: "hrHead", createdByName: null }]);
+  });
+
+  // Recruitment Phase 7 (B10) — names next to the ids, one lookup per read.
+  test("approveOffer and the policy read carry approverName / createdByName", async () => {
+    const employees = [{ id: 31, first_name: "Sana", last_name: "Iqbal", employee_name: null }];
+    const client = db();
+    client.employee = { findMany: jest.fn().mockResolvedValue(employees) };
+    client.offerApproval.upsert.mockResolvedValue({ stage: "hiringManager", decision: "APPROVED", approverId: 31 });
+    const result = await approveOffer({ offerId: 4, stage: "hiringManager", decision: "APPROVED", approverId: 31, tenantId: "tenant-a", db: client });
+    expect(result.approval).toMatchObject({ approverId: 31, approverName: "Sana Iqbal" });
+    expect(client.employee.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: [31] }, tenant_id: "tenant-a" },
+      select: { id: true, first_name: true, last_name: true, employee_name: true },
+    }));
+
+    client.offerApprovalRule.findMany.mockResolvedValue([
+      { stepOrder: 1, stage: "hrHead", createdById: 31 },
+      { stepOrder: 2, stage: "finance", createdById: 99 },
+    ]);
+    const policy = await getOfferApprovalPolicy({ tenantId: "tenant-a", db: client });
+    expect(policy.rules.map((r) => [r.createdById, r.createdByName])).toEqual([[31, "Sana Iqbal"], [99, null]]);
+    expect(client.employee.findMany).toHaveBeenCalledTimes(2);
   });
 });

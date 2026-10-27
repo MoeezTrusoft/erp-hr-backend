@@ -73,6 +73,13 @@ export const DEPENDENCY_UNAVAILABLE_CODES = Object.freeze([
     'HR-RECRUITMENT-OFFER-LETTER-DOCUMENT-UNAVAILABLE',
     'HR-RECRUITMENT-OFFER-LETTER-UPLOAD-FAILED',
     'HR-RESUME-DAM-FETCH',
+    // Phase 7 (D17): the AI plane answered with a failure. The parse retries
+    // it on its own schedule; the client can try again too.
+    'HR-RESUME-PLANE-FAILED',
+    'HR-RECRUITMENT-AI-DRAFT-FAILED',
+    'HR-RECRUITMENT-AI-OUTPUT-INVALID',
+    // The resume queue's store (Redis / the ledger) refused the enqueue.
+    'HR-RECRUITMENT-PARSE-QUEUE-FAILED',
     'HR-RESUME-PLANE-PENDING',
 ]);
 

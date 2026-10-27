@@ -144,6 +144,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_interview_feedback_consolidate", REC, "VIEW"),
         tool("hr_interview_score", REC, "CREATE"),
         tool("hr_interview_set_outcome", REC, "EDIT"),
+        tool("hr_recruitment_interview_panel_roles_set", REC, "EDIT"),
         tool("hr_interview_cancel", REC, "EDIT"),
         tool("hr_interview_reschedule_request", REC, "CREATE"),
         tool("hr_interview_reschedule_confirm", REC, "EDIT"),
@@ -321,6 +322,16 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_offer_letter_versions_list", REC, "VIEW"),
         tool("hr_offer_esign_send", REC, "CREATE"),
         tool("hr_offer_esign_void", REC, "EDIT"),
+    ]),
+    // Recruitment Phase 7: open the documents a screen links to, from DAM.
+    group("recruitment-document-download.tools", "registerRecruitmentDocumentDownloadTools", [
+        tool("hr_recruitment_offer_letter_download", REC, "VIEW"),
+        tool("hr_recruitment_interview_packet_document_download", REC, "VIEW"),
+        tool("hr_recruitment_test_item_picture_download", REC, "VIEW"),
+    ]),
+    // Recruitment Phase 7: the retention policy form prefill (same gate as the set tool).
+    group("retention-policy.tools", "registerRetentionPolicyTools", [
+        tool("hr_candidate_retention_policy_get", REC, "EDIT"),
     ]),
     group("recruitment-workspace.tools", "registerRecruitmentWorkspaceTools", [
         tool("hr_interview_workspace_get", REC, "VIEW"),

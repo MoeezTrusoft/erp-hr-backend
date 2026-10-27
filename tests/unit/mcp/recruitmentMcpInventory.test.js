@@ -26,6 +26,8 @@ import { registerCandidatePipelineTools } from "../../../src/mcp/tools/candidate
 import { registerInterviewMgmtTools } from "../../../src/mcp/tools/interviewMgmtTools.js";
 import { registerOfferMgmtTools } from "../../../src/mcp/tools/offerMgmtTools.js";
 import { registerCandidatePrivacyTools } from "../../../src/mcp/tools/candidatePrivacyTools.js";
+import { registerRecruitmentDocumentDownloadTools } from "../../../src/mcp/tools/recruitment-document-download.tools.js";
+import { registerRetentionPolicyTools } from "../../../src/mcp/tools/retention-policy.tools.js";
 import { registerTalentPoolMgmtTools } from "../../../src/mcp/tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "../../../src/mcp/tools/recruitmentAnalyticsTools.js";
 import { registerRecruitmentExtraTools } from "../../../src/mcp/tools/recruitmentExtraTools.js";
@@ -74,6 +76,8 @@ const RECRUITMENT_REGISTRARS = [
   ["interviewMgmtTools", registerInterviewMgmtTools],
   ["offerMgmtTools", registerOfferMgmtTools],
   ["candidatePrivacyTools", registerCandidatePrivacyTools],
+  ["recruitmentDocumentDownloadTools", registerRecruitmentDocumentDownloadTools],
+  ["retentionPolicyTools", registerRetentionPolicyTools],
   ["talentPoolMgmtTools", registerTalentPoolMgmtTools],
   ["recruitmentAnalyticsTools", registerRecruitmentAnalyticsTools],
   ["recruitmentExtraTools", registerRecruitmentExtraTools],
@@ -145,7 +149,7 @@ const EXPECTED_PER_MODULE = Object.freeze({
   recruitmentTools: 23, // + hr_offer_handoffs_failed_list (Phase 9 operator fleet view)
   requisitionMgmtTools: 14,
   candidatePipelineTools: 3, // + hr_candidate_360_get (F-14)
-  interviewMgmtTools: 17,
+  interviewMgmtTools: 18, // Phase 7: + panel roles set
   offerMgmtTools: 7, // + hr_offer_approval_policy_get/_set (FR-09 residue)
   candidatePrivacyTools: 15,
   talentPoolMgmtTools: 8, // + the invitation lifecycle, segment and pool sweep (FR-10 residue)
@@ -184,9 +188,17 @@ const EXPECTED_PER_MODULE = Object.freeze({
   offerExtensionTools: 2, // Phase 6: extension request get and withdraw
   kioskResumeTools: 1, // Phase 6: resume code issue
   interviewBulkCancelTools: 1, // Phase 6: bulk cancel with a coded reason
+  recruitmentDocumentDownloadTools: 3, // Phase 7: offer letter, packet document, item picture downloads
+  retentionPolicyTools: 1, // Phase 7: retention policy read
 });
 
 const EXPECTED_TOOLS = Object.freeze([
+  // Phase 7
+  "hr_recruitment_offer_letter_download",
+  "hr_recruitment_interview_packet_document_download",
+  "hr_recruitment_test_item_picture_download",
+  "hr_recruitment_interview_panel_roles_set",
+  "hr_candidate_retention_policy_get",
   "hr_candidate_360_get",
   "hr_application_create",
   "hr_application_delete",
@@ -507,7 +519,8 @@ describe("Recruitment MCP tool inventory", () => {
     // agencies and their portal, privacy operations, analytics alerts).
     // Phase 6: + 7 tools (template reactivate and default unset, own document
     // download, offer extension get and withdraw, kiosk resume code, bulk cancel).
-    expect(all).toHaveLength(842);
+    // Phase 7: + 5 tools (three document downloads, panel roles, retention policy read).
+    expect(all).toHaveLength(847);
     for (const name of EXPECTED_TOOLS) expect(all).toContain(name);
   });
 
@@ -522,7 +535,8 @@ describe("Recruitment MCP tool inventory", () => {
     // on the pool clock, so a resource-shaped registration would bypass the gate.
     // 21 with Phase 5's retention runs, sign-off, owner and the data request
     // export (6).
-    expect(privacy).toHaveLength(21);
+    // 22 with Phase 7's retention policy read.
+    expect(privacy).toHaveLength(22);
     for (const name of privacy) expect(allRecruitmentTools).toContain(name);
   });
 

@@ -122,7 +122,7 @@ describe("the board", () => {
         const { items } = await asUser(() => svc.listInternalJobs({ tenantId: T1, employeeId: ME, now: NOW }));
         const job = items[0];
         expect(Object.keys(job).sort()).toEqual(
-            ["applied", "closesAt", "departmentId", "description", "employmentType", "id", "location", "openings", "postedAt", "title"].sort(),
+            ["applied", "closesAt", "departmentId", "departmentName", "description", "employmentType", "id", "location", "openings", "postedAt", "title"].sort(),
         );
         expect(job).toMatchObject({ title: "Backend Engineer", departmentId: 7, location: "Lahore", employmentType: "FULL_TIME", postedAt: "2026-10-11T00:00:00.000Z", applied: false });
         expect(job.description).toContain("Build services.");

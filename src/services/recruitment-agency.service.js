@@ -17,6 +17,10 @@
 //     its closing date) can be assigned; unassigning ENDS the row (kept for the
 //     audit trail; pending submissions stay reviewable).
 //
+// Phase 7: the reads name the employees behind their ids (createdByName on an
+// agency, assignedByName on an assignment), one lookup per read under the
+// caller's tenant.
+//
 // Every query carries the tenant; writes run in tenantTransaction (FORCE RLS).
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
@@ -25,6 +29,7 @@ import { withTenant } from "../lib/tenancy.js";
 import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisitionEligibility.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { AGENCY_STATUS, AGENCY_USER_STATUS, ASSIGNMENT_STATUS } from "../lib/agency-access.util.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 
 const fail = (message, code, status = 400, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -133,6 +138,10 @@ export function normalizeAgencyInput(input = {}, { creating = false } = {}) {
 const presentAgency = (row) =>
     row ? { ...row, feePercent: row.feePercent == null ? null : Number(row.feePercent) } : row;
 
+// Phase 7 — the employee who registered the agency, by name next to the id
+// (one lookup per read, under the caller's tenant).
+const withCreatorName = (row, names) => (row ? { ...row, createdByName: nameOf(names, row.createdById) } : row);
+
 // ── Agencies ───────────────────────────────────────────────────────────────
 
 export async function listAgencies({ tenantId, status, q, page, pageSize } = {}) {
@@ -146,7 +155,8 @@ export async function listAgencies({ tenantId, status, q, page, pageSize } = {})
         prisma.recruitmentAgency.findMany({ where, orderBy: [{ name: "asc" }, { id: "asc" }], skip: paging.skip, take: paging.pageSize }),
         prisma.recruitmentAgency.count({ where }),
     ]);
-    return { items: items.map(presentAgency), total, page: paging.page, pageSize: paging.pageSize };
+    const names = await employeeNamesById(prisma, tenantId, items.map((row) => row.createdById));
+    return { items: items.map((row) => withCreatorName(presentAgency(row), names)), total, page: paging.page, pageSize: paging.pageSize };
 }
 
 export async function getAgency({ tenantId, id } = {}) {
@@ -162,7 +172,12 @@ export async function getAgency({ tenantId, id } = {}) {
         }),
         prisma.recruitmentAgencyUser.count({ where: withTenant(tenantId, { agencyId, status: AGENCY_USER_STATUS.ACTIVE }) }),
     ]);
-    return { ...presentAgency(agency), activeUserCount: activeUsers, assignments };
+    const names = await employeeNamesById(prisma, tenantId, [agency.createdById, ...assignments.map((a) => a.assignedById)]);
+    return {
+        ...withCreatorName(presentAgency(agency), names),
+        activeUserCount: activeUsers,
+        assignments: assignments.map((a) => ({ ...a, assignedByName: nameOf(names, a.assignedById) })),
+    };
 }
 
 const isUniqueViolation = (err) => err?.code === "P2002";

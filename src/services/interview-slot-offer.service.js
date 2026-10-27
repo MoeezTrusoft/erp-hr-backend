@@ -62,6 +62,8 @@ import {
     leaveRowToInterval,
     normalizeIntervals,
     overlaps,
+    weekdayOf,
+    zonedDate,
 } from "../lib/slot-finder.util.js";
 import { RECRUITMENT_SETTINGS_DEFAULTS, getRecruitmentSettings } from "./recruitment-settings.service.js";
 import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
@@ -274,7 +276,7 @@ async function loadSettings(tenantId) {
  * effective work schedules, and the panel's own SCHEDULED interviews (an
  * interviewer already on another panel is busy, calendar or not).
  */
-export async function loadPanelAvailability(db, { tenantId, interviewerIds, from, to }) {
+export async function loadPanelAvailability(db, { tenantId, interviewerIds, from, to, timeZone = "UTC" }) {
     const ids = interviewerIds;
     const padFrom = new Date(new Date(from).getTime() - DAY_MS);
     const padTo = new Date(new Date(to).getTime() + DAY_MS);
@@ -305,7 +307,7 @@ export async function loadPanelAvailability(db, { tenantId, interviewerIds, from
         start: new Date(i.scheduledAt),
         end: new Date(new Date(i.scheduledAt).getTime() + Number(i.durationMinutes || 60) * 60_000),
     }));
-    return { interviewerIds: ids, leaveRows, schedules, busy };
+    return { interviewerIds: ids, leaveRows, schedules, busy, timeZone };
 }
 
 function patternAt(schedules, employeeId, at) {
@@ -319,9 +321,10 @@ function patternAt(schedules, employeeId, at) {
 
 // Same weekday rule as interviewSchedule.checkInterviewerAvailability: an
 // empty or missing day in the effective pattern is a non-working day; no
-// schedule at all is no evidence of a conflict.
+// schedule at all is no evidence of a conflict. The weekday is the tenant's
+// (Phase 7): a Friday 23:30 UTC slot is Saturday in Asia/Karachi.
 function offScheduleInterviewers(availability, start) {
-    const dayKey = WEEKDAY_KEYS[start.getDay()];
+    const dayKey = WEEKDAY_KEYS[weekdayOf(zonedDate(start, availability.timeZone ?? "UTC"))];
     return availability.interviewerIds.filter((id) => {
         const pattern = patternAt(availability.schedules, id, start);
         if (!pattern) return false;
@@ -436,7 +439,7 @@ export async function proposeSlots({
 
     const searchFrom = new Date(Math.max(at.getTime(), fromDate?.getTime() ?? 0));
     const searchTo = toDateValue ?? new Date(at.getTime() + DEFAULT_SEARCH_DAYS * DAY_MS);
-    const availability = await loadPanelAvailability(prisma, { tenantId, interviewerIds: ids, from: searchFrom, to: searchTo });
+    const availability = await loadPanelAvailability(prisma, { tenantId, interviewerIds: ids, from: searchFrom, to: searchTo, timeZone: settings.timeZone });
     const calendar = await calendarBusy({ tenantId, panel, from: searchFrom, to: searchTo });
 
     const slots = findCommonSlots({
@@ -528,7 +531,8 @@ async function resolveSendDraft({ tenantId, slotOfferId, args, scope, now }) {
 async function assertSlotsAvailable({ tenantId, draft, panel }) {
     const first = new Date(draft.slots[0].start);
     const last = new Date(draft.slots[draft.slots.length - 1].end);
-    const availability = await loadPanelAvailability(prisma, { tenantId, interviewerIds: draft.interviewerIds, from: first, to: last });
+    const { timeZone } = await loadSettings(tenantId);
+    const availability = await loadPanelAvailability(prisma, { tenantId, interviewerIds: draft.interviewerIds, from: first, to: last, timeZone });
     const calendar = await calendarBusy({ tenantId, panel, from: first, to: last });
     const unavailable = draft.slots
         .map((slot) => ({ start: slot.start, reason: slotConflict(availability, new Date(slot.start), new Date(slot.end), calendar.busy) }))
@@ -813,10 +817,11 @@ export async function confirmSlotOffer({ token, slotStart, tenantId = null, now 
 
 async function confirmInTransaction({ ref, offer, start, end, calendarBusyList, now }) {
     const tenantId = ref.tenantId;
+    const { timeZone } = await loadSettings(tenantId);
     return tenantTransaction(
         prisma,
         async (tx) => {
-            const availability = await loadPanelAvailability(tx, { tenantId, interviewerIds: offer.interviewerIds ?? [], from: start, to: end });
+            const availability = await loadPanelAvailability(tx, { tenantId, interviewerIds: offer.interviewerIds ?? [], from: start, to: end, timeZone });
             if (slotConflict(availability, start, end, calendarBusyList)) throw slotUnavailable();
             // The guarded claim: exactly one confirm of this offer gets past here.
             const { count } = await tx.interviewSlotOffer.updateMany({

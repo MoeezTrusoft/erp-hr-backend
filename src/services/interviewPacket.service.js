@@ -16,6 +16,10 @@
 //     packet; the candidate audience never sees the packet at all.
 //   * Every denial is logged (class names only, never content) — the audit
 //     trail shows the ACL working, without leaking what was denied.
+//   * Phase 7 (B7) — downloadPacketDocument opens one document of the packet
+//     from DAM: recruiters (ORG) from the full packet, a panelist from their
+//     own packet view (the same ACL as getPacketForViewer). A media id that is
+//     not in the caller's view of THIS interview is never fetched.
 
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -28,6 +32,7 @@ import {
     isPacketable,
     resolvePacketView,
 } from "../lib/documentAccess.js";
+import { readRecruitmentDocument } from "./recruitment-document-download.service.js";
 
 export class PacketError extends Error {
     constructor(message, status = 400, details = undefined) {
@@ -260,6 +265,61 @@ export const getPacketForViewer = async ({ interviewId, tenantId, viewerEmployee
         viewer: { employeeId: toInt(viewerEmployeeId) ?? null, isAssignedInterviewer: Boolean(assigned) },
         items: view,
         deniedClasses,
+    };
+};
+
+// ── Phase 7 (B7) — download ─────────────────────────────────────────────────
+
+// The Phase 3a error shape: the code on `.code` as well as `.details`.
+const failCode = (message, status, code) => Object.assign(fail(message, status, code), { code });
+const packetNotFound = () => failCode("Packet document not found", 404, "HR-RECRUITMENT-PACKET-NOT-FOUND");
+
+/** The recruiter's view: every packetable item plus the candidate's resume. */
+async function recruiterView(interviewId, tenantId) {
+    const interview = await requireInterview(interviewId, tenantId);
+    const items = await listPacket({ interviewId: interview.id, tenantId });
+    const view = items.map((item) => ({ id: item.id, docClass: item.docClass, mediaId: item.mediaId, label: item.label, source: "PACKET" }));
+    const resumeMediaId = interview.application?.candidate?.resumeMediaId;
+    if (resumeMediaId) view.unshift({ docClass: "RESUME", mediaId: resumeMediaId, label: "Resume / CV", source: "CANDIDATE_RECORD" });
+    return { interviewId: interview.id, items: view };
+}
+
+/**
+ * Open one document of an interview's packet. Pick it by packet itemId, or by
+ * mediaId (the resume has no packet row; its mediaId comes from the packet
+ * view). Recruiters (scope ORG) reach the full packet; anyone else only their
+ * own panelist view, so a caller not on the panel, a class the matrix keeps
+ * from interviewers and another interview's media are all the same 404.
+ *
+ * @param {object} p
+ * @param {object} p.scope  resolveRecruitmentScope(user)
+ * @returns {Promise<{ interviewId: number, item: object, fileName: string, mimeType: string, size: number, contentBase64: string }>}
+ */
+export const downloadPacketDocument = async ({ interviewId, itemId = null, mediaId = null, tenantId, scope, viewerEmployeeId = null }) => {
+    const wantItem = toInt(itemId);
+    const wantMedia = toInt(mediaId);
+    if (Boolean(wantItem) === Boolean(wantMedia)) {
+        throw failCode("Pass exactly one of itemId or mediaId", 400, "HR-RECRUITMENT-PACKET-DOCUMENT-INVALID");
+    }
+
+    const view = scope?.unrestricted
+        ? await recruiterView(interviewId, tenantId)
+        : await getPacketForViewer({ interviewId, tenantId, viewerEmployeeId: viewerEmployeeId ?? scope?.employeeId ?? null });
+    if (!scope?.unrestricted && !view.viewer?.isAssignedInterviewer) throw packetNotFound();
+
+    const item = (view.items ?? []).find((entry) =>
+        wantItem ? entry.source === "PACKET" && entry.id === wantItem : Number(entry.mediaId) === wantMedia);
+    if (!item) throw packetNotFound();
+
+    const file = await readRecruitmentDocument({
+        mediaId: item.mediaId,
+        fallbackName: item.label || String(item.docClass ?? "document").toLowerCase(),
+        log: { tenantId, interviewId: view.interviewId, itemId: item.id ?? null },
+    });
+    return {
+        interviewId: view.interviewId,
+        item: { id: item.id ?? null, docClass: item.docClass, label: item.label ?? null, source: item.source, mediaId: item.mediaId },
+        ...file,
     };
 };
 

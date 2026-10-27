@@ -96,8 +96,14 @@ describe("agency resume", () => {
     });
 
     it("refuses anything but a valid PDF before reaching DAM", async () => {
-        for (const bad of [resume({ mimeType: "image/png", fileName: "a.png", contentBase64: PNG }), resume({ contentBase64: PNG }), resume({ fileName: "cv.exe" }), "x"]) {
-            await expect(submit({ resume: bad })).rejects.toMatchObject({ status: 400, code: "HR-RECRUITMENT-AGENCY-RESUME-INVALID" });
+        // Phase 7: each refusal has its own code (all still 400).
+        for (const [bad, code] of [
+            [resume({ mimeType: "image/png", fileName: "a.png", contentBase64: PNG }), "HR-RECRUITMENT-AGENCY-RESUME-NOT-PDF"],
+            [resume({ contentBase64: PNG }), "HR-RECRUITMENT-AGENCY-RESUME-NOT-PDF"],
+            [resume({ fileName: "cv.exe" }), "HR-RECRUITMENT-AGENCY-RESUME-NOT-PDF"],
+            ["x", "HR-RECRUITMENT-AGENCY-RESUME-INVALID"],
+        ]) {
+            await expect(submit({ resume: bad })).rejects.toMatchObject({ status: 400, code });
         }
         expect(uploadFileToDAM).not.toHaveBeenCalled();
     });

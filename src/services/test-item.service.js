@@ -63,6 +63,8 @@ import {
 } from "../lib/test-item.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { loadAliasIndex, requisitionSkillRequirements } from "./candidateMatch.service.js";
+import { readRecruitmentDocument } from "./recruitment-document-download.service.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 
 const log = logger.child({ component: "test-item" });
 
@@ -374,6 +376,13 @@ export async function insertDraftItems(tx, tenantId, entries, { authorId, aiDraf
 
 // ── List and get ─────────────────────────────────────────────────────────────
 
+// Phase 7 (B10) — the author and reviewer by name next to their ids, one
+// lookup for the whole page.
+async function withPeopleNames(tenantId, views) {
+    const names = await employeeNamesById(prisma, tenantId, views.flatMap((v) => [v?.authorId, v?.reviewerId]));
+    return views.map((v) => (v ? { ...v, authorName: nameOf(names, v.authorId), reviewerName: nameOf(names, v.reviewerId) } : v));
+}
+
 /** List items the caller may read; never the key. */
 export async function listTestItems({
     tenantId, access, status, competencyKey, jobFamily, difficulty, language, type, q, page = 1, limit = 50,
@@ -405,7 +414,7 @@ export async function listTestItems({
         }),
         prisma.candidateTestItem.count({ where }),
     ]);
-    return { items: rows.map(presentTestItemSummary), total, page: pageNo, limit: take };
+    return { items: await withPeopleNames(tenantId, rows.map(presentTestItemSummary)), total, page: pageNo, limit: take };
 }
 
 /** One item; the key, feedback and rationale only for privileged callers. */
@@ -414,10 +423,36 @@ export async function getTestItem({ tenantId, access, itemId } = {}) {
     requireTenant(tenantId);
     const visible = requireVisibility(access);
     const row = await loadItem(prisma, tenantId, itemId, { where: visible });
-    if (!canSeeAnswerKey(access, row)) return presentTestItem(row, access);
+    if (!canSeeAnswerKey(access, row)) return (await withPeopleNames(tenantId, [presentTestItem(row, access)]))[0];
     // Second read for the key: only once the caller is known to be entitled.
     const keyed = await loadItem(prisma, tenantId, row.id, { withKey: true });
-    return presentTestItem(keyed, access, keyed.answerKey);
+    return (await withPeopleNames(tenantId, [presentTestItem(keyed, access, keyed.answerKey)]))[0];
+}
+
+// ── Picture download (Phase 7, B7) ───────────────────────────────────────────
+
+/**
+ * Open an item's picture (IMAGE_SINGLE stems) from DAM: authors (their own
+ * items and published ones), reviewers and recruiters. The picture is the
+ * item's own mediaId under the caller's item visibility; anything else is the
+ * same 404. The candidate kiosk serves pictures on its own path.
+ * @returns {Promise<{ itemId: number, itemCode: string, version: number, fileName: string, mimeType: string, size: number, contentBase64: string }>}
+ */
+export async function downloadTestItemPicture({ tenantId, access, itemId } = {}) {
+    assertOnsiteTestEnabled();
+    requireTenant(tenantId);
+    if (!access?.author && !access?.reviewer && !access?.recruiter) {
+        throw fail("Only assessment authors, reviewers and recruiters can open item pictures", 403, "HR-RECRUITMENT-ASSESSMENT-FORBIDDEN");
+    }
+    const row = await loadItem(prisma, tenantId, itemId, { where: requireVisibility(access) });
+    const mediaId = positiveInt(row.mediaId);
+    if (!mediaId) throw fail("This item has no picture", 404, "HR-RECRUITMENT-TEST-ITEM-PICTURE-NOT-FOUND");
+    const file = await readRecruitmentDocument({
+        mediaId,
+        fallbackName: `${row.itemCode ?? "item"}-v${row.version ?? 1}-picture`,
+        log: { tenantId, itemId: row.id },
+    });
+    return { itemId: row.id, itemCode: row.itemCode, version: row.version, ...file };
 }
 
 // ── Create and update ────────────────────────────────────────────────────────
@@ -815,6 +850,7 @@ export async function draftTestItemsWithAi({
 export default {
     listTestItems,
     getTestItem,
+    downloadTestItemPicture,
     createTestItem,
     updateTestItem,
     submitTestItemForReview,

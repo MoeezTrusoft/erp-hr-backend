@@ -7,6 +7,8 @@
 // the alerts describe the whole tenant's funnel, so a hiring manager or an
 // interviewer, who sees only part of it, gets 403 rather than tenant-wide
 // figures. Changing thresholds and acknowledging are PUT; reading is GET.
+// Phase 7: reads carry display names next to the employee ids (recipient,
+// acknowledger, configured recipient); the HR-role fallback stays a role label.
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -52,7 +54,7 @@ const thresholdValue = (label) => z.number().nullable().optional().describe(`${l
 export function registerRecruitmentAlertTools(server) {
   server.tool(
     "hr_recruitment_alert_thresholds_get",
-    "Read the tenant's recruitment analytics alert thresholds (time to fill days, SLA breaches, offer decline rate %, failed handoffs), the alert recipient and the settings version to pass when changing them. Metrics are measured over a rolling 30-day window.",
+    "Read the tenant's recruitment analytics alert thresholds (time to fill days, SLA breaches, offer decline rate %, failed handoffs), the alert recipient (alertRecipientId, alertRecipientName) and the settings version to pass when changing them. Metrics are measured over a rolling 30-day window.",
     {},
     withToolError(async () => {
       const { user } = authorize("GET");
@@ -93,7 +95,7 @@ export function registerRecruitmentAlertTools(server) {
 
   server.tool(
     "hr_recruitment_alerts_list",
-    "List the tenant's recruitment analytics alerts, most recently seen first, optionally by status (OPEN, ACKNOWLEDGED, RESOLVED) and metric (TIME_TO_FILL, SLA_BREACHES, OFFER_DECLINE_RATE, FAILED_HANDOFFS).",
+    "List the tenant's recruitment analytics alerts, most recently seen first, optionally by status (OPEN, ACKNOWLEDGED, RESOLVED) and metric (TIME_TO_FILL, SLA_BREACHES, OFFER_DECLINE_RATE, FAILED_HANDOFFS). Each alert names who it went to (recipientId and recipientName, or notifyRole \"HR\" when it went to the HR role) and who acknowledged it (acknowledgedById, acknowledgedByName).",
     {
       status: z.enum(ALERT_STATUSES).optional().describe("Only alerts in this status"),
       metric: z.enum(ALERT_METRICS).optional().describe("Only alerts on this metric"),

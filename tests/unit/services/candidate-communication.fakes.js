@@ -99,6 +99,8 @@ export function createFakeDb() {
         interviews: [],
         offers: [],
         history: [],
+        // Phase 7 — the nurture invitation an accepted application came from.
+        invitations: [],
     };
     let nextId = 1;
 
@@ -168,6 +170,7 @@ export function createFakeDb() {
         interview: lazyModel(contextLog, "interview", finder(() => store.interviews)),
         offer: lazyModel(contextLog, "offer", finder(() => store.offers)),
         applicationStageHistory: lazyModel(contextLog, "applicationStageHistory", finder(() => store.history)),
+        talentPoolInvitation: lazyModel(contextLog, "talentPoolInvitation", finder(() => store.invitations)),
         $executeRaw: jest.fn(async () => 1),
         contextLog,
     };

@@ -87,14 +87,17 @@ const ITEM_DEFAULTS = () => ({
 });
 
 export function createTestItemDb() {
-    const state = { items: [], stats: [], responses: [], results: [], skills: [], grades: [], requisitions: [] };
+    const state = { items: [], stats: [], responses: [], results: [], skills: [], grades: [], requisitions: [], employees: [] };
     const contextLog = [];
     let nextId = 100;
     const platformTables = new Set(["skills"]);
 
+    // Employees carry their tenant as tenant_id (Phase 7 name lookups).
+    const tenantOf = (table, r) => (table === "employees" ? r.tenant_id : r.tenantId);
+
     function visible(table, ctx) {
         if (ctx?.system) return state[table];
-        return state[table].filter((r) => r.tenantId === ctx.user.tenantId || (platformTables.has(table) && r.tenantId == null));
+        return state[table].filter((r) => tenantOf(table, r) === ctx.user.tenantId || (platformTables.has(table) && r.tenantId == null));
     }
 
     function lazy(model, op, run) {
@@ -207,6 +210,7 @@ export function createTestItemDb() {
         skill: model("skill", "skills"),
         gradeLevel: model("gradeLevel", "grades"),
         jobRequisition: model("jobRequisition", "requisitions"),
+        employee: model("employee", "employees"),
         $executeRaw: jest.fn(async () => 1),
         contextLog,
     };

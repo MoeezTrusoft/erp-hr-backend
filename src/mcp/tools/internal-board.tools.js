@@ -86,7 +86,7 @@ function selfCaller(explicitEmployeeId) {
 export function registerInternalBoardTools(server) {
   server.tool(
     "hr_self_internal_jobs_list",
-    "Open roles on the internal job board (posted to the careers site or internally): title, department id, location, employment type, posted and closing dates, a plain description, and whether you already applied. Roles you manage, recruit for or are being replaced on are not listed. Never salary bands or internal notes.",
+    "Open roles on the internal job board (posted to the careers site or internally): title, department id and name, location, employment type, posted and closing dates, a plain description, and whether you already applied. Roles you manage, recruit for or are being replaced on are not listed. Never salary bands or internal notes.",
     {
       q: z.string().max(100).optional().describe("Search the job title"),
       ...pageInput,

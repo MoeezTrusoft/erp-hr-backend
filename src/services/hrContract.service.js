@@ -7,7 +7,6 @@ import {
   assertRequisitionAdvanceAllowed,
   recordRequisitionTransition,
 } from "./requisitionWorkflow.service.js";
-import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
@@ -1979,18 +1978,12 @@ const transitionRequisition = async ({ id, tenantId, status, actorId, comments }
         { tenantId },
       );
     }
-    await legacySubmit("REQUISITION", id, comments);
+    // Phase 7: the transition row and hr.recruitment.requisition_submitted.v1
+    // are written in the centre's submit transaction (approval/adapters.js onSubmit).
+    await legacySubmit("REQUISITION", id, comments, {
+      requisition: { reason: comments ?? null, transitionSource: "requisition.legacy" },
+    });
     const submitted = await tenantTransaction(prisma, async (tx) => {
-      await recordRequisitionTransition(tx, {
-        requisitionId: Number(id),
-        tenantId,
-        fromStatus: requisition.status,
-        toStatus: "PENDING_APPROVAL",
-        reason: comments,
-        actorId,
-        source: "requisition.legacy",
-      });
-      await emitRequisitionSubmittedEvent(tx, { tenantId, requisition, actorId });
       return tx.jobRequisition.findFirst({
         where: scopedWhere(tenantId, { id: Number(id) }),
         include: {

@@ -202,7 +202,8 @@ describe("time to start and recruiter workload — payload and drill-down agree"
         const workload = res.canonicalMetrics.recruiterWorkload;
         expect(workload.period).toEqual({ from: "2026-09-20T10:00:00.000Z", to: "2026-10-20T10:00:00.000Z" });
         expect(workload.recruiters).toEqual([
-            { recruiterId: 70, openRequisitions: 1, activeApplications: 1, interviewsThisPeriod: 2, requisitionIds: [7] },
+            // Phase 7: recruiterName next to the id (employee 70 is not in this tenant's lookup).
+            { recruiterId: 70, recruiterName: null, openRequisitions: 1, activeApplications: 1, interviewsThisPeriod: 2, requisitionIds: [7] },
         ]);
 
         const drill = await drillDownRecruitmentMetric(TENANT, "recruiterWorkload", { dateFrom: "2026-10-05" }, { now: NOW });

@@ -15,6 +15,7 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { approvalCentreDouble } from "./helpers/approval-centre-double.js";
 
 import {
   DEFAULT_CHAIN,
@@ -251,18 +252,22 @@ jest.unstable_mockModule("../../src/services/rbac.client.js", () => ({
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
   enqueueHrDomainEvent: jest.fn(async () => undefined),
 }));
-const mockLegacySubmit = jest.fn(async () => ({}));
+// The centre's submit (Phase 7) flips the status and writes the transition row
+// and the routed event in one transaction: the double runs the REAL onSubmit
+// (approval/adapters.js) on `prisma`.
+const centre = approvalCentreDouble(prisma);
 jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
   legacyDecision: jest.fn(async () => {
     throw Object.assign(new Error("HR-4201: Open HR Approval Centre"), { status: 409, code: "HR-4201" });
   }),
-  legacySubmit: mockLegacySubmit,
+  legacySubmit: centre.legacySubmit,
 }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   tenantTransaction: jest.fn((client, fn) => fn(client)),
   rlsTenantExtension: jest.fn((client) => client),
 }));
 
+const { enqueueHrDomainEvent } = await import("../../src/services/hrDomainEvent.service.js");
 const { approveRequisition } = await import("../../src/services/requisition.service.js");
 const { submitRequisition } = await import("../../src/services/requisitionMgmt.service.js");
 const { approveRequisition: legacyApprove } = await import("../../src/services/hrContract.service.js");
@@ -287,6 +292,7 @@ const statusMoves = () =>
 
 beforeEach(() => {
   jest.clearAllMocks();
+  centre.reset();
   RULES = [];
   DECISIONS = [];
   REQUISITION_ROW = { ...REQUISITION };
@@ -328,14 +334,33 @@ describe("Phase 4 — configuring the matrix", () => {
     // longer a reason to refuse submission.
     RULES = [{ stepOrder: 1, role: "HR_HEAD", approverId: REQUISITION.requestedById }];
     REQUISITION_ROW = { ...REQUISITION, status: "DRAFT" };
+    centre.arm({ tenantId: TENANT, actorId: 7, row: () => REQUISITION_ROW });
 
     await submitRequisition(5, TENANT, 7);
-    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
-    // The status move itself is the centre's; recruitment records the history.
-    expect(statusMoves()).toEqual([]);
+    expect(centre.legacySubmit).toHaveBeenCalledTimes(1);
+    expect(centre.legacySubmit).toHaveBeenCalledWith("REQUISITION", 5, undefined, {
+      requisition: { reason: null, transitionSource: "requisition.submit" },
+    });
+    // The only status move is the centre's flip: the matrix writes none.
+    expect(statusMoves()).toEqual(["PENDING_APPROVAL"]);
+    // The centre's submit transaction records the history, for the surface.
+    expect(prisma.requisitionTransition.create).toHaveBeenCalledTimes(1);
     expect(prisma.requisitionTransition.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ toStatus: "PENDING_APPROVAL", source: "requisition.submit" }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          fromStatus: "DRAFT",
+          toStatus: "PENDING_APPROVAL",
+          actorId: 7,
+          source: "requisition.submit",
+        }),
+      }),
     );
+    // The unsatisfiable matrix does not route the review either: the line manager does.
+    const submitted = enqueueHrDomainEvent.mock.calls.filter(
+      ([, args]) => args?.eventName === "hr.recruitment.requisition_submitted.v1",
+    );
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0][1].payload).toMatchObject({ pendingApproverId: "12", pendingStepOrder: 1 });
   });
 
   it("seeds the recommended chain", async () => {

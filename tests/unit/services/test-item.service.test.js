@@ -356,3 +356,26 @@ describe("AI drafting", () => {
         await expect(call("draftTestItemsWithAi", { access: AUTHOR_A })).rejects.toMatchObject({ status: 400 });
     });
 });
+
+// Recruitment Phase 7 (B10) — the author and reviewer by name, next to their ids.
+describe("display names", () => {
+    it("lists and details carry authorName and reviewerName from one lookup, same tenant only", async () => {
+        state.employees.push(
+            { id: 11, tenant_id: TENANT, first_name: "Amna", last_name: "Shah" },
+            { id: 21, tenant_id: TENANT, first_name: null, last_name: null, employee_name: "Imran Ali" },
+            { id: 31, tenant_id: OTHER, first_name: "Not", last_name: "Here" },
+        );
+        const done = await published();
+        expect(done).toMatchObject({ authorId: 11, authorName: "Amna Shah", reviewerId: 21, reviewerName: "Imran Ali" });
+
+        db.employee.findMany.mockClear();
+        await create(RECRUITER, { stem: "<p>What is 3 + 3?</p>" });
+        const list = await call("listTestItems", { access: REVIEWER });
+        expect(list.items.map((i) => [i.authorId, i.authorName, i.reviewerName])).toEqual(
+            expect.arrayContaining([[11, "Amna Shah", "Imran Ali"], [31, null, null]]),
+        );
+        // the create above plus the list: one lookup each
+        expect(db.employee.findMany).toHaveBeenCalledTimes(2);
+        expect(JSON.stringify(list)).not.toMatch(/email|phone/i);
+    });
+});

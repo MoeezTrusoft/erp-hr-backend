@@ -13,8 +13,15 @@
 //     therefore byte-identical, which the content hash relies on.
 //   * DAM. The file is uploaded through the same server-side DAM upload the
 //     manual offer letter upload uses (uploadFileToDAM, type "document").
+//   * NON-LATIN TEXT (Phase 7, B18b). A name, company or paragraph the
+//     standard fonts cannot encode (Urdu, Arabic, Polish, ...) is drawn with
+//     the bundled Unicode font, embedded as a subset (lib/pdf-unicode-text.util
+//     .js); WinAnsi text takes the exact calls it took before, so an existing
+//     Latin letter is still byte-identical. Scripts the bundled font lacks
+//     (Chinese, Japanese, Korean) render as empty boxes rather than failing.
 import PDFDocument from "pdfkit";
 
+import { writeText } from "../lib/pdf-unicode-text.util.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
 
 const MARGIN = 56;
@@ -31,9 +38,9 @@ function drawSignatureBlock(doc, { companyName, candidateName }) {
     const top = doc.y + 30;
     doc.moveTo(left, top).lineTo(left + width, top).stroke("#333333");
     doc.moveTo(right, top).lineTo(right + width, top).stroke("#333333");
-    doc.fontSize(10).font("Helvetica-Bold");
-    doc.text(`For ${companyName || "the company"}`, left, top + 6, { width });
-    doc.text(candidateName || "Candidate", right, top + 6, { width });
+    doc.fontSize(10);
+    writeText(doc, `For ${companyName || "the company"}`, { font: "Helvetica-Bold", x: left, y: top + 6, options: { width } });
+    writeText(doc, candidateName || "Candidate", { font: "Helvetica-Bold", x: right, y: top + 6, options: { width } });
     doc.font("Helvetica").fontSize(9).fillColor("#555555");
     doc.text("Authorised signatory, date", left, top + 22, { width });
     doc.text("Accepted by the candidate, date", right, top + 22, { width });
@@ -69,19 +76,21 @@ export function generateOfferLetterPdf({ companyName = null, subject = null, par
 
         const width = doc.page.width - MARGIN * 2;
         if (companyName) {
-            doc.font("Helvetica-Bold").fontSize(18).text(companyName, { align: "center", width });
+            doc.fontSize(18);
+            writeText(doc, companyName, { font: "Helvetica-Bold", options: { align: "center", width } });
             doc.moveDown(0.3);
             const y = doc.y;
             doc.moveTo(MARGIN, y).lineTo(MARGIN + width, y).stroke("#999999");
             doc.moveDown(1);
         }
         if (subject) {
-            doc.font("Helvetica-Bold").fontSize(12).text(subject, { width });
+            doc.fontSize(12);
+            writeText(doc, subject, { font: "Helvetica-Bold", options: { width } });
             doc.moveDown(0.8);
         }
         doc.font("Helvetica").fontSize(11);
         for (const paragraph of paragraphs) {
-            doc.text(paragraph, { width, align: "left", lineGap: 2 });
+            writeText(doc, paragraph, { font: "Helvetica", options: { width, align: "left", lineGap: 2 } });
             doc.moveDown(0.8);
         }
         drawSignatureBlock(doc, { companyName, candidateName });

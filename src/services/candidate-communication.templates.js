@@ -30,6 +30,12 @@
 // status, no score), and its accept/decline link is added by the delivery
 // loop at send time (`responseLink`), because the link carries a single-use
 // token that must never be stored.
+//
+// Phase 7 — application.received is not sent for an application created by
+// accepting a nurture invitation (the acceptance confirmed it), and
+// assessment.arrival tells a candidate reception checked in for an on-site
+// test that they are checked in (hr.recruitment.candidate_checked_in.v1):
+// first name, role, company, the interview time and type, nothing else.
 import { projectCandidateStatus } from "../lib/candidateStatusView.js";
 
 export const COMMUNICATION_CATEGORIES = Object.freeze(["STATUS", "INTERVIEW", "OFFER", "REJECTION", "MANUAL"]);
@@ -48,6 +54,8 @@ export const EVENTS = Object.freeze({
     OFFER_EXPIRY_REMINDER: "hr.recruitment.offer_expiry_reminder.v1",
     // Phase 6 — a talent pool invitation was created (or re-sent).
     TALENT_POOL_INVITATION_SENT: "hr.recruitment.talent_pool_invitation_sent.v1",
+    // Phase 7 — reception checked the candidate in for an on-site test.
+    CANDIDATE_CHECKED_IN: "hr.recruitment.candidate_checked_in.v1",
 });
 
 // Phase 6 — how a template's target is resolved, and the link the delivery
@@ -118,11 +126,12 @@ const CATALOGUE = Object.freeze({
         category: "STATUS",
         events: [EVENTS.APPLICATION_CREATED],
         hubTemplateId: "hr.recruitment.candidate_application_received",
-        description: "Acknowledges an application a recruiter added (portal applicants already get the portal confirmation)",
+        description: "Acknowledges an application a recruiter added (portal applicants and accepted invitations already get their own confirmation)",
         manual: true,
         // The public portal confirms its own applications (with the status
-        // link), so an event-driven acknowledgement would be a second mail.
-        appliesTo: (context) => !context?.portalIntake,
+        // link), and an accepted nurture invitation was confirmed by its own
+        // acceptance, so an event-driven acknowledgement would be a second mail.
+        appliesTo: (context) => !context?.portalIntake && !context?.invitationAcceptance,
         buildData: (context) => baseData(context, "applied"),
     }),
     "application.stage.screening": template({
@@ -184,6 +193,15 @@ const CATALOGUE = Object.freeze({
         description: "An interview was cancelled (the reason code stays internal)",
         manual: false,
         buildData: (context) => ({ ...baseData(context), ...interviewData(context) }),
+    }),
+    "assessment.arrival": template({
+        id: "assessment.arrival",
+        category: "INTERVIEW",
+        events: [EVENTS.CANDIDATE_CHECKED_IN],
+        hubTemplateId: "hr.recruitment.candidate_assessment_arrival",
+        description: "Reception checked the candidate in for an on-site test (the interview time and type only; no ID, accommodation or site detail)",
+        manual: false,
+        buildData: (context) => ({ ...baseData(context, "interview"), ...interviewData(context) }),
     }),
     "offer.sent": template({
         id: "offer.sent",
@@ -345,6 +363,8 @@ export function templateForEvent(eventName, payload = {}) {
             return CATALOGUE["offer.expiry_reminder"];
         case EVENTS.TALENT_POOL_INVITATION_SENT:
             return CATALOGUE["talentPool.invitation"];
+        case EVENTS.CANDIDATE_CHECKED_IN:
+            return CATALOGUE["assessment.arrival"];
         default:
             return null;
     }

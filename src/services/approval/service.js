@@ -248,7 +248,11 @@ async function audit(tx, env, before, after, action, reason) {
   });
   if (!queued) fail("Transactional approval event could not be recorded", 503);
 }
-export function submitApproval(raw) {
+// `options.requisition` (recruitment callers): { reason, transitionSource } for
+// the requisition transition row onSubmit writes in this transaction. A
+// direct hr_approval_submit passes none: the row records the submit reason
+// and source "approval.submit".
+export function submitApproval(raw, options = {}) {
   const input = ApprovalSubmit.parse(raw);
   return execute(input, "SUBMIT", async (tx, env) => {
     if (!permits(env, "self") || !ownsCode(env, input.employeeCode))
@@ -287,7 +291,10 @@ export function submitApproval(raw) {
       )
     )
       fail("Configure an active independent line manager before submission");
-    await onSubmit(tx, env, input.kind, source);
+    await onSubmit(tx, env, input.kind, source, {
+      reason: options.requisition ? options.requisition.reason : input.reason,
+      transitionSource: options.requisition?.transitionSource,
+    });
     const data = {
       employeeCode: env.who.employee_code,
       stage: "LINE_MANAGER",

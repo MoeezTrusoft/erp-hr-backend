@@ -13,6 +13,7 @@
 // records NOTHING (a history row for a transition nobody performed is worse than
 // no row at all).
 import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+import { approvalCentreDouble } from "./helpers/approval-centre-double.js";
 
 const prisma = {
   jobRequisition: {
@@ -42,13 +43,15 @@ const prisma = {
   employee: { findFirst: jest.fn(async () => ({ managerId: 12 })) },
 };
 
-// Decisions answer HR-4201 from the HR Approval Centre; its submit opens review.
-const mockLegacySubmit = jest.fn(async () => ({}));
+// Decisions answer HR-4201 from the HR Approval Centre; its submit opens review
+// and (Phase 7) writes the submit's transition row in the same transaction: the
+// double runs the REAL onSubmit (approval/adapters.js) on `prisma`.
+const centre = approvalCentreDouble(prisma);
 jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
   legacyDecision: jest.fn(async () => {
     throw Object.assign(new Error("HR-4201: Open HR Approval Centre"), { status: 409, code: "HR-4201" });
   }),
-  legacySubmit: mockLegacySubmit,
+  legacySubmit: centre.legacySubmit,
 }));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
@@ -101,6 +104,7 @@ const historyRow = (nth = 0) => prisma.requisitionTransition.create.mock.calls[n
 
 beforeEach(() => {
   jest.clearAllMocks();
+  centre.reset();
   prisma.requisitionTransition.create.mockResolvedValue({ id: 1 });
   prisma.requisitionApproval.create.mockResolvedValue({ id: 1 });
   prisma.jobPosting.create.mockResolvedValue({ id: 1 });
@@ -130,25 +134,40 @@ describe("Phase 2.1 — requisition transition history", () => {
   });
 
   it("records the submit transition, attributed to the caller", async () => {
-    prisma.jobRequisition.findFirst.mockResolvedValue({
+    const row = {
       id: 5,
       title: "Backend Engineer",
       status: "DRAFT",
       approvals: [],
       transitions: [],
       ...SUBMITTABLE,
-    });
+    };
+    prisma.jobRequisition.findFirst.mockResolvedValue(row);
     prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "PENDING_APPROVAL" });
+    // In production the centre's env.who is the verified caller: the same
+    // employee the service receives as actorId.
+    centre.arm({ tenantId: TENANT, actorId: 9, row });
 
     await submitRequisition(5, TENANT, 9);
 
-    // The PENDING_APPROVAL move is the HR Approval Centre's, opened by submit.
-    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
-    expect(prisma.jobRequisition.update).not.toHaveBeenCalled();
+    // The surface hands the centre its source; it writes neither the status
+    // move nor the history row itself.
+    expect(centre.legacySubmit).toHaveBeenCalledTimes(1);
+    expect(centre.legacySubmit).toHaveBeenCalledWith("REQUISITION", 5, undefined, {
+      requisition: { reason: null, transitionSource: "requisition.submit" },
+    });
+    // The PENDING_APPROVAL move is the HR Approval Centre's, opened by submit,
+    // and the one history row is written in that same transaction.
+    expect(prisma.jobRequisition.update.mock.calls).toEqual([
+      [{ where: { id: 5 }, data: { status: "PENDING_APPROVAL" } }],
+    ]);
+    expect(prisma.requisitionTransition.create).toHaveBeenCalledTimes(1);
     expect(historyRow()).toMatchObject({
       requisitionId: 5,
+      tenantId: TENANT,
       fromStatus: "DRAFT",
       toStatus: "PENDING_APPROVAL",
+      reason: null,
       actorId: 9,
       source: "requisition.submit",
     });

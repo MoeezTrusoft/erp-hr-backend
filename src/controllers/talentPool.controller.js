@@ -59,6 +59,7 @@ export const listInvitations = async (req, res) => {
             tenantId: tenantOf(req),
             status: req.query?.status ?? null,
             candidateId: req.query?.candidateId ?? null,
+            nurtureRunId: req.query?.nurtureRunId ?? null,
             limit: req.query?.limit,
         });
         res.status(200).json({ success: true, message: "Success", data: result });

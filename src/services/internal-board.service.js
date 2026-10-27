@@ -5,7 +5,7 @@
 // employee id (the tools take it from the verified claim, never from input).
 //
 //   * The board: open requisitions with a live CAREER_SITE or INTERNAL posting
-//     (boardRequisitionWhere). Title, department id, location, employment
+//     (boardRequisitionWhere). Title, department id and name, location, employment
 //     type, posted and closing dates and a plain description, nothing else:
 //     no salary band, no budget, no approval state, no notes. A requisition
 //     the caller owns (hiring manager, recruiter) or is being replaced on is
@@ -167,13 +167,36 @@ export async function listInternalJobs({ tenantId, employeeId, q = null, page = 
             take: size,
         }),
     ]);
-    const applied = await appliedRequisitionIds(prisma, tenantId, employeeId, rows.map((r) => r.id));
+    const [applied, departments] = await Promise.all([
+        appliedRequisitionIds(prisma, tenantId, employeeId, rows.map((r) => r.id)),
+        departmentNamesById(prisma, tenantId, rows.map((r) => r.departmentId)),
+    ]);
     return {
-        items: rows.map((row) => toBoardJob(row, { applied: applied.has(row.id) })),
+        items: rows.map((row) => boardJobView(row, { applied: applied.has(row.id), departments })),
         total,
         page: pageNo,
         pageSize: size,
     };
+}
+
+// Phase 7 — the board row's department by name. JobRequisition.departmentId
+// is a BusinessUnit id (the department model, no relation on the requisition),
+// resolved in one query under the caller's tenant; an id that does not resolve
+// there reads as null and the id stays.
+export async function departmentNamesById(db, tenantId, values) {
+    const ids = [...new Set((values ?? []).map(positiveInt).filter(Boolean))];
+    if (!ids.length || !tenantId) return new Map();
+    const rows = await db.businessUnit.findMany({
+        where: withTenant(tenantId, { id: { in: ids } }),
+        select: { id: true, name: true },
+    });
+    return new Map(rows.map((row) => [row.id, row.name ?? null]));
+}
+
+/** toBoardJob plus departmentName next to departmentId. */
+export function boardJobView(requisition, { applied = false, departments = new Map() } = {}) {
+    const job = toBoardJob(requisition, { applied });
+    return { ...job, departmentName: job.departmentId != null ? departments.get(job.departmentId) ?? null : null };
 }
 
 async function appliedRequisitionIds(db, tenantId, employeeId, ids) {
@@ -190,8 +213,11 @@ export async function getInternalJob({ tenantId, employeeId, requisitionId, now 
     requireTenantId(tenantId);
     const requisition = await findBoardRequisition(prisma, { tenantId, employeeId, requisitionId, now });
     if (!requisition) throw jobNotFound();
-    const applied = await appliedRequisitionIds(prisma, tenantId, employeeId, [requisition.id]);
-    return toBoardJob(requisition, { applied: applied.has(requisition.id) });
+    const [applied, departments] = await Promise.all([
+        appliedRequisitionIds(prisma, tenantId, employeeId, [requisition.id]),
+        departmentNamesById(prisma, tenantId, [requisition.departmentId]),
+    ]);
+    return boardJobView(requisition, { applied: applied.has(requisition.id), departments });
 }
 
 // ── Applying ────────────────────────────────────────────────────────────────

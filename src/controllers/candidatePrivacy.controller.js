@@ -10,6 +10,7 @@
 // block from a validation failure.
 import * as privacy from "../services/candidatePrivacy.service.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
+import { runManualRetention } from "../services/retention-run.service.js";
 
 const TENANT_REQUIRED = { success: false, code: "HR-TENANT-REQUIRED", message: "Tenant context is required" };
 
@@ -143,7 +144,8 @@ export const applyRetentionHandler = async (req, res) => {
     try {
         // dryRun defaults to TRUE: erasure is irreversible, so the destructive
         // path has to be requested explicitly (`dryRun: false`).
-        const result = await privacy.applyRetention({
+        // Recruitment Phase 7: a manual apply is recorded as a retention run.
+        const result = await runManualRetention({
             tenantId,
             asOf: req.body?.asOf ? new Date(req.body.asOf) : new Date(),
             actorId: await resolveEmployeeActor(req.user),

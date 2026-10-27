@@ -50,6 +50,7 @@ import {
     validateCriteria,
 } from "../lib/scorecardTemplates.js";
 import { PANEL_ROLES, TEMPLATE_STATUS, validateFormDefinition } from "../lib/evaluation-form.util.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 
 export class TemplateError extends Error {
     constructor(message, status = 400, details = undefined) {
@@ -99,6 +100,8 @@ export const FORM_TEMPLATE_SELECT = Object.freeze({
     evidenceRules: true,
     requiresTrainedInterviewer: true,
     publishedAt: true,
+    // Phase 7 (B10) — the author, shown by name on the form header.
+    createdById: true,
 });
 
 const slug = (name) =>
@@ -427,12 +430,23 @@ export const deactivateTemplate = async ({ templateId, tenantId, actorId }) => {
     return { id: existing.id, deleted: false, deactivated: true };
 };
 
+// Phase 7 (B10) — every template and link carries its author's display name
+// (createdByName next to createdById), from one lookup for the whole list.
 export const listTemplates = async ({ tenantId, includeInactive = false }) => {
-    return prisma.scorecardTemplate.findMany({
+    const rows = await prisma.scorecardTemplate.findMany({
         where: scopedWhere(tenantId, includeInactive ? {} : { isActive: true }),
         orderBy: { id: "asc" },
         include: { links: { where: { isActive: true } } },
     });
+    const names = await employeeNamesById(prisma, tenantId, rows.flatMap((t) => [
+        t.createdById,
+        ...(Array.isArray(t.links) ? t.links.map((l) => l.createdById) : []),
+    ]));
+    return rows.map((t) => ({
+        ...t,
+        createdByName: nameOf(names, t.createdById),
+        ...(Array.isArray(t.links) ? { links: t.links.map((l) => ({ ...l, createdByName: nameOf(names, l.createdById) })) } : {}),
+    }));
 };
 
 // ── links ────────────────────────────────────────────────────────────────────

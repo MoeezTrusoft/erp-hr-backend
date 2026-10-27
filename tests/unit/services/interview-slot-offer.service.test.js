@@ -473,6 +473,21 @@ describe("runSlotOfferExpiryJob", () => {
         expect(db.contextLog.some((q) => !q.system && q.op === "updateMany")).toBe(true);
     });
 
+    it("counts the off day in the tenant's zone: Friday 23:30 UTC is Saturday in Karachi (Phase 7)", () => {
+        const pattern = { monday: "09-18", tuesday: "09-18", wednesday: "09-18", thursday: "09-18", friday: "09-18", saturday: "", sunday: "" };
+        const availability = (timeZone) => ({
+            interviewerIds: [3],
+            leaveRows: [],
+            busy: [],
+            schedules: [{ employeeId: 3, effective_start_date: new Date("2026-01-01"), effective_end_date: null, schedule_pattern: pattern }],
+            timeZone,
+        });
+        const start = new Date("2026-10-23T23:30:00Z"); // a Friday in UTC
+        const end = new Date("2026-10-24T00:30:00Z");
+        expect(svc.slotConflict(availability("UTC"), start, end)).toBeNull();
+        expect(svc.slotConflict(availability("Asia/Karachi"), start, end)).toBe("NON_WORKING_DAY");
+    });
+
     it("does nothing while selfScheduling is off", async () => {
         process.env.HR_RECRUITMENT_SELF_SCHEDULING = "false";
         await expect(svc.runSlotOfferExpiryJob({ now: NOW })).resolves.toEqual({ skipped: "FLAG_OFF" });

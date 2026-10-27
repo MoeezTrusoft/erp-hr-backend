@@ -117,6 +117,32 @@ export const RESUMABLE_SESSION_STATUSES = Object.freeze([SESSION_STATUS.IN_PROGR
 export const resumeEventWhere = (tenantId, sessionId) =>
     withTenant(tenantId, { sessionId, type: INTEGRITY_TYPE.KIOSK_RESUME, source: "PROCTOR" });
 
+/**
+ * Phase 7 — the resumes that count toward MAX_KIOSK_RESUMES: a code that was
+ * used, or the session's current code while it is still live. A code that
+ * expired unused (or was replaced by a newer one before it was used) moved
+ * nothing and does not count. Pure.
+ *
+ * Use is recorded on the resume's own event when the kiosk exchanges the code
+ * (detail.usedAt); events written before that tracking existed
+ * (detail.usageTracked absent) count as used, which is what they counted as.
+ *
+ * @param {Array<{ id: number, detail?: object|null }>} events the session's PROCTOR KIOSK_RESUME rows
+ * @param {{ sessionCodeHash?: string|null, codeExpiresAt?: Date|string|null }} session
+ */
+export function countedKioskResumes(events, session, now = new Date()) {
+    const rows = Array.isArray(events) ? events : [];
+    const latestId = rows.reduce((max, e) => Math.max(max, Number(e?.id) || 0), 0);
+    const live = Boolean(session?.sessionCodeHash) && session?.codeExpiresAt != null
+        && new Date(session.codeExpiresAt).getTime() > now.getTime();
+    return rows.filter((e) => {
+        const detail = e?.detail && typeof e.detail === "object" ? e.detail : {};
+        if (detail.usageTracked !== true) return true;
+        if (detail.usedAt) return true;
+        return live && Number(e.id) === latestId;
+    }).length;
+}
+
 // ── Codes and tokens ─────────────────────────────────────────────────────────
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -415,6 +441,19 @@ export async function resumeKioskSession({ tenantId, workstation, code, now = ne
                 data: { sessionCodeHash: null, sessionTokenHash: hashSessionToken(token), lastHeartbeatAt: now },
             });
             if (!claim.count) return null;
+            // Phase 7 — the code was used: its resume now counts toward the limit
+            // for good (the latest resume event is the one this code was issued with).
+            const issued = await tx.candidateTestIntegrityEvent.findFirst({
+                where: resumeEventWhere(tenantId, match.id),
+                orderBy: { id: "desc" },
+                select: { id: true, detail: true },
+            });
+            if (issued) {
+                await tx.candidateTestIntegrityEvent.updateMany({
+                    where: withTenant(tenantId, { id: issued.id }),
+                    data: { detail: { ...(issued.detail ?? {}), usedAt: now.toISOString(), usedOnWorkstationId: workstation.id } },
+                });
+            }
             return await tx.candidateTestSession.findFirst({ where: withTenant(tenantId, { id: match.id }) });
         },
         { tenantId },

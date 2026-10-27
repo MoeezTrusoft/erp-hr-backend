@@ -17,7 +17,7 @@ const uploadFileToDAM = jest.fn();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
-jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM }));
+jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM, downloadDamAssetBuffer: jest.fn(async () => null) }));
 
 const svc = await import("../../../src/services/offer-letter.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");

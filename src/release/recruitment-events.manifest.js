@@ -104,7 +104,7 @@ export const RECRUITMENT_EVENT_MANIFEST = Object.freeze({
 
     // ── Applications, screening and dispositions ───────────────────────────
     "hr.recruitment.application_created.v1": notify(
-        candidate(T("candidate_application_received"), { when: "not a portal intake (the portal confirms its own applications)" }),
+        candidate(T("candidate_application_received"), { when: "not a portal intake or an accepted nurture invitation (each confirms its own)" }),
         staff(["field:requestedById"], T("application_created")),
     ),
     "hr.recruitment.application_stage_changed.v1": notify(
@@ -156,7 +156,11 @@ export const RECRUITMENT_EVENT_MANIFEST = Object.freeze({
             pending: "Arrival instructions template (p3b-notes/H.md) is not in the candidate-communication catalogue yet",
         }),
     ),
-    "hr.recruitment.candidate_checked_in.v1": notify(staff(["field:recruiterId", "field:interviewerIds"], T("candidate_checked_in"), { mode: "all" })),
+    "hr.recruitment.candidate_checked_in.v1": notify(
+        staff(["field:recruiterId", "field:interviewerIds"], T("candidate_checked_in"), { mode: "all" }),
+        // Phase 7: the candidate hears they are checked in for the on-site test.
+        candidate(T("candidate_assessment_arrival"), { when: "the interview is still scheduled and the application not withdrawn" }),
+    ),
     "hr.recruitment.test_session_issued.v1": silent("Reception issued it at the desk; realtime refresh of the live grid"),
     "hr.recruitment.test_session_started.v1": notify(staff(["field:interviewerIds"], T("test_session_started"), { mode: "all" })),
     // Phase 6 (kioskResume): reception moved a crashed session to a workstation.

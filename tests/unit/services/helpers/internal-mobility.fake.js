@@ -44,6 +44,7 @@ export function makeInternalMobilityDb() {
     const MODELS = [
         "employee", "jobRequisition", "jobPosting", "candidate", "candidateConsent", "application",
         "applicationStageHistory", "internalReferral", "offer", "offerHandoff", "tenantRecruitmentSettings", "outboxEvent",
+        "businessUnit",
     ];
     const state = { tables: Object.fromEntries(MODELS.map((m) => [m, []])), ops: [], nextId: 5000 };
     let activeTx = null;

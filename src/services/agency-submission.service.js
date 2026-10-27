@@ -38,6 +38,11 @@
 // back with resumeSource AGENCY_UPLOAD. A bare resumeMediaId is refused (400),
 // and ACCEPT carries a snapshot's resume onto the candidate only when this
 // flow uploaded it (a Phase 5 submission's typed id is dropped).
+//
+// Phase 7 — every resume refusal has its own code and details.reason
+// (AGENCY_RESUME_REFUSAL), and HR's submission rows carry reviewedByName and,
+// on a DUPLICATE, duplicateReasonCode (IN_PROCESS | AGENCY_OWNED). The agency's
+// own view is unchanged (a neutral REJECTED, no names).
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -53,8 +58,9 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { createCandidate } from "./candidateService.js";
 import { createApplication } from "./applicationService.js";
 import { deleteDamAsset, uploadFileToDAM } from "./dam.media.service.js";
-import { validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
+import { ONBOARDING_UPLOAD_MAX_BYTES, validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
 import { assertAgencyPortalEnabled, isRequisitionOpenForAgencies } from "./recruitment-agency.service.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 
 const fail = (message, code, status = 400, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
@@ -82,19 +88,59 @@ const submissionMarker = (id) => `agency-submission:${id}`;
 export const AGENCY_RESUME_SOURCE = "AGENCY_UPLOAD";
 const AGENCY_RESUME_MIME = "application/pdf";
 
+// Phase 7 — every resume refusal has its own code and a coded reason in
+// error.details, so the portal tells "not a PDF", "too large", "empty" and
+// "malformed" apart without reading the message. All stay 400.
+export const AGENCY_RESUME_REFUSAL = Object.freeze({
+    NOT_PDF: Object.freeze({ code: "HR-RECRUITMENT-AGENCY-RESUME-NOT-PDF", reason: "NOT_PDF" }),
+    TOO_LARGE: Object.freeze({ code: "HR-RECRUITMENT-AGENCY-RESUME-TOO-LARGE", reason: "TOO_LARGE" }),
+    EMPTY: Object.freeze({ code: "HR-RECRUITMENT-AGENCY-RESUME-EMPTY", reason: "EMPTY" }),
+    MALFORMED: Object.freeze({ code: "HR-RECRUITMENT-AGENCY-RESUME-INVALID", reason: "MALFORMED" }),
+});
+
+// The portal upload validator's code -> the agency refusal it means.
+const UPLOAD_CODE_REFUSAL = Object.freeze({
+    "HR-ONBOARDING-UPLOAD-TYPE": AGENCY_RESUME_REFUSAL.NOT_PDF,
+    "HR-ONBOARDING-UPLOAD-EXTENSION": AGENCY_RESUME_REFUSAL.NOT_PDF,
+    "HR-ONBOARDING-UPLOAD-SIGNATURE": AGENCY_RESUME_REFUSAL.NOT_PDF,
+    "HR-ONBOARDING-UPLOAD-TOO-LARGE": AGENCY_RESUME_REFUSAL.TOO_LARGE,
+    "HR-ONBOARDING-UPLOAD-CONTENT": AGENCY_RESUME_REFUSAL.MALFORMED,
+});
+
+const MAX_RESUME_MB = Math.round(ONBOARDING_UPLOAD_MAX_BYTES / (1024 * 1024));
+
+const refuseResume = (refusal, message) =>
+    fail(message, refusal.code, 400, {
+        reason: refusal.reason,
+        ...(refusal === AGENCY_RESUME_REFUSAL.TOO_LARGE ? { maxBytes: ONBOARDING_UPLOAD_MAX_BYTES } : {}),
+    });
+
 /**
  * Validate the agency's resume file (pure): a PDF, the portal upload rules
  * (extension, base64, 10 MB, the %PDF- signature). null when none was sent.
+ * A refusal carries AGENCY_RESUME_REFUSAL's code and details.reason.
  */
 export function normalizeAgencyResume(resume) {
     if (resume == null) return null;
-    if (typeof resume !== "object") throw fail("resume must be { fileName, mimeType, contentBase64 }", "HR-RECRUITMENT-AGENCY-RESUME-INVALID");
+    if (typeof resume !== "object" || Array.isArray(resume)) {
+        throw refuseResume(AGENCY_RESUME_REFUSAL.MALFORMED, "resume must be { fileName, mimeType, contentBase64 }");
+    }
     const mime = String(resume.mimeType ?? "").split(";")[0].trim().toLowerCase();
-    if (mime !== AGENCY_RESUME_MIME) throw fail("The resume must be a PDF file", "HR-RECRUITMENT-AGENCY-RESUME-INVALID");
+    if (mime !== AGENCY_RESUME_MIME) throw refuseResume(AGENCY_RESUME_REFUSAL.NOT_PDF, "The resume must be a PDF file");
+    // An absent or blank body is an empty file (the validator would call it
+    // "content required"); anything else that is not text is malformed.
+    const content = resume.contentBase64;
+    if (content == null || (typeof content === "string" && !content.replace(/[\r\n]+/g, ""))) {
+        throw refuseResume(AGENCY_RESUME_REFUSAL.EMPTY, "The resume file is empty");
+    }
     try {
-        return validateOnboardingUpload({ fileName: resume.fileName, mimeType: mime, contentBase64: resume.contentBase64 });
+        return validateOnboardingUpload({ fileName: resume.fileName, mimeType: mime, contentBase64: content });
     } catch (err) {
-        throw fail(err?.message || "The resume file is not valid", "HR-RECRUITMENT-AGENCY-RESUME-INVALID");
+        const refusal = UPLOAD_CODE_REFUSAL[err?.code] ?? AGENCY_RESUME_REFUSAL.MALFORMED;
+        const message = refusal === AGENCY_RESUME_REFUSAL.TOO_LARGE ? `The resume is larger than ${MAX_RESUME_MB} MB`
+            : refusal === AGENCY_RESUME_REFUSAL.NOT_PDF ? "The resume must be a PDF file"
+                : "The resume file could not be read";
+        throw refuseResume(refusal, message);
     }
 }
 
@@ -415,7 +461,21 @@ export async function listAgencySubmissions({ tenantId, status, agencyId, requis
         }),
         prisma.agencySubmission.count({ where }),
     ]);
-    return { items, total, page: paging.page, pageSize: paging.pageSize };
+    const names = await employeeNamesById(prisma, tenantId, items.map((row) => row.reviewedById));
+    return { items: items.map((row) => hrSubmissionView(row, names)), total, page: paging.page, pageSize: paging.pageSize };
+}
+
+/**
+ * Phase 7 — HR's row: the stored submission plus the reviewer's name and, on a
+ * DUPLICATE, the coded reason (the stored reason text is unchanged).
+ */
+export function hrSubmissionView(row, names = new Map()) {
+    if (!row) return row;
+    return {
+        ...row,
+        reviewedByName: nameOf(names, row.reviewedById),
+        duplicateReasonCode: row.status === SUBMISSION_STATUS.DUPLICATE ? duplicateReasonCode(row.rejectionReason) : null,
+    };
 }
 
 // Settle a PENDING_REVIEW submission; a concurrent reviewer who got there
@@ -431,17 +491,33 @@ async function settle(tx, tenantId, id, data) {
     return tx.agencySubmission.findFirst({ where: withTenant(tenantId, { id }) });
 }
 
+// Phase 7 — the two DUPLICATE cases as codes for the HR screen.
+export const DUPLICATE_REASON_CODE = Object.freeze({
+    IN_PROCESS: "IN_PROCESS",
+    AGENCY_OWNED: "AGENCY_OWNED",
+});
+const IN_PROCESS_PREFIX = "Candidate already in process";
+const AGENCY_OWNED_PREFIX = "Candidate owned by agency";
+
+/** The coded case of a stored DUPLICATE reason (null when it is neither). */
+export function duplicateReasonCode(reason) {
+    const text = String(reason ?? "");
+    if (text.startsWith(IN_PROCESS_PREFIX)) return DUPLICATE_REASON_CODE.IN_PROCESS;
+    if (text.startsWith(AGENCY_OWNED_PREFIX)) return DUPLICATE_REASON_CODE.AGENCY_OWNED;
+    return null;
+}
+
 /**
  * The duplicate rule, pure: why an ACCEPT must become DUPLICATE, or null.
  * `application` is the candidate's existing application to the requisition.
  */
 export function duplicateReasonFor({ candidate, application, agencyId, submissionId, now = new Date() }) {
     if (application && application.sourceDetail !== submissionMarker(submissionId)) {
-        return `Candidate already in process for this requisition (application ${application.id})`;
+        return `${IN_PROCESS_PREFIX} for this requisition (application ${application.id})`;
     }
     const expires = candidate?.ownershipExpiresAt ? new Date(candidate.ownershipExpiresAt) : null;
     if (candidate?.ownerAgencyId && candidate.ownerAgencyId !== agencyId && expires && expires.getTime() > now.getTime()) {
-        return `Candidate owned by agency ${candidate.ownerAgencyId} until ${expires.toISOString()}`;
+        return `${AGENCY_OWNED_PREFIX} ${candidate.ownerAgencyId} until ${expires.toISOString()}`;
     }
     return null;
 }
@@ -502,7 +578,7 @@ export async function reviewAgencySubmission({ tenantId, actorId = null, id, dec
                     ...reviewed,
                 }));
             logger.info({ tenantId, submissionId, decision: "ACCEPT", outcome: "DUPLICATE" }, "agency submission reviewed");
-            return { submission: row, outcome: SUBMISSION_STATUS.DUPLICATE, reason: duplicate };
+            return { submission: row, outcome: SUBMISSION_STATUS.DUPLICATE, reason: duplicate, reasonCode: duplicateReasonCode(duplicate) };
         }
     } else {
         candidate = await createCandidate({

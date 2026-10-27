@@ -1,5 +1,9 @@
+// Recruitment Phase 7 (B10) — approver and rule-author ids carry their display
+// names (approverName, createdByName) so the approval screens stop showing
+// bare employee ids. One name lookup per read, under the caller's tenant.
 import prisma from "../config/prisma.js";
 import { scopedData, scopedWhere } from "../lib/tenancy.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 import {
   DEFAULT_OFFER_APPROVAL_RULES,
   OFFER_APPROVAL_STAGES,
@@ -37,9 +41,10 @@ export async function getOfferApprovalPolicy({ tenantId, amount = null, currency
     amount,
     currency,
   });
+  const names = await employeeNamesById(db, tenantId, rules.map((r) => r.createdById));
   return {
     configured: rules.length > 0,
-    rules,
+    rules: rules.map((rule) => ({ ...rule, createdByName: nameOf(names, rule.createdById) })),
     stages: OFFER_APPROVAL_STAGES,
     resolvedChain: resolved.steps.map((s) => s.stage),
     resolvedSource: resolved.source,
@@ -88,10 +93,12 @@ export async function setOfferApprovalPolicy({ tenantId, rules = [], createdById
         }),
       });
     }
-    return tx.offerApprovalRule.findMany({
+    const saved = await tx.offerApprovalRule.findMany({
       where: scopedWhere(tenantId, { isActive: true }),
       orderBy: { stepOrder: "asc" },
     });
+    const names = await employeeNamesById(tx, tenantId, saved.map((r) => r.createdById));
+    return saved.map((rule) => ({ ...rule, createdByName: nameOf(names, rule.createdById) }));
   });
 }
 
@@ -189,7 +196,13 @@ export async function approveOffer({ offerId, stage, decision, reason, approverI
     where: { id: offer.id },
     data: { approvalStatus },
   });
-  return { approval: record, approvalStatus, requiredStages, requiredSource: source };
+  const names = await employeeNamesById(db, tenantId, [record?.approverId]);
+  return {
+    approval: record ? { ...record, approverName: nameOf(names, record.approverId) } : record,
+    approvalStatus,
+    requiredStages,
+    requiredSource: source,
+  };
 }
 
 export async function assertOfferApproved({ offerId, tenantId, db = prisma } = {}) {

@@ -33,6 +33,15 @@
 //     marked no-show; it records a NO_SHOW lifecycle event, cancels the
 //     calendar event and announces hr.recruitment.interview_no_show.v1 so the
 //     disposition prompt and the Communication module can react.
+//   * Recruitment Phase 7 (B18a) — "non-working day" is the interviewer's
+//     weekday in the TENANT's time zone (TenantRecruitmentSettings.timeZone,
+//     the zone the slot finder already works in), not in UTC: a Friday 23:30
+//     UTC slot is a Saturday in Asia/Karachi.
+//   * Recruitment Phase 7 (B5) — each panelist may carry a panel role
+//     (TECHNICAL | HIRING_MANAGER | HR | CULTURE) that decides which form
+//     sections they rate. It is set when the interview is scheduled and may be
+//     changed until the interview starts (setInterviewPanelRoles). No role =
+//     every section (the behaviour before roles existed). Flag evaluationForms.
 
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -43,6 +52,7 @@ import {
     interviewCancelledEvent,
     interviewRescheduledEvent,
     interviewRescheduleRequestedEvent,
+    interviewUpdatedEvent,
 } from "./hrEvents.js";
 import {
     LIFECYCLE_EVENTS,
@@ -51,7 +61,12 @@ import {
     validateConflictOverride,
     validateLifecycleReason,
 } from "../lib/interviewScheduling.js";
-import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
+import { RECRUITMENT_SCOPE, interviewScopeWhere } from "../lib/recruitmentAccess.js";
+import { isValidTimeZone, weekdayOf, zonedDate } from "../lib/slot-finder.util.js";
+import { PANEL_ROLES } from "../lib/evaluation-form.util.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
+import logger from "../lib/logger.js";
 
 export class ScheduleError extends Error {
     constructor(message, status = 400, details = undefined) {
@@ -270,37 +285,50 @@ export const cancelInterview = async ({ interviewId, reasonCode, notes, tenantId
 
 // ── §5.2/5.2a — availability checks over the REAL HR data ────────────────────
 
+// The zone a tenant without a settings row works in: the column default of
+// TenantRecruitmentSettings.timeZone and RECRUITMENT_SETTINGS_DEFAULTS.timeZone
+// (a test pins the three together). Not imported from the settings service so
+// the schedule paths stay free of its import graph.
+export const DEFAULT_TENANT_TIME_ZONE = "Asia/Karachi";
+
+const WEEKDAY_KEYS = Object.freeze(["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]);
+
 /**
- * Which of these interviewers are on APPROVED leave overlapping the slot, and
- * whose effective schedule marks the date non-working? §5.2 says check HR
- * attendance/leave/work schedule; §5.2a fixes the tiers.
- *
- * @returns {{ blocked: number[], nonWorkingDay: number[] }}
+ * B18a — the time zone a tenant's working days are counted in: its recruitment
+ * settings' zone, else the default. A client without the settings model (an
+ * older unit-test double) keeps the pre-Phase-7 UTC rule; a failed read is
+ * logged and answers the default rather than failing the schedule.
  */
-export const checkInterviewerAvailability = async ({ scheduledAt, durationMinutes = 60, interviewerIds, tenantId }) => {
-    const start = toDate(scheduledAt);
-    if (!start) throw fail("scheduledAt must be a valid ISO 8601 datetime", 400);
-    const end = new Date(start.getTime() + Number(durationMinutes || 60) * 60000);
-    const ids = (interviewerIds ?? []).map(toInt).filter(Boolean);
-    if (!ids.length) return { blocked: [], nonWorkingDay: [] };
+export async function tenantScheduleTimeZone(db, tenantId) {
+    if (typeof db?.tenantRecruitmentSettings?.findFirst !== "function") return "UTC";
+    if (!tenantId) return DEFAULT_TENANT_TIME_ZONE;
+    try {
+        const row = await db.tenantRecruitmentSettings.findFirst({ where: { tenantId }, select: { timeZone: true } });
+        const zone = row?.timeZone ?? DEFAULT_TENANT_TIME_ZONE;
+        if (isValidTimeZone(zone)) return zone;
+        logger.warn({ tenantId }, "interview availability: the tenant time zone is not valid, using the default");
+    } catch (err) {
+        logger.warn({ err: err?.message, tenantId }, "interview availability: could not read the tenant time zone, using the default");
+    }
+    return DEFAULT_TENANT_TIME_ZONE;
+}
 
-    // §5.2 — APPROVED leave only: a pending request is not yet a fact, a
-    // rejected one never was. Leave rows are day-granular; the overlap rule
-    // lives in the lib (leaveOverlapsSlot) so the semantics exist once.
-    const leaveRows = await prisma.leaveRequest.findMany({
-        where: scopedWhere(tenantId, {
-            employeeId: { in: ids },
-            status: "APPROVED",
-        }),
-        select: { employeeId: true, startDate: true, endDate: true },
-    });
-    const blocked = blockedInterviewers(start, end, leaveRows);
+/** The schedule_pattern key ("monday".."sunday") of an instant's date in a zone. */
+export function weekdayKeyInZone(instant, timeZone = "UTC") {
+    return WEEKDAY_KEYS[weekdayOf(zonedDate(instant, timeZone))];
+}
 
-    // §5.2 — the work schedule: one effective schedule per interviewer for the
-    // slot's date. schedule_pattern follows the weekly map the attendance and
-    // overtime services already read (monday..sunday, ""/absent = off).
-    const dayKey = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][start.getDay()];
-    const schedules = await prisma.workSchedule.findMany({
+/**
+ * Which of these interviewers' effective work schedule marks the slot's
+ * (tenant-local) weekday off? schedule_pattern follows the weekly map the
+ * attendance and overtime services read (monday..sunday, ""/absent = off).
+ * No schedule at all cannot claim a conflict: the WARNING tier fails open (a
+ * hard block needs evidence).
+ */
+async function nonWorkingInterviewers(db, { tenantId, ids, start, timeZone }) {
+    if (!ids.length) return [];
+    const dayKey = weekdayKeyInZone(start, timeZone);
+    const schedules = await db.workSchedule.findMany({
         where: scopedWhere(tenantId, {
             employeeId: { in: ids },
             effective_start_date: { lte: start },
@@ -313,16 +341,43 @@ export const checkInterviewerAvailability = async ({ scheduledAt, durationMinute
     for (const s of schedules) {
         if (!patternByEmployee.has(s.employeeId)) patternByEmployee.set(s.employeeId, s.schedule_pattern);
     }
-    const nonWorkingDay = ids.filter((id) => {
+    return ids.filter((id) => {
         const pattern = patternByEmployee.get(id);
-        // No schedule at all → cannot claim a conflict; fail open for the
-        // WARNING tier (a hard block needs evidence).
         if (!pattern || typeof pattern !== "object") return false;
         const timing = pattern[dayKey];
         return !(typeof timing === "string" && timing.trim() !== "");
     });
+}
 
-    return { blocked, nonWorkingDay };
+/**
+ * Which of these interviewers are on APPROVED leave overlapping the slot, and
+ * whose effective schedule marks the date non-working? §5.2 says check HR
+ * attendance/leave/work schedule; §5.2a fixes the tiers.
+ *
+ * @returns {{ blocked: number[], nonWorkingDay: number[], timeZone: string }}
+ */
+export const checkInterviewerAvailability = async ({ scheduledAt, durationMinutes = 60, interviewerIds, tenantId }) => {
+    const start = toDate(scheduledAt);
+    if (!start) throw fail("scheduledAt must be a valid ISO 8601 datetime", 400);
+    const end = new Date(start.getTime() + Number(durationMinutes || 60) * 60000);
+    const ids = (interviewerIds ?? []).map(toInt).filter(Boolean);
+    const timeZone = await tenantScheduleTimeZone(prisma, tenantId);
+    if (!ids.length) return { blocked: [], nonWorkingDay: [], timeZone };
+
+    // §5.2 — APPROVED leave only: a pending request is not yet a fact, a
+    // rejected one never was. Leave rows are day-granular; the overlap rule
+    // lives in the lib (leaveOverlapsSlot) so the semantics exist once.
+    const leaveRows = await prisma.leaveRequest.findMany({
+        where: scopedWhere(tenantId, {
+            employeeId: { in: ids },
+            status: "APPROVED",
+        }),
+        select: { employeeId: true, startDate: true, endDate: true },
+    });
+    const blocked = blockedInterviewers(start, end, leaveRows);
+    const nonWorkingDay = await nonWorkingInterviewers(prisma, { tenantId, ids, start, timeZone });
+
+    return { blocked, nonWorkingDay, timeZone };
 };
 
 // ── §5.3/5.3a — reschedule request → recruiter confirms ─────────────────────
@@ -439,28 +494,9 @@ export const confirmReschedule = async ({ interviewId, scheduledAt, reasonCode, 
             : [];
         const blocked = blockedInterviewers(when, end, leaveRows);
 
-        const dayKey = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][when.getDay()];
-        const schedules = interviewerIds.length
-            ? await tx.workSchedule.findMany({
-                where: scopedWhere(tenantId, {
-                    employeeId: { in: interviewerIds },
-                    effective_start_date: { lte: when },
-                    OR: [{ effective_end_date: null }, { effective_end_date: { gte: when } }],
-                }),
-                orderBy: { effective_start_date: "desc" },
-                select: { employeeId: true, schedule_pattern: true },
-            })
-            : [];
-        const patternByEmployee = new Map();
-        for (const s of schedules) {
-            if (!patternByEmployee.has(s.employeeId)) patternByEmployee.set(s.employeeId, s.schedule_pattern);
-        }
-        const nonWorkingDay = interviewerIds.filter((eid) => {
-            const pattern = patternByEmployee.get(eid);
-            if (!pattern || typeof pattern !== "object") return false;
-            const timing = pattern[dayKey];
-            return !(typeof timing === "string" && timing.trim() !== "");
-        });
+        // B18a — the weekday is the tenant's, not UTC's.
+        const timeZone = await tenantScheduleTimeZone(tx, tenantId);
+        const nonWorkingDay = await nonWorkingInterviewers(tx, { tenantId, ids: interviewerIds, start: when, timeZone });
 
         if (blocked.length) {
             // §5.2a — HARD BLOCK. No override exists for approved leave.
@@ -626,6 +662,144 @@ export const markNoShow = async ({ interviewId, tenantId, actorId = null, notes 
             tenantId: tenantId ?? null,
         });
         return { interviewId: interview.id, status: "NO_SHOW", noShowAt: at };
+    }, { tenantId });
+};
+
+// ── Recruitment Phase 7 (B5) — panel roles ─────────────────────────────────
+
+const PANEL_ROLE_MAX_ENTRIES = 20;
+
+/** 503 while evaluation forms are off: panel roles only exist for forms. */
+export function assertPanelRolesEnabled() {
+    if (!isRecruitmentFlagEnabled("evaluationForms")) {
+        throw failCode("Panel roles need evaluation forms, which are not enabled", 503, "HR-RECRUITMENT-EVALUATION-FORMS-DISABLED");
+    }
+}
+
+/**
+ * The panel roles a caller asked for, as Map<employeeId, role|null>. Accepts
+ * a list [{ employeeId, panelRole }] (panelRole null or "" clears a role) or a
+ * map { "<employeeId>": role }. Every employee must be on the panel
+ * (panelIds) when one is given; every role must be one of PANEL_ROLES.
+ * Empty input is an empty map (nothing to set).
+ */
+export function normalizePanelRoles(input, panelIds = null) {
+    const entries = Array.isArray(input)
+        ? input.map((e) => [e?.employeeId, e?.panelRole])
+        : input && typeof input === "object"
+            ? Object.entries(input)
+            : [];
+    if (entries.length > PANEL_ROLE_MAX_ENTRIES) {
+        throw failCode(`At most ${PANEL_ROLE_MAX_ENTRIES} panel roles at a time`, 400, "HR-RECRUITMENT-PANEL-ROLE-INVALID");
+    }
+    const panel = panelIds ? new Set([...panelIds].map(Number)) : null;
+    const roles = new Map();
+    for (const [rawId, rawRole] of entries) {
+        const employeeId = toInt(rawId);
+        if (!employeeId) throw failCode("Each panel role needs the panelist's employee id", 400, "HR-RECRUITMENT-PANEL-ROLE-INVALID");
+        if (panel && !panel.has(employeeId)) {
+            throw failCode(`Employee ${employeeId} is not on this interview's panel`, 400, "HR-RECRUITMENT-PANEL-ROLE-NOT-PANELIST");
+        }
+        if (roles.has(employeeId)) {
+            throw failCode(`Employee ${employeeId} is given two panel roles`, 400, "HR-RECRUITMENT-PANEL-ROLE-INVALID");
+        }
+        const text = rawRole == null ? "" : String(rawRole).trim().toUpperCase();
+        if (text && !PANEL_ROLES.includes(text)) {
+            throw failCode(`panelRole must be one of ${PANEL_ROLES.join(", ")}`, 400, "HR-RECRUITMENT-PANEL-ROLE-INVALID");
+        }
+        roles.set(employeeId, text || null);
+    }
+    return roles;
+}
+
+/** True when the caller sent any panel role input at all. */
+export const hasPanelRoleInput = (input) =>
+    Array.isArray(input) ? input.length > 0 : Boolean(input && typeof input === "object" && Object.keys(input).length);
+
+// Recruiters change any panel; a hiring manager only the panels of their own
+// requisitions (sitting on another manager's panel is not ownership).
+function panelEditWhere(scope) {
+    if (!scope || scope.unrestricted) return {};
+    if (scope.level === RECRUITMENT_SCOPE.MANAGED && scope.employeeId) {
+        return { application: { jobRequisition: { requestedById: scope.employeeId } } };
+    }
+    throw failCode("Only recruiters and the requisition's hiring manager can set panel roles", 403, "HR-RECRUITMENT-PANEL-ROLE-FORBIDDEN");
+}
+
+/**
+ * Set (or clear) panelists' roles on an interview that has not started yet.
+ * Only the listed panelists change; the rest keep theirs. A started,
+ * completed, cancelled or no-show interview is refused: a panelist may be
+ * mid-way through the form their role decides.
+ *
+ * @param {object} p
+ * @param {Array<{employeeId:number, panelRole:string|null}>|object} p.roles
+ * @param {object|null} [p.scope]  resolveRecruitmentScope(user); null = unscoped (internal callers)
+ * @returns {Promise<{ interviewId: number, panel: Array<{employeeId:number, employeeName:string|null, panelRole:string|null}>, changed: number }>}
+ */
+export const setInterviewPanelRoles = async ({ interviewId, roles, tenantId, actorId = null, scope = null, now = new Date() }) => {
+    assertPanelRolesEnabled();
+    if (!hasPanelRoleInput(roles)) throw failCode("roles must list at least one panelist", 400, "HR-RECRUITMENT-PANEL-ROLE-INVALID");
+    const scopeWhere = panelEditWhere(scope);
+    const actor = toInt(actorId);
+
+    return tenantTransaction(prisma, async (tx) => {
+        const interview = await tx.interview.findFirst({
+            where: scopedWhere(tenantId, { id: toInt(interviewId) ?? 0, ...scopeWhere }),
+            select: {
+                id: true, tenantId: true, applicationId: true, scheduledAt: true, status: true, decision: true,
+                interviewers: { select: { employeeId: true, panelRole: true } },
+                application: { select: { candidateId: true } },
+            },
+        });
+        if (!interview) throw failCode("Interview not found", 404, "HR-RECRUITMENT-SCHEDULE-NOT-FOUND");
+        if (interview.status !== "SCHEDULED" || new Date(interview.scheduledAt).getTime() <= new Date(now).getTime()) {
+            throw failCode("Panel roles can only change before the interview starts", 409, "HR-RECRUITMENT-PANEL-ROLE-LOCKED");
+        }
+
+        const panelIds = interview.interviewers.map((i) => i.employeeId);
+        const wanted = normalizePanelRoles(roles, panelIds);
+        const current = new Map(interview.interviewers.map((i) => [i.employeeId, i.panelRole ?? null]));
+        let changed = 0;
+        for (const [employeeId, panelRole] of wanted) {
+            if (current.get(employeeId) === panelRole) continue;
+            await tx.interviewInterviewer.updateMany({
+                where: scopedWhere(tenantId, { interviewId: interview.id, employeeId }),
+                data: { panelRole },
+            });
+            current.set(employeeId, panelRole);
+            changed += 1;
+        }
+
+        if (changed) {
+            await enqueueHrDomainEvent(
+                tx,
+                interviewUpdatedEvent(
+                    { ...interview, candidateId: interview.application?.candidateId ?? null },
+                    { actorId: actor },
+                    { changedFields: ["panelRoles"], interviewerIds: panelIds },
+                ),
+            );
+            await logAction({
+                employeeId: actor ?? null,
+                type: "UPDATE",
+                module: AUDIT_MODULE,
+                result: "SUCCESS",
+                notes: `Panel roles changed on interview "${interview.id}" (${changed} panelist(s))`,
+                tenantId: tenantId ?? null,
+            });
+        }
+
+        const names = await employeeNamesById(tx, tenantId, panelIds);
+        return {
+            interviewId: interview.id,
+            changed,
+            panel: panelIds.map((employeeId) => ({
+                employeeId,
+                employeeName: nameOf(names, employeeId),
+                panelRole: current.get(employeeId) ?? null,
+            })),
+        };
     }, { tenantId });
 };
 

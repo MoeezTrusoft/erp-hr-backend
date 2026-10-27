@@ -262,12 +262,31 @@ const acceptInvitation = async ({ tenantId, invitationId, note, via, tokenHash, 
 export const withdrawInvitation = async ({ tenantId, invitationId, reason = null, db = prisma } = {}) =>
   transitionInvitation({ tenantId, invitationId, to: "WITHDRAWN", responseNote: reason, db });
 
-/** The tenant's invitations, newest first, optionally narrowed. */
-export async function listInvitations({ tenantId, status = null, candidateId = null, limit = 50, db = prisma } = {}) {
+/** An optional positive-integer filter: null when absent, a 400 when malformed. */
+const optionalIdFilter = (value, field) => {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw Object.assign(new Error(`${field} must be a positive whole number`), {
+      status: 400,
+      code: "HR-RECRUITMENT-INVITATION-FILTER-INVALID",
+    });
+  }
+  return n;
+};
+
+/**
+ * The tenant's invitations, newest first, optionally narrowed by status,
+ * candidate or (Phase 7) the nurture run whose approval sent them. Every row
+ * carries its nurtureRunId (null for a recruiter's own invitation).
+ */
+export async function listInvitations({ tenantId, status = null, candidateId = null, nurtureRunId = null, limit = 50, db = prisma } = {}) {
   requireTenant(tenantId);
+  const runId = optionalIdFilter(nurtureRunId, "nurtureRunId");
   const where = scopedWhere(tenantId, {});
   if (status) where.status = String(status).trim().toUpperCase();
   if (candidateId != null) where.candidateId = Number(candidateId);
+  if (runId) where.nurtureRunId = runId;
   const items = await db.talentPoolInvitation.findMany({
     where,
     orderBy: { invitedAt: "desc" },
@@ -278,7 +297,7 @@ export async function listInvitations({ tenantId, status = null, candidateId = n
   // the clock has already left.
   const asOf = new Date();
   return {
-    items: items.map((row) => ({ ...presentInvitation(row), expired: isInvitationExpired(row, asOf) })),
+    items: items.map((row) => ({ ...presentInvitation(row), nurtureRunId: row.nurtureRunId ?? null, expired: isInvitationExpired(row, asOf) })),
     total: items.length,
   };
 }

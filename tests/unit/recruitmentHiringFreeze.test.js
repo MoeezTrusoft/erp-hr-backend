@@ -16,6 +16,7 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { approvalCentreDouble } from "./helpers/approval-centre-double.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 const OTHER_TENANT = "22222222-2222-2222-2222-222222222222";
@@ -101,13 +102,17 @@ const prisma = {
   employee: { findFirst: jest.fn(async () => ({ managerId: 12 })) },
 };
 
-// The HR Approval Centre owns the PENDING_APPROVAL move once every gate passes.
-const mockLegacySubmit = jest.fn(async () => ({}));
+// The HR Approval Centre owns the PENDING_APPROVAL move once every gate passes,
+// and (Phase 7) writes the transition row and the submitted event in the same
+// transaction: the double runs the REAL onSubmit (approval/adapters.js) on
+// `prisma`. The freeze gate must run BEFORE it, or a frozen submit would leave
+// those rows behind.
+const centre = approvalCentreDouble(prisma);
 jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
   legacyDecision: jest.fn(async () => {
     throw Object.assign(new Error("HR-4201"), { status: 409, code: "HR-4201" });
   }),
-  legacySubmit: mockLegacySubmit,
+  legacySubmit: centre.legacySubmit,
 }));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
@@ -138,6 +143,7 @@ const { setHiringFreeze, liftHiringFreeze, listHiringFreezes, activeFreezeFor } 
 
 beforeEach(() => {
   jest.clearAllMocks();
+  centre.reset();
   FREEZES = [];
   prisma.requisitionTransition.create.mockResolvedValue({ id: 1 });
   prisma.jobPosting.create.mockResolvedValue({ id: 1 });
@@ -229,6 +235,8 @@ describe("Phase 4 — the freeze blocks submission and publication, and nothing 
   it("refuses to SUBMIT a frozen requisition, with the freeze's reason in the error", async () => {
     await setHiringFreeze(TENANT, { scope: "COMPANY", reason: "Q4 budget review" });
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQUISITION });
+    // Armed, so a gate that ran AFTER the centre would leave its rows behind.
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { ...REQUISITION } });
 
     let caught;
     try {
@@ -240,7 +248,8 @@ describe("Phase 4 — the freeze blocks submission and publication, and nothing 
     expect(caught.status).toBe(409);
     expect(caught.message).toMatch(/Q4 budget review/);
     expect(caught.details.action).toBe("submission");
-    // A refused submit leaves no status flip and no history row.
+    // A refused submit never reaches the centre: no status flip, no history row.
+    expect(centre.legacySubmit).not.toHaveBeenCalled();
     expect(prisma.jobRequisition.update).not.toHaveBeenCalled();
     expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
   });
@@ -273,25 +282,43 @@ describe("Phase 4 — the freeze blocks submission and publication, and nothing 
   it("blocks an advance made through the generic update", async () => {
     await setHiringFreeze(TENANT, { scope: "COMPANY", reason: "Q4" });
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQUISITION });
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { ...REQUISITION } });
 
     await expect(updateRequisition(5, { status: "PENDING_APPROVAL" }, 9, TENANT)).rejects.toThrow(/hiring freeze/i);
     expect(prisma.jobRequisition.updateMany).not.toHaveBeenCalled();
+    expect(centre.legacySubmit).not.toHaveBeenCalled();
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
   });
 
   it("blocks submission through the legacy /api/hr endpoint too", async () => {
     // Otherwise the freeze would be bypassable by calling the older URL.
     await setHiringFreeze(TENANT, { scope: "COMPANY", reason: "Q4" });
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQUISITION });
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { ...REQUISITION } });
 
     await expect(legacySubmit(5, TENANT, 9, "please review")).rejects.toThrow(/hiring freeze/i);
+    expect(centre.legacySubmit).not.toHaveBeenCalled();
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
   });
 
   it("lets a non-frozen department submit while a different unit is frozen", async () => {
     await setHiringFreeze(TENANT, { scope: "BUSINESS_UNIT", departmentId: 99, reason: "other unit" });
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQUISITION });
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { ...REQUISITION } });
 
     await submitRequisition(5, TENANT, 9);
-    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
+    // The gate let it through to the centre, which opened the review.
+    expect(centre.legacySubmit).toHaveBeenCalledTimes(1);
+    expect(centre.legacySubmit).toHaveBeenCalledWith("REQUISITION", 5, undefined, {
+      requisition: { reason: null, transitionSource: "requisition.submit" },
+    });
+    expect(prisma.requisitionTransition.create).toHaveBeenCalledTimes(1);
+    expect(prisma.requisitionTransition.create.mock.calls[0][0].data).toMatchObject({
+      fromStatus: "DRAFT",
+      toStatus: "PENDING_APPROVAL",
+      actorId: 9,
+      source: "requisition.submit",
+    });
   });
 
   it("lets a frozen tenant close a requisition — a freeze is not a lock", async () => {

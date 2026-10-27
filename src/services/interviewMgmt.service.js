@@ -126,6 +126,9 @@ const shapeInterviewers = (interviewers = []) =>
     // Profile photo for the avatar (initials fallback handled client-side).
     avatar: link.employee?.photo_url ?? null,
     status: link.status ?? null,
+    // Recruitment Phase 7 (B5) — which form sections this panelist rates
+    // (TECHNICAL | HIRING_MANAGER | HR | CULTURE); null = every section.
+    panelRole: link.panelRole ?? null,
   }));
 
 // FE-facing interview row for the Interview Management list screen.

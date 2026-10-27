@@ -41,6 +41,8 @@ import { registerRecruitmentDispositionTools } from "./tools/recruitment-disposi
 import { registerOfferLifecycleTools } from "./tools/offer-lifecycle.tools.js";
 import { registerOfferExtensionTools } from "./tools/offer-extension.tools.js";
 import { registerOfferLetterTools } from "./tools/offer-letter.tools.js";
+import { registerRecruitmentDocumentDownloadTools } from "./tools/recruitment-document-download.tools.js";
+import { registerRetentionPolicyTools } from "./tools/retention-policy.tools.js";
 import { registerRecruitmentWorkspaceTools } from "./tools/recruitment-workspace.tools.js";
 import { registerInterviewSchedulingTools } from "./tools/interview-scheduling.tools.js";
 import { registerTestBlueprintTools } from "./tools/test-blueprint.tools.js";
@@ -338,6 +340,8 @@ export function registerAllTools(server) {
   registerOfferExtensionTools(server);
   // Phase 3a — versioned offer letters and the e-signature round trip.
   registerOfferLetterTools(server);
+  // Recruitment Phase 7: open offer letters, packet documents and item pictures from DAM.
+  registerRecruitmentDocumentDownloadTools(server);
   // Phase 3a — the interviewer and hiring manager workspaces.
   registerRecruitmentWorkspaceTools(server);
   // Phase 3a — slot offers, no-show and calendar re-sync.
@@ -360,6 +364,8 @@ export function registerAllTools(server) {
   registerOnboardingReadinessTools(server);
   registerOnboardingSelfTools(server);
   registerCandidatePrivacyTools(server);
+  // Recruitment Phase 7: read the tenant retention policy (the form prefill).
+  registerRetentionPolicyTools(server);
   // Recruitment Phase 5: talent pool nurture, the internal job board and
   // referrals, agencies and their portal, privacy operations (retention runs,
   // sign-off, data request exports) and the analytics threshold alerts.

@@ -8,12 +8,21 @@
 // audience must not depend on which URL performed the submit. The recruitment
 // approval matrix no longer decides who reviews, so it must not change routing.
 //
+// Phase 7: the event (and the transition row) is written INSIDE the centre's
+// submit transaction by onSubmit (approval/adapters.js), not by the surface.
+// legacy.js is mocked with a double that runs the REAL onSubmit on this
+// suite's prisma double (tests/unit/helpers/approval-centre-double.js), so the
+// routing below is the production routing, reached through each surface.
+//
 // Pinned here, per surface (management / generic PATCH / legacy /api/hr):
-//   * the event fires after the centre opens the review,
+//   * the surface hands the centre its id, reason and transition source and
+//     writes no transition / event of its own (exactly one of each per submit),
+//   * the event is enqueued on the centre's transaction client,
 //   * pendingApproverId is the requester's managerId and pendingStepOrder is 1,
 //   * a requester with no line manager routes as null (no invented recipient),
 //   * a configured matrix does not change the routing.
 import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+import { approvalCentreDouble } from "./helpers/approval-centre-double.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 
@@ -70,12 +79,14 @@ jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
   enqueueHrDomainEvent: jest.fn(async () => undefined),
 }));
 
-// The HR Approval Centre opens the review; its own module is out of scope here.
+// The HR Approval Centre opens the review and, in the same transaction, writes
+// the transition row and the routed event (the REAL onSubmit runs on `prisma`).
+const centre = approvalCentreDouble(prisma);
 jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
   legacyDecision: jest.fn(async () => {
     throw Object.assign(new Error("HR-4201"), { status: 409, code: "HR-4201" });
   }),
-  legacySubmit: jest.fn(async () => ({})),
+  legacySubmit: centre.legacySubmit,
 }));
 
 const { enqueueHrDomainEvent } = await import("../../src/services/hrDomainEvent.service.js");
@@ -87,9 +98,37 @@ const submittedEventOf = (nth = 0) => {
   const calls = enqueueHrDomainEvent.mock.calls.filter(([, args]) => args?.eventName === "hr.recruitment.requisition_submitted.v1");
   return calls[nth]?.[1] ?? null;
 };
+const submittedEventCalls = () =>
+  enqueueHrDomainEvent.mock.calls.filter(([, args]) => args?.eventName === "hr.recruitment.requisition_submitted.v1");
+
+// One submit = one centre call, one transition row, one routed event, all on
+// the centre's transaction client: the surface wrote neither row itself.
+const expectOneCentreSubmit = ({ id, reason, transitionSource, actorId, fromStatus = "DRAFT" }) => {
+  expect(centre.legacySubmit).toHaveBeenCalledTimes(1);
+  expect(centre.legacySubmit).toHaveBeenCalledWith("REQUISITION", id, reason ?? undefined, {
+    requisition: { reason: reason ?? null, transitionSource },
+  });
+  // The only status move is the centre's flip.
+  const flips = prisma.jobRequisition.update.mock.calls.filter(([arg]) => arg?.data && "status" in arg.data);
+  expect(flips).toEqual([[{ where: { id }, data: { status: "PENDING_APPROVAL" } }]]);
+  expect(prisma.requisitionTransition.create).toHaveBeenCalledTimes(1);
+  expect(prisma.requisitionTransition.create.mock.calls[0][0].data).toMatchObject({
+    requisitionId: id,
+    tenantId: TENANT,
+    fromStatus,
+    toStatus: "PENDING_APPROVAL",
+    reason: reason ?? null,
+    actorId,
+    source: transitionSource,
+  });
+  const events = submittedEventCalls();
+  expect(events).toHaveLength(1);
+  expect(events[0][0]).toBe(prisma);
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
+  centre.reset();
   prisma.requisitionApprovalRule.findMany.mockResolvedValue([]);
   prisma.employee.findFirst.mockResolvedValue({ managerId: 9 });
 });
@@ -98,9 +137,11 @@ describe("requisition_submitted routes to the requester's line manager on every 
   it("management submit routes to the line manager, at stage 1", async () => {
     const row = { id: 5, title: "Backend Engineer", status: "DRAFT", tenantId: TENANT, ...SUBMITTABLE };
     prisma.jobRequisition.findFirst.mockResolvedValue(row);
+    centre.arm({ tenantId: TENANT, actorId: 7, row });
 
     await mgmtSubmit(5, TENANT, 7);
 
+    expectOneCentreSubmit({ id: 5, transitionSource: "requisition.submit", actorId: 7 });
     const ev = submittedEventOf();
     expect(ev).not.toBeNull();
     expect(ev.payload).toMatchObject({
@@ -122,9 +163,13 @@ describe("requisition_submitted routes to the requester's line manager on every 
       .mockResolvedValueOnce(existing)
       .mockResolvedValue({ ...existing, status: "PENDING_APPROVAL" });
     prisma.jobRequisition.updateMany.mockResolvedValue({ count: 1 });
+    // The centre loads the requisition as the PATCH left it: still DRAFT, the
+    // flip is the centre's own.
+    centre.arm({ tenantId: TENANT, actorId: 6, row: existing });
 
     await updateRequisition(8, { status: "PENDING_APPROVAL" }, 6, TENANT);
 
+    expectOneCentreSubmit({ id: 8, transitionSource: "requisition.update", actorId: 6 });
     const ev = submittedEventOf();
     expect(ev).not.toBeNull();
     expect(ev.payload.pendingApproverId).toBe("9");
@@ -135,13 +180,16 @@ describe("requisition_submitted routes to the requester's line manager on every 
   it("legacy /api/hr submit emits the same routed event — the audience does not depend on the URL", async () => {
     const row = { id: 12, title: "Ops Analyst", status: "DRAFT", tenantId: TENANT, ...SUBMITTABLE };
     prisma.jobRequisition.findFirst.mockResolvedValue(row);
+    centre.arm({ tenantId: TENANT, actorId: 4, row });
 
     await legacySubmit(12, TENANT, 4, "please review");
 
+    expectOneCentreSubmit({ id: 12, reason: "please review", transitionSource: "requisition.legacy", actorId: 4 });
     const ev = submittedEventOf();
     expect(ev).not.toBeNull();
     expect(ev.payload.pendingApproverId).toBe("9");
     expect(ev.payload.pendingStepOrder).toBe(1);
+    expect(ev.actorId).toBe(4);
   });
 
   it("a configured recruitment matrix does not change the routing", async () => {
@@ -150,19 +198,24 @@ describe("requisition_submitted routes to the requester's line manager on every 
     ]);
     const row = { id: 5, title: "Backend Engineer", status: "DRAFT", tenantId: TENANT, ...SUBMITTABLE };
     prisma.jobRequisition.findFirst.mockResolvedValue(row);
+    centre.arm({ tenantId: TENANT, actorId: 7, row });
 
     await mgmtSubmit(5, TENANT, 7);
 
+    expectOneCentreSubmit({ id: 5, transitionSource: "requisition.submit", actorId: 7 });
     expect(submittedEventOf().payload.pendingApproverId).toBe("9");
+    expect(submittedEventOf().payload.pendingStepOrder).toBe(1);
   });
 
   it("a requester with no line manager routes as null — no invented recipient", async () => {
     prisma.employee.findFirst.mockResolvedValue({ managerId: null });
     const row = { id: 5, title: "Backend Engineer", status: "DRAFT", tenantId: TENANT, ...SUBMITTABLE };
     prisma.jobRequisition.findFirst.mockResolvedValue(row);
+    centre.arm({ tenantId: TENANT, actorId: 7, row });
 
     await mgmtSubmit(5, TENANT, 7);
 
+    expectOneCentreSubmit({ id: 5, transitionSource: "requisition.submit", actorId: 7 });
     const ev = submittedEventOf();
     expect(ev.payload.pendingApproverId).toBeNull();
     expect(ev.payload.pendingStepOrder).toBeNull();
@@ -171,9 +224,14 @@ describe("requisition_submitted routes to the requester's line manager on every 
   it("a refusal at the gate emits nothing — no audience for a submit that never happened", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ id: 5, status: "POSTED", tenantId: TENANT });
 
+    centre.arm({ tenantId: TENANT, actorId: 7, row: { id: 5, status: "POSTED", tenantId: TENANT } });
+
     await expect(mgmtSubmit(5, TENANT, 7)).rejects.toMatchObject({
       code: "HR-RECRUITMENT-REQUISITION-TRANSITION-INVALID",
     });
+    // Refused before the centre: no review opened, no row, no event.
+    expect(centre.legacySubmit).not.toHaveBeenCalled();
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
     expect(enqueueHrDomainEvent).not.toHaveBeenCalled();
   });
 });

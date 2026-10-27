@@ -36,6 +36,14 @@
 //   * AN UNCHANGED RENDER IS A REPLAY. The same template version and the same
 //     rendered text as the newest (unsent) version returns that version, so a
 //     double click does not make version 2 of an identical letter.
+//
+// Download (Phase 7, B7)
+//   * The letter prints the salary, so only scopes that may see compensation
+//     (ORG, FINANCE) open it, and only for an offer their offer read reaches
+//     (offerScopeWhere). A hiring manager reads the offer but not this file.
+//   * The media must be the offer's own: its current letter
+//     (Offer.offerLetterMediaId, a rendered or an uploaded letter), or a
+//     version's rendered / signed PDF of THAT offer. Nothing else is fetched.
 import crypto from "node:crypto";
 
 import prisma from "../lib/prisma.js";
@@ -54,6 +62,7 @@ import {
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
 import { generateOfferLetterPdf, uploadOfferLetterPdf } from "./offer-letter-pdf.service.js";
+import { readRecruitmentDocument } from "./recruitment-document-download.service.js";
 
 export const OFFER_LETTER_RENDERED_EVENT = "hr.recruitment.offer_letter_rendered.v1";
 export const DEFAULT_TEMPLATE_KEY = "STANDARD";
@@ -481,5 +490,60 @@ export async function listOfferLetterVersions({ tenantId, scope, offerId } = {})
         offerId: id,
         offerStatus: offer.status,
         items: rows.map((row, index) => presentLetterVersion(row, scope, { isCurrent: index === 0 })),
+    };
+}
+
+// ── Download (Phase 7, B7) ───────────────────────────────────────────────────
+
+/**
+ * Open an offer's letter PDF from DAM. With no versionId and signed false it
+ * is the offer's current letter (rendered or uploaded); versionId picks a
+ * rendered version of this offer, and signed the signed copy of that version
+ * (or of the newest one). Out-of-scope offers, other offers' versions and
+ * missing files all read as not found.
+ * @returns {Promise<{ offerId: number, versionId: number|null, version: number|null, signed: boolean, fileName: string, mimeType: string, size: number, contentBase64: string }>}
+ */
+export async function downloadOfferLetter({ tenantId, scope, offerId, versionId = null, signed = false } = {}) {
+    requireTenant(tenantId);
+    if (!scope?.canSeeCompensation) {
+        throw fail("Opening an offer letter needs access to compensation", 403, "HR-RECRUITMENT-OFFER-LETTER-FORBIDDEN");
+    }
+    const id = positiveId(offerId, "offer id");
+    const offer = await prisma.offer.findFirst({
+        where: withTenant(tenantId, { id, ...offerScopeWhere(scope) }),
+        select: { id: true, offerLetterMediaId: true },
+    });
+    if (!offer) throw fail("Offer not found", 404, "HR-RECRUITMENT-OFFER-NOT-FOUND");
+
+    const missing = () => fail("This offer has no such letter", 404, "HR-RECRUITMENT-OFFER-LETTER-NOT-FOUND");
+    let version = null;
+    let mediaId = null;
+    if (versionId != null || signed === true) {
+        // Letter versions exist only with the offerLetters feature.
+        requireOfferLettersEnabled();
+        version = versionId != null
+            ? await prisma.offerLetterVersion.findFirst({
+                where: withTenant(tenantId, { id: positiveId(versionId, "letter version id"), offerId: offer.id }),
+            })
+            : await findNewestLetterVersion(prisma, tenantId, offer.id);
+        if (!version) throw missing();
+        mediaId = signed === true ? version.signedMediaId : version.mediaId;
+    } else {
+        mediaId = offer.offerLetterMediaId;
+    }
+    if (!Number.isInteger(Number(mediaId)) || Number(mediaId) <= 0) throw missing();
+
+    const suffix = version ? `-v${version.version}${signed === true ? "-signed" : ""}` : "";
+    const file = await readRecruitmentDocument({
+        mediaId: Number(mediaId),
+        fallbackName: `offer-${offer.id}-letter${suffix}.pdf`,
+        log: { tenantId, offerId: offer.id, versionId: version?.id ?? null },
+    });
+    return {
+        offerId: offer.id,
+        versionId: version?.id ?? null,
+        version: version?.version ?? null,
+        signed: signed === true,
+        ...file,
     };
 }

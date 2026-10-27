@@ -38,7 +38,6 @@ const prisma = {
             return {
                 ...row,
                 candidate: { id: row.candidateId, firstName: "Ayesha", email: "ayesha@example.com", anonymizedAt: null, status: "active" },
-                requisition: { id: row.requisitionId, title: "Backend Engineer", tenantId: TENANT },
             };
         }),
         update: jest.fn(async ({ where, data }) => {
@@ -46,6 +45,10 @@ const prisma = {
             return { id: where.id, ...data };
         }),
         deleteMany: jest.fn(async () => ({ count: 1 })),
+    },
+    // Phase 7 — a draft has no requisition relation: the requisition is read on its own.
+    jobRequisition: {
+        findFirst: jest.fn(async ({ where }) => ({ id: where.id, title: "Backend Engineer", tenantId: TENANT })),
     },
     // Phase 2 / D-11 — a draft save probes the do-not-contact register.
     candidateDncEntry: { findFirst: jest.fn(async () => null) },
@@ -151,7 +154,8 @@ describe("Phase 5 / FR-04.07 — loading behind the link", () => {
         expect(draft.candidateId).toBe(7);
         expect(draft.jobTitle).toBe("Backend Engineer");
         expect(Object.keys(draft).sort()).toEqual([
-            "candidateId", "expiresAt", "firstName", "jobTitle", "payload", "requisitionId", "resumeMediaId",
+            // Phase 7 — `resume` (a reference, never the media id).
+            "candidateId", "expiresAt", "firstName", "jobTitle", "payload", "requisitionId", "resume",
         ]);
     });
 
@@ -191,6 +195,27 @@ describe("Phase 5 / FR-04.07 — submitting through the gates", () => {
         expect(draftRow.submittedAt).toBeTruthy();
     });
 
+    it("reads the requisition on its own, in the draft's tenant (a draft has no requisition relation)", async () => {
+        await saveApplicationDraft({ tenantId: TENANT, requisitionId: 5, email: "ayesha@example.com", body: { firstName: "Ayesha" } });
+        const token = savedTokenOf();
+        await loadApplicationDraft({ token });
+        await submitApplicationDraft({ token });
+        for (const [args] of prisma.applicationDraft.findUnique.mock.calls) expect(Object.keys(args.include)).toEqual(["candidate"]);
+        expect(prisma.jobRequisition.findFirst.mock.calls.map(([a]) => a.where)).toEqual([
+            { id: 5, tenantId: TENANT },
+            { id: 5, tenantId: TENANT },
+        ]);
+    });
+
+    it("a draft whose requisition is gone is the uniform dead link", async () => {
+        await saveApplicationDraft({ tenantId: TENANT, requisitionId: 5, email: "ayesha@example.com", body: {} });
+        const token = savedTokenOf();
+        prisma.jobRequisition.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+        expect(await loadApplicationDraft({ token })).toBeNull();
+        await expect(submitApplicationDraft({ token })).rejects.toMatchObject({ code: "HR-PORTAL-DRAFT-INVALID" });
+        expect(submitPublicApplication).not.toHaveBeenCalled();
+    });
+
     it("a bad token refuses before the intake is invoked", async () => {
         await expect(submitApplicationDraft({ token: "garbage" })).rejects.toMatchObject({
             code: "HR-PORTAL-DRAFT-INVALID",
@@ -219,6 +244,7 @@ describe("Phase 5 / FR-04.07 — payload shape", () => {
         expect(parseDraftPayload({}).firstName).toBeNull();
         expect(parseDraftPayload({ answers: { 1: "x" } }).answers).toEqual({ 1: "x" });
         expect(() => parseDraftPayload({ answers: [] })).toThrow();
-        expect(parseDraftPayload({ resumeMediaId: "55" }).resumeMediaId).toBe(55);
+        // Phase 7 — the payload no longer carries a typed media id at all.
+        expect(parseDraftPayload({ resumeMediaId: "55" })).not.toHaveProperty("resumeMediaId");
     });
 });

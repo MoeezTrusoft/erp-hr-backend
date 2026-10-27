@@ -20,6 +20,10 @@
 //               own, so the destructive path has two independent gates.
 //   * FAILED    the error text, so a silent tenant is visible as a failure.
 //
+// Phase 7: a manual hr_candidate_retention_apply goes through the same
+// recording path (runManualRetention), so the runs list shows it too; an
+// APPLY it performed is signed off by the caller.
+//
 // The switch: the owner signs off a COMPLETED dry-run from the last 7 days
 // (hr_candidate_retention_signoff); that stamps the run and turns
 // retentionApplyEnabled on with its timestamps and the run id. The owner can
@@ -212,7 +216,22 @@ export async function runTenantRetention({ tenantId, envMode, asOf, limit = 100 
         log.error({ tenantId, intendedMode, errMessage: err?.message }, "retention run failed");
     }
 
+    const { run, reportSent } = await recordRun({ tenantId, at, intendedMode, result, error, limit, state });
+    return { run, result, error, reportSent };
+}
+
+/**
+ * Record one run (the job's and a manual call's shared path) and, for a
+ * completed dry-run, send its report. `signedOffById` stamps an APPLY run with
+ * the employee who ran it by hand; a dry-run is never stamped, so it stays
+ * open for the owner's sign-off.
+ */
+async function recordRun({ tenantId, at, intendedMode, result, error, limit, state, signedOffById = null }) {
     const data = buildRunRecord({ tenantId, asOf: at, intendedMode, result, error, limit });
+    if (data.mode === RETENTION_RUN_MODE.APPLY && signedOffById) {
+        data.signedOffById = signedOffById;
+        data.signedOffAt = new Date();
+    }
     // The run row is written on its own first: a report that cannot be sent
     // must never cost the record of what the run found.
     const run = await tenantTransaction(prisma, async (tx) => await tx.candidateRetentionRun.create({ data }), { tenantId });
@@ -226,7 +245,51 @@ export async function runTenantRetention({ tenantId, envMode, asOf, limit = 100 
             log.error({ tenantId, runId: run.id, errMessage: err?.message }, "retention dry-run report not sent");
         }
     }
-    return { run, result, error, reportSent };
+    return { run, reportSent };
+}
+
+/**
+ * hr_candidate_retention_apply — a recruiter's manual run, recorded like the
+ * nightly one (Phase 7: it was missing from the runs list).
+ *
+ * What gets anonymised is unchanged: applyRetention runs exactly as the tool
+ * asked (dry-run unless dryRun is false) with its own gates (the flag and the
+ * tenant's signed-off switch), and its result goes back to the caller as
+ * before, with the run's id added. The run row is APPLY when it erased, signed
+ * off by the caller (the employee who authorised that erasure); a dry-run,
+ * also one an apply was refused into, is a DRY_RUN with its report sent to the
+ * owner like the job's. A failure is recorded FAILED and then thrown.
+ *
+ * A run row that cannot be written does not undo an erasure that happened: the
+ * result is still returned, with runId null, and the failure is logged.
+ */
+export async function runManualRetention({ tenantId, actorId = null, dryRun = true, asOf, limit = 100 } = {}) {
+    requireTenant(tenantId);
+    const at = new Date(asOf ?? Date.now());
+    const wantsApply = dryRun === false;
+    const actor = positiveInt(actorId);
+    const intendedMode = wantsApply ? RETENTION_RUN_MODE.APPLY : RETENTION_RUN_MODE.DRY_RUN;
+
+    let result = null;
+    let error = null;
+    try {
+        result = await applyRetention({ tenantId, asOf: at, actorId: actor, dryRun: !wantsApply, limit });
+    } catch (err) {
+        error = err;
+        recordRetentionRun("failed");
+        log.error({ tenantId, intendedMode, errMessage: err?.message }, "manual retention run failed");
+    }
+
+    let run = null;
+    try {
+        const state = await readRetentionState(prisma, tenantId);
+        ({ run } = await recordRun({ tenantId, at, intendedMode, result, error, limit, state, signedOffById: actor }));
+    } catch (err) {
+        log.error({ tenantId, intendedMode, errMessage: err?.message }, "manual retention run not recorded");
+    }
+    if (error) throw error;
+    log.info({ tenantId, runId: run?.id ?? null, mode: run?.mode ?? intendedMode, actorId: actor }, "manual retention run recorded");
+    return { ...result, runId: run?.id ?? null, runMode: run?.mode ?? null };
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────

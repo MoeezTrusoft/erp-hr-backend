@@ -515,7 +515,9 @@ export async function sourceCandidates(tx, env, kind) {
   }
   return candidates;
 }
-export async function onSubmit(tx, env, kind, s) {
+// `meta` (recruitment only): { reason, transitionSource } for the requisition's
+// transition row; see the REQUISITION block at the end.
+export async function onSubmit(tx, env, kind, s, meta = {}) {
   if (kind === 'ATTENDANCE_CORRECTION' && ((!s.row.checkIn && !s.row.checkOut) || !s.row.reason?.trim() || !s.row.evidence?.trim() || !s.row.reasonCategory || !s.row.evidenceDate)) fail('Complete the supported missing time, reason category, explanation, evidence reference and source date before submitting.',422);
   if (kind === "TIMESHEET" && !s.snapshot.entries.length)
     fail("Cannot submit an empty timesheet", 422);
@@ -535,6 +537,31 @@ export async function onSubmit(tx, env, kind, s) {
       where: { id: s.row.id },
       data: changes,
     });
+  // Recruitment Phase 7 — a requisition's transition row and its
+  // hr.recruitment.requisition_submitted.v1 are written in THIS transaction,
+  // with the status flip, whichever surface submitted (the recruitment
+  // services, the legacy /api/hr route or hr_approval_submit itself). A
+  // rolled-back submit leaves neither; a committed one cannot miss them.
+  if (kind === "REQUISITION") {
+    const [{ recordRequisitionTransition }, { emitRequisitionSubmittedEvent }] = await Promise.all([
+      import("../requisitionWorkflow.service.js"),
+      import("../requisitionApprovalChain.service.js"),
+    ]);
+    await recordRequisitionTransition(tx, {
+      requisitionId: s.row.id,
+      tenantId: env.tenantId,
+      fromStatus: s.row.status,
+      toStatus: "PENDING_APPROVAL",
+      reason: meta.reason ?? null,
+      actorId: env.who.id,
+      source: meta.transitionSource ?? "approval.submit",
+    });
+    await emitRequisitionSubmittedEvent(tx, {
+      tenantId: env.tenantId,
+      requisition: { ...s.row, ...changes },
+      actorId: env.who.id,
+    });
+  }
 }
 export async function onReturn(tx, kind, source, target) {
   if (target !== "INITIATOR") return;

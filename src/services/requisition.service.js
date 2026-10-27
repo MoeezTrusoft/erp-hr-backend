@@ -15,7 +15,6 @@ import { requisitionDecisionEvent, requisitionPostedEvent, requisitionCreatedEve
 import { eventContext } from "../lib/event-context.util.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
 import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
-import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 
@@ -382,28 +381,13 @@ export const updateRequisition = async (id, data, updatedBy, tenantId) => {
   }
 
   if (submitAfterUpdate) {
-    await legacySubmit("REQUISITION", id, data.comments ?? data.reason ?? undefined);
     // Phase 4 closure — the submission emits the same routed event the
-    // management and legacy surfaces do, so the audience cannot depend on the URL.
-    await tenantTransaction(
-      prisma,
-      async (tx) => {
-        await recordRequisitionTransition(tx, {
-          requisitionId: Number(id),
-          tenantId,
-          fromStatus: existing.status,
-          toStatus: "PENDING_APPROVAL",
-          reason: data.comments ?? data.reason ?? null,
-          actorId: updatedBy,
-          source: "requisition.update",
-        });
-        const submitted = await tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-        if (submitted) {
-          await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: submitted, actorId: updatedBy });
-        }
-      },
-      { tenantId },
-    );
+    // management and legacy surfaces do, so the audience cannot depend on the
+    // URL. Phase 7: the centre writes it (and the transition row) inside its
+    // submit transaction (approval/adapters.js onSubmit).
+    await legacySubmit("REQUISITION", id, data.comments ?? data.reason ?? undefined, {
+      requisition: { reason: data.comments ?? data.reason ?? null, transitionSource: "requisition.update" },
+    });
   }
 
   const updatedRequi = await prisma.jobRequisition.findFirst({

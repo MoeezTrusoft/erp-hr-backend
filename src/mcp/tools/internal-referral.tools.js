@@ -51,7 +51,7 @@ const actorOf = (user) => {
 export function registerInternalReferralTools(server) {
   server.tool(
     "hr_recruitment_referrals_list",
-    `List employee referrals, newest first, with their status, hire date and bonus status. Filters: status (${REFERRAL_STATUSES.join(" | ")}), bonusStatus (${BONUS_STATUSES.join(" | ")}), referrerEmployeeId, requisitionId. Hiring managers see the referrals on their own requisitions; the bonus amount is shown to recruiters and finance only.`,
+    `List employee referrals, newest first, with their status, hire date and bonus status, the referring employee (referrerEmployeeId and referrerName) and who decided the bonus (bonusDecidedById and bonusDecidedByName). Filters: status (${REFERRAL_STATUSES.join(" | ")}), bonusStatus (${BONUS_STATUSES.join(" | ")}), referrerEmployeeId, requisitionId. Hiring managers see the referrals on their own requisitions; the bonus amount is shown to recruiters and finance only.`,
     {
       status: z.enum(REFERRAL_STATUSES).optional().describe("Referral status"),
       bonusStatus: z.enum(BONUS_STATUSES).optional().describe("Bonus status"),

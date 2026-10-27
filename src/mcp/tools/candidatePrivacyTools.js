@@ -15,6 +15,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import * as privacy from "../../services/candidatePrivacy.service.js";
+import { runManualRetention } from "../../services/retention-run.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -201,7 +202,7 @@ export function registerCandidatePrivacyTools(server) {
   // 10 ── RETENTION APPLY ─────────────────────────────────────────────────────
   server.tool(
     "hr_candidate_retention_apply",
-    "Apply retention to due candidates. DRY RUN unless dryRun is explicitly false — anonymization is irreversible",
+    "Apply retention to due candidates. DRY RUN unless dryRun is explicitly false — anonymization is irreversible. Every call is recorded as a retention run (runId in the result; it appears on hr_candidate_retention_runs_list): APPLY signed off by you when it erased, else DRY_RUN with its report sent to the data-policy owner",
     {
       dryRun: z.boolean().optional().describe("Defaults to true; the destructive path requires an explicit false"),
       asOf: z.string().optional(),
@@ -210,7 +211,9 @@ export function registerCandidatePrivacyTools(server) {
     withToolError(async ({ dryRun, asOf, limit }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
-      const data = await privacy.applyRetention({
+      // Phase 7 — the run-recording path the nightly job uses; what it
+      // anonymises is still applyRetention's decision.
+      const data = await runManualRetention({
         tenantId: getTenant(user),
         asOf: asOf ? new Date(asOf) : new Date(),
         actorId: user.employeeId ?? null,

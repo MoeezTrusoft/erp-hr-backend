@@ -129,19 +129,21 @@ export function registerTalentPoolMgmtTools(server) {
   // ── INVITATION LIFECYCLE (FR-10 residue) ────────────────────────────────
   server.tool(
     "hr_talent_pool_invitation_list",
-    "List talent-pool invitations with status, expiry, answer and the derived 'expired' flag (newest first; optionally narrowed by status or candidate)",
+    "List talent-pool invitations with status, expiry, answer, the nurture run that sent each (nurtureRunId, null for a recruiter's own) and the derived 'expired' flag (newest first; optionally narrowed by status, candidate or nurture run)",
     {
       status: z.enum(["INVITED", "ACCEPTED", "DECLINED", "WITHDRAWN", "EXPIRED"]).optional(),
       candidateId: z.coerce.number().int().positive().optional(),
+      nurtureRunId: z.coerce.number().int().positive().optional().describe("Only the invitations this nurture run sent (references TalentPoolNurtureRun)"),
       limit: z.coerce.number().int().positive().max(200).optional(),
     },
-    withToolError(async ({ status, candidateId, limit }) => {
+    withToolError(async ({ status, candidateId, nurtureRunId, limit }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const data = await listInvitations({
         tenantId: user.tenantId,
         status: status ?? null,
         candidateId: candidateId ?? null,
+        nurtureRunId: nurtureRunId ?? null,
         limit,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };

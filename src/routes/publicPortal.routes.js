@@ -36,6 +36,12 @@
 //   * Recruitment Phase 6 — the same link can decline every offered slot
 //     (POST /candidates/interview-slots/decline { token, reason? }): one 200
 //     for a live link, the same 404 for every other one.
+//   * Recruitment Phase 7 — the careers resume upload
+//     (POST /candidates/resume { fileName, mimeType, contentBase64,
+//     draftToken? }): PDF only, the portal upload rules, its own rate budget.
+//     The answer is an opaque `resumeRef` for this tenant (bound to the draft
+//     when a draft token is given), never a storage key. Draft save and the
+//     direct apply take that reference; a typed resumeMediaId is a 400.
 import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import { listPublicJobs, getPublicJob, submitPublicApplication } from "../services/publicPortal.service.js";
@@ -47,6 +53,7 @@ import {
     submitApplicationDraft,
 } from "../services/applicationDraft.service.js";
 import { getSlotOfferForCandidate, confirmSlotOffer, declineSlotOffer } from "../services/interview-slot-offer.service.js";
+import { PORTAL_RESUME_CODES, resumeMediaIdForApply, uploadPortalResume } from "../services/portal-resume-upload.service.js";
 import logger from "../lib/logger.js";
 import { rateLimit as sharedRateLimit } from "../lib/rate-limit.util.js";
 
@@ -95,6 +102,9 @@ const LIMITS = Object.freeze({
     slotConfirm: 10,
     // Phase 6 — declining every slot has its own budget too.
     slotDecline: 10,
+    // Phase 7 — the resume upload (up to 10 MB each) spends neither the
+    // application budget nor the reader's.
+    resumeUpload: 6,
 });
 
 const limiters = Object.freeze(Object.fromEntries(
@@ -156,10 +166,13 @@ router.post(
     "/jobs/:id/apply",
     express.json({ limit: "256kb" }),
     ...guard("apply", async (req, res, tenantId) => {
+        // Phase 7 — a resume only through this tenant's upload reference.
+        const resumeMediaId = resumeMediaIdForApply({ tenantId, body: req.body });
         const result = await submitPublicApplication({
             tenantId,
             requisitionId: req.params.id,
             body: req.body,
+            resumeMediaId,
         });
         return res.status(201).json({ success: true, data: result });
     }),
@@ -225,7 +238,12 @@ router.post(
         } catch (err) {
             const status = Number(err?.status) || 500;
             if (status >= 500) logger.error({ err: err?.message }, "draft save failed");
-            return res.status(status).json({ success: false, message: status >= 500 ? "Something went wrong" : err.message });
+            return res.status(status).json({
+                success: false,
+                message: status >= 500 ? "Something went wrong" : err.message,
+                // Phase 7 — a refused resume reference carries its code.
+                ...(status < 500 && err?.details ? { details: err.details } : {}),
+            });
         }
     }),
 );
@@ -270,6 +288,39 @@ router.post(
                 message: actionable ? err.message : "This draft link is not valid",
                 ...(actionable && err?.details ? { details: err.details } : {}),
             });
+        }
+    }),
+);
+
+// POST /public/candidates/resume — Phase 7: store the visitor's resume (PDF,
+// at most 10 MB, base64 in JSON) and answer an opaque reference for the draft
+// save or the apply. A refused file is a 400 with details { code, reason }; a
+// bad draft token is a 400 with its code; DAM being down is a 503 "try again".
+const RESUME_TRY_AGAIN = Object.freeze({
+    success: false,
+    message: "We could not store your resume right now. Please try again in a few minutes.",
+    details: { code: PORTAL_RESUME_CODES.UNAVAILABLE },
+});
+router.post(
+    "/candidates/resume",
+    express.json({ limit: "15mb" }),
+    ...guard("resumeUpload", async (req, res, tenantId) => {
+        try {
+            const body = req.body ?? {};
+            const result = await uploadPortalResume({
+                tenantId,
+                resume: { fileName: body.fileName, mimeType: body.mimeType, contentBase64: body.contentBase64 },
+                draftToken: body.draftToken ?? null,
+            });
+            return res.status(201).json({ success: true, data: result });
+        } catch (err) {
+            const status = Number(err?.status) || 500;
+            if (status === 404) return res.status(404).json({ success: false, message: "Not found" });
+            if (status >= 500) {
+                logger.error({ err: err?.message, code: err?.code ?? null }, "portal resume upload failed");
+                return res.status(503).json(RESUME_TRY_AGAIN);
+            }
+            return res.status(status).json({ success: false, message: err.message, ...(err?.details ? { details: err.details } : {}) });
         }
     }),
 );

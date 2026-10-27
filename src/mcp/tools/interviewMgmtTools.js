@@ -21,6 +21,7 @@ import {
   checkInterviewerAvailability,
   markCalendarSync,
   listLifecycleEvents,
+  setInterviewPanelRoles,
 } from "../../services/interviewSchedule.service.js";
 import {
   createTemplate,
@@ -338,7 +339,7 @@ export function registerInterviewMgmtTools(server) {
 
   server.tool(
     "hr_interview_availability_check",
-    "Check interviewer availability for a proposed slot (§5.2/5.2a): returns hard-blocked interviewers (approved leave — never overridable) and non-working-day warnings (overridable with authorization + reason). Call BEFORE scheduling or confirming.",
+    "Check interviewer availability for a proposed slot (§5.2/5.2a): returns hard-blocked interviewers (approved leave — never overridable) and non-working-day warnings (overridable with authorization + reason; the slot's weekday is counted in the company's recruitment time zone, returned as timeZone). Call BEFORE scheduling or confirming.",
     {
       scheduledAt: z.string().describe("Proposed slot start (ISO 8601)"),
       durationMinutes: z.coerce.number().int().positive().optional().describe("Slot length (default 60)"),
@@ -392,6 +393,33 @@ export function registerInterviewMgmtTools(server) {
       const data = await listLifecycleEvents({ interviewId, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_interview_lifecycle_list")
+  );
+
+  // ── Recruitment Phase 7 (B5) — panel roles ──────────────────────────────
+
+  server.tool(
+    "hr_recruitment_interview_panel_roles_set",
+    "Set or clear panelists' panel roles on an interview that has not started yet (flag evaluationForms). The role decides which evaluation form sections the panelist rates: TECHNICAL | HIRING_MANAGER | HR | CULTURE; null clears it (the panelist rates every section). Only the listed panelists change. Recruiters, or the hiring manager of the interview's requisition.",
+    {
+      interviewId: z.coerce.number().int().positive().describe("Interview id"),
+      roles: z.array(z.object({
+        employeeId: z.coerce.number().int().positive().describe("A panelist's employee id (must be on the interview's panel)"),
+        panelRole: z.enum(PANEL_ROLES).nullable().describe("TECHNICAL | HIRING_MANAGER | HR | CULTURE, or null to clear"),
+      })).min(1).max(20).describe("The panelists to change"),
+    },
+    withToolError(async ({ interviewId, roles }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const scope = resolveRecruitmentScope(user);
+      const data = await setInterviewPanelRoles({
+        interviewId,
+        roles,
+        tenantId: user.tenantId,
+        actorId: scope.employeeId ?? user.employeeId ?? null,
+        scope,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_recruitment_interview_panel_roles_set")
   );
 
   // ── Phase 7 / §5.5–5.5b — scorecard templates ───────────────────────────

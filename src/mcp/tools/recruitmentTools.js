@@ -34,6 +34,7 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import { PUBLICATION_CHANNELS } from "../../lib/requisitionPublication.js";
+import { PANEL_ROLES } from "../../lib/evaluation-form.util.js";
 import { listQuestions } from "../../services/applicationQuestion.service.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 
@@ -457,6 +458,16 @@ export function registerRecruitmentTools(server) {
         .enum(["PHONE_SCREEN", "TECHNICAL", "BEHAVIORAL", "PANEL", "FINAL", "ONSITE", "VIDEO"])
         .describe("InterviewType enum — one of PHONE_SCREEN | TECHNICAL | BEHAVIORAL | PANEL | FINAL | ONSITE | VIDEO"),
       interviewerIds: z.array(z.string()).optional().describe("Interviewer employee ids (numeric strings), e.g. ['2002','3003']"),
+      panelRoles: z
+        .array(
+          z.object({
+            employeeId: z.union([z.string(), z.number()]).describe("One of interviewerIds"),
+            panelRole: z.enum(PANEL_ROLES).nullable().describe("Which evaluation form sections this panelist rates; null = every section"),
+          })
+        )
+        .max(20)
+        .optional()
+        .describe("Recruitment Phase 7: optional panel role per interviewer (evaluationForms flag; 503 HR-RECRUITMENT-EVALUATION-FORMS-DISABLED when off)"),
       location: z.string().optional().describe("Interview location or meeting link, e.g. 'Zoom'"),
     },
     withToolError(async (args) => {

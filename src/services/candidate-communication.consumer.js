@@ -29,6 +29,15 @@
 // re-read under the tenant, and the row is queued with no application. With
 // the flag off, or for an invitation that is no longer open, it maps to
 // nothing.
+//
+// Phase 7 — application_created is not acknowledged when the application came
+// from accepting a nurture (role) invitation: the candidate's acceptance
+// already confirmed it. The marker is what the acceptance intake writes in the
+// same transaction as the application (sourceChannel TALENT_POOL, sourceDetail
+// "nurture:<runId>"), checked against an invitation of that run for that
+// candidate and role, so a recruiter typing the same detail does not mute it.
+// candidate_checked_in (reception checked the candidate in for an on-site
+// test) resolves through its interview like the interview events.
 import Redis from "ioredis";
 
 import prisma from "../lib/prisma.js";
@@ -161,6 +170,31 @@ async function isPortalIntake(tenantId, applicationId) {
     return Boolean(row);
 }
 
+// The detail talent-nurture.service writes on an accepted invitation's
+// application (lib/talent-nurture.util.js nurtureSourceDetail).
+const NURTURE_DETAIL = /^nurture:(\d+)$/;
+
+/** True when the application was created by accepting a nurture invitation. */
+async function isInvitationAcceptanceIntake(tenantId, applicationId) {
+    const row = await prisma.application.findFirst({
+        where: withTenant(tenantId, { id: applicationId }),
+        select: { candidateId: true, jobRequisitionId: true, sourceChannel: true, sourceDetail: true },
+    });
+    if (row?.sourceChannel !== "TALENT_POOL") return false;
+    const runId = positiveInt(NURTURE_DETAIL.exec(String(row.sourceDetail ?? ""))?.[1]);
+    if (!runId) return false;
+    const invitation = await prisma.talentPoolInvitation.findFirst({
+        where: withTenant(tenantId, { nurtureRunId: runId, candidateId: row.candidateId, jobRequisitionId: row.jobRequisitionId }),
+        select: { id: true },
+    });
+    return Boolean(invitation);
+}
+
+async function applicationCreatedExtra(tenantId, applicationId) {
+    if (await isPortalIntake(tenantId, applicationId)) return { portalIntake: true, invitationAcceptance: false };
+    return { portalIntake: false, invitationAcceptance: await isInvitationAcceptanceIntake(tenantId, applicationId) };
+}
+
 async function resolveTargets(tenantId, eventName, payload, template) {
     if (template?.target === COMMUNICATION_TARGETS.INVITATION) return resolveInvitationTargets(tenantId, payload);
     if (eventName === EVENTS.REQUISITION_CLOSED) return resolveRequisitionTargets(tenantId, payload);
@@ -169,13 +203,19 @@ async function resolveTargets(tenantId, eventName, payload, template) {
         return resolveOfferTargets(tenantId, payload, { expiryDate: payload.expiryDate ?? null });
     }
     if (
-        [EVENTS.INTERVIEW_SCHEDULED, EVENTS.INTERVIEW_RESCHEDULED, EVENTS.INTERVIEW_CANCELLED, EVENTS.INTERVIEW_REMINDER].includes(eventName)
+        [
+            EVENTS.INTERVIEW_SCHEDULED,
+            EVENTS.INTERVIEW_RESCHEDULED,
+            EVENTS.INTERVIEW_CANCELLED,
+            EVENTS.INTERVIEW_REMINDER,
+            EVENTS.CANDIDATE_CHECKED_IN,
+        ].includes(eventName)
     ) {
         return resolveInterviewTargets(tenantId, payload);
     }
     const application = await loadApplicationForCommunication({ tenantId, applicationId: payload.applicationId });
     if (!application) return [];
-    const extra = eventName === EVENTS.APPLICATION_CREATED ? { portalIntake: await isPortalIntake(tenantId, application.id) } : {};
+    const extra = eventName === EVENTS.APPLICATION_CREATED ? await applicationCreatedExtra(tenantId, application.id) : {};
     return [{ application, extra }];
 }
 

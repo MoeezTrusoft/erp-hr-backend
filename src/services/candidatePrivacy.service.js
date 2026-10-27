@@ -429,6 +429,50 @@ export async function getRetentionPolicy({ tenantId, appliesTo } = {}, options =
   });
 }
 
+// Phase 7 — what the retention form starts from. There is no invented default
+// window: with no policy stored there is no clock (rule 5), so the nightly run
+// skips the population. That is the default this reports, with isDefault true.
+export const DEFAULT_RETENTION_POLICY = Object.freeze({
+  retentionMonths: null,
+  legalBasis: null,
+  isActive: false,
+});
+
+const presentRetentionPolicy = (appliesTo, row) =>
+  row
+    ? {
+      appliesTo,
+      retentionMonths: row.retentionMonths ?? null,
+      legalBasis: row.legalBasis ?? null,
+      isActive: row.isActive === true,
+      isDefault: false,
+      createdById: row.createdById ?? null,
+      createdAt: row.created_at ?? null,
+      updatedAt: row.updated_at ?? null,
+    }
+    : { appliesTo, ...DEFAULT_RETENTION_POLICY, isDefault: true, createdById: null, createdAt: null, updatedAt: null };
+
+/**
+ * hr_candidate_retention_policy_get — the tenant's stored policy per
+ * population (APPLICANT, TALENT_POOL, or the one asked for), else the default
+ * the run uses (no clock) with isDefault true. A stored row that is not active
+ * is returned as stored (isActive false): the run ignores it as it does a
+ * missing one.
+ * @returns {Promise<{ items: object[] }>}
+ */
+export async function getRetentionPolicyView({ tenantId, appliesTo = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const populations = appliesTo == null || appliesTo === ""
+    ? [...RETENTION_POPULATIONS]
+    : [requireEnum(appliesTo, RETENTION_POPULATIONS, "appliesTo", "HR-RECRUITMENT-RETENTION-POPULATION-INVALID")];
+  const rows = await db.candidateRetentionPolicy.findMany({
+    where: withTenant(tenantId, { appliesTo: { in: populations } }),
+  });
+  const byPopulation = new Map(rows.map((row) => [row.appliesTo, row]));
+  return { items: populations.map((population) => presentRetentionPolicy(population, byPopulation.get(population))) };
+}
+
 const addMonths = (date, months) => {
   const out = new Date(date);
   out.setMonth(out.getMonth() + months);

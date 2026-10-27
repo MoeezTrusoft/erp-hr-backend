@@ -22,6 +22,7 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere, scopedData, withTenant } from "../lib/tenancy.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
 
 const MASK = "••••••";
@@ -65,6 +66,22 @@ const summarizeApprovals = (approvals) => {
     }
   }
   return { approvedBy, rejectedBy, reason, stages: approvals };
+};
+
+// Recruitment Phase 7: the approval chips showed bare employee ids. Resolve
+// every `by` of the page's rows in one query under the tenant and add `byName`
+// next to it (null when the id does not resolve, e.g. a legacy text value).
+const withApproverNames = async (rows, tenantId) => {
+  const entries = rows.flatMap((row) => [...(row.approvals?.approvedBy ?? []), ...(row.approvals?.rejectedBy ?? [])]);
+  if (!entries.length) return rows;
+  let names = new Map();
+  try {
+    names = await employeeNamesById(prisma, tenantId, entries.map((entry) => entry.by));
+  } catch (err) {
+    logger.warn({ err: err?.message, tenantId }, "offer manage: approver names unavailable");
+  }
+  for (const entry of entries) entry.byName = nameOf(names, entry.by);
+  return rows;
 };
 
 // Mask the sensitive base of a compensation JSON blob unless showSensitive.
@@ -208,7 +225,10 @@ export const listOffersManage = async ({
   ]);
 
   return {
-    items: offers.map((offer) => toManageRow(offer, showSensitive)),
+    items: await withApproverNames(
+      offers.map((offer) => toManageRow(offer, showSensitive)),
+      tenantId
+    ),
     total,
     page: currentPage,
     pageSize: take,
@@ -224,7 +244,7 @@ export const getOfferManage = async (id, { tenantId, showSensitive = false }) =>
   });
   if (!offer) throw Object.assign(new Error("Offer not found"), { status: 404 });
 
-  const detail = toManageRow(offer, showSensitive);
+  const [detail] = await withApproverNames([toManageRow(offer, showSensitive)], tenantId);
   detail.notes = offer.notes ?? null;
   // Phase 3a — the detail panel extends with If-Match (version) and sends for
   // signature with the category chosen at acceptance (employeeCategory).

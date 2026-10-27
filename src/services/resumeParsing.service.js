@@ -26,6 +26,12 @@
 // The pieces both paths use live here: executeParseAttempt (one attempt on a
 // claimed row), completeParseAttempt, and projectParsedResumeOntoCandidate (the
 // candidate write plus its hr.recruitment.candidate_resume_parsed.v1 event).
+//
+// Recruitment Phase 7 — the parse carries yearsOfExperience, derived from the
+// plane's dated work-history entries (src/lib/resume-experience.util.js: overlaps
+// merged, "present" is the parse time, capped at 50, null when nothing is
+// dated). It is stored on the ledger row and on Candidate.parsedResume, where the
+// fit score's experience component reads it.
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 
@@ -39,6 +45,7 @@ import { downloadDamAssetBuffer } from "./dam.media.service.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { recordResumeParse } from "../lib/recruitmentOpsMetrics.js";
 import { runAiTask, collectAiResult } from "../lib/aiPlaneClient.js";
+import { experienceEntriesOf, yearsOfExperienceFrom } from "../lib/resume-experience.util.js";
 import {
   PARSE_MAX_ATTEMPTS,
   PARSE_LEASE_MS,
@@ -205,7 +212,7 @@ const exhaustedError = (attempts, reason = "MAX_ATTEMPTS") =>
 // Normalize a plane answer and record its §7.4 provenance. Throws the typed
 // pending error when the wait window expired, and HR-RESUME-PLANE-FAILED on a
 // non-ok answer.
-async function finishPlaneResult(res, { inputHash, charsAnalyzed, tenantId, candidateId }) {
+async function finishPlaneResult(res, { inputHash, charsAnalyzed, tenantId, candidateId, now = new Date() }) {
   if (res?.pending) {
     await recordInference({
       kind: "resume-parse",
@@ -267,6 +274,8 @@ async function finishPlaneResult(res, { inputHash, charsAnalyzed, tenantId, cand
   const certifications = (Array.isArray(parsed.certifications) ? parsed.certifications : [])
     .map(normCert)
     .filter(Boolean);
+  // Years only: the entries themselves (employers, titles) are not kept.
+  const yearsOfExperience = yearsOfExperienceFrom(experienceEntriesOf(parsed), now);
 
   await recordInference({
     kind: "resume-parse",
@@ -285,6 +294,7 @@ async function finishPlaneResult(res, { inputHash, charsAnalyzed, tenantId, cand
     skills,
     competencies,
     certifications,
+    yearsOfExperience,
     model: provenance.model,
     provider: provenance.provider,
     aiProvenance: provenance,
@@ -296,9 +306,9 @@ async function finishPlaneResult(res, { inputHash, charsAnalyzed, tenantId, cand
 // the output. The plane owns provider/model selection (its registry entry
 // hr.resume.parse.v1), PII redaction (§7.1a) and the token ceiling; HR owns
 // normalization and the §7.4 provenance that travels with the result.
-async function parseResumeText(text, { tenantId = null, candidateId = null, correlationId = null } = {}) {
+async function parseResumeText(text, { tenantId = null, candidateId = null, correlationId = null, now = new Date() } = {}) {
   if (!text || text.length < 20) {
-    return { skills: [], competencies: [], certifications: [], warning: "resume text was empty or too short" };
+    return { skills: [], competencies: [], certifications: [], yearsOfExperience: null, warning: "resume text was empty or too short" };
   }
   // Phase 15 — AI features are flag-gated (§7.1b): a disabled deployment gets
   // the same typed 503 as a missing plane, so callers need no new error shape.
@@ -314,7 +324,7 @@ async function parseResumeText(text, { tenantId = null, candidateId = null, corr
   // exact input we hand the plane, then record who/what answered.
   const input = String(text).slice(0, MAX_RESUME_CHARS);
   const inputHash = createHash("sha256").update(input).digest("hex");
-  const meta = { inputHash, charsAnalyzed: Math.min(text.length, MAX_RESUME_CHARS), tenantId, candidateId };
+  const meta = { inputHash, charsAnalyzed: Math.min(text.length, MAX_RESUME_CHARS), tenantId, candidateId, now };
 
   let res;
   try {
@@ -345,7 +355,7 @@ async function parseResumeText(text, { tenantId = null, candidateId = null, corr
 // Look for a late plane answer. Returns { result } when it arrived and was
 // usable, { error } when it arrived as a failure, {} when it has not arrived.
 // A transport error while looking is "not arrived": the window then decides.
-async function collectLateResult(marker, { tenantId, candidateId }) {
+async function collectLateResult(marker, { tenantId, candidateId, now = new Date() }) {
   let res;
   try {
     res = await collectAiResult({ taskId: marker.taskId, sinceId: marker.sinceId ?? "-" });
@@ -355,7 +365,7 @@ async function collectLateResult(marker, { tenantId, candidateId }) {
   }
   if (res?.pending) return {};
   try {
-    const meta = { inputHash: marker.inputHash, charsAnalyzed: marker.charsAnalyzed ?? null, tenantId, candidateId };
+    const meta = { inputHash: marker.inputHash, charsAnalyzed: marker.charsAnalyzed ?? null, tenantId, candidateId, now };
     return { result: await finishPlaneResult(res, meta) };
   } catch (err) {
     return { error: err };
@@ -437,7 +447,7 @@ export async function executeParseAttempt({ row, claimToken, tenantId, candidate
   const at = new Date(now);
   const marker = pendingMarkerOf(row);
   if (marker) {
-    const late = await collectLateResult(marker, { tenantId, candidateId });
+    const late = await collectLateResult(marker, { tenantId, candidateId, now: at });
     if (late.result) {
       logger.info({ parseAttemptId: row.id, taskId: marker.taskId }, "resume: collected a late plane answer");
       return { outcome: "COMPLETED", result: late.result, attempt: row.attemptCount ?? 0, lateResult: true };
@@ -472,7 +482,7 @@ export async function executeParseAttempt({ row, claimToken, tenantId, candidate
   try {
     const dl = await loadContent();
     const text = await extractResumeText(dl.buffer, dl.mimeType, dl.fileName);
-    const result = await parseResumeText(text, { tenantId, candidateId, correlationId: row.contentHash });
+    const result = await parseResumeText(text, { tenantId, candidateId, correlationId: row.contentHash, now: at });
     return { outcome: "COMPLETED", result, attempt };
   } catch (err) {
     return recordFailedAttempt({ row, claimToken, err, attempt, now: at });
@@ -787,6 +797,9 @@ export async function projectParsedResumeOntoCandidate(
         skills,
         competencies,
         certifications,
+        // Phase 7 — read by the fit score; null when the parse dated nothing
+        // (a parse cached before Phase 7 has no value either).
+        yearsOfExperience: Number.isFinite(parsed?.yearsOfExperience) ? parsed.yearsOfExperience : null,
       },
     },
   });
@@ -903,5 +916,6 @@ export async function ingestCandidateResume({ candidateId, mediaId, tenantId = n
     skills: parsed.skills,
     competencies: parsed.competencies,
     certifications: parsed.certifications,
+    yearsOfExperience: Number.isFinite(parsed.yearsOfExperience) ? parsed.yearsOfExperience : null,
   };
 }

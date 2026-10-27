@@ -424,6 +424,8 @@ describe("Phase 5 — the public router's guards", () => {
         "GET /jobs/:id",
         "POST /candidates/draft",
         "POST /candidates/draft/submit",
+        // Phase 7 — the careers resume upload (an opaque reference back).
+        "POST /candidates/resume",
         "POST /candidates/status-link",
         "POST /jobs/:id/apply",
     ]);

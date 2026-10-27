@@ -8,6 +8,7 @@
 // services never called it, so the last block drives the real submit/update entry
 // points and asserts the gate actually fires there.
 import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+import { approvalCentreDouble } from "./helpers/approval-centre-double.js";
 
 import {
   EMPLOYMENT_TYPES,
@@ -273,13 +274,16 @@ const prisma = {
   employee: { findFirst: jest.fn(async () => ({ managerId: 9 })) },
 };
 
-// The HR Approval Centre owns the PENDING_APPROVAL move once the gate passes.
-const mockLegacySubmit = jest.fn(async () => ({}));
+// The HR Approval Centre owns the PENDING_APPROVAL move once the gate passes,
+// and (Phase 7) writes the transition row and the submitted event in the same
+// transaction: the double runs the REAL onSubmit (approval/adapters.js) on
+// `prisma`, so a gate that ran too late would leave those rows behind.
+const centre = approvalCentreDouble(prisma);
 jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
   legacyDecision: jest.fn(async () => {
     throw Object.assign(new Error("HR-4201"), { status: 409, code: "HR-4201" });
   }),
-  legacySubmit: mockLegacySubmit,
+  legacySubmit: centre.legacySubmit,
 }));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
@@ -302,6 +306,7 @@ const { updateRequisition } = await import("../../src/services/requisition.servi
 
 beforeEach(() => {
   jest.clearAllMocks();
+  centre.reset();
   prisma.requisitionTransition.create.mockResolvedValue({ id: 1 });
   prisma.jobRequisition.updateMany.mockResolvedValue({ count: 1 });
   prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "PENDING_APPROVAL" });
@@ -312,9 +317,11 @@ beforeEach(() => {
 describe("Phase 2.2 — the gate is wired into the real submit paths", () => {
   it("refuses to submit an incomplete requisition and writes nothing", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ id: 5, title: "Backend Engineer", status: "DRAFT" });
+    // Armed, so a gate that ran AFTER the centre would leave its rows behind.
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { id: 5, title: "Backend Engineer", status: "DRAFT" } });
 
     await expect(submitRequisition(5, TENANT, 9)).rejects.toThrow(/cannot be submitted/i);
-    expect(mockLegacySubmit).not.toHaveBeenCalled();
+    expect(centre.legacySubmit).not.toHaveBeenCalled();
     // A refused submit must leave no status flip and no history row.
     expect(prisma.jobRequisition.update).not.toHaveBeenCalled();
     expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
@@ -322,11 +329,23 @@ describe("Phase 2.2 — the gate is wired into the real submit paths", () => {
 
   it("submits once the same requisition is complete", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...COMPLETE, status: "DRAFT" });
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { ...COMPLETE, status: "DRAFT" } });
 
     await submitRequisition(5, TENANT, 9);
 
-    // The gate passed, so the HR Approval Centre opened the review.
-    expect(mockLegacySubmit).toHaveBeenCalledWith("REQUISITION", 5);
+    // The gate passed, so the HR Approval Centre opened the review, and its
+    // submit transaction recorded the move for this surface.
+    expect(centre.legacySubmit).toHaveBeenCalledTimes(1);
+    expect(centre.legacySubmit).toHaveBeenCalledWith("REQUISITION", 5, undefined, {
+      requisition: { reason: null, transitionSource: "requisition.submit" },
+    });
+    expect(prisma.requisitionTransition.create).toHaveBeenCalledTimes(1);
+    expect(prisma.requisitionTransition.create.mock.calls[0][0].data).toMatchObject({
+      fromStatus: "DRAFT",
+      toStatus: "PENDING_APPROVAL",
+      actorId: 9,
+      source: "requisition.submit",
+    });
   });
 
   it("validates the requisition AS IT WILL BE, so fixing the fields and submitting in one PATCH works", async () => {
@@ -334,6 +353,8 @@ describe("Phase 2.2 — the gate is wired into the real submit paths", () => {
     prisma.jobRequisition.findFirst
       .mockResolvedValueOnce({ id: 5, title: "Backend Engineer", status: "DRAFT" })
       .mockResolvedValueOnce({ ...COMPLETE, status: "PENDING_APPROVAL" });
+    // The centre loads the row as the PATCH left it: complete, still DRAFT.
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { ...COMPLETE, status: "DRAFT" } });
 
     await updateRequisition(
       5,
@@ -352,14 +373,22 @@ describe("Phase 2.2 — the gate is wired into the real submit paths", () => {
     );
 
     expect(prisma.jobRequisition.updateMany).toHaveBeenCalled();
+    expect(centre.legacySubmit).toHaveBeenCalledTimes(1);
+    expect(centre.legacySubmit).toHaveBeenCalledWith("REQUISITION", 5, undefined, {
+      requisition: { reason: null, transitionSource: "requisition.update" },
+    });
   });
 
   it("still refuses a bare status flip on an incomplete requisition", async () => {
     prisma.jobRequisition.findFirst.mockResolvedValue({ id: 5, title: "Backend Engineer", status: "DRAFT" });
 
+    centre.arm({ tenantId: TENANT, actorId: 9, row: { id: 5, title: "Backend Engineer", status: "DRAFT" } });
+
     await expect(updateRequisition(5, { status: "PENDING_APPROVAL" }, 9, TENANT)).rejects.toThrow(
       /cannot be submitted/i,
     );
     expect(prisma.jobRequisition.updateMany).not.toHaveBeenCalled();
+    expect(centre.legacySubmit).not.toHaveBeenCalled();
+    expect(prisma.requisitionTransition.create).not.toHaveBeenCalled();
   });
 });

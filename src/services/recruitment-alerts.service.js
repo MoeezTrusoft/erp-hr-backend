@@ -22,6 +22,12 @@
 // time to fill per requisition, the offer outcome rates and the stage SLA the
 // analytics payload reports, so an alert never disagrees with the dashboard.
 //
+// Phase 7 — reads name people: an alert carries recipientId / recipientName
+// (the employee it was routed to) or notifyRole "HR" when it went to the HR
+// role (that recipient stays a role label, with no name), plus
+// acknowledgedByName; the thresholds read carries alertRecipientName. Names
+// come from src/lib/employee-names.util.js, one query per read.
+//
 // Thresholds are written through this service, not the settings tool: the
 // upsert takes the settings row's advisory lock and checks the version the
 // caller read, exactly like recruitment-settings.service.js, so a thresholds
@@ -32,6 +38,7 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import {
@@ -123,14 +130,17 @@ export function recruitmentAnalyticsAlertRaisedEvent(alert, ctx = {}, extra = {}
 
 // ── Thresholds ──────────────────────────────────────────────────────────────
 
-const presentThresholds = (tenantId, row) => ({
+const presentThresholds = (tenantId, row, names = new Map()) => ({
     tenantId,
     thresholds: readStoredThresholds(row?.alertThresholds),
     alertRecipientId: row?.alertRecipientId ?? null,
+    alertRecipientName: nameOf(names, row?.alertRecipientId),
     version: row?.version ?? 0,
     periodDays: ALERT_PERIOD_DAYS,
     metrics: ALERT_METRIC_THRESHOLD_KEYS,
 });
+
+const recipientNames = (tenantId, row) => employeeNamesById(prisma, tenantId, [row?.alertRecipientId]);
 
 /** The tenant's alert thresholds and recipient (empty when never set). */
 export async function getAlertThresholds({ tenantId } = {}) {
@@ -139,7 +149,7 @@ export async function getAlertThresholds({ tenantId } = {}) {
         where: { tenantId },
         select: { alertThresholds: true, alertRecipientId: true, version: true },
     });
-    return presentThresholds(tenantId, row);
+    return presentThresholds(tenantId, row, await recipientNames(tenantId, row));
 }
 
 async function assertRecipient(tx, tenantId, employeeId) {
@@ -194,25 +204,44 @@ export async function setAlertThresholds({ tenantId, actorId = null, expectedVer
         { tenantId, version: row.version, keys: Object.keys(change), recipientChanged: alertRecipientId !== undefined },
         "recruitment alert thresholds updated",
     );
-    return presentThresholds(tenantId, row);
+    return presentThresholds(tenantId, row, await recipientNames(tenantId, row));
 }
 
 // ── Alerts: list and acknowledge ───────────────────────────────────────────
 
-const presentAlert = (row) => ({
-    id: row.id,
-    metric: row.metric,
-    status: row.status,
-    periodStart: row.periodStart,
-    value: toNumber(row.value),
-    threshold: toNumber(row.threshold),
-    details: row.details ?? null,
-    firstSeenAt: row.firstSeenAt,
-    lastSeenAt: row.lastSeenAt,
-    acknowledgedById: row.acknowledgedById ?? null,
-    acknowledgedAt: row.acknowledgedAt ?? null,
-    resolvedAt: row.resolvedAt ?? null,
-});
+/** The employee an alert was routed to (details.recipientId), or null. */
+const recipientIdOf = (row) => {
+    const id = Number(row?.details?.recipientId);
+    return Number.isInteger(id) && id > 0 ? id : null;
+};
+
+const presentAlert = (row, names = new Map()) => {
+    const recipientId = recipientIdOf(row);
+    return {
+        id: row.id,
+        metric: row.metric,
+        status: row.status,
+        periodStart: row.periodStart,
+        value: toNumber(row.value),
+        threshold: toNumber(row.threshold),
+        details: row.details ?? null,
+        // Phase 7 — who the alert went to: a person (id and name), or the HR
+        // role when nobody was configured or found (a role label, no name).
+        recipientId,
+        recipientName: nameOf(names, recipientId),
+        notifyRole: recipientId === null ? (row.details?.notifyRole ?? null) : null,
+        firstSeenAt: row.firstSeenAt,
+        lastSeenAt: row.lastSeenAt,
+        acknowledgedById: row.acknowledgedById ?? null,
+        acknowledgedByName: nameOf(names, row.acknowledgedById),
+        acknowledgedAt: row.acknowledgedAt ?? null,
+        resolvedAt: row.resolvedAt ?? null,
+    };
+};
+
+/** One name lookup for every person on these alert rows. */
+const alertNames = (tenantId, rows) =>
+    employeeNamesById(prisma, tenantId, rows.flatMap((r) => [recipientIdOf(r), r.acknowledgedById]));
 
 export async function listRecruitmentAlerts({ tenantId, status, metric, limit } = {}) {
     requireTenant(tenantId);
@@ -232,7 +261,8 @@ export async function listRecruitmentAlerts({ tenantId, status, metric, limit } 
         orderBy: [{ lastSeenAt: "desc" }, { id: "desc" }],
         take: clamp(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
     });
-    return { alerts: rows.map(presentAlert), count: rows.length };
+    const names = await alertNames(tenantId, rows);
+    return { alerts: rows.map((row) => presentAlert(row, names)), count: rows.length };
 }
 
 /**
@@ -255,7 +285,7 @@ export async function acknowledgeRecruitmentAlert({ tenantId, alertId, actorId =
         }
         return current;
     }, { tenantId });
-    return presentAlert(row);
+    return presentAlert(row, await alertNames(tenantId, [row]));
 }
 
 // ── Metric measurement (one tenant, one window) ─────────────────────────────

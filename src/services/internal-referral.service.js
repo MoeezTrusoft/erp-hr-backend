@@ -24,6 +24,10 @@
 // and hr.recruitment.referral_bonus_eligible.v1 (to HR). Their builders are
 // here so both services share one payload shape.
 //
+// Phase 7: HR's referral reads (the list and the bonus decision's answer)
+// carry referrerName and bonusDecidedByName next to the ids, resolved in one
+// lookup under the caller's tenant (lib/employee-names.util.js).
+//
 // Phase 6:
 //   * a FORFEITED bonus keeps its coded reason and note on the row
 //     (bonusForfeitReason, bonusNote), written by the HR decision and by the
@@ -65,6 +69,7 @@ import {
 } from "../lib/internal-mobility.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { logAction } from "../utils/logs.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 
 // No logger.child at load time: workflow suites mock the logger with a plain
 // { info, warn, error } double.
@@ -390,10 +395,13 @@ export async function listReferrals({
             take: size,
         }),
     ]);
-    const titles = await requisitionTitles(tenantId, rows.map((r) => r.requisitionId));
+    const [titles, names] = await Promise.all([
+        requisitionTitles(tenantId, rows.map((r) => r.requisitionId)),
+        referralEmployeeNames(tenantId, rows),
+    ]);
     const canSeeCompensation = scope?.canSeeCompensation === true;
     return {
-        items: rows.map((row) => hrReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation })),
+        items: rows.map((row) => hrReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation, names })),
         total,
         page: pageNo,
         pageSize: size,
@@ -405,12 +413,21 @@ export async function listReferrals({
  * coded reason for anyone who sees the row, the free-text note only for a
  * compensation scope (it explains a pay decision).
  */
-export function hrReferralView(row, { jobTitle = null, canSeeCompensation = false } = {}) {
+export function hrReferralView(row, { jobTitle = null, canSeeCompensation = false, names = new Map() } = {}) {
     return {
         ...toHrReferral(row, { jobTitle, canSeeCompensation }),
+        // Phase 7 — the referring employee and the bonus decider by name, next
+        // to their ids (null when the id does not resolve in this tenant).
+        referrerName: nameOf(names, row.referrerEmployeeId),
+        bonusDecidedByName: nameOf(names, row.bonusDecidedById),
         bonusForfeitReason: row.bonusForfeitReason ?? null,
         bonusNote: canSeeCompensation ? row.bonusNote ?? null : null,
     };
+}
+
+/** The display names of every referrer and bonus decider on these rows (one query). */
+export function referralEmployeeNames(tenantId, rows, db = prisma) {
+    return employeeNamesById(db, tenantId, rows.flatMap((row) => [row?.referrerEmployeeId, row?.bonusDecidedById]));
 }
 
 /** Requisition id -> title, tenant-scoped (one query). */
@@ -509,8 +526,11 @@ export async function updateReferralBonus({
         { tenantId },
     );
 
-    const titles = await requisitionTitles(tenantId, [row.requisitionId]);
-    return hrReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation: true });
+    const [titles, names] = await Promise.all([
+        requisitionTitles(tenantId, [row.requisitionId]),
+        referralEmployeeNames(tenantId, [row]),
+    ]);
+    return hrReferralView(row, { jobTitle: titles.get(row.requisitionId) ?? null, canSeeCompensation: true, names });
 }
 
 // ── The bonus clock ─────────────────────────────────────────────────────────

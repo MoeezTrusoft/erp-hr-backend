@@ -164,7 +164,27 @@ export function normalizeJobContent(value) {
         if (entries.length) out.faq = entries;
     }
 
+    // Phase 7 — the minimum years of experience the fit score's experience
+    // component compares the parsed resume against. Optional; blank means none.
+    const minYears = normalizeMinYearsExperience(value.minYearsExperience);
+    if (minYears !== null) out.minYearsExperience = minYears;
+
     return out;
+}
+
+export const MAX_MIN_YEARS_EXPERIENCE = 50;
+
+/** jobContent.minYearsExperience: a number 0..50 (numeric strings accepted), else 422. */
+function normalizeMinYearsExperience(raw) {
+    if (isBlank(raw)) return null;
+    const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : Number.NaN;
+    if (!Number.isFinite(n) || n < 0 || n > MAX_MIN_YEARS_EXPERIENCE) {
+        throw fieldError(
+            `jobContent.minYearsExperience must be a number from 0 to ${MAX_MIN_YEARS_EXPERIENCE}`,
+            "HR-RECRUITMENT-JOB-CONTENT-INVALID",
+        );
+    }
+    return Math.round(n * 10) / 10;
 }
 
 /** Normalize one of the closed vocabularies; throws 422 on an unknown value. */

@@ -80,6 +80,10 @@ const prisma = {
             inContext();
             return clone(EMPLOYEES.find((e) => e.tenant_id === where.tenant_id && e.id === where.id) ?? null);
         })),
+        findMany: jest.fn(({ where }) => lazy(() => {
+            inContext();
+            return EMPLOYEES.filter((e) => e.tenant_id === where.tenant_id && where.employee_code.in.includes(e.employee_code)).map(clone);
+        })),
     },
     hrApprovalRequest: {
         findUnique: jest.fn(({ where }) => lazy(() => {
@@ -101,7 +105,14 @@ const prisma = {
             return clone(row);
         })),
     },
-    hrApprovalAudit: { create: jest.fn(({ data }) => lazy(() => { AUDITS.push(clone(data)); return data; })) },
+    hrApprovalAudit: {
+        create: jest.fn(({ data }) => lazy(() => { AUDITS.push(clone(data)); return data; })),
+        // Phase 7 (B10) — the decision trail the extension read shows.
+        findMany: jest.fn(({ where }) => lazy(() => {
+            inContext();
+            return AUDITS.filter((a) => a.tenantId === where.tenantId && a.approvalRef === where.approvalRef).map(clone);
+        })),
+    },
     outboxEvent: { create: jest.fn(async ({ data }) => { OUTBOX.push(data); return data; }) },
     $queryRaw: jest.fn(async (strings, ...values) => { RAW.push({ sql: strings.join("?"), values }); return []; }),
     $executeRaw: jest.fn(async (strings, ...values) => { RAW.push({ sql: strings.join("?"), values }); return 1; }),
@@ -357,6 +368,27 @@ describe("withdraw and read", () => {
         APPROVALS.push(extRequest({ stage: "REJECTED", createdAt: at(-2) }), extRequest({ stage: "LINE_MANAGER", sourceRef: util.buildOfferExtensionRef({ offerId: 1, sequence: 1, attempt: 2, proposedExpiryDate: at(20) }) }));
         const out = await as(() => svc.getOfferExtensionApproval({ tenantId: T1, id: 1, scope: ORG }));
         expect(out).toMatchObject({ open: true, latest: { stage: "LINE_MANAGER", attempt: 2, proposedExpiryDate: at(20).toISOString() } });
+    });
+
+    it("Phase 7 (B10): the latest request carries its decision trail with the deciders' names", async () => {
+        EMPLOYEES.push({ id: 12, tenant_id: T1, employee_code: "E-12", first_name: "Hina", last_name: "Raza" });
+        EMPLOYEES.push({ id: 13, tenant_id: "22222222-2222-4222-8222-222222222222", employee_code: "E-13", first_name: "Other", last_name: "Tenant" });
+        APPROVALS.push(extRequest({ stage: "MANAGEMENT" }));
+        const ref = APPROVALS.at(-1).id;
+        AUDITS.push(
+            { tenantId: T1, approvalRef: ref, version: 1, actorCode: "E-12", fromStage: "LINE_MANAGER", toStage: "HR", action: "APPROVE", reason: "ok", createdAt: at(-1) },
+            { tenantId: T1, approvalRef: ref, version: 2, actorCode: "E-13", fromStage: "HR", toStage: "MANAGEMENT", action: "APPROVE", reason: "ok", createdAt: at(-1) },
+            { tenantId: T1, approvalRef: ref, version: 3, actorCode: "SYSTEM", fromStage: "MANAGEMENT", toStage: "MANAGEMENT", action: "REMIND", reason: "x", createdAt: at(-1) },
+        );
+        const out = await as(() => svc.getOfferExtensionApproval({ tenantId: T1, id: 1, scope: ORG }));
+        expect(out.latest.decisions).toEqual([
+            { action: "APPROVE", fromStage: "LINE_MANAGER", toStage: "HR", decidedAt: at(-1).toISOString(), decidedByCode: "E-12", decidedByName: "Hina Raza" },
+            { action: "APPROVE", fromStage: "HR", toStage: "MANAGEMENT", decidedAt: at(-1).toISOString(), decidedByCode: "E-13", decidedByName: null },
+            { action: "REMIND", fromStage: "MANAGEMENT", toStage: "MANAGEMENT", decidedAt: at(-1).toISOString(), decidedByCode: "SYSTEM", decidedByName: null },
+        ]);
+        // Reasons are free text and stay in the Approval Centre.
+        expect(JSON.stringify(out)).not.toContain('"reason"');
+        expect(prisma.employee.findMany).toHaveBeenCalledTimes(1);
     });
 });
 

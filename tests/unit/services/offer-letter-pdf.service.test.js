@@ -40,6 +40,37 @@ describe("generateOfferLetterPdf", () => {
     });
 });
 
+// Phase 7 (B18b) — names the standard fonts cannot encode.
+describe("generateOfferLetterPdf × non-Latin text", () => {
+    const UNICODE = {
+        ...LETTER,
+        companyName: "ٹرو سافٹ",
+        paragraphs: ["21 October 2026", "Dear محمد علی ٹیپو,", "Welcome, Łukasz Wójcik and 王小明.", "Sincerely,\nHuman Resources\nٹرو سافٹ"],
+        candidateName: "محمد علی ٹیپو",
+    };
+
+    it("renders Urdu, Polish and Chinese names without throwing, embedding the Unicode font", async () => {
+        const pdf = await generateOfferLetterPdf(UNICODE);
+        expect(pdf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+        const text = pdf.toString("latin1");
+        expect(text).toContain("/FontFile2");
+        expect(text).toMatch(/\/BaseFont \/[A-Z]{6}\+DejaVuSans/);
+    });
+
+    it("stays deterministic with the embedded font", async () => {
+        const a = await generateOfferLetterPdf(UNICODE);
+        const b = await generateOfferLetterPdf(UNICODE);
+        expect(a.equals(b)).toBe(true);
+    });
+
+    it("a Latin letter (accents included) embeds nothing: the standard fonts, as before", async () => {
+        const pdf = await generateOfferLetterPdf({ ...LETTER, candidateName: "Zoé Müller", paragraphs: ["Dear Zoé Müller, – “welcome” €"] });
+        const text = pdf.toString("latin1");
+        expect(text).not.toContain("/FontFile2");
+        expect(text).toContain("/Helvetica");
+    });
+});
+
 describe("uploadOfferLetterPdf", () => {
     it("stores the PDF as a DAM document and returns its media id", async () => {
         uploadFileToDAM.mockResolvedValue([{ id: 812 }]);

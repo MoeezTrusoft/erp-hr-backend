@@ -4,16 +4,32 @@
 // guard. All heavy AI work is delegated to resumeParsing.service.js (lazy deps).
 import { hasPermission } from "../mcp/utils/assertPermission.js";
 import { sendSuccess, sendError } from "../utils/response.js";
+import { normalizeError } from "../middlewares/error.middleware.js";
 import {
   parseResumePreview,
   ingestEmployeeResume,
   ingestCandidateResume,
 } from "../services/resumeParsing.service.js";
 
-const fail = (res, err) =>
-  sendError(res, err?.message || "Resume operation failed", err?.status || 500, [
+// Recruitment Phase 7 (D17) — a flag that is off and an unavailable dependency
+// (the AI plane, DAM, a plane task still running) answer with the terminal
+// handler's classification: HR-5031, or HR-5032 with the domain code in
+// details.code, instead of the generic HR-5000 sendError gives every 5xx.
+const OPERATIONAL_5XX = new Set(["HR-5031", "HR-5032"]);
+const fail = (res, err) => {
+  const norm = normalizeError(err);
+  if (OPERATIONAL_5XX.has(norm.code)) {
+    return res.status(norm.httpStatus).json({
+      success: false,
+      message: norm.message,
+      errors: [{ code: norm.code, message: norm.message, ...(norm.details ? { details: norm.details } : {}) }],
+      requestId: res.req?.requestId,
+    });
+  }
+  return sendError(res, err?.message || "Resume operation failed", err?.status || 500, [
     { code: err?.code || "HR-RESUME", message: err?.message || "Resume operation failed" },
   ]);
+};
 
 const deny = (res) =>
   sendError(res, "Forbidden", 403, [{ code: "HR-RESUME-FORBIDDEN", message: "Insufficient permission" }]);

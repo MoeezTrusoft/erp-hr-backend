@@ -17,12 +17,21 @@
 // definition changed): timeToStart, recruiterWorkload and costPerHire, each
 // also reachable through the drill-down with the same filters.
 //
+// Phase 7 additions: recruiter workload rows carry recruiterName next to
+// recruiterId (src/lib/employee-names.util.js); every SLA aging bucket carries
+// a stable drill-down key ("sla:<stage>" and "sla:<stage>:breached", "sla:all"
+// for the whole block) that the drill-down answers with the applications behind
+// it, through the same requisition and application predicates the payload uses,
+// narrowed to the caller's recruitment scope and paginated (offset + limit).
+//
 // The dataset is tiny (~24 applications/tenant), so we fetch the applications
 // once with the relations we need and compute in JS to avoid N+1 round-trips.
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedEmployeeWhere } from "../lib/tenancy.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
+import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
 import { getCostConfig } from "./recruitmentCost.service.js";
 // Phase 12 / decision record §6 — the FROZEN, versioned KPI definitions. The
 // service only assembles inputs; the definitions live in the lib.
@@ -208,6 +217,117 @@ export async function loadFilteredApplications(tenantId, n = {}) {
 }
 
 /**
+ * The requisition predicate of the canonical block: the tenant plus the
+ * requisition-level filters (ids, department). The payload's canonical fetch
+ * and the SLA drill-down both build it here, so they read the same requisitions.
+ */
+export function canonicalRequisitionWhere(tenantId, n = {}) {
+  const where = { tenantId };
+  if (n.requisitionIds?.length) where.id = { in: n.requisitionIds };
+  if (n.departmentId != null) where.departmentId = n.departmentId;
+  return where;
+}
+
+/**
+ * The application-level filters of the canonical block (stage, source, the
+ * appliedAt window), applied in JS to applications already narrowed by
+ * canonicalRequisitionWhere. Shared by the payload and the SLA drill-down.
+ */
+export function inCanonicalWindow(a, n = {}) {
+  if (n.stage && a.stage !== n.stage) return false;
+  if (n.source && (a.candidate?.source ?? "Unknown") !== n.source) return false;
+  if (n.dateFrom && (!a.appliedAt || new Date(a.appliedAt) < n.dateFrom)) return false;
+  if (n.dateTo && (!a.appliedAt || new Date(a.appliedAt) > n.dateTo)) return false;
+  return true;
+}
+
+/**
+ * SLA aging of each application's CURRENT stage (§6 row 5), the rows the
+ * payload's slaAging block counts. Applications without a current stage
+ * (inconsistent history) have no row.
+ * @returns {{ application: object, aging: ReturnType<typeof slaAging> }[]}
+ */
+export function slaAgingRowsFor(applications, slaByStage, now = new Date()) {
+  const rows = [];
+  for (const a of applications) {
+    const durations = timeInStageForApplication(a.stageHistory, a.stage, a.appliedAt, now);
+    const current = durations.find((d) => d.isCurrent);
+    const aging = current ? slaAging(current.stage, current.daysInStage, slaByStage) : null;
+    if (aging) rows.push({ application: a, aging });
+  }
+  return rows;
+}
+
+// ── Phase 7: SLA aging drill-down keys ─────────────────────────────────────
+//
+// Each bucket of canonicalMetrics.slaAging names its own key, which the
+// screen sends back as the drill-down metric. "all" is the whole block.
+export const SLA_DRILLDOWN_ALL = "all";
+const SLA_KEY = /^sla:([a-z][a-z0-9_]{0,39})(?::(breached))?$/;
+
+/** The drill-down key for one SLA bucket (stage null = the whole block). */
+export function slaDrilldownKey(stage = null, { breached = false } = {}) {
+  return `sla:${stage ?? SLA_DRILLDOWN_ALL}${breached ? ":breached" : ""}`;
+}
+
+/** { stage, breachedOnly } for a valid SLA key, else null. */
+export function parseSlaDrilldownKey(key) {
+  const m = SLA_KEY.exec(String(key || ""));
+  if (!m) return null;
+  return { stage: m[1] === SLA_DRILLDOWN_ALL ? null : m[1], breachedOnly: m[2] === "breached" };
+}
+
+const DEFAULT_DRILLDOWN_LIMIT = 100;
+
+/**
+ * Phase 7 — the applications behind one SLA aging bucket.
+ *
+ * Same requisitions (canonicalRequisitionWhere), same application filters
+ * (inCanonicalWindow) and the same aging arithmetic (slaAgingRowsFor) as the
+ * payload, so an unscoped caller's row count equals the bucket's number. The
+ * recruitment scope narrows the rows (a hiring manager sees the applications
+ * on their own requisitions; a scope with no rows gets an empty page). Rows
+ * are ids plus display fields, oldest in stage first.
+ */
+async function slaDrillDown(tenantId, normalized, bucket, { scope = null, now = new Date() } = {}) {
+  const slaByStage = getStageSlaConfig();
+  const configured = Object.keys(slaByStage).length > 0;
+  if (bucket.breachedOnly && !configured) return { rows: [], extra: { configured, reason: NULL_REASONS.SLA_NOT_CONFIGURED } };
+  const where = { AND: [{ tenantId, jobRequisition: canonicalRequisitionWhere(tenantId, normalized) }] };
+  if (scope) where.AND.push(applicationScopeWhere(scope));
+  const applications = await prisma.application.findMany({
+    where,
+    select: {
+      id: true,
+      stage: true,
+      appliedAt: true,
+      candidate: { select: { id: true, source: true, firstName: true, lastName: true } },
+      jobRequisition: { select: { id: true, title: true } },
+      stageHistory: { select: { fromStage: true, toStage: true, createdAt: true } },
+    },
+    orderBy: { id: "asc" },
+  });
+  const rows = slaAgingRowsFor(applications.filter((a) => inCanonicalWindow(a, normalized)), slaByStage, now)
+    .filter(({ aging }) => (!bucket.stage || aging.stage === bucket.stage) && (!bucket.breachedOnly || aging.breached))
+    .sort((x, y) => y.aging.daysInStage - x.aging.daysInStage || x.application.id - y.application.id)
+    .map(({ application: a, aging }) => ({
+      applicationId: a.id,
+      candidateId: a.candidate?.id ?? null,
+      candidateName: [a.candidate?.firstName, a.candidate?.lastName].map((p) => String(p ?? "").trim()).filter(Boolean).join(" ") || null,
+      requisitionId: a.jobRequisition?.id ?? null,
+      requisitionTitle: a.jobRequisition?.title ?? null,
+      source: a.candidate?.source ?? "Unknown",
+      appliedAt: a.appliedAt ?? null,
+      stage: aging.stage,
+      daysInStage: aging.daysInStage,
+      slaDays: aging.slaDays,
+      agingDays: aging.agingDays,
+      breached: aging.breached,
+    }));
+  return { rows, extra: { configured, ...(configured ? {} : { reason: NULL_REASONS.SLA_NOT_CONFIGURED }) } };
+}
+
+/**
  * NFR-12 — the metric vocabulary a drill-down may name. Canonical keys are the
  * frozen §6 names; the prefixed forms address one bucket of a grouped metric
  * (`funnel:<stage>`, `source:<name>`, `disposition:<code>`) so an operator can
@@ -231,7 +351,8 @@ export const DRILLDOWN_METRICS = Object.freeze([
 
 const isKnownMetric = (metric) =>
   DRILLDOWN_METRICS.includes(metric) ||
-  /^(funnel|source|disposition|stage):.+$/.test(String(metric || ""));
+  /^(funnel|source|disposition|stage):.+$/.test(String(metric || "")) ||
+  parseSlaDrilldownKey(metric) !== null;
 
 /**
  * NFR-12 — the row-level evidence behind a metric.
@@ -241,35 +362,63 @@ const isKnownMetric = (metric) =>
  * facts that metric used. Tenant-scoped by the same `where` (and the RLS policy
  * beneath it), so an export or a drill-down can never widen a caller's view.
  *
+ * Phase 7: `offset` pages through the rows (`nextOffset` is the next page's
+ * offset, null on the last page; `truncated` means more rows follow), and an
+ * SLA bucket key (`sla:<stage>[:breached]`, `sla:all[:breached]`) answers with
+ * the applications behind that bucket, narrowed to `scope` when one is given.
+ *
  * @returns {Promise<{metric: string, filters: object, total: number,
- *   returned: number, truncated: boolean, rows: object[]}>}
+ *   returned: number, truncated: boolean, offset: number, nextOffset: number|null,
+ *   rows: object[]}>}
  */
-export async function drillDownRecruitmentMetric(tenantId, metric, filters = {}, { limit = 100, now = new Date() } = {}) {
+export async function drillDownRecruitmentMetric(
+  tenantId,
+  metric,
+  filters = {},
+  { limit = DEFAULT_DRILLDOWN_LIMIT, offset = 0, now = new Date(), scope = null } = {},
+) {
   const key = String(metric || "").trim();
   if (!key || !isKnownMetric(key)) {
     throw Object.assign(
-      new Error(`Unsupported drill-down metric: ${key || "(missing)"} (expected one of ${DRILLDOWN_METRICS.join(", ")} or <group>:<value>)`),
+      new Error(`Unsupported drill-down metric: ${key || "(missing)"} (expected one of ${DRILLDOWN_METRICS.join(", ")}, <group>:<value> or an SLA bucket key sla:<stage>[:breached])`),
       { status: 400, code: "HR-RECRUITMENT-ANALYTICS-DRILLDOWN-INVALID" },
     );
   }
 
   const normalized = normalizeAnalyticsFilters(filters);
+  const size = Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_DRILLDOWN_LIMIT;
+  const start = Number.isInteger(offset) && offset > 0 ? offset : 0;
+  let basis = key;
+  const page = (unit, rows, extra = {}) => {
+    const slice = rows.slice(start, start + size);
+    const next = start + slice.length;
+    return {
+      metric: key,
+      basis,
+      filters: serializeAnalyticsFilters(normalized),
+      unit,
+      ...extra,
+      total: rows.length,
+      returned: slice.length,
+      truncated: next < rows.length,
+      offset: start,
+      nextOffset: next < rows.length ? next : null,
+      rows: slice,
+    };
+  };
+
+  // Phase 7 — an SLA aging bucket (its own fetch: the stage history is not in
+  // the shared application loader).
+  const slaBucket = parseSlaDrilldownKey(key);
+  if (slaBucket) {
+    const { rows, extra } = await slaDrillDown(tenantId, normalized, slaBucket, { scope, now });
+    return page("application", rows, { bucket: { stage: slaBucket.stage, breachedOnly: slaBucket.breachedOnly }, ...extra });
+  }
+
   const applications = await loadFilteredApplications(tenantId, normalized);
 
   const [group, value] = key.includes(":") ? key.split(/:(.+)/) : [null, null];
   let selected = applications;
-  let basis = key;
-  const page = (unit, rows, extra = {}) => ({
-    metric: key,
-    basis,
-    filters: serializeFilters(normalized),
-    unit,
-    ...extra,
-    total: rows.length,
-    returned: Math.min(rows.length, limit),
-    truncated: rows.length > limit,
-    rows: rows.slice(0, limit),
-  });
 
   // Phase 5 — the three added metrics answer with the rows their number used,
   // computed by the same helpers the payload calls.
@@ -342,16 +491,7 @@ export async function drillDownRecruitmentMetric(tenantId, metric, filters = {},
         outcome: a.offer.status === "SENT" ? "pending" : "final",
         respondedAt: a.offer.respondedAt ?? null,
       }));
-    return {
-      metric: key,
-      basis,
-      filters: serializeFilters(normalized),
-      unit: "offer",
-      total: rows.length,
-      returned: Math.min(rows.length, limit),
-      truncated: rows.length > limit,
-      rows: rows.slice(0, limit),
-    };
+    return page("offer", rows);
   } else if (key === "timeToFillDays" || key === "timeToFirstFillDays" || key === "stageConversion" || key === "dropOff") {
     // Requisition- and offer-shaped metrics: the drill-down answers with the
     // requisitions (the aggregate's unit), each carrying its own applications.
@@ -362,17 +502,7 @@ export async function drillDownRecruitmentMetric(tenantId, metric, filters = {},
       if (!byRequisition.has(id)) byRequisition.set(id, { requisitionId: id, title: a.jobRequisition?.title ?? null, applicationIds: [] });
       byRequisition.get(id).applicationIds.push(a.id);
     }
-    const rows = [...byRequisition.values()];
-    return {
-      metric: key,
-      basis,
-      filters: serializeFilters(normalized),
-      unit: "requisition",
-      total: rows.length,
-      returned: Math.min(rows.length, limit),
-      truncated: rows.length > limit,
-      rows: rows.slice(0, limit),
-    };
+    return page("requisition", [...byRequisition.values()]);
   }
 
   const rows = selected.map((a) => ({
@@ -388,20 +518,11 @@ export async function drillDownRecruitmentMetric(tenantId, metric, filters = {},
     offerRespondedAt: a.offer?.respondedAt ?? null,
   }));
 
-  return {
-    metric: key,
-    basis,
-    filters: serializeFilters(normalized),
-    unit: "application",
-    total: rows.length,
-    returned: Math.min(rows.length, limit),
-    truncated: rows.length > limit,
-    rows: rows.slice(0, limit),
-  };
+  return page("application", rows);
 }
 
 /** The filter echo an operator can compare against what they asked for. */
-const serializeFilters = (n) => ({
+export const serializeAnalyticsFilters = (n) => ({
   ...(n.dateFrom ? { dateFrom: n.dateFrom.toISOString() } : {}),
   ...(n.dateTo ? { dateTo: n.dateTo.toISOString() } : {}),
   ...(n.requisitionIds?.length ? { requisitionIds: n.requisitionIds } : {}),
@@ -466,11 +587,8 @@ export async function loadRecruiterWorkload(tenantId, n = {}, now = new Date()) 
   requireAnalyticsTenant(tenantId);
   const to = n.dateTo ?? new Date(now);
   const from = n.dateFrom ?? new Date(new Date(to).getTime() - DEFAULT_WORKLOAD_PERIOD_DAYS * MS_PER_DAY);
-  const where = { tenantId };
-  if (n.requisitionIds?.length) where.id = { in: n.requisitionIds };
-  if (n.departmentId != null) where.departmentId = n.departmentId;
   const requisitions = await prisma.jobRequisition.findMany({
-    where,
+    where: canonicalRequisitionWhere(tenantId, n),
     select: {
       id: true,
       status: true,
@@ -493,10 +611,28 @@ export async function loadRecruiterWorkload(tenantId, n = {}, now = new Date()) 
       return true;
     }),
   }));
+  const recruiters = recruiterWorkload(narrowed, { from, to });
+  const names = await recruiterNames(tenantId, recruiters);
   return {
     period: { from: new Date(from).toISOString(), to: new Date(to).toISOString() },
-    recruiters: recruiterWorkload(narrowed, { from, to }),
+    // Phase 7 — the name next to the id (null for "no recruiter assigned" and
+    // for an id that no longer resolves; the screen keeps its id fallback).
+    recruiters: recruiters.map((r) => ({ ...r, recruiterName: nameOf(names, r.recruiterId) })),
   };
+}
+
+/**
+ * Display names for the workload's recruiters, one query. A failed lookup
+ * leaves the names null rather than taking the metric down: the figures do
+ * not depend on them.
+ */
+async function recruiterNames(tenantId, recruiters) {
+  try {
+    return await employeeNamesById(prisma, tenantId, recruiters.map((r) => r.recruiterId));
+  } catch (err) {
+    log.warn({ tenantId, code: err?.code, errMessage: err?.message }, "recruiter names unavailable");
+    return new Map();
+  }
 }
 
 /**
@@ -542,9 +678,6 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now 
   // drill-down, so a reported number and the rows behind it can never come from
   // two slightly different queries.
   const normalized = normalizeAnalyticsFilters(filters);
-  const {
-    dateFrom, dateTo, requisitionIds, departmentId, stage, source, hasDateFilter, hasRowFilter,
-  } = normalized;
 
   const filteredApplications = await loadFilteredApplications(tenantId, normalized);
 
@@ -664,11 +797,8 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now 
     // predicates (ids/department) so time-to-fill per requisition agrees with
     // the application-level numbers above; date/stage/source filtering happens
     // per application below, matching the legacy block's semantics.
-    const requisitionWhere = { tenantId };
-    if (requisitionIds?.length) requisitionWhere.id = { in: requisitionIds };
-    if (departmentId != null) requisitionWhere.departmentId = departmentId;
     const requisitions = await prisma.jobRequisition.findMany({
-      where: requisitionWhere,
+      where: canonicalRequisitionWhere(tenantId, normalized),
       select: {
         id: true,
         openings: true,
@@ -708,13 +838,7 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now 
       }
     }
 
-    const allApplications = requisitions.flatMap((r) => r.applications).filter((a) => {
-      if (stage && a.stage !== stage) return false;
-      if (source && (a.candidate?.source ?? "Unknown") !== source) return false;
-      if (dateFrom && (!a.appliedAt || new Date(a.appliedAt) < dateFrom)) return false;
-      if (dateTo && (!a.appliedAt || new Date(a.appliedAt) > dateTo)) return false;
-      return true;
-    });
+    const allApplications = requisitions.flatMap((r) => r.applications).filter((a) => inCanonicalWindow(a, normalized));
     const funnel = stageFunnel(
       allApplications.map((a) => ({
         applicationId: a.id,
@@ -729,13 +853,8 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now 
 
     const slaByStage = getStageSlaConfig();
     const slaConfigured = Object.keys(slaByStage).length > 0;
-    const slaRows = allApplications
-      .map((a) => {
-        const durations = timeInStageForApplication(a.stageHistory, a.stage, a.appliedAt);
-        const current = durations.find((d) => d.isCurrent);
-        return current ? slaAging(current.stage, current.daysInStage, slaByStage) : null;
-      })
-      .filter(Boolean);
+    // Phase 7 — the same rows the SLA drill-down returns per bucket.
+    const slaRows = slaAgingRowsFor(allApplications, slaByStage, now).map((r) => r.aging);
 
     // Phase 5 — over the SAME filtered applications the drill-down reads.
     const startRows = await timeToStartFor(tenantId, filteredApplications, now);
@@ -778,8 +897,18 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now 
         // "not measured" (null), not zero breaches.
         breached: slaConfigured ? slaRows.filter((s) => s.breached).length : null,
         ...(slaConfigured ? {} : { reason: NULL_REASONS.SLA_NOT_CONFIGURED }),
+        // Phase 7 — the keys hr_recruitment_analytics_drilldown answers with
+        // the applications behind each figure.
+        drilldownKey: slaDrilldownKey(null),
+        breachedDrilldownKey: slaDrilldownKey(null, { breached: true }),
         byStage: slaRows.reduce((acc, s) => {
-          acc[s.stage] ??= { open: 0, breached: 0, worstAgingDays: null };
+          acc[s.stage] ??= {
+            open: 0,
+            breached: 0,
+            worstAgingDays: null,
+            drilldownKey: slaDrilldownKey(s.stage),
+            breachedDrilldownKey: slaDrilldownKey(s.stage, { breached: true }),
+          };
           acc[s.stage].open += 1;
           if (s.breached) acc[s.stage].breached += 1;
           if (s.agingDays !== null && (acc[s.stage].worstAgingDays === null || s.agingDays > acc[s.stage].worstAgingDays)) {
@@ -821,6 +950,9 @@ export async function computeRecruitmentAnalytics(tenantId, filters = {}, { now 
     metrics,
     canonicalMetrics: canonical,
     reasons,
+    // Phase 7 — the normalized filters these numbers were computed with (the
+    // same echo the drill-down returns); the export prints it on the file.
+    filters: serializeAnalyticsFilters(normalized),
   };
 }
 

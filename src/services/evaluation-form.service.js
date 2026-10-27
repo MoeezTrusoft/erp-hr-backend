@@ -32,6 +32,7 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
+import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { interviewScopeWhere, requisitionScopeWhere } from "../lib/recruitmentAccess.js";
 import { resolveAssessmentAccess } from "../lib/assessment-access.util.js";
@@ -222,7 +223,10 @@ export async function getInterviewForm(user, { interviewId } = {}) {
     if (!template) template = await resolveForInterview({ interviewId: interview.id, tenantId });
     if (!template) return { interviewId: interview.id, form: null, reason: "NO_FORM" };
 
-    const { form } = await formForInterview(prisma, tenantId, { ...interview, formTemplateId: template.id });
+    const { form, template: formTemplate } = await formForInterview(prisma, tenantId, { ...interview, formTemplateId: template.id });
+    // Phase 7 (B10) — the form's author by name (one lookup).
+    const authorId = formTemplate?.createdById ?? template.createdById ?? null;
+    const authorNames = await employeeNamesById(prisma, tenantId, [authorId]);
     const panelRole = member?.panelRole ?? null;
     const view = member && !seesAll ? formForPanelRole(form, panelRole) : form;
     const extras = await formExtras(prisma, tenantId, interview, view);
@@ -254,6 +258,8 @@ export async function getInterviewForm(user, { interviewId } = {}) {
             scale: form.scale,
             evidenceRules: form.evidenceRules,
             requiresTrainedInterviewer: template.requiresTrainedInterviewer === true,
+            createdById: authorId,
+            createdByName: nameOf(authorNames, authorId),
             sections: view.sections,
         },
         questions: extras.questions,

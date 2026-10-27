@@ -34,6 +34,8 @@
 // kiosk, and the exchange (test-session.service.js resumeKioskSession) gives
 // the same items, answers and clock back. At most MAX_KIOSK_RESUMES per
 // sitting; each one is a PROCTOR DEVICE_CHANGE on the integrity timeline.
+// Phase 7: only a code that was used, or is still live, counts toward the
+// limit; one that expired unused gives its slot back (countedKioskResumes).
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -57,6 +59,7 @@ import {
     RESUMABLE_SESSION_STATUSES,
     SESSION_CODE_TTL_MS,
     assertKioskResumeEnabled,
+    countedKioskResumes,
     generateSessionCode,
     hashSessionCode,
     resumeEventWhere,
@@ -486,7 +489,7 @@ export async function listLiveSessions({ tenantId, access, siteRef, now = new Da
             : [],
         ids.length ? prisma.candidateTestResponse.findMany({ where: withTenant(tenantId, { sessionId: { in: ids } }), select: { sessionId: true, answer: true } }) : [],
         ids.length
-            ? prisma.candidateTestIntegrityEvent.findMany({ where: withTenant(tenantId, { sessionId: { in: ids }, type: { in: [...FLAG_INTEGRITY_TYPES, INTEGRITY_TYPE.KIOSK_RESUME] } }), select: { sessionId: true, type: true, source: true } })
+            ? prisma.candidateTestIntegrityEvent.findMany({ where: withTenant(tenantId, { sessionId: { in: ids }, type: { in: [...FLAG_INTEGRITY_TYPES, INTEGRITY_TYPE.KIOSK_RESUME] } }), select: { id: true, sessionId: true, type: true, source: true, detail: true } })
             : [],
     ]);
     const labelOf = new Map(kiosks.map((k) => [k.id, k.label]));
@@ -494,7 +497,9 @@ export async function listLiveSessions({ tenantId, access, siteRef, now = new Da
     const count = (rows, pick = () => true) => rows.reduce((m, r) => (pick(r) ? m.set(r.sessionId, (m.get(r.sessionId) ?? 0) + 1) : m), new Map());
     const answered = count(responses, (r) => r.answer && Object.keys(r.answer).length > 0);
     const flagged = count(flags, (f) => f.type !== INTEGRITY_TYPE.KIOSK_RESUME);
-    const resumes = count(flags, (f) => f.type === INTEGRITY_TYPE.KIOSK_RESUME && f.source === "PROCTOR");
+    // Phase 7 — the same count the limit uses (used or live codes only).
+    const resumeRows = flags.filter((f) => f.type === INTEGRITY_TYPE.KIOSK_RESUME && f.source === "PROCTOR");
+    const resumeCountOf = (s) => countedKioskResumes(resumeRows.filter((f) => f.sessionId === s.id), s, now);
 
     return {
         siteRef: site,
@@ -514,7 +519,7 @@ export async function listLiveSessions({ tenantId, access, siteRef, now = new Da
                 remainingSec: live && s.status !== SESSION_STATUS.ISSUED ? remainingSeconds(s, now, durationOf.get(s.blueprintId) ?? 0) : null,
                 codeExpiresAt: s.status === SESSION_STATUS.ISSUED ? s.codeExpiresAt : null,
                 integrityFlagCount: flagged.get(s.id) ?? 0,
-                resumeCount: resumes.get(s.id) ?? 0,
+                resumeCount: resumeCountOf(s),
                 // A resume code waiting for its kiosk (never the code itself).
                 resumeCodeExpiresAt: RESUMABLE_SESSION_STATUSES.includes(s.status) && s.sessionCodeHash && s.codeExpiresAt && new Date(s.codeExpiresAt) > now
                     ? s.codeExpiresAt
@@ -642,7 +647,11 @@ export async function issueKioskResumeCode({ tenantId, access, actorId = null, s
             if (isPastDeadline(session, now)) {
                 throw fail("The sitting's time is up; it is submitted as it stands", 409, "HR-RECRUITMENT-TEST-SESSION-STATE");
             }
-            const used = await tx.candidateTestIntegrityEvent.count({ where: resumeEventWhere(tenantId, session.id) });
+            const issued = await tx.candidateTestIntegrityEvent.findMany({
+                where: resumeEventWhere(tenantId, session.id),
+                select: { id: true, detail: true },
+            });
+            const used = countedKioskResumes(issued, session, now);
             if (used >= MAX_KIOSK_RESUMES) {
                 throw fail(`This sitting has been resumed ${MAX_KIOSK_RESUMES} times; void it and ask the recruiter for a retest`, 409, "HR-RECRUITMENT-KIOSK-RESUME-LIMIT");
             }
@@ -675,6 +684,9 @@ export async function issueKioskResumeCode({ tenantId, access, actorId = null, s
             await proctorEvent(tx, session, INTEGRITY_TYPE.KIOSK_RESUME, {
                 reason: "KIOSK_RESUME",
                 resumeNo,
+                // Phase 7 — the exchange stamps usedAt here; until then this
+                // resume counts only while its code is live.
+                usageTracked: true,
                 fromWorkstationId: session.workstationId ?? null,
                 toWorkstationId: workstation.id,
                 byId: actor,

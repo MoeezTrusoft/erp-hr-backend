@@ -22,6 +22,9 @@ import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
 // Recruitment Phase 3a — every create and every calendar-relevant edit queues
 // the interview for the calendar sync worker in the same transaction.
 import { CALENDAR_SYNC_ACTION, calendarSyncMark, nextCalendarAction, resetRemindersForReschedule } from "./interviewSchedule.service.js";
+// Recruitment Phase 7 (B5) — each panelist's role (which form sections they
+// rate) is validated by the same rule the change-before-start path uses.
+import { assertPanelRolesEnabled, hasPanelRoleInput, normalizePanelRoles } from "./interviewSchedule.service.js";
 // Recruitment Phase 3a (stream B) — a NEXT_ROUND decision may advance the
 // application in the decision's own transaction.
 import { applyDecisionAutoAdvance } from "./interview-decision-prompt.service.js";
@@ -64,9 +67,16 @@ function assertScheduledAt(scheduledAt) {
  */
 export const scheduleInterviewInTransaction = async (tx, {
     applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes, tenantId,
-    conflictOverride, source = "interview-schedule", slotOfferId = null, now = new Date(),
+    conflictOverride, source = "interview-schedule", slotOfferId = null, now = new Date(), panelRoles = null,
 } = {}) => {
     const scheduledDate = assertScheduledAt(scheduledAt);
+    // B5 — optional per-panelist roles ([{ employeeId, panelRole }] or a map),
+    // validated before any write; a panelist without one rates every section.
+    let rolesByEmployee = new Map();
+    if (hasPanelRoleInput(panelRoles)) {
+        assertPanelRolesEnabled();
+        rolesByEmployee = normalizePanelRoles(panelRoles, (interviewerIds ?? []).map(Number).filter(Boolean));
+    }
     // Phase 7 / §5.2a — the availability gate runs BEFORE any write.
     // APPROVED leave on any panelist is a HARD block (refused, not
     // overridable); a non-working-day conflict is only a warning tier, so
@@ -111,7 +121,13 @@ export const scheduleInterviewInTransaction = async (tx, {
             ...calendarSyncMark(CALENDAR_SYNC_ACTION.CREATE, now),
             ...(slotOfferId != null ? { slotOfferId: Number(slotOfferId) } : {}),
             interviewers: interviewerIds?.length
-                ? { create: interviewerIds.map(id => ({ employeeId: Number(id), ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
+                ? {
+                    create: interviewerIds.map(id => ({
+                        employeeId: Number(id),
+                        ...(rolesByEmployee.get(Number(id)) ? { panelRole: rolesByEmployee.get(Number(id)) } : {}),
+                        ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }),
+                    })),
+                }
                 : undefined,
         }),
         include: {

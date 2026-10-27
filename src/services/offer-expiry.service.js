@@ -71,7 +71,8 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { mcpCtx } from "../lib/requestContext.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { withTenant } from "../lib/tenancy.js";
+import { scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
+import { employeeDisplayName } from "../lib/employee-names.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
@@ -686,6 +687,8 @@ export async function getOfferExtensionApproval({ tenantId, id, scope = null } =
             if (!offer) throw fail("Offer not found", 404, "HR-RECRUITMENT-OFFER-NOT-FOUND");
             const requests = await extensionsOf(tx, tenantId, offerId);
             const latest = requests.at(-1) ?? null;
+            // B10 — the latest request's decision trail with the deciders' names.
+            const decisions = latest ? await extensionDecisions(tx, tenantId, latest.id) : [];
             return {
                 offerId,
                 status: offer.status,
@@ -693,11 +696,43 @@ export async function getOfferExtensionApproval({ tenantId, id, scope = null } =
                 expiryExtendedCount: offer.expiryExtendedCount ?? 0,
                 version: offer.version ?? null,
                 open: Boolean(latest && OFFER_EXTENSION_OPEN_STAGES.includes(latest.stage)),
-                latest: offerExtensionView(latest, offer),
+                latest: latest ? { ...offerExtensionView(latest, offer), decisions } : null,
             };
         },
         { tenantId },
     );
+}
+
+// Recruitment Phase 7 (B10) — who decided each step of an extension request.
+// The Approval Centre records its actors by employee code (actorCode), so the
+// names are resolved by code, in one query under the tenant; an automation
+// actor (SYSTEM) or a code that no longer resolves reads as a null name.
+const MAX_EXTENSION_DECISIONS = 50;
+
+async function extensionDecisions(tx, tenantId, approvalRef) {
+    if (!approvalRef) return [];
+    const audits = await tx.hrApprovalAudit.findMany({
+        where: { tenantId, approvalRef },
+        select: { action: true, fromStage: true, toStage: true, actorCode: true, createdAt: true },
+        orderBy: [{ createdAt: "asc" }, { version: "asc" }],
+        take: MAX_EXTENSION_DECISIONS,
+    });
+    const codes = [...new Set(audits.map((a) => a.actorCode).filter((c) => typeof c === "string" && c && c !== "SYSTEM"))];
+    const employees = codes.length
+        ? await tx.employee.findMany({
+            where: scopedEmployeeWhere(tenantId, { employee_code: { in: codes } }),
+            select: { employee_code: true, first_name: true, last_name: true, employee_name: true },
+        })
+        : [];
+    const names = new Map(employees.map((e) => [e.employee_code, employeeDisplayName(e)]));
+    return audits.map((a) => ({
+        action: a.action,
+        fromStage: a.fromStage,
+        toStage: a.toStage,
+        decidedAt: isoStr(a.createdAt),
+        decidedByCode: a.actorCode ?? null,
+        decidedByName: names.get(a.actorCode) ?? null,
+    }));
 }
 
 /**

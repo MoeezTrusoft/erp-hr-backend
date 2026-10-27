@@ -29,7 +29,6 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { exportRows } from "../lib/export.util.js";
 import { logAction } from "../utils/logs.js";
 import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
-import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionClosedEvent } from "./hrEvents.js";
@@ -247,22 +246,11 @@ export const submitRequisition = async (id, tenantId, actorId = null) => {
       { tenantId },
     );
   }
-  await legacySubmit("REQUISITION", id);
-  await tenantTransaction(
-    prisma,
-    async (tx) => {
-      await recordRequisitionTransition(tx, {
-        requisitionId: Number(id),
-        tenantId,
-        fromStatus: current.status,
-        toStatus: "PENDING_APPROVAL",
-        actorId,
-        source: "requisition.submit",
-      });
-      await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: current, actorId });
-    },
-    { tenantId },
-  );
+  // The centre's submit transaction also writes the transition row and
+  // hr.recruitment.requisition_submitted.v1 (approval/adapters.js onSubmit).
+  await legacySubmit("REQUISITION", id, undefined, {
+    requisition: { reason: null, transitionSource: "requisition.submit" },
+  });
   return getManagedRequisition(id, tenantId);
 };
 

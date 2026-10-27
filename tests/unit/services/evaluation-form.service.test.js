@@ -126,6 +126,15 @@ describe("hr_interview_form_get", () => {
         expect(m.form.sections.map((s) => s.key)).toEqual(["tech", "people"]);
     });
 
+    it("Phase 7 (B10): names the form's author next to createdById", async () => {
+        store.templates[0].createdById = 7;
+        const out = await as(panelA, () => forms.getInterviewForm(panelA, { interviewId: 100 }));
+        expect(out.form).toMatchObject({ createdById: 7, createdByName: "Rina Recruiter" });
+        store.templates[0].createdById = null;
+        const none = await as(panelA, () => forms.getInterviewForm(panelA, { interviewId: 100 }));
+        expect(none.form).toMatchObject({ createdById: null, createdByName: null });
+    });
+
     it("is not found for someone outside the interview's scope", async () => {
         await expect(as(outsider, () => forms.getInterviewForm(outsider, { interviewId: 100 }))).rejects.toMatchObject({ status: 404 });
     });
