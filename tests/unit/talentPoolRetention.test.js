@@ -16,7 +16,7 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
 const prisma = {
   talentPool: { create: jest.fn() },
-  candidate: { updateMany: jest.fn() },
+  candidate: { updateMany: jest.fn(), findFirst: jest.fn() },
   // F-37 — the pool entry is written inside a tenant transaction (with its
   // outbox event); the double runs the callback on the same client.
   $transaction: jest.fn(async (fn) => fn(prisma)),
@@ -39,6 +39,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   prisma.talentPool.create.mockResolvedValue({ id: 5, candidateId: 7, poolName: "Future roles" });
   prisma.candidate.updateMany.mockResolvedValue({ count: 1 });
+  // The candidate belongs to the caller's tenant (the pool add checks it).
+  prisma.candidate.findFirst.mockResolvedValue({ id: 7 });
 });
 
 describe("Phase 10 — TALENT_POOL retention wiring", () => {
@@ -93,5 +95,24 @@ describe("Phase 10 — TALENT_POOL retention wiring", () => {
       tenantId: TENANT,
       id: 7,
     });
+  });
+});
+
+describe("talent pool add: the candidate must be the caller's tenant's", () => {
+  it("refuses another tenant's (or an unknown) candidate as not found, and creates nothing", async () => {
+    prisma.candidate.findFirst.mockResolvedValue(null);
+    await expect(addToPool({ candidateId: 9, poolName: "Future roles", tenantId: TENANT })).rejects.toMatchObject({
+      status: 404,
+      code: "HR-RECRUITMENT-CANDIDATE-NOT-FOUND",
+    });
+    expect(prisma.candidate.findFirst.mock.calls[0][0].where).toMatchObject({ id: 9, tenantId: TENANT });
+    expect(prisma.talentPool.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a malformed candidate id before any read", async () => {
+    await expect(addToPool({ candidateId: "x", poolName: "Future roles", tenantId: TENANT })).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(prisma.candidate.findFirst).not.toHaveBeenCalled();
   });
 });

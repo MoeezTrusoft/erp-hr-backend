@@ -55,7 +55,7 @@ import { issueEmailVerification, sendVerificationEmail, issueStatusLink, sendApp
 import { evaluateRequisitionEligibility, closedApplicationMessage } from "../lib/requisitionEligibility.js";
 import { validateAnswer, scoreAnswers } from "../lib/applicationQuestions.js";
 import { parsePublicApplicationInput, getPublicJob as getPublicJobShape } from "../lib/publicPortal.js";
-import { INTERNAL_ONLY_CHANNELS, PUBLIC_CHANNELS, publicPostings } from "../lib/requisitionPublication.js";
+import { PUBLIC_CHANNELS, publicPostings } from "../lib/requisitionPublication.js";
 import {
     checkIntakeDnc,
     logIntakeSuppressed,
@@ -84,8 +84,13 @@ const positiveInt = (value) => {
     return Number.isInteger(n) && n > 0 ? n : null;
 };
 
-// The channels an anonymous portal applicant may not tag themselves with.
-export const PORTAL_UNCLAIMABLE_CHANNELS = Object.freeze([...INTERNAL_ONLY_CHANNELS, "REFERRAL"]);
+// The only channels an anonymous portal applicant may tag themselves with:
+// the careers site and the public job boards the feed publishes to (plus a
+// generic OTHER). Every other source (INTERNAL, REFERRAL, AGENCY, TALENT_POOL,
+// RECRUITER, ...) is recorded by the path that owns it, never claimed in a
+// public request, so a claim of one falls back to the portal's default. An
+// allow-list, so a channel added later is unclaimable until listed here.
+export const PORTAL_CLAIMABLE_CHANNELS = Object.freeze(["CAREER_SITE", "LINKEDIN", "INDEED", "OTHER"]);
 
 /**
  * Source attribution from the apply link the job feed published
@@ -96,13 +101,13 @@ export const PORTAL_UNCLAIMABLE_CHANNELS = Object.freeze([...INTERNAL_ONLY_CHANN
  */
 export function parseSourceAttribution(body = {}, { postings = [], defaultChannel = "CAREER_SITE" } = {}) {
     const postingId = positiveInt(body?.sourcePostingId);
-    // Recruitment Phase 5 — an anonymous applicant cannot claim the internal
-    // channel: INTERNAL attribution belongs to the employees' own board.
-    // Phase 6 — nor REFERRAL: a referral only comes from an employee through
-    // that board, so a self-tagged one would credit (and pay) nobody's referral.
+    // An anonymous applicant claims only a public channel (see
+    // PORTAL_CLAIMABLE_CHANNELS): INTERNAL belongs to the employees' board, a
+    // REFERRAL to an employee's referral, AGENCY to an agency submission and
+    // TALENT_POOL to a pool invitation, each recorded by its own path.
     const claimed = normalizeSourceChannel(body?.sourceChannel, defaultChannel);
     return {
-        sourceChannel: PORTAL_UNCLAIMABLE_CHANNELS.includes(claimed) ? defaultChannel : claimed,
+        sourceChannel: PORTAL_CLAIMABLE_CHANNELS.includes(claimed) ? claimed : defaultChannel,
         sourcePostingId: postingId && postings.some((p) => p.id === postingId && p.isActive !== false) ? postingId : null,
         sourceDetail: normalizeSourceDetail(body?.sourceDetail),
     };

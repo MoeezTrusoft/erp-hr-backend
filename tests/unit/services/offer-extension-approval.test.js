@@ -359,3 +359,41 @@ describe("withdraw and read", () => {
         expect(out).toMatchObject({ open: true, latest: { stage: "LINE_MANAGER", attempt: 2, proposedExpiryDate: at(20).toISOString() } });
     });
 });
+
+describe("runOfferExtensionCloseJob (Phase 6 hardening)", () => {
+    const run = () => mcpCtx.run({ system: true }, async () => await svc.runOfferExtensionCloseJob({ now: NOW }));
+
+    it("withdraws an open extension request once its offer is accepted, as the system", async () => {
+        APPROVALS.push(extRequest({ stage: "MANAGEMENT", version: 3 }));
+        OFFERS = [offer({ status: "ACCEPTED" })];
+        const out = await run();
+        expect(out).toMatchObject({ scanned: 1, closed: 1, stillOpen: 0, failed: 0 });
+        const ext = APPROVALS.find((a) => a.sourceRef.includes("@x"));
+        expect(ext.stage).toBe("WITHDRAWN");
+        expect(AUDITS.at(-1)).toMatchObject({ actorCode: "SYSTEM", fromStage: "MANAGEMENT", toStage: "WITHDRAWN", action: "WITHDRAW" });
+        expect(AUDITS.at(-1).reason).toMatch(/ACCEPTED/);
+        expect(events("hr.approval.transitioned.v1").at(-1).payload.actor).toMatchObject({ type: "automation", id: "SYSTEM" });
+        expect(events("hr.recruitment.offer_expiry_extension_decided.v1").at(-1).payload.payload).toMatchObject({ decision: "WITHDRAWN" });
+        // The offer row is never touched.
+        expect(byId(1).status).toBe("ACCEPTED");
+    });
+
+    it("withdraws it when the offer declined, or is SENT but already past its expiry", async () => {
+        APPROVALS.push(extRequest());
+        OFFERS = [offer({ status: "SENT", expiryDate: at(-1) })];
+        expect(await run()).toMatchObject({ closed: 1 });
+        APPROVALS = [{ ...ORIGINAL }, extRequest()];
+        OFFERS = [offer({ status: "DECLINED" })];
+        expect(await run()).toMatchObject({ closed: 1 });
+    });
+
+    it("leaves a request on a live SENT offer alone, and does nothing with the flag off", async () => {
+        APPROVALS.push(extRequest());
+        expect(await run()).toMatchObject({ scanned: 1, closed: 0, stillOpen: 1 });
+        expect(APPROVALS.find((a) => a.sourceRef.includes("@x")).stage).toBe("HR");
+        delete process.env.HR_RECRUITMENT_OFFER_EXTENSION_APPROVAL;
+        OFFERS = [offer({ status: "ACCEPTED" })];
+        expect(await run()).toEqual({ skipped: "FLAG_OFF" });
+        expect(APPROVALS.find((a) => a.sourceRef.includes("@x")).stage).toBe("HR");
+    });
+});

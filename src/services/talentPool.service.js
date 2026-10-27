@@ -26,10 +26,21 @@ export const addToPool = async ({ candidateId, poolName, notes, addedById, tenan
     // retention stamp below stays OUTSIDE this transaction on purpose: it is
     // fail-soft, and a failed statement inside a Postgres transaction would abort
     // it (and the pool entry with it) even though the error is caught.
+    const id = Number(candidateId);
+    if (!Number.isInteger(id) || id <= 0) {
+        throw Object.assign(new Error("candidateId must be a positive integer"), { status: 400, code: "HR-RECRUITMENT-CANDIDATE-INVALID" });
+    }
     const entry = await tenantTransaction(prisma, async (tx) => {
+        // The foreign key does not know tenants: a pool row in this tenant may
+        // only point at this tenant's candidate. Another tenant's id (or an
+        // unknown one) reads as not found, never as a row created across tenants.
+        const candidate = await tx.candidate.findFirst({ where: scopedWhere(tenantId, { id }), select: { id: true } });
+        if (!candidate) {
+            throw Object.assign(new Error("Candidate not found"), { status: 404, code: "HR-RECRUITMENT-CANDIDATE-NOT-FOUND" });
+        }
         const created = await tx.talentPool.create({
             data: scopedData(tenantId, {
-                candidateId: Number(candidateId),
+                candidateId: id,
                 poolName,
                 notes,
                 addedById: addedById ? Number(addedById) : null,

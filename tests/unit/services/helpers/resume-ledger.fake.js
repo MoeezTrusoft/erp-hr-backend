@@ -47,6 +47,7 @@ export function matches(row, where) {
             if ("lt" in cond && !(value != null && time(value) < time(cond.lt))) return false;
             if ("gt" in cond && !(value != null && time(value) > time(cond.gt))) return false;
             if ("startsWith" in cond && !String(value ?? "").startsWith(cond.startsWith)) return false;
+            if ("contains" in cond && !String(value ?? "").includes(cond.contains)) return false;
         } else if ((value ?? null) !== cond) {
             return false;
         }

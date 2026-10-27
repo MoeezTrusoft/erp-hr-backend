@@ -304,6 +304,11 @@ router.get(
 export const interviewSlotsRouter = express.Router();
 
 const SLOT_LINK_NOT_FOUND = Object.freeze({ success: false, message: "This interview link is not valid" });
+// Phase 6 hardening: the decline could not be recorded (an outage), not a dead link.
+const SLOT_DECLINE_TRY_AGAIN = Object.freeze({
+    success: false,
+    message: "We could not record your answer right now. Please try again in a few minutes.",
+});
 const SLOT_TAKEN = Object.freeze({ success: false, message: "This time is no longer available, please pick another" });
 
 // GET /public/candidates/interview-slots?token= — the slots offered to the
@@ -356,8 +361,14 @@ interviewSlotsRouter.post(
             if (err?.code === "HR-RECRUITMENT-SLOT-DECLINE-REASON-INVALID") {
                 return res.status(400).json({ success: false, message: err.message });
             }
+            const status = Number(err?.status);
+            // A refusal of the link itself (any 4xx) is the same dead link.
+            if (Number.isInteger(status) && status >= 400 && status < 500) return res.status(404).json(SLOT_LINK_NOT_FOUND);
+            // An outage is not a dead link: the candidate is told to try again,
+            // so a decline is not silently lost (Phase 6 hardening). The body is
+            // the same for every token, so it reveals nothing about the person.
             logger.error({ err: err?.message, code: err?.code }, "interview slot decline failed");
-            return res.status(404).json(SLOT_LINK_NOT_FOUND);
+            return res.status(503).json(SLOT_DECLINE_TRY_AGAIN);
         }
     }),
 );

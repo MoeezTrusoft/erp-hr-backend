@@ -101,6 +101,7 @@ const {
   JOB_DSR_SLA,
   JOB_DSR_VERIFICATION_SWEEP,
   JOB_RECRUITMENT_ALERTS,
+  JOB_OFFER_EXTENSION_CLOSE,
 } = await import("../../../src/jobs/reminder.queue.js");
 const { approvalSlaConfig, approvalSlaKey } = await import("../../../src/services/recruitment-approval-sla.service.js");
 
@@ -334,6 +335,7 @@ describe("Phase 3a jobs are scheduled", () => {
       [JOB_DSR_SLA, "dsrSla", "20 4 * * *"],
       [JOB_DSR_VERIFICATION_SWEEP, "dsrVerificationSweep", "35 * * * *"],
       [JOB_RECRUITMENT_ALERTS, "recruitmentAlerts", "7 * * * *"],
+      [JOB_OFFER_EXTENSION_CLOSE, "offerExtensionClose", "55 * * * *"],
     ];
     const runners = Object.fromEntries(expected.map(([name, key]) => [key, jest.fn(async () => name)]));
     const processor = buildReminderProcessor(runners);

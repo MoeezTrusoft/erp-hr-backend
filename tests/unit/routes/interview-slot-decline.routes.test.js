@@ -30,6 +30,7 @@ const TENANT = "11111111-1111-4111-8111-111111111111";
 process.env.HR_PORTAL_HOSTS = `careers.test=${TENANT}`;
 
 const { interviewSlotsRouter } = await import("../../../src/routes/publicPortal.routes.js");
+const { resetRateLimitMemory } = await import("../../../src/lib/rate-limit.util.js");
 
 const app = express();
 app.set("trust proxy", false);
@@ -50,12 +51,22 @@ describe("POST /public/candidates/interview-slots/decline", () => {
         expect(declineSlotOffer).toHaveBeenCalledWith({ token: TOKEN, reason: "NONE_SUIT", tenantId: TENANT });
     });
 
+    it("an outage asks the candidate to try again (503), never a dead link", async () => {
+        declineSlotOffer.mockRejectedValueOnce(new Error("db down"));
+        const res = await post({ token: TOKEN });
+        expect(res.status).toBe(503);
+        expect(res.body).toEqual({
+            success: false,
+            message: "We could not record your answer right now. Please try again in a few minutes.",
+        });
+    });
+
     it("a dead link and any refusal are the slot routes' one 404 body; a bad reason is a 400", async () => {
         declineSlotOffer.mockResolvedValueOnce(null);
         const dead = await post({ token: TOKEN });
-        declineSlotOffer.mockRejectedValueOnce(new Error("db down"));
-        const broken = await post({ token: TOKEN });
-        for (const res of [dead, broken]) {
+        declineSlotOffer.mockRejectedValueOnce(Object.assign(new Error("not offered"), { status: 409 }));
+        const refused = await post({ token: TOKEN });
+        for (const res of [dead, refused]) {
             expect(res.status).toBe(404);
             expect(res.body).toEqual(NOT_FOUND);
         }
@@ -73,10 +84,11 @@ describe("POST /public/candidates/interview-slots/decline", () => {
 
     it("has its own budget: ten a minute per IP, then 429", async () => {
         declineSlotOffer.mockResolvedValue(null);
+        // Start from an empty window so the count does not depend on the tests above.
+        resetRateLimitMemory();
         const statuses = [];
-        // Five were spent above (the limiter runs before tenant resolution).
-        for (let i = 0; i < 6; i += 1) statuses.push((await post({ token: TOKEN })).status);
-        expect(statuses.slice(0, 5).every((s) => s === 404)).toBe(true);
-        expect(statuses[5]).toBe(429);
+        for (let i = 0; i < 11; i += 1) statuses.push((await post({ token: TOKEN })).status);
+        expect(statuses.slice(0, 10).every((s) => s === 404)).toBe(true);
+        expect(statuses[10]).toBe(429);
     });
 });

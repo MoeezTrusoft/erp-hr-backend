@@ -54,6 +54,7 @@ import { runTalentNurtureProposalJob } from '../services/talent-nurture.service.
 import { runReferralBonusJob } from '../services/internal-referral.service.js';
 import { runDsrSlaJob, runDsrVerificationSweepJob } from '../services/dsr-portal.service.js';
 import { runRecruitmentAlertsJob } from '../services/recruitment-alerts.service.js';
+import { runOfferExtensionCloseJob } from '../services/offer-expiry.service.js';
 
 // BullMQ v5 forbids ':' in a queue NAME (Redis key separator) — a colon here
 // makes `new Queue()` throw at boot, which the startReminderJobs try/catch
@@ -143,6 +144,9 @@ export const JOB_REFERRAL_BONUS = 'referral-bonus';
 export const JOB_DSR_SLA = 'dsr-sla';
 export const JOB_DSR_VERIFICATION_SWEEP = 'dsr-verification-sweep';
 export const JOB_RECRUITMENT_ALERTS = 'recruitment-alerts';
+// Phase 6 hardening: withdraw extension requests left open on a closed offer
+// (HR_RECRUITMENT_OFFER_EXTENSION_APPROVAL).
+export const JOB_OFFER_EXTENSION_CLOSE = 'offer-extension-close';
 
 // The retry ladder applied to every job: bounded attempts + exponential
 // backoff, with bounded completed/failed retention so the queue keys do not
@@ -347,6 +351,11 @@ export function repeatableJobs() {
             data: {},
             opts: { jobId: 'repeat:recruitment-alerts', repeat: { pattern: '7 * * * *' } },
         },
+        {
+            name: JOB_OFFER_EXTENSION_CLOSE,
+            data: {},
+            opts: { jobId: 'repeat:offer-extension-close', repeat: { pattern: '55 * * * *' } },
+        },
     ];
 }
 
@@ -385,6 +394,7 @@ export function buildReminderProcessor({
     dsrSla = runDsrSlaJob,
     dsrVerificationSweep = runDsrVerificationSweepJob,
     recruitmentAlerts = runRecruitmentAlertsJob,
+    offerExtensionClose = runOfferExtensionCloseJob,
 } = {}) {
     // Reminder sweeps are cross-tenant → run as SYSTEM (deny-by-default off);
     // each sweep already scopes its own per-tenant work.
@@ -455,6 +465,8 @@ export function buildReminderProcessor({
                     return dsrVerificationSweep(data);
                 case JOB_RECRUITMENT_ALERTS:
                     return recruitmentAlerts(data);
+                case JOB_OFFER_EXTENSION_CLOSE:
+                    return offerExtensionClose(data);
                 default:
                     throw new Error(`reminder.queue: unknown job name "${job.name}"`);
             }

@@ -701,6 +701,72 @@ export async function getOfferExtensionApproval({ tenantId, id, scope = null } =
 }
 
 /**
+ * Withdraw the given open extension requests of one offer inside the caller's
+ * transaction: each becomes WITHDRAWN with its audit row, the Centre's
+ * transition announcement and the recruitment decision event. The offer row is
+ * never touched. Returns the views of the requests it withdrew.
+ */
+async function withdrawExtensionRequestsInTx(tx, { tenantId, offer, open, actorCode, actorType = "user", note, ctx, recruiterId }) {
+    const withdrawn = [];
+    for (const { id: requestId } of open) {
+        await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${tenantId}::uuid AND id=${requestId}::uuid FOR UPDATE`;
+        const row = await tx.hrApprovalRequest.findFirst({ where: { tenantId, id: requestId } });
+        if (!row || !OFFER_EXTENSION_OPEN_STAGES.includes(row.stage)) continue;
+        const next = await tx.hrApprovalRequest.update({
+            where: { id: row.id },
+            data: { stage: "WITHDRAWN", execution: "APPLIED", version: { increment: 1 } },
+        });
+        await tx.hrApprovalAudit.create({
+            data: {
+                tenantId,
+                approvalRef: next.id,
+                version: next.version,
+                round: next.round,
+                actorCode,
+                fromStage: row.stage,
+                toStage: "WITHDRAWN",
+                action: "WITHDRAW",
+                reason: note,
+                sourceHash: next.sourceHash,
+            },
+        });
+        // The same announcement the Centre makes for its own transitions.
+        await enqueueHrDomainEvent(tx, {
+            tenantId,
+            actorId: actorCode,
+            actorType,
+            eventName: "hr.approval.transitioned.v1",
+            aggregateType: "HrApprovalRequest",
+            aggregateId: next.id,
+            correlationId: ctx.correlationId,
+            payload: {
+                approvalRef: next.id,
+                kind: next.kind,
+                sourceRef: next.sourceRef,
+                employeeCode: next.employeeCode,
+                actorCode,
+                fromStage: row.stage,
+                toStage: "WITHDRAWN",
+                action: "WITHDRAW",
+                version: next.version,
+                round: next.round,
+            },
+        });
+        await enqueueHrDomainEvent(
+            tx,
+            offerExpiryExtensionDecidedEvent({ ...offer, tenantId: offer.tenantId ?? tenantId }, ctx, {
+                approvalRef: next.id,
+                decision: "WITHDRAWN",
+                proposedExpiryDate: parseOfferExtensionRef(next.sourceRef)?.proposedExpiryDate ?? null,
+                recruiterId,
+            }),
+        );
+        withdrawn.push(offerExtensionView(next, offer));
+    }
+    return withdrawn;
+}
+
+/**
  * hr_offer_expiry_extension_withdraw. A recruiter withdraws the offer's open
  * extension request: the request becomes WITHDRAWN (audited and announced as
  * the Centre's own transitions are), the offer is unchanged, decided
@@ -740,64 +806,91 @@ export async function withdrawOfferExtension({ tenantId, id, reason, scope = nul
                 select: { recruiterId: true },
             });
 
-            const withdrawn = [];
-            for (const { id: requestId } of open) {
-                await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${tenantId}::uuid AND id=${requestId}::uuid FOR UPDATE`;
-                const row = await tx.hrApprovalRequest.findFirst({ where: { tenantId, id: requestId } });
-                if (!row || !OFFER_EXTENSION_OPEN_STAGES.includes(row.stage)) continue;
-                const next = await tx.hrApprovalRequest.update({
-                    where: { id: row.id },
-                    data: { stage: "WITHDRAWN", execution: "APPLIED", version: { increment: 1 } },
-                });
-                await tx.hrApprovalAudit.create({
-                    data: {
-                        tenantId,
-                        approvalRef: next.id,
-                        version: next.version,
-                        round: next.round,
-                        actorCode: who.employee_code,
-                        fromStage: row.stage,
-                        toStage: "WITHDRAWN",
-                        action: "WITHDRAW",
-                        reason: note,
-                        sourceHash: next.sourceHash,
-                    },
-                });
-                // The same announcement the Centre makes for its own transitions.
-                await enqueueHrDomainEvent(tx, {
-                    tenantId,
-                    actorId: who.employee_code,
-                    actorType: "user",
-                    eventName: "hr.approval.transitioned.v1",
-                    aggregateType: "HrApprovalRequest",
-                    aggregateId: next.id,
-                    correlationId: ctx.correlationId,
-                    payload: {
-                        approvalRef: next.id,
-                        kind: next.kind,
-                        sourceRef: next.sourceRef,
-                        employeeCode: next.employeeCode,
-                        actorCode: who.employee_code,
-                        fromStage: row.stage,
-                        toStage: "WITHDRAWN",
-                        action: "WITHDRAW",
-                        version: next.version,
-                        round: next.round,
-                    },
-                });
-                await enqueueHrDomainEvent(
-                    tx,
-                    offerExpiryExtensionDecidedEvent({ ...offer, tenantId: offer.tenantId ?? tenantId }, ctx, {
-                        approvalRef: next.id,
-                        decision: "WITHDRAWN",
-                        proposedExpiryDate: parseOfferExtensionRef(next.sourceRef)?.proposedExpiryDate ?? null,
-                        recruiterId: requisition?.recruiterId ?? null,
-                    }),
-                );
-                withdrawn.push(offerExtensionView(next, offer));
-            }
+            const withdrawn = await withdrawExtensionRequestsInTx(tx, {
+                tenantId,
+                offer,
+                open,
+                actorCode: who.employee_code,
+                note,
+                ctx,
+                recruiterId: requisition?.recruiterId ?? null,
+            });
             return { offerId, withdrawn, latest: withdrawn.at(-1) ?? null };
         },
         { tenantId },
     );
+}
+
+// Statuses after which an offer's expiry can no longer change.
+const CLOSED_FOR_EXTENSION = Object.freeze(["ACCEPTED", "DECLINED", "EXPIRED", "WITHDRAWN", "CANCELLED"]);
+// The audit actor of a withdrawal the system makes (no person decided it).
+export const EXTENSION_SWEEP_ACTOR = "SYSTEM";
+
+/**
+ * Phase 6 hardening. An extension request that is still open when its offer
+ * is accepted, declined, withdrawn or expires can never apply (the decision
+ * refuses a stale offer), so it would sit in the HR Approval Centre queue until
+ * someone withdrew it by hand. This sweep withdraws those requests as the
+ * system, with the same audit row and events as a recruiter's withdrawal; the
+ * offer row is never touched. It runs with the offer expiry job.
+ * Flag offerExtensionApproval (returns { skipped: "FLAG_OFF" } when off).
+ */
+export async function runOfferExtensionCloseJob({ now = new Date(), limit = DEFAULT_LIMIT } = {}) {
+    if (!isRecruitmentFlagEnabled("offerExtensionApproval")) return { skipped: "FLAG_OFF" };
+    const at = new Date(now);
+    const take = Math.min(Math.max(Number(limit) || DEFAULT_LIMIT, 1), 500);
+    const open = await mcpCtx.run({ system: true }, async () =>
+        await prisma.hrApprovalRequest.findMany({
+            where: { kind: "OFFER", stage: { in: [...OFFER_EXTENSION_OPEN_STAGES] }, sourceRef: { contains: "@x" } },
+            select: { id: true, tenantId: true, sourceRef: true },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take,
+        }),
+    );
+    const summary = { scanned: open.length, closed: 0, stillOpen: 0, failed: 0 };
+    for (const request of open) {
+        const parsed = parseOfferExtensionRef(request.sourceRef);
+        if (!parsed || !request.tenantId) {
+            summary.stillOpen += 1;
+            continue;
+        }
+        const { tenantId } = request;
+        try {
+            const closed = await mcpCtx.run({ user: { tenantId } }, async () =>
+                await tenantTransaction(
+                    prisma,
+                    async (tx) => {
+                        await tx.$queryRaw`SELECT id FROM "offers" WHERE id=${parsed.offerId} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
+                        const offer = await tx.offer.findFirst({ where: withTenant(tenantId, { id: parsed.offerId }) });
+                        if (!offer) return 0;
+                        const expired = offer.status === "SENT" && offer.expiryDate && new Date(offer.expiryDate) < at;
+                        if (!CLOSED_FOR_EXTENSION.includes(offer.status) && !expired) return 0;
+                        const requisition = await tx.jobRequisition.findFirst({
+                            where: withTenant(tenantId, { id: offer.jobRequisitionId }),
+                            select: { recruiterId: true },
+                        });
+                        const withdrawn = await withdrawExtensionRequestsInTx(tx, {
+                            tenantId,
+                            offer,
+                            open: [{ id: request.id }],
+                            actorCode: EXTENSION_SWEEP_ACTOR,
+                            actorType: "automation",
+                            note: `Withdrawn automatically: the offer is ${expired ? "EXPIRED" : offer.status}`,
+                            ctx: eventContext({ actorId: null }),
+                            recruiterId: requisition?.recruiterId ?? null,
+                        });
+                        return withdrawn.length;
+                    },
+                    { tenantId },
+                ),
+            );
+            if (closed) summary.closed += closed;
+            else summary.stillOpen += 1;
+        } catch (err) {
+            summary.failed += 1;
+            log.error({ errMessage: err?.message, tenantId, approvalRef: request.id }, "offer extension close: request failed");
+        }
+    }
+    log.info(summary, "offer extension close job: done");
+    return summary;
 }
