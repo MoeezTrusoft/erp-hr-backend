@@ -991,6 +991,10 @@ export async function listCheckInOuts({
       id: true, employeeId: true, date: true, type: true, status: true,
       evidenceState: true,
       sourceKind: true,
+      // TS-REQUEST-HYBRID-01 — a raise binds its approval to `id@factHash`, so
+      // the hash is what lets this read model show the request for the exact
+      // evidence revision it was raised against (and hide a stale one).
+      factHash: true,
       raisedById: true, raisedByName: true,
       reason: true, detail: true, fromTime: true, toTime: true,
       createdAt: true, decidedAt: true, reviewNote: true, requestDeadline: true,
@@ -1027,6 +1031,33 @@ export async function listCheckInOuts({
     );
     if (isForm && !existingIsForm) anomalyByKey.set(key, an);
   }
+  // TS-REQUEST-HYBRID-01 (operator, 2026-10-27) — the employee or HR raises the
+  // resolution request for a detected case into the HR Approval Centre
+  // (hr_attendance_rules_raise / _raise_on_behalf), and THAT request is the
+  // row's Request story. The case itself stays a rules-v2 row: the ATTENDANCE
+  // approval adapter only finalizes rules-v2 sources, so a raise completes the
+  // detected case instead of creating a legacy-shaped sibling.
+  //
+  // Matching the exact `anomalyId@factHash` reference keeps this honest in both
+  // directions — an unraised case has no approval and still reads "Not
+  // submitted", and an approval whose evidence has since been re-evaluated is
+  // not found, so the row falls back to "Not submitted" rather than claiming a
+  // request that no longer describes the current facts.
+  const approvalRefs = [...anomalyByKey.values()]
+    .filter((an) => an.factHash)
+    .map((an) => `${an.id}@${an.factHash}`);
+  const approvalByAnomaly = new Map();
+  if (approvalRefs.length) {
+    const requests = await prisma.hrApprovalRequest.findMany({
+      where: scopedWhere(tenantId, {
+        kind: "ATTENDANCE",
+        sourceRef: { in: approvalRefs },
+      }),
+      select: { id: true, sourceRef: true, stage: true, version: true, updatedAt: true },
+    });
+    for (const request of requests)
+      approvalByAnomaly.set(String(request.sourceRef).split("@")[0], request);
+  }
   const approvalRows = anomalyByKey.size
     ? await prisma.attendanceAnomalyApproval.findMany({
         where: { anomalyId: { in: [...anomalyByKey.values()].map((a) => a.id) } },
@@ -1060,15 +1091,27 @@ export async function listCheckInOuts({
     // form renders Pending/Approved/Disapproved and IS viewable. The map is
     // ordered newest-first with forms outranking grading rows, so an employee
     // CAN still answer a machine-flagged day.
+    // TS-REQUEST-HYBRID-01 — a raised resolution request counts as the row's
+    // request even though the row stays a rules-v2 case. A row with neither a
+    // raised request nor a legacy form still falls through to UNSUBMITTED
+    // below, which is exactly the "Not submitted" state of a detected anomaly.
+    const approval = an != null ? approvalByAnomaly.get(String(an.id)) ?? null : null;
     const anForm =
       an != null &&
-      ["REGULARIZATION", "PAPER_FORM"].includes(String(an.sourceKind ?? "").toUpperCase())
+      (approval != null ||
+        ["REGULARIZATION", "PAPER_FORM"].includes(String(an.sourceKind ?? "").toUpperCase()))
         ? an
         : null;
     if (anForm) {
       request = {
         anomalyId: an.id,
         status: an.status, // PENDING | APPROVED | REJECTED
+        // Where the request sits in the HR Approval Centre — HR verification,
+        // then Management (the Level-1 manager stage is paused for attendance).
+        // Null for a row decided through the legacy chain, which the FE already
+        // renders from `decisions`.
+        stage: approval?.stage ?? null,
+        approvalRef: approval?.id ?? null,
         type: an.type,
         submittedAt: an.createdAt,
         decidedAt: an.decidedAt,
@@ -1091,7 +1134,15 @@ export async function listCheckInOuts({
         decisions: decisionsByAnomaly.get(an.id) ?? [],
       };
     } else if (ANOMALY_DAY_STATUSES.has(a.status)) {
-      request = { status: "UNSUBMITTED" };
+      // TS-REQUEST-HYBRID-01 — carry the detected case with the state: the
+      // raise addresses ONE case, and this is the row that offers the raise, so
+      // the id (and its type) must travel with "Not submitted". A day with no
+      // case row at all keeps the id null and is raised by its day instead.
+      request = {
+        status: "UNSUBMITTED",
+        anomalyId: an?.id ?? null,
+        type: an?.type ?? null,
+      };
     }
     return {
       attendanceId: a.id,

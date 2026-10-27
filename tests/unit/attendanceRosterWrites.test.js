@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, it, expect, jest } from '@jest/globals';
 let rows = [],
   failCreate = false;
 const db = {
@@ -160,6 +160,16 @@ describe('roster-write attendance re-evaluation (ROSTER-REEVAL-01)', () => {
   const today = '2026-10-21';
   const resetWhere = () =>
     db.attendanceEvaluationJob.updateMany.mock.calls[0][0].where;
+
+  // The horizon is capped at the operating "today" (the tenant's civil date),
+  // so pin the clock: a real clock would move the horizon off `today` and turn
+  // these assertions into calendar-dependent failures.
+  beforeEach(() => {
+    jest.useFakeTimers({ now: new Date(`${today}T06:00:00.000Z`) });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
 
   it('enqueues evaluation from the effective date through today when saving an in-force correction', async () => {
     const saved = await updateWorkSchedule(
