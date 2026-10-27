@@ -7,6 +7,7 @@ import {
   reconcileLaunches,
 } from "../services/appraisals/jobs.js";
 import logger from "../lib/logger.js";
+import { dispatchReminders } from '../services/appraisals/notifications.js';
 const tenants = z
   .array(z.string().uuid())
   .min(1)
@@ -37,6 +38,14 @@ const worker = new Worker(
   async (job) => {
     if (!tenants.includes(job.data.tenantId))
       throw new Error("Unsupported appraisal tenant");
+    if (job.name === 'notifications') {
+      if (process.env.APPRAISAL_NOTIFICATIONS_ENABLED !== 'true') return { disabled: true };
+      const notifications = await dispatchReminders(job.data.tenantId, { cursor: job.data.cursor });
+      if (notifications.failed) logger.warn({ failed: notifications.failed }, 'Appraisal notification retries remain pending');
+      if (notifications.nextCursor) await queue.add('notifications', { tenantId: job.data.tenantId, cursor: notifications.nextCursor },
+        { removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } });
+      return notifications;
+    }
     if (job.name === "launch") {
       const cycleId = z.string().uuid().parse(job.data.cycleId);
       for (;;) {
@@ -55,6 +64,10 @@ const worker = new Worker(
       ? z.string().uuid().parse(job.data.cursor)
       : undefined;
     const result = await scanCompany(job.data.tenantId, { cursor });
+    if (!cursor && process.env.APPRAISAL_NOTIFICATIONS_ENABLED === 'true')
+      await queue.add('notifications', { tenantId: job.data.tenantId },
+        { jobId: `notifications-${job.data.tenantId}-${Math.floor(Date.now() / 300000)}`,
+          removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } });
     if (result.nextCursor)
       await queue.add(
         "scan",

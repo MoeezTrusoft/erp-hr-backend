@@ -368,6 +368,8 @@ test(
           "hr.performance.read",
         ])
       ).items[0];
+      const { notificationRegressions } = await import('./notification-regressions.mjs');
+      await notificationRegressions(t, { tenant, other, people, db, admin, reviewId: r.id });
       const { peerRegressions } = await import("./peer-regressions.mjs");
       await peerRegressions(t, {
         as,
