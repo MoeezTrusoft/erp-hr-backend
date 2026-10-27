@@ -1,0 +1,77 @@
+name: ${LIBRESIGN_PROJECT_NAME:-recruitment-libresign}
+services:
+  db:
+    image: library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: libresign
+      POSTGRES_USER: libresign
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets: [database_password]
+    volumes: [database:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U libresign -d libresign']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  redis:
+    image: library/redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    restart: unless-stopped
+    command: [redis-server, --appendonly, 'yes']
+    volumes: [redis:/data]
+  mailpit:
+    image: axllent/mailpit:latest@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387
+    restart: unless-stopped
+    ports: ['127.0.0.1:${LIBRESIGN_MAILPIT_PORT:-5399}:8025']
+  app:
+    build: .
+    image: recruitment-libresign:15.0.8-nc35.0.2
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_started}
+    ports: ['127.0.0.1:${LIBRESIGN_HTTP_PORT:-5398}:80']
+    environment: &nextcloud-environment
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      POSTGRES_HOST: db
+      POSTGRES_DB: libresign
+      POSTGRES_USER: libresign
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+      NEXTCLOUD_ADMIN_USER: recruitment-admin
+      NEXTCLOUD_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      NEXTCLOUD_TRUSTED_DOMAINS: '127.0.0.1 localhost app'
+      OVERWRITECLIURL: http://127.0.0.1:${LIBRESIGN_HTTP_PORT:-5398}
+      LIBRESIGN_CA_NAME: ${LIBRESIGN_CA_NAME:-Recruitment local development CA}
+      REDIS_HOST: redis
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      MAIL_FROM_ADDRESS: recruitment
+      MAIL_DOMAIN: example.test
+      PHP_MEMORY_LIMIT: 1024M
+      PHP_UPLOAD_LIMIT: 16M
+    secrets: [database_password, admin_password, integration_password]
+    volumes: [nextcloud:/var/www/html]
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost/status.php]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+  cron:
+    image: recruitment-libresign:15.0.8-nc35.0.2
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    environment: *nextcloud-environment
+    secrets: [database_password, admin_password, integration_password]
+    depends_on:
+      app: {condition: service_healthy}
+    volumes: [nextcloud:/var/www/html]
+secrets:
+  database_password: {file: .secrets/database_password}
+  admin_password: {file: .secrets/admin_password}
+  integration_password: {file: .secrets/integration_password}
+volumes:
+  nextcloud:
+  database:
+  redis:

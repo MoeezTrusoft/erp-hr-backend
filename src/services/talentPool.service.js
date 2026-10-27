@@ -1,40 +1,156 @@
 import prisma from "../config/prisma.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
-
-// C.2-completion — verified tenant (T-P2.1) threaded via `tenantId`; folded into
-// talent-pool reads + stamped on creates, fail-closed so tenant B never reads or
-// mutates tenant A's talent pools.
-
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import {
+  candidateScopeWhere,
+  maskCandidateForScope,
+} from "../lib/recruitmentAccess.js";
+import { requireRecruitmentActor } from "./recruitmentActor.service.js";
+import {
+  computeRetentionUntil,
+  assertCommunicationsAllowed,
+} from "./candidatePrivacy.service.js";
+const fail = (message, status = 409) => {
+  throw Object.assign(new Error(message), { status, code: "HR-5601" });
+};
 export const listPools = async ({ page = 1, limit = 20, tenantId } = {}) => {
-    const skip = (page - 1) * limit;
-    const where = scopedWhere(tenantId, {});
-    const [items, total] = await Promise.all([
-        prisma.talentPool.findMany({ where, skip, take: limit, orderBy: { addedAt: "desc" }, include: { candidate: { select: { id: true, firstName: true, lastName: true, email: true } } } }),
-        prisma.talentPool.count({ where }),
-    ]);
-    return { items, total, page, limit };
+  const { scope } = await requireRecruitmentActor({ tenantId });
+  page = Math.max(1, Math.floor(Number(page) || 1));
+  limit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 20)));
+  const where = {
+    tenantId,
+    candidate: { anonymizedAt: null, ...candidateScopeWhere(scope) },
+  };
+  const [items, total] = await Promise.all([
+    prisma.talentPool.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { addedAt: "desc" },
+      include: {
+        candidate: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+      },
+    }),
+    prisma.talentPool.count({ where }),
+  ]);
+  return {
+    items: scope.canSeeInternalNotes
+      ? items
+      : items.map((r) => ({ ...r, notes: null })),
+    total,
+    page,
+    limit,
+  };
 };
-
-export const addToPool = async ({ candidateId, poolName, notes, addedById, tenantId }) => {
-    return prisma.talentPool.create({
-        data: scopedData(tenantId, {
-            candidateId: Number(candidateId),
-            poolName,
-            notes,
-            addedById: addedById ? Number(addedById) : null,
-        }),
-    });
-};
-
-export const removeFromPool = async (id, tenantId) => {
-    const existing = await prisma.talentPool.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw new Error("Talent pool entry not found");
-    return prisma.talentPool.delete({ where: { id: Number(id) } });
-};
-
+export const addToPool = async ({
+  candidateId,
+  poolName = "General",
+  notes,
+  tenantId,
+}) =>
+  tenantTransaction(
+    prisma,
+    async (db) => {
+      const { who } = await requireRecruitmentActor(
+        {
+          tenantId,
+          permission: "hr.recruitment.create",
+          allowedScopes: ["ORG"],
+        },
+        db,
+      );
+      const id = Number(candidateId),
+        name = String(poolName).trim();
+      if (
+        !Number.isSafeInteger(id) ||
+        id < 1 ||
+        !name ||
+        name.length > 100 ||
+        (notes != null && (typeof notes !== "string" || notes.length > 4000))
+      )
+        fail("Valid candidate, pool name and bounded notes are required", 422);
+      await db.$queryRawUnsafe(
+        'SELECT id FROM "Candidate" WHERE id=$1 AND "tenantId"=$2::uuid FOR UPDATE',
+        id,
+        tenantId,
+      );
+      const candidate = await db.candidate.findFirst({
+        where: { id, tenantId, anonymizedAt: null, status: "active" },
+        select: { id: true },
+      });
+      if (!candidate) fail("Candidate not found", 404);
+      await assertCommunicationsAllowed(
+        { tenantId, candidateId: id, purpose: "TALENT_POOL" },
+        { db },
+      );
+      const existing = await db.talentPool.findFirst({
+        where: { tenantId, candidateId: id, poolName: name },
+      });
+      if (existing) return existing;
+      // Membership and its retention clock commit together. A policy failure must
+      // not leave personal data retained under an unknown policy.
+      const retentionUntil = await computeRetentionUntil(
+        { tenantId, appliesTo: "TALENT_POOL" },
+        { db },
+      );
+      const entry = await db.talentPool.create({
+        data: {
+          tenantId,
+          candidateId: id,
+          poolName: name,
+          notes: notes?.trim() || null,
+          addedById: who.id,
+        },
+      });
+      if (retentionUntil)
+        await db.candidate.updateMany({
+          where: { id, tenantId },
+          data: { retentionUntil, retentionPopulation: "TALENT_POOL" },
+        });
+      return {
+        ...entry,
+        ...(retentionUntil
+          ? { retentionUntil, retentionPopulation: "TALENT_POOL" }
+          : {}),
+      };
+    },
+    { tenantId },
+  );
+export const removeFromPool = async (id, tenantId) =>
+  tenantTransaction(
+    prisma,
+    async (db) => {
+      await requireRecruitmentActor(
+        {
+          tenantId,
+          permission: "hr.recruitment.delete",
+          allowedScopes: ["ORG"],
+        },
+        db,
+      );
+      const removed = await db.talentPool.deleteMany({
+        where: { id: Number(id), tenantId },
+      });
+      if (!removed.count) fail("Talent pool entry not found", 404);
+      return { removed: true, id: Number(id) };
+    },
+    { tenantId },
+  );
 export const getCandidatesInPool = async (poolName, tenantId) => {
-    return prisma.talentPool.findMany({
-        where: scopedWhere(tenantId, { poolName }),
-        include: { candidate: { include: { tags: { include: { tag: true } } } } },
-    });
+  const { scope } = await requireRecruitmentActor({ tenantId });
+  const rows = await prisma.talentPool.findMany({
+    where: {
+      tenantId,
+      poolName,
+      candidate: { anonymizedAt: null, ...candidateScopeWhere(scope) },
+    },
+    take: 100,
+    include: { candidate: { include: { tags: { include: { tag: true } } } } },
+  });
+  return rows.map((r) => ({
+    ...r,
+    notes: scope.canSeeInternalNotes ? r.notes : null,
+    candidate: maskCandidateForScope(r.candidate, scope),
+  }));
 };

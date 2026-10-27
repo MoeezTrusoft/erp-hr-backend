@@ -1,0 +1,5 @@
+.secrets/
+.runtime/
+.env
+vendor/*.tar.gz
+__pycache__/

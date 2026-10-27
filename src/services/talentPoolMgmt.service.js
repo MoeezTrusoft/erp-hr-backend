@@ -1,3 +1,4 @@
+import { createApplication } from "./applicationService.js";
 // src/services/talentPoolMgmt.service.js
 //
 // Talent Pool MANAGEMENT surface (net-new, sits alongside talentPool.service.js
@@ -19,14 +20,26 @@
 //   * interviewScore     → avg of InterviewScorecard.overallScore across all the
 //                          candidate's interviews (via applications), else null.
 
+import { requireRecruitmentActor } from "./recruitmentActor.service.js";
+import {
+  candidateScopeWhere,
+  applicationScopeWhere,
+} from "../lib/recruitmentAccess.js";
 import prisma from "../lib/prisma.js";
 import { scopedWhere, withTenant } from "../lib/tenancy.js";
+export { listManagedPool } from "./talentPoolList.service.js";
+import { poolExperienceYears as deriveExperienceYears } from "./talentPoolList.service.js";
+import { inviteToApply } from "./talentPoolInvitation.service.js";
 
 // ── DERIVATION HELPERS ──────────────────────────────────────────────────────
 
 // Resolve a set of BusinessUnit ids → names, batched + tenant-scoped fail-closed.
 const resolveDepartmentNames = async (departmentIds, tenantId) => {
-  const ids = [...new Set(departmentIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))];
+  const ids = [
+    ...new Set(
+      departmentIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+    ),
+  ];
   if (!ids.length) return new Map();
   const units = await prisma.businessUnit.findMany({
     where: scopedWhere(tenantId, { id: { in: ids } }),
@@ -38,13 +51,6 @@ const resolveDepartmentNames = async (departmentIds, tenantId) => {
 // Probe a candidate's parsed-resume JSON for a years-of-experience figure.
 // parsedResume is free-form AI output, so we look at the two documented keys and
 // coerce to a finite number; anything else → null.
-const deriveExperienceYears = (parsedResume) => {
-  if (!parsedResume || typeof parsedResume !== "object") return null;
-  const raw = parsedResume.yearsOfExperience ?? parsedResume.totalExperience;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-};
-
 // The candidate's most-recent application is the one with the latest appliedAt.
 // Applications are included pre-sorted (appliedAt desc) so element 0 is newest.
 const mostRecentApplication = (applications) =>
@@ -59,111 +65,25 @@ const deriveLocation = (parsedResume) => {
     parsedResume.city ??
     parsedResume.address ??
     (parsedResume.contact && typeof parsedResume.contact === "object"
-      ? parsedResume.contact.location ?? parsedResume.contact.city ?? parsedResume.contact.address
+      ? (parsedResume.contact.location ??
+        parsedResume.contact.city ??
+        parsedResume.contact.address)
       : null);
   return typeof raw === "string" && raw.trim().length ? raw.trim() : null;
 };
 
 const deriveSkillNames = (candidateSkills) =>
   Array.isArray(candidateSkills)
-    ? candidateSkills.map((s) => s.name).filter((name) => typeof name === "string" && name.length)
+    ? candidateSkills
+        .map((s) => s.name)
+        .filter((name) => typeof name === "string" && name.length)
     : [];
 
 const fullName = (candidate) =>
-  [candidate?.firstName, candidate?.lastName].filter(Boolean).join(" ").trim() || null;
-
-// Shared include: everything the list/profile derivations need in one round-trip.
-const candidateInclude = {
-  candidateSkills: { select: { name: true } },
-  applications: {
-    orderBy: { appliedAt: "desc" },
-    include: { jobRequisition: { select: { title: true, departmentId: true } } },
-  },
-};
-
-// ── LIST ────────────────────────────────────────────────────────────────────
-
-/**
- * Tool 1 — hr_talent_pool_manage_list.
- * Returns enriched talent-pool membership rows (candidate + derived role /
- * department / experience / skills), tenant-scoped, with q/filter/sort/paging.
- */
-export const listManagedPool = async ({
-  tenantId,
-  q,
-  poolName,
-  sort = "addedAt",
-  order = "desc",
-  page = 1,
-  limit = 20,
-} = {}) => {
-  const resolvedPage = Number(page) > 0 ? Number(page) : 1;
-  const resolvedLimit = Number(limit) > 0 ? Number(limit) : 20;
-  const skip = (resolvedPage - 1) * resolvedLimit;
-
-  const candidateFilter = q
-    ? {
-        candidate: {
-          OR: [
-            { firstName: { contains: q, mode: "insensitive" } },
-            { lastName: { contains: q, mode: "insensitive" } },
-          ],
-        },
-      }
-    : {};
-
-  const where = scopedWhere(tenantId, {
-    ...(poolName ? { poolName } : {}),
-    ...candidateFilter,
-  });
-
-  // Only addedAt is a real TalentPool column; guard the sort so an odd value
-  // can't throw a Prisma "unknown field" error.
-  const sortField = sort === "addedAt" ? "addedAt" : "addedAt";
-  const sortOrder = order === "asc" ? "asc" : "desc";
-
-  const [memberships, total] = await Promise.all([
-    prisma.talentPool.findMany({
-      where,
-      skip,
-      take: resolvedLimit,
-      orderBy: { [sortField]: sortOrder },
-      include: {
-        candidate: { include: candidateInclude },
-      },
-    }),
-    prisma.talentPool.count({ where }),
-  ]);
-
-  // Resolve each candidate's most-recent-application departmentId → BusinessUnit
-  // name, batched across the page so we never issue N queries.
-  const deptIds = memberships
-    .map((m) => mostRecentApplication(m.candidate?.applications)?.jobRequisition?.departmentId)
-    .filter((id) => id != null);
-  const deptNames = await resolveDepartmentNames(deptIds, tenantId);
-
-  const rows = memberships.map((m) => {
-    const candidate = m.candidate || {};
-    const recent = mostRecentApplication(candidate.applications);
-    const departmentId = recent?.jobRequisition?.departmentId ?? null;
-    return {
-      membershipId: m.id,
-      candidateId: m.candidateId,
-      name: fullName(candidate),
-      role: recent?.jobRequisition?.title ?? null,
-      department: departmentId != null ? deptNames.get(departmentId) ?? null : null,
-      departmentId,
-      experienceYears: deriveExperienceYears(candidate.parsedResume),
-      location: candidate.location ?? deriveLocation(candidate.parsedResume),
-      skills: deriveSkillNames(candidate.candidateSkills),
-      poolName: m.poolName,
-      notes: m.notes ?? null,
-      addedAt: m.addedAt,
-    };
-  });
-
-  return { items: rows, total, page: resolvedPage, limit: resolvedLimit };
-};
+  [candidate?.firstName, candidate?.lastName]
+    .filter(Boolean)
+    .join(" ")
+    .trim() || null;
 
 // ── PROFILE ─────────────────────────────────────────────────────────────────
 
@@ -174,22 +94,31 @@ export const listManagedPool = async ({
  * interview date, merged notes, and skills. Tenant-scoped, fail-closed.
  */
 export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
+  const { scope } = await requireRecruitmentActor({ tenantId });
   const id = Number(candidateId);
 
   const candidate = await prisma.candidate.findFirst({
     // Candidate is scoped by tenantId (nullable) — reuse the fail-closed helper.
-    where: withTenant(tenantId, { id }),
+    where: withTenant(tenantId, {
+      id,
+      anonymizedAt: null,
+      ...candidateScopeWhere(scope),
+    }),
     include: {
       candidateSkills: { select: { name: true } },
       talentPools: { select: { notes: true }, where: withTenant(tenantId, {}) },
       applications: {
+        where: applicationScopeWhere(scope),
         orderBy: { appliedAt: "desc" },
         include: {
           jobRequisition: { select: { title: true, departmentId: true } },
           interviews: {
             select: {
               scheduledAt: true,
-              scorecards: { select: { overallScore: true } },
+              scorecards: {
+                where: { submittedAt: { not: null } },
+                select: { overallScore: true },
+              },
             },
           },
         },
@@ -249,14 +178,16 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
       location: candidate.location ?? deriveLocation(candidate.parsedResume),
     },
     role: recent?.jobRequisition?.title ?? null,
-    department: departmentId != null ? deptNames.get(departmentId) ?? null : null,
+    department:
+      departmentId != null ? (deptNames.get(departmentId) ?? null) : null,
     departmentId,
     experienceYears: deriveExperienceYears(candidate.parsedResume),
     location: candidate.location ?? deriveLocation(candidate.parsedResume),
     previousRolesApplied,
     interviewScore,
     lastInterviewDate,
-    notes,
+    notes: scope.canSeeInternalNotes ? notes : [],
+    notesRedacted: !scope.canSeeInternalNotes,
     skills: deriveSkillNames(candidate.candidateSkills),
   };
 };
@@ -270,7 +201,18 @@ export const getPoolProfile = async ({ candidateId, tenantId } = {}) => {
  * jobRequisitionId]) — returns the existing application if the pair already
  * exists (created:false) rather than throwing.
  */
-export const moveToPipeline = async ({ candidateId, jobRequisitionId, tenantId, addedById } = {}) => {
+export const moveToPipeline = async ({
+  candidateId,
+  jobRequisitionId,
+  tenantId,
+  addedById,
+} = {}) => {
+  const { who } = await requireRecruitmentActor({
+    tenantId,
+    permission: "hr.recruitment.create",
+    allowedScopes: ["ORG"],
+  });
+  addedById = who.id;
   const cId = Number(candidateId);
   const rId = Number(jobRequisitionId);
 
@@ -280,16 +222,11 @@ export const moveToPipeline = async ({ candidateId, jobRequisitionId, tenantId, 
   });
   if (existing) return { created: false, application: existing };
 
-  const application = await prisma.application.create({
-    data: {
-      candidateId: cId,
-      jobRequisitionId: rId,
-      stage: "applied",
-      status: "open",
-      tenantId: tenantId ?? null,
-      createdById: addedById != null ? Number(addedById) : null,
-    },
-    include: { candidate: true, jobRequisition: true },
+  const application = await createApplication({
+    candidateId: cId,
+    jobRequisitionId: rId,
+    tenantId,
+    createdById: addedById,
   });
 
   return { created: true, application };
@@ -297,61 +234,28 @@ export const moveToPipeline = async ({ candidateId, jobRequisitionId, tenantId, 
 
 // ── INVITE ──────────────────────────────────────────────────────────────────
 
-/**
- * Tool 4 — hr_talent_pool_invite.
- * Record an "invited to apply" note. Appends the note to the candidate's
- * TalentPool membership row(s) when present, else to Candidate.notes. When a
- * jobRequisitionId is supplied it also performs the move-to-pipeline behaviour.
- */
-export const inviteCandidate = async ({ candidateId, jobRequisitionId, tenantId, addedById } = {}) => {
-  const cId = Number(candidateId);
-
-  const candidate = await prisma.candidate.findFirst({
-    where: withTenant(tenantId, { id: cId }),
+/** Record a consent-checked invitation and its durable message. Applications remain a separate explicit action. */
+export const inviteCandidate = async ({
+  candidateId,
+  jobRequisitionId,
+  tenantId,
+} = {}) => {
+  const { who } = await requireRecruitmentActor({
+    tenantId,
+    permission: "hr.recruitment.update",
+    allowedScopes: ["ORG"],
   });
-  if (!candidate) {
-    const err = new Error("Candidate not found");
-    err.status = 404;
-    throw err;
-  }
-
-  const stamp = `Invited to apply ${new Date().toISOString().slice(0, 10)}`;
-
-  const appendNote = (prev) => (prev && prev.trim().length ? `${prev}\n${stamp}` : stamp);
-
-  const memberships = await prisma.talentPool.findMany({
-    where: withTenant(tenantId, { candidateId: cId }),
-    select: { id: true, notes: true },
+  const lifecycle = await inviteToApply({
+    tenantId,
+    candidateId: Number(candidateId),
+    jobRequisitionId: jobRequisitionId ?? null,
+    actorId: who.id,
   });
-
-  let updatedMemberships = 0;
-  if (memberships.length) {
-    for (const m of memberships) {
-      await prisma.talentPool.update({
-        where: { id: m.id },
-        data: { notes: appendNote(m.notes) },
-      });
-      updatedMemberships += 1;
-    }
-  } else {
-    // No pool membership — fall back to the candidate's own notes column.
-    await prisma.candidate.update({
-      where: { id: cId },
-      data: { notes: appendNote(candidate.notes) },
-    });
-  }
-
-  let pipeline = null;
-  if (jobRequisitionId != null && `${jobRequisitionId}`.trim().length) {
-    pipeline = await moveToPipeline({ candidateId: cId, jobRequisitionId, tenantId, addedById });
-  }
-
   return {
-    candidateId: cId,
+    candidateId: Number(candidateId),
     invited: true,
-    note: stamp,
-    updatedMemberships,
-    updatedCandidateNotes: memberships.length === 0,
-    pipeline,
+    invitation: lifecycle.invitation,
+    invitationReused: lifecycle.reused,
+    pipeline: null,
   };
 };

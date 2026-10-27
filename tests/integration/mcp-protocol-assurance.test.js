@@ -168,41 +168,25 @@ describe("MCP-PROTOCOL-01 — HR MCP protocol assurance", () => {
   it("tools/list returns a facade with hr_-prefixed tool names", async () => {
     const { body } = await rpc(app, "tools/list");
 
-    // The SDK may return an error for some Zod schemas on 333-tool facades.
-    // If the call succeeds, validate the structure.
-    if (body?.result?.tools) {
-      const { tools } = body.result;
-      expect(Array.isArray(tools)).toBe(true);
-      expect(tools.length).toBeGreaterThan(100);
-
-      // Every tool must be hr_-prefixed
-      for (const tool of tools) {
-        expect(tool.name).toMatch(/^hr_/);
-        expect(tool.description).toBeTruthy();
-      }
-    } else {
-      // If tools/list fails due to SDK Zod edge case, verify the error
-      // is a known -32603 (internal) and NOT a boundary auth failure
-      expect(body?.error).toBeDefined();
-      expect(body.error.code).toBe(-32603);
-      expect(body.error.message).not.toContain("Unauthenticated");
-      expect(body.error.message).not.toContain("403");
+    expect(body?.error).toBeUndefined();
+    const tools = body?.result?.tools;
+    expect(Array.isArray(tools)).toBe(true);
+    expect(tools.length).toBeGreaterThan(100);
+    for (const tool of tools) {
+      expect(tool.name).toMatch(/^hr_/);
+      expect(tool.description).toBeTruthy();
+      expect(tool.inputSchema.type).toBe("object");
     }
   });
 
-  it("representative tools exist when tools/list succeeds", async () => {
+  it("discovers core HR and candidate assessment tools with usable schemas", async () => {
     const { body } = await rpc(app, "tools/list");
-    if (!body?.result?.tools) return; // skip if SDK Zod issue
-
+    expect(body?.result?.tools).toBeDefined();
     const names = body.result.tools.map((t) => t.name);
-    for (const name of [
-      "hr_employees_list",
-      "hr_attendance_checkin",
-      "hr_leave_request_approve",
-      "hr_payroll_run_create",
-    ]) {
-      expect(names).toContain(name);
-    }
+    for (const name of ["hr_employees_list", "hr_attendance_checkin", "hr_leave_request_approve", "hr_payroll_run_create", "hr_reception_staff_list", "hr_test_session_issue"]) expect(names).toContain(name);
+    const issue = body.result.tools.find((t) => t.name === "hr_test_session_issue");
+    expect(issue.inputSchema.required).toEqual(expect.arrayContaining(["interviewId", "workstationId"]));
+    expect(issue.inputSchema.properties.extraTimePct.maximum).toBe(50);
   });
 
   // ── 3. tools/call — permission gating ───────────────────────

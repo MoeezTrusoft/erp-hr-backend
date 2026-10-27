@@ -1,0 +1,51 @@
+{
+  "at": "2026-10-23T16:44:07.614329+00:00",
+  "state": "OWNER_AGREED_CONTRACT_SOURCE_IMPLEMENTATION_AND_QUALIFICATION_PENDING",
+  "tool": "hr_native_verification_entry_lifecycle",
+  "input": {
+    "entryId": "UUID",
+    "additionalProperties": false
+  },
+  "outputFields": {
+    "grantId": "UUID",
+    "entryId": "UUID",
+    "tenantId": "UUID",
+    "employeeId": "positive Int32",
+    "employeeUuid": "producer canonical UUID from tenant and actual employee integer",
+    "eventId": "actual persisted EventEnvelope.id UUID",
+    "outboxId": "actual persisted OutboxEvent.id UUID",
+    "eventName": "literal hr.employee.lifecycle.v1",
+    "phase": "literal hired",
+    "publishedAt": "ISO timestamp or null",
+    "dispatchAttempts": "nonnegative Int32"
+  },
+  "outputFieldCount": 11,
+  "envelope": "Existing MCP success/data text and structuredContent; exact data fields",
+  "permission": "Existing hr.employee.create plus exact native bootstrap identity, sole role, two grants, tenant and installed grant ownership; no broad READ",
+  "guards": [
+    "Reuse V4 actor/entry/employee/intent checks under tenant transaction and shared grant lock",
+    "Reread mounted plan and expiry after lock and final awaited reads",
+    "Unique matching tenant/Employee aggregate/String(employeeId)/hired outbox row using bounded take 2",
+    "Parse actual EventEnvelope and HrEmployeeLifecycleV1; verify row/outer/inner tenant/name/version/phase/canonical employee identity",
+    "Validate both separately stored UUIDs without assuming equality or inequality",
+    "Published timestamp requires attempts >= 1; actual dispatcher updates both in the same statement",
+    "Generic HR-0310 for missing/ambiguous/drifted/cancelled/expired evidence; no raw payload/errors/credentials or worker action"
+  ],
+  "sourceReferences": {
+    "src/services/employeeOutbox.service.js": "5d0626641ff85d8a94b3b81e292c1d405dfd57e632ed9544a2d372983678f05a",
+    "src/services/hrContract.service.js": "28cff5bca7f9e8b41bfcc03eebee51367e75702933891c042ac776c54d5ecbf3",
+    "src/jobs/outbox.dispatcher.js": "5b5f1002c2264fa88b2f270acce697045ae89e9f8ba781071f662d321629b7eb",
+    "prisma/schema.prisma": "ca255b248a3c20fba93040975104e769b05c77e78affe0e090989023c36f048a"
+  },
+  "baselineNativeOverlayV4Sha256": "d6949a15a9f08dfe9ab2379a530f55268f46c32b97d856842b792f79c42389af",
+  "baselineNativeAssemblyV5Sha256": "01a52677256a7ce2a79d67330679a0694616505d56e5314348a8e02da9793a63",
+  "hrOwner": "HR Recruitment: separate native successor, preserve eight-field status tool",
+  "gatewayAndConsumerOwner": "SDLC: explicit CREATE mapping, RBAC actual-consumer metadata and owned-entry observation, HTTP pairing",
+  "rbacEvidenceRequirement": "Actual consumer writes nullable eventName/canonicalEmployeeId/lifecyclePhase alongside effects and ProcessedEvent in the same transaction. Old unannotated receipts never count; no backfill or replay to fabricate proof. Observer accepts entryId only and compares actual consumed eventId to HR envelope eventId.",
+  "publicationIsNotConsumption": true,
+  "loginAndMappingAreNotConsumption": true,
+  "runtimeQualified": false,
+  "testsExecuted": 0,
+  "liveSchemaChanged": false,
+  "nativeFrozenArchivesChanged": false
+}

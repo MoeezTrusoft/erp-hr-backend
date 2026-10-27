@@ -36,6 +36,7 @@ import { EventEnvelope } from '@trusoft/contracts/envelopes';
 import { eventPayloadSchema } from '@trusoft/contracts/events';
 
 import logger from '../lib/logger.js';
+import { recordRecruitmentNotification } from '../lib/recruitmentOpsMetrics.js';
 
 // Payload schema version (EventEnvelope.version — independent of the name's vN).
 const DEFAULT_PAYLOAD_VERSION = 1;
@@ -104,6 +105,14 @@ export function buildHrEventEnvelope({
  *   OutboxEvent model is unavailable (test mocks) or tenantId is absent.
  */
 export async function enqueueHrDomainEvent(tx, args) {
+    // Phase 15 — notification emission is one of the rollout metrics. Only
+    // recruitment events are counted (label allowlist drops the rest), and the
+    // metric never throws. Failure family: a skipped enqueue is `dropped-error`.
+    const isRecruitmentEvent = String(args?.eventName ?? '').startsWith('hr.recruitment.');
+    const countDrop = () => {
+        if (isRecruitmentEvent) recordRecruitmentNotification(String(args?.eventName ?? '').replace('hr.recruitment.', '').replace(/\.v1$/, ''), 'dropped-error');
+    };
+
     // Fail-closed: an event with no tenant can never be contract-valid; skip it
     // rather than break the surrounding aggregate write.
     if (!args?.tenantId) {
@@ -111,6 +120,7 @@ export async function enqueueHrDomainEvent(tx, args) {
             { eventName: args?.eventName },
             'hr domain event: missing tenantId — skipping outbox enqueue (fail-closed)'
         );
+        countDrop();
         return null;
     }
 
@@ -120,11 +130,14 @@ export async function enqueueHrDomainEvent(tx, args) {
             { tenantId: args?.tenantId, eventName: args?.eventName },
             'OutboxEvent model unavailable on prisma client — skipping outbox enqueue'
         );
+        countDrop();
         return null;
     }
 
     // Validate-before-write: throwing aborts the enqueue (and the surrounding tx).
     const envelope = buildHrEventEnvelope(args);
+
+    if (isRecruitmentEvent) recordRecruitmentNotification(String(args?.eventName ?? '').replace('hr.recruitment.', '').replace(/\.v1$/, ''), 'enqueued');
 
     return writer.create({
         data: {

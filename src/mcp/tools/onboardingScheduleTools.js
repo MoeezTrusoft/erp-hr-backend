@@ -26,7 +26,8 @@ import {
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
-  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  if (!ctx?.user)
+    throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
 }
 
@@ -39,58 +40,127 @@ export function registerOnboardingScheduleTools(server) {
     {
       checklistId: z
         .union([z.string(), z.number()])
-        .describe("Onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+        .describe(
+          "Onboarding checklist id (references OnboardingChecklist; Number()-coerced)",
+        ),
     },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
       const data = await listSchedule(checklistId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
     "hr_onboarding_schedule_create",
-    "Create an onboarding schedule session for a checklist",
+    "Create a draft onboarding session; use a stable request key when retrying",
     {
+      requestKey: z
+        .string()
+        .regex(/^[a-zA-Z0-9_-]{16,100}$/)
+        .optional(),
       checklistId: z
         .union([z.string(), z.number()])
-        .describe("Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+        .describe(
+          "Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)",
+        ),
       title: z.string().min(1).describe("Session title"),
-      sessionDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD (or datetime)"),
-      fromTime: z.string().optional().describe('Start time, free-form "HH:mm" e.g. "09:00"'),
-      toTime: z.string().optional().describe('End time, free-form "HH:mm" e.g. "10:00"'),
-      sessionType: z.string().optional().describe("Free-form session type e.g. orientation | training | meeting"),
-      location: z.string().optional().describe("Room name or meeting link"),
-      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner (references Employee)"),
+      sessionDate: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("ISO 8601 date YYYY-MM-DD (or datetime)"),
+      fromTime: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Start time, free-form "HH:mm" e.g. "09:00"'),
+      toTime: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('End time, free-form "HH:mm" e.g. "10:00"'),
+      sessionType: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Free-form session type e.g. orientation | training | meeting",
+        ),
+      location: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("Room name or meeting link"),
+      assigneeId: z.coerce
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe("Employee id of the session owner (references Employee)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await createSession(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
     "hr_onboarding_schedule_update",
-    "Update an onboarding schedule session",
+    "Update a draft onboarding session; confirmed sessions use the calendar workflow",
     {
-      id: z.union([z.string(), z.number()]).describe("Onboarding session id (references OnboardingSession; Number()-coerced)"),
+      expectedVersion: z.number().int().nonnegative().optional(),
+      id: z
+        .union([z.string(), z.number()])
+        .describe(
+          "Onboarding session id (references OnboardingSession; Number()-coerced)",
+        ),
       title: z.string().min(1).optional().describe("Session title"),
-      sessionDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD (or datetime)"),
-      fromTime: z.string().optional().describe('Start time, free-form "HH:mm" e.g. "11:00"'),
-      toTime: z.string().optional().describe('End time, free-form "HH:mm" e.g. "12:00"'),
-      sessionType: z.string().optional().describe("Free-form session type e.g. orientation | training | meeting"),
-      location: z.string().optional().describe("Room name or meeting link"),
-      assigneeId: z.coerce.number().int().optional().describe("Employee id of the session owner (references Employee)"),
+      sessionDate: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("ISO 8601 date YYYY-MM-DD (or datetime)"),
+      fromTime: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Start time, free-form "HH:mm" e.g. "11:00"'),
+      toTime: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('End time, free-form "HH:mm" e.g. "12:00"'),
+      sessionType: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Free-form session type e.g. orientation | training | meeting",
+        ),
+      location: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("Room name or meeting link"),
+      assigneeId: z.coerce
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe("Employee id of the session owner (references Employee)"),
     },
     withToolError(async ({ id, ...patch }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
       const data = await updateSession(id, patch, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   // ── DOCUMENTS ────────────────────────────────────────────────────────────
@@ -101,34 +171,53 @@ export function registerOnboardingScheduleTools(server) {
     {
       checklistId: z
         .union([z.string(), z.number()])
-        .describe("Onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
+        .describe(
+          "Onboarding checklist id (references OnboardingChecklist; Number()-coerced)",
+        ),
     },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
       const data = await listDocuments(checklistId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
     "hr_onboarding_document_add",
-    "Attach an already-uploaded DAM document (by mediaId) to an onboarding checklist. Upload the media via the DAM upload tool first, then pass the resulting mediaId here.",
+    "Attach a clean private DAM document already protected by this onboarding checklist. For new files use hr_onboarding_document_upload; broadly shared DAM assets are not accepted.",
     {
       checklistId: z
         .union([z.string(), z.number()])
-        .describe("Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)"),
-      employeeId: z.coerce.number().int().describe("Employee id the document belongs to (references Employee)"),
+        .describe(
+          "Parent onboarding checklist id (references OnboardingChecklist; Number()-coerced)",
+        ),
+      employeeId: z.coerce
+        .number()
+        .int()
+        .describe("Employee id the document belongs to (references Employee)"),
       title: z.string().min(1).describe("Document display name"),
-      mediaId: z.coerce.number().int().describe("DAM media id of the already-uploaded file (references DAM Media)"),
-      category: z.string().optional().describe("Free-form document category e.g. offer | contract | policy"),
-      requiresSign: z.boolean().optional().describe("Whether the document needs a signature; defaults to false"),
+      mediaId: z.coerce
+        .number()
+        .int()
+        .describe(
+          "DAM media id of the already-uploaded file (references DAM Media)",
+        ),
+      category: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("Free-form document category e.g. offer | contract | policy"),
+      requiresSign: z
+        .boolean()
+        .optional()
+        .describe("Whether the document needs a signature; defaults to false"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await addDocument(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 }

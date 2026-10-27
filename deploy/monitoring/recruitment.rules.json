@@ -1,0 +1,75 @@
+{
+  "groups": [
+    {
+      "name": "hr-recruitment-automation",
+      "interval": "1m",
+      "rules": [
+        {
+          "alert": "RecruitmentSchedulerFailures",
+          "expr": "sum by (task) (increase(hr_recruitment_scheduler_runs_total{outcome=\"failed\"}[15m])) > 0",
+          "for": "5m",
+          "labels": {
+            "severity": "warning",
+            "service": "hr"
+          },
+          "annotations": {
+            "summary": "Recruitment scheduler attempts are failing",
+            "description": "Review the failing task and its correlated structured logs. Retries are already bounded; do not replay business writes blindly."
+          }
+        },
+        {
+          "alert": "RecruitmentCommunicationFailures",
+          "expr": "sum(increase(hr_recruitment_communication_outcomes_total{outcome=\"failed\"}[15m])) > 0",
+          "for": "5m",
+          "labels": {
+            "severity": "warning",
+            "service": "hr"
+          },
+          "annotations": {
+            "summary": "Candidate communications require operator attention",
+            "description": "Inspect the scoped HR recovery queue and Hub receipts. Hub acceptance is not mailbox delivery; keep consent and cancellation guards enabled."
+          }
+        },
+        {
+          "alert": "RecruitmentScoringFailures",
+          "expr": "sum(increase(hr_recruitment_scoring_outcomes_total{outcome=\"failed\"}[15m])) >= 5",
+          "for": "5m",
+          "labels": {
+            "severity": "warning",
+            "service": "hr"
+          },
+          "annotations": {
+            "summary": "Application scoring has repeated failures",
+            "description": "Check the scheduler error and current schema/dependencies. Recruiters retain review ownership; do not advance applications by manipulating scores."
+          }
+        },
+        {
+          "alert": "RecruitmentCalendarRetries",
+          "expr": "sum by (kind) (increase(hr_recruitment_calendar_sync_outcomes_total{outcome=\"retried\"}[15m])) >= 5",
+          "for": "10m",
+          "labels": {
+            "severity": "warning",
+            "service": "hr"
+          },
+          "annotations": {
+            "summary": "Calendar reconciliation is repeatedly retrying",
+            "description": "Check Communication service availability and verified company identity. Do not rebind another company account to bypass ownership checks."
+          }
+        },
+        {
+          "alert": "RecruitmentFrequentSchedulerStalled",
+          "expr": "(time() - max by (task) (hr_recruitment_scheduler_last_finished_seconds{task=~\"candidate-communication-delivery|interview-calendar-sync|onboarding-calendar-sync|application-scoring|candidate-test-expiry\"}) > 600) and (max by (task) (hr_recruitment_scheduler_last_finished_seconds) > 0)",
+          "for": "5m",
+          "labels": {
+            "severity": "warning",
+            "service": "hr"
+          },
+          "annotations": {
+            "summary": "A previously active recruitment task has stopped finishing",
+            "description": "Inspect the worker, queue and database before restart. Skipped tasks still produce a heartbeat. Separate platform liveness alerts must detect workers that never started or targets that vanished."
+          }
+        }
+      ]
+    }
+  ]
+}

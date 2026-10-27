@@ -1,0 +1,266 @@
+{
+  "rule_files": ["recruitment.rules.json"],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "hr_recruitment_scheduler_runs_total{task=\"application-scoring\",outcome=\"failed\"}",
+          "values": "0+1x30"
+        },
+        {
+          "series": "hr_recruitment_communication_outcomes_total{outcome=\"failed\"}",
+          "values": "0+1x30"
+        },
+        {
+          "series": "hr_recruitment_scoring_outcomes_total{outcome=\"failed\"}",
+          "values": "0+1x30"
+        },
+        {
+          "series": "hr_recruitment_calendar_sync_outcomes_total{kind=\"interview\",outcome=\"retried\"}",
+          "values": "0+1x30"
+        },
+        {
+          "series": "hr_recruitment_scheduler_last_finished_seconds{task=\"interview-calendar-sync\"}",
+          "values": "60+0x30"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentSchedulerFailures",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr",
+                "task": "application-scoring"
+              },
+              "exp_annotations": {
+                "summary": "Recruitment scheduler attempts are failing",
+                "description": "Review the failing task and its correlated structured logs. Retries are already bounded; do not replay business writes blindly."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentCommunicationFailures",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr"
+              },
+              "exp_annotations": {
+                "summary": "Candidate communications require operator attention",
+                "description": "Inspect the scoped HR recovery queue and Hub receipts. Hub acceptance is not mailbox delivery; keep consent and cancellation guards enabled."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentScoringFailures",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr"
+              },
+              "exp_annotations": {
+                "summary": "Application scoring has repeated failures",
+                "description": "Check the scheduler error and current schema/dependencies. Recruiters retain review ownership; do not advance applications by manipulating scores."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentCalendarRetries",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr",
+                "kind": "interview"
+              },
+              "exp_annotations": {
+                "summary": "Calendar reconciliation is repeatedly retrying",
+                "description": "Check Communication service availability and verified company identity. Do not rebind another company account to bypass ownership checks."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentFrequentSchedulerStalled",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr",
+                "task": "interview-calendar-sync"
+              },
+              "exp_annotations": {
+                "summary": "A previously active recruitment task has stopped finishing",
+                "description": "Inspect the worker, queue and database before restart. Skipped tasks still produce a heartbeat. Separate platform liveness alerts must detect workers that never started or targets that vanished."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "hr_recruitment_scheduler_runs_total{task=\"application-scoring\",outcome=\"failed\"}",
+          "values": "0+0x30"
+        },
+        {
+          "series": "hr_recruitment_communication_outcomes_total{outcome=\"failed\"}",
+          "values": "0+0x30"
+        },
+        {
+          "series": "hr_recruitment_scoring_outcomes_total{outcome=\"failed\"}",
+          "values": "0+0x30"
+        },
+        {
+          "series": "hr_recruitment_calendar_sync_outcomes_total{kind=\"interview\",outcome=\"retried\"}",
+          "values": "0+0x30"
+        },
+        {
+          "series": "hr_recruitment_scheduler_last_finished_seconds{task=\"interview-calendar-sync\"}",
+          "values": "0+60x30"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentSchedulerFailures",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentCommunicationFailures",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentScoringFailures",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentCalendarRetries",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "RecruitmentFrequentSchedulerStalled",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "hr_recruitment_scheduler_runs_total{task=\"application-scoring\",outcome=\"failed\"}",
+          "values": "0+0x5 1+0x24"
+        },
+        {
+          "series": "hr_recruitment_communication_outcomes_total{outcome=\"failed\"}",
+          "values": "0+0x5 1+0x24"
+        },
+        {
+          "series": "hr_recruitment_scoring_outcomes_total{outcome=\"failed\"}",
+          "values": "0+0x5 5+0x24"
+        },
+        {
+          "series": "hr_recruitment_calendar_sync_outcomes_total{kind=\"interview\",outcome=\"retried\"}",
+          "values": "0+0x5 5+0x24"
+        },
+        {
+          "series": "hr_recruitment_scheduler_last_finished_seconds{task=\"interview-calendar-sync\"}",
+          "values": "0+60x30"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "18m",
+          "alertname": "RecruitmentSchedulerFailures",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr",
+                "task": "application-scoring"
+              },
+              "exp_annotations": {
+                "summary": "Recruitment scheduler attempts are failing",
+                "description": "Review the failing task and its correlated structured logs. Retries are already bounded; do not replay business writes blindly."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "18m",
+          "alertname": "RecruitmentCommunicationFailures",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr"
+              },
+              "exp_annotations": {
+                "summary": "Candidate communications require operator attention",
+                "description": "Inspect the scoped HR recovery queue and Hub receipts. Hub acceptance is not mailbox delivery; keep consent and cancellation guards enabled."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "18m",
+          "alertname": "RecruitmentScoringFailures",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr"
+              },
+              "exp_annotations": {
+                "summary": "Application scoring has repeated failures",
+                "description": "Check the scheduler error and current schema/dependencies. Recruiters retain review ownership; do not advance applications by manipulating scores."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "18m",
+          "alertname": "RecruitmentCalendarRetries",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "warning",
+                "service": "hr",
+                "kind": "interview"
+              },
+              "exp_annotations": {
+                "summary": "Calendar reconciliation is repeatedly retrying",
+                "description": "Check Communication service availability and verified company identity. Do not rebind another company account to bypass ownership checks."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "18m",
+          "alertname": "RecruitmentFrequentSchedulerStalled",
+          "exp_alerts": []
+        }
+      ]
+    }
+  ]
+}

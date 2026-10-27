@@ -1,3 +1,11 @@
+import {
+  policyActions,
+  policyGrant,
+  policyQueueFields,
+  policyQueueWhere,
+  resolveRecruitmentPolicy,
+  mirrorRecruitmentStep,
+} from "./recruitment-policy.service.js";
 import { encryptString, decryptString } from "../../lib/crypto.js";
 import prisma from "../../lib/prisma.js";
 import { tenantTransaction } from "../../lib/rlsTenant.js";
@@ -81,13 +89,14 @@ async function execute(input, operation, fn) {
           });
           const from = cached.record.history.at(-1)?.fromStage;
           const grant =
-            operation === "SUBMIT" || input.action === "WITHDRAW"
+            prior.authorization?.permission ??
+            (operation === "SUBMIT" || input.action === "WITHDRAW"
               ? "self"
               : {
                   LINE_MANAGER: "manager",
                   HR: "verify",
                   MANAGEMENT: "approve",
-                }[from];
+                }[from]);
           if (
             !current ||
             !grant ||
@@ -107,6 +116,7 @@ async function execute(input, operation, fn) {
             actorCode: who.employee_code,
             digest,
             result: seal(result),
+            authorization: env.receiptAuthorization,
           },
         });
       return result;
@@ -115,6 +125,8 @@ async function execute(input, operation, fn) {
   );
 }
 async function actionsFor(tx, env, row) {
+  if (row.recruitmentPolicy && row.stage !== "INITIATOR")
+    return ownsCode(env, row.employeeCode) ? [] : policyActions(env, row);
   if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
   const subject = await employee(tx, env.tenantId, row.employeeCode),
     self = ownsCode(env, row.employeeCode);
@@ -148,6 +160,31 @@ async function canRead(tx, env, row) {
     permits(env, "read") ||
     permits(env, "verify") ||
     permits(env, "approve")
+  )
+    return true;
+  if (
+    row.recruitmentPolicy &&
+    (policyActions(env, row).length ||
+      (permits(env, "manager") &&
+        row.recruitmentPolicy.decisions.some((d) => d.actorId === env.who.id)))
+  )
+    return true;
+  // Returning to the initiator clears the current policy decisions. Preserve
+  // the acting manager's access to this round's receipt through the immutable
+  // audit, without opening returned requests to unrelated managers.
+  if (
+    row.recruitmentPolicy &&
+    permits(env, "manager") &&
+    (await tx.hrApprovalAudit.findFirst({
+      where: {
+        tenantId: env.tenantId,
+        approvalRef: row.id,
+        round: row.round,
+        actorCode: { in: env.identityCodes },
+        action: { in: ["APPROVE", "REJECT", "REVERT"] },
+      },
+      select: { id: true },
+    }))
   )
     return true;
   const subject = await employee(tx, env.tenantId, row.employeeCode);
@@ -276,22 +313,31 @@ export function submitApproval(raw) {
     });
     if (!ownsCode(env, source.who.employee_code))
       fail("Only the employee initiator can submit", 403);
+    const recruitmentPolicy = await resolveRecruitmentPolicy(
+      tx,
+      env,
+      input.kind,
+      source,
+    );
     const manager = await tx.employee.findFirst({
       where: { tenant_id: env.tenantId, id: source.who.managerId ?? -1 },
     });
     if (
-      !manager?.employee_code ||
-      manager.id === env.who.id ||
-      /inactive|terminated|exited|separated/i.test(
-        `${manager.status} ${manager.employement_status}`,
-      )
+      !recruitmentPolicy &&
+      (!manager?.employee_code ||
+        manager.id === env.who.id ||
+        /inactive|terminated|exited|separated/i.test(
+          `${manager.status} ${manager.employement_status}`,
+        ))
     )
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
     const data = {
       employeeCode: env.who.employee_code,
-      stage: "LINE_MANAGER",
-      managerCode: manager.employee_code,
+      recruitmentPolicy,
+      ...policyQueueFields(recruitmentPolicy),
+      stage: recruitmentPolicy ? "MANAGEMENT" : "LINE_MANAGER",
+      managerCode: manager?.employee_code ?? env.who.employee_code,
       managerActorCode: null,
       hrActorCode: null,
       recommendation: null,
@@ -344,6 +390,75 @@ export function actApproval(raw) {
     let source = await loadSource(tx, env, row.kind, row.sourceRef, {
       lock: true,
     });
+    if (row.recruitmentPolicy) {
+      env.receiptAuthorization = {
+        permission: policyGrant(
+          row.recruitmentPolicy.steps[row.recruitmentPolicy.decisions.length],
+        ),
+      };
+      if (input.action !== "REVERT" && source.digest !== row.sourceHash)
+        fail("The source changed; return to the initiator for review");
+      if (input.action === "REVERT") {
+        await onReturn(tx, row.kind, source, "INITIATOR");
+        const next = await tx.hrApprovalRequest.update({
+          where: { id: row.id },
+          data: {
+            stage: "INITIATOR",
+            ...policyQueueFields(null),
+            recruitmentPolicy: { ...row.recruitmentPolicy, decisions: [] },
+            version: { increment: 1 },
+          },
+        });
+        await audit(tx, env, row, next, input.action, input.reason);
+        return {
+          actorCode: env.who.employee_code,
+          record: await view(tx, env, next),
+        };
+      }
+      const policy = await mirrorRecruitmentStep(
+        tx,
+        env,
+        row,
+        input.action,
+        input.reason,
+      );
+      const final =
+        input.action === "REJECT" ||
+        policy.decisions.length === policy.steps.length;
+      const stage = final
+        ? input.action === "APPROVE"
+          ? "APPROVED"
+          : "REJECTED"
+        : row.stage;
+      let next = await tx.hrApprovalRequest.update({
+        where: { id: row.id },
+        data: {
+          stage,
+          recruitmentPolicy: policy,
+          ...policyQueueFields(policy),
+          version: { increment: 1 },
+        },
+      });
+      if (final) {
+        const execution = await applyDecision(
+          tx,
+          env,
+          row,
+          source,
+          input.action === "APPROVE",
+          input.reason,
+        );
+        next = await tx.hrApprovalRequest.update({
+          where: { id: row.id },
+          data: { execution },
+        });
+      }
+      await audit(tx, env, row, next, input.action, input.reason);
+      return {
+        actorCode: env.who.employee_code,
+        record: await view(tx, env, next),
+      };
+    }
     const data = { version: { increment: 1 } };
     if (input.action === "WITHDRAW") {
       data.stage = "WITHDRAWN";
@@ -493,6 +608,7 @@ export function listApprovals(raw) {
           })
         : [];
       where.OR = [
+        policyQueueWhere(env),
         ...(permits(env, "self")
           ? [{ stage: "INITIATOR", employeeCode: { in: env.identityCodes } }]
           : []),
@@ -524,6 +640,7 @@ export function listApprovals(raw) {
           ? [
               {
                 stage: "MANAGEMENT",
+                policyPermission: null,
                 employeeCode: { notIn: env.identityCodes },
                 managerActorCode: { notIn: env.identityCodes },
                 hrActorCode: { notIn: env.identityCodes },
@@ -539,7 +656,15 @@ export function listApprovals(raw) {
       }),
       page = rows.slice(0, input.limit);
     const items = [];
-    for (const row of page) items.push(await view(tx, env, row, true));
+    for (const row of page) {
+      if (
+        input.scope === "QUEUE" &&
+        row.recruitmentPolicy &&
+        !(await actionsFor(tx, env, row)).length
+      )
+        continue;
+      items.push(await view(tx, env, row, true));
+    }
     return {
       actorCode: env.who.employee_code,
       items,

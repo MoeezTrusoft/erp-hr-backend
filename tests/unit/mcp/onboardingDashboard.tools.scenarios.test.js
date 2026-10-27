@@ -32,6 +32,7 @@ jest.unstable_mockModule('../../../src/services/onboardingPortalScreen.service.j
   completePortalTask: jest.fn(async () => ({ success: true })),
   deletePortalTask: jest.fn(async () => ({ success: true })),
   getFeedbackQuestions: jest.fn(async () => ({ success: true })),
+  submitPortalMilestone: jest.fn(async () => ({ success: true })),
   submitPortalFeedback: jest.fn(async () => ({ success: true })),
   sendTaskReminder: jest.fn(async () => ({ success: true })),
 }));
@@ -60,7 +61,7 @@ const USER = {
 };
 
 function call(name, args, { user = USER, permissions } = {}) {
-  return mcpCtx.run({ user, permissions: permissions || {} }, () => handlers.get(name)(args));
+  return mcpCtx.run({ actorVerified: true, user, permissions: permissions || {} }, () => handlers.get(name)(args));
 }
 const parse = (res) => JSON.parse(res.content[0].text);
 
@@ -68,7 +69,7 @@ const TOOLS = [
   // --- onboardingDashboardTools.js (4 tools) ---
   { name: 'hr_onboarding_dashboard_get', gate: 'hr:onboarding', action: 'VIEW', args: {} },
   { name: 'hr_onboarding_add_new_hire', gate: 'hr:onboarding', action: 'CREATE', args: { employeeId: '7', startDate: '2026-08-01' } },
-  { name: 'hr_onboarding_export', gate: 'hr:onboarding', action: 'VIEW', args: { format: 'csv' } },
+  { name: 'hr_onboarding_export', gate: 'hr:onboarding', action: 'EXPORT', args: { format: 'csv' } },
   { name: 'hr_onboarding_quick_progress', gate: 'hr:onboarding', action: 'VIEW', args: { id: '1' } },
   // --- onboardingScheduleTools.js (5 tools) ---
   { name: 'hr_onboarding_schedule_list', gate: 'hr:onboarding', action: 'VIEW', args: { checklistId: '1' } },
@@ -84,6 +85,7 @@ const TOOLS = [
   { name: 'hr_onboarding_portal_task_delete', gate: 'hr:onboarding', action: 'DELETE', args: { taskId: '1' } },
   { name: 'hr_onboarding_portal_feedback_questions', gate: 'hr:onboarding', action: 'VIEW', args: {} },
   { name: 'hr_onboarding_portal_feedback_submit', gate: 'hr:onboarding', action: 'CREATE', args: { answers: [{ questionId: 'q1', value: 5 }] } },
+  { name: 'hr_onboarding_portal_survey_submit', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: 1, type: 'DAY_30', answers: [{ questionId: 'role_clarity', value: 'Clear' }] } },
   { name: 'hr_onboarding_portal_send_reminder', gate: 'hr:onboarding', action: 'CREATE', args: { taskId: '1' } },
 ];
 

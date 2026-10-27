@@ -93,7 +93,11 @@ export async function runController(controller, { user = {}, params = {}, query 
   }
 
   if (statusCode >= 400) {
-    const message = payload?.message || payload?.error || "Request failed";
+    const envelope = payload?.error && typeof payload.error === "object"
+      ? payload.error
+      : Array.isArray(payload?.errors) ? payload.errors[0] : payload;
+    const message = [payload?.message, envelope?.message, payload?.error]
+      .find((value) => typeof value === "string" && value) || "Request failed";
     // ERR-3: Sanitize the error message — if it contains raw Prisma/DB detail,
     // replace with a human-readable message. Never leak internal implementation
     // details to MCP clients.
@@ -118,8 +122,11 @@ export async function runController(controller, { user = {}, params = {}, query 
     // API-2 — preserve the HR-nnnn code and the optimistic-concurrency
     // currentVersion the controller surfaced (e.g. a 412 HR-4120) so the MCP
     // error mapper (toJsonRpcError) can emit -32009 with data.currentVersion.
-    if (payload?.code) err.code = payload.code;
-    if (payload?.currentVersion !== undefined) err.currentVersion = payload.currentVersion;
+    const code = payload?.code ?? envelope?.code;
+    if (code) err.code = code;
+    if (envelope?.details !== undefined) err.details = envelope.details;
+    const currentVersion = payload?.currentVersion ?? envelope?.currentVersion ?? envelope?.details?.currentVersion;
+    if (currentVersion !== undefined) err.currentVersion = currentVersion;
     throw err;
   }
 

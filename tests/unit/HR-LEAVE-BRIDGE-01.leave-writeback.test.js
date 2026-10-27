@@ -80,6 +80,8 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock
 // tenantData/withTenant pass data through untouched in the mock lane.
 jest.unstable_mockModule('../../src/lib/tenancy.js', () => ({
     tenantData: (_t, data) => data,
+    scopedData: (_t, data) => data,
+    scopedWhere: (_t, where) => where,
     withTenant: (_t, where) => where,
 }));
 jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
@@ -90,6 +92,10 @@ jest.unstable_mockModule('../../src/services/hrDomainEvent.service.js', () => ({
     enqueueHrDomainEvent: jest.fn(),
 }));
 jest.unstable_mockModule('../../src/services/hrEvents.js', () => ({
+    requisitionDecisionEvent: jest.fn(() => null),
+    requisitionSubmittedEvent: jest.fn(() => null),
+    requisitionApprovedEvent: jest.fn(() => null),
+    requisitionRejectedEvent: jest.fn(() => null),
     leaveApprovedEvent: jest.fn(() => null),
     leaveRejectedEvent: jest.fn(() => null),
 }));

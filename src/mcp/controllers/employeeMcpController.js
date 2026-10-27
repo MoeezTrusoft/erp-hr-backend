@@ -18,6 +18,7 @@ import * as hrContractService from "../../services/hrContract.service.js";
 import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
 import { getEmployeeProfileTab } from "../../services/employeeProfileTabs.service.js";
 import logger from "../../lib/logger.js";
+import { authorizeNativeHrCreate } from "../../services/native-verification-guard.service.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
@@ -123,10 +124,12 @@ export async function mcpCreateEmployee(user, data, ctx = {}) {
   // service-JWT claim — never the request body) and the request correlationId so
   // createEmployee writes tenant_id and emits the hr.employee.lifecycle.v1 event
   // in-tx. actorId stays the acting principal.
-  const actorEmployeeId = await requireEmployeeActor(user);
+  const native = await authorizeNativeHrCreate(data, { idempotencyKey: ctx.idempotencyKey });
+  const actorEmployeeId = native ? null : await requireEmployeeActor(user);
   return hrContractService.createEmployee(data, actorEmployeeId, {
     tenantId: user?.tenantId ?? null,
     correlationId: ctx.correlationId,
+    idempotencyKey: ctx.idempotencyKey,
     actorId: actorEmployeeId,
     actor: ctx.actor,
   });

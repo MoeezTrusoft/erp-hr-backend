@@ -1,0 +1,46 @@
+{
+  "state": "SOURCE_ONLY_NOT_RUNTIME_QUALIFIED",
+  "tool": "hr_native_verification_entry_status",
+  "input": {
+    "entryId": "UUID",
+    "additionalProperties": false
+  },
+  "permission": {
+    "module": "hr:employee",
+    "action": "CREATE",
+    "httpMethod": "POST",
+    "canonical": "hr.employee.create",
+    "bootstrapExactPermissions": ["hr.employee.create", "rbac.employee.create"]
+  },
+  "output": {
+    "grantId": "UUID",
+    "entryId": "UUID",
+    "employeeId": "positive Int32",
+    "provisioningId": "UUID",
+    "idempotencyKey": "UUID",
+    "payloadFingerprint": "lowercase SHA256",
+    "status": ["PENDING", "PROCESSING", "RETRY_WAIT", "SUCCEEDED", "TERMINAL_FAILED"],
+    "rbacUserId": "null except SUCCEEDED; actual stored canonical decimal string1..2147483647 on SUCCEEDED"
+  },
+  "envelope": {
+    "success": true,
+    "data": "exact eight-field output; also mirrored in MCP structuredContent"
+  },
+  "denial": {
+    "code": "HR-0310",
+    "status": 403,
+    "message": "HR-0310: native verification authorization is unavailable"
+  },
+  "inputValidation": "Strict MCP schema rejects malformed or additional input fields before the handler; service-level direct invalid input also fails with HR-0310",
+  "semantics": [
+    "Company is derived solely from verified actor tenant and immutable plan",
+    "Exact active bootstrap identity/sole role/two existing permissions, no system/admin/employee context",
+    "Same grant lock as cancellation and worker inside tenant transaction",
+    "Mounted plan reread after grant lock; durable expiry checked after wait and final reads",
+    "Controller-installed active grant and exact owned entry, actorUserId and non-deactivated ownership",
+    "Explicit employee.id and tenant_id comparison; assertNativeOwnedIntent against authoritative provisioning row",
+    "No create/retry/dispatch/advance/RBAC RPC and no lastError/result/payload/credentials output"
+  ],
+  "externalDependency": "Gateway routing and explicit permission/delegation mapping owned by SDLC; no absent grant may be synthesized",
+  "testsExecuted": false
+}

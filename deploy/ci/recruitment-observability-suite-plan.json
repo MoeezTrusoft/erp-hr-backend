@@ -1,0 +1,37 @@
+{
+  "state": "PREPARED_NOT_RUN",
+  "lane": "recruitment-observability-v2",
+  "base": "job-board assembly v1 plus observability v1",
+  "requirements": ["attachment13.1", "attachment14"],
+  "fullHrJestFileCount": 347,
+  "newUnitCasesPrepared": 15,
+  "newNativeSubcasesPrepared": 1,
+  "prometheusAlertAssertionsPrepared": 15,
+  "jestFiles": [
+    "tests/unit/recruitment-automation-metrics.test.js",
+    "tests/unit/recruitmentOpsMetrics.test.js",
+    "tests/unit/jobs/reminder.queue.test.js",
+    "tests/unit/application-scoring-worker.test.js"
+  ],
+  "nativeFiles": [
+    "tests/recruitment/communications.postgres.test.mjs",
+    "tests/recruitment/fit-score.postgres.test.mjs",
+    "tests/recruitment/calendar-sync.postgres.test.mjs",
+    "tests/recruitment/onboarding-calendar.postgres.test.mjs"
+  ],
+  "promtool": [
+    ["check", "rules", "deploy/monitoring/recruitment.rules.json"],
+    ["test", "rules", "deploy/monitoring/recruitment.rules.test.json"]
+  ],
+  "required": [
+    "Fresh locked install and Prisma generation/replay/drift",
+    "Exact full 347-file Jest discovery/regression and full HR lint/boundaries",
+    "Native PostgreSQL regressions for delivery, scoring, interview and onboarding calendars",
+    "Real HTTP metrics scrape including worker target with all 13 families, no PII labels and counters from synthetic flows",
+    "Promtool rule validation and fifteen alert assertions using approved pinned image in existing Kubernetes",
+    "Staged metric/alert loading with production target and receiver mapping, platform worker liveness and observation period"
+  ],
+  "runtimeExecuted": false,
+  "liveMutation": false,
+  "reviewFix": "REC-OBS-V1-01: zero-baseline series and single-failure/burst regressions; first-scrape limitation documented"
+}

@@ -37,9 +37,11 @@ const CODE_TO_JSONRPC = {
  */
 export function toJsonRpcError(err) {
     const norm = normalizeError(err);
-    const jsonrpcCode = CODE_TO_JSONRPC[norm.code] ?? -32603;
+    const statusCode = norm.httpStatus >= 500 ? -32603 : norm.httpStatus === 403 ? -32003 : norm.httpStatus === 404 ? -32004 : [412, 428].includes(norm.httpStatus) ? -32009 : [400, 422].includes(norm.httpStatus) ? -32602 : -32001;
+    const jsonrpcCode = CODE_TO_JSONRPC[norm.code] ?? statusCode;
 
     const data = { code: norm.code };
+    if (norm.reason) data.reason = norm.reason;
     if (norm.details !== undefined) data.details = norm.details;
     // Appendix B extras, surfaced from the error when the domain set them.
     if (err && err.currentVersion !== undefined) data.currentVersion = err.currentVersion;

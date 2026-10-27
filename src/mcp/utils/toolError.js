@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import logger from "../../lib/logger.js";
+import { normalizeError } from "../../middlewares/error.middleware.js";
 import { toJsonRpcError } from "./mcpErrorMap.js";
 
 // LOG-4: HR MCP tools accept flat top-level C4-sensitive fields (iban, ntn,
@@ -50,8 +51,9 @@ export function withResourceError(fn, resourceUri = "unknown_resource") {
       }, "MCP resource read failed");
       const body = {
         error: jsonrpc.message,
-        status: err?.status || err?.httpStatus || err?.statusCode || 500,
+        status: normalizeError(err).httpStatus,
         code: jsonrpc.data.code,
+        ...(jsonrpc.data.reason ? { reason: jsonrpc.data.reason } : {}),
         jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
       };
       return {
@@ -90,8 +92,9 @@ export function withToolError(fn, toolName = "unknown_tool") {
       // additions machine clients should branch on. `error` is leak-safe (ERR-3).
       const body = {
         error: jsonrpc.message,
-        status: err?.status || err?.httpStatus || err?.statusCode || 500,
+        status: normalizeError(err).httpStatus,
         code: jsonrpc.data.code,
+        ...(jsonrpc.data.reason ? { reason: jsonrpc.data.reason } : {}),
         jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
       };
       return {

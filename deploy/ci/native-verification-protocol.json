@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "state": "SOURCE_ONLY_NOT_QUALIFIED",
+  "planMount": "/var/run/trusoft/sdlc-native/plan.json",
+  "controllerMount": "/control/hr-native-grant.json",
+  "artifactPath": "/artifacts/hr-native-cleanup.json",
+  "artifactEnvelope": {
+    "grantId": "UUID",
+    "receipts": [
+      {
+        "entryId": "UUID",
+        "token": "EdDSA JWT"
+      }
+    ]
+  },
+  "authorization": "Trusted combined controller must verify actual Kubernetes Job/Pod UID ledger, immutable source/controller hashes and committed RBAC Logs before mounting dispatch; matching file shape/hashes alone is not authorization.",
+  "dispatchKeys": [
+    "version",
+    "operation",
+    "planSha256",
+    "planFingerprint",
+    "grantId",
+    "runId",
+    "tenantId",
+    "operatorOrigin",
+    "dispatch",
+    "rbacAuthorization",
+    "rbacCancellation",
+    "operationRef"
+  ],
+  "dispatchIdentityKeys": [
+    "kind",
+    "namespace",
+    "jobName",
+    "jobUid",
+    "podUid",
+    "sourceSha256",
+    "controllerSha256"
+  ],
+  "rbacLogId": "Canonical positive decimal string, <=2147483647",
+  "receiptHashes": {
+    "authorization": "nativeDigest({version:1,type:'BOOTSTRAP_AUTHORIZATION',id:String(log.id),tenantId:plan.tenantId,userId:plan.bootstrap.userId,grantId:plan.grantId,planFingerprint:nativeDigest(plan)})",
+    "cancellation": "nativeDigest({version:1,type:'BOOTSTRAP_CANCELLED',id:String(log.id),tenantId:plan.tenantId,userId:plan.bootstrap.userId,grantId:plan.grantId,planFingerprint:nativeDigest(plan),authorizationId:String(authorizationLog.id)})"
+  },
+  "cleanupJwt": {
+    "header": {
+      "alg": "EdDSA",
+      "typ": "JWT",
+      "kid": "actual HR-owned key in separate RBAC registry"
+    },
+    "outerKeys": [
+      "sub",
+      "iss",
+      "aud",
+      "tid",
+      "iat",
+      "exp",
+      "sdlcCleanup"
+    ],
+    "issuer": "erp-hr-backend",
+    "audience": "erp-rbac:sdlc-cleanup",
+    "lifetimeSeconds": 300,
+    "claimKeys": [
+      "version",
+      "grantId",
+      "grantFingerprint",
+      "runId",
+      "tenantId",
+      "bootstrapUserId",
+      "entryId",
+      "provisioningId",
+      "employeeId",
+      "idempotencyKey",
+      "payloadFingerprint",
+      "employeeStatus",
+      "grantStatus",
+      "deactivationReceiptId"
+    ],
+    "tenantRule": "Outer tid and inner tenantId must equal public plan tenant",
+    "statuses": {
+      "employeeStatus": "Inactive",
+      "grantStatus": "CANCELLED"
+    }
+  },
+  "ordering": [
+    "RBAC commits grant cancellation and native bootstrap offboarding/session revocation and releases locks",
+    "HR locks grant, terminates pending work, locks owned employees, natively deactivates and records immutable entry receipt in one transaction",
+    "HR signs only committed receipt and atomically publishes0600 private artifact; lost-output retry reuses receipt",
+    "RBAC verifies HR signature/complete binding and offboards only its actual owned account entries"
+  ],
+  "timeouts": {
+    "rpcMs": 10000,
+    "workerTransactionMs": 20000,
+    "defaultLeaseMs": 60000,
+    "minimumRemainingLeaseMs": 20000
+  },
+  "rollback": "deploy/ci/native-verification.rollback.sql refuses nonempty history; after any grant installation retain schema/audit and disable lane",
+  "remainingQualification": [
+    "Controller actual UID/hash/immutable mount binding",
+    "Prisma generate/validate, full fresh migration replay/drift and empty/history rollback rehearsal",
+    "Focused unit/native PostgreSQL tests, entire HR regression and lint/boundaries",
+    "Actual bootstrap login→MCP create→worker→RBAC activation and cache/expiry/cancellation negatives",
+    "Partial0–4 creation, RPC timeout/lost response, commit-before-sign, signing/output-failure reissue, both-service cleanup races",
+    "Strict RBAC cleanup audience/key/expiry/outer-inner-tenant and owned-entry rejection"
+  ],
+  "resultPath": "/artifacts/result.json",
+  "resultEnvelope": {
+    "version": 1,
+    "operation": "INSTALL|CANCEL",
+    "operationRef": "Same trusted dispatch reference",
+    "state": "INSTALLED|CANCELLED",
+    "grantId": "UUID",
+    "planFingerprint": "Canonical public-plan SHA256",
+    "rbacAuthorization": {
+      "id": "Canonical positive Int32 decimal string",
+      "fingerprint": "Canonical committed authorization receipt SHA256"
+    },
+    "rbacCancellation": "null on INSTALL; canonical {id,fingerprint,grantId} on CANCEL",
+    "ownedEmployeeCount": "Complete committed HR entry count,0..4",
+    "entries": [
+      {
+        "entryId": "UUID",
+        "employeeId": "Actual positive HR integer",
+        "provisioningId": "UUID",
+        "idempotencyKey": "Native UUID",
+        "payloadFingerprint": "64hex",
+        "deactivationReceiptId": "null on INSTALL; committed UUID on CANCEL"
+      }
+    ],
+    "artifactSha256": "null on INSTALL; exact newline-inclusive private artifact SHA256 on CANCEL"
+  },
+  "resultOrdering": "INSTALL publishes0600result after commit; CANCEL commits all owned deactivations, publishes/fsyncs0600private artifact, then atomically publishes/fsyncs0600token-free result.json. Missing files/coverage is incomplete. Preserve prior attempts and reissue from durable receipts into a fresh owned output directory.",
+  "supersedes": "Minimal result in native overlayv2 retained as historical only"
+}

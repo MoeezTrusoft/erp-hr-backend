@@ -1,0 +1,22 @@
+[Unit]
+Description=Encrypted company LibreSign backups and isolated DAM restore verification
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+WorkingDirectory=/opt/erp-cicd/recruitment-signing-k8s
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/python3 /opt/erp-cicd/recruitment-signing-k8s/Kubernetes-BackupSchedule.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=75%
+MemoryMax=1G
+TimeoutStartSec=6h
+TimeoutStopSec=5m
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal

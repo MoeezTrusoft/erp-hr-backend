@@ -65,6 +65,18 @@ function harness(candidate = row()) {
 }
 
 describe("F-03 provisioning worker", () => {
+  it.each([true, false])("reports a superseded finalization after RPC ok=%s without overwriting cancellation", async ok => {
+    const h = harness();
+    const result = await runSystemAccountProvisioningBatch({
+      prisma: h.prisma, workerId: "worker-a", now: () => NOW,
+      provision: async () => {
+        await h.model.update({ data: { status: "TERMINAL_FAILED", claimedBy: null, lastErrorCode: "HR-0310" } });
+        return ok ? { ok: true, user: { id: 9001 } } : { ok: false, status: 503, error: "Lost response" };
+      },
+    });
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 0, claimRaceLost: 1 });
+    expect(h.current()).toMatchObject({ status: "TERMINAL_FAILED", lastErrorCode: "HR-0310", rbacUserId: null });
+  });
   beforeEach(() => jest.clearAllMocks());
 
   it("claims under a lease and calls RBAC with stable idempotency metadata, without retaining password", async () => {

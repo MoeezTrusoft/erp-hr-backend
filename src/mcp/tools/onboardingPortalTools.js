@@ -21,7 +21,8 @@ import {
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
-  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  if (!ctx?.user)
+    throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
 }
 
@@ -37,7 +38,7 @@ export function registerOnboardingPortalTools(server) {
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
       const data = await getPreboarding(id, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_onboarding_preboarding_get")
+    }, "hr_onboarding_preboarding_get"),
   );
 
   server.tool(
@@ -48,39 +49,49 @@ export function registerOnboardingPortalTools(server) {
       group: z
         .enum(["readiness", "itSetup", "engagement", "workspace"])
         .optional()
-        .describe("Single-toggle mode: preboarding group — one of readiness | itSetup | engagement | workspace"),
-      key: z.string().optional().describe("Single-toggle mode: item key within the group"),
-      value: z.boolean().optional().describe("Single-toggle mode: new boolean value for the item"),
+        .describe(
+          "Single-toggle mode: preboarding group — one of readiness | itSetup | engagement | workspace",
+        ),
+      key: z
+        .string()
+        .optional()
+        .describe("Single-toggle mode: item key within the group"),
+      value: z
+        .boolean()
+        .optional()
+        .describe("Single-toggle mode: new boolean value for the item"),
       preboarding: z
         .record(z.string(), z.record(z.string(), z.boolean()))
         .optional()
-        .describe("Full-object mode: the complete preboarding object (the 4 groups of booleans). Provide EITHER this OR (group + key + value)."),
+        .describe(
+          "Full-object mode: the complete preboarding object (the 4 groups of booleans). Provide EITHER this OR (group + key + value).",
+        ),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
       const data = await updatePreboarding(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_onboarding_preboarding_update")
+    }, "hr_onboarding_preboarding_update"),
   );
 
   server.tool(
     "hr_onboarding_feedback_submit",
-    "Submit new-hire onboarding feedback (role clarity / team support / onboarding process ratings + comments) for a checklist",
+    "Submit the canonical questionnaire for the verified employee’s own checklist; general feedback does not modify milestone surveys",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id the feedback is stored against"),
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("OnboardingChecklist id the feedback is stored against"),
       employeeId: z
         .union([z.string(), z.number()])
         .optional()
-        .describe("Employee id — defaults to the checklist's own new hire when omitted"),
-      ratings: z
-        .object({
-          roleClarity: z.union([z.number(), z.string()]).optional().describe("Role-clarity rating (e.g. 1-5)"),
-          teamSupport: z.union([z.number(), z.string()]).optional().describe("Team-support rating (e.g. 1-5)"),
-          onboardingProcess: z.union([z.number(), z.string()]).optional().describe("Onboarding-process rating (e.g. 1-5)"),
-        })
-        .passthrough()
-        .describe("Ratings object — required. Extra keys are passed through and stored under responses.ratings"),
+        .describe("Employee id — defaults to the verified linked employee"),
+      answers: z
+        .array(z.object({ questionId: z.string(), answer: z.string() }))
+        .max(20)
+        .describe(
+          "Canonical questionnaire answers from hr_onboarding_portal_feedback_questions",
+        ),
       comments: z.string().optional().describe("Free-text feedback comments"),
     },
     withToolError(async (args) => {
@@ -88,50 +99,59 @@ export function registerOnboardingPortalTools(server) {
       assertPermission(permissions, "POST", "hr:onboarding", user.isAdmin);
       const data = await submitFeedback(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_onboarding_feedback_submit")
+    }, "hr_onboarding_feedback_submit"),
   );
 
   server.tool(
     "hr_onboarding_feedback_view",
     "View submitted onboarding feedback for a checklist, shaped as a table (candidate, role, ratings, comments, submittedAt)",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("OnboardingChecklist id"),
     },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
       const data = await viewFeedback(checklistId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_onboarding_feedback_view")
+    }, "hr_onboarding_feedback_view"),
   );
 
   server.tool(
     "hr_onboarding_note_add",
     "Append a note to an onboarding checklist's activity log",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
-      text: z.string().min(1).describe("Note body text"),
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("OnboardingChecklist id"),
+      idempotencyKey: z.string().min(16).max(100).optional(),
+      text: z.string().min(1).max(4000).describe("Note body text"),
     },
-    withToolError(async ({ checklistId, text }) => {
+    withToolError(async ({ checklistId, text, idempotencyKey }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:onboarding", user.isAdmin);
-      const actor = user.employeeId || user.email || "system";
-      const data = await addNote({ checklistId, text, actor }, user.tenantId);
+      const data = await addNote(
+        { checklistId, text, idempotencyKey },
+        user.tenantId,
+      );
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_onboarding_note_add")
+    }, "hr_onboarding_note_add"),
   );
 
   server.tool(
     "hr_onboarding_activity_list",
     "List an onboarding checklist's activity log newest-first, with entries grouped by day (Today / Yesterday / date)",
     {
-      checklistId: z.union([z.string(), z.number()]).describe("OnboardingChecklist id"),
+      checklistId: z
+        .union([z.string(), z.number()])
+        .describe("OnboardingChecklist id"),
     },
     withToolError(async ({ checklistId }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:onboarding", user.isAdmin);
       const data = await listActivity(checklistId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_onboarding_activity_list")
+    }, "hr_onboarding_activity_list"),
   );
 }

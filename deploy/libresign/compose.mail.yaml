@@ -1,0 +1,15 @@
+services:
+  app:
+    environment: &smtp-environment
+      SMTP_HOST: ''
+      SMTP_NAME: ''
+      SMTP_PASSWORD: ''
+      SMTP_PASSWORD_FILE: ''
+    secrets: [smtp_settings]
+    volumes: ['./mail.config.php:/var/www/html/config/recruitment-mail.config.php:ro']
+  cron:
+    environment: *smtp-environment
+    secrets: [smtp_settings]
+    volumes: ['./mail.config.php:/var/www/html/config/recruitment-mail.config.php:ro']
+secrets:
+  smtp_settings: {file: .secrets/smtp-settings.json}

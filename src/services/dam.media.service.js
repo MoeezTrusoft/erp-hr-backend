@@ -68,6 +68,43 @@ export function normalizeDamAssetResponse(payload) {
   return payload;
 }
 
+/**
+ * Phase 10 (remainder) — DELETE a DAM asset, with an outcome the caller can AUDIT.
+ *
+ * `damRequest` above is deliberately fail-soft (it logs and returns null), which
+ * is right for enrichment reads and wrong here: an erasure cannot treat "we could
+ * not reach DAM" and "the asset is gone" as the same answer. So this returns an
+ * explicit verdict instead of a value.
+ *
+ * A 404 counts as SUCCESS. The goal is "the asset is not there", and an asset
+ * that is already gone satisfies it — treating that as a failure would make an
+ * erasure retry forever against something that no longer exists.
+ *
+ * @param {string|number} mediaId
+ * @returns {Promise<{ok: boolean, skipped?: boolean, reason?: string, status?: number|null, alreadyGone?: boolean, error?: string}>}
+ */
+export async function deleteDamAsset(mediaId) {
+    if (mediaId === null || mediaId === undefined || mediaId === "") {
+        return { ok: false, skipped: true, reason: "no media id on the record" };
+    }
+    try {
+        const res = await damApi.delete(`/assets/${mediaId}`, { headers: withInternalSecret() });
+        return { ok: true, status: res.status };
+    } catch (error) {
+        const status = error.response?.status ?? null;
+        if (status === 404) return { ok: true, status, alreadyGone: true };
+        return {
+            ok: false,
+            status,
+            error:
+                error.response?.data?.message ||
+                error.response?.data?.error ||
+                error.message ||
+                "DAM delete failed",
+        };
+    }
+}
+
 export async function getDamAssetById(mediaId) {
   const direct = await damRequest(`/assets/${mediaId}`, "GET");
   const normalizedDirect = normalizeDamAssetResponse(direct);
@@ -129,7 +166,7 @@ export async function downloadDamAssetBuffer(mediaId) {
   return null;
 }
 
-export async function uploadFileToDAM(file, type = "avatar") {
+export async function uploadFileToDAM(file, type = "avatar", options = {}) {
   try {
     // Use native fetch + FormData/Blob — the form-data npm lib's multipart
     // (via axios) is not parsed by DAM's busboy (req.file stays undefined →
@@ -139,7 +176,7 @@ export async function uploadFileToDAM(file, type = "avatar") {
     fd.append("source", "HR-TruSoft");
     // Unique per upload so DAM's Usage @@unique([source, externalId]) doesn't
     // collapse every HR asset onto one usage row (was hardcoded 123).
-    fd.append("externalId", `hr-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
+    fd.append("externalId", options.externalId || `hr-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
     fd.append(
       "files",
       new globalThis.Blob([file.buffer], { type: file.mimetype || "application/octet-stream" }),
@@ -180,3 +217,19 @@ export async function uploadFileToDAM(file, type = "avatar") {
   }
 }
 
+
+/** Kiosk images: authenticated DAM request, bounded bytes, no credentials on redirects. */
+export async function downloadAssessmentImage(mediaId) {
+  const config = {responseType:'arraybuffer',timeout:DAM_TIMEOUT,maxRedirects:0,
+    maxContentLength:5*1024*1024,validateStatus:status=>status===200||status===302};
+  let response = await damApi.get('/assets/video-stream/'+encodeURIComponent(String(mediaId)),{...config,headers:withInternalSecret()});
+  if(response.status===302){
+    const target = new URL(response.headers.location);
+    const allowed = new Set(String(process.env.DAM_ASSET_HOSTS||'').split(',').map(s=>s.trim()).filter(Boolean));
+    if(target.protocol!=='https:'||target.username||target.password||!allowed.has(target.hostname)) throw new Error('DAM image redirect is not allowlisted');
+    response = await axios.get(target.href,{...config,validateStatus:status=>status===200});
+  }
+  const mimeType=String(response.headers['content-type']||'').split(';')[0];
+  if(!['image/png','image/jpeg','image/webp','image/gif'].includes(mimeType)) throw new Error('Unsupported assessment image type');
+  return {buffer:Buffer.from(response.data),mimeType};
+}

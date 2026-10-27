@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily company LibreSign DAM backup at 02:30 Pakistan time
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Karachi
+RandomizedDelaySec=10m
+Persistent=false
+Unit=recruitment-dam-backup.service
+
+[Install]
+WantedBy=timers.target

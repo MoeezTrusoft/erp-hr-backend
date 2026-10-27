@@ -1,0 +1,26 @@
+[
+  {
+    "name": "NotoSansArabic-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf",
+    "bytes": 240456,
+    "sha256": "ceea25b464a656dc3b26849bab9356740401af62aedf1bfa8b7f0d9b75925b1b"
+  },
+  {
+    "name": "NotoSans-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+    "bytes": 569208,
+    "sha256": "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
+  },
+  {
+    "name": "NotoSansArabic-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/OFL.txt",
+    "bytes": 4382,
+    "sha256": "07fc70bfeb985cc1a87a8587d0a0c80bab11c86c9dc3fd95b6f0cb332f983e96"
+  },
+  {
+    "name": "NotoSans-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans/OFL.txt",
+    "bytes": 4396,
+    "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+  }
+]

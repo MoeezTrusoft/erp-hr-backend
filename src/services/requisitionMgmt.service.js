@@ -16,9 +16,22 @@ import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 // scope already constrains the row set; no separate Employee scoping needed for
 // the name lookups.
 import prisma from "../lib/prisma.js";
+import { listDepartments } from "./rbac.client.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { scopedWhere } from "../lib/tenancy.js";
+import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
+import { recordExport } from "../lib/recruitmentOpsMetrics.js";
+import {
+  assertRequisitionTransition,
+  assertRequisitionAdvanceAllowed,
+  recordRequisitionTransition,
+} from "./requisitionWorkflow.service.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { exportRows } from "../lib/export.util.js";
+import { logAction } from "../utils/logs.js";
+import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
+import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 
 // Resolve a display name from an Employee row (names decrypt transparently via
 // the C4 client extension on the shared prisma singleton).
@@ -26,7 +39,9 @@ const employeeName = (employee) => {
   if (!employee) return null;
   return (
     employee.employee_name ||
-    [employee.first_name, employee.middle_name, employee.last_name].filter(Boolean).join(" ") ||
+    [employee.first_name, employee.middle_name, employee.last_name]
+      .filter(Boolean)
+      .join(" ") ||
     employee.preferred_name ||
     (employee.id != null ? `Employee ${employee.id}` : null) ||
     null
@@ -50,18 +65,22 @@ const requisitionInclude = {
     orderBy: { decidedAt: "desc" },
     include: { approver: { select: EMPLOYEE_NAME_SELECT } },
   },
+  // Phase 2.1 — the append-only transition history, oldest first, so an operator
+  // reads the requisition the way it happened (submitted → decided → posted →
+  // closed) rather than newest-first like the approval log.
+  transitions: { orderBy: { createdAt: "asc" } },
 };
 
-// Resolve departmentId (a BusinessUnit id) → business-unit name, batched for a
-// page of requisitions so we never issue N queries. Returns a Map<id, name>.
-const resolveDepartmentNames = async (departmentIds, tenantId) => {
-  const ids = [...new Set(departmentIds.filter((id) => id != null))];
-  if (!ids.length) return new Map();
-  const units = await prisma.businessUnit.findMany({
-    where: scopedWhere(tenantId, { id: { in: ids } }),
-    select: { id: true, name: true },
-  });
-  return new Map(units.map((unit) => [unit.id, unit.name]));
+// Requisitions reference RBAC departments, not HR business units.
+const resolveDepartmentNames = async (departmentIds) => {
+  const ids = new Set(departmentIds.filter((id) => id != null).map(Number));
+  if (!ids.size) return new Map();
+  const departments = await listDepartments();
+  return new Map(
+    departments
+      .filter((d) => ids.has(Number(d.id)))
+      .map((d) => [Number(d.id), d.name]),
+  );
 };
 
 // Shape one management row. `departmentName` is injected by the caller (batched).
@@ -69,6 +88,22 @@ const managementRow = (requisition, departmentName) => ({
   reqId: requisition.id,
   id: requisition.id,
   title: requisition.title,
+  version: requisition.version,
+  positionId: requisition.positionId ?? null,
+  location: requisition.location ?? null,
+  employmentType: requisition.employmentType ?? null,
+  targetStartDate: requisition.targetStartDate ?? null,
+  gradeLevelId: requisition.gradeLevelId ?? null,
+  costCenterRef: requisition.costCenterRef ?? null,
+  costCenterLabel: requisition.costCenterLabel ?? null,
+  budgetRef: requisition.budgetRef ?? null,
+  budgetLabel: requisition.budgetLabel ?? null,
+  hiringReason: requisition.hiringReason ?? null,
+  replacementEmployeeId: requisition.replacementEmployeeId ?? null,
+  recruiterId: requisition.recruiterId ?? null,
+  closesAt: requisition.closesAt ?? null,
+  autoCloseWhenFilled: requisition.autoCloseWhenFilled ?? false,
+  jobContent: requisition.jobContent ?? null,
   department: departmentName ?? null,
   departmentId: requisition.departmentId ?? null,
   manager: employeeName(requisition.requestedBy),
@@ -86,6 +121,17 @@ const managementRow = (requisition, departmentName) => ({
     status: approval.status,
     decidedAt: approval.decidedAt,
     comments: approval.comments ?? null,
+  })),
+  // Phase 2.1 — every state change, attributed. `baseline`/'migration' rows mark
+  // where the history starts for records that predate the table; they are not
+  // operator actions and their from/to are equal by construction.
+  transitionHistory: (requisition.transitions || []).map((transition) => ({
+    fromStatus: transition.fromStatus,
+    toStatus: transition.toStatus,
+    reason: transition.reason ?? null,
+    actorId: transition.actorId ?? null,
+    source: transition.source,
+    at: transition.createdAt,
   })),
 });
 
@@ -106,7 +152,10 @@ const buildRequisitionWhere = (query, tenantId, q) => {
   const filters = {
     status: query.status || null,
     priority: query.priority || null,
-    departmentId: query.departmentId != null && query.departmentId !== "" ? Number(query.departmentId) : null,
+    departmentId:
+      query.departmentId != null && query.departmentId !== ""
+        ? Number(query.departmentId)
+        : null,
   };
   const where = {
     AND: [
@@ -125,9 +174,12 @@ const buildRequisitionWhere = (query, tenantId, q) => {
 // Build a page of management rows (list + department-name resolution) from a set
 // of raw requisition rows.
 const buildRows = async (rows, tenantId) => {
-  const deptNames = await resolveDepartmentNames(rows.map((r) => r.departmentId), tenantId);
+  const deptNames = await resolveDepartmentNames(
+    rows.map((r) => r.departmentId),
+    tenantId,
+  );
   return rows.map((requisition) =>
-    managementRow(requisition, deptNames.get(requisition.departmentId) ?? null)
+    managementRow(requisition, deptNames.get(requisition.departmentId) ?? null),
   );
 };
 
@@ -135,9 +187,19 @@ const buildRows = async (rows, tenantId) => {
 // priority, status, jobDescription, requirements, approvalHistory. Paginated +
 // searchable (title) + filterable (status/priority/departmentId) + sortable
 // (createdAt|title|priority|status).
-export const listManagedRequisitions = async (query, tenantId) => {
+// Phase 1.4 — `scope` narrows the management list the same way the REST list is
+// narrowed, so the transport cannot be used to widen a caller's reach.
+export const listManagedRequisitions = async (
+  query,
+  tenantId,
+  scope = null,
+) => {
   const list = parseListQuery(query, { sort: "createdAt" });
-  const { where, filters } = buildRequisitionWhere(query, tenantId, list.q);
+  const built = buildRequisitionWhere(query, tenantId, list.q);
+  const { filters } = built;
+  const where = scope
+    ? { AND: [built.where, requisitionScopeWhere(scope)] }
+    : built.where;
   const sort = REQUISITION_SORTS.includes(list.sort) ? list.sort : "createdAt";
 
   const [total, rows] = await Promise.all([
@@ -161,12 +223,16 @@ export const listManagedRequisitions = async (query, tenantId) => {
 };
 
 // Single requisition with full management detail + approvalHistory.
-export const getManagedRequisition = async (id, tenantId) => {
+export const getManagedRequisition = async (id, tenantId, scope = null) => {
   const requisition = await prisma.jobRequisition.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, {
+      id: Number(id),
+      ...(scope ? requisitionScopeWhere(scope) : {}),
+    }),
     include: requisitionInclude,
   });
-  if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+  if (!requisition)
+    throw Object.assign(new Error("Requisition not found"), { status: 404 });
 
   const [row] = await buildRows([requisition], tenantId);
   return row;
@@ -175,40 +241,94 @@ export const getManagedRequisition = async (id, tenantId) => {
 // Fail-closed tenant-scoped fetch of the raw row for a mutation. Throws 404 when
 // the requisition is not in the caller's tenant so a cross-tenant id can never
 // be transitioned.
+// Phase 2.2 — the FULL row, not `{ id, status }`. The submission gate has to see
+// every mandatory field, and a narrower select here would make the gate silently
+// read undefined for everything it was written to check.
 const requireScoped = async (id, tenantId) => {
   const requisition = await prisma.jobRequisition.findFirst({
     where: scopedWhere(tenantId, { id: Number(id) }),
-    select: { id: true, status: true },
   });
-  if (!requisition) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+  if (!requisition)
+    throw Object.assign(new Error("Requisition not found"), { status: 404 });
   return requisition;
 };
 
 // Submit for approval: status → PENDING_APPROVAL.
 export const submitRequisition = async (id, tenantId) => {
-  return legacySubmit('REQUISITION',id);
+  return legacySubmit("REQUISITION", id);
 };
 
 // Reject: status → REJECTED and record a RequisitionApproval row for the
 // caller (approverId = caller employeeId) with the rejection comments.
-export const rejectRequisition = async (id, tenantId, { comments, approverId } = {}) => {
-  return legacyDecision('REQUISITION',id);
+export const rejectRequisition = async (
+  id,
+  tenantId,
+  { comments, approverId } = {},
+) => {
+  return legacyDecision("REQUISITION", id);
 };
 
-// Close: status → CLOSED.
-export const closeRequisition = async (id, tenantId) => {
-  await requireScoped(id, tenantId);
-  await prisma.jobRequisition.update({
-    where: { id: Number(id) },
-    data: { status: "CLOSED" },
-  });
+// Close: status → CLOSED (terminal).
+//
+// Phase 4 / §2.4a — closing a PUBLISHED requisition requires a reason and closes
+// every active posting in the same transaction. A closed requisition that is still
+// advertised on a job board is the failure this prevents, and "closed" without a
+// reason is indistinguishable from "closed because we filled it" in reporting.
+// A draft or rejected requisition still closes with no reason (housekeeping).
+export const closeRequisition = async (
+  id,
+  tenantId,
+  actorId = null,
+  reason = null,
+) => {
+  const current = await requireScoped(id, tenantId);
+  assertRequisitionTransition(current.status, "CLOSED", { comments: reason });
+  await tenantTransaction(
+    prisma,
+    async (tx) => {
+      const closedPostings = await closeActivePostingsForRequisition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        closeReason: "REQUISITION_CLOSED",
+        actorId,
+      });
+      await tx.jobRequisition.update({
+        where: { id: Number(id) },
+        data: { status: "CLOSED" },
+      });
+      await recordRequisitionTransition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        fromStatus: current.status,
+        toStatus: "CLOSED",
+        reason,
+        actorId,
+        source: "requisition.close",
+      });
+      if (closedPostings) {
+        await logAction({
+          employeeId: actorId,
+          type: "UPDATE",
+          module: "Requisition Close",
+          result: "SUCCESS",
+          notes: `Requisition "${id}" closed; ${closedPostings} active posting(s) closed`,
+          tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+        });
+      }
+    },
+    { tenantId },
+  );
   return getManagedRequisition(id, tenantId);
 };
 
 const REQUISITION_EXPORT_COLUMNS = [
   { key: "reqId", header: "Req ID", value: (r) => r.reqId },
   { key: "title", header: "Title", value: (r) => r.title || "-" },
-  { key: "department", header: "Department", value: (r) => r.department || "-" },
+  {
+    key: "department",
+    header: "Department",
+    value: (r) => r.department || "-",
+  },
   { key: "manager", header: "Manager", value: (r) => r.manager || "-" },
   { key: "openings", header: "Openings", value: (r) => r.openCount },
   { key: "priority", header: "Priority", value: (r) => r.priority || "-" },
@@ -217,9 +337,43 @@ const REQUISITION_EXPORT_COLUMNS = [
 
 // Export the requisition-management view (all rows matching the filters) as CSV
 // or PDF. Same filters/sort as the list; returns a base64 buffer.
-export const exportManagedRequisitions = async (query, tenantId, format = "csv") => {
+// Phase 1.4 — an export is a read at bulk scale, so it carries the caller's
+// record scope too; otherwise the export endpoint would be the way around it.
+export const exportManagedRequisitions = async (
+  query,
+  tenantId,
+  format = "csv",
+  scope = null,
+) => {
+  // Phase 15 — exports are a rollout metric (format × outcome, no row data in
+  // labels). The happy path records below; a denial never reaches the service
+  // (F-02 denies first), but a computation failure records `failed`.
+  try {
+    const result = await exportManagedRequisitionsInner(
+      query,
+      tenantId,
+      format,
+      scope,
+    );
+    recordExport(format, "ok");
+    return result;
+  } catch (err) {
+    recordExport(format, "failed");
+    throw err;
+  }
+};
+
+const exportManagedRequisitionsInner = async (
+  query,
+  tenantId,
+  format = "csv",
+  scope = null,
+) => {
   const list = parseListQuery(query, { sort: "createdAt" });
-  const { where } = buildRequisitionWhere(query, tenantId, list.q);
+  const built = buildRequisitionWhere(query, tenantId, list.q);
+  const where = scope
+    ? { AND: [built.where, requisitionScopeWhere(scope)] }
+    : built.where;
   const sort = REQUISITION_SORTS.includes(list.sort) ? list.sort : "createdAt";
 
   const rows = await prisma.jobRequisition.findMany({

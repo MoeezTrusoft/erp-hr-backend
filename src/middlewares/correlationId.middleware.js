@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto';
 
 import defaultLogger from '../lib/logger.js';
+import { runWithRequestContext } from '../lib/requestContext.js';
 
 export const CORRELATION_HEADER = 'x-correlation-id';
 
@@ -49,7 +50,10 @@ export function attachCorrelationId(req, res, next, { logger = defaultLogger } =
         ? logger.child({ correlationId })
         : logger;
     res.setHeader(CORRELATION_HEADER, correlationId);
-    next();
+    // NFR-03 — bind the id for the WHOLE async chain so writers that never see
+    // `req` (audit logAction, event builders) can still read it. Outside a
+    // request (cron/queue) the store is simply empty.
+    return runWithRequestContext({ correlationId }, () => next());
 }
 
 /**

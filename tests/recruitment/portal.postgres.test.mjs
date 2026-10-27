@@ -1,0 +1,150 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
+const url = new URL(process.env.RECRUITMENT_TEST_DATABASE_URL || "");
+if (url.hostname !== "127.0.0.1" || url.pathname !== "/hr_task_assessment_test" || url.username !== "recruitment_test_user") throw new Error("Use isolated recruitment test database");
+process.env.HR_C4_ENCRYPTION_KEY=Buffer.alloc(32,19).toString('base64');
+process.env.HR_PORTAL_BASE_URL='https://careers.example.invalid';
+process.env.DATABASE_URL = url.href;
+process.env.NODE_ENV = "test";
+process.env.HR_PORTAL_PRIVACY_POLICY_VERSION = "test-policy-1";
+process.env.HR_PORTAL_PRIVACY_POLICY_URL = "https://example.invalid/privacy";
+process.env.NOTIFICATION_HUB_URL = "http://127.0.0.1:1";
+process.env.NOTIFICATION_HUB_TIMEOUT = "100";
+const { default: db } = await import("../../src/lib/prisma.js");
+const { mcpCtx } = await import("../../src/lib/requestContext.js");
+const { tenantTransaction } = await import("../../src/lib/rlsTenant.js");
+const portal = await import("../../src/services/publicPortal.service.js");
+const drafts = await import("../../src/services/applicationDraft.service.js");
+const verification = await import("../../src/services/candidateVerification.service.js");
+const documents = await import("../../src/services/candidatePortalDocument.service.js");
+const privacy = await import("../../src/services/candidatePrivacy.service.js");
+const { runCandidateMediaCleanup } = await import("../../src/services/candidate-media-cleanup.service.js");
+const {default:express}=await import("express");
+const {default:supertest}=await import("supertest");
+const {default:portalRouter}=await import("../../src/routes/publicPortal.routes.js");
+const self = await import("../../src/services/candidatePortalSelf.service.js");
+const { readStatusViaLink } = await import("../../src/services/candidateStatus.service.js");
+const tenant = randomUUID(), foreign = randomUUID();
+const as = (fn, tenantId = tenant) => mcpCtx.run({ user: { tenantId }, publicPortal: true }, fn);
+const tx = fn => as(() => tenantTransaction(db, fn, { tenantId: tenant, txOptions: { timeout: 30000 } }));
+let job, candidate, draft, token, statusToken, otherCandidate;
+test("public careers protects mailbox ownership, tenant scope, consent and transitions", async t => {
+ await tx(async q => {
+  const manager = await q.employee.create({ data: { tenant_id: tenant, employee_code: "PORTAL-" + randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", first_name: "Fictional", status: "Active", employement_status: "Active" } });
+  job = await q.jobRequisition.create({ data: { tenantId: tenant, title: "Fictional editor", requestedById: manager.id, status: "POSTED" } });
+  await q.jobPosting.create({ data: { tenantId: tenant, requisitionId: job.id, channel: "CAREER_SITE", isActive: true } });
+  candidate = await q.candidate.create({ data: { tenantId: tenant, firstName: "Fictional", email: randomUUID() + "@example.invalid", status: "active" } });
+  otherCandidate = await q.candidate.create({ data: { tenantId: tenant, firstName: "Other", email: randomUUID() + "@example.invalid", status: "active" } });
+  token = randomBytes(32).toString("base64url");
+  draft = await q.applicationDraft.create({ data: { tenantId: tenant, candidateId: candidate.id, requisitionId: job.id, payload: { firstName: "Fictional", consent: true, policyVersion: "test-policy-1", answers: {} }, tokenHash: drafts.hashDraftToken(token), expiresAt: new Date(Date.now() + 86400000) } });
+  statusToken = (await verification.issueStatusLink(q, { tenantId: tenant, candidate })).token;
+ });
+ await t.test("HTTP host context, schema projection and fail-closed throttling", async () => {
+  process.env.HR_PORTAL_HOSTS="careers.example.invalid="+tenant;
+  const app=express();app.use(express.json());app.locals.recruitmentRateLimitClient={eval:async()=>1};app.use("/public",portalRouter);
+  const listed=await supertest(app).get("/public/jobs").set("Host","careers.example.invalid");
+  assert.equal(listed.status,200);assert.equal(listed.body.data.length,1);assert.equal(listed.body.data[0].title,job.title);
+  assert.equal(listed.headers["cache-control"],"no-store");
+  const detail=await supertest(app).get("/public/jobs/"+job.id).set("Host","careers.example.invalid");
+  assert.equal(detail.status,200);assert.deepEqual(detail.body.data.questions,[]);
+  const link=await supertest(app).get("/public/candidates/draft").set("Host","careers.example.invalid").set("X-Candidate-Token",token);
+  assert.equal(link.status,200);assert.equal(link.body.data.email,candidate.email);
+  const unknown=await supertest(app).get("/public/jobs").set("Host","unknown.example.invalid").set("X-Portal-Tenant",tenant);
+  assert.equal(unknown.status,404);
+  app.locals.recruitmentRateLimitClient={eval:async()=>121};
+  assert.equal((await supertest(app).get("/public/jobs").set("Host","careers.example.invalid")).status,429);
+  app.locals.recruitmentRateLimitClient={eval:async()=>{throw new Error("offline");}};
+  assert.equal((await supertest(app).get("/public/jobs").set("Host","careers.example.invalid")).status,503);
+ });
+ await t.test("draft token lookup cannot cross tenant and raw media ids are discarded", async () => {
+  const own = await as(() => drafts.loadApplicationDraft({ tenantId: tenant, token }));
+  assert.equal(own.email, candidate.email);
+  assert.equal(await as(() => drafts.loadApplicationDraft({ tenantId: foreign, token }), foreign), null);
+  assert.equal(drafts.parseDraftPayload({ resumeMediaId: 999, firstName: "Fictional" }).resumeMediaId, undefined);
+ });
+ await t.test("stale saves fail and valid saves prove mailbox ownership", async () => {
+  await assert.rejects(as(() => drafts.updateApplicationDraft({ tenantId: tenant, token, expectedUpdatedAt: "2000-01-01", body: { firstName: "Changed" } })), { status: 412 });
+  const own = await as(() => drafts.loadApplicationDraft({ tenantId: tenant, token }));
+  await as(() => drafts.updateApplicationDraft({ tenantId: tenant, token, expectedUpdatedAt: own.updatedAt, body: { firstName: "Fictional", consent: true, policyVersion: "test-policy-1" } }));
+  assert.ok((await tx(q => q.candidate.findUnique({ where: { id: candidate.id } }))).emailVerifiedAt);
+ });
+ await t.test("resume upload persists retry state and accepts only owned draft tokens", async () => {
+  const own = await as(() => drafts.loadApplicationDraft({ tenantId: tenant, token }));
+  const body = { fileName: "resume.pdf", fileBase64: Buffer.from("%PDF-1.4\n%%EOF").toString("base64"), expectedUpdatedAt: own.updatedAt };
+  await assert.rejects(as(() => documents.uploadDraftResume({ tenantId: tenant, token: "x".repeat(43), body }, { upload: async () => { throw new Error("Must not upload"); } })), { status: 404 });
+  await assert.rejects(as(() => documents.uploadDraftResume({ tenantId: tenant, token, body }, { upload: async () => [] })), { status: 503 });
+  const saved = await as(() => documents.uploadDraftResume({ tenantId: tenant, token, body }, { upload: async () => [{ id: 912345 }] }));
+  assert.equal(saved.resumeUploaded, true);
+  assert.equal((await as(() => drafts.loadApplicationDraft({ tenantId: tenant, token }))).resumeUploaded, true);
+  const ledger = await tx(q => q.candidateDocumentUpload.findMany({ where: { candidateId: candidate.id } }));
+  assert.equal(ledger.length, 1); assert.equal(ledger[0].status, "READY"); assert.equal(ledger[0].mediaId, 912345);
+  assert.throws(() => documents.validatePortalResume({ ...body, fileName: "resume.exe" }));
+ });
+ await t.test("status tokens cannot be consumed as verification tokens", async () => {
+  await assert.rejects(as(() => verification.consumeEmailVerification({ tenantId: tenant, token: statusToken })), { status: 400 });
+  assert.equal((await as(() => verification.resolveStatusLink({ tenantId: tenant, token: statusToken }))).candidateId, candidate.id);
+ });
+ await t.test("current consent is mandatory and submission consumes draft atomically", async () => {
+  await assert.rejects(as(() => portal.submitPublicApplication({ tenantId: tenant, requisitionId: job.id, body: { firstName: "Fictional", email: otherCandidate.email, policyVersion: "test-policy-1" } })), { status: 400 });
+  await as(() => drafts.submitApplicationDraft({ tenantId: tenant, token }));
+  assert.equal(await as(() => drafts.loadApplicationDraft({ tenantId: tenant, token })), null);
+  assert.equal(await tx(q => q.application.count({ where: { candidateId: candidate.id, jobRequisitionId: job.id } })), 1);
+  statusToken = (await tx(q => verification.issueStatusLink(q, { tenantId: tenant, candidate }))).token;
+ });
+ await t.test("candidate preferences are separate, privacy requests deduplicate and withdrawal is own-only", async () => {
+  await as(() => self.saveCandidatePreferences({ tenantId: tenant, token: statusToken, policyVersion: "test-policy-1", preferences: { TALENT_POOL: true, MARKETING: false } }));
+  assert.deepEqual(await as(() => self.candidatePreferences({ tenantId: tenant, token: statusToken })), { TALENT_POOL: true, MARKETING: false });
+  const first = await as(() => self.requestOwnData({ tenantId: tenant, token: statusToken, type: "ACCESS" }));
+  assert.equal((await as(() => self.requestOwnData({ tenantId: tenant, token: statusToken, type: "ACCESS" }))).reference, first.reference);
+  const other = await tx(q => q.application.create({ data: { tenantId: tenant, candidateId: otherCandidate.id, jobRequisitionId: job.id } }));
+  await assert.rejects(as(() => self.withdrawOwnApplication({ tenantId: tenant, token: statusToken, applicationId: other.id })), { status: 404 });
+  const view = await as(() => readStatusViaLink({ tenantId: tenant, token: statusToken }));
+  assert.equal(view.view.applications[0].canWithdraw, true);
+  await as(() => self.withdrawOwnApplication({ tenantId: tenant, token: statusToken, applicationId: view.view.applications[0].applicationId }));
+  assert.equal((await as(() => readStatusViaLink({ tenantId: tenant, token: statusToken }))).view.applications[0].status, "WITHDRAWN");
+ });
+ await t.test("legal hold blocks erasure and media deletion retries only after committed redaction", async () => {
+  await tx(q => q.candidate.update({ where: { id: otherCandidate.id }, data: { resumeMediaId: 923456, notes: "Erase this personal note" } }));
+  await as(() => privacy.placeLegalHold({ tenantId: tenant, candidateId: otherCandidate.id, reason: "Fictional test hold" }));
+  await assert.rejects(as(() => privacy.anonymizeCandidate({ tenantId: tenant, candidateId: otherCandidate.id, reason: "Verified erasure request" })), { status: 409 });
+  assert.equal((await tx(q => q.candidate.findUnique({ where: { id: otherCandidate.id } }))).notes, "Erase this personal note");
+  await as(() => privacy.releaseLegalHold({ tenantId: tenant, candidateId: otherCandidate.id, reason: "Fictional test released" }));
+  const erased = await as(() => privacy.anonymizeCandidate({ tenantId: tenant, candidateId: otherCandidate.id, reason: "Verified erasure request" }));
+  assert.deepEqual(erased.damCleanup.requested, ["923456"]);
+  assert.equal(erased.damCleanup.state, "PENDING");
+  const row = await tx(q => q.candidate.findUnique({ where: { id: otherCandidate.id } }));
+  assert.ok(row.anonymizedAt); assert.equal(row.resumeMediaId, null); assert.equal(row.notes, null);
+  await assert.rejects(as(() => privacy.placeLegalHold({ tenantId: tenant, candidateId: otherCandidate.id, reason: "Too late" })), { status: 409 });
+  const attempted=[];
+  await as(() => runCandidateMediaCleanup({ remove: async id => { attempted.push(id); return {ok:false}; } }));
+  assert.deepEqual(attempted, ["923456"]);
+  const second=await as(() => runCandidateMediaCleanup({ remove: async id => { assert.equal(id,"923456");return {ok:true}; } }));
+  assert.equal(second.completed,1);
+  assert.equal((await tx(q => q.candidateAnonymizationLog.findUnique({ where: { id: erased.log.id } }))).damCleanup.state,"COMPLETE");
+ });
+ await t.test("an upload finishing after erasure joins the durable deletion queue", async () => {
+  const lateToken = randomBytes(32).toString("base64url");
+  let lateCandidate, lateDraft;
+  await tx(async q => {
+   lateCandidate = await q.candidate.create({data:{tenantId:tenant,firstName:"Fictional",email:randomUUID()+"@example.invalid",status:"active"}});
+   lateDraft = await q.applicationDraft.create({data:{tenantId:tenant,candidateId:lateCandidate.id,requisitionId:job.id,payload:{firstName:"Fictional"},tokenHash:drafts.hashDraftToken(lateToken),expiresAt:new Date(Date.now()+86400000)}});
+  });
+  const body={fileName:"resume.pdf",fileBase64:Buffer.from("%PDF-1.4\nlate-upload\n%%EOF").toString("base64"),expectedUpdatedAt:lateDraft.updated_at.toISOString()};
+  await assert.rejects(as(()=>documents.uploadDraftResume({tenantId:tenant,token:lateToken,body},{upload:async()=>{
+   await privacy.anonymizeCandidate({tenantId:tenant,candidateId:lateCandidate.id,reason:"Verified erasure during upload"});
+   return [{id:934567}];
+  }})),{status:404});
+  const log=await tx(q=>q.candidateAnonymizationLog.findFirst({where:{candidateId:lateCandidate.id}}));
+  assert.equal(log.damCleanup.state,"PENDING");assert.deepEqual(log.damCleanup.requested,["934567"]);
+  await as(()=>runCandidateMediaCleanup({remove:async id=>{assert.equal(id,"934567");return {ok:true};}}));
+ });
+ await t.test("expired draft and anonymized owner tokens fail closed", async () => {
+  const expired = randomBytes(32).toString("base64url");
+  await tx(q => q.applicationDraft.update({ where: { id: draft.id }, data: { tokenHash: createHash("sha256").update(expired).digest("hex"), submittedAt: null, expiresAt: new Date(0) } }));
+  await assert.rejects(as(() => drafts.submitApplicationDraft({ tenantId: tenant, token: expired })), { status: 400 });
+  await tx(q => q.candidate.update({ where: { id: candidate.id }, data: { anonymizedAt: new Date() } }));
+  assert.equal(await as(() => verification.resolveStatusLink({ tenantId: tenant, token: statusToken })), null);
+ });
+});
+test.after(() => db.$disconnect());

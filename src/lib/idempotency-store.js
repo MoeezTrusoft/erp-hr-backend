@@ -69,12 +69,46 @@ export function createMemoryStore({ ttlMs, max = 5000 } = {}) {
     };
 }
 
-export function createRedisStore({ redis, ttlMs }) {
+
+// Share one bounded readiness wait so the first command cannot race lazy connection setup.
+const readiness = new WeakMap();
+export function waitForRedisReady(redis, { timeoutMs = 1000 } = {}) {
+    if (redis.status === 'ready') return Promise.resolve();
+    if (readiness.has(redis)) return readiness.get(redis);
+    const pending = new Promise((resolve, reject) => {
+        let timer;
+        const clean = () => {
+            clearTimeout(timer);
+            redis.removeListener('ready', ready);
+            redis.removeListener('error', failed);
+            redis.removeListener('end', ended);
+        };
+        const ready = () => { clean(); resolve(); };
+        const failed = (error) => { clean(); reject(error); };
+        const ended = () => failed(new Error('Idempotency Redis connection ended'));
+        redis.once('ready', ready);
+        redis.once('error', failed);
+        redis.once('end', ended);
+        timer = setTimeout(() => failed(new Error('Idempotency Redis readiness timeout')), timeoutMs);
+        if (redis.status === 'ready') ready();
+        else if (redis.status === 'wait' || redis.status === 'end') {
+            try { Promise.resolve(redis.connect()).catch(failed); }
+            catch (error) { failed(error); }
+        }
+    });
+    readiness.set(redis, pending);
+    const clear = () => { if (readiness.get(redis) === pending) readiness.delete(redis); };
+    pending.then(clear, clear);
+    return pending;
+}
+
+export function createRedisStore({ redis, ttlMs, ready = async () => {} }) {
     if (!redis) throw new Error('createRedisStore: redis client required');
     if (!ttlMs || ttlMs <= 0) throw new Error('createRedisStore: ttlMs must be > 0');
     return {
         name: 'redis',
         async reserve(key) {
+            await ready();
             // SET NX PX is the atomic primitive: returns 'OK' iff this caller
             // is the first to claim the key within the TTL window.
             const ok = await redis.set(
@@ -92,6 +126,7 @@ export function createRedisStore({ redis, ttlMs }) {
                 : { state: STATE_PENDING };
         },
         async commit(key, value) {
+            await ready();
             await redis.set(
                 key,
                 JSON.stringify({ state: STATE_COMPLETED, value }),
@@ -99,6 +134,7 @@ export function createRedisStore({ redis, ttlMs }) {
             );
         },
         async release(key) {
+            await ready();
             await redis.del(key);
         },
     };

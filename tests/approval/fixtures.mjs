@@ -25,7 +25,8 @@ const company = randomUUID(),
   people = {};
 let counter = 0,
   profile,
-  policy;
+  policy,
+  department;
 const db = (fn) =>
   mcpCtx.run({ user: { tenantId: company } }, () =>
     tenantTransaction(prisma, fn, {
@@ -49,6 +50,7 @@ const as = (role, fn, tenantId = company) =>
         tenantId,
         userId: people[role].userId,
         isAdmin: role === "ADMIN",
+        roles: ({ MANAGER: ["HIRING_MANAGER"], HR: ["HR_HEAD"], MANAGEMENT: ["FINANCE"] })[role] || [],
       },
       permissions: grants[role].map((k) => "hr.approvals." + k),
     },
@@ -229,6 +231,7 @@ async function fixture(kind) {
           tenantId: company,
           requestedById: base.employeeId,
           title: "Fictional vacancy",
+          departmentId: department.id, location: "Karachi", employmentType: "FULL_TIME", hiringReason: "NEW_HIRE", costCenterRef: "TEST-APPROVAL",
         },
       });
     if (kind === "PAYROLL")
@@ -410,6 +413,7 @@ async function fixture(kind) {
           tenantId: company,
           requestedById: base.employeeId,
           title: "Fictional vacancy",
+          departmentId: department.id, location: "Karachi", employmentType: "FULL_TIME", hiringReason: "NEW_HIRE", costCenterRef: "TEST-APPROVAL",
         },
       });
       const candidate = await tx.candidate.create({
@@ -419,6 +423,7 @@ async function fixture(kind) {
           email: randomUUID() + "@example.invalid",
         },
       });
+      await tx.candidateConsent.create({ data: { tenantId: company, candidateId: candidate.id, purpose: "PROCESSING", status: "GRANTED", policyVersion: "fixture-1" } });
       const application = await tx.application.create({
         data: {
           tenantId: company,
@@ -457,6 +462,7 @@ async function fixture(kind) {
 
 export async function setup() {
   await db(async (tx) => {
+    department = await tx.businessUnit.create({ data: { tenantId: company, name: "Fictional approvals" } });
     for (const role of Object.keys(grants))
       people[role] = await tx.employee.create({
         data: {

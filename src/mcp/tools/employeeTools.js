@@ -1,9 +1,12 @@
+import { registerNativeLifecycleTools } from "./native-lifecycle-tools.js";
+import { registerNativeVerificationTools } from "./native-verification-tools.js";
 import { EmploymentCategory, EmploymentCode } from "@trusoft/contracts/employment";
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { assertDirectoryAccess } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
+import { authorizeNativeHrCreate } from "../../services/native-verification-guard.service.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
 import logger from "../../lib/logger.js";
 import { requireEmployeeActor, resolveEmployeeActor } from "../../lib/employeeActor.js";
@@ -78,7 +81,7 @@ const listToolShape = {
     .string()
     .optional()
     .describe(
-      "Sort key: employee_name | employee_code | department | role | status | manager | hire_date | created_at | updated_at"
+      "Sort key: employee_name | employee_code | department | role | status | manager | hire_date | created_at | updated_at",
     ),
   order: z.enum(["asc", "desc"]).optional(),
   ...columnSearchShape,
@@ -86,7 +89,12 @@ const listToolShape = {
 
 const mediaPayloadShape = {
   id: z.string().min(1),
-  fileBase64: z.string().optional().describe("Raw base64 or data: URI of the image. BE uploads to DAM and derives mediaId/url/size."),
+  fileBase64: z
+    .string()
+    .optional()
+    .describe(
+      "Raw base64 or data: URI of the image. BE uploads to DAM and derives mediaId/url/size.",
+    ),
   mediaId: z.union([z.string(), z.number()]).optional(),
   url: z.string().optional(),
   downloadUrl: z.string().optional(),
@@ -96,6 +104,8 @@ const mediaPayloadShape = {
 };
 
 export function registerEmployeeTools(server) {
+  registerNativeVerificationTools(server);
+  registerNativeLifecycleTools(server);
   server.resource(
     "hr_employees_resource",
     "hr://employees",
@@ -103,8 +113,10 @@ export function registerEmployeeTools(server) {
     async (uri) => {
       const { user } = getCtx();
       const data = await mcpGetEmployees(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+      return {
+        contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }],
+      };
+    },
   );
 
   server.tool(
@@ -118,11 +130,14 @@ export function registerEmployeeTools(server) {
       // subset). Callers needing "who is this id" use hr_employee_resolve.
       assertDirectoryAccess(permissions);
       const query = { page: 1, pageSize: 10, ...args };
-      logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_employees_list pagination resolved");
+      logger.debug(
+        { page: query.page, pageSize: query.pageSize },
+        "MCP hr_employees_list pagination resolved",
+      );
       // BLOCKER-1: thread the verified tenant so the directory is tenant-scoped.
       const data = await mcpListEmployeesContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employees_list")
+    }, "hr_employees_list"),
   );
 
   server.tool(
@@ -134,8 +149,14 @@ export function registerEmployeeTools(server) {
       status: z.string().optional(),
       positionId: z.union([z.string(), z.number()]).optional(),
       departmentId: z.union([z.string(), z.number()]).optional(),
-      joinedFrom: z.string().optional().describe("Filter: joining date >= this ISO date (YYYY-MM-DD)"),
-      joinedTo: z.string().optional().describe("Filter: joining date <= this ISO date (YYYY-MM-DD)"),
+      joinedFrom: z
+        .string()
+        .optional()
+        .describe("Filter: joining date >= this ISO date (YYYY-MM-DD)"),
+      joinedTo: z
+        .string()
+        .optional()
+        .describe("Filter: joining date <= this ISO date (YYYY-MM-DD)"),
       sort: z.string().optional(),
       order: z.enum(["asc", "desc"]).optional(),
       ...columnSearchShape,
@@ -148,11 +169,13 @@ export function registerEmployeeTools(server) {
       // screen-by-screen; EXPORT is the atom that authorises taking a copy of
       // the whole tenant's employee data out of the platform.
       if (!hasPermission(permissions, "hr:employee", "EXPORT")) {
-        throw Object.assign(new Error("Insufficient permissions: hr:employee:EXPORT"), { status: 403 });
+        throw Object.assign(new Error("Insufficient permissions: hr:employee:EXPORT"), {
+          status: 403,
+        });
       }
       const data = await mcpExportEmployees(query, user.tenantId, format);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employees_export")
+    }, "hr_employees_export"),
   );
 
   server.resource(
@@ -162,8 +185,10 @@ export function registerEmployeeTools(server) {
     async (uri) => {
       const { user } = getCtx();
       const data = await mcpGetPositions(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+      return {
+        contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }],
+      };
+    },
   );
 
   server.tool(
@@ -181,11 +206,14 @@ export function registerEmployeeTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const query = { page: 1, pageSize: 10, ...args };
-      logger.debug({ page: query.page, pageSize: query.pageSize }, "MCP hr_positions_list pagination resolved");
+      logger.debug(
+        { page: query.page, pageSize: query.pageSize },
+        "MCP hr_positions_list pagination resolved",
+      );
       // BLOCKER-1: thread the verified tenant so positions are tenant-scoped.
       const data = await mcpListPositionsContract(query, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_positions_list")
+    }, "hr_positions_list"),
   );
 
   server.resource(
@@ -195,8 +223,10 @@ export function registerEmployeeTools(server) {
     async (uri) => {
       const { user } = getCtx();
       const data = await mcpGetOrgChart(user);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+      return {
+        contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }],
+      };
+    },
   );
 
   const registerEmployeeProfileTool = (toolName, handler) => {
@@ -209,7 +239,7 @@ export function registerEmployeeTools(server) {
         assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
         const data = await handler(user, id);
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
-      }, toolName)
+      }, toolName),
     );
   };
 
@@ -235,20 +265,55 @@ export function registerEmployeeTools(server) {
     "Get a tab-scoped employee profile (identity header + one tab's data). tab = overview | job_and_comp | documents | performance | leaves | training | activity",
     {
       id: z.string().min(1).describe("Employee ID"),
-      tab: z.enum(["overview", "job_and_comp", "documents", "performance", "leaves", "training", "activity"]).optional().default("overview").describe("Which tab's data to fetch (default overview)"),
-      taxFiscalYear: z.string().optional().describe("Override the Pakistan fiscal year for the job_and_comp tax slab, e.g. 'FY26'."),
-      page: z.coerce.number().int().min(1).optional().describe("Page for the paginated sections (documents/comp history/review history/leave history/training)"),
-      pageSize: z.coerce.number().int().min(1).max(100).optional().describe("Page size for paginated sections"),
+      tab: z
+        .enum([
+          "overview",
+          "job_and_comp",
+          "documents",
+          "performance",
+          "leaves",
+          "training",
+          "activity",
+        ])
+        .optional()
+        .default("overview")
+        .describe("Which tab's data to fetch (default overview)"),
+      taxFiscalYear: z
+        .string()
+        .optional()
+        .describe("Override the Pakistan fiscal year for the job_and_comp tax slab, e.g. 'FY26'."),
+      page: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "Page for the paginated sections (documents/comp history/review history/leave history/training)",
+        ),
+      pageSize: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("Page size for paginated sections"),
     },
     withToolError(async ({ id, tab, taxFiscalYear, page, pageSize }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       // Raw salary / account / iban / ntn / CTC only for payroll-authorized callers.
-      const showSensitive = user.isAdmin ||
+      const showSensitive =
+        user.isAdmin ||
         (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
-      const data = await mcpGetEmployeeProfileTab(user, id, { tab, showSensitive, taxFiscalYear, page, pageSize });
+      const data = await mcpGetEmployeeProfileTab(user, id, {
+        tab,
+        showSensitive,
+        taxFiscalYear,
+        page,
+        pageSize,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_profile_get")
+    }, "hr_employee_profile_get"),
   );
 
   // Back-compat: the previous all-at-once consolidated profile (job_and_comp core).
@@ -262,11 +327,12 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ id, taxFiscalYear }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
-      const showSensitive = user.isAdmin ||
+      const showSensitive =
+        user.isAdmin ||
         (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
       const data = await mcpGetEmployeeProfile(user, id, { showSensitive, taxFiscalYear });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_profile_full_get")
+    }, "hr_employee_profile_full_get"),
   );
 
   server.tool(
@@ -279,7 +345,7 @@ export function registerEmployeeTools(server) {
       assertDirectoryAccess(permissions);
       const data = await mcpGetEmployeeQuickView(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_quick_view_get")
+    }, "hr_employee_quick_view_get"),
   );
 
   server.tool(
@@ -291,7 +357,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const data = await mcpGetEmployeeDocuments(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_documents_list")
+    }, "hr_employee_documents_list"),
   );
 
   // Phase 3 — Job & Compensation tab
@@ -300,19 +366,23 @@ export function registerEmployeeTools(server) {
     "Get compensation (salary, bonus, banking) for an employee — payroll-sensitive fields masked unless caller holds hr:payroll VIEW",
     {
       id: z.string().min(1).describe("Employee ID"),
-      includeBanking: z.coerce.boolean().optional().default(false)
+      includeBanking: z.coerce
+        .boolean()
+        .optional()
+        .default(false)
         .describe("Set true only if your role has hr:payroll VIEW permission"),
     },
     withToolError(async ({ id, includeBanking }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       // Banking / raw salary only for payroll-authorized callers.
-      const hasPayroll = user.isAdmin ||
+      const hasPayroll =
+        user.isAdmin ||
         (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"));
       const showBanking = Boolean(includeBanking && hasPayroll);
       const data = await getEmployeeCompensation(id, user.tenantId, { showBanking });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
-    }, "hr_employee_compensation_get")
+    }, "hr_employee_compensation_get"),
   );
 
   // Phase 3 — Activity tab
@@ -329,7 +399,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
       const data = await listEmployeeActivity(id, user.tenantId, { page, pageSize });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
-    }, "hr_employee_activity_list")
+    }, "hr_employee_activity_list"),
   );
 
   server.tool(
@@ -351,7 +421,7 @@ export function registerEmployeeTools(server) {
           },
         ],
       };
-    }, "hr_employee_emergency_contacts_list")
+    }, "hr_employee_emergency_contacts_list"),
   );
 
   server.tool(
@@ -394,44 +464,114 @@ export function registerEmployeeTools(server) {
       employmentType: z.string().optional(),
       employmentStatus: z.string().optional(),
       status: z.string().optional(),
-      profilePhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
+      profilePhotoBase64: z
+        .string()
+        .optional()
+        .describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
       profilePhotoFileName: z.string().optional(),
-      coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
+      coverPhotoBase64: z
+        .string()
+        .optional()
+        .describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
       coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
-      documents: z.array(z.any()).optional().describe("Each item may carry fileBase64 (+fileName) for the BE to upload, OR an existing mediaId."),
+      documents: z
+        .array(z.any())
+        .optional()
+        .describe(
+          "Each item may carry fileBase64 (+fileName) for the BE to upload, OR an existing mediaId.",
+        ),
       // Free-form JSON blob stored on the employee. FE-compat: banking may be nested
       // here (keys bank/accountNumber/iban/…) — the BE also reads it as a fallback to
       // create the primary bank row. MUST be declared or the MCP SDK strips it.
-      additionalFields: z.record(z.string(), z.any()).optional().describe("Free-form extras (taxSlab, eobi, payDate, onboardingStartDate, location, and FE-nested banking)."),
+      additionalFields: z
+        .record(z.string(), z.any())
+        .optional()
+        .describe(
+          "Free-form extras (taxSlab, eobi, payDate, onboardingStartDate, location, and FE-nested banking).",
+        ),
       // Tax + banking (consolidated profile). ntn + iban are encrypted at rest.
       ntn: z.string().optional().describe("Pakistan National Tax Number (encrypted at rest)"),
       bankName: z.string().optional(),
       accountTitle: z.string().optional().describe("A/C Title"),
-      accountNumber: z.string().optional().describe("Provide with bankName to create the primary bank row"),
+      accountNumber: z
+        .string()
+        .optional()
+        .describe("Provide with bankName to create the primary bank row"),
       iban: z.string().optional(),
       branch: z.string().optional(),
       disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
       routingNumber: z.string().optional(),
       accountType: z.string().optional(),
       // Opt-in AI resume parsing: only runs when BOTH are set.
-      resumeMediaId: z.union([z.string(), z.number()]).optional().describe("DAM asset id of the resume to parse"),
-      parseResume: z.coerce.boolean().optional().describe("Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create"),
+      resumeMediaId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("DAM asset id of the resume to parse"),
+      parseResume: z.coerce
+        .boolean()
+        .optional()
+        .describe(
+          "Set true (with resumeMediaId) to AI-extract skills/competencies/certifications on create",
+        ),
       // F-03: this creates a durable HR-owned intent; the response is pending and
       // the worker reconciles RBAC asynchronously with a stable idempotency key.
-      createSystemAccount: z.coerce.boolean().optional().describe("Queue durable RBAC login provisioning for this employee (requires roleId)."),
-      systemEmail: z.string().optional().describe("Login email for the system account (falls back to workEmail/personalEmail)."),
-      password: z.string().min(8).optional().describe("Deprecated compatibility input; HR never persists or returns plaintext passwords."),
-      roleId: z.union([z.string(), z.number()]).optional().describe("RBAC role id (integer) for the login. Required when createSystemAccount is true."),
-      permissions: z.array(z.object({ permissionId: z.union([z.string(), z.number()]), granted: z.boolean().optional() })).optional().describe("Optional per-permission overrides for the login: [{permissionId, granted}]."),
+      createSystemAccount: z.coerce
+        .boolean()
+        .optional()
+        .describe("Queue durable RBAC login provisioning for this employee (requires roleId)."),
+      systemEmail: z
+        .string()
+        .optional()
+        .describe("Login email for the system account (falls back to workEmail/personalEmail)."),
+      password: z
+        .string()
+        .min(8)
+        .optional()
+        .describe(
+          "Deprecated compatibility input; HR never persists or returns plaintext passwords.",
+        ),
+      roleId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe(
+          "RBAC role id (integer) for the login. Required when createSystemAccount is true.",
+        ),
+      permissions: z
+        .array(
+          z.object({
+            permissionId: z.union([z.string(), z.number()]),
+            granted: z.boolean().optional(),
+          }),
+        )
+        .optional()
+        .describe("Optional per-permission overrides for the login: [{permissionId, granted}]."),
       // FE-compat: accept the canonical array OR the FE's legacy map form; a map is tolerated (not applied).
-      permissionMap: z.any().optional().describe("FE-compat alias for permissions. Prefer the array form [{permissionId, granted}]; a legacy map is accepted but ignored."),
+      permissionMap: z
+        .any()
+        .optional()
+        .describe(
+          "FE-compat alias for permissions. Prefer the array form [{permissionId, granted}]; a legacy map is accepted but ignored.",
+        ),
       // FE-compat aliases (some callers send these instead of the canonical fields).
-      email: z.string().optional().describe("FE-compat alias — login email; prefer systemEmail. Falls back to workEmail/personalEmail."),
-      company: z.union([z.string(), z.number()]).optional().describe("FE-compat alias for companyId."),
+      email: z
+        .string()
+        .optional()
+        .describe(
+          "FE-compat alias — login email; prefer systemEmail. Falls back to workEmail/personalEmail.",
+        ),
+      company: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("FE-compat alias for companyId."),
       // API-3: optional idempotency key. When supplied, a retried create replays
       // the first result instead of inserting a duplicate employee.
-      idempotencyKey: z.string().optional().describe("Optional idempotency key. Repeat the same value to safely retry this create without producing a duplicate."),
+      idempotencyKey: z
+        .string()
+        .optional()
+        .describe(
+          "Optional idempotency key. Repeat the same value to safely retry this create without producing a duplicate.",
+        ),
     },
     withToolError(async ({ idempotencyKey, ...args }) => {
       const ctx = getCtx();
@@ -440,14 +580,19 @@ export function registerEmployeeTools(server) {
       // A.4/A.5: pass the request correlationId so the in-tx
       // hr.employee.lifecycle.v1 envelope chains HTTP → event end-to-end. The
       // verified tenant rides on user.tenantId (set by buildContextFromHeaders).
-      const { value: data } = await runMcpIdempotent({
-        toolName: "hr_employee_create",
-        idempotencyKey,
-        ctx,
-        run: () => mcpCreateEmployee(user, args, { correlationId }),
-      });
-      return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
-    }, "hr_employee_create")
+      const native = await authorizeNativeHrCreate(args, { ctx, idempotencyKey });
+      const result = native
+        ? { value: await mcpCreateEmployee(user, args, { correlationId, idempotencyKey }) }
+        : await runMcpIdempotent({
+            toolName: "hr_employee_create",
+            idempotencyKey,
+            ctx,
+            run: () => mcpCreateEmployee(user, args, { correlationId }),
+          });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: true, data: result.value }) }],
+      };
+    }, "hr_employee_create"),
   );
 
   server.tool(
@@ -491,9 +636,15 @@ export function registerEmployeeTools(server) {
       employmentType: z.string().optional(),
       employmentStatus: z.string().optional(),
       status: z.string().optional(),
-      profilePhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
+      profilePhotoBase64: z
+        .string()
+        .optional()
+        .describe("Raw base64 / data: URI. BE uploads to DAM and sets the profile photo."),
       profilePhotoFileName: z.string().optional(),
-      coverPhotoBase64: z.string().optional().describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
+      coverPhotoBase64: z
+        .string()
+        .optional()
+        .describe("Raw base64 / data: URI. BE uploads to DAM and sets the cover photo."),
       coverPhotoFileName: z.string().optional(),
       emergencyContacts: z.array(z.any()).optional(),
       // Tax + banking — patches the primary bank row (or creates it when bankName
@@ -507,14 +658,20 @@ export function registerEmployeeTools(server) {
       disbursementMethod: z.string().optional().describe("Bank Transfer | Cheque | Cash"),
       routingNumber: z.string().optional(),
       accountType: z.string().optional(),
-      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
+      expectedVersion: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          "optimistic-concurrency guard; the version you last read — a stale value returns -32009",
+        ),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdateEmployee(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify({ success: true, data }) }] };
-    }, "hr_employee_update")
+    }, "hr_employee_update"),
   );
 
   server.tool(
@@ -536,10 +693,10 @@ export function registerEmployeeTools(server) {
         user,
         id,
         status,
-        await resolveEmployeeActor(user)
+        await resolveEmployeeActor(user),
       );
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_status_update")
+    }, "hr_employee_status_update"),
   );
 
   server.tool(
@@ -551,7 +708,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeleteEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -567,7 +724,7 @@ export function registerEmployeeTools(server) {
       }
       const data = await mcpUploadEmployeeProfilePhoto(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_profile_photo_attach")
+    }, "hr_employee_profile_photo_attach"),
   );
 
   server.tool(
@@ -583,7 +740,7 @@ export function registerEmployeeTools(server) {
       }
       const data = await mcpUploadEmployeeCoverPhoto(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_cover_photo_attach")
+    }, "hr_employee_cover_photo_attach"),
   );
 
   server.tool(
@@ -597,7 +754,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpRemoveEmployeeProfilePhoto(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_profile_photo_remove")
+    }, "hr_employee_profile_photo_remove"),
   );
 
   server.tool(
@@ -609,7 +766,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpRemoveEmployeeCoverPhoto(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_cover_photo_remove")
+    }, "hr_employee_cover_photo_remove"),
   );
 
   server.tool(
@@ -617,7 +774,12 @@ export function registerEmployeeTools(server) {
     "Create an employee document record",
     {
       employeeId: z.string().min(1),
-      fileBase64: z.string().optional().describe("Raw base64 or data: URI of the document. BE uploads to DAM and derives mediaId/fileName/mimeType/size."),
+      fileBase64: z
+        .string()
+        .optional()
+        .describe(
+          "Raw base64 or data: URI of the document. BE uploads to DAM and derives mediaId/fileName/mimeType/size.",
+        ),
       title: z.string().optional(),
       category: z.string().optional(),
       version: z.string().optional(),
@@ -640,7 +802,7 @@ export function registerEmployeeTools(server) {
       }
       const data = await mcpCreateEmployeeDocument(user, employeeId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_employee_document_create")
+    }, "hr_employee_document_create"),
   );
 
   server.tool(
@@ -664,7 +826,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
       const data = await mcpCreatePosition(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -681,14 +843,20 @@ export function registerEmployeeTools(server) {
       requirements: z.string().optional(),
       jobCode: z.string().optional(),
       isActive: z.coerce.boolean().optional(),
-      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
+      expectedVersion: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          "optimistic-concurrency guard; the version you last read — a stale value returns -32009",
+        ),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdatePosition(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -703,7 +871,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "PUT", "hr:employee", user.isAdmin);
       const data = await mcpUpdatePositionStatus(user, id, isActive);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_position_status_update")
+    }, "hr_position_status_update"),
   );
 
   server.tool(
@@ -715,19 +883,19 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeletePosition(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
-   server.tool(
-      "hr_position_get",
-      "Get a specific postion record by position ID",
-      { id: z.string().min(1) },
-      withToolError(async ({ id }) => {
-        const { user, permissions } = getCtx();
-        assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
-        const data = await mcpGetPositionByPositionId(user, id);
-        return { content: [{ type: "text", text: JSON.stringify(data) }] };
-      })
-    );
+  server.tool(
+    "hr_position_get",
+    "Get a specific postion record by position ID",
+    { id: z.string().min(1) },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:employee", user.isAdmin);
+      const data = await mcpGetPositionByPositionId(user, id);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }),
+  );
 
   server.tool(
     "hr_employee_lifecycle_create",
@@ -768,7 +936,7 @@ export function registerEmployeeTools(server) {
         type: eventType,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -788,7 +956,7 @@ export function registerEmployeeTools(server) {
         exitReason: reason,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -808,7 +976,7 @@ export function registerEmployeeTools(server) {
         ...(lastWorkingDate ? { exitDate: lastWorkingDate } : {}),
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   // Phase 1 alias — FE calls hr_employee_emergency_contact_create; backend
@@ -829,14 +997,14 @@ export function registerEmployeeTools(server) {
     withToolError(async ({ employeeId, contactName, name, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:employee", user.isAdmin);
-      const resolvedName = name || contactName;  // accept either key
+      const resolvedName = name || contactName; // accept either key
       const data = await mcpCreateEmergencyContact(user, {
         ...rest,
         employee_Id: employeeId,
         Contact_name: resolvedName,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -859,7 +1027,7 @@ export function registerEmployeeTools(server) {
         Contact_name: name,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -880,7 +1048,7 @@ export function registerEmployeeTools(server) {
         ...(name ? { Contact_name: name } : {}),
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   server.tool(
@@ -892,7 +1060,7 @@ export function registerEmployeeTools(server) {
       assertPermission(permissions, "DELETE", "hr:employee", user.isAdmin);
       const data = await mcpDeleteEmergencyContact(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
+    }),
   );
 
   // E4: Cross-service employee resolution for Communication module.
@@ -901,7 +1069,10 @@ export function registerEmployeeTools(server) {
     "hr_employee_resolve",
     "Resolve employee display info by RBAC userId (cross-service, batch)",
     {
-      userIds: z.array(z.union([z.string(), z.number()])).min(1).max(100),
+      userIds: z
+        .array(z.union([z.string(), z.number()]))
+        .min(1)
+        .max(100),
     },
     withToolError(async ({ userIds }) => {
       const { user, permissions } = getCtx();
@@ -937,13 +1108,10 @@ export function registerEmployeeTools(server) {
           firstName,
           lastName,
           email: r.work_email || r.email || null,
-          displayName:
-            r.employee_name ||
-            [firstName, lastName].filter(Boolean).join(" ") ||
-            null,
+          displayName: r.employee_name || [firstName, lastName].filter(Boolean).join(" ") || null,
         };
       }
       return { content: [{ type: "text", text: JSON.stringify({ results }) }] };
-    })
+    }),
   );
 }

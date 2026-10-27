@@ -1,10 +1,16 @@
-import { registerAttendanceAcceptanceTools } from './tools/attendanceAcceptanceTools.js';
-import { registerCompanySetupTools } from './tools/companySetupTools.js';
-import { registerApprovalTools } from './tools/approvalTools.js';
+import { registerOnboardingCalendarTools } from "./tools/onboardingCalendarTools.js";
+import { registerOnboardingDocumentTools } from "./tools/onboardingDocumentTools.js";
+import { registerOnboardingProvisioningTools } from "./tools/onboardingProvisioningTools.js";
+import { registerRecruitmentCommunicationTools } from "./tools/recruitmentCommunicationTools.js";
+import { registerApplicationFitScoreTools } from "./tools/applicationFitScoreTools.js";
+import { registerCandidateAssessmentTools } from "./tools/candidateAssessmentTools.js";
+import { registerAttendanceAcceptanceTools } from "./tools/attendanceAcceptanceTools.js";
+import { registerCompanySetupTools } from "./tools/companySetupTools.js";
+import { registerApprovalTools } from "./tools/approvalTools.js";
 import { registerSeparationTools } from "./tools/separationTools.js";
-import { registerAssessmentTools } from './tools/assessmentTools.js';
-import { registerAttendanceCaptureTools } from './tools/attendanceCaptureTools.js';
-import { registerMonthlyPayrollAttendanceTools } from './tools/monthlyPayrollAttendanceTools.js';
+import { registerAssessmentTools } from "./tools/assessmentTools.js";
+import { registerAttendanceCaptureTools } from "./tools/attendanceCaptureTools.js";
+import { registerMonthlyPayrollAttendanceTools } from "./tools/monthlyPayrollAttendanceTools.js";
 import { registerEmployeeTools } from "./tools/employeeTools.js";
 import { registerAttendanceTools } from "./tools/attendanceTools.js";
 import { registerLeaveTools } from "./tools/leaveTools.js";
@@ -26,10 +32,14 @@ import { registerRequisitionMgmtTools } from "./tools/requisitionMgmtTools.js";
 import { registerCandidatePipelineTools } from "./tools/candidatePipelineTools.js";
 import { registerInterviewMgmtTools } from "./tools/interviewMgmtTools.js";
 import { registerOfferMgmtTools } from "./tools/offerMgmtTools.js";
+import { registerCandidatePrivacyTools } from "./tools/candidatePrivacyTools.js";
+import { registerAgencyRecruitmentTools } from "./tools/agencyRecruitmentTools.js";
+import { registerInternalRecruitmentTools } from "./tools/internalRecruitmentTools.js";
 import { registerTalentPoolMgmtTools } from "./tools/talentPoolMgmtTools.js";
 import { registerRecruitmentAnalyticsTools } from "./tools/recruitmentAnalyticsTools.js";
 import { registerOnboardingMgmtTools } from "./tools/onboardingMgmtTools.js";
 import { registerRecruitmentExtraTools } from "./tools/recruitmentExtraTools.js";
+import { registerOnboardingTemplateTools } from "./tools/onboardingTemplateTools.js";
 import { registerOnboardingDashboardTools } from "./tools/onboardingDashboardTools.js";
 import { registerOnboardingDetailTools } from "./tools/onboardingDetailTools.js";
 import { registerOnboardingScheduleTools } from "./tools/onboardingScheduleTools.js";
@@ -110,12 +120,23 @@ function safeToolErrorResult(err, toolName = "unknown_tool") {
   const correlationId = store?.correlationId || undefined;
   if (norm.httpStatus >= 500) {
     log.error(
-      { toolName, argsHash: null, err, code: jsonrpc.data.code, jsonrpcCode: jsonrpc.code },
+      {
+        toolName,
+        argsHash: null,
+        err,
+        code: jsonrpc.data.code,
+        jsonrpcCode: jsonrpc.code,
+      },
       "MCP tool failed",
     );
   } else {
     log.warn(
-      { toolName, code: jsonrpc.data.code, jsonrpcCode: jsonrpc.code, message: jsonrpc.message },
+      {
+        toolName,
+        code: jsonrpc.data.code,
+        jsonrpcCode: jsonrpc.code,
+        message: jsonrpc.message,
+      },
       "MCP tool rejected",
     );
   }
@@ -140,7 +161,7 @@ function withSafeToolCallbacks(server) {
   server.tool = function wrappedTool(name, ...rest) {
     // The SDK's legacy overload cannot identify an empty ZodObject. Normalize
     // only that empty shape; retain every populated schema and its refinements.
-    rest = rest.map(arg => arg?.shape && Object.keys(arg.shape).length === 0 ? {} : arg);
+    rest = rest.map((arg) => (arg?.shape && Object.keys(arg.shape).length === 0 ? {} : arg));
     try {
       if (typeof name !== "string" || rest.length === 0) {
         return originalTool(name, ...rest);
@@ -152,10 +173,7 @@ function withSafeToolCallbacks(server) {
       const inferred = inferToolAnnotations(name);
       const preCb = rest[cbIndex - 1];
       const isExplicitAnnotations =
-        cbIndex - 1 >= 0 &&
-        preCb !== null &&
-        typeof preCb === "object" &&
-        !isZodRawShape(preCb);
+        cbIndex - 1 >= 0 && preCb !== null && typeof preCb === "object" && !isZodRawShape(preCb);
 
       // Wrap the trailing callback so any thrown error is sanitized. Success
       // returns pass through untouched; only thrown errors are intercepted.
@@ -215,7 +233,7 @@ function withAnnotationInjection(server) {
   server.tool = function wrappedTool(name, ...rest) {
     // The SDK's legacy overload cannot identify an empty ZodObject. Normalize
     // only that empty shape; retain every populated schema and its refinements.
-    rest = rest.map(arg => arg?.shape && Object.keys(arg.shape).length === 0 ? {} : arg);
+    rest = rest.map((arg) => (arg?.shape && Object.keys(arg.shape).length === 0 ? {} : arg));
     // Never let annotation injection break registration — fall back to the
     // original call if anything about the arg shape is unexpected.
     try {
@@ -234,10 +252,7 @@ function withAnnotationInjection(server) {
       // (an object that is neither a ZodRawShape schema)? If so, merge.
       const preCb = rest[cbIndex - 1];
       const isExplicitAnnotations =
-        cbIndex - 1 >= 0 &&
-        preCb !== null &&
-        typeof preCb === "object" &&
-        !isZodRawShape(preCb);
+        cbIndex - 1 >= 0 && preCb !== null && typeof preCb === "object" && !isZodRawShape(preCb);
 
       if (isExplicitAnnotations) {
         const merged = { ...inferred, ...preCb };
@@ -283,9 +298,14 @@ export function registerAllTools(server) {
   registerInterviewMgmtTools(server);
   registerOfferMgmtTools(server);
   registerTalentPoolMgmtTools(server);
+  registerInternalRecruitmentTools(server);
+  registerAgencyRecruitmentTools(server);
   registerRecruitmentAnalyticsTools(server);
   registerOnboardingMgmtTools(server);
   registerRecruitmentExtraTools(server);
+  // FR-13 residue — tenant-configurable onboarding checklist templates.
+  registerOnboardingTemplateTools(server);
+  registerCandidatePrivacyTools(server);
   registerOnboardingDashboardTools(server);
   registerOnboardingDetailTools(server);
   registerOnboardingScheduleTools(server);
@@ -315,6 +335,9 @@ export function registerAllTools(server) {
   registerMyPayslipTools(server);
   registerClaimsTools(server);
   registerOnboardingPortalScreenTools(server);
+  registerOnboardingProvisioningTools(server);
+  registerOnboardingDocumentTools(server);
+  registerOnboardingCalendarTools(server);
   registerEmployeeImportTools(server);
   registerAttendanceImportTools(server);
   registerAttendanceCaptureTools(server);
@@ -340,4 +363,7 @@ export function registerAllTools(server) {
   registerCompanySetupTools(server);
   registerAttendanceAcceptanceTools(server);
   registerAssessmentTools(server);
+  registerCandidateAssessmentTools(server);
+  registerApplicationFitScoreTools(server);
+  registerRecruitmentCommunicationTools(server);
 }

@@ -63,7 +63,6 @@ export function leaveRejectedEvent(req, ctx = {}, extra = {}) {
             leaveRequestId: String(req?.id),
             employeeId: req?.employeeId != null ? String(req.employeeId) : null,
             status: 'REJECTED',
-            reason: extra?.reason ?? null,
         },
     });
 }
@@ -137,6 +136,284 @@ export function offerSentEvent(offer, ctx = {}) {
         payload: {
             offerId: String(offer?.id),
             candidateId: offer?.candidateId != null ? String(offer.candidateId) : null,
+        },
+    });
+}
+
+// Phase 9 — the candidate answered a sent offer. ids-only (no PII, no salary):
+// downstream consumers react to the decision, never to compensation.
+// Phase 11 residue — `createdById` (the recruiter who owns the offer) is now
+// carried so the hub can route an internal "offer accepted" notice; a candidate
+// is not a platform user, so without it there is no routable recipient and the
+// mapper skips (the previous reason this name was deliberately unmapped).
+export function offerAcceptedEvent(offer, ctx = {}) {
+    return baseArgs('hr.recruitment.offer_accepted.v1', offer, ctx, {
+        aggregateType: 'Offer',
+        aggregateId: offer?.id,
+        payload: {
+            offerId: String(offer?.id),
+            applicationId: offer?.applicationId != null ? String(offer.applicationId) : null,
+            candidateId: offer?.candidateId != null ? String(offer.candidateId) : null,
+            createdById: offer?.createdById != null ? String(offer.createdById) : null,
+        },
+    });
+}
+
+// Phase 9 — the accepted-offer handoff finished: one employee + checklist exist.
+export function offerHandoffCompletedEvent(handoff, ctx = {}) {
+    return baseArgs('hr.recruitment.handoff_completed.v1', handoff, ctx, {
+        aggregateType: 'OfferHandoff',
+        aggregateId: handoff?.id,
+        payload: {
+            handoffId: String(handoff?.id),
+            offerId: handoff?.offerId != null ? String(handoff.offerId) : null,
+            employeeId: handoff?.employeeId != null ? String(handoff.employeeId) : null,
+            checklistId: handoff?.checklistId != null ? String(handoff.checklistId) : null,
+        },
+    });
+}
+
+// Phase 9 — the handoff failed and was rolled back. The failure DETAIL stays in
+// offer_handoffs.lastError; the event carries only ids + the failing step so an
+// operator can be alerted without leaking a database error into the fabric.
+// Phase 11 residue — `createdById` rides along as the OPERATOR routing id: the
+// offer's owning recruiter is the person who must chase provisioning, and the
+// handoff's hire is exactly who a failure notice must NOT be addressed to.
+export function offerHandoffFailedEvent(handoff, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.handoff_failed.v1', handoff, ctx, {
+        aggregateType: 'OfferHandoff',
+        aggregateId: handoff?.id,
+        payload: {
+            handoffId: String(handoff?.id),
+            offerId: handoff?.offerId != null ? String(handoff.offerId) : null,
+            step: extra?.step ?? null,
+            attemptCount: handoff?.attemptCount ?? null,
+            operatorId: extra?.operatorId ?? (handoff?.offer?.createdById != null ? String(handoff.offer.createdById) : null),
+        },
+    });
+}
+
+// Phase 11 — requisition lifecycle. Payloads carry the state fact + the ids a
+// consumer needs to route (approvers, recruiters); no compensation, no PII.
+export function requisitionSubmittedEvent(requisition, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.requisition_submitted.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: 'PENDING_APPROVAL',
+            title: requisition?.title ?? null,
+            departmentId: requisition?.departmentId != null ? String(requisition.departmentId) : null,
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+            // Phase 4 shipped the approval chain, so the event now carries the
+            // FIRST PENDING step's resolved approver — the recipient the hub
+            // maps this event to. Null when the chain is un-stepped (a tenant
+            // with no configured rules: the single decision needs no routing),
+            // or when the first step names a role with no pinned approver (the
+            // tenant routes those decisions through its own directory lookup).
+            // ids-only, same convention as requestedById.
+            pendingApproverId:
+                extra?.pendingApproverId != null ? String(extra.pendingApproverId) : null,
+            // The step the routing id was resolved for, so a consumer can show
+            // or log WHICH decision is awaited (e.g. 2 = HR Manager).
+            pendingStepOrder: extra?.pendingStepOrder != null ? Number(extra.pendingStepOrder) : null,
+        },
+    });
+}
+
+// A decision on a submitted requisition. `APPROVED` and `REJECTED` are the same
+// fact from the fabric's point of view (a decision was taken), so one builder
+// carries the outcome rather than two near-identical names consumers must both
+// subscribe to.
+export function requisitionDecisionEvent(requisition, ctx = {}, extra = {}) {
+    const decision = String(extra?.decision ?? requisition?.status ?? '').toUpperCase();
+    return baseArgs('hr.recruitment.requisition_decided.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            decision: decision === 'REJECTED' ? 'REJECTED' : 'APPROVED',
+            // A rejection must carry why; the reason is the operator's own text
+            // (compliance-relevant), not candidate data.
+            reason: extra?.reason ?? null,
+            decidedById: extra?.decidedById != null ? String(extra.decidedById) : null,
+            // Phase 11 — the ROUTING id: the requester is the person who must be
+            // told the decision, and without it a notification consumer has a
+            // recipient-less event it can only skip (ids-only, no PII).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+        },
+    });
+}
+
+// The requisition became visible to candidates (or stopped being).
+export function requisitionPostedEvent(requisition, ctx = {}) {
+    return baseArgs('hr.recruitment.requisition_posted.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: 'POSTED',
+            externalUrl: requisition?.externalUrl ?? null,
+            // Phase 11 — routing id (see requisitionDecisionEvent).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+        },
+    });
+}
+
+// Phase 4 — the `status` is 'CLOSED' by default but can be overridden with
+// 'WITHDRAWN'. A withdrawal is a closure from the consumer's point of view (the
+// same audience learns the same fact), so it reuses this event rather than adding
+// a name the hub would have no mapper for — but the payload still states which of
+// the two happened, so analytics does not have to infer it.
+export function requisitionClosedEvent(requisition, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.requisition_closed.v1', requisition, ctx, {
+        aggregateType: 'JobRequisition',
+        aggregateId: requisition?.id,
+        payload: {
+            requisitionId: String(requisition?.id),
+            status: extra?.status === 'WITHDRAWN' ? 'WITHDRAWN' : 'CLOSED',
+            reason: extra?.reason ?? null,
+            // Phase 11 — routing id (see requisitionDecisionEvent).
+            requestedById: requisition?.requestedById != null ? String(requisition.requestedById) : null,
+        },
+    });
+}
+
+// Phase 11 — application lifecycle. A stage change is the event recruiters and
+// hiring managers actually want ("moved to interview"), so `from`/`to` travel
+// with the ids and the optional reason that the workflow already enforces.
+export function applicationCreatedEvent(application, ctx = {}) {
+    return baseArgs('hr.recruitment.application_created.v1', application, ctx, {
+        aggregateType: 'Application',
+        aggregateId: application?.id,
+        payload: {
+            applicationId: String(application?.id),
+            candidateId: application?.candidateId != null ? String(application.candidateId) : null,
+            jobRequisitionId: application?.jobRequisitionId != null ? String(application.jobRequisitionId) : null,
+            stage: application?.stage ?? null,
+            // Phase 11 — routing id: the hiring manager who owns the requisition
+            // is who wants "a new applicant arrived". It is read off the already-
+            // included relation when the caller loaded it, and stays null (never
+            // invented) when it did not.
+            requestedById:
+                application?.jobRequisition?.requestedById != null
+                    ? String(application.jobRequisition.requestedById)
+                    : null,
+        },
+    });
+}
+
+export function applicationStageChangedEvent(application, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.application_stage_changed.v1', application, ctx, {
+        aggregateType: 'Application',
+        aggregateId: application?.id,
+        payload: {
+            applicationId: String(application?.id),
+            candidateId: application?.candidateId != null ? String(application.candidateId) : null,
+            jobRequisitionId: application?.jobRequisitionId != null ? String(application.jobRequisitionId) : null,
+            applicationVersion: application?.version ?? null,
+            fromStage: extra?.fromStage ?? null,
+            toStage: extra?.toStage ?? application?.stage ?? null,
+            status: application?.status ?? null,
+            reason: extra?.reason ?? null,
+            // Phase 11 — routing id (see applicationCreatedEvent).
+            requestedById:
+                application?.jobRequisition?.requestedById != null
+                    ? String(application.jobRequisition.requestedById)
+                    : null,
+        },
+    });
+}
+
+// Phase 11 — interview scheduled + outcome. `interviewerIds` is the routing list
+// a notification consumer fans out over (ids-only, no names/emails).
+export function interviewScheduledEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_scheduled.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            scheduledAt: interview?.scheduledAt ?? null,
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+export function interviewOutcomeRecordedEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_outcome_recorded.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            outcome: interview?.outcome ?? extra?.outcome ?? null,
+            // Whether the outcome rode an override rather than evidence — the
+            // fabric should show that a human overrode the gate.
+            overridden: Boolean(extra?.overridden),
+            reason: extra?.reason ?? null,
+            // Phase 11 — the panel learns its own outcome. Same routing list as
+            // interviewScheduledEvent, so a consumer fans out over one field name.
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+// Phase 7 / §5.4 — an interview was CANCELLED with a coded reason. ids-only;
+// the candidate-facing copy is the consumer's job.
+export function interviewCancelledEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_cancelled.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            scheduledAt: interview?.scheduledAt ?? null,
+            reasonCode: extra?.reasonCode ?? null,
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+// Phase 7 / §5.3a — the replacement schedule is CONFIRMED; the panel may now be
+// notified (the point of the two-phase §5.3a contract is to avoid calendar
+// churn, so the panel event fires exactly once, on confirmation).
+export function interviewRescheduledEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_rescheduled.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            previousScheduledAt: extra?.previousScheduledAt ?? null,
+            newScheduledAt: interview?.scheduledAt ?? extra?.newScheduledAt ?? null,
+            reasonCode: extra?.reasonCode ?? null,
+            interviewerIds: (extra?.interviewerIds ?? interview?.interviewerIds ?? []).map(String),
+        },
+    });
+}
+
+// Phase 7 / §5.3 — a candidate REQUESTED a reschedule. The recruiter is the
+// audience; the panel is deliberately NOT told (§5.3a: only after the
+// replacement schedule is confirmed). interviewerIds is absent on purpose —
+// its presence would invite a consumer to fan out to the panel.
+export function interviewRescheduleRequestedEvent(interview, ctx = {}, extra = {}) {
+    return baseArgs('hr.recruitment.interview_reschedule_requested.v1', interview, ctx, {
+        aggregateType: 'Interview',
+        aggregateId: interview?.id,
+        payload: {
+            interviewId: String(interview?.id),
+            applicationId: interview?.applicationId != null ? String(interview.applicationId) : null,
+            candidateId: interview?.candidateId != null ? String(interview.candidateId) : null,
+            scheduledAt: interview?.scheduledAt ?? null,
+            requestedFor: extra?.requestedFor ?? null,
+            note: extra?.note ?? null,
+            // §5.3 — the routing id: the REQUISITION OWNER (the recruiter who
+            // owns the confirmation). ids-only, no names/addresses.
+            recruiterId: extra?.recruiterId ?? null,
         },
     });
 }

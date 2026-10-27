@@ -1,0 +1,11 @@
+# Apply with Publish-LibreSign.sh, which validates and backs up nginx first.
+services:
+  app:
+    environment: &public-environment
+      NEXTCLOUD_TRUSTED_DOMAINS: '${LIBRESIGN_PUBLIC_HOST:-erp.trusoft.ai} 127.0.0.1 localhost app'
+      OVERWRITEHOST: ${LIBRESIGN_PUBLIC_HOST:-erp.trusoft.ai}
+      OVERWRITEPROTOCOL: https
+      OVERWRITEWEBROOT: ${LIBRESIGN_WEBROOT:-/libresign}
+      OVERWRITECLIURL: https://${LIBRESIGN_PUBLIC_HOST:-erp.trusoft.ai}${LIBRESIGN_WEBROOT:-/libresign}
+  cron:
+    environment: *public-environment

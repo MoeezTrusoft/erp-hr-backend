@@ -9,9 +9,9 @@
 // making the test's `employeeCtl.mcpXxx` a different object than the one
 // the tool calls internally.  Checking the return value proves the tool
 // reached the controller, called it, and returned its result.
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
-jest.unstable_mockModule('../../../src/mcp/controllers/employeeMcpController.js', () => ({
+jest.unstable_mockModule("../../../src/mcp/controllers/employeeMcpController.js", () => ({
   mcpCreateEmergencyContact: jest.fn(async () => ({ success: true })),
   mcpCreateEmployee: jest.fn(async () => ({ success: true })),
   mcpCreateEmployeeDocument: jest.fn(async () => ({ success: true })),
@@ -45,20 +45,25 @@ jest.unstable_mockModule('../../../src/mcp/controllers/employeeMcpController.js'
   mcpRemoveEmployeeProfilePhoto: jest.fn(async () => ({ success: true })),
 }));
 
-const employeeCtl = await import('../../../src/mcp/controllers/employeeMcpController.js');
-const { registerEmployeeTools } = await import('../../../src/mcp/tools/employeeTools.js');
-const { mcpCtx } = await import('../../../src/mcp/context.js');
+const employeeCtl = await import("../../../src/mcp/controllers/employeeMcpController.js");
+const { registerEmployeeTools } = await import("../../../src/mcp/tools/employeeTools.js");
+const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const handlers = new Map();
 const recording = {
+  registerTool: (name, _config, callback) => handlers.set(name, callback),
   tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
   resource: () => {},
 };
 registerEmployeeTools(recording);
 
 const USER = {
-  userId: '7', email: 'hr@acme.test', roles: ['HR_ADMIN'],
-  isAdmin: false, employeeId: '7', tenantId: 'tenant-A',
+  userId: "7",
+  email: "hr@acme.test",
+  roles: ["HR_ADMIN"],
+  isAdmin: false,
+  employeeId: "7",
+  tenantId: "tenant-A",
 };
 
 function call(name, args, { user = USER, permissions } = {}) {
@@ -73,70 +78,156 @@ const parse = (res) => JSON.parse(res.content[0].text);
 // `grants` overrides the single-action grant when a tool needs MORE than one
 // atom: hr_employees_export requires VIEW + EXPORT (bulk roster download).
 const TOOLS = [
-  { name: 'hr_employees_list', gate: 'hr:employee', action: 'VIEW', args: { page: 1, pageSize: 10 } },
-  { name: 'hr_employees_export', gate: 'hr:employee', action: 'VIEW', grants: ['VIEW', 'EXPORT'], args: {} },
-  { name: 'hr_positions_list', gate: 'hr:employee', action: 'VIEW', args: {} },
-  { name: 'hr_employee_get', gate: 'hr:employee', action: 'VIEW', args: { id: 7 } },
-  { name: 'hr_employee_profile_get', gate: 'hr:employee', action: 'VIEW', args: { id: 7, tab: 'personal' } },
-  { name: 'hr_employee_profile_full_get', gate: 'hr:employee', action: 'VIEW', args: { id: 7, tab: 'overview' } },
-  { name: 'hr_employee_quick_view_get', gate: 'hr:employee', action: 'VIEW', args: { id: 7 } },
-  { name: 'hr_employee_documents_list', gate: 'hr:employee', action: 'VIEW', args: { id: 7 } },
-  { name: 'hr_employee_create', gate: 'hr:employee', action: 'CREATE', args: { firstName: 'John', lastName: 'Doe' } },
-  { name: 'hr_employee_update', gate: 'hr:employee', action: 'EDIT', args: { id: 7, firstName: 'Jane' } },
-  { name: 'hr_employee_status_update', gate: 'hr:employee', action: 'EDIT', args: { id: 7, status: 'active' } },
-  { name: 'hr_employee_delete', gate: 'hr:employee', action: 'DELETE', args: { id: 7 } },
-  { name: 'hr_employee_profile_photo_attach', gate: 'hr:employee', action: 'EDIT', args: { id: 7, mediaId: 'm1' } },
-  { name: 'hr_employee_cover_photo_attach', gate: 'hr:employee', action: 'EDIT', args: { id: 7, mediaId: 'm1' } },
+  {
+    name: "hr_employees_list",
+    gate: "hr:employee",
+    action: "VIEW",
+    args: { page: 1, pageSize: 10 },
+  },
+  {
+    name: "hr_employees_export",
+    gate: "hr:employee",
+    action: "VIEW",
+    grants: ["VIEW", "EXPORT"],
+    args: {},
+  },
+  { name: "hr_positions_list", gate: "hr:employee", action: "VIEW", args: {} },
+  { name: "hr_employee_get", gate: "hr:employee", action: "VIEW", args: { id: 7 } },
+  {
+    name: "hr_employee_profile_get",
+    gate: "hr:employee",
+    action: "VIEW",
+    args: { id: 7, tab: "personal" },
+  },
+  {
+    name: "hr_employee_profile_full_get",
+    gate: "hr:employee",
+    action: "VIEW",
+    args: { id: 7, tab: "overview" },
+  },
+  { name: "hr_employee_quick_view_get", gate: "hr:employee", action: "VIEW", args: { id: 7 } },
+  { name: "hr_employee_documents_list", gate: "hr:employee", action: "VIEW", args: { id: 7 } },
+  {
+    name: "hr_employee_create",
+    gate: "hr:employee",
+    action: "CREATE",
+    args: { firstName: "John", lastName: "Doe" },
+  },
+  {
+    name: "hr_employee_update",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 7, firstName: "Jane" },
+  },
+  {
+    name: "hr_employee_status_update",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 7, status: "active" },
+  },
+  { name: "hr_employee_delete", gate: "hr:employee", action: "DELETE", args: { id: 7 } },
+  {
+    name: "hr_employee_profile_photo_attach",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 7, mediaId: "m1" },
+  },
+  {
+    name: "hr_employee_cover_photo_attach",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 7, mediaId: "m1" },
+  },
   // Removal detaches the reference on the employee record — EDIT, like attach.
   // (Trashing the DAM asset is the DAM's own dam:asset DELETE, asserted there.)
-  { name: 'hr_employee_profile_photo_remove', gate: 'hr:employee', action: 'EDIT', args: { id: 7 } },
-  { name: 'hr_employee_cover_photo_remove', gate: 'hr:employee', action: 'EDIT', args: { id: 7 } },
-  { name: 'hr_employee_document_create', gate: 'hr:employee', action: 'CREATE', args: { employeeId: 7, mediaId: 'm1' } },
-  { name: 'hr_position_create', gate: 'hr:employee', action: 'CREATE', args: { title: 'Engineer' } },
-  { name: 'hr_position_update', gate: 'hr:employee', action: 'EDIT', args: { id: 1, title: 'Senior' } },
-  { name: 'hr_position_status_update', gate: 'hr:employee', action: 'EDIT', args: { id: 1, status: 'active' } },
-  { name: 'hr_position_delete', gate: 'hr:employee', action: 'DELETE', args: { id: 1 } },
-  { name: 'hr_position_get', gate: 'hr:employee', action: 'VIEW', args: { id: 1 } },
-  { name: 'hr_employee_lifecycle_create', gate: 'hr:employee', action: 'CREATE', args: { employeeId: 7, type: 'promotion' } },
-  { name: 'hr_offboarding_create', gate: 'hr:employee', action: 'CREATE', args: { employeeId: 7 } },
-  { name: 'hr_offboarding_update', gate: 'hr:employee', action: 'EDIT', args: { id: 1 } },
-  { name: 'hr_emergency_contact_create', gate: 'hr:employee', action: 'CREATE', args: { employeeId: 7, name: 'Dad' } },
-  { name: 'hr_emergency_contact_update', gate: 'hr:employee', action: 'EDIT', args: { id: 1 } },
-  { name: 'hr_emergency_contact_delete', gate: 'hr:employee', action: 'DELETE', args: { id: 1 } },
-  { name: 'hr_employee_emergency_contacts_list', gate: 'hr:employee', action: 'VIEW', args: { id: 7 } },
+  {
+    name: "hr_employee_profile_photo_remove",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 7 },
+  },
+  { name: "hr_employee_cover_photo_remove", gate: "hr:employee", action: "EDIT", args: { id: 7 } },
+  {
+    name: "hr_employee_document_create",
+    gate: "hr:employee",
+    action: "CREATE",
+    args: { employeeId: 7, mediaId: "m1" },
+  },
+  {
+    name: "hr_position_create",
+    gate: "hr:employee",
+    action: "CREATE",
+    args: { title: "Engineer" },
+  },
+  {
+    name: "hr_position_update",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 1, title: "Senior" },
+  },
+  {
+    name: "hr_position_status_update",
+    gate: "hr:employee",
+    action: "EDIT",
+    args: { id: 1, status: "active" },
+  },
+  { name: "hr_position_delete", gate: "hr:employee", action: "DELETE", args: { id: 1 } },
+  { name: "hr_position_get", gate: "hr:employee", action: "VIEW", args: { id: 1 } },
+  {
+    name: "hr_employee_lifecycle_create",
+    gate: "hr:employee",
+    action: "CREATE",
+    args: { employeeId: 7, type: "promotion" },
+  },
+  { name: "hr_offboarding_create", gate: "hr:employee", action: "CREATE", args: { employeeId: 7 } },
+  { name: "hr_offboarding_update", gate: "hr:employee", action: "EDIT", args: { id: 1 } },
+  {
+    name: "hr_emergency_contact_create",
+    gate: "hr:employee",
+    action: "CREATE",
+    args: { employeeId: 7, name: "Dad" },
+  },
+  { name: "hr_emergency_contact_update", gate: "hr:employee", action: "EDIT", args: { id: 1 } },
+  { name: "hr_emergency_contact_delete", gate: "hr:employee", action: "DELETE", args: { id: 1 } },
+  {
+    name: "hr_employee_emergency_contacts_list",
+    gate: "hr:employee",
+    action: "VIEW",
+    args: { id: 7 },
+  },
 ];
 
-describe('EMPLOYEE-SCENARIOS — registration', () => {
-  it.each(TOOLS.map((t) => t.name))('%s is registered', (name) => {
+describe("EMPLOYEE-SCENARIOS — registration", () => {
+  it.each(TOOLS.map((t) => t.name))("%s is registered", (name) => {
     expect(handlers.has(name)).toBe(true);
   });
-  it('hr_employee_emergency_contact_create is registered', () => {
-    expect(handlers.has('hr_employee_emergency_contact_create')).toBe(true);
+  it("hr_employee_emergency_contact_create is registered", () => {
+    expect(handlers.has("hr_employee_emergency_contact_create")).toBe(true);
   });
 });
 
-describe.each(TOOLS)('$name scenarios', ({ name, gate, action, grants, args }) => {
+describe.each(TOOLS)("$name scenarios", ({ name, gate, action, grants, args }) => {
   const grant = { [gate]: grants || [action] };
 
   beforeEach(() => jest.clearAllMocks());
 
-  it('happy path: dispatches to controller and returns result', async () => {
+  it("happy path: dispatches to controller and returns result", async () => {
     const res = await call(name, args, { permissions: grant });
     expect(res).toBeDefined();
     expect(res.content).toBeDefined();
     expect(Array.isArray(res.content)).toBe(true);
-    expect(res.content[0].type).toBe('text');
+    expect(res.content[0].type).toBe("text");
     const body = parse(res);
     expect(body.success).toBe(true);
   });
 
-  it('deny-by-default: no permission blob -> 403', async () => {
+  it("deny-by-default: no permission blob -> 403", async () => {
     const res = await call(name, args, { permissions: {} });
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
   });
 
-  it('forged isAdmin grants nothing (still 403)', async () => {
+  it("forged isAdmin grants nothing (still 403)", async () => {
     const res = await call(name, args, { user: { ...USER, isAdmin: true }, permissions: {} });
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
@@ -146,23 +237,26 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, grants, args }) =
 // ELEVATED EXPORT (2026-10-13) — bulk download needs the EXPORT atom on top of
 // VIEW. A VIEW-only grant must not be able to take a copy of the roster out of
 // the platform, even though VIEW is what opens the directory screen.
-describe('hr_employees_export — EXPORT elevation', () => {
+describe("hr_employees_export — EXPORT elevation", () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('VIEW alone is not enough -> 403', async () => {
-    const res = await call('hr_employees_export', {}, { permissions: { 'hr:employee': ['VIEW'] } });
+  it("VIEW alone is not enough -> 403", async () => {
+    const res = await call("hr_employees_export", {}, { permissions: { "hr:employee": ["VIEW"] } });
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
   });
 
-  it('VIEW + EXPORT dispatches to the export controller', async () => {
-    const res = await call('hr_employees_export', {}, {
-      permissions: { 'hr:employee': ['VIEW', 'EXPORT'] },
-    });
+  it("VIEW + EXPORT dispatches to the export controller", async () => {
+    const res = await call(
+      "hr_employees_export",
+      {},
+      {
+        permissions: { "hr:employee": ["VIEW", "EXPORT"] },
+      },
+    );
     expect(res.isError).toBeUndefined();
     expect(parse(res).success).toBe(true);
   });
 });
 
 // KNOWN BUG: hr_employee_emergency_contact_create uses route path
-

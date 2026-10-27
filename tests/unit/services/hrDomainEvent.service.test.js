@@ -96,7 +96,7 @@ describe('enqueueHrDomainEvent', () => {
             actorId: ACTOR,
             occurredAt: '2026-06-25T10:00:00.000Z',
             correlationId: 'corr-hire',
-            payload: { candidateId: 'c-1', employeeId: 'e-1' },
+            payload: { candidateId: 'c-1', employeeId: 'e-1', applicationId: 'a-1' },
         });
 
         expect(create).toHaveBeenCalledTimes(1);

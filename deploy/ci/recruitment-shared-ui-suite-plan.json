@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "state": "SOURCE_ONLY_NOT_QUALIFIED",
+  "scope": [
+    "Attachment9.5 shared day/week CalendarView used by direct interview scheduling, candidate slot offers and onboarding sessions",
+    "Attachment9.5 RHF FormScaffold with shared schema resolver and requisition drafting integration"
+  ],
+  "baseArchive": "agency-recruitment-source-20261023-v4.tar.gz",
+  "baseArchiveSha256": "2dabba4368f380c801f29f4ede016036ff968716920e1a0d396ddfb4023ec2ca",
+  "frontendTests": [
+    "packages/ui/src/components/calendar-layout.test.js",
+    "packages/ui/src/components/CalendarView.test.jsx",
+    "packages/ui/src/components/FormScaffold.test.jsx",
+    "apps/erp-web/src/domains/hr/__tests__/recruitment-calendar.test.jsx",
+    "apps/erp-web/src/domains/hr/screens/Recruitment/JobRequisitions/requisition-form.test.js"
+  ],
+  "newCases": 16,
+  "browserJourneys": [
+    "tests/recruitment/calendar-journey.cjs",
+    "tests/recruitment/slot-offer-journey.cjs",
+    "tests/recruitment/onboarding-calendar-journey.cjs",
+    "tests/recruitment/requisition-journey.cjs"
+  ],
+  "required": [
+    "Fresh locked dependency lane with matching full source inventory",
+    "Kubernetes-only Vitest and browser execution; no host execution",
+    "Frontend full lint, dependency boundaries, production builds",
+    "Desktop/mobile browser screenshots reviewed under E-04; no current screenshots exist for new shared UI",
+    "Agency and native test plans remain required and have not been run"
+  ],
+  "runtimeExecuted": false,
+  "externalMailSent": false
+}

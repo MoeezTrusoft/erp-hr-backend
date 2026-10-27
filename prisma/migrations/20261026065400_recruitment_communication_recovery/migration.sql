@@ -1,0 +1,2 @@
+ALTER TABLE outbox_events ADD COLUMN "communicationAttempts" INTEGER NOT NULL DEFAULT 0 CHECK ("communicationAttempts" >= 0), ADD COLUMN "communicationNextAttemptAt" TIMESTAMPTZ, ADD COLUMN "communicationFailedAt" TIMESTAMPTZ, ADD COLUMN "communicationLastError" TEXT;
+CREATE INDEX outbox_candidate_communication_due_idx ON outbox_events ("communicationNextAttemptAt", "createdAt", id) WHERE "communicationProcessedAt" IS NULL AND "communicationFailedAt" IS NULL AND "eventName" LIKE 'hr.recruitment.%';

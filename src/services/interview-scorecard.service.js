@@ -1,91 +1,210 @@
-// src/services/interview-scorecard.service.js — HR-INTERVIEW-FEEDBACK-01
-//
-// One place where a reviewer's InterviewScorecard is written, so "submit
-// feedback" is idempotent and re-submittable from every entry point
-// (hr_interview_update / hr_interview_score / REST POST :id/scorecards).
-//
-// WHY THIS EXISTS
-// The scorecard is unique on (interviewId, reviewerId) — a DB index that knows
-// nothing about tenants. The tenantScope extension, however, injects
-// `where.tenantId = <caller tenant>` into every read, so a scorecard row whose
-// tenantId is NULL (seeded, or written before the tenant backfill) is invisible
-// to a findUnique/upsert lookup while STILL colliding on insert. Callers doing
-// "look it up, else create" therefore hard-failed with P2002 —
-// "Unique constraint failed" — for every interview that already had feedback.
-//
-// The fix is to resolve the row by its real unique key in an explicit SYSTEM
-// context (the same escape hatch the backfills use), then decide:
-//   * no row                  -> create, stamped with the caller's tenant
-//   * row is ours / NULL      -> update in place and adopt it into the tenant
-//   * row is another tenant's -> refuse; never silently overwrite
-//
-// CALLER CONTRACT: the interview must already have been read under the caller's
-// tenant (fail-closed). Given that, its scorecards are the caller's by
-// construction — InterviewScorecard.interviewId is a cascading FK on Interview.
-import prisma from '../lib/prisma.js';
-import { mcpCtx } from '../mcp/context.js';
+import prisma from "../lib/prisma.js";
+import { getCtx } from "../mcp/context.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { actor } from "./separation/base.js";
+import { assertPermission } from "../lib/assertPermission.js";
+import { assertAssessmentComplete } from "./candidate-assessment/rules.js";
+import {
+  resolveForInterview,
+  validateSubmission,
+} from "./scorecardTemplate.service.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
-const asSystem = (fn) => mcpCtx.run({ system: true }, fn);
+const fail = (message, status = 409, code = "HR-6102") => {
+  throw Object.assign(new Error(message), { status, code });
+};
+const COMPARABLE_FIELDS = ["scores", "overallScore", "recommendation", "notes"];
 
-const currentTenantId = () => {
-    const raw = mcpCtx.getStore()?.user?.tenantId;
-    return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+const stable = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (Array.isArray(value)) return value.map(stable);
+  if (typeof value === "object") {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = stable(value[key]);
+        return acc;
+      }, {});
+  }
+  return value;
 };
 
-/**
- * Create-or-update the (interviewId, reviewerId) scorecard.
- *
- * @param {object}  params
- * @param {number}  params.interviewId  interview the scorecard belongs to (tenant-verified by the caller)
- * @param {number}  params.reviewerId   Employee id of the reviewer
- * @param {object}  params.data         column values (scores, overallScore, recommendation, notes, submittedAt)
- * @param {string} [params.tenantId]    caller tenant; defaults to the async-local request tenant
- * @returns {Promise<object>} the written scorecard row
- */
-export const upsertInterviewScorecard = async ({ interviewId, reviewerId, data = {}, tenantId } = {}) => {
-    const interview = Number(interviewId);
-    const reviewer = Number(reviewerId);
-    if (!Number.isInteger(interview) || interview <= 0) {
-        throw Object.assign(new Error('A valid interview id is required to write a scorecard'), { status: 400 });
-    }
-    // A scorecard is attributable evidence: never write one under a guessed or
-    // defaulted reviewer (callers used to fall back to employee id 1).
-    if (!Number.isInteger(reviewer) || reviewer <= 0) {
-        throw Object.assign(
-            new Error('A reviewer (employee) id is required to submit interview feedback'),
-            { status: 400 },
+/** The stored/incoming values for the fields a reviewer may change. */
+const comparable = (row = {}) =>
+  COMPARABLE_FIELDS.reduce((acc, field) => {
+    if (row[field] !== undefined) acc[field] = row[field];
+    return acc;
+  }, {});
+
+/** True when the incoming payload would change anything the reviewer owns. */
+export const scorecardPayloadChanged = (existing, data = {}) => {
+  const before = stable(comparable(existing));
+  const after = stable(comparable(data));
+  return COMPARABLE_FIELDS.some(
+    (field) =>
+      JSON.stringify(before[field] ?? null) !==
+      JSON.stringify(after[field] ?? null),
+  );
+};
+
+/** Shared REST/MCP writer. The reviewer is always the verified employee. */
+export async function upsertInterviewScorecard({
+  interviewId,
+  reviewerId,
+  data = {},
+  tenantId,
+  amendment = null,
+} = {}) {
+  const ctx = getCtx();
+  if (
+    !ctx.actorVerified ||
+    !ctx.user?.tenantId ||
+    (tenantId && tenantId !== ctx.user.tenantId)
+  )
+    fail("Verified company context required", 401);
+  assertPermission(ctx.permissions, "PUT", "hr:recruitment", false);
+  tenantId = ctx.user.tenantId;
+  const id = Number(interviewId);
+  if (!Number.isInteger(id) || id <= 0) fail("Valid interview required", 422);
+  return tenantTransaction(
+    prisma,
+    async (tx) => {
+      const who = await actor(tx, ctx);
+      if (reviewerId != null && Number(reviewerId) !== who.id)
+        fail("Feedback must be submitted by its reviewer", 403);
+      await tx.$queryRawUnsafe(
+        'SELECT id FROM interviews WHERE "tenantId"=$1::uuid AND id=$2 FOR UPDATE',
+        tenantId,
+        id,
+      );
+      const parent = await tx.interview.findFirst({
+        where: { tenantId, id, interviewers: { some: { employeeId: who.id } } },
+      });
+      if (!parent) fail("Interview not found", 404);
+      assertAssessmentComplete(parent);
+      if (["CANCELLED", "NO_SHOW"].includes(parent.status))
+        fail("This interview cannot receive feedback");
+      if (parent.formSnapshot)
+        fail(
+          "Submit the pinned structured form for this interview",
+          409,
+          "HR-6101",
         );
-    }
-
-    const tenant = tenantId ?? currentTenantId();
-
-    // Resolve by the REAL unique key — tenant-blind, like the index itself.
-    const existing = await asSystem(async () =>
-        prisma.interviewScorecard.findUnique({
-            where: { interviewId_reviewerId: { interviewId: interview, reviewerId: reviewer } },
-        }),
-    );
-
-    if (!existing) {
-        return prisma.interviewScorecard.create({
-            data: { interviewId: interview, reviewerId: reviewer, ...data, ...(tenant ? { tenantId: tenant } : {}) },
+      const scores = data.scores ?? {};
+      const values = Object.values(scores);
+      if (
+        !values.length ||
+        values.some((n) => !Number.isInteger(n) || n < 1 || n > 5)
+      )
+        fail("Ratings must be integers from 1 to 5", 422);
+      const template = await resolveForInterview({
+        interviewId: id,
+        tenantId,
+        db: tx,
+      });
+      const verdict = validateSubmission({ template, scores });
+      const payload = {
+        scores,
+        overallScore:
+          verdict.overall ??
+          values.reduce((sum, n) => sum + n, 0) / values.length,
+        recommendation: data.recommendation ?? null,
+        notes: data.notes ?? null,
+      };
+      if (
+        payload.notes != null &&
+        (typeof payload.notes !== "string" || payload.notes.length > 10000)
+      )
+        fail("Feedback notes are too long", 422);
+      let existing = await tx.interviewScorecard.findFirst({
+        where: { tenantId, interviewId: id, reviewerId: who.id },
+      });
+      if (!existing) {
+        // Claim only legacy rows whose interview and verified reviewer both
+        // belong to this company. Never reassign a non-NULL company. The
+        // parent interview lock serializes submissions and amendments.
+        const claimed = await tx.$executeRawUnsafe(
+          `UPDATE interview_scorecards AS s SET "tenantId"=$1::uuid
+           FROM interviews AS i, "Employee" AS e
+           WHERE s."interviewId"=$2 AND s."reviewerId"=$3 AND s."tenantId" IS NULL
+             AND i.id=s."interviewId" AND i."tenantId"=$1::uuid
+             AND e.id=s."reviewerId" AND e.tenant_id=$1::uuid`,
+          tenantId,
+          id,
+          who.id,
+        );
+        if (claimed) existing = await tx.interviewScorecard.findFirst({
+          where: { tenantId, interviewId: id, reviewerId: who.id },
         });
-    }
-
-    if (tenant && existing.tenantId && existing.tenantId !== tenant) {
-        throw Object.assign(
-            new Error('This interview scorecard belongs to another tenant and cannot be modified'),
-            { status: 409 },
+      }
+      if (existing?.submittedAt && !scorecardPayloadChanged(existing, payload))
+        return existing;
+      const reason = String(amendment?.reason ?? "").trim();
+      if (existing?.submittedAt && reason.length < 10)
+        fail(
+          "A submitted scorecard requires an amendment reason of at least 10 characters",
         );
-    }
-
-    // Ours, or a legacy tenant-less row on our interview: update and adopt it.
-    return asSystem(async () =>
-        prisma.interviewScorecard.update({
+      const now = new Date();
+      const row = existing
+        ? await tx.interviewScorecard.update({
             where: { id: existing.id },
-            data: { ...data, ...(tenant ? { tenantId: tenant } : {}) },
-        }),
-    );
-};
-
+            data: {
+              ...payload,
+              submittedAt: existing.submittedAt ?? now,
+              status: "SUBMITTED",
+              version: { increment: 1 },
+              ...(existing.submittedAt
+                ? {
+                    lastAmendedAt: now,
+                    amendmentLog: [
+                      ...(Array.isArray(existing.amendmentLog)
+                        ? existing.amendmentLog
+                        : []),
+                      {
+                        at: now.toISOString(),
+                        by: who.id,
+                        reason,
+                        replaced: comparable(existing),
+                      },
+                    ],
+                  }
+                : {}),
+            },
+          })
+        : await tx.interviewScorecard.create({
+            data: {
+              ...payload,
+              tenantId,
+              interviewId: id,
+              reviewerId: who.id,
+              submittedAt: now,
+              status: "SUBMITTED",
+              version: 1,
+            },
+          }).catch((error) => {
+            if (error.code === "P2002")
+              fail("A scorecard already belongs to another tenant");
+            throw error;
+          });
+      const queued = await enqueueHrDomainEvent(tx, {
+        tenantId,
+        actorId: who.id,
+        actorType: "user",
+        eventName: "hr.recruitment.interview_scorecard_submitted.v1",
+        aggregateType: "Application",
+        aggregateId: String(parent.applicationId),
+        payload: {
+          applicationId: parent.applicationId,
+          interviewId: id,
+          scorecardId: row.id,
+          actorId: who.id,
+        },
+      });
+      if (!queued) fail("Feedback event could not be persisted", 503);
+      return row;
+    },
+    { tenantId },
+  );
+}
 export default upsertInterviewScorecard;

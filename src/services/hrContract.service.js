@@ -1,7 +1,18 @@
+import { authorizeNativeHrCreate, lockNativeHrGrant, findNativeHrReplay, bindNativeHrIntent } from "./native-verification-guard.service.js";
 import { legacyDecision, legacySubmit } from './approval/legacy.js';
 import { prepareEmployeeInsert, guardIdentityEdit } from "./employee-code.service.js";
 import prisma from "../config/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
+import {
+  assertRequisitionTransition,
+  assertRequisitionAdvanceAllowed,
+  recordRequisitionTransition,
+} from "./requisitionWorkflow.service.js";
+import { assertNotRequester, nextPendingStep } from "../lib/requisitionApprovalChain.js";
+import { applyApprovalDecision, chainFor, emitRequisitionSubmittedEvent } from "./requisitionApprovalChain.service.js";
+import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
+import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
@@ -1083,6 +1094,7 @@ const lifecycleSourceSelect = {
 };
 
 export const createEmployee = async (payload, actorId, ctx = {}) => {
+  const native = await authorizeNativeHrCreate(payload, { idempotencyKey: ctx.idempotencyKey });
   const data = createEmployeeContractSchema.parse(normalizeContractPayload(payload));
   // F-03: provisioning must be tenant-scoped and valid before any aggregate
   // side effect. The actual durable row is built after Employee has its id.
@@ -1146,6 +1158,11 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
   };
 
   const createdResult = await tenantTransaction(prisma, async (tx) => {
+    if (native) {
+      await lockNativeHrGrant(tx, native);
+      const replay = await findNativeHrReplay(tx, native);
+      if (replay) return { ...replay, employee: await tx.employee.findUnique({ where: { id: replay.employee.id }, select: employeeProfileSelect }) };
+    }
     const createData = await prepareEmployeeInsert(tx, employeeDataFromContract(employeeData, actorId), { tenantId: verifiedTenantId, category: data.employeeCategory });
     createData.tenant_id = verifiedTenantId;
     const created = await tx.employee.create({
@@ -1205,9 +1222,17 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
     const systemAccount = intentData
       ? await tx.systemAccountProvisioning.create({ data: intentData })
       : null;
+    if (native) {
+      await bindNativeHrIntent(tx, native, employee, systemAccount);
+      await tx.log.create({ data: { tenantId: verifiedTenantId, employeeId: employee.id,
+        type: "CREATE", action_type: "NATIVE_VERIFICATION_EMPLOYEE", module: "SDLCNativeVerification", result: "SUCCESS", ip: "internal", os: "kubernetes",
+        notes: JSON.stringify({ grantId: native.plan.grantId, entryId: native.entry.entryId, actorUserId: native.plan.bootstrap.userId, provisioningId: systemAccount.id }),
+        correlationId: ctx.correlationId ?? null } });
+    }
     return { employee, systemAccount };
   }, { tenantId: verifiedTenantId });
   const { employee, systemAccount: provisioning } = createdResult;
+  if (createdResult.replayed) return { ...employeeContractProfile(employee), systemAccount: publicProvisioningState(provisioning) };
 
   await logAction({
     employeeId: actorId,
@@ -1366,13 +1391,13 @@ export const getEmployeeDocuments = async (id, tenantId) => {
   };
 };
 
-export const updateEmployeeStatus = async (id, status, actorId) => {
+export const updateEmployeeStatus = async (id, status, actorId, { client = prisma } = {}) => {
   const parsed = employeeStatusSchema.parse({ status });
-  const current = await prisma.employee.findUnique({ where: { id: Number(id) } });
+  const current = await client.employee.findUnique({ where: { id: Number(id) } });
   if (!current) throw Object.assign(new Error("Employee not found"), { status: 404 });
   guardIdentityEdit(current, {});
 
-  const employee = await prisma.employee.update({
+  const employee = await client.employee.update({
     where: { id: Number(id) },
     data: {
       status: parsed.status,
@@ -1868,28 +1893,50 @@ export const getRequisition = async (id, tenantId) => {
   return { ...requisitionRow(requisition), postings: requisition.postings };
 };
 
-export const createRequisition = async (data, actorId) => {
+export const createRequisition = async (data, actorId, tenantId = null) => {
   if (!data.title) throw new Error("Title is required");
   if (!actorId) throw new Error("Employee context is required");
 
+  // Phase 2.2 — the legacy surface writes the expansion fields too. Without this
+  // a requisition created here could never satisfy the submission gate, so the
+  // legacy UI would be able to create requisitions it cannot submit.
+  const expansion = pickRequisitionFields(data);
+  const requestedById = toInt(data.requestedById) || Number(actorId);
+  assertReplacementPairing({ ...expansion, requestedById });
+
   const requisition = await prisma.jobRequisition.create({
-    data: {
+    data: scopedData(tenantId, {
       title: data.title,
       description: data.description || null,
       departmentId: toInt(data.departmentId),
       positionId: toInt(data.positionId),
       // Hiring manager: an explicitly chosen requestedById wins, else the creator.
-      requestedById: toInt(data.requestedById) || Number(actorId),
+      requestedById,
       openings: Number(data.openings || 1),
       status: data.status || "DRAFT",
-    },
+      ...expansion,
+    }),
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
 
   return requisitionRow(requisition);
 };
 
-export const updateRequisition = async (id, data) => {
+export const updateRequisition = async (id, data, tenantId = null) => {
+  // Phase 1.2 — tenant-scoped pre-read so a cross-tenant id is not-found rather
+  // than a successful write. Previously this was a bare `update({ where: { id } })`
+  // with no tenant predicate at all, unlike the transition paths beside it.
+  const existing = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+  });
+  if (!existing) throw Object.assign(new Error("Requisition not found"), { status: 404 });
+
+  const expansion = pickRequisitionFields(data);
+  assertReplacementPairing({ ...existing, ...expansion });
+  // FR-02.02 — the legacy /api/hr surface enforces the same post-submission
+  // field lock as the newer path, or the lock would be bypassable by URL choice.
+  assertRequisitionFieldsEditable(existing, { ...data, ...expansion });
+
   const requisition = await prisma.jobRequisition.update({
     where: { id: Number(id) },
     data: {
@@ -1902,6 +1949,7 @@ export const updateRequisition = async (id, data) => {
         data.requestedById === undefined || data.requestedById === ''
           ? undefined
           : toInt(data.requestedById),
+      ...expansion,
     },
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
@@ -1909,32 +1957,107 @@ export const updateRequisition = async (id, data) => {
   return requisitionRow(requisition);
 };
 
-const transitionRequisition = async ({ id, status, actorId, comments }) => {
+const transitionRequisition = async ({ id, tenantId, status, actorId, comments }) => {
   if (["APPROVED","REJECTED"].includes(status)) return legacyDecision("REQUISITION",id);
   if (status === "PENDING_APPROVAL") return legacySubmit("REQUISITION",id,comments);
   if (!actorId) throw new Error("Employee context is required");
+  if (!tenantId) {
+    throw Object.assign(new Error("Tenant context is required"), {
+      status: 400,
+      code: "HR-TENANT-REQUIRED",
+    });
+  }
 
-  const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
+  const requisition = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+  });
   if (!requisition) throw new Error("Requisition not found");
 
+  // Phase 2.2 — the legacy /api/hr surface submits like any other, so it runs the
+  // same mandatory-field gate. Enforced here (before the transaction) as well as
+  // inside the workflow guard, because this path also has to enforce the legal
+  // transition and the rejection-reason rule.
+  assertRequisitionTransition(requisition.status, status, { comments, requisition });
+  // Phase 4 — and a hiring freeze blocks submission here too, or the freeze would
+  // be bypassable simply by using the older endpoint.
+  await assertRequisitionAdvanceAllowed(tenantId, requisition, status);
+  // FR-02.10 / decision B1.1–B1.2 — the Finance validity gate on the legacy
+  // submit too, so the posture cannot depend on which URL was used. Dormant
+  // until configured; runs before the transaction (no HTTP inside a tx).
+  const financeSnapshot = status === "PENDING_APPROVAL"
+    ? await assertFinanceValidityAtSubmit(tenantId, requisition, requisition.budgetApprovalSnapshot)
+    : null;
+
+  // Phase 4 — the legacy decision goes through the same approval CHAIN as the
+  // newer surface, so a tenant cannot get a different number of required
+  // signatures depending on which URL its client used. A partial approval
+  // returns early WITHOUT moving the status: the requisition is not approved
+  // until the last applicable step is satisfied.
+  let partialDecision = null;
+
   const updated = await tenantTransaction(prisma, async (tx) => {
-    if (["APPROVED", "REJECTED"].includes(status)) {
+    if (status === "APPROVED") {
+      const decision = await applyApprovalDecision(tx, {
+        tenantId,
+        requisition,
+        actorId,
+        comments,
+      });
+      if (!decision.chainComplete) {
+        partialDecision = decision;
+        await recordRequisitionTransition(tx, {
+          requisitionId: Number(id),
+          tenantId,
+          fromStatus: requisition.status,
+          toStatus: requisition.status,
+          reason: comments,
+          actorId,
+          source: "requisition.approval_step",
+        });
+        return tx.jobRequisition.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
+      }
+    } else if (status === "REJECTED") {
+      // Stamp the verified tenant (RequisitionApproval.tenantId, per
+      // requisition.service.js) rather than writing a null-tenant approval row.
+      // A rejection ends the chain, but records the step it was decided at.
+      const decisions = await tx.requisitionApproval.findMany({
+        where: scopedWhere(tenantId, { requisitionId: Number(id) }),
+      });
+      const chain = await chainFor(requisition, { db: tx, tenantId });
+      const step = nextPendingStep(chain, decisions);
+      assertNotRequester(requisition, actorId);
       await tx.requisitionApproval.create({
-        data: {
+        data: scopedData(tenantId, {
           requisitionId: Number(id),
           approverId: Number(actorId),
           status,
           comments,
           decidedAt: new Date(),
-        },
+          stepOrder: step ? step.stepOrder : null,
+          role: step ? step.role : null,
+        }),
       });
     }
 
-    return tx.jobRequisition.update({
+    // Phase 4 / §2.4a — CLOSING from this surface takes the requisition off every
+    // channel it was published to, in the same transaction as the status flip. The
+    // legacy route has no separate "unpublish", so without this a closed
+    // requisition would stay advertised on a job board.
+    if (status === "CLOSED") {
+      await closeActivePostingsForRequisition(tx, {
+        requisitionId: Number(id),
+        tenantId,
+        closeReason: "REQUISITION_CLOSED",
+        actorId,
+      });
+    }
+
+    const moved = await tx.jobRequisition.update({
       where: { id: Number(id) },
       data: {
         status,
         approvedById: status === "APPROVED" || status === "REJECTED" ? Number(actorId) : undefined,
+        ...(financeSnapshot ? { budgetApprovalSnapshot: financeSnapshot } : {}),
       },
       include: {
         position: true,
@@ -1943,22 +2066,49 @@ const transitionRequisition = async ({ id, status, actorId, comments }) => {
         approvals: { include: { approver: true }, orderBy: { id: "desc" } },
       },
     });
+
+    // Phase 2.1 — the legacy /api/hr surface is a requisition transition path
+    // like any other, so it writes the same history row. `source` marks which
+    // surface made the move; the row itself is identical in shape.
+    await recordRequisitionTransition(tx, {
+      requisitionId: Number(id),
+      tenantId,
+      fromStatus: requisition.status,
+      toStatus: status,
+      reason: comments,
+      actorId,
+      source: "requisition.legacy",
+    });
+
+    // Phase 4 closure — the legacy submit routes the approver notification the
+    // same way the newer surfaces do; the audience must not depend on the URL.
+    if (status === "PENDING_APPROVAL") {
+      await emitRequisitionSubmittedEvent(tx, { tenantId, requisition: moved, actorId });
+    }
+
+    return moved;
   });
 
-  return requisitionRow(updated);
+  const row = requisitionRow(updated);
+  if (!partialDecision) return row;
+  return {
+    ...row,
+    approvalDecision: "STEP_RECORDED",
+    approvalProgress: partialDecision.chain,
+  };
 };
 
-export const submitRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "PENDING_APPROVAL" });
+export const submitRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "PENDING_APPROVAL" });
 
-export const approveRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "APPROVED" });
+export const approveRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "APPROVED" });
 
-export const rejectRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "REJECTED" });
+export const rejectRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "REJECTED" });
 
-export const closeRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "CLOSED" });
+export const closeRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "CLOSED" });
 
-export const reopenRequisition = (id, actorId, comments) =>
-  transitionRequisition({ id, actorId, comments, status: "DRAFT" });
+export const reopenRequisition = (id, tenantId, actorId, comments) =>
+  transitionRequisition({ id, tenantId, actorId, comments, status: "DRAFT" });

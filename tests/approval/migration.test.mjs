@@ -66,10 +66,10 @@ test(
       url.pathname = "/" + name;
       db = new pg.Client({ connectionString: url.toString() });
       await db.connect();
-      await db.query(diff.stdout);
       await db.query(
         "CREATE FUNCTION public.hr_current_tenant() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('app.tenant_id',true),'')::uuid $$",
       );
+      await db.query(diff.stdout);
       const company = randomUUID();
       const person = (
         await db.query(

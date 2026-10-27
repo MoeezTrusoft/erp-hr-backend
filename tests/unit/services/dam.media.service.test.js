@@ -24,6 +24,7 @@ const mockSignServiceJwtEdDSA = jest.fn().mockImplementation(() => {
 });
 jest.unstable_mockModule('../../../src/lib/serviceJwt.js', () => ({
     signServiceJwtEdDSA: mockSignServiceJwtEdDSA,
+  signNativeVerificationJwt: jest.fn(() => "native.hr.token"),
     ambientTenantHeader: jest.fn().mockReturnValue({}),
 }));
 

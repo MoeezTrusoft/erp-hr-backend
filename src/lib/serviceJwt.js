@@ -39,6 +39,7 @@ import jwt from 'jsonwebtoken';
 
 import { resolvePublicKeyPem } from './serviceJwtKeys.js';
 import { mcpCtx } from './requestContext.js';
+import { NATIVE_TENANT, validateNativeWorkerClaim } from './native-verification-plan.js';
 
 // Source the caller's VERIFIED tenant from the ambient request context (set by
 // establishTenantContext for REST and the MCP router) so peer service tokens
@@ -373,4 +374,48 @@ export function signServiceJwtEdDSA(extraClaims = {}) {
     } catch {
         return null;
     }
+}
+
+// Restricted worker claim: no shared-HMAC fallback and no configurable issuer
+// or audience. RBAC separately pins this HR-owned public key to this issuer.
+export function signNativeVerificationJwt(extraClaims = {}) {
+    const privKey = getServicePrivateKey();
+    const kid = process.env.SERVICE_JWT_CURRENT_KID;
+    const tid = ambientTenantId();
+    const ctx = mcpCtx.getStore();
+    if (!privKey || privKey.asymmetricKeyType !== 'ed25519' || !kid || !tid ||
+        !ctx?.actorVerified || !extraClaims.sdlcVerification ||
+        String(extraClaims.userId) !== String(ctx.user?.userId)) return null;
+    try { validateNativeWorkerClaim(extraClaims.sdlcVerification); } catch { return null; }
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = b64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT', kid }));
+    const payload = b64url(JSON.stringify({ ...extraClaims, tid,
+        sub: 'erp-hr-backend', iss: 'erp-hr-backend', aud: 'internal',
+        iat: nowSec, exp: nowSec + 60 }));
+    const input = `${header}.${payload}`;
+    try { return `${input}.${b64url(crypto.sign(null, Buffer.from(input), privKey))}`; }
+    catch { return null; }
+}
+
+// Protected operator artifact only. The operator signs committed deactivation
+// receipts, never an input from an HTTP/MCP request or an inactive bootstrap.
+export function signNativeCleanupJwt(claim) {
+    const keys = ['version', 'grantId', 'grantFingerprint', 'runId', 'tenantId', 'bootstrapUserId', 'entryId',
+        'provisioningId', 'employeeId', 'idempotencyKey', 'payloadFingerprint', 'employeeStatus', 'grantStatus', 'deactivationReceiptId'];
+    if (!claim || Object.keys(claim).sort().join('|') !== keys.sort().join('|') ||
+        claim.tenantId !== NATIVE_TENANT || !Number.isSafeInteger(claim.bootstrapUserId) || claim.bootstrapUserId <= 0 ||
+        claim.bootstrapUserId === 8 || claim.employeeStatus !== 'Inactive' || claim.grantStatus !== 'CANCELLED' ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(claim.deactivationReceiptId || '')) return null;
+    const tenantId = claim.tenantId;
+    const worker = Object.fromEntries(['version', 'grantId', 'grantFingerprint', 'runId', 'entryId', 'provisioningId', 'employeeId', 'idempotencyKey', 'payloadFingerprint'].map(key => [key, claim[key]]));
+    try { validateNativeWorkerClaim(worker); } catch { return null; }
+    const privKey = getServicePrivateKey(), kid = process.env.SERVICE_JWT_CURRENT_KID;
+    if (!privKey || privKey.asymmetricKeyType !== 'ed25519' || !kid) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = b64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT', kid }));
+    const payload = b64url(JSON.stringify({ sub: 'erp-hr-backend', iss: 'erp-hr-backend',
+        aud: 'erp-rbac:sdlc-cleanup', tid: tenantId, iat: nowSec, exp: nowSec + 300, sdlcCleanup: claim }));
+    const input = `${header}.${payload}`;
+    try { return `${input}.${b64url(crypto.sign(null, Buffer.from(input), privKey))}`; }
+    catch { return null; }
 }

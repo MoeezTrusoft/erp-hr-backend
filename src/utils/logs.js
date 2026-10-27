@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma.js";
 import os from "os";
 import logger from "../lib/logger.js";
+import { currentCorrelationId } from "../lib/requestContext.js";
 
 
 const toIntOrNull = (value) => {
@@ -19,7 +20,12 @@ export const logAction = async ({
     notes = "",
     ip = "unknown",
     tenantId = null,
+    // NFR-03 — callers may pass the id explicitly (background jobs); every HTTP
+    // request supplies it automatically through the AsyncLocalStorage binding
+    // the correlationId middleware sets up.
+    correlationId = null,
 }) => {
+    const effectiveCorrelationId = correlationId ?? currentCorrelationId() ?? null;
     try {
         const os_name = os.platform();
         // F-07: both columns reference Employee.id. RBAC User.id is a distinct
@@ -58,6 +64,7 @@ export const logAction = async ({
                 os: os_name,
                 notes,
                 tenantId: tenantId ?? null,
+                correlationId: effectiveCorrelationId,
             },
         });
     } catch (err) {

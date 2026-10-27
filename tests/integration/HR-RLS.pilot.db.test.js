@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 // C.2 / T-P2.6 — RLS PILOT proof (defense-in-depth at the database).
 //
 // withTenant() is the primary, application-layer tenant fence. This test proves
@@ -60,8 +61,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
         return;
     }
 
-    const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'RLS', last_name: 'A', status: 'active' } });
-    const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'RLS', last_name: 'B', status: 'active' } });
+    const empA = await prisma.employee.create({ data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_A, first_name: 'RLS', last_name: 'A', status: 'active' } });
+    const empB = await prisma.employee.create({ data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_B, first_name: 'RLS', last_name: 'B', status: 'active' } });
     created.employees.push(empA.id, empB.id);
 
     const attA = await prisma.attendance.create({ data: { employeeId: empA.id, status: 'PRESENT', tenantId: TENANT_A } });

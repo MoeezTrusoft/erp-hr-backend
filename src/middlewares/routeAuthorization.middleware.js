@@ -8,6 +8,7 @@ import { EMPLOYMENT_TOOLS } from "@trusoft/contracts/employment";
 // what that call may do. Forwarded x-user-* headers are never authorization
 // truth.
 import { mcpCtx } from "../mcp/context.js";
+import { recordDenial } from "../lib/recruitmentOpsMetrics.js";
 
 const PROTECTED = Symbol("F-02-route-protected");
 // Grants that place a caller on the payroll admin surface (actorScope.js).
@@ -40,6 +41,14 @@ const RESOURCE_PREFIXES = Object.freeze([
   ["/api/attendance", "hr.attendance"],
   ["/api/reimbursements", "hr.reimbursement"],
   ["/api/requisitions", "hr.requisition"],
+  // Phase 4 / §2.7 — the hiring freeze is a CONTROL, not an ordinary recruitment
+  // write, so it resolves to its own resource. This entry MUST stay above
+  // "/api/recruitment" (first match wins): below it, a plain recruiter's
+  // hr.recruitment:create grant would let them lift the freeze an HR leader set.
+  ["/api/recruitment/freeze", "hr.recruitment.freeze"],
+  // Phase 4 / §2.5 — configuring the approval chain is a CONTROL too, so it gets
+  // its own resource. MUST stay above "/api/recruitment" (first match wins).
+  ["/api/recruitment/approval-matrix", "hr.recruitment.approval.matrix"],
   ["/api/recruitment", "hr.recruitment"],
   ["/api/interviews", "hr.recruitment"],
   ["/api/talent-pool", "hr.recruitment"],
@@ -199,12 +208,18 @@ export function resolveHrRoutePolicy(req) {
   };
 }
 
-const deny = (req, res, code, message) => res.status(403).json({
-  success: false,
-  message: "Forbidden",
-  errors: [{ code, message }],
-  requestId: req.requestId,
-});
+const deny = (req, res, code, message) => {
+  // Phase 15 — denials are a rollout metric (HR_RECRUITMENT_DENIALS). The
+  // metric records the CODE family only, never the actor, route params or
+  // message, so there is no PII in the label and no cardinality risk.
+  recordDenial(code);
+  return res.status(403).json({
+    success: false,
+    message: "Forbidden",
+    errors: [{ code, message }],
+    requestId: req.requestId,
+  });
+};
 
 const syncVerifiedAmbientActor = (req) => {
   const store = mcpCtx.getStore();

@@ -34,6 +34,30 @@ test(
         async () => {
           const s = await fixture(kind);
           let row = await submit(s);
+          if (kind === "OFFER") {
+            const policy = async () => (await db(tx => tx.hrApprovalRequest.findFirstOrThrow({
+              where: { tenantId: company, id: row.approvalRef },
+              select: { recruitmentPolicy: true },
+            }))).recruitmentPolicy;
+            assert.equal(row.stage, "MANAGEMENT");
+            assert.deepEqual((await policy()).steps.map(step => step.role), ["HIRING_MANAGER", "HR_HEAD", "FINANCE"]);
+            for (const who of ["HR", "MANAGEMENT", "OTHER", "ADMIN", "EMPLOYEE"])
+              await assert.rejects(act(who, row, "APPROVE"), e => [403, 404].includes(e.status));
+            row = await act("MANAGER", row, "APPROVE");
+            row = await act("HR", row, "APPROVE");
+            const before = row;
+            row = await act("MANAGEMENT", row, "REVERT");
+            assert.equal(row.stage, "INITIATOR");
+            assert.equal((await policy()).decisions.length, 0);
+            await assert.rejects(act("MANAGEMENT", before, "APPROVE"), e => e.status === 412);
+            row = await submit(s, row.version);
+            for (const who of ["MANAGER", "HR", "MANAGEMENT"]) row = await act(who, row, "APPROVE");
+            assert.equal(row.stage, "APPROVED");
+            assert.equal((await policy()).decisions.length, 3);
+            await db(tx => requireApproval(tx, company, kind, s.ref));
+            await assert.rejects(act("MANAGEMENT", row, "APPROVE"), e => e.status === 403);
+            return;
+          }
           assert.equal(row.stage, "LINE_MANAGER");
           for (const who of ["HR", "MANAGEMENT", "OTHER", "ADMIN"])
             await assert.rejects(act(who, row, "APPROVE"), (e) =>
@@ -134,6 +158,23 @@ test(
         async () => {
           const s = await fixture(kind);
           let row = await submit(s);
+          if (kind === "OFFER") {
+            row = await act("MANAGER", row, "REVERT");
+            assert.equal(row.stage, "INITIATOR");
+            row = await submit(s, row.version);
+            assert.equal(row.round, 2);
+            row = await act("MANAGER", row, "APPROVE");
+            row = await act("HR", row, "REVERT");
+            assert.equal(row.stage, "INITIATOR");
+            row = await submit(s, row.version);
+            assert.equal(row.round, 3);
+            await assert.rejects(act("HR", row, "REJECT"), e => e.status === 403);
+            row = await act("MANAGER", row, "APPROVE");
+            row = await act("HR", row, "APPROVE");
+            row = await act("MANAGEMENT", row, "REJECT");
+            assert.equal(row.stage, "REJECTED");
+            return;
+          }
           row = await act("MANAGER", row, "REVERT");
           assert.equal(row.stage, "INITIATOR");
           row = await submit(s, row.version);
@@ -235,8 +276,8 @@ test(
           /Complete the employee/,
         );
         let row = await submit(source);
-        row = await act("MANAGER", row, "RECOMMEND_APPROVAL");
-        row = await act("HR", row, "VERIFY");
+        row = await act("MANAGER", row, "APPROVE");
+        row = await act("HR", row, "APPROVE");
         await act("MANAGEMENT", row, "APPROVE");
         const sent = await as("HR", () => sendOffer(source.row.id, company));
         assert.equal(sent.status, "SENT");

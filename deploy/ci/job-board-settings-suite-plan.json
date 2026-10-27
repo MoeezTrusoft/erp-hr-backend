@@ -1,0 +1,59 @@
+{
+  "state": "PREPARED_NOT_RUN",
+  "lane": "company-job-board-settings-v4",
+  "base": "agency v4 + shared UI v1/v2 + job-board feeds v1 + observability v1/v2; native-only lane unchanged",
+  "page": "/hr/job-board-settings",
+  "newPrepared": {
+    "hrUnitCases": 17,
+    "nativeSubcases": 14,
+    "frontendUnitCases": 10,
+    "browserJourneys": 4,
+    "frontendScopeUnitCases": 7,
+    "sharedApiScopeCases": 6
+  },
+  "fullHrJestFileCount": 348,
+  "jestFiles": [
+    "tests/unit/job-board-settings.test.js",
+    "tests/unit/job-board-feeds.test.js",
+    "tests/unit/requisitionPublication.test.js",
+    "tests/unit/applicationDraft.service.test.js",
+    "tests/unit/publicPortal.test.js"
+  ],
+  "nativeFiles": [
+    "tests/recruitment/job-board-settings.postgres.test.mjs",
+    "tests/recruitment/job-board-feeds.postgres.test.mjs",
+    "tests/recruitment/communications.postgres.test.mjs",
+    "tests/recruitment/auto-disposition.postgres.test.mjs",
+    "tests/recruitment/analytics.postgres.test.mjs",
+    "tests/recruitment/offer-signing.postgres.test.mjs"
+  ],
+  "frontendFiles": [
+    "apps/erp-web/src/domains/hr/__tests__/job-board-settings.test.jsx",
+    "apps/erp-web/src/domains/hr/__tests__/hr-manifest.test.js",
+    "apps/erp-web/src/domains/hr/__tests__/recruitment-scope.test.jsx",
+    "packages/api/src/mcp/client.test.js"
+  ],
+  "browser": {
+    "harness": "tests/job-board-settings/vite.config.js",
+    "journey": "tests/job-board-settings/journey.cjs",
+    "host": "127.0.0.1",
+    "port": 5394,
+    "requiredEnvironment": ["KUBERNETES_SERVICE_HOST", "RECRUITMENT_BROWSER_OUTPUT_DIR"],
+    "expectedJourneys": 4
+  },
+  "required": [
+    "Fresh exact-source locked dependencies; no host runtime or installed graph reuse",
+    "Prisma generate/replay/drift in approved Kubernetes fixture",
+    "Full 348-file HR Jest discovery and regression, adjacent policy/publication/native suites",
+    "Full frontend test/lint/build and browser screenshots with E-04 route/nav review",
+    "Actual Gateway structured tool schema accepts the optional reconcileJobBoards boolean",
+    "Tenant host binding, configured-provider identity and HTTPS public-feed acceptance",
+    "Current-source staging and provider ingestion acceptance before rollout",
+    "Hiring-freeze refusal on first provider activation and reactivation; no policy or posting writes after refusal",
+    "Malformed website inputs return field errors; feed location/title text rejects invalid XML before publication",
+    "Run full shared MCP client/API regression and company/account switch races, including queued mutations and authentication refresh; no cross-scope dedupe or response acceptance"
+  ],
+  "runtimeExecuted": false,
+  "noNewLiveMail": true,
+  "noAutomaticProviderSubmission": true
+}

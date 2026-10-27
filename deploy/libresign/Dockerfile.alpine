@@ -1,0 +1,20 @@
+# Isolated candidate; production cutover requires the signing acceptance receipt.
+FROM docker.io/library/nextcloud@sha256:f0504047980b636e001ff61e91fc831a55a029fd5063a05252533e6f2d7f8932
+RUN apk add --no-cache nginx poppler-utils fontconfig font-dejavu ca-certificates \
+ && test "$(id -u www-data)" = 82 \
+ && awk -F: '$3 == 33 && $1 != "www-data" {exit 1}' /etc/passwd \
+ && awk -F: '$3 == 33 && $1 != "www-data" {exit 1}' /etc/group \
+ && sed -i 's/^www-data:x:82:82:/www-data:x:33:33:/' /etc/passwd \
+ && sed -i 's/^www-data:x:82:/www-data:x:33:/' /etc/group \
+ && test "$(id -u www-data)" = 33 \
+ && mkdir -p /run/nginx /var/cache/nginx /usr/src/nextcloud/custom_apps \
+ && chown -R www-data:www-data /usr/src/nextcloud /var/lib/nginx /var/cache/nginx /run/nginx
+RUN --mount=type=bind,source=vendor,target=/vendor,readonly \
+    echo "4b43d7b161d65464f1df93a38eb9d18bd901e51773a02b74081cca9d802a8543  /vendor/libresign-v15.0.8.tar.gz" | sha256sum -c - \
+ && tar -xzf /vendor/libresign-v15.0.8.tar.gz -C /usr/src/nextcloud/custom_apps \
+ && chown -R www-data:www-data /usr/src/nextcloud/custom_apps/libresign
+COPY nginx-alpine.conf /etc/nginx/nginx.conf
+RUN php -r 'foreach (["openssl","pdo_pgsql","redis","imagick","zip","intl"] as $e) { if (!extension_loaded($e)) {fwrite(STDERR,$e);exit(1);} }' \
+ && nginx -t \
+ && pdfsig -v
+CMD ["php-fpm"]

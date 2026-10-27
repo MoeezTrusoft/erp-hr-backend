@@ -17,7 +17,7 @@
 
 import Redis from 'ioredis';
 import logger from '../lib/logger.js';
-import { createMemoryStore, createRedisStore } from '../lib/idempotency-store.js';
+import { createMemoryStore, createRedisStore, waitForRedisReady } from '../lib/idempotency-store.js';
 
 // Default TTL: 24h (HR mutations are infrequent; a generous replay window).
 const DEFAULT_TTL_MS = Number(process.env.HR_IDEMPOTENCY_TTL_MS) || 24 * 60 * 60 * 1000;
@@ -35,6 +35,8 @@ function getSharedRedis() {
         lazyConnect: true,
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
+        connectTimeout: 1000,
+        commandTimeout: 1000,
     });
     redis.on('error', (err) => logger.warn({ err }, 'idempotency redis client error'));
     _sharedRedis = redis;
@@ -45,7 +47,7 @@ function buildStore(ttl) {
     const redis = getSharedRedis();
     if (redis) {
         logger.info({ ttlMs: ttl }, 'hr idempotency store: redis (SET NX PX)');
-        return createRedisStore({ redis, ttlMs: ttl });
+        return createRedisStore({ redis, ttlMs: ttl, ready: () => waitForRedisReady(redis) });
     }
     logger.warn({ ttlMs: ttl }, 'hr idempotency store: memory (no HR_REDIS_URL — single-process only)');
     return createMemoryStore({ ttlMs: ttl });
@@ -182,20 +184,24 @@ export function idempotency({ store, ttlMs } = {}) {
             // 2xx response commits the cache; anything else releases it.
             const json = res.json.bind(res);
             res.json = (payload) => {
-                const result = json(payload);
                 const status = res.statusCode;
+                // Finish persistence before emitting a success response, so an immediate retry
+                // sees the committed value even when Redis completion is asynchronous.
                 try {
-                    if (status >= 200 && status < 300) {
-                        Promise.resolve(activeStore.commit(key, { status, body: payload }))
-                            .catch((err) => logger.warn({ err, key }, 'idempotency commit failed'));
-                    } else {
-                        Promise.resolve(activeStore.release(key))
-                            .catch((err) => logger.warn({ err, key }, 'idempotency release failed'));
+                    const pending = status >= 200 && status < 300
+                        ? activeStore.commit(key, { status, body: payload })
+                        : activeStore.release(key);
+                    if (pending && typeof pending.then === 'function') {
+                        Promise.resolve(pending)
+                            .catch((err) => logger.warn({ err, key }, 'idempotency post-response persistence failed'))
+                            .then(() => json(payload))
+                            .catch(next);
+                        return res;
                     }
                 } catch (err) {
                     logger.warn({ err, key }, 'idempotency post-response handling threw');
                 }
-                return result;
+                return json(payload);
             };
             next();
         }

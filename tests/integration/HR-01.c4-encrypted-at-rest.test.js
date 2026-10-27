@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 // HR-01 / HR-10 (Roadmap T-P4.2) — C4 encrypted-at-rest, transparent decrypt,
 // blind index, deny-by-default + audit, and redaction.
 //
@@ -17,6 +18,12 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
 import { mcpCtx } from '../../src/mcp/context.js';
+
+// Raw SQL bypasses Prisma model extensions; bind each ciphertext read to its tenant connection.
+const rawForTenant = (read) => prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.tenant_id', ${TENANT}, true)`;
+    return read(tx);
+});
 import {
     encryptString,
     decryptString,
@@ -62,7 +69,7 @@ afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (created.terms.length) await prisma.employmentTerms.deleteMany({ where: { id: { in: created.terms } } });
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } });
     await prisma.$disconnect();
-}));
+}), 30000);
 
 const skipIfNoDb = () => {
     if (!dbAvailable) return true;
@@ -142,7 +149,7 @@ describe('HR-01 employment terms salary — ciphertext at rest, number on read',
         if (skipIfNoDb()) return;
 
         const emp = await prisma.employee.create({
-            data: { tenant_id: TENANT, first_name: 'Sal', last_name: 'Test', status: 'active' },
+            data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT, first_name: 'Sal', last_name: 'Test', status: 'active' },
         });
         created.employees.push(emp.id);
 
@@ -169,7 +176,7 @@ describe('HR-01 employment terms salary — ciphertext at rest, number on read',
         expect(reread.bonusTarget).toBe(12345.5);
 
         // RAW DB read → ciphertext STRING, NOT the plaintext salary.
-        const rows = await prisma.$queryRaw`SELECT "baseSalary", "bonusTarget" FROM employment_terms WHERE id = ${term.id}`;
+        const rows = await rawForTenant((tx) => tx.$queryRaw`SELECT "baseSalary", "bonusTarget" FROM employment_terms WHERE id = ${term.id}`);
         const raw = rows[0];
         expect(typeof raw.baseSalary).toBe('string');
         expect(raw.baseSalary).not.toContain('88888');
@@ -184,7 +191,7 @@ describe('HR-01 bank detail — encrypted account, blind index lookup + uniquene
         if (skipIfNoDb()) return;
 
         const emp = await prisma.employee.create({
-            data: { tenant_id: TENANT, first_name: 'Bank', last_name: 'Test', status: 'active' },
+            data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT, first_name: 'Bank', last_name: 'Test', status: 'active' },
         });
         created.employees.push(emp.id);
 
@@ -205,7 +212,7 @@ describe('HR-01 bank detail — encrypted account, blind index lookup + uniquene
         expect(bank.routingNumber).toBe('021000021');
 
         // RAW account column is ciphertext, and a blind-index column holds the HMAC.
-        const rows = await prisma.$queryRaw`SELECT "accountNumber", "routingNumber", "accountNumberBidx" FROM bank_details WHERE id = ${bank.id}`;
+        const rows = await rawForTenant((tx) => tx.$queryRaw`SELECT "accountNumber", "routingNumber", "accountNumberBidx" FROM bank_details WHERE id = ${bank.id}`);
         const raw = rows[0];
         expect(raw.accountNumber).not.toContain(ACC);
         expect(isCiphertext(raw.accountNumber)).toBe(true);
@@ -235,7 +242,7 @@ describe('HR-01 employee national id — ciphertext at rest, plaintext on read',
 
         const NID = '42101-7654321-0';
         const emp = await prisma.employee.create({
-            data: { tenant_id: TENANT, first_name: 'Nat', last_name: 'Id', status: 'active', nationality_id_no: NID },
+            data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT, first_name: 'Nat', last_name: 'Id', status: 'active', nationality_id_no: NID },
         });
         created.employees.push(emp.id);
 
@@ -244,7 +251,7 @@ describe('HR-01 employee national id — ciphertext at rest, plaintext on read',
         const reread = await prisma.employee.findUnique({ where: { id: emp.id } });
         expect(reread.nationality_id_no).toBe(NID);
 
-        const rows = await prisma.$queryRaw`SELECT "nationality_id_no" FROM "Employee" WHERE id = ${emp.id}`;
+        const rows = await rawForTenant((tx) => tx.$queryRaw`SELECT "nationality_id_no" FROM "Employee" WHERE id = ${emp.id}`);
         expect(rows[0].nationality_id_no).not.toContain(NID);
         expect(isCiphertext(rows[0].nationality_id_no)).toBe(true);
     }));

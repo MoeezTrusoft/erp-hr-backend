@@ -1,0 +1,63 @@
+{
+  "state": "PRODUCTION_ORIGINAL_PINNED_REMEDIATION_IN_PROGRESS",
+  "sourceArchiveSha256": "64b24e9280ee0300423406841fc07df8e4f8ab7b327e2ace4860b2af26ef5182",
+  "sourceIndexDigest": "sha256:0916c08b74f8ba89d3e36afee15e4c39fb28f1c3865c9d31203e28bfe57db097",
+  "publishedPlatformDigest": "sha256:46b7510490547c11472c354d4e095bc0d9b1747e4d98c2c7d05fa4afb7fcc225",
+  "platform": "linux/amd64",
+  "baseline": {
+    "critical": 4,
+    "high": 245
+  },
+  "candidate": {
+    "digest": "sha256:6a65c956873c96f45ca9213987b9a12b2bd8be2358de484881df7ecd869d2a31",
+    "state": "NOT_DEPLOYED_SCAN_REQUIRES_REMEDIATION",
+    "critical": 1,
+    "high": 136,
+    "medium": 320,
+    "low": 998,
+    "unknown": 65
+  },
+  "libxml2": {
+    "cve": "CVE-2026-6653",
+    "distributionStatus": "Debian trixie vulnerable, no-dsa minor issue; upstream fixed in v2.11.0; no remediation deployed.",
+    "source": "https://security-tracker.debian.org/tracker/CVE-2026-6653",
+    "upstreamCommit": "463bbeeca1805b5c4828f50d0fefc4eebaf620df"
+  },
+  "suppressedFindings": 0,
+  "alpine": {
+    "base": {
+      "state": "BASE_ONLY_SCAN_PASS_CRITICAL_HIGH_MEDIUM_NOT_DERIVED_ACCEPTANCE",
+      "digest": "sha256:f0504047980b636e001ff61e91fc831a55a029fd5063a05252533e6f2d7f8932",
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 1,
+      "unknown": 1,
+      "findings": [
+        "symfony/http-foundation CVE-2026-108082 UNKNOWN; installed7.4.15 fixed7.4.19",
+        "web-auth/webauthn-lib GHSA-gq4g-fpc9-vjfq LOW; installed4.9.3 fixed5.3.5"
+      ],
+      "derivedCandidate": "LOCAL_DOCKERFILE_UNBUILT; worker held for TruGit; native signing acceptance pending"
+    },
+    "sourceArchive": {
+      "archiveSha256": "2c12f7c79ecc9bcc06830ae0d93da8da5fa3129646ca691c69f3a3bc94eb3661",
+      "dockerfileSha256": "7925a28e1a6d93c2868a7f4e1e6f26f937bf3ca1a6324588d6bd7d3c99d6711b",
+      "bytes": 14709617,
+      "files": {
+        "Dockerfile": "7925a28e1a6d93c2868a7f4e1e6f26f937bf3ca1a6324588d6bd7d3c99d6711b",
+        "nginx-alpine.conf": "f16ad0711948b7718956c521054d4736639e816cd32f5618a6a249895e3447b0",
+        "vendor/libresign-v15.0.8.tar.gz": "4b43d7b161d65464f1df93a38eb9d18bd901e51773a02b74081cca9d802a8543"
+      }
+    },
+    "buildName": "tg-build-2c12f7c79ecc9bcc",
+    "state": "PREPARED_AWAITING_WORKER_SLOT",
+    "qualificationRequired": [
+      "Derived complete image scan",
+      "Isolated restored Nextcloud data compatibility",
+      "PhpNative signed PDF whole-document cryptographic verification",
+      "Mounted signing dependency inventory and scan",
+      "No foreign tenant access or public mail during qualification"
+    ],
+    "constraint": "Bundled Java21.0.8+9 and PDFtk are mounted application data; base-image scan alone does not qualify signing dependencies. LibreSign setup checks still check Java/PDFtk when PhpNative selected."
+  }
+}

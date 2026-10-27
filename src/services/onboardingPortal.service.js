@@ -7,37 +7,53 @@
 //   * preboarding readiness — the 4 grouped boolean checklists persisted on
 //     OnboardingChecklist.preboarding (Json). readyToCollect is DERIVED = every
 //     `readiness` + `itSetup` item is true.
-//   * feedback — persisted as an OnboardingSurvey row (responses = { ratings,
-//     comments }). SurveyType only carries DAY_30/DAY_60/DAY_90, so the "new
-//     hire feedback" survey is stored under DAY_30 (the earliest touch-point);
-//     the [checklistId, type] unique means submit is an UPSERT (create/append).
+//   * feedback uses the owned canonical portal questionnaire.
 //   * notes / activity — appended to OnboardingChecklist.activityLog (Json
 //     array of { at, actor, text }), same shape onboardingDetail.service uses.
 //
 // Tenant-scoped fail-closed via scopedWhere / scopedData (RBAC Company.uuid on
 // tenantId). All checklist lookups 404 on a missing OR cross-tenant row.
-import prisma from "../lib/prisma.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { randomUUID } from "node:crypto";
+import {
+  runOnboardingManagement,
+  managementChecklist,
+  onboardingFailure,
+} from "./onboardingManagement.service.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { ONBOARDING_FEEDBACK_QUESTIONS } from "../lib/onboardingTaxonomy.js";
+import { submitPortalFeedback } from "./onboardingPortalScreen.service.js";
 
 // The canonical preboarding JSON shape. Every group key defaults to false when a
 // stored blob omits it, so old/partial rows still normalise to a full board.
 const PREBOARDING_GROUPS = {
-  readiness: ["documentsReceived", "personalInfoComplete", "vpnAccessEnabled", "joiningDateConfirmed"],
-  itSetup: ["companyEmailCreated", "systemAccessAssigned", "personalEmailComplete", "communicationToolSetup"],
-  engagement: ["welcomeEmailSent", "introVideoWatched", "firstDayAgendaReviewed"],
-  workspace: ["laptopAssigned", "idCardPrepared", "deskAllocated", "softwareInstalled", "accessoriesAllocated"],
+  readiness: [
+    "documentsReceived",
+    "personalInfoComplete",
+    "vpnAccessEnabled",
+    "joiningDateConfirmed",
+  ],
+  itSetup: [
+    "companyEmailCreated",
+    "systemAccessAssigned",
+    "personalEmailComplete",
+    "communicationToolSetup",
+  ],
+  engagement: [
+    "welcomeEmailSent",
+    "introVideoWatched",
+    "firstDayAgendaReviewed",
+  ],
+  workspace: [
+    "laptopAssigned",
+    "idCardPrepared",
+    "deskAllocated",
+    "softwareInstalled",
+    "accessoriesAllocated",
+  ],
 };
 
 // readyToCollect is derived from these groups only (all items true).
 const READY_GROUPS = ["readiness", "itSetup"];
-
-const FEEDBACK_SURVEY_TYPE = "DAY_30";
-
-const notFound = () => {
-  const err = new Error("Onboarding checklist not found");
-  err.status = 404;
-  return err;
-};
 
 const badRequest = (msg) => {
   const err = new Error(msg);
@@ -47,15 +63,10 @@ const badRequest = (msg) => {
 
 const toChecklistId = (value) => {
   const id = Number(value);
-  if (!Number.isInteger(id)) throw badRequest("A valid checklist id is required");
+  if (!Number.isInteger(id))
+    throw badRequest("A valid checklist id is required");
   return id;
 };
-
-const employeeName = (e) =>
-  e?.employee_name ||
-  [e?.first_name, e?.last_name].filter(Boolean).join(" ").trim() ||
-  e?.preferred_name ||
-  null;
 
 // Normalise any stored blob into the canonical 4-group boolean board, defaulting
 // missing keys to false and coercing stored values to strict booleans.
@@ -63,7 +74,8 @@ const normalizePreboarding = (stored) => {
   const src = stored && typeof stored === "object" ? stored : {};
   const out = {};
   for (const [group, keys] of Object.entries(PREBOARDING_GROUPS)) {
-    const groupSrc = src[group] && typeof src[group] === "object" ? src[group] : {};
+    const groupSrc =
+      src[group] && typeof src[group] === "object" ? src[group] : {};
     out[group] = {};
     for (const key of keys) out[group][key] = groupSrc[key] === true;
   }
@@ -72,7 +84,10 @@ const normalizePreboarding = (stored) => {
 
 const groupSummary = (preboarding, group) => {
   const keys = PREBOARDING_GROUPS[group];
-  const done = keys.reduce((n, key) => n + (preboarding[group][key] ? 1 : 0), 0);
+  const done = keys.reduce(
+    (n, key) => n + (preboarding[group][key] ? 1 : 0),
+    0,
+  );
   return { done, total: keys.length };
 };
 
@@ -98,13 +113,15 @@ const buildSummary = (preboarding) => {
 
 // readyToCollect = every item in the READY_GROUPS is true.
 const deriveReadyToCollect = (preboarding) =>
-  READY_GROUPS.every((group) => PREBOARDING_GROUPS[group].every((key) => preboarding[group][key] === true));
+  READY_GROUPS.every((group) =>
+    PREBOARDING_GROUPS[group].every((key) => preboarding[group][key] === true),
+  );
 
 const shapePreboardingGet = (checklist) => {
   const preboarding = normalizePreboarding(checklist.preboarding);
   return {
     id: checklist.id,
-    readyToCollect: !!checklist.readyToCollect,
+    readyToCollect: deriveReadyToCollect(preboarding),
     preboarding,
     summary: buildSummary(preboarding),
   };
@@ -115,15 +132,10 @@ const shapePreboardingGet = (checklist) => {
  * @param {number|string} id  checklistId
  * @param {string|null|undefined} tenantId
  */
-export const getPreboarding = async (id, tenantId) => {
-  const checklistId = toChecklistId(id);
-  const checklist = await prisma.onboardingChecklist.findFirst({
-    where: scopedWhere(tenantId, { id: checklistId }),
-    select: { id: true, readyToCollect: true, preboarding: true },
-  });
-  if (!checklist) throw notFound();
-  return shapePreboardingGet(checklist);
-};
+export const getPreboarding = (id, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) =>
+    shapePreboardingGet(await managementChecklist(tx, env, id)),
+  );
 
 /**
  * Tool 2 — update the preboarding board, either a single { group, key, value }
@@ -132,47 +144,49 @@ export const getPreboarding = async (id, tenantId) => {
  * @param {object} input { id, group?, key?, value?, preboarding? }
  * @param {string|null|undefined} tenantId
  */
-export const updatePreboarding = async (input, tenantId) => {
-  const { id, group, key, value, preboarding } = input || {};
-  const checklistId = toChecklistId(id);
-
-  const checklist = await prisma.onboardingChecklist.findFirst({
-    where: scopedWhere(tenantId, { id: checklistId }),
-    select: { id: true, preboarding: true },
+export const updatePreboarding = (input, tenantId) =>
+  runOnboardingManagement(tenantId, "PUT", async (tx, env) => {
+    const checklist = await managementChecklist(tx, env, input.id, {
+      lock: true,
+    });
+    const current = normalizePreboarding(checklist.preboarding),
+      next = structuredClone(current);
+    if (input.preboarding !== undefined) {
+      const source = input.preboarding;
+      if (!source || typeof source !== "object" || Array.isArray(source))
+        throw badRequest("Invalid preboarding groups");
+      for (const [group, values] of Object.entries(source)) {
+        if (
+          !PREBOARDING_GROUPS[group] ||
+          !values ||
+          typeof values !== "object" ||
+          Array.isArray(values)
+        )
+          throw badRequest("Unknown preboarding group");
+        for (const [key, value] of Object.entries(values)) {
+          if (
+            !PREBOARDING_GROUPS[group].includes(key) ||
+            typeof value !== "boolean"
+          )
+            throw badRequest("Invalid preboarding item");
+          next[group][key] = value;
+        }
+      }
+    } else {
+      if (
+        !PREBOARDING_GROUPS[input.group]?.includes(input.key) ||
+        typeof input.value !== "boolean"
+      )
+        throw badRequest("Invalid preboarding item");
+      next[input.group][input.key] = input.value;
+    }
+    const updated = await tx.onboardingChecklist.update({
+      where: { id: checklist.id },
+      data: { preboarding: next, readyToCollect: deriveReadyToCollect(next) },
+    });
+    await changed(tx, env, checklist, "READINESS_UPDATED");
+    return shapePreboardingGet(updated);
   });
-  if (!checklist) throw notFound();
-
-  const current = normalizePreboarding(checklist.preboarding);
-  let next;
-
-  if (preboarding !== undefined) {
-    if (preboarding === null || typeof preboarding !== "object" || Array.isArray(preboarding)) {
-      throw badRequest("`preboarding` must be an object of the 4 groups");
-    }
-    // Full-object mode: normalise the caller blob against the canonical shape.
-    next = normalizePreboarding(preboarding);
-  } else {
-    // Single-toggle mode.
-    if (!PREBOARDING_GROUPS[group]) {
-      throw badRequest("`group` must be one of readiness|itSetup|engagement|workspace");
-    }
-    if (!PREBOARDING_GROUPS[group].includes(key)) {
-      throw badRequest(`\`key\` is not valid for group ${group}`);
-    }
-    if (typeof value !== "boolean") throw badRequest("`value` must be a boolean");
-    next = { ...current, [group]: { ...current[group], [key]: value } };
-  }
-
-  const readyToCollect = deriveReadyToCollect(next);
-
-  const updated = await prisma.onboardingChecklist.update({
-    where: { id: checklist.id },
-    data: { preboarding: next, readyToCollect },
-    select: { id: true, readyToCollect: true, preboarding: true },
-  });
-
-  return shapePreboardingGet(updated);
-};
 
 /**
  * Tool 3 — submit new-hire feedback. Stored as an OnboardingSurvey row keyed by
@@ -181,50 +195,20 @@ export const updatePreboarding = async (input, tenantId) => {
  * @param {string|null|undefined} tenantId
  */
 export const submitFeedback = async (input, tenantId) => {
-  const { checklistId: rawChecklistId, employeeId, ratings, comments } = input || {};
-  const checklistId = toChecklistId(rawChecklistId);
-
-  if (!ratings || typeof ratings !== "object" || Array.isArray(ratings)) {
-    throw badRequest("`ratings` object is required");
-  }
-
-  const checklist = await prisma.onboardingChecklist.findFirst({
-    where: scopedWhere(tenantId, { id: checklistId }),
-    select: { id: true, employeeId: true },
+  // General onboarding feedback must not overwrite a timed milestone survey.
+  // Keep this transport adapter, but enforce the same employee ownership and
+  // canonical questionnaire as the employee portal.
+  if (!Array.isArray(input?.answers))
+    throw badRequest(
+      "Use the current onboarding questionnaire and answer every question",
+    );
+  return submitPortalFeedback({
+    tenantId,
+    checklistId: input.checklistId,
+    employeeId: input.employeeId,
+    answers: input.answers,
+    comments: input.comments,
   });
-  if (!checklist) throw notFound();
-
-  // employeeId defaults to the checklist's own new hire when the caller omits it.
-  const empId =
-    employeeId !== undefined && employeeId !== null && `${employeeId}`.trim() !== ""
-      ? Number(employeeId)
-      : checklist.employeeId;
-  if (!Number.isInteger(empId)) throw badRequest("A valid employeeId is required");
-
-  const submittedAt = new Date();
-  const responses = { ratings, comments: comments ?? null };
-
-  const created = await prisma.onboardingSurvey.upsert({
-    where: { checklistId_type: { checklistId, type: FEEDBACK_SURVEY_TYPE } },
-    update: { responses, submittedAt, ...scopedData(tenantId, {}) },
-    create: scopedData(tenantId, {
-      checklistId,
-      employeeId: empId,
-      type: FEEDBACK_SURVEY_TYPE,
-      responses,
-      submittedAt,
-    }),
-    select: {
-      id: true,
-      checklistId: true,
-      employeeId: true,
-      type: true,
-      responses: true,
-      submittedAt: true,
-    },
-  });
-
-  return created;
 };
 
 /**
@@ -233,87 +217,112 @@ export const submitFeedback = async (input, tenantId) => {
  * @param {number|string} checklistId
  * @param {string|null|undefined} tenantId
  */
-export const viewFeedback = async (checklistId, tenantId) => {
-  const id = toChecklistId(checklistId);
-
-  const checklist = await prisma.onboardingChecklist.findFirst({
-    where: scopedWhere(tenantId, { id }),
-    select: {
-      id: true,
-      employee: {
-        select: {
-          employee_name: true,
-          first_name: true,
-          last_name: true,
-          preferred_name: true,
-          job_title: true,
-        },
-      },
-      surveys: {
-        orderBy: { submittedAt: "desc" },
-        select: { responses: true, submittedAt: true },
-      },
-    },
-  });
-  if (!checklist) throw notFound();
-
-  const candidate = employeeName(checklist.employee);
-  const role = checklist.employee?.job_title ?? null;
-
-  return (checklist.surveys || []).map((survey) => {
-    const responses = survey.responses && typeof survey.responses === "object" ? survey.responses : {};
-    const ratings = responses.ratings && typeof responses.ratings === "object" ? responses.ratings : {};
+export const viewFeedback = (checklistId, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) => {
+    const c = await managementChecklist(tx, env, checklistId);
+    const where = { tenantId, checklistId: c.id, employeeId: c.employeeId };
+    const general = await tx.onboardingFeedback.findFirst({ where });
+    const surveys = await tx.onboardingSurvey.findMany({
+      where: { ...where, submittedAt: { not: null } },
+      orderBy: [{ submittedAt: "desc" }, { id: "desc" }],
+    });
+    const submissions = [
+      ...(general
+        ? [
+            {
+              id: general.id,
+              type: "GENERAL",
+              answers: general.responses,
+              comments: general.comments,
+              submittedAt: general.submittedAt,
+            },
+          ]
+        : []),
+      ...surveys.map((r) => ({
+        id: r.id,
+        type: r.type,
+        answers: r.responses?.answers || [],
+        comments: r.responses?.comments || null,
+        submittedAt: r.submittedAt,
+      })),
+    ];
     return {
-      candidate,
-      role,
-      roleClarity: ratings.roleClarity ?? null,
-      teamSupport: ratings.teamSupport ?? null,
-      onboardingProcess: ratings.onboardingProcess ?? null,
-      additionalComments: responses.comments ?? null,
-      submittedAt: survey.submittedAt ?? null,
+      checklistId: c.id,
+      questions: ONBOARDING_FEEDBACK_QUESTIONS,
+      submissions,
     };
   });
-};
-
-/**
- * Tool 5 — append a note to the checklist activityLog.
- * @param {object} input { checklistId, text, actor? }
- * @param {string|null|undefined} tenantId
- */
-export const addNote = async (input, tenantId) => {
-  const { checklistId, text, actor } = input || {};
-  const id = toChecklistId(checklistId);
-
-  if (typeof text !== "string" || !text.trim()) throw badRequest("`text` is required");
-
-  const checklist = await prisma.onboardingChecklist.findFirst({
-    where: scopedWhere(tenantId, { id }),
-    select: { id: true, activityLog: true },
+async function changed(tx, env, c, action) {
+  const event = await enqueueHrDomainEvent(tx, {
+    tenantId: env.tenantId,
+    actorId: String(env.who.id),
+    actorType: "user",
+    eventName: "hr.onboarding.checklist_changed.v1",
+    aggregateType: "OnboardingChecklist",
+    aggregateId: String(c.id),
+    payload: {
+      checklistId: String(c.id),
+      employeeId: String(c.employeeId),
+      actorId: String(env.who.id),
+      action,
+    },
   });
-  if (!checklist) throw notFound();
-
-  const entry = {
-    at: new Date().toISOString(),
-    actor: actor ?? "system",
-    text: text.trim(),
-  };
-
-  const log = Array.isArray(checklist.activityLog) ? checklist.activityLog : [];
-  const updated = await prisma.onboardingChecklist.update({
-    where: { id: checklist.id },
-    data: { activityLog: [...log, entry] },
-    select: { activityLog: true },
+  if (!event) onboardingFailure("Onboarding event could not be saved", 503);
+}
+export const addNote = (input, tenantId) =>
+  runOnboardingManagement(tenantId, "PUT", async (tx, env) => {
+    if (
+      typeof input?.text !== "string" ||
+      !input.text.trim() ||
+      input.text.length > 4000
+    )
+      throw badRequest("Note must contain 1–4000 characters");
+    const c = await managementChecklist(tx, env, input.checklistId, {
+      lock: true,
+    });
+    const log = Array.isArray(c.activityLog) ? c.activityLog : [];
+    const key = input.idempotencyKey;
+    if (
+      key != null &&
+      (typeof key !== "string" || !/^[a-zA-Z0-9_-]{16,100}$/.test(key))
+    )
+      throw badRequest("Invalid note request key");
+    const old =
+      key && log.find((e) => e.kind === "NOTE" && e.requestKey === key);
+    if (old) {
+      if (old.text !== input.text.trim())
+        onboardingFailure(
+          "Request key was already used for a different note",
+          409,
+        );
+      return log.map(({ requestKey, requestHash, ...item }) => item);
+    }
+    const next = [
+      ...log,
+      {
+        id: randomUUID(),
+        kind: "NOTE",
+        at: new Date().toISOString(),
+        actor: String(env.who.id),
+        text: input.text.trim(),
+        ...(key ? { requestKey: key } : {}),
+      },
+    ];
+    await tx.onboardingChecklist.update({
+      where: { id: c.id },
+      data: { activityLog: next },
+    });
+    await changed(tx, env, c, "NOTE_ADDED");
+    return next.map(({ requestKey, requestHash, ...item }) => item);
   });
-
-  return Array.isArray(updated.activityLog) ? updated.activityLog : [];
-};
 
 // Day-bucket label for the activity feed. "Today" / "Yesterday" / else the ISO
 // calendar date (YYYY-MM-DD) of the entry, computed in UTC for stable buckets.
 const dayLabel = (at, now = new Date()) => {
   const when = new Date(at);
   if (Number.isNaN(when.getTime())) return "unknown";
-  const dayStart = (d) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const dayStart = (d) =>
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   const diffDays = Math.round((dayStart(now) - dayStart(when)) / 86400000);
   if (diffDays <= 0) return "Today";
   if (diffDays === 1) return "Yesterday";
@@ -326,28 +335,20 @@ const dayLabel = (at, now = new Date()) => {
  * @param {number|string} checklistId
  * @param {string|null|undefined} tenantId
  */
-export const listActivity = async (checklistId, tenantId) => {
-  const id = toChecklistId(checklistId);
-
-  const checklist = await prisma.onboardingChecklist.findFirst({
-    where: scopedWhere(tenantId, { id }),
-    select: { id: true, activityLog: true },
+export const listActivity = (checklistId, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) => {
+    const checklist = await managementChecklist(
+      tx,
+      env,
+      toChecklistId(checklistId),
+    );
+    const entries = (
+      Array.isArray(checklist.activityLog) ? checklist.activityLog : []
+    )
+      .filter((e) => e && typeof e === "object")
+      .map(({ requestKey, requestHash, ...e }) => e)
+      .sort((a, b) => (+new Date(b.at) || 0) - (+new Date(a.at) || 0));
+    const grouped = {};
+    for (const e of entries) (grouped[dayLabel(e.at)] ||= []).push(e);
+    return { entries, grouped };
   });
-  if (!checklist) throw notFound();
-
-  const entries = Array.isArray(checklist.activityLog) ? [...checklist.activityLog] : [];
-  entries.sort((a, b) => {
-    const ta = new Date(a?.at).getTime() || 0;
-    const tb = new Date(b?.at).getTime() || 0;
-    return tb - ta;
-  });
-
-  const now = new Date();
-  const grouped = {};
-  for (const entry of entries) {
-    const label = dayLabel(entry?.at, now);
-    (grouped[label] ||= []).push(entry);
-  }
-
-  return { entries, grouped };
-};

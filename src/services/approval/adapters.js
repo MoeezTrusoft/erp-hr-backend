@@ -1,3 +1,4 @@
+import { recruitmentSubmitted, recruitmentDecided } from "./recruitment-policy.service.js";
 import { createHash } from "node:crypto";
 import { employee } from "../separation/base.js";
 import { assertAttendancePeriodOpen, lockAttendancePeriod } from "../attendancePeriod.service.js";
@@ -91,6 +92,8 @@ const definitions = {
       "employmentType",
       "terms",
       "compensation",
+      "employeeCategory",
+      "offerLetterMediaId",
     ],
   ],
   LEAVE: [
@@ -187,6 +190,10 @@ const definitions = {
       "openings",
       "priority",
       "requirements",
+      "location", "employmentType", "targetStartDate", "gradeLevelId",
+      "costCenterRef", "budgetRef", "hiringReason", "replacementEmployeeId",
+      "recruiterId", "budgetedAmount", "budgetCurrency", "jobContent",
+      "closesAt", "autoCloseWhenFilled",
     ],
   ],
   PAYROLL: [
@@ -509,6 +516,7 @@ export async function sourceCandidates(tx, env, kind) {
   return candidates;
 }
 export async function onSubmit(tx, env, kind, s) {
+  if (kind === "REQUISITION") await recruitmentSubmitted(tx, env, s);
   if (kind === 'ATTENDANCE_CORRECTION' && ((!s.row.checkIn && !s.row.checkOut) || !s.row.reason?.trim() || !s.row.evidence?.trim() || !s.row.reasonCategory || !s.row.evidenceDate)) fail('Complete the supported missing time, reason category, explanation, evidence reference and source date before submitting.',422);
   if (kind === "TIMESHEET" && !s.snapshot.entries.length)
     fail("Cannot submit an empty timesheet", 422);
@@ -555,12 +563,15 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
       "JOB_DESCRIPTION",
       "CATEGORY_CONVERSION",
       "NOTICE_CHANGE",
-      "OFFER",
       "SEPARATION_WITHDRAWAL",
       "SETTLEMENT",
     ].includes(kind)
   )
     return "SEPARATE_ACTION";
+  if (kind === "OFFER") {
+    await tx.offer.update({ where: { id: row.id }, data: { approvalStatus: status } });
+    return "SEPARATE_ACTION";
+  }
   await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${kind + ":" + row.id},true)`;
   if (kind === "ATTENDANCE_CORRECTION") {
     const { finalizeCorrectionRequest } = await import('../attendanceCorrectionRequest.service.js');
@@ -712,7 +723,7 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
       data: { status, approvedById: env.who.id },
     });
   else if (kind === "REQUISITION") {
-    await tx.requisitionApproval.create({
+    if (!request.recruitmentPolicy) await tx.requisitionApproval.create({
       data: {
         tenantId: env.tenantId,
         requisitionId: row.id,
@@ -726,6 +737,7 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
       where: { id: row.id },
       data: { status, approvedById: approved ? env.who.id : null },
     });
+    await recruitmentDecided(tx, env, s, status, reason);
   } else if (kind === "PAYROLL") {
     await tx.payrollRun.update({
       where: { id: row.id },

@@ -82,7 +82,7 @@ const TOOLS = [
   // --- onboardingDetailTools.js (3 tools) ---
   { name: 'hr_onboarding_detail_get', gate: 'hr:onboarding', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_onboarding_task_create', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', title: 'Setup laptop', stage: 'pre_boarding' } },
-  { name: 'hr_onboarding_send_reminder', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', sendTo: 'newhire@test.com', subject: 'Reminder', message: 'Please complete' } },
+  { name: 'hr_onboarding_send_reminder', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', idempotencyKey: 'request-fixture-000001' } },
   // --- onboardingPortalTools.js (6 tools) ---
   { name: 'hr_onboarding_preboarding_get', gate: 'hr:onboarding', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_onboarding_preboarding_update', gate: 'hr:onboarding', action: 'EDIT', args: { id: '1', group: 'readiness', key: 'bgCheck', value: true } },
@@ -123,3 +123,5 @@ describe.each(TOOLS)('$name scenarios', ({ name, gate, action, args }) => {
     expect(parse(res).status).toBe(403);
   });
 });
+
+it('forwards a stable note key and never forwards an unverified actor claim',async()=>{const {addNote}=await import('../../../src/services/onboardingPortal.service.js');await call('hr_onboarding_note_add',{checklistId:1,text:'Follow up',idempotencyKey:'request-fixture-000001'},{permissions:{'hr:onboarding':['EDIT']}});expect(addNote).toHaveBeenLastCalledWith({checklistId:1,text:'Follow up',idempotencyKey:'request-fixture-000001'},'tenant-A');});

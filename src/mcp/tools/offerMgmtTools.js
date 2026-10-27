@@ -1,3 +1,9 @@
+import {
+  createOfferLetter,
+  listOfferLetters,
+  downloadOfferLetter,
+} from "../../services/offerLetter.service.js";
+import { getOfferSignature } from "../../services/offerSignature.service.js";
 // src/mcp/tools/offerMgmtTools.js — Offer Management MCP tools.
 //
 // Enhanced offer-management surface (structured comp/terms/approvals, preview
@@ -8,6 +14,8 @@
 //
 // Existing simple offer tools live in recruitmentTools.js (hr_offer_create,
 // hr_offer_send, hr_offer_update) — these do NOT duplicate them.
+import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { respondOffer } from "../../services/offer.service.js";
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
@@ -19,29 +27,112 @@ import {
   createOfferFull,
   markOfferPreboarding,
 } from "../../services/offerMgmt.service.js";
+import {
+  getOfferApprovalPolicy,
+  setOfferApprovalPolicy,
+} from "../../services/offerApproval.service.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
-  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  if (!ctx?.user)
+    throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
 }
 
 // Sensitive salary/comp is surfaced only to admins or hr:payroll VIEW holders.
 function computeShowSensitive(user, permissions) {
   return (
-    Boolean(user?.isAdmin) ||
-    (Array.isArray(permissions?.["hr:payroll"]) && permissions["hr:payroll"].includes("VIEW"))
+    resolveRecruitmentScope(user).canSeeCompensation &&
+    (Array.isArray(permissions)
+      ? permissions.includes("hr.payroll.read")
+      : Array.isArray(permissions?.["hr:payroll"]) &&
+        permissions["hr:payroll"].includes("VIEW"))
   );
 }
 
 export function registerOfferMgmtTools(server) {
+  for (const [name, description, schema, handler] of [
+    [
+      "hr_offer_letter_render",
+      "Generate an immutable PDF letter for the current draft offer revision",
+      {
+        offerId: z.coerce.number().int().positive(),
+        expectedVersion: z.number().int().nonnegative(),
+        employerName: z.string().trim().min(2).max(200),
+      },
+      createOfferLetter,
+    ],
+    [
+      "hr_offer_letter_versions_list",
+      "List immutable offer letter versions",
+      { offerId: z.coerce.number().int().positive() },
+      listOfferLetters,
+    ],
+    [
+      "hr_offer_letter_download",
+      "Download a verified offer letter version or its signed PDF",
+      {
+        offerId: z.coerce.number().int().positive(),
+        letterId: z.uuid(),
+        signed: z.boolean().optional(),
+      },
+      downloadOfferLetter,
+    ],
+    [
+      "hr_offer_signature_get",
+      "Read signing progress and signed document reference",
+      { offerId: z.coerce.number().int().positive() },
+      getOfferSignature,
+    ],
+  ])
+    server.tool(
+      name,
+      description,
+      schema,
+      withToolError(
+        async (input) => ({
+          content: [
+            { type: "text", text: JSON.stringify(await handler(input)) },
+          ],
+        }),
+        name,
+      ),
+    );
+  server.tool(
+    "hr_offer_respond",
+    "Record a candidate offer response and provision the accepted hire idempotently",
+    {
+      id: z.coerce.number().int().positive(),
+      accepted: z.boolean(),
+      employeeCategory: z
+        .enum(["MANAGEMENT", "EMPLOYEE", "INTERNEE"])
+        .optional(),
+    },
+    withToolError(async ({ id, accepted, employeeCategory }) => {
+      const ctx = getCtx();
+      assertPermission(ctx.permissions, "PUT", "hr:recruitment", false);
+      await getOfferManage(id, {
+        tenantId: ctx.user.tenantId,
+        scope: resolveRecruitmentScope(ctx.user),
+      });
+      const data = await respondOffer(id, accepted, ctx.user.tenantId, {
+        ...ctx,
+        actorId: ctx.user.employeeId,
+        employeeCategory,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_offer_respond"),
+  );
   // 1 ── LIST ────────────────────────────────────────────────────────────────
   server.tool(
     "hr_offers_manage_list",
     "List offers for the Offer Management screen (structured comp/terms/approvals; salary masked unless caller holds hr:payroll VIEW)",
     {
       q: z.string().optional().describe("Search by candidate name"),
-      status: z.string().optional().describe("DRAFT|SENT|ACCEPTED|DECLINED|EXPIRED|WITHDRAWN"),
+      status: z
+        .string()
+        .optional()
+        .describe("DRAFT|SENT|ACCEPTED|DECLINED|EXPIRED|WITHDRAWN"),
       offerType: z.string().optional(),
       sort: z.enum(["sentAt", "startDate"]).optional(),
       order: z.enum(["asc", "desc"]).optional(),
@@ -52,9 +143,14 @@ export function registerOfferMgmtTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const showSensitive = computeShowSensitive(user, permissions);
-      const data = await listOffersManage({ ...args, tenantId: user.tenantId, showSensitive });
+      const data = await listOffersManage({
+        ...args,
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+        showSensitive,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_offers_manage_list")
+    }, "hr_offers_manage_list"),
   );
 
   // 2 ── GET (full detail + preview) ───────────────────────────────────────────
@@ -66,9 +162,13 @@ export function registerOfferMgmtTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const showSensitive = computeShowSensitive(user, permissions);
-      const data = await getOfferManage(id, { tenantId: user.tenantId, showSensitive });
+      const data = await getOfferManage(id, {
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+        showSensitive,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_offer_manage_get")
+    }, "hr_offer_manage_get"),
   );
 
   // 3 ── FULL CREATE ───────────────────────────────────────────────────────────
@@ -76,25 +176,62 @@ export function registerOfferMgmtTools(server) {
     "hr_offer_create_full",
     "Create a full offer (structured compensation, terms, employment type) in DRAFT status",
     {
-      applicationId: z.coerce.number().int().positive().describe("Application id (references Application; NOT NULL @unique FK on Offer)"),
-      candidateId: z.coerce.number().int().positive().describe("Candidate id (references Candidate; NOT NULL FK on Offer)"),
-      jobRequisitionId: z.coerce.number().int().positive().describe("Job requisition id (references JobRequisition; NOT NULL FK on Offer)"),
+      applicationId: z.coerce
+        .number()
+        .int()
+        .positive()
+        .describe(
+          "Application id (references Application; NOT NULL @unique FK on Offer)",
+        ),
+      candidateId: z.coerce
+        .number()
+        .int()
+        .positive()
+        .describe("Candidate id (references Candidate; NOT NULL FK on Offer)"),
+      jobRequisitionId: z.coerce
+        .number()
+        .int()
+        .positive()
+        .describe(
+          "Job requisition id (references JobRequisition; NOT NULL FK on Offer)",
+        ),
       jobTitle: z.string().optional(),
-      employmentType: z.string().min(1).optional().describe("Employment type, e.g. Full-time | Part-time | Contract (nullable on Offer)"),
+      employeeCategory: z.enum(["MANAGEMENT", "EMPLOYEE", "INTERNEE"]),
+      expiryDate: z.iso.datetime().optional(),
+      employmentType: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Employment type, e.g. Full-time | Part-time | Contract (nullable on Offer)",
+        ),
       department: z.string().optional(),
       hiringManager: z.string().optional(),
-      startDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD (nullable on Offer)"),
+      startDate: z
+        .string()
+        .optional()
+        .describe("ISO 8601 date YYYY-MM-DD (nullable on Offer)"),
       workLocation: z.string().optional(),
       probationMonths: z.coerce.number().int().nonnegative().optional(),
       noticePeriodDays: z.coerce.number().int().nonnegative().optional(),
-      baseSalary: z.coerce.number().positive().describe("Base salary as a number; persisted C4-encrypted (Offer.salary NOT NULL)"),
+      baseSalary: z.coerce
+        .number()
+        .positive()
+        .describe(
+          "Base salary as a number; persisted C4-encrypted (Offer.salary NOT NULL)",
+        ),
       salaryFrequency: z.string().optional().describe("e.g. Monthly | Annual"),
       bonus: z.union([z.number(), z.string()]).optional(),
       allowances: z.union([z.number(), z.string()]).optional(),
       currency: z.string().default("PKR"),
       benefits: z.array(z.string()).default([]),
       specialClauses: z.string().optional(),
-      offerType: z.string().default("Standard").describe("Offer type, e.g. Standard | Contract | Internship | Promotion"),
+      offerType: z
+        .string()
+        .default("Standard")
+        .describe(
+          "Offer type, e.g. Standard | Contract | Internship | Promotion",
+        ),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -106,7 +243,7 @@ export function registerOfferMgmtTools(server) {
         showSensitive,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_offer_create_full")
+    }, "hr_offer_create_full"),
   );
 
   // 4 ── PREVIEW (no mutation) ─────────────────────────────────────────────────
@@ -118,25 +255,109 @@ export function registerOfferMgmtTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
       const showSensitive = computeShowSensitive(user, permissions);
-      const data = await previewOfferManage(id, { tenantId: user.tenantId, showSensitive });
+      const data = await previewOfferManage(id, {
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+        showSensitive,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_offer_preview")
+    }, "hr_offer_preview"),
   );
 
   // 5 ── PREBOARDING ───────────────────────────────────────────────────────────
   server.tool(
     "hr_offer_preboarding",
-    "Mark an offer as moving into pre-boarding (sets terms.preboarding=true and appends a notes entry)",
+    "Start preboarding through the accepted offer's canonical employee and onboarding handoff; signed offer terms remain immutable",
     {
       id: z.union([z.string(), z.number()]),
-      note: z.string().optional().describe("Optional pre-boarding note appended to the offer notes"),
+      note: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe("Optional note recorded on the onboarding activity log"),
     },
     withToolError(async ({ id, note }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
       const showSensitive = computeShowSensitive(user, permissions);
-      const data = await markOfferPreboarding(id, { tenantId: user.tenantId, showSensitive, note });
+      const data = await markOfferPreboarding(id, {
+        tenantId: user.tenantId,
+        scope: resolveRecruitmentScope(user),
+        showSensitive,
+        note,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    }, "hr_offer_preboarding")
+    }, "hr_offer_preboarding"),
+  );
+
+  // 6 ── APPROVAL POLICY: READ ─────────────────────────────────────────────────
+  // FR-09 residue — the tenant's role-specific approver chain. `amount`/
+  // `currency` are optional and only PREVIEW which chain an offer of that size
+  // resolves to, so a config screen can show the effect before saving.
+  server.tool(
+    "hr_offer_approval_policy_get",
+    "Read the tenant offer approval policy (role-specific approver chain with compensation windows); optionally preview the chain an offer of a given amount resolves to",
+    {
+      amount: z
+        .number()
+        .nonnegative()
+        .optional()
+        .describe("Optional amount to preview the resolved chain for"),
+      currency: z
+        .string()
+        .optional()
+        .describe(
+          "Optional ISO currency for the preview (a rule naming another currency does not apply)",
+        ),
+    },
+    withToolError(async ({ amount, currency }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:recruitment", user.isAdmin);
+      const data = await getOfferApprovalPolicy({
+        tenantId: user.tenantId,
+        amount: amount ?? null,
+        currency: currency ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_offer_approval_policy_get"),
+  );
+
+  // 7 ── APPROVAL POLICY: WRITE ────────────────────────────────────────────────
+  // Replace-all rather than per-row editing: a chain is only coherent as a
+  // whole, and a partial edit could leave a tenant with a chain that is neither
+  // the old one nor the new one (same reasoning as the requisition matrix).
+  server.tool(
+    "hr_offer_approval_policy_set",
+    "Replace the tenant offer approval policy (rules: stage hiringManager|hrHead|finance, stepOrder, optional role, optional minAmount/maxAmount compensation window and currency)",
+    {
+      rules: z
+        .array(
+          z.object({
+            stepOrder: z.number().int().positive(),
+            stage: z.enum(["hiringManager", "hrHead", "finance"]),
+            role: z.string().optional(),
+            minAmount: z.number().nonnegative().optional(),
+            maxAmount: z.number().nonnegative().optional(),
+            currency: z.string().optional(),
+          }),
+        )
+        .min(1)
+        .describe("The full rule list; it replaces the tenant's active policy"),
+    },
+    withToolError(async ({ rules }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:recruitment", user.isAdmin);
+      const data = await setOfferApprovalPolicy({
+        tenantId: user.tenantId,
+        rules,
+        createdById: user.employeeId ?? user.userId ?? null,
+      });
+      const policy = await getOfferApprovalPolicy({ tenantId: user.tenantId });
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ rules: data, ...policy }) },
+        ],
+      };
+    }, "hr_offer_approval_policy_set"),
   );
 }

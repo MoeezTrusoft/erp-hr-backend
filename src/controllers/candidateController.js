@@ -2,14 +2,14 @@
 import * as candidateService from "../services/candidateService.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
 
 
 export const createCandidate = async (req, res) => {
     try {
-        const user = req.headers['user-id'];
-
-        const tenantId = user.tenantId ?? null;
-        const createdById = user||user.employeeId || user.id || null;
+        const actor = req.user || {};
+        const tenantId = actor.tenantId ?? null;
+        const createdById = actor.employeeId ?? null;
 
         const {
             firstName,
@@ -27,6 +27,12 @@ export const createCandidate = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: "firstName and email are required",
+            });
+        }
+        if (!tenantId) {
+            return res.status(400).json({
+                success: false,
+                message: "Tenant context is required",
             });
         }
 
@@ -76,9 +82,9 @@ export const createCandidate = async (req, res) => {
 
 export const updateCandidate = async (req, res) => {
     try {
-        const user = req.headers['user-id'];
-        const tenantId = user.tenantId ?? null;
-        const updatedById = user||user.employeeId || user.id || null;
+        const actor = req.user || {};
+        const tenantId = actor.tenantId ?? null;
+        const updatedById = actor.employeeId ?? null;
         const { id } = req.params;
 
         const {
@@ -91,6 +97,13 @@ export const updateCandidate = async (req, res) => {
             tags, // array of tag names
             expectedVersion, // API-2 — optimistic-concurrency guard (optional)
         } = req.body;
+
+        if (!tenantId) {
+            return res.status(400).json({
+                success: false,
+                message: "Tenant context is required",
+            });
+        }
 
         const candidate = await candidateService.updateCandidate({
             id: Number(id),
@@ -134,11 +147,16 @@ export const getCandidate = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
+        if (!tenantId) return respondServerError(req, res, Object.assign(new Error("Tenant context is required"), { status: 400 }));
         const { id } = req.params;
 
+        // Phase 1.4 — record scope: managers reach only candidates on their own
+        // requisitions, interviewers only those they are meeting, and both get the
+        // recruiter's internal notes masked inside the service.
         const candidate = await candidateService.getCandidate({
             id: Number(id),
             tenantId,
+            scope: resolveRecruitmentScope(user),
         });
 
         if (!candidate) {
@@ -173,7 +191,11 @@ export const uploadCandidateResume = async (req, res) => {
             return res.status(500).json({ success: false, message: "DAM upload failed" });
         }
         const mediaId = uploaded[0].id;
-        const candidate = await candidateService.updateCandidateResumeMedia({ id, mediaId });
+        const tenantId = req.user?.tenantId ?? null;
+        if (!tenantId) {
+            return res.status(400).json({ success: false, message: "Tenant context is required" });
+        }
+        const candidate = await candidateService.updateCandidateResumeMedia({ id, mediaId, tenantId });
         return res.status(200).json({ success: true, message: "Success", data: candidate });
     } catch (error) {
         return res.status(400).json({ success: false, message: error.message });
@@ -184,6 +206,7 @@ export const listCandidates = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
+        if (!tenantId) return respondServerError(req, res, Object.assign(new Error("Tenant context is required"), { status: 400 }));
         // API-4: `cursor` is an optional, additive keyset pagination param;
         // absent → unchanged offset/page behavior.
         const { search, tags, page, limit, cursor } = req.query;
@@ -202,6 +225,7 @@ export const listCandidates = async (req, res) => {
             page: page ? Number(page) : 1,
             limit: limit ? Number(limit) : 20,
             cursor: cursor || undefined,
+            scope: resolveRecruitmentScope(user),
         });
 
         return res.status(200).json({

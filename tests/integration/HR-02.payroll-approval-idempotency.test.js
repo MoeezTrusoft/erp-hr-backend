@@ -1,140 +1,82 @@
-// HR-02 / HR-07 (Roadmap T-P4.1) — approval gate + idempotency against the REAL
-// engine and the live HR database (shared Prisma singleton).
-//
-// Proves the four behaviours the golden-file unit test cannot (they need real
-// rows + status transitions):
-//   * FINALIZE is BLOCKED without an approval.
-//   * FINALIZE is BLOCKED on self-approval (processor == approver).
-//   * FINALIZE SUCCEEDS with a DISTINCT approver.
-//   * Re-PROCESSING the same run is idempotent — no duplicate payslips, no
-//     doubled totals.
-// Also confirms the run records the rule version it was computed against
-// (reproducibility) and that tax came from the seeded TaxRate table, not the
-// removed 15%/5% constants.
-//
-// Runs only when a Postgres DATABASE_URL is reachable; otherwise it skips,
-// mirroring payroll-tenancy.db.test.js / HR-01.c4-encrypted-at-rest.test.js.
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import prisma from '../../src/lib/prisma.js';
-import * as payroll from '../../src/services/payrollService.js';
-import { mcpCtx } from '../../src/mcp/context.js';
-import { decimalToMinor } from '../../src/lib/money.js';
+// Native payroll regression: calculation, idempotency and independent Approval Centre review.
+import { randomBytes, randomUUID } from "node:crypto";
+import { describe, it, expect, beforeAll, afterAll } from "@jest/globals";
+import prisma from "../../src/lib/prisma.js";
+import * as payroll from "../../src/services/payrollService.js";
+import { publishConfig } from "../../src/services/payrollConfigActions.service.js";
+import { submitApproval, actApproval } from "../../src/services/approval/service.js";
+import { mcpCtx } from "../../src/mcp/context.js";
+import { decimalToMinor } from "../../src/lib/money.js";
 
-// REQ-007 — tenant is an RBAC Company.uuid STRING (was an int). Isolated test tenant.
-const TENANT = '93010000-0000-4000-8000-000000000001';
-const PROCESSOR = 930101;
-const APPROVER = 930102;
-
-let dbAvailable = false;
-const created = { employees: [], runs: [], taxRates: [], terms: [] };
+const TENANT = randomUUID(), people = {}, created = { runs: [], terms: [], taxRates: [] };
+let PROCESSOR, APPROVER, dbAvailable = false, periodSeq = 0;
+const savedKeys = Object.fromEntries(["HR_C4_ENCRYPTION_KEY", "HR_C4_BLIND_INDEX_KEY"].map(k => [k, process.env[k]]));
+const grants = { PROCESSOR: ["self"], MANAGER: ["self", "manager"], HR: ["self", "verify", "read"], MANAGEMENT: ["self", "approve", "read"] };
+const as = (role, fn) => mcpCtx.run({ actorVerified: true,
+    user: { tenantId: TENANT, userId: people[role].userId },
+    permissions: grants[role].map(k => "hr.approvals." + k),
+}, fn);
+const submit = run => as("PROCESSOR", () => submitApproval({ kind: "PAYROLL", sourceRef: String(run.id),
+    employeeCode: people.PROCESSOR.employee_code, expectedVersion: 0,
+    reason: "Payroll calculation and evidence reviewed", requestKey: randomUUID(),
+})).then(r => r.record);
+const act = (role, review, action) => as(role, () => actApproval({ approvalRef: review.approvalRef,
+    expectedVersion: review.version, action, reason: role + " independently reviewed payroll evidence", requestKey: randomUUID(),
+})).then(r => r.record);
 
 beforeAll(async () => mcpCtx.run({ system: true }, async () => {
-    try {
-        await prisma.$queryRaw`SELECT 1`;
-        dbAvailable = true;
-    } catch {
-        dbAvailable = false;
-        return;
-    }
-
-    // Defensive: purge any leftover 2097 runs for this test tenant from an
-    // interrupted prior run so the tenant-scoped [tenantId, periodStart,
-    // periodEnd] unique constraint (REQ-006/REQ-007) never collides across re-runs.
-    const stale = await prisma.payrollRun.findMany({
-        where: { tenantId: TENANT, periodStart: { gte: new Date('2097-01-01'), lt: new Date('2098-01-01') } },
-        select: { id: true },
-    });
-    for (const r of stale) {
-        await prisma.payrollAuditLog.deleteMany({ where: { payrollRunId: r.id } });
-        const slips = await prisma.payrollPayslip.findMany({ where: { payrollRunId: r.id }, select: { id: true } });
-        for (const s of slips) {
-            await prisma.payrollEarning.deleteMany({ where: { payslipId: s.id } });
-            await prisma.payrollDeduction.deleteMany({ where: { payslipId: s.id } });
-        }
-        await prisma.payrollPayslip.deleteMany({ where: { payrollRunId: r.id } });
-    }
-    if (stale.length) await prisma.payrollRun.deleteMany({ where: { id: { in: stale.map((r) => r.id) } } });
-
-    // The payroll engine auto-provisions a tenant-scoped BASE_SALARY earning type
-    // and the tax deduction types on first process. PayrollEarningType.code /
-    // PayrollDeductionType.code are GLOBALLY unique, so any pre-existing rows with
-    // these codes (e.g. dev-seed rows whose int tenant was un-mappable and nulled
-    // by the REQ-007 backfill) would collide with the per-tenant create. Purge any
-    // such leftovers up-front so this spec owns its catalog deterministically.
-    await prisma.payrollEarningType.deleteMany({ where: { code: { in: ['BASE_SALARY'] } } });
-    await prisma.payrollDeductionType.deleteMany({ where: { code: { in: ['FED_TAX', 'STATE_TAX', 'INCOME_TAX', 'TAX'] } } });
-
-    // Two employees: one is paid, the other plays processor/approver actors.
-    const emp = await prisma.employee.create({
-        data: { tenant_id: TENANT, first_name: 'Pay', last_name: 'Ee', status: 'active' },
-    });
-    created.employees.push(emp.id);
-    created.emp = emp.id;
-
-    // Employment terms — monthly base. Written through the C4 extension (string
-    // at rest, number on read); the engine reads it back as a Number.
-    const term = await prisma.employmentTerms.create({
-        data: {
-            tenantId: TENANT,
-            employeeId: emp.id,
-            baseSalary: 5000,
-            currency: 'USD',
-            payFrequency: 'MONTHLY',
-            effectiveFrom: new Date('2097-01-01'),
-            effectiveTo: null,
+    for (const key of Object.keys(savedKeys)) process.env[key] ||= randomBytes(32).toString("base64");
+    await prisma.$queryRaw`SELECT 1`;
+    dbAvailable = true;
+    for (const role of Object.keys(grants)) people[role] = await prisma.employee.create({ data: {
+        employee_code: "PAY-" + role + "-" + randomUUID().slice(0,8).toUpperCase(), employeeCategory: "EMPLOYEE",
+        tenant_id: TENANT, first_name: "Fictional", last_name: role, status: "Active", employement_status: "Active",
+        userId: 100000 + Math.floor(Math.random() * 1e8), payroll_included: role === "PROCESSOR", hire_date: new Date("2097-01-01"),
+    } });
+    PROCESSOR = people.PROCESSOR.id;
+    APPROVER = people.MANAGEMENT.id;
+    await prisma.employee.update({ where: { id: PROCESSOR }, data: { managerId: people.MANAGER.id } });
+    created.terms.push((await prisma.employmentTerms.create({ data: { tenantId: TENANT, employeeId: PROCESSOR,
+        baseSalary: 5000, currency: "USD", payFrequency: "MONTHLY", effectiveFrom: new Date("2097-01-01"),
+    } })).id);
+    await prisma.bankDetail.create({ data: { tenantId: TENANT, employeeId: PROCESSOR, bankName: "Fictional bank",
+        accountNumber: "TEST-" + randomUUID(), routingNumber: "TEST-ROUTING", isPrimary: true,
+    } });
+    for (const [bracketMin, bracketMax, rate] of [[0,3000,0.1],[3000,null,0.2]]) created.taxRates.push((await prisma.taxRate.create({
+        data: { tenantId: TENANT, countryCode: "US", bracketMin, bracketMax, rate, status: "ACTIVE", effectiveFrom: new Date("2097-01-01") },
+    })).id);
+    await prisma.attendanceSetupRelease.create({ data: {
+        tenantId: TENANT, version: 1, effectiveFrom: new Date("2097-01-01"), coverageThrough: new Date("2097-12-31"),
+        reason: "Fictional published payroll attendance coverage",
+        config: { version: 1,
+            settings: { timeZone: "UTC", defaultCalendarId: 1, profiles: [], assignments: [], sites: [{ id: "TEST" }],
+                siteAssignments: [{ employeeId: PROCESSOR, siteIds: ["TEST"], effectiveFrom: "2097-01-01" }], siteRoutes: [] },
+            policy: { checkoutLeniencyMin: 240 }, employees: [{ id: PROCESSOR, payroll_included: true, hire_date: "2097-01-01" }],
+            periods: [], schedules: [{ employeeId: PROCESSOR, effective_start_date: "2097-01-01",
+                schedule_pattern: { shift: { from: "09:00", to: "17:00" }, offDays: [] } }],
+            calendars: [{ id: 1, year: 2097 }], holidays: [], calendarAssignments: [],
         },
-    });
-    created.terms.push(term.id);
+    } });
+    await publishConfig({ tenantId: TENANT, publishedById: PROCESSOR });
+}), 60000);
 
-    // Seed a versioned progressive tax table for US effective in the run window.
-    const t1 = await prisma.taxRate.create({
-        data: { tenantId: TENANT, countryCode: 'US', bracketMin: 0, bracketMax: 3000, rate: 0.1, effectiveFrom: new Date('2097-01-01'), effectiveTo: null },
-    });
-    const t2 = await prisma.taxRate.create({
-        data: { tenantId: TENANT, countryCode: 'US', bracketMin: 3000, bracketMax: null, rate: 0.2, effectiveFrom: new Date('2097-01-01'), effectiveTo: null },
-    });
-    created.taxRates.push(t1.id, t2.id);
-}));
-
-afterAll(async () => mcpCtx.run({ system: true }, async () => {
-    if (!dbAvailable) return;
-    for (const id of created.runs) {
-        await prisma.payrollAuditLog.deleteMany({ where: { payrollRunId: id } });
-        await prisma.payrollPayslip.deleteMany({ where: { payrollRunId: id } });
+afterAll(async () => {
+    // The uniquely named fixture company lives only in the disposable test DB.
+    // Approval history is immutable, including in tests; keep its source rows
+    // instead of disabling audit protections to clean up an individual suite.
+    for (const [key, value] of Object.entries(savedKeys)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
-    if (created.runs.length) await prisma.payrollRun.deleteMany({ where: { id: { in: created.runs } } });
-    if (created.taxRates.length) await prisma.taxRate.deleteMany({ where: { id: { in: created.taxRates } } });
-    if (created.terms.length) await prisma.employmentTerms.deleteMany({ where: { id: { in: created.terms } } });
-    if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } });
-    // Tear down the engine-provisioned tenant-scoped catalog rows for this tenant.
-    await prisma.payrollEarningType.deleteMany({ where: { tenantId: TENANT } });
-    await prisma.payrollDeductionType.deleteMany({ where: { tenantId: TENANT } });
     await prisma.$disconnect();
-}));
-
+}, 30000);
 const guard = () => !dbAvailable;
-
-// The PayrollRun period uniqueness is now tenant-scoped:
-// @@unique([tenantId, periodStart, periodEnd]) (REQ-006/REQ-007). Within THIS
-// single tenant a period must still be unique, so each test mints a DISTINCT
-// month from a monotonically increasing counter to avoid intra-tenant collisions.
-let periodSeq = 0;
 const freshRun = async () => mcpCtx.run({ system: true }, async () => {
-    const month = periodSeq;
-    periodSeq += 1;
-    const start = new Date(Date.UTC(2097, month, 1));
-    const end = new Date(Date.UTC(2097, month + 1, 0)); // last day of the month
-    const run = await payroll.createPayrollRun(
-        {
-            periodStart: start,
-            periodEnd: end,
-            countryCode: 'US',
-            currencyCode: 'USD',
-        },
-        PROCESSOR,
-        TENANT,
-    );
+    const month = periodSeq++, start = new Date(Date.UTC(2097, month, 1)), end = new Date(Date.UTC(2097, month + 1, 0));
+    const run = await payroll.createPayrollRun({ periodStart: start, periodEnd: end, countryCode: "US", currencyCode: "USD" }, PROCESSOR, TENANT);
     created.runs.push(run.id);
+    await prisma.payrollAuditLog.create({ data: { tenantId: TENANT, payrollRunId: run.id, action: "TIMESHEET_SUBMITTED",
+        details: "Fictional verified timesheet " + start.toISOString().slice(0,7), employeeId: PROCESSOR,
+    } });
     return run;
 });
 
@@ -186,11 +128,15 @@ describe('HR-02 approval gate + idempotency (real engine, live DB)', () => {
         await expect(payroll.finalizePayrollRun(run.id, PROCESSOR, TENANT)).rejects.toThrow(/approv/i);
     }));
 
-    it('FINALIZE is BLOCKED on self-approval (processor == approver)', async () => mcpCtx.run({ system: true }, async () => {
+    it('Approval Centre refuses self-review by the payroll initiator', async () => mcpCtx.run({ system: true }, async () => {
         if (guard()) return;
         const run = await freshRun();
         await payroll.processPayrollRun(run.id, PROCESSOR, TENANT);
-        await expect(payroll.approvePayrollRun(run.id, PROCESSOR, TENANT)).rejects.toThrow(/self|distinct|same/i);
+        const review = await submit(run);
+        await expect(as("PROCESSOR", () => actApproval({ approvalRef: review.approvalRef, expectedVersion: review.version,
+            action: "RECOMMEND_APPROVAL", reason: "Attempted self review", requestKey: randomUUID() })))
+            .rejects.toThrow();
+        expect((await prisma.payrollRun.findUnique({ where: { id: run.id } })).status).toBe("COMPLETED");
     }));
 
     it('FINALIZE SUCCEEDS with a DISTINCT approver', async () => mcpCtx.run({ system: true }, async () => {
@@ -198,11 +144,15 @@ describe('HR-02 approval gate + idempotency (real engine, live DB)', () => {
         const run = await freshRun();
         await payroll.processPayrollRun(run.id, PROCESSOR, TENANT);
 
-        const approved = await payroll.approvePayrollRun(run.id, APPROVER, TENANT);
+        let review = await submit(run);
+        review = await act("MANAGER", review, "RECOMMEND_APPROVAL");
+        review = await act("HR", review, "VERIFY");
+        await act("MANAGEMENT", review, "APPROVE");
+        const approved = await prisma.payrollRun.findUnique({ where: { id: run.id } });
         expect(approved.approvedBy).toBe(APPROVER);
         expect(approved.status).toBe('APPROVED');
 
-        const finalized = await payroll.finalizePayrollRun(run.id, APPROVER, TENANT);
+        const finalized = await as("HR", () => payroll.finalizePayrollRun(run.id, people.HR.id, TENANT));
         expect(finalized.status).toBe('FINALIZED');
         const slipStatuses = finalized.payslips.map((p) => p.status);
         expect(slipStatuses.every((s) => s === 'FINALIZED')).toBe(true);

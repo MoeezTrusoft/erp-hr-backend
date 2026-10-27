@@ -17,12 +17,14 @@
 //   superuser sees rows. This needs no seeding, so it stays meaningful on a
 //   fresh CI database.
 //
-// Skips cleanly when the DB is unreachable or the hr_app role / RLS migration
-// is absent, mirroring the pilot test — green on a bare checkout.
+// Requires the isolated database and non-privileged hr_app role. Missing
+// prerequisites fail qualification instead of silently omitting isolation probes.
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import prisma from '../../src/lib/prisma.js';
+import { randomUUID } from 'node:crypto';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 const TENANT_A = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
 const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
@@ -54,23 +56,23 @@ let ready = false;
 let appClient = null;
 const created = { employees: [], emergency: [], bank: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     const url = hrAppUrl();
-    if (!url) return;
+    if (!url) throw new Error('RLS fleet requires a valid DATABASE_URL');
     try {
         await prisma.$queryRaw`SELECT 1`;
         const roles = await prisma.$queryRaw`SELECT 1 FROM pg_roles WHERE rolname = 'hr_app'`;
-        if (!roles || roles.length === 0) return;
+        if (!roles || roles.length === 0) throw new Error('RLS fleet requires the hr_app role');
         appClient = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
         await appClient.$queryRaw`SELECT 1`;
-    } catch {
+    } catch (error) {
         ready = false;
-        return;
+        throw error;
     }
 
     try {
-        const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'RLS', last_name: 'FA', status: 'active' } });
-        const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'RLS', last_name: 'FB', status: 'active' } });
+        const empA = await prisma.employee.create({ data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_A, first_name: 'RLS', last_name: 'FA', status: 'active' } });
+        const empB = await prisma.employee.create({ data: { employee_code: randomUUID().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_B, first_name: 'RLS', last_name: 'FB', status: 'active' } });
         created.employees.push(empA.id, empB.id);
 
         const ecA = await prisma.emergencyContacts.create({ data: { tenantId: TENANT_A, employee_Id: empA.id, Contact_name: 'A-kin', phone: '111' } });
@@ -86,20 +88,20 @@ beforeAll(async () => {
         created.bkA = bkA.id; created.bkB = bkB.id;
 
         ready = true;
-    } catch {
-        // Seeding failed (e.g. missing C4 key or schema drift) — leave ready
-        // false so the substantive specs early-return instead of false-failing.
+    } catch (error) {
+        // A failed fixture must be visible; isolation probes cannot become empty passes.
         ready = false;
+        throw error;
     }
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (created.bank.length) await prisma.bankDetail.deleteMany({ where: { id: { in: created.bank } } }).catch(() => {});
     if (created.emergency.length) await prisma.emergencyContacts.deleteMany({ where: { id: { in: created.emergency } } }).catch(() => {});
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } }).catch(() => {});
     if (appClient) await appClient.$disconnect();
     await prisma.$disconnect();
-});
+}));
 
 // SET app.tenant_id + SELECT in ONE transaction so they share a connection.
 async function visibleIdsAs(table, tenantId, ids) {
@@ -112,7 +114,7 @@ async function visibleIdsAs(table, tenantId, ids) {
 
 describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables', () => {
     it('reports a result even when hr_app / RLS migration is absent', () => {
-        expect(typeof ready).toBe('boolean');
+        expect(ready).toBe(true);
     });
 
     for (const t of [
@@ -120,7 +122,7 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
         { table: 'bank_details', a: 'bkA', b: 'bkB' },
     ]) {
         it(`${t.table}: tenant A sees ONLY A; B is invisible at the DB`, async () => {
-            if (!ready) return;
+            if (!ready) throw new Error('RLS fleet fixture was not seeded');
             const ids = [created[t.a], created[t.b]];
             const visible = await visibleIdsAs(t.table, TENANT_A, ids);
             expect(visible).toContain(created[t.a]);
@@ -128,7 +130,7 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
         });
 
         it(`${t.table}: no tenant set → fail-closed (neither row visible)`, async () => {
-            if (!ready) return;
+            if (!ready) throw new Error('RLS fleet fixture was not seeded');
             const ids = [created[t.a], created[t.b]];
             const visible = await visibleIdsAs(t.table, null, ids);
             expect(visible).not.toContain(created[t.a]);
@@ -136,7 +138,7 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
         });
 
         it(`${t.table}: cross-tenant UPDATE affects 0 rows (WITH CHECK / USING)`, async () => {
-            if (!ready) return;
+            if (!ready) throw new Error('RLS fleet fixture was not seeded');
             const affected = await appClient.$transaction(async (tx) => {
                 await tx.$executeRawUnsafe(`SET LOCAL app.tenant_id = '${TENANT_A}'`);
                 // touch a harmless column that exists on both tables
@@ -149,7 +151,8 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
 
 describe('C.2 RLS cross-tenant negative — structural sweep over all 17 tables', () => {
     it('every protected table has FORCE RLS + tenant_isolation policy, and is fail-closed for a leaked no-GUC connection', async () => {
-        if (!appClient) return; // DB/role unavailable
+        if (!ready || !appClient) throw new Error('RLS fleet requires its seeded hr_app connection');
+        expect.assertions(RLS_TABLES.length * 4);
         for (const table of RLS_TABLES) {
             const cat = await prisma.$queryRawUnsafe(
                 `SELECT c.relforcerowsecurity AS forced,

@@ -67,7 +67,9 @@ export const tenantScopeExtension = (client) =>
                         );
                     }
                     const a = args ? { ...args } : {};
-                    if (WHERE_OPS.has(operation)) {
+                    if (['Skill', 'SkillAlias'].includes(model) && ['findMany','findFirst','findFirstOrThrow','findUnique','findUniqueOrThrow','count','aggregate','groupBy'].includes(operation)) {
+                        a.where = { ...(a.where ?? {}), AND: [a.where ?? {}, { OR: [{ [col]: tenantId }, { [col]: null }] }] };
+                    } else if (WHERE_OPS.has(operation)) {
                         a.where = { ...(a.where ?? {}), [col]: tenantId };
                     } else if (operation === 'create') {
                         a.data = { ...(a.data ?? {}), [col]: tenantId };

@@ -22,6 +22,7 @@ jest.unstable_mockModule("axios", () => ({
 // Deterministic service-JWT + tenant header so we can assert them.
 jest.unstable_mockModule("../../src/lib/serviceJwt.js", () => ({
   signServiceJwtEdDSA: mockSignServiceJwtEdDSA,
+  signNativeVerificationJwt: jest.fn(() => "native.hr.token"),
   ambientTenantHeader: () => ({ "X-Tenant-Id": "tenant-abc" }),
 }));
 

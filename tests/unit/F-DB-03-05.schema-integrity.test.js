@@ -80,9 +80,8 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // nullable-tenant convention as every other tenant-owned model here.
     // 121 + EmploymentPeriod (HR-PAYROLL-EMPLOYMENT-PERIOD-01), likewise.
     // 122 + EmployeeDeviceEnrolment (HR-ATT-DEVICE-ENROLMENT-01), likewise.
-    // 123 + AttendanceCallIn (HR-ATT-ONCALL-01), likewise — nullable-tenant
-    // call-in rows join the staged-backfill cohort, same as every model here.
-    expect(nullableModels).toHaveLength(124);
+    // Catalog-driven discovery covers the expanded recruitment and HR model set.
+    expect(nullableModels).toHaveLength(156);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

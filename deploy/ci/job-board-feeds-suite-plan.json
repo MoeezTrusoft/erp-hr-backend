@@ -1,0 +1,40 @@
+{
+  "state": "PREPARED_NOT_RUN",
+  "lane": "job-board-feeds-v1",
+  "base": "agency v4 plus shared UI v1 and v2; separate from frozen native-only lane",
+  "flag": {
+    "name": "HR_RECRUITMENT_JOB_BOARDS_ENABLED",
+    "default": false
+  },
+  "fullHrJestFileCount": 345,
+  "unitCasesPrepared": 17,
+  "nativeSubcasesPrepared": 11,
+  "jestFiles": [
+    "tests/unit/job-board-feeds.test.js",
+    "tests/unit/applicationDraft.service.test.js",
+    "tests/unit/publicPortal.test.js",
+    "tests/unit/requisitionPublication.test.js",
+    "tests/unit/recruitmentFlags.test.js",
+    "tests/unit/mcp/controller.error-envelope.test.js"
+  ],
+  "nativeFiles": [
+    "tests/recruitment/job-board-feeds.postgres.test.mjs",
+    "tests/recruitment/internal-sourcing.postgres.test.mjs",
+    "tests/recruitment/agency-recruitment.postgres.test.mjs",
+    "tests/recruitment/portal.postgres.test.mjs"
+  ],
+  "browserFiles": ["tests/recruitment/careers-journey.cjs"],
+  "required": [
+    "Fresh locked installs and Prisma generation",
+    "Full 345-file Jest discovery and regression",
+    "Native cases with Python standard-library XML parsing and isolated local PostgreSQL",
+    "Feed and redirect HTTP smoke through trusted host mapping, invalid/foreign host denial, Redis rate limiting",
+    "Full HR lint and dependency boundaries",
+    "Careers and ERP builds, frontend lint and browser journeys",
+    "Provider-account identity and complete published-inventory review",
+    "Staging deployment, feed polling, closure propagation, actual provider ingestion approval"
+  ],
+  "noProductionMail": true,
+  "noProviderSubmissionWithoutApprovedConfiguration": true,
+  "runtimeExecuted": false
+}

@@ -1,3 +1,7 @@
+import {
+  RECRUITMENT_ERROR_FAMILIES,
+  RECRUITMENT_DETAIL_ERRORS,
+} from "./recruitmentErrorCodes.js";
 // src/constants/errorCodes.js — ERR-6 · central HR-nnnn error-code registry.
 //
 // Single source of truth for HR's machine-stable error codes and their default
@@ -10,7 +14,7 @@
 //   HR-1xxx  validation / bad request (client-safe messages)
 //   HR-2xxx  money / payroll arithmetic (internal invariants)
 //   HR-4xxx  authorization / not-found / conflict / tenancy-deny
-//   HR-5xxx  internal / unexpected (client message is ALWAYS generic — ERR-3)
+//   HR-5000 internal / unexpected; HR-5100–6199 recruitment domain errors
 //
 // `message` here is the CLIENT-SAFE default. For 5xx codes it is deliberately
 // generic (never the raw error) so no Prisma/RLS/internal detail leaks (ERR-3).
@@ -24,29 +28,68 @@
 
 /** @type {Record<string, ErrorCodeDef>} */
 export const HR_ERRORS = {
-    // ---- validation (client-safe) ----
-    VALIDATION: { code: 'HR-1000', httpStatus: 400, message: 'Validation failed' },
-    BAD_REQUEST: { code: 'HR-1001', httpStatus: 400, message: 'Bad request' },
+  ...RECRUITMENT_DETAIL_ERRORS,
+  ...Object.fromEntries(
+    Object.entries(RECRUITMENT_ERROR_FAMILIES).map(([key, value]) => [
+      "RECRUITMENT_" + key,
+      value,
+    ]),
+  ),
+  // ---- validation (client-safe) ----
+  VALIDATION: {
+    code: "HR-1000",
+    httpStatus: 400,
+    message: "Validation failed",
+  },
+  BAD_REQUEST: { code: "HR-1001", httpStatus: 400, message: "Bad request" },
 
-    // ---- authorization / resource ----
-    UNAUTHORIZED: { code: 'HR-4010', httpStatus: 401, message: 'Unauthorized' },
-    FORBIDDEN: { code: 'HR-4030', httpStatus: 403, message: 'Forbidden' },
-    NOT_FOUND: { code: 'HR-4040', httpStatus: 404, message: 'Resource not found' },
-    CONFLICT: { code: 'HR-4090', httpStatus: 409, message: 'Conflict' },
-    PRECONDITION_FAILED: { code: 'HR-4120', httpStatus: 412, message: 'Precondition failed' },
-    PRECONDITION_REQUIRED: { code: 'HR-4280', httpStatus: 428, message: 'Precondition required' },
-    PAYROLL_PERIOD: { code: 'HR-4301', httpStatus: 400, message: 'Invalid payroll period' },
-    PAYROLL_READINESS: { code: 'HR-4302', httpStatus: 409, message: 'Complete payroll setup before processing' },
-    PAYROLL_LOAN_CHANGED: { code: 'HR-4303', httpStatus: 409, message: 'Loan balance changed; reconcile payroll before finalization' },
+  // ---- authorization / resource ----
+  UNAUTHORIZED: { code: "HR-4010", httpStatus: 401, message: "Unauthorized" },
+  FORBIDDEN: { code: "HR-4030", httpStatus: 403, message: "Forbidden" },
+  NOT_FOUND: {
+    code: "HR-4040",
+    httpStatus: 404,
+    message: "Resource not found",
+  },
+  CONFLICT: { code: "HR-4090", httpStatus: 409, message: "Conflict" },
+  PRECONDITION_FAILED: {
+    code: "HR-4120",
+    httpStatus: 412,
+    message: "Precondition failed",
+  },
+  PRECONDITION_REQUIRED: {
+    code: "HR-4280",
+    httpStatus: 428,
+    message: "Precondition required",
+  },
+  PAYROLL_PERIOD: {
+    code: "HR-4301",
+    httpStatus: 400,
+    message: "Invalid payroll period",
+  },
+  PAYROLL_READINESS: {
+    code: "HR-4302",
+    httpStatus: 409,
+    message: "Complete payroll setup before processing",
+  },
+  PAYROLL_LOAN_CHANGED: {
+    code: "HR-4303",
+    httpStatus: 409,
+    message: "Loan balance changed; reconcile payroll before finalization",
+  },
 
-    // ---- internal / unexpected (ERR-3: generic client message only) ----
-    INTERNAL: { code: 'HR-5000', httpStatus: 500, message: 'Internal server error' },
+  // ---- internal / unexpected (ERR-3: generic client message only) ----
+  INTERNAL: {
+    code: "HR-5000",
+    httpStatus: 500,
+    message: "Internal server error",
+  },
 };
 
 // Fast reverse lookup: HR-nnnn code string → definition. Lets the terminal
 // handler and the MCP mapper resolve a code that arrived on an AppError.
 export const HR_ERROR_BY_CODE = Object.freeze(
-    Object.fromEntries(Object.values(HR_ERRORS).map((d) => [d.code, d])),
+  Object.fromEntries(Object.values(HR_ERRORS).map((d) => [d.code, d])),
 );
 
 // The single generic code every unexpected/5xx error collapses to for clients.

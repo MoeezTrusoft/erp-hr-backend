@@ -9,7 +9,7 @@
 // any error returns nulls so the profile still renders without org names.
 import axios from "axios";
 import logger from "../lib/logger.js";
-import { signServiceJwtEdDSA, ambientTenantHeader } from "../lib/serviceJwt.js";
+import { signServiceJwtEdDSA, signNativeVerificationJwt, ambientTenantHeader } from "../lib/serviceJwt.js";
 import { mcpCtx } from "../mcp/context.js";
 
 const RBAC_BASE_URL = process.env.RBAC_SERVICE_URL || "http://localhost:3001";
@@ -54,11 +54,14 @@ const signedActorClaims = () => {
   };
 };
 
-const withInternalAuth = (headers = {}) => {
+const withInternalAuth = (headers = {}, nativeClaim = null) => {
   const merged = { ...headers, ...ambientTenantHeader(), "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET };
   // F-01/F-02: sign the same verified actor represented by compatibility
   // headers. The tenant remains supplied by signServiceJwtEdDSA's ambient tid.
-  const token = signServiceJwtEdDSA(signedActorClaims());
+  const token = nativeClaim
+    ? signNativeVerificationJwt({ ...signedActorClaims(), sdlcVerification: nativeClaim })
+    : signServiceJwtEdDSA(signedActorClaims());
+  if (nativeClaim && !token) throw Object.assign(new Error("HR-0310: native signing key is unavailable"), { code: "HR-0310", status: 403 });
   if (token) merged["X-Service-Authorization"] = `Bearer ${token}`;
   return merged;
 };
@@ -157,6 +160,7 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}, option
     const res = await rbacApi.request({
       url: "/mcp",
       method: "POST",
+      ...(options.nativeVerification ? { timeout: 10000 } : {}),
       headers: withInternalAuth({
         ...withoutIdentityHeaders(actorHeaders),
         ...actorIdentityHeaders(),
@@ -169,7 +173,7 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}, option
         ...(options.payloadFingerprint
           ? { "X-Idempotency-Fingerprint": options.payloadFingerprint }
           : {}),
-      }),
+      }, options.nativeVerification ?? null),
       data: rpc,
       // The transport may answer as an SSE frame; take the raw text and parse
       // it ourselves (parseMcpBody handles JSON and SSE).
@@ -218,7 +222,7 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}, option
   } catch (err) {
     // Transport/network failure (or a boundary 401/403 from internalServiceGuard
     // / gatewayIdentity before the tool ran). Fail-soft.
-    const status = err?.response?.status ?? null;
+    const status = err?.response?.status ?? err?.status ?? null;
     const parsedErr = parseMcpBody(err?.response?.data);
     const error =
       parsedErr?.error?.message ||
@@ -229,7 +233,7 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}, option
       { status, error, hrEmployeeId: payload?.hrEmployeeId },
       "rbac.client: createRbacSystemAccount failed — employee kept, login provisioning did not"
     );
-    return { ok: false, status, error, code: parsedErr?.error?.data?.code };
+    return { ok: false, status, error, code: parsedErr?.error?.data?.code ?? err?.code };
   }
 }
 

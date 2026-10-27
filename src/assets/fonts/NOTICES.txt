@@ -1,0 +1,6 @@
+Noto Sans Regular 2.008 and Noto Sans Arabic Regular 2.009
+Copyright 2015-2021 Google LLC. All Rights Reserved.
+Copyright 2015-2021 Google LLC. All Rights Reserved.
+Distributed under SIL Open Font License 1.1; see the adjacent OFL files.
+Sources and downloaded SHA-256 digests are recorded in noto-provenance.json.
+OrgSans.ttf is pre-existing and is not used by the evaluation report renderer.

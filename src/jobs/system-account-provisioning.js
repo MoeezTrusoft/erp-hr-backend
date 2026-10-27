@@ -1,6 +1,7 @@
 // F-03 / ARCH-00 P-04/P-07/P-12 / ARCH-01 §3.5, §7-§9.
 // Durable HR-owned account provisioning with claim/lease and bounded retry.
 import crypto from "node:crypto";
+import { withNativeHrWorkerClaim } from "../services/native-verification-guard.service.js";
 
 import defaultPrisma from "../lib/prisma.js";
 import defaultLogger from "../lib/logger.js";
@@ -199,18 +200,20 @@ async function runBatch(options) {
     let result;
     try {
       const password = randomBytesFn(18).toString("base64url");
-      result = await mcpCtx.run(actorContext(row), () => provision(
-        { ...row.payload, password },
-        {},
-        { idempotencyKey: row.idempotencyKey, payloadFingerprint: row.payloadFingerprint },
-      ));
+      result = await withNativeHrWorkerClaim(prisma, { ...row, claimedBy: workerId }, nativeClaim =>
+        mcpCtx.run(actorContext(row), () => provision(
+          { ...row.payload, password },
+          {},
+          { idempotencyKey: row.idempotencyKey, payloadFingerprint: row.payloadFingerprint,
+            ...(nativeClaim ? { nativeVerification: nativeClaim } : {}) },
+        )), { now });
     } catch (error) {
-      result = { ok: false, status: null, error: error?.message || "RBAC provisioning failed" };
+      result = { ok: false, status: error?.status ?? null, code: error?.code, error: error?.message || "RBAC provisioning failed" };
     }
 
     if (result?.ok) {
       const userId = result.user?.id == null ? null : String(result.user.id);
-      await model.updateMany({
+      const finalized = await model.updateMany({
         where: { id: row.id, claimedBy: workerId, status: "PROCESSING" },
         data: {
           status: "SUCCEEDED",
@@ -227,12 +230,13 @@ async function runBatch(options) {
           claimExpiresAt: null,
         },
       });
-      counts.succeeded += 1;
+      if (finalized.count === 1) counts.succeeded += 1;
+      else counts.claimRaceLost += 1; // Cancellation or lease replacement owns the final state.
       continue;
     }
 
     const terminal = isPermanentFailure(result) || attempt >= row.maxAttempts;
-    await model.updateMany({
+    const finalized = await model.updateMany({
       where: { id: row.id, claimedBy: workerId, status: "PROCESSING" },
       data: {
         status: terminal ? "TERMINAL_FAILED" : "RETRY_WAIT",
@@ -246,6 +250,10 @@ async function runBatch(options) {
         claimExpiresAt: null,
       },
     });
+    if (finalized.count !== 1) {
+      counts.claimRaceLost += 1;
+      continue;
+    }
     counts.failed += 1;
     logger.warn?.(
       { provisioningId: row.id, employeeId: row.employeeId, attempt, terminal },
@@ -274,7 +282,7 @@ export async function retrySystemAccountProvisioning(id, tenantId, {
   if (row.status !== "TERMINAL_FAILED") {
     throw new Error("HR-0304: only terminal failed provisioning can be retried manually");
   }
-  const updated = await prisma.systemAccountProvisioning.update({
+  const updated = await withNativeHrWorkerClaim(prisma, row, (_claim, client) => client.systemAccountProvisioning.update({
     where: { id: row.id },
     data: {
       status: "PENDING",
@@ -288,6 +296,6 @@ export async function retrySystemAccountProvisioning(id, tenantId, {
       claimExpiresAt: null,
       manualRetryCount: row.manualRetryCount + 1,
     },
-  });
+  }), { now, requireLease: false });
   return publicProvisioningState(updated);
 }

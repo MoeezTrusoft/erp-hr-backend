@@ -1,271 +1,440 @@
-import prisma from "../config/prisma.js";
-import { uploadFileToDAM } from "./dam.media.service.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
-
-// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
-// param; folded into onboarding reads and stamped on creates, fail-closed so
-// tenant B never reads/mutates tenant A's onboarding checklists/tasks/documents.
-
+// Compatibility transports converge on the same verified management/portal rules.
+import {
+  uploadOnboardingDocument,
+  requireOnboardingSignatures,
+} from "./onboardingDocuments.service.js";
+import { createHash } from "node:crypto";
+import {
+  submitPortalMilestone,
+  createPortalTask,
+  updatePortalTask,
+  deletePortalTask,
+} from "./onboardingPortalScreen.service.js";
+import {
+  runOnboardingManagement,
+  managementChecklist,
+  managementChecklistWhere,
+  onboardingFailure as fail,
+} from "./onboardingManagement.service.js";
+import { addNewHire } from "./onboardingDashboard.service.js";
+import { listDocuments as managedDocuments } from "./onboardingSchedule.service.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 const employeeSelect = {
-    id: true,
-    employee_name: true,
-    first_name: true,
-    last_name: true,
-    job_title: true,
-    joining_date: true,
-    hire_date: true,
-    photo_url: true,
-    current_address: true,
-    city: true,
+  id: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  job_title: true,
+  joining_date: true,
+  photo_url: true,
+  tenant_id: true,
 };
-
+const includeFor = (tenantId) => ({
+  employee: { select: employeeSelect },
+  tasks: {
+    where: { tenantId },
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+  },
+  buddy: { include: { buddy: { select: employeeSelect } } },
+});
+const safeRow = (row, tenantId) => ({
+  ...row,
+  buddy:
+    row.buddy?.tenantId === tenantId && row.buddy?.buddy?.tenant_id === tenantId
+      ? row.buddy
+      : null,
+});
+const positive = (value) => {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0) fail("Use a valid record ID");
+  return id;
+};
+function date(value) {
+  if (value == null) return null;
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+    !Number.isFinite(+new Date(value)) ||
+    new Date(value).toISOString().slice(0, 10) !== value
+  )
+    fail("Use a valid calendar date");
+  return new Date(value);
+}
+function text(value, max, label) {
+  if (value != null && (typeof value !== "string" || value.length > max))
+    fail(label + " is too long");
+  return value?.trim() || null;
+}
+async function changed(tx, env, c, action) {
+  const e = await enqueueHrDomainEvent(tx, {
+    tenantId: env.tenantId,
+    actorId: String(env.who.id),
+    actorType: "user",
+    eventName: "hr.onboarding.checklist_changed.v1",
+    aggregateType: "OnboardingChecklist",
+    aggregateId: String(c.id),
+    payload: {
+      checklistId: String(c.id),
+      employeeId: String(c.employeeId),
+      actorId: String(env.who.id),
+      action,
+    },
+  });
+  if (!e) fail("Onboarding event could not be saved", 503);
+}
+export const createChecklist = ({
+  tenantId,
+  employeeId,
+  title,
+  templateId,
+  startDate,
+  buddyId,
+  ...rest
+}) => {
+  if (Object.keys(rest).some((k) => rest[k] !== undefined))
+    fail("Use the current checklist fields and a company template ID");
+  return addNewHire(
+    {
+      employeeId: positive(employeeId),
+      title,
+      templateId: templateId == null ? undefined : positive(templateId),
+      startDate: startDate || new Date().toISOString().slice(0, 10),
+      buddyId,
+    },
+    tenantId,
+  );
+};
+export const listChecklists = ({ tenantId, page = 1, limit = 20 } = {}) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) => {
+    page = positive(page);
+    limit = positive(limit);
+    if (limit > 100) fail("Page size must be at most 100");
+    const where = managementChecklistWhere(env);
+    const items = await tx.onboardingChecklist.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: [{ created_at: "desc" }, { id: "desc" }],
+      include: includeFor(tenantId),
+    });
+    const total = await tx.onboardingChecklist.count({ where });
+    return {
+      items: items.map((c) => safeRow(c, tenantId)),
+      total,
+      page,
+      limit,
+    };
+  });
+export const getChecklist = (id, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) =>
+    safeRow(
+      await managementChecklist(tx, env, id, { include: includeFor(tenantId) }),
+      tenantId,
+    ),
+  );
+export const getChecklistByEmployee = (employeeId, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) => {
+    const rows = await tx.onboardingChecklist.findMany({
+      where: {
+        ...managementChecklistWhere(env),
+        employeeId: positive(employeeId),
+      },
+      orderBy: [{ created_at: "desc" }, { id: "desc" }],
+      include: includeFor(tenantId),
+      take: 1001,
+    });
+    if (rows.length > 1000)
+      fail("Use the paged onboarding list for this employee", 413);
+    return rows.map((c) => safeRow(c, tenantId));
+  });
+export const updateChecklist = (id, input, tenantId) =>
+  runOnboardingManagement(tenantId, "PUT", async (tx, env) => {
+    const allowed = [
+      "title",
+      "status",
+      "notes",
+      "startDate",
+      "targetDate",
+      "currentStage",
+    ];
+    if (!input || Object.keys(input).some((k) => !allowed.includes(k)))
+      fail("Unsupported checklist update field");
+    const c = await managementChecklist(tx, env, id, { lock: true }),
+      data = {};
+    for (const key of ["title", "notes"])
+      if (input[key] !== undefined)
+        data[key] = text(input[key], key === "title" ? 200 : 4000, key);
+    if (data.title === null) fail("A checklist title is required");
+    if (input.startDate !== undefined) {
+      data.startDate = date(input.startDate);
+      if (!data.startDate) fail("Start date is required");
+    }
+    if (input.targetDate !== undefined)
+      data.targetDate = date(input.targetDate);
+    if (
+      (data.targetDate ?? c.targetDate) &&
+      (data.targetDate ?? c.targetDate) < (data.startDate ?? c.startDate)
+    )
+      fail("Target date cannot precede the start date");
+    if (input.currentStage !== undefined) {
+      if (
+        ![
+          "pre_joining",
+          "pre_boarding",
+          "first_week",
+          "equipment",
+          "complete",
+        ].includes(input.currentStage)
+      )
+        fail("Unknown onboarding stage");
+      data.currentStage = input.currentStage;
+    }
+    if (input.status !== undefined) {
+      if (
+        !["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "OVERDUE"].includes(
+          input.status,
+        )
+      )
+        fail("Unknown onboarding status");
+      data.status = input.status;
+    }
+    if (data.status === "COMPLETED" || data.currentStage === "complete") {
+      if (
+        await tx.onboardingTask.count({
+          where: { tenantId, checklistId: c.id, completed: false },
+        })
+      )
+        fail("Complete all checklist tasks before closing onboarding", 409);
+      await requireOnboardingSignatures(tx, tenantId, c.id);
+      data.status = "COMPLETED";
+      data.currentStage = "complete";
+      data.completedAt = c.completedAt || new Date();
+    } else if (data.status) {
+      data.completedAt = null;
+      if (c.currentStage === "complete" && data.currentStage === undefined)
+        data.currentStage = "pre_joining";
+    }
+    const saved = await tx.onboardingChecklist.update({
+      where: { id: c.id },
+      data,
+      include: includeFor(tenantId),
+    });
+    await changed(tx, env, c, "CHECKLIST_UPDATED");
+    return safeRow(saved, tenantId);
+  });
+const legacyTask = (t) => ({
+  ...t,
+  completed: t.done,
+  dueDate: t.deadline,
+  assigneeId: t.responsible?.id ?? null,
+});
+export const addTask = async ({
+  tenantId,
+  checklistId,
+  title,
+  description,
+  notes,
+  assigneeType,
+  dueDate,
+  assignedToId,
+  assigneeId,
+  stage,
+  category,
+}) =>
+  legacyTask(
+    await createPortalTask({
+      tenantId,
+      checklistId: positive(checklistId),
+      title,
+      description: description ?? notes,
+      assigneeType,
+      deadline: dueDate,
+      responsibleId: assignedToId ?? assigneeId,
+      stage,
+      category,
+    }),
+  );
+export const updateTask = async (taskId, input, tenantId) => {
+  const allowed = [
+    "title",
+    "description",
+    "notes",
+    "category",
+    "stage",
+    "assigneeType",
+    "assigneeId",
+    "dueDate",
+    "completed",
+    "isCompleted",
+    "status",
+  ];
+  if (!input || Object.keys(input).some((k) => !allowed.includes(k)))
+    fail("Unsupported task update field");
+  const patch = { tenantId, taskId: positive(taskId) };
+  for (const key of [
+    "title",
+    "description",
+    "category",
+    "stage",
+    "assigneeType",
+  ])
+    if (input[key] !== undefined) patch[key] = input[key];
+  if (input.notes !== undefined) patch.description = input.notes;
+  if (input.assigneeId !== undefined) patch.responsibleId = input.assigneeId;
+  if (input.dueDate !== undefined) patch.deadline = input.dueDate;
+  if (input.status !== undefined) {
+    if (!["PENDING", "IN_PROGRESS", "COMPLETED"].includes(input.status))
+      fail("Unknown task status");
+    patch.done = input.status === "COMPLETED";
+  }
+  for (const key of ["completed", "isCompleted"])
+    if (input[key] !== undefined) {
+      if (typeof input[key] !== "boolean")
+        fail("Completion must be true or false");
+      if (patch.done !== undefined && patch.done !== input[key])
+        fail("Conflicting task completion values");
+      patch.done = input[key];
+    }
+  return legacyTask(await updatePortalTask(patch));
+};
+export const deleteTask = (taskId, tenantId) =>
+  deletePortalTask({ tenantId, taskId: positive(taskId) });
+export const listDocuments = managedDocuments;
+// Preserve the legacy upload transport with verified company/employee ownership.
+// Employee self-service uploads are handled separately from this HR transport.
+export async function uploadDocument({
+  checklistId,
+  employeeId,
+  title,
+  file,
+  tenantId,
+}) {
+  const checked = await runOnboardingManagement(
+    tenantId,
+    "POST",
+    async (tx, env) => {
+      const c = await managementChecklist(tx, env, checklistId);
+      if (employeeId != null && positive(employeeId) !== c.employeeId)
+        fail("Document employee does not match the checklist", 404);
+      return { id: c.id, employeeId: c.employeeId };
+    },
+  );
+  if (
+    !Buffer.isBuffer(file?.buffer) ||
+    !file.buffer.length ||
+    file.buffer.length > 5 * 1024 * 1024
+  )
+    fail("Choose a document of 5 MB or less");
+  const pdf = file.buffer.subarray(0, 5).toString() === "%PDF-",
+    docx =
+      file.buffer.subarray(0, 4).equals(Buffer.from([80, 75, 3, 4])) &&
+      file.buffer.includes(Buffer.from("word/document.xml")) &&
+      file.buffer.includes(Buffer.from("[Content_Types].xml"));
+  if (!pdf && !docx) fail("Choose a valid PDF or Word document");
+  const documentTitle = text(title || file.originalname, 200, "Document title");
+  if (!documentTitle) fail("Document title is required");
+  const hash = createHash("sha256").update(file.buffer).digest("hex");
+  return uploadOnboardingDocument(
+    {
+      checklistId: checked.id,
+      title: documentTitle,
+      requestKey: "legacy:" + hash,
+      contentBase64: file.buffer.toString("base64"),
+    },
+    tenantId,
+  );
+}
+export const signDocument = (docId, { tenantId } = {}) =>
+  runOnboardingManagement(tenantId, "PUT", async (tx, env) => {
+    const doc = await tx.onboardingDocument.findFirst({
+      where: { id: positive(docId), tenantId },
+    });
+    if (!doc) fail("Onboarding document not found", 404);
+    await managementChecklist(tx, env, doc.checklistId);
+    fail(
+      "A verified LibreSign result is required; a manual signature timestamp is not accepted",
+      409,
+    );
+  });
+export const assignBuddy = ({ checklistId, buddyId, tenantId }) =>
+  runOnboardingManagement(tenantId, "POST", async (tx, env) => {
+    const c = await managementChecklist(tx, env, checklistId, { lock: true }),
+      id = positive(buddyId);
+    if (id === c.employeeId) fail("Choose a different employee as buddy");
+    const buddy = await tx.employee.findFirst({
+      where: { tenant_id: tenantId, id },
+    });
+    if (
+      !buddy ||
+      /inactive|terminated|exited|offboard|separated/i.test(
+        [buddy.status, buddy.employement_status].join(" "),
+      )
+    )
+      fail("Active buddy not found", 404);
+    const saved = await tx.onboardingBuddy.upsert({
+      where: { checklistId: c.id },
+      create: { tenantId, checklistId: c.id, buddyId: id },
+      update: { buddyId: id, tenantId },
+      include: { buddy: { select: employeeSelect } },
+    });
+    await changed(tx, env, c, "BUDDY_ASSIGNED");
+    return saved;
+  });
+export const getBuddy = (checklistId, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) => {
+    const c = await managementChecklist(tx, env, checklistId);
+    const row = await tx.onboardingBuddy.findFirst({
+      where: {
+        tenantId,
+        checklistId: c.id,
+        buddy: { is: { tenant_id: tenantId } },
+      },
+      include: { buddy: { select: employeeSelect } },
+    });
+    return row;
+  });
 const mapSurveyType = (value) => {
-    const normalized = String(value || "DAY_30").toUpperCase().replace(/-/g, "_");
-    if (normalized === "30_DAY" || normalized === "DAY_30") return "DAY_30";
-    if (normalized === "60_DAY" || normalized === "DAY_60") return "DAY_60";
-    if (normalized === "90_DAY" || normalized === "DAY_90") return "DAY_90";
-    return normalized;
+  const key = String(value || "DAY_30")
+    .toUpperCase()
+    .replaceAll("-", "_");
+  return (
+    { "30_DAY": "DAY_30", "60_DAY": "DAY_60", "90_DAY": "DAY_90" }[key] || key
+  );
 };
-
-const normalizeTaskUpdate = (data = {}) => {
-    const update = { ...data };
-
-    if (update.status !== undefined) {
-        const status = String(update.status).toUpperCase();
-        update.completed = status === "COMPLETED";
-        if (update.completed) update.completedAt = new Date();
-        else if (status === "PENDING") update.completedAt = null;
-        delete update.status;
-    }
-
-    if (update.isCompleted !== undefined) {
-        update.completed = !!update.isCompleted;
-        if (update.completed) update.completedAt = new Date();
-        delete update.isCompleted;
-    }
-
-    if (update.notes !== undefined) {
-        update.description = update.notes;
-        delete update.notes;
-    }
-
-    if (update.assigneeId !== undefined) {
-        update.assigneeId = update.assigneeId ? Number(update.assigneeId) : null;
-    }
-
-    return update;
-};
-
-// ── Checklists ──────────────────────────────────────────────────────────────
-
-export const createChecklist = async ({ employeeId, title, templateId, template, startDate, targetCompletionDate, targetDate, notes, tenantId }) => {
-    return prisma.onboardingChecklist.create({
-        data: scopedData(tenantId, {
-            employeeId: Number(employeeId),
-            title: title || "Employee Onboarding",
-            template: templateId || template || null,
-            startDate: startDate ? new Date(startDate) : new Date(),
-            targetDate: targetCompletionDate || targetDate ? new Date(targetCompletionDate || targetDate) : null,
-            notes,
-        }),
-        include: { tasks: true, documents: true, buddy: { include: { buddy: { select: employeeSelect } } } },
-    });
-};
-
-export const listChecklists = async ({ page = 1, limit = 20, tenantId } = {}) => {
-    const skip = (page - 1) * limit;
-    const where = scopedWhere(tenantId, {});
-    const [items, total] = await Promise.all([
-        prisma.onboardingChecklist.findMany({
-            where,
-            skip,
-            take: limit,
-            orderBy: { created_at: "desc" },
-            include: {
-                employee: { select: employeeSelect },
-                tasks: { orderBy: { sortOrder: "asc" } },
-                buddy: { include: { buddy: { select: employeeSelect } } },
-            },
-        }),
-        prisma.onboardingChecklist.count({ where }),
-    ]);
-    return { items, total, page, limit };
-};
-
-export const getChecklist = async (id, tenantId) => {
-    return prisma.onboardingChecklist.findFirst({
-        where: scopedWhere(tenantId, { id: Number(id) }),
-        include: {
-            employee: { select: employeeSelect },
-            tasks: { orderBy: { sortOrder: "asc" } },
-            documents: true,
-            buddy: { include: { buddy: { select: employeeSelect } } },
-            surveys: true,
+export const submitSurvey = ({
+  employeeId,
+  checklistId,
+  type,
+  surveyType,
+  responses,
+  tenantId,
+}) =>
+  submitPortalMilestone({
+    employeeId,
+    checklistId,
+    type: mapSurveyType(surveyType || type),
+    tenantId,
+    answers: Array.isArray(responses?.answers)
+      ? responses.answers
+      : Object.entries(responses || {}).map(([questionId, answer]) => ({
+          questionId,
+          answer,
+        })),
+    comments: responses?.comments,
+  });
+export const getSurveys = (employeeId, tenantId) =>
+  runOnboardingManagement(tenantId, "GET", async (tx, env) =>
+    tx.onboardingSurvey.findMany({
+      where: {
+        tenantId,
+        employeeId: positive(employeeId),
+        checklist: {
+          is: {
+            ...managementChecklistWhere(env),
+            employeeId: positive(employeeId),
+          },
         },
-    });
-};
-
-export const getChecklistByEmployee = async (employeeId, tenantId) => {
-    return prisma.onboardingChecklist.findMany({
-        where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
-        include: {
-            employee: { select: employeeSelect },
-            tasks: { orderBy: { sortOrder: "asc" } },
-            documents: true,
-            buddy: { include: { buddy: { select: employeeSelect } } },
-        },
-        orderBy: { created_at: "desc" },
-    });
-};
-
-export const updateChecklist = async (id, data, tenantId) => {
-    const existing = await prisma.onboardingChecklist.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw new Error("Checklist not found");
-    return prisma.onboardingChecklist.update({
-        where: { id: Number(id) },
-        data,
-        include: { tasks: true, buddy: { include: { buddy: { select: employeeSelect } } } },
-    });
-};
-
-// ── Tasks ────────────────────────────────────────────────────────────────────
-
-export const addTask = async ({ checklistId, title, description, assigneeType, dueDate, assignedToId, assigneeId, tenantId }) => {
-    return prisma.onboardingTask.create({
-        data: scopedData(tenantId, {
-            checklistId: Number(checklistId),
-            title,
-            description,
-            assigneeType: assigneeType || "HR",
-            dueDate: dueDate ? new Date(dueDate) : null,
-            assigneeId: assignedToId || assigneeId ? Number(assignedToId || assigneeId) : null,
-        }),
-    });
-};
-
-export const updateTask = async (taskId, data, tenantId) => {
-    const existing = await prisma.onboardingTask.findFirst({ where: scopedWhere(tenantId, { id: Number(taskId) }) });
-    if (!existing) throw new Error("Task not found");
-    const update = normalizeTaskUpdate(data);
-    return prisma.onboardingTask.update({
-        where: { id: Number(taskId) },
-        data: update,
-    });
-};
-
-export const deleteTask = async (taskId, tenantId) => {
-    const existing = await prisma.onboardingTask.findFirst({ where: scopedWhere(tenantId, { id: Number(taskId) }) });
-    if (!existing) throw new Error("Task not found");
-    return prisma.onboardingTask.delete({ where: { id: Number(taskId) } });
-};
-
-// ── Documents ────────────────────────────────────────────────────────────────
-
-export const uploadDocument = async ({ checklistId, employeeId, title, file, tenantId }) => {
-    const checklist = await prisma.onboardingChecklist.findFirst({
-        where: scopedWhere(tenantId, { id: Number(checklistId) }),
-        select: { employeeId: true },
-    });
-    if (!checklist) throw new Error("Checklist not found");
-
-    const uploaded = await uploadFileToDAM(file, "document");
-    if (!uploaded || !uploaded[0]) throw new Error("DAM upload failed");
-    const mediaId = uploaded[0].id;
-
-    return prisma.onboardingDocument.create({
-        data: scopedData(tenantId, {
-            checklistId: Number(checklistId),
-            employeeId: Number(employeeId || checklist.employeeId),
-            title,
-            mediaId,
-        }),
-    });
-};
-
-export const listDocuments = async (checklistId, tenantId) => {
-    return prisma.onboardingDocument.findMany({
-        where: scopedWhere(tenantId, { checklistId: Number(checklistId) }),
-        orderBy: { created_at: "desc" },
-    });
-};
-
-export const signDocument = async (docId, { signedBy, tenantId } = {}) => {
-    const existing = await prisma.onboardingDocument.findFirst({ where: scopedWhere(tenantId, { id: Number(docId) }) });
-    if (!existing) throw new Error("Document not found");
-    const signerId = signedBy !== undefined && signedBy !== null && String(signedBy) !== "" ? Number(signedBy) : null;
-    return prisma.onboardingDocument.update({
-        where: { id: Number(docId) },
-        data: {
-            signedAt: new Date(),
-            ...(signerId != null && !Number.isNaN(signerId) ? { signedByEmpId: signerId } : {}),
-        },
-    });
-};
-
-// ── Buddy ────────────────────────────────────────────────────────────────────
-
-export const assignBuddy = async ({ checklistId, buddyId, tenantId }) => {
-    // Scope the parent checklist so a buddy can't be attached cross-tenant.
-    const checklist = await prisma.onboardingChecklist.findFirst({
-        where: scopedWhere(tenantId, { id: Number(checklistId) }),
-        select: { id: true },
-    });
-    if (!checklist) throw new Error("Checklist not found");
-    return prisma.onboardingBuddy.upsert({
-        where: { checklistId: Number(checklistId) },
-        update: { buddyId: Number(buddyId) },
-        create: scopedData(tenantId, { checklistId: Number(checklistId), buddyId: Number(buddyId) }),
-        include: { buddy: { select: employeeSelect } },
-    });
-};
-
-export const getBuddy = async (checklistId, tenantId) => {
-    return prisma.onboardingBuddy.findFirst({
-        where: scopedWhere(tenantId, { checklistId: Number(checklistId) }),
-        include: { buddy: { select: employeeSelect } },
-    });
-};
-
-// ── Surveys ──────────────────────────────────────────────────────────────────
-
-export const submitSurvey = async ({ employeeId, checklistId, type, surveyType, responses, tenantId }) => {
-    const resolvedType = mapSurveyType(surveyType || type);
-    let resolvedChecklistId = checklistId ? Number(checklistId) : null;
-
-    if (!resolvedChecklistId) {
-        const checklist = await prisma.onboardingChecklist.findFirst({
-            where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
-            orderBy: { created_at: "desc" },
-            select: { id: true },
-        });
-        if (!checklist) throw new Error("Onboarding checklist not found for employee");
-        resolvedChecklistId = checklist.id;
-    }
-
-    return prisma.onboardingSurvey.upsert({
-        where: {
-            checklistId_type: {
-                checklistId: resolvedChecklistId,
-                type: resolvedType,
-            },
-        },
-        update: {
-            responses,
-            submittedAt: new Date(),
-        },
-        create: scopedData(tenantId, {
-            checklistId: resolvedChecklistId,
-            employeeId: Number(employeeId),
-            type: resolvedType,
-            responses,
-            submittedAt: new Date(),
-        }),
-    });
-};
-
-export const getSurveys = async (employeeId, tenantId) => {
-    return prisma.onboardingSurvey.findMany({
-        where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
-        orderBy: { created_at: "desc" },
-    });
-};
+      },
+      orderBy: [{ created_at: "desc" }, { id: "desc" }],
+    }),
+  );

@@ -1,3 +1,4 @@
+import { recruitmentErrorFamily } from '../constants/recruitmentErrorCodes.js';
 // src/middlewares/error.middleware.js — ERR-1/2/3/4 · terminal error handler.
 //
 // The SINGLE terminal error middleware for the HR service. Mounted LAST in
@@ -112,7 +113,9 @@ export function normalizeError(err) {
     // the benefit.service `err(code, message, statusCode)` helper). Trust the
     // status + a client-safe message for 4xx; genericize the message for 5xx
     // (ERR-3) while preserving a valid HR-nnnn code when present.
-    const status = err?.httpStatus || err?.statusCode || err?.status;
+    const reason = recruitmentErrorFamily(err?.reason) ? err.reason : recruitmentErrorFamily(err?.code) ? err.code : undefined;
+    const recruitment = recruitmentErrorFamily(reason);
+    const status = err?.httpStatus || err?.statusCode || err?.status || recruitment?.httpStatus;
     const numericStatus = Number.isInteger(status) ? status : null;
     if (err instanceof AppError || numericStatus) {
         const httpStatus = numericStatus || 500;
@@ -120,7 +123,8 @@ export function normalizeError(err) {
         if (httpStatus >= 500) {
             return {
                 httpStatus,
-                code: hasHrCode ? err.code : GENERIC_INTERNAL.code,
+                code: hasHrCode ? err.code : recruitment?.code ?? GENERIC_INTERNAL.code,
+                reason,
                 message: GENERIC_INTERNAL.message,
                 details: undefined,
                 isOperational: false,
@@ -128,7 +132,8 @@ export function normalizeError(err) {
         }
         return {
             httpStatus,
-            code: hasHrCode ? err.code : defaultCodeForStatus(httpStatus),
+            code: hasHrCode ? err.code : recruitment?.code ?? defaultCodeForStatus(httpStatus),
+            reason,
             message: err.message || HR_ERRORS.BAD_REQUEST.message,
             details: err.details,
             isOperational: err.isOperational ?? true,
@@ -151,6 +156,7 @@ export function normalizeError(err) {
  */
 export function buildErrorEnvelope(norm, correlationId) {
     const error = { code: norm.code, message: norm.message };
+    if (norm.reason) error.reason = norm.reason;
     if (norm.details !== undefined) error.details = norm.details;
     if (correlationId) error.correlationId = correlationId;
     return { error };

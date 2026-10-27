@@ -1,0 +1,10 @@
+# Runtime-package reduction candidate. Security acceptance requires a fresh scan
+# and full signing regression; this alone does not resolve libxml2 findings.
+ARG BASE=erp-registry.erp-system.svc.cluster.local:5444/erp-build/libresign-base@sha256:46b7510490547c11472c354d4e095bc0d9b1747e4d98c2c7d05fa4afb7fcc225
+FROM ${BASE}
+USER root
+RUN apt-get purge -y linux-libc-dev libopenexr-3-1-30 libblkid-dev libmount-dev uuid-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && php -r 'foreach (["openssl", "pdo_pgsql", "redis", "imagick", "gd", "zip", "dom"] as $extension) { if (!extension_loaded($extension)) { fwrite(STDERR, "Required PHP extension missing: ".$extension.PHP_EOL); exit(1); } } if (!Imagick::queryFormats("PDF") || !Imagick::queryFormats("PNG")) { exit(1); }' \
+ && test -f /usr/src/nextcloud/custom_apps/libresign/appinfo/info.xml \
+ && test -x /opt/recruitment/bootstrap.sh
