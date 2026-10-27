@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { performanceCycleCreate, performanceCycleUpdate } from '../validators/performance.schema.js';
 
 // C.2-completion — verified tenant (T-P2.1) threaded via `tenantId` (in the
 // create payload, or a trailing read/update/delete param); folded into cycle /
@@ -8,7 +9,8 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // mutates tenant A's performance cycles.
 
 export const createPerformanceCycle = async (data, createdBy) => {
-  const { name, start_date, end_date , status,templateId, tenantId } = data;
+  const { tenantId, ...payload } = data;
+  const { name, start_date, end_date, status, templateId, description } = performanceCycleCreate.parse(payload);
 
   if (!name || !start_date || !end_date || !templateId ) throw new Error("Missing required fields");
   if(status&&status!=='DRAFT')throw Object.assign(new Error('New cycles must begin as drafts'),{status:422});
@@ -25,7 +27,7 @@ export const createPerformanceCycle = async (data, createdBy) => {
   const create = await prisma.performanceCycle.create({
     data: scopedData(tenantId, {
          name,
-         description:data.description,
+         description,
          start_date: new Date(start_date),
           end_date : new Date(end_date ),
           status,
@@ -65,6 +67,7 @@ export const getPerformanceCycleById = async (id, tenantId) => {
 };
 
 export const updatePerformanceCycle = async (id, data,updatedBy, tenantId) => {
+    data = performanceCycleUpdate.parse(data);
     const existing  = await prisma.performanceCycle.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
     if (!existing) throw new Error("Performnce cycle not found");
   if(Object.keys(data).some(k=>!["name","description","start_date","end_date","templateId"].includes(k)))throw Object.assign(new Error('Unsupported cycle field'),{status:422});

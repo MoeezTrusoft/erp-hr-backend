@@ -17,12 +17,28 @@ import {
 import { createGoalAlignmentService } from "../../src/services/goalAlignment.service.js";
 import { addFeedback } from "../../src/services/performance.service.js";
 import { runReviewReminderJob } from "../../src/services/reminderScheduler.service.js";
+import { createMetric, upsertReviewItems, getReviewItems } from "../../src/services/performanceMetricService.js";
+import { upsertReviewItems as replaceItemsController } from "../../src/controllers/performanceMetricController.js";
 
 export async function legacyRegressions(
   t,
   { as, tenant, other, people, db, admin },
 ) {
   let cycle, review;
+  await t.test('Legacy cycle and template configuration rejects mass assignment and invalid calendar dates before writing', async () => {
+    const before = await db(async tx => ({ templates: await tx.performanceTemplate.count(), cycles: await tx.performanceCycle.count() }));
+    for (const payload of [{ name: ' ' }, { name: 'Template', criteria: [' '] },
+      { name: 'Template', createdById: people.HR.id }, { name: 'Template', overall_rating: 6 }]) {
+      await assert.rejects(as('HR', () => createPerformanceTemplate({ ...payload, tenantId: tenant }, people.HR.id)), e => e.name === 'ZodError');
+    }
+    const valid = { name: 'Cycle', templateId: 1, start_date: '2026-01-01', end_date: '2026-12-31' };
+    for (const payload of [{ ...valid, start_date: '2026-02-30' }, { ...valid, end_date: '2025-12-31' },
+      { ...valid, status: 'COMPLETED' }, { ...valid, reviews: { create: {} } }, { ...valid, templateId: true }]) {
+      await assert.rejects(as('HR', () => createPerformanceCycle({ ...payload, tenantId: tenant }, people.HR.id)), e => e.name === 'ZodError');
+    }
+    const after = await db(async tx => ({ templates: await tx.performanceTemplate.count(), cycles: await tx.performanceCycle.count() }));
+    assert.deepEqual(after, before);
+  });
   await t.test(
     "Legacy Prisma writes preserve criteria, valid fields and launch retry counts",
     async () => {
@@ -99,6 +115,44 @@ export async function legacyRegressions(
       assert.equal(feedback.reviewId, review.id);
     },
   );
+  await t.test('Legacy item replacement rejects malformed REST payloads without erasing saved evidence', async () => {
+    const metric = await as('HR', () => createMetric({ tenantId: tenant, name: 'Quality' }));
+    const valid = [{ metricId: metric.id, rating: 4, comment: 'Saved evidence' }];
+    await as('HR', () => upsertReviewItems({ reviewId: review.id, tenantId: tenant, items: valid }));
+    for (const body of [{}, { items: null }, { items: 'invalid' }, { items: {} },
+      { items: [{ ...valid[0], rating: 6 }] }, { items: [{ ...valid[0], rating: '4' }] },
+      { items: [valid[0], valid[0]] }, { items: [{ ...valid[0], tenantId: other }] },
+      { items: [], unexpected: true }]) {
+      let status;
+      const res = { status(value) { status = value; return this; }, json() { return this; } };
+      await as('HR', () => replaceItemsController({ user: { tenantId: tenant }, params: { reviewId: String(review.id) }, body }, res));
+      assert.equal(status, 400);
+      const stored = await as('HR', () => getReviewItems({ reviewId: review.id, tenantId: tenant }));
+      assert.equal(stored.length, 1);
+      assert.equal(stored[0].comment, 'Saved evidence');
+    }
+    await assert.rejects(as('HR', () => upsertReviewItems({ reviewId: review.id, tenantId: tenant })), /items/);
+    await assert.rejects(as('HR', () => upsertReviewItems({ reviewId: review.id, tenantId: other, items: [] }), undefined, other));
+    await as('HR', () => upsertReviewItems({ reviewId: review.id, tenantId: tenant, items: [] }));
+    assert.equal((await as('HR', () => getReviewItems({ reviewId: review.id, tenantId: tenant }))).length, 0);
+  });
+  await t.test('Concurrent legacy metric replacements remain whole and failed inserts retain prior evidence', async () => {
+    const metrics = await Promise.all(['Delivery', 'Accuracy'].map(name => as('HR', () => createMetric({ tenantId: tenant, name }))));
+    const replace = items => as('HR', () => upsertReviewItems({ reviewId: review.id, tenantId: tenant, items }));
+    await Promise.all(metrics.map(metric => replace([{ metricId: metric.id, rating: 3 }])));
+    const saved = await as('HR', () => getReviewItems({ reviewId: review.id, tenantId: tenant }));
+    assert.equal(saved.length, 1, 'Concurrent replacements must not merge their item lists');
+    await admin.query(`CREATE FUNCTION appraisal_test_fail_items() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."tenantId"='${tenant}'::uuid THEN RAISE EXCEPTION 'simulated item failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER appraisal_test_fail_items BEFORE INSERT ON "PerformanceReviewItem" FOR EACH ROW EXECUTE FUNCTION appraisal_test_fail_items()`);
+    try {
+      await assert.rejects(replace([{ metricId: metrics[0].id, rating: 5 }]), /simulated item failure/);
+      const after = await as('HR', () => getReviewItems({ reviewId: review.id, tenantId: tenant }));
+      assert.equal(after.length, 1);
+      assert.equal(after[0].id, saved[0].id);
+      assert.equal(after[0].rating, saved[0].rating);
+    } finally {
+      await admin.query('DROP TRIGGER appraisal_test_fail_items ON "PerformanceReviewItem"; DROP FUNCTION appraisal_test_fail_items()');
+    }
+  });
   await t.test(
     "Legacy submission rolls back edited content when approval validation fails",
     async () => {

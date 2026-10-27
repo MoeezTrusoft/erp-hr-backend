@@ -1,13 +1,15 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { performanceTemplateCreate, performanceTemplateUpdate } from '../validators/performance.schema.js';
 
 // C.2-completion — verified tenant (T-P2.1) threaded via `tenantId`; folded into
 // template reads + stamped on creates, fail-closed so tenant B never reads or
 // mutates tenant A's performance templates.
 
 export const createPerformanceTemplate = async (data, createdBy) => {
-  const { name, description, criteria, overall_rating, tenantId } = data;
+  const { tenantId, ...payload } = data;
+  const { name, description, criteria, overall_rating } = performanceTemplateCreate.parse(payload);
   if (!name) throw new Error("Template name is required");
   if(criteria!==undefined && (!Array.isArray(criteria)||criteria.some(c=>typeof c!=='string'||!c.trim())))throw Object.assign(new Error('Legacy template criteria must be an array of nonempty labels'),{status:422});
 
@@ -50,6 +52,7 @@ export const getPerformanceTemplateById = async (id, tenantId) => {
 };
 
 export const updatePerformanceTemplate = async (id, data, updatedBy, tenantId) => {
+  data = performanceTemplateUpdate.parse(data);
 
   const performanceTemplate = await prisma.performanceTemplate.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
   if (!performanceTemplate) throw new Error("Performance Template Not Found");

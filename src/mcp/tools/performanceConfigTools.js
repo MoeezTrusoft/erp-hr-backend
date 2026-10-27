@@ -3,6 +3,7 @@
 // Covers PerformanceCycle, PerformanceTemplate, and PerformanceMetric.
 // All gated on hr:performance and tenant-scoped.
 import { z } from "zod";
+import { performanceMetricCreate } from '../../validators/performance.schema.js';
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -206,7 +207,7 @@ export function registerPerformanceConfigTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await createMetric({ ...args, tenantId: user.tenantId, createdById: user.employeeId || user.userId });
+      const data = await createMetric({ ...performanceMetricCreate.parse(args), tenantId: user.tenantId, createdById: user.employeeId || user.userId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_metric_create")
   );
@@ -218,7 +219,7 @@ export function registerPerformanceConfigTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:performance", user.isAdmin);
-      const data = await deactivateMetric({ id, tenantId: user.tenantId });
+      const data = await deactivateMetric({ id: Number(id), tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_metric_deactivate")
   );
