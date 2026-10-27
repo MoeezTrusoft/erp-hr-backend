@@ -17,11 +17,11 @@ jest.unstable_mockModule("axios", () => ({ default: axiosMock }));
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 
 const sync = await import("../../../src/services/interview-calendar-sync.service.js");
-const { calendarSyncMark } = await import("../../../src/services/interviewSchedule.service.js");
+const { calendarSyncMark } = await import("../../../src/services/interview-schedule.service.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

@@ -36,7 +36,7 @@
 // assessment.arrival tells a candidate reception checked in for an on-site
 // test that they are checked in (hr.recruitment.candidate_checked_in.v1):
 // first name, role, company, the interview time and type, nothing else.
-import { projectCandidateStatus } from "../lib/candidateStatusView.js";
+import { projectCandidateStatus } from "../lib/candidate-status-view.util.js";
 
 export const COMMUNICATION_CATEGORIES = Object.freeze(["STATUS", "INTERVIEW", "OFFER", "REJECTION", "MANUAL"]);
 

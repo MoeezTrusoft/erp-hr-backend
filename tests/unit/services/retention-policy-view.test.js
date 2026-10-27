@@ -7,7 +7,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: {} }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ deleteDamAsset: jest.fn() }));
 
-const { getRetentionPolicyView, DEFAULT_RETENTION_POLICY, computeRetentionUntil } = await import("../../../src/services/candidatePrivacy.service.js");
+const { getRetentionPolicyView, DEFAULT_RETENTION_POLICY, computeRetentionUntil } = await import("../../../src/services/candidate-privacy.service.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const stored = {

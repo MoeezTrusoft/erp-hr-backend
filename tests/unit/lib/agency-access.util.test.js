@@ -1,5 +1,5 @@
 // Recruitment Phase 5 — the AGENCY recruitment scope: who the agency user is
-// (agency-access.util.js), what the scope resolves to (recruitmentAccess.js),
+// (agency-access.util.js), what the scope resolves to (recruitment-access.util.js),
 // that every other scope's predicates are unchanged, the agency field masks and
 // the export refusal.
 import { jest, describe, it, expect, beforeEach, afterAll } from "@jest/globals";
@@ -18,7 +18,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({
 
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 const requestContextTenant = () => mcpCtx.getStore()?.user?.tenantId ?? null;
-const access = await import("../../../src/lib/recruitmentAccess.js");
+const access = await import("../../../src/lib/recruitment-access.util.js");
 const util = await import("../../../src/lib/agency-access.util.js");
 const {
     AGENCY_MEMBERSHIP, RECRUITMENT_SCOPE, resolveRecruitmentScope, requisitionScopeWhere, candidateScopeWhere,

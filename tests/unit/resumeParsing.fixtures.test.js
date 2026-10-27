@@ -88,9 +88,9 @@ const runAiTask = jest.fn(async ({ input }) => ({
 
 jest.unstable_mockModule("../../src/lib/aiPlaneClient.js", () => ({ runAiTask, collectAiResult: jest.fn() }));
 
-const { parseResumeWithRetry } = await import("../../src/services/resumeParsing.service.js");
-const { hashResumeContent } = await import("../../src/lib/parseRetry.js");
-const { buildAliasIndex, reconcileParsedSkills } = await import("../../src/lib/skillNormalization.js");
+const { parseResumeWithRetry } = await import("../../src/services/resume-parsing.service.js");
+const { hashResumeContent } = await import("../../src/lib/parse-retry.util.js");
+const { buildAliasIndex, reconcileParsedSkills } = await import("../../src/lib/skill-normalization.util.js");
 
 const fixtures = new Map(); // name → { buffer }
 let pdfParseWarm = null;

@@ -11,7 +11,7 @@ const applyRetention = jest.fn();
 const setRetentionPolicy = jest.fn(async () => ({ id: 1 }));
 const runManualRetention = jest.fn(async () => ({ dryRun: true, runId: 5, runMode: "DRY_RUN" }));
 
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({
     RETENTION_POPULATIONS: Object.freeze(["APPLICANT", "TALENT_POOL"]),
     getRetentionPolicyView,
     applyRetention,
@@ -20,7 +20,7 @@ jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", ()
 jest.unstable_mockModule("../../../src/services/retention-run.service.js", () => ({ runManualRetention }));
 
 const { registerRetentionPolicyTools, RETENTION_POLICY_TOOL_NAMES } = await import("../../../src/mcp/tools/retention-policy.tools.js");
-const { registerCandidatePrivacyTools } = await import("../../../src/mcp/tools/candidatePrivacyTools.js");
+const { registerCandidatePrivacyTools } = await import("../../../src/mcp/tools/candidate-privacy.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const tools = new Map();

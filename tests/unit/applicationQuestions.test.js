@@ -54,10 +54,10 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 
 const { validateQuestionDefinition, validateAnswer, validateQuestionSet, totalScore } = await import(
-    "../../src/lib/applicationQuestions.js"
+    "../../src/lib/application-questions.util.js"
 );
-const questionService = await import("../../src/services/applicationQuestion.service.js");
-const { submitPublicApplication } = await import("../../src/services/publicPortal.service.js");
+const questionService = await import("../../src/services/application-question.service.js");
+const { submitPublicApplication } = await import("../../src/services/public-portal.service.js");
 
 // Silence the audit-log writes; the intake calls it inside the (mocked) tx.
 logAction.mockResolvedValue(undefined);

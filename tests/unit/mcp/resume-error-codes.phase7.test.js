@@ -26,7 +26,7 @@ jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ 
 jest.unstable_mockModule("../../../src/lib/aiPlaneClient.js", () => ({ runAiTask, collectAiResult: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent: jest.fn() }));
 
-const resume = await import("../../../src/services/resumeParsing.service.js");
+const resume = await import("../../../src/services/resume-parsing.service.js");
 const { toJsonRpcError } = await import("../../../src/mcp/utils/mcpErrorMap.js");
 
 const CV = "Payroll specialist, SAP HCM, statutory reporting, team lead for five years.";

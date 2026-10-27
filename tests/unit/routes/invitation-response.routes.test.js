@@ -10,14 +10,14 @@ const getInvitationForCandidate = jest.fn();
 const respondViaInvitationLink = jest.fn();
 
 jest.unstable_mockModule("../../../src/services/invitation-response.service.js", () => ({ getInvitationForCandidate, respondViaInvitationLink }));
-jest.unstable_mockModule("../../../src/services/publicPortal.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/public-portal.service.js", () => ({
     listPublicJobs: jest.fn(),
     getPublicJob: jest.fn(),
     submitPublicApplication: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({ consumeEmailVerification: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/candidateStatus.service.js", () => ({ requestStatusLink: jest.fn(), readStatusViaLink: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/applicationDraft.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-verification.service.js", () => ({ consumeEmailVerification: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/candidate-status.service.js", () => ({ requestStatusLink: jest.fn(), readStatusViaLink: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/application-draft.service.js", () => ({
     saveApplicationDraft: jest.fn(),
     loadApplicationDraft: jest.fn(),
     submitApplicationDraft: jest.fn(),

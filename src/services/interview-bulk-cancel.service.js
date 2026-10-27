@@ -18,8 +18,8 @@
 // outcome. An interview that is already cancelled is reported as
 // ALREADY_CANCELLED, so a retried bulk call is harmless.
 import logger from "../lib/logger.js";
-import { RESCHEDULE_REASONS, validateLifecycleReason } from "../lib/interviewScheduling.js";
-import { cancelInterview } from "./interviewSchedule.service.js";
+import { RESCHEDULE_REASONS, validateLifecycleReason } from "../lib/interview-scheduling.util.js";
+import { cancelInterview } from "./interview-schedule.service.js";
 
 export const BULK_CANCEL_MAX = 50;
 /** The reasons a person may give (the single cancel tool's list). */

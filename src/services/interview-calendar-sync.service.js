@@ -4,7 +4,7 @@
 // candidate's calendars through the Communication module, and retries what
 // fails.
 //
-// The schedule paths (interview.service.js, interviewSchedule.service.js)
+// The schedule paths (interview.service.js, interview-schedule.service.js)
 // MARK an interview in the same transaction as the change: status PENDING,
 // calendarSyncAction CREATE / UPDATE / CANCEL, attempts 0, due now. This file
 // is the worker side:
@@ -42,10 +42,10 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { RECRUITMENT_SCOPE, requisitionScopeWhere } from "../lib/recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { RECRUITMENT_SCOPE, requisitionScopeWhere } from "../lib/recruitment-access.util.js";
 import { generateWorkerId, sanitiseWorkerId } from "../jobs/outbox.dispatcher.js";
-import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
+import { assertCommunicationsAllowed } from "./candidate-privacy.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import {
     CalendarClientError,
@@ -60,7 +60,7 @@ import {
     CALENDAR_SYNC_STATUS,
     calendarSyncMark,
     nextCalendarAction,
-} from "./interviewSchedule.service.js";
+} from "./interview-schedule.service.js";
 
 const log = logger.child({ component: "interview-calendar-sync" });
 

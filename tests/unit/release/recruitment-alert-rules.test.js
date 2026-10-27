@@ -1,7 +1,7 @@
 // Recruitment Phase 6 (go-live) — every Prometheus rules file under
 // observability/alerts/ parses, and every metric and label value its
 // expressions use is one the code actually records. A rename in
-// src/lib/recruitmentOpsMetrics.js (or a label value its allowlist collapses
+// src/lib/recruitment-ops-metrics.util.js (or a label value its allowlist collapses
 // to "other") would otherwise leave an alert wired to a series that never moves.
 //
 // js-yaml is only a transitive dependency today (as in the Phase 4 rules
@@ -13,7 +13,7 @@ import path from "node:path";
 import client from "prom-client";
 import yaml from "js-yaml";
 
-import * as ops from "../../../src/lib/recruitmentOpsMetrics.js";
+import * as ops from "../../../src/lib/recruitment-ops-metrics.util.js";
 import * as auth from "../../../src/lib/authMetrics.js";
 import * as http from "../../../src/lib/httpMetrics.js";
 import { RECRUITMENT_TOOL_MANIFEST } from "../../../src/release/recruitment-tools.manifest.js";

@@ -34,9 +34,9 @@ import logger from "../lib/logger.js";
 import { scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
 import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { interviewScopeWhere, requisitionScopeWhere } from "../lib/recruitmentAccess.js";
+import { interviewScopeWhere, requisitionScopeWhere } from "../lib/recruitment-access.util.js";
 import { resolveAssessmentAccess } from "../lib/assessment-access.util.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { extractModelJson, runAiTask } from "../lib/aiPlaneClient.js";
 import { scanProhibitedTopics } from "../lib/prohibited-topics.util.js";
@@ -67,7 +67,7 @@ import {
     afterFormScorecardSubmitted,
     writeScorecardInTx,
 } from "./interview-scorecard.service.js";
-import { createFormTemplate, pinEvaluationFormForInterview, resolveForInterview } from "./scorecardTemplate.service.js";
+import { createFormTemplate, pinEvaluationFormForInterview, resolveForInterview } from "./scorecard-template.service.js";
 import { createQuestion, publishedQuestionsFor } from "./interview-question.service.js";
 import {
     REPORT_INTERVIEW_SELECT,
@@ -76,7 +76,7 @@ import {
     shapeCard,
     testSummaryFor,
 } from "./evaluation-summary.service.js";
-import { requisitionSkillRequirements } from "./candidateMatch.service.js";
+import { requisitionSkillRequirements } from "./candidate-match.service.js";
 
 export const SCORECARD_SUBMITTED_EVENT = "hr.recruitment.interview_scorecard_submitted.v1";
 export const NOTES_FLAGGED_EVENT = "hr.recruitment.interview_notes_flagged.v1";

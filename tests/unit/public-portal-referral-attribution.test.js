@@ -6,7 +6,7 @@ import { jest, describe, it, expect } from "@jest/globals";
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: {} }));
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: {} }));
 
-const { parseSourceAttribution, PORTAL_CLAIMABLE_CHANNELS } = await import("../../src/services/publicPortal.service.js");
+const { parseSourceAttribution, PORTAL_CLAIMABLE_CHANNELS } = await import("../../src/services/public-portal.service.js");
 
 describe("parseSourceAttribution", () => {
     it("maps a claimed REFERRAL (any case) to the portal's default channel", () => {

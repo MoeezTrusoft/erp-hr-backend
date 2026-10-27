@@ -12,7 +12,7 @@ const { events, enqueueHrDomainEvent } = createEventRecorder();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 jest.unstable_mockModule("../../../src/lib/aiPlaneClient.js", () => ({ runAiTask: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/candidateMatch.service.js", () => ({ loadAliasIndex: jest.fn(), requisitionSkillRequirements: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/candidate-match.service.js", () => ({ loadAliasIndex: jest.fn(), requisitionSkillRequirements: jest.fn() }));
 
 const { computeItemStatistics, flagsFor, pointBiserial, runTestItemStatsJob, STAT_THRESHOLDS } = await import("../../../src/services/test-item-stats.service.js");
 

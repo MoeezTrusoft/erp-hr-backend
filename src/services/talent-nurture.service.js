@@ -40,10 +40,10 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { evaluateRequisitionEligibility } from "../lib/requisitionEligibility.js";
-import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
-import { isInvitationExpired, matchesSegment, segmentRejectionReasons } from "../lib/talentPoolPolicy.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { evaluateRequisitionEligibility } from "../lib/requisition-eligibility.util.js";
+import { requisitionScopeWhere } from "../lib/recruitment-access.util.js";
+import { isInvitationExpired, matchesSegment, segmentRejectionReasons } from "../lib/talent-pool-policy.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import {
     DEFAULT_NURTURE_VALIDITY_DAYS,
@@ -61,11 +61,11 @@ import {
     resolveValidityDays,
     segmentFiltersFor,
 } from "../lib/talent-nurture.util.js";
-import { requisitionSkillRequirements } from "./candidateMatch.service.js";
-import { inviteToApply } from "./talentPoolInvitation.service.js";
-import { describePoolCandidates } from "./talentPoolMgmt.service.js";
-import { createApplication } from "./applicationService.js";
-import { recordScreening } from "./applicationScreening.service.js";
+import { requisitionSkillRequirements } from "./candidate-match.service.js";
+import { inviteToApply } from "./talent-pool-invitation.service.js";
+import { describePoolCandidates } from "./talent-pool-mgmt.service.js";
+import { createApplication } from "./application.service.js";
+import { recordScreening } from "./application-screening.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { talentPoolInvitationSentEvent } from "./hrEvents.js";
 

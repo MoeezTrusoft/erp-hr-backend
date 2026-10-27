@@ -13,7 +13,7 @@ import {
     unlinkTemplate,
     resolveForInterview,
     TemplateError,
-} from "../services/scorecardTemplate.service.js";
+} from "../services/scorecard-template.service.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorOf = (req) => req.user?.employeeId ?? null;

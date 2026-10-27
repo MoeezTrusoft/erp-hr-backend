@@ -14,12 +14,12 @@ let db = createPrivacyFake();
 const prismaProxy = new Proxy({}, { get: (_t, prop) => db[prop] });
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prismaProxy }));
 const applyRetention = jest.fn();
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ applyRetention }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ applyRetention }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 
 const svc = await import("../../../src/services/retention-run.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const NOW = new Date("2026-10-20T02:00:00.000Z");

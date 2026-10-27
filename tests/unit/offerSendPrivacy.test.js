@@ -21,16 +21,16 @@ const consumeApproval = jest.fn(async () => ({ id: "approval-1", stage: "APPROVE
 jest.unstable_mockModule("../../src/services/approval/adapters.js", () => ({ consumeApproval }));
 
 const assertCommunicationsAllowed = jest.fn(async () => ({ allowed: true }));
-jest.unstable_mockModule("../../src/services/candidatePrivacy.service.js", () => ({
+jest.unstable_mockModule("../../src/services/candidate-privacy.service.js", () => ({
   assertCommunicationsAllowed,
   CONSENT_STATUS: { UNKNOWN: "UNKNOWN", GRANTED: "GRANTED", WITHDRAWN: "WITHDRAWN" },
 }));
 
-jest.unstable_mockModule("../../src/services/recruitmentHandoff.service.js", () => ({
+jest.unstable_mockModule("../../src/services/recruitment-handoff.service.js", () => ({
   runOfferHandoff: jest.fn(),
   getOfferHandoff: jest.fn(),
 }));
-jest.unstable_mockModule("../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../src/services/application-workflow.service.js", () => ({
   transitionApplicationStageInTransaction: jest.fn(),
   transitionApplicationStage: jest.fn(),
 }));

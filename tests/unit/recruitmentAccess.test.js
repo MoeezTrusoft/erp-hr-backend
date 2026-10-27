@@ -24,7 +24,7 @@ import {
     maskCandidateForScope,
     maskInterviewForScope,
     scopeListResult,
-} from "../../src/lib/recruitmentAccess.js";
+} from "../../src/lib/recruitment-access.util.js";
 
 const TENANT_OK = true; // scope functions are pure; tenancy is asserted elsewhere
 

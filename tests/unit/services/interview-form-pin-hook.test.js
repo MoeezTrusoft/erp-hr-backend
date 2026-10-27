@@ -11,9 +11,9 @@ const pinEvaluationFormForInterview = jest.fn(async () => null);
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed: jest.fn(async () => ({ allowed: true })) }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed: jest.fn(async () => ({ allowed: true })) }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({
     transitionApplicationStageInTransaction: jest.fn(async () => ({})),
     transitionApplicationStage: jest.fn(async () => ({})),
 }));
@@ -21,7 +21,7 @@ jest.unstable_mockModule("../../../src/services/interview-scorecard.service.js",
 jest.unstable_mockModule("../../../src/services/test-blueprint.service.js", () => ({
     markInterviewAssessmentInTransaction: jest.fn(async () => null),
 }));
-jest.unstable_mockModule("../../../src/services/scorecardTemplate.service.js", () => ({ pinEvaluationFormForInterview }));
+jest.unstable_mockModule("../../../src/services/scorecard-template.service.js", () => ({ pinEvaluationFormForInterview }));
 
 const { scheduleInterviewInTransaction } = await import("../../../src/services/interview.service.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");

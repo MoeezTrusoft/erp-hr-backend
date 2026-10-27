@@ -60,13 +60,13 @@ const closePostingsPastClosesAt = jest.fn();
 const expireInvitations = jest.fn();
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
-jest.unstable_mockModule("../../../src/services/requisitionPublication.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/requisition-publication.service.js", () => ({
   autoCloseFilledRequisitions,
   autoPublishApprovedRequisitions,
   closePostingsPastClosesAt,
 }));
 // The nurture service (scheduled by reminder.queue) imports inviteToApply.
-jest.unstable_mockModule("../../../src/services/talentPoolInvitation.service.js", () => ({ expireInvitations, inviteToApply: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/talent-pool-invitation.service.js", () => ({ expireInvitations, inviteToApply: jest.fn() }));
 
 const {
   runRequisitionAutoCloseJob,

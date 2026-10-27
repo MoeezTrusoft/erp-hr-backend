@@ -16,7 +16,7 @@ class ScheduleError extends Error {
         this.details = details;
     }
 }
-jest.unstable_mockModule("../../../src/services/interviewSchedule.service.js", () => ({ cancelInterview }));
+jest.unstable_mockModule("../../../src/services/interview-schedule.service.js", () => ({ cancelInterview }));
 
 const { cancelInterviewsBulk, BULK_CANCEL_REASONS } = await import("../../../src/services/interview-bulk-cancel.service.js");
 const { registerInterviewBulkCancelTools } = await import("../../../src/mcp/tools/interview-bulk-cancel.tools.js");

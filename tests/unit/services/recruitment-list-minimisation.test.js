@@ -16,11 +16,11 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 
 const { getAllRequisitions, REQUISITION_LIST_LIMIT } = await import("../../../src/services/requisition.service.js");
-const { listCandidates } = await import("../../../src/services/candidateService.js");
-const { listApplications } = await import("../../../src/services/applicationService.js");
+const { listCandidates } = await import("../../../src/services/candidate.service.js");
+const { listApplications } = await import("../../../src/services/application.service.js");
 const { listInterviews } = await import("../../../src/services/interview.service.js");
 const { listOffers } = await import("../../../src/services/offer.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const ORG = resolveRecruitmentScope({ isAdmin: true, roles: [] });

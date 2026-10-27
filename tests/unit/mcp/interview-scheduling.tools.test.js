@@ -18,7 +18,7 @@ jest.unstable_mockModule("../../../src/services/interview-slot-offer.service.js"
     cancelSlotOffer,
     listSlotOffers,
 }));
-jest.unstable_mockModule("../../../src/services/interviewSchedule.service.js", () => ({ markNoShow }));
+jest.unstable_mockModule("../../../src/services/interview-schedule.service.js", () => ({ markNoShow }));
 jest.unstable_mockModule("../../../src/services/interview-calendar-sync.service.js", () => ({ requeueInterviewCalendarSync }));
 
 const { registerInterviewSchedulingTools } = await import("../../../src/mcp/tools/interview-scheduling.tools.js");

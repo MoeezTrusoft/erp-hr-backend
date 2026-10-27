@@ -49,7 +49,7 @@ describe("Phase 4 — the eligibility rule (§2.9)", () => {
 
   beforeAll(async () => {
     ({ evaluateRequisitionEligibility, closedApplicationMessage } = await import(
-      "../../src/lib/requisitionEligibility.js"
+      "../../src/lib/requisition-eligibility.util.js"
     ));
   });
 
@@ -182,7 +182,7 @@ describe("Phase 4 — applications are refused for an ineligible requisition", (
       rlsTenantExtension: jest.fn((client) => client),
     }));
     const setRequisition = (r) => { REQUISITION = r; };
-    ({ createApplication } = await import("../../src/services/applicationService.js"));
+    ({ createApplication } = await import("../../src/services/application.service.js"));
     createApplication.__setRequisition = setRequisition;
   });
 
@@ -310,7 +310,7 @@ describe("Phase 4 — autoCloseWhenFilled closes the requisition, reversibly", (
       REQUISITIONS = requisitions;
       APPLICATIONS = applications;
     };
-    ({ autoCloseFilledRequisitions } = await import("../../src/services/requisitionPublication.service.js"));
+    ({ autoCloseFilledRequisitions } = await import("../../src/services/requisition-publication.service.js"));
     autoCloseFilledRequisitions.__seed = seed;
   });
 
@@ -396,7 +396,7 @@ describe("Phase 4 — hired against a closed requisition", () => {
     };
     jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: {} }));
     jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
-    const { transitionApplicationStage } = await import("../../src/services/applicationWorkflow.service.js");
+    const { transitionApplicationStage } = await import("../../src/services/application-workflow.service.js");
 
     await expect(
       transitionApplicationStage({ id: 7, tenantId: TENANT, targetStage: "hired", db }),
@@ -426,7 +426,7 @@ describe("Phase 4 — hired against a closed requisition", () => {
     jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
       enqueueHrDomainEvent: jest.fn(async () => undefined),
     }));
-    const { transitionApplicationStage } = await import("../../src/services/applicationWorkflow.service.js");
+    const { transitionApplicationStage } = await import("../../src/services/application-workflow.service.js");
 
     const result = await transitionApplicationStage({ id: 7, tenantId: TENANT, targetStage: "hired", db });
     expect(result.changed).toBe(true);

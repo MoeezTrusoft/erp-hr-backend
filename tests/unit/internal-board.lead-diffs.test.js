@@ -17,8 +17,8 @@ jest.unstable_mockModule("../../src/services/intake-dnc.service.js", () => ({
     logIntakeSuppressed: jest.fn(),
 }));
 
-const { toPublicJob, PUBLIC_JOB_SELECT } = await import("../../src/lib/publicPortal.js");
-const { createApplicationInTx } = await import("../../src/services/applicationService.js");
+const { toPublicJob, PUBLIC_JOB_SELECT } = await import("../../src/lib/public-portal.util.js");
+const { createApplicationInTx } = await import("../../src/services/application.service.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const NOW = new Date("2026-10-20T09:00:00Z");
@@ -36,7 +36,7 @@ describe("careers portal", () => {
     });
 
     it("does not let an anonymous applicant claim the INTERNAL channel", async () => {
-        const { parseSourceAttribution } = await import("../../src/services/publicPortal.service.js");
+        const { parseSourceAttribution } = await import("../../src/services/public-portal.service.js");
         expect(parseSourceAttribution({ sourceChannel: "INTERNAL" }).sourceChannel).toBe("CAREER_SITE");
         expect(parseSourceAttribution({ sourceChannel: "INDEED" }).sourceChannel).toBe("INDEED");
     });

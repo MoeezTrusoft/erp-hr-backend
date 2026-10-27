@@ -45,7 +45,7 @@ const lazy = (value, seen) => ({
         return Promise.resolve(typeof value === "function" ? value() : value).then(resolve, reject);
     },
 });
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { computeFitScore } = await import("../../../src/lib/fit-score.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

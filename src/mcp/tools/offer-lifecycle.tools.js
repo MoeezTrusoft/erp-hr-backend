@@ -23,11 +23,11 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { maskOfferForScope, resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { maskOfferForScope, resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import { DECLINE_NOTE_MAX_LENGTH, DECLINE_REASONS, DECLINE_REASON_CODES } from "../../lib/offer-decline.util.js";
 import { respondOffer } from "../../services/offer.service.js";
 import { extendOfferExpiry, MAX_EXTENSION_DAYS, REOPEN_WINDOW_DAYS } from "../../services/offer-expiry.service.js";
-import { checkOfferSalaryBand } from "../../services/offerMgmt.service.js";
+import { checkOfferSalaryBand } from "../../services/offer-mgmt.service.js";
 
 const RESOURCE = "hr:recruitment";
 

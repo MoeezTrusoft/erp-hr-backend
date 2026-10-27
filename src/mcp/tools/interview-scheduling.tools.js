@@ -16,7 +16,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import {
   INTERVIEW_TYPES,
   SLOT_OFFER_STATUS,
@@ -25,7 +25,7 @@ import {
   proposeSlots,
   sendSlotOffer,
 } from "../../services/interview-slot-offer.service.js";
-import { markNoShow } from "../../services/interviewSchedule.service.js";
+import { markNoShow } from "../../services/interview-schedule.service.js";
 import { requeueInterviewCalendarSync } from "../../services/interview-calendar-sync.service.js";
 
 const RESOURCE = "hr:recruitment";

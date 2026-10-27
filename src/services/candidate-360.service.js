@@ -6,7 +6,7 @@
 // pools, privacy state and AI parse records.
 //
 // Every section is cut to the caller's recruitment scope with the same
-// predicates and masks the list endpoints use (src/lib/recruitmentAccess.js):
+// predicates and masks the list endpoints use (src/lib/recruitment-access.util.js):
 //   - the candidate is reachable only through an application the caller may
 //     see (candidateScopeWhere), else not found;
 //   - applications, interviews and offers each apply their own scope filter;
@@ -24,9 +24,9 @@ import {
     maskCandidateForScope,
     maskOfferForScope,
     offerScopeWhere,
-} from "../lib/recruitmentAccess.js";
+} from "../lib/recruitment-access.util.js";
 import { withTenant } from "../lib/tenancy.js";
-import { findActiveDnc } from "./candidatePrivacy.service.js";
+import { findActiveDnc } from "./candidate-privacy.service.js";
 
 const CONSENT_LIMIT = 50;
 const AI_RECORD_LIMIT = 20;

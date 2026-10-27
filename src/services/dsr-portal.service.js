@@ -35,7 +35,7 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../lib/requestContext.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { sendCandidateEmail } from "../lib/notificationClient.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 

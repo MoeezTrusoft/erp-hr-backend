@@ -24,7 +24,7 @@
 //     the calendar worker removes the row once the event is cancelled. Every
 //     reader lists sessions through liveSessionWhere().
 import { zonedTimeToUtc } from "./slot-finder.util.js";
-import { isRecruitmentFlagEnabled } from "./recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "./recruitment-flags.util.js";
 
 export const ONBOARDING_SESSION_TYPES = Object.freeze(["orientation", "training", "meeting", "compliance"]);
 export const ONBOARDING_SESSION_ASSIGNEES = Object.freeze(["HR", "MANAGER", "BUDDY", "NEW_HIRE"]);

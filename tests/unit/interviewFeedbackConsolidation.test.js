@@ -31,7 +31,7 @@ jest.unstable_mockModule("../../src/services/interview-scorecard.service.js", ()
 }));
 
 const { consolidateInterviewFeedback, setInterviewOutcome } = await import(
-  "../../src/services/interviewMgmt.service.js"
+  "../../src/services/interview-mgmt.service.js"
 );
 
 const TENANT = "22222222-2222-4222-8222-222222222222";

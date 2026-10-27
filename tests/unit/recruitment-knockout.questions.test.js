@@ -23,8 +23,8 @@ jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 
 const { Prisma } = await import("@prisma/client");
-const { validateQuestionDefinition, validateAnswer, scoreAnswers, isKnockedOut } = await import("../../src/lib/applicationQuestions.js");
-const { createQuestion, updateQuestion } = await import("../../src/services/applicationQuestion.service.js");
+const { validateQuestionDefinition, validateAnswer, scoreAnswers, isKnockedOut } = await import("../../src/lib/application-questions.util.js");
+const { createQuestion, updateQuestion } = await import("../../src/services/application-question.service.js");
 
 const choice = (overrides = {}) => ({
     type: "SINGLE_CHOICE",

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import yaml from "js-yaml";
 
-import { RECRUITMENT_FLAG_DEFINITIONS } from "../../../src/lib/recruitmentFlags.js";
+import { RECRUITMENT_FLAG_DEFINITIONS } from "../../../src/lib/recruitment-flags.util.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "../../..");

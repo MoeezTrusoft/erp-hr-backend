@@ -8,7 +8,7 @@ const {
   requiredStagesForOffer,
   setOfferApprovalPolicy,
   OFFER_APPROVAL_STAGES,
-} = await import("../../src/services/offerApproval.service.js");
+} = await import("../../src/services/offer-approval.service.js");
 
 describe("Recruitment offer approvals", () => {
   // FR-09 residue — `offerApprovalRule.findMany` resolves to [] by default so

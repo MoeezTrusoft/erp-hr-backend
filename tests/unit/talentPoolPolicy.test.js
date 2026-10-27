@@ -22,7 +22,7 @@ import {
   resolveInvitationResponse,
   segmentRejectionReasons,
   validateSegment,
-} from "../../src/lib/talentPoolPolicy.js";
+} from "../../src/lib/talent-pool-policy.util.js";
 
 describe("invitation lifecycle", () => {
   it("INVITED is the only non-terminal status", () => {

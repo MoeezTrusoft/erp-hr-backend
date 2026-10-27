@@ -4,7 +4,7 @@
 // DB-free: services are mocked; tool→service dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
-jest.unstable_mockModule('../../../src/services/candidatePipeline.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/candidate-pipeline.service.js', () => ({
   getPipelineBoard: jest.fn(async () => ({ success: true })),
   listPipelineCards: jest.fn(async () => ({ success: true })),
   PIPELINE_STAGES: ['NEW', 'SCREENING', 'INTERVIEW', 'OFFER', 'HIRED', 'REJECTED'],
@@ -15,7 +15,7 @@ jest.unstable_mockModule('../../../src/services/candidate-360.service.js', () =>
 jest.unstable_mockModule('../../../src/utils/apiContract.js', () => ({
   buildListPayload: jest.fn(({ items, page, pageSize, total, sort, order, filters }) => ({ items, page, pageSize, total, sort, order, filters })),
 }));
-jest.unstable_mockModule('../../../src/services/resumeParsing.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/resume-parsing.service.js', () => ({
   parseResumePreview: jest.fn(async () => ({ success: true })),
   ingestEmployeeResume: jest.fn(async () => ({ success: true })),
   ingestCandidateResume: jest.fn(async () => ({ success: true })),
@@ -23,7 +23,7 @@ jest.unstable_mockModule('../../../src/services/resumeParsing.service.js', () =>
 jest.unstable_mockModule('../../../src/lib/employeeActor.js', () => ({
   requireEmployeeActor: jest.fn(() => ({ employeeId: '7' })),
 }));
-jest.unstable_mockModule('../../../src/services/talentPoolMgmt.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/talent-pool-mgmt.service.js', () => ({
   listManagedPool: jest.fn(async () => ({ success: true })),
   getPoolProfile: jest.fn(async () => ({ success: true })),
   moveToPipeline: jest.fn(async () => ({ success: true })),
@@ -34,9 +34,9 @@ jest.unstable_mockModule('../../../src/mcp/utils/listEnvelope.js', () => ({
   toListQuery: jest.fn((args) => args),
 }));
 
-const { registerCandidatePipelineTools } = await import('../../../src/mcp/tools/candidatePipelineTools.js');
-const { registerResumeTools } = await import('../../../src/mcp/tools/resumeTools.js');
-const { registerTalentPoolMgmtTools } = await import('../../../src/mcp/tools/talentPoolMgmtTools.js');
+const { registerCandidatePipelineTools } = await import('../../../src/mcp/tools/candidate-pipeline.tools.js');
+const { registerResumeTools } = await import('../../../src/mcp/tools/resume.tools.js');
+const { registerTalentPoolMgmtTools } = await import('../../../src/mcp/tools/talent-pool-mgmt.tools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
@@ -59,15 +59,15 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  // --- candidatePipelineTools.js (3 tools) ---
+  // --- candidate-pipeline.tools.js (3 tools) ---
   { name: 'hr_candidate_pipeline_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_candidate_pipeline_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_candidate_360_get', gate: 'hr:recruitment', action: 'VIEW', args: { candidateId: '1' } },
-  // --- resumeTools.js (3 tools) ---
+  // --- resume.tools.js (3 tools) ---
   { name: 'hr_resume_parse_preview', gate: 'hr:employee', action: 'VIEW', args: { resumeMediaId: '10' } },
   { name: 'hr_resume_employee_ingest', gate: 'hr:employee', action: 'CREATE', args: { employeeId: '7', resumeMediaId: '10' } },
   { name: 'hr_resume_candidate_ingest', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1' } },
-  // --- talentPoolMgmtTools.js (4 tools) ---
+  // --- talent-pool-mgmt.tools.js (4 tools) ---
   { name: 'hr_talent_pool_manage_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_talent_pool_profile_get', gate: 'hr:recruitment', action: 'VIEW', args: { candidateId: '1' } },
   { name: 'hr_talent_pool_move_to_pipeline', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1', jobRequisitionId: '1' } },

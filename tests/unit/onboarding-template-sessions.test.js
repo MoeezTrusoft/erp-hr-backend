@@ -19,8 +19,8 @@ const prisma = {
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({ tenantTransaction: (c, fn, o) => fn(c, o) }));
 
-const templates = await import("../../src/services/onboardingTemplate.service.js");
-const { registerOnboardingTemplateTools } = await import("../../src/mcp/tools/onboardingTemplateTools.js");
+const templates = await import("../../src/services/onboarding-template.service.js");
+const { registerOnboardingTemplateTools } = await import("../../src/mcp/tools/onboarding-template.tools.js");
 const { mcpCtx } = await import("../../src/mcp/context.js");
 const { DEFAULT_ONBOARDING_SESSIONS } = await import("../../src/lib/onboarding-sessions.util.js");
 

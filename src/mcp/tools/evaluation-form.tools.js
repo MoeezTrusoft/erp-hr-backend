@@ -15,7 +15,7 @@
 //     report; a panelist reads only their own form.
 //   * export: recruiters and the requisition's manager.
 //   * rater calibration: HR and recruiters.
-// The form SUBMIT is hr_interview_score (interviewMgmtTools.js).
+// The form SUBMIT is hr_interview_score (interview-mgmt.tools.js).
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";

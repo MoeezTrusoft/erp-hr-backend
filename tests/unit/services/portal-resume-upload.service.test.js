@@ -28,7 +28,7 @@ let portalOn = true;
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM }));
-jest.unstable_mockModule("../../../src/lib/recruitmentFlags.js", () => ({ isRecruitmentFlagEnabled: (key) => key === "portal" && portalOn }));
+jest.unstable_mockModule("../../../src/lib/recruitment-flags.util.js", () => ({ isRecruitmentFlagEnabled: (key) => key === "portal" && portalOn }));
 
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 const svc = await import("../../../src/services/portal-resume-upload.service.js");

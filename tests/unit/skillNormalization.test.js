@@ -19,7 +19,7 @@ import {
     reconcileParsedSkills,
     recordAliasSuggestion,
     matchCandidateToRequisition,
-} from "../../src/lib/skillNormalization.js";
+} from "../../src/lib/skill-normalization.util.js";
 
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
 const TENANT_B = "22222222-2222-2222-2222-222222222222";

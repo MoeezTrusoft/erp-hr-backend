@@ -12,19 +12,19 @@ import { generateDocumentExpiryAlerts } from "./documentExpiryAlert.service.js";
 import { runTenantRetention } from "./retention-run.service.js";
 import { resolveRetentionMode } from "../lib/retention-run.util.js";
 import { mcpCtx } from "../lib/requestContext.js";
-import { purgeExpiredDrafts } from "./applicationDraft.service.js";
+import { purgeExpiredDrafts } from "./application-draft.service.js";
 import {
   autoCloseFilledRequisitions,
   autoPublishApprovedRequisitions,
   closePostingsPastClosesAt,
-} from "./requisitionPublication.service.js";
-import { expireInvitations } from "./talentPoolInvitation.service.js";
+} from "./requisition-publication.service.js";
+import { expireInvitations } from "./talent-pool-invitation.service.js";
 import {
   sweepApprovalSla,
   APPROVAL_SLA_KINDS,
   APPROVAL_SLA_STAGES,
 } from "./recruitment-approval-sla.service.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 
 const reminderLog = logger.child({ component: "reminder-jobs" });
 
@@ -92,7 +92,7 @@ export async function runDocumentExpiryJob() {
  */
 // ── Phase 5 residue — the save-and-return draft expiry sweep ─────────────────
 //
-// `purgeExpiredDrafts` (applicationDraft.service.js) already deleted drafts
+// `purgeExpiredDrafts` (application-draft.service.js) already deleted drafts
 // whose 30-day clock ran out, but nothing SCHEDULED it: the sweep was exposed
 // for the job ladder and then left as a document rather than a control — the
 // exact posture the candidate-retention job comment below warns about. This job

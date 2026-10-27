@@ -8,7 +8,7 @@ jest.unstable_mockModule("../../../src/services/rbac.client.js", () => ({
   listDepartments: async () => [],
 }));
 
-const { toCard } = await import("../../../src/services/candidatePipeline.service.js");
+const { toCard } = await import("../../../src/services/candidate-pipeline.service.js");
 
 describe("candidate pipeline card", () => {
   it("carries the ids a move, an interview and an offer address", () => {

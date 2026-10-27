@@ -43,8 +43,8 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 const { DEFAULT_DISPOSITION_REASONS, validateScreeningDecision, validateCriteria, SCREENING_OUTCOMES } = await import(
     "../../src/lib/dispositionReasons.js"
 );
-const service = await import("../../src/services/applicationScreening.service.js");
-const workflow = await import("../../src/services/applicationWorkflow.service.js");
+const service = await import("../../src/services/application-screening.service.js");
+const workflow = await import("../../src/services/application-workflow.service.js");
 
 const defaultCodes = DEFAULT_DISPOSITION_REASONS.map((r) => ({ code: r.code, requiresNotes: r.requiresNotes, version: 1 }));
 

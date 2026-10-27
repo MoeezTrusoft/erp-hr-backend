@@ -8,7 +8,7 @@ import request from "supertest";
 const submitPortalDsr = jest.fn();
 const verifyPortalDsr = jest.fn();
 jest.unstable_mockModule("../../../src/services/dsr-portal.service.js", () => ({ submitPortalDsr, verifyPortalDsr }));
-jest.unstable_mockModule("../../../src/routes/publicPortal.routes.js", () => ({
+jest.unstable_mockModule("../../../src/routes/public-portal.routes.js", () => ({
     resolvePortalTenant: (req) => (String(req.hostname).toLowerCase() === "careers.test" ? TENANT : null),
 }));
 

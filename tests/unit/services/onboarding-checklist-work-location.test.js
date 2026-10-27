@@ -15,7 +15,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma,
 
 const svc = await import("../../../src/services/onboarding.service.js");
 const ctrl = await import("../../../src/controllers/onboarding.controller.js");
-const { registerOnboardingTools } = await import("../../../src/mcp/tools/onboardingTools.js");
+const { registerOnboardingTools } = await import("../../../src/mcp/tools/onboarding.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 // Prisma would return only the selected columns; the fake does the same for

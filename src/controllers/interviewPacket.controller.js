@@ -16,7 +16,7 @@ import {
     listPacket,
     getPacketForViewer,
     PacketError,
-} from "../services/interviewPacket.service.js";
+} from "../services/interview-packet.service.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorOf = (req) => req.user?.employeeId ?? null;

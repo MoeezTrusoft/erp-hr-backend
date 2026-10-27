@@ -4,7 +4,7 @@
 # the new ones are visible in Prometheus with the alerts in the runbook
 # configured"). The Phase 4 handoff pages live in recruitment-onboarding.rules.yml;
 # this file covers the Phase 5 surfaces on the counters in
-# src/lib/recruitmentOpsMetrics.js:
+# src/lib/recruitment-ops-metrics.util.js:
 #
 #   hr_recruitment_retention_runs_total{outcome="dry-run"|"applied"|"refused-flag"|"refused-tenant"|"failed"}
 #   hr_recruitment_notifications_total{event, outcome="enqueued"|"dropped-flag"|"dropped-error"}

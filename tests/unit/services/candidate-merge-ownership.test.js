@@ -37,7 +37,7 @@ jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({
 }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction }));
 
-const { mergeCandidates, mergedAgencyOwnership } = await import("../../../src/services/candidateMerge.service.js");
+const { mergeCandidates, mergedAgencyOwnership } = await import("../../../src/services/candidate-merge.service.js");
 
 const seed = (source = {}, target = {}) => {
     rows.clear();

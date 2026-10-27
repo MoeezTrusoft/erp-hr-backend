@@ -13,8 +13,8 @@ import {
     normalizeChannelPublication,
     publicPostings,
     resolveDefaultPublicationChannels,
-} from "../../../src/lib/requisitionPublication.js";
-import { evaluateRequisitionEligibility } from "../../../src/lib/requisitionEligibility.js";
+} from "../../../src/lib/requisition-publication.util.js";
+import { evaluateRequisitionEligibility } from "../../../src/lib/requisition-eligibility.util.js";
 import {
     BONUS_DECISIONS,
     assertBonusTransition,

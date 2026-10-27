@@ -20,7 +20,7 @@ import {
     computeOverall,
     checkRequiredCriteria,
     resolveTemplate,
-} from "../../src/lib/scorecardTemplates.js";
+} from "../../src/lib/scorecard-templates.util.js";
 
 // ── the pure lib ─────────────────────────────────────────────────────────────
 
@@ -148,7 +148,7 @@ jest.unstable_mockModule("../../src/mcp/context.js", () => ({
     mcpCtx: { run: (ctx, fn) => fn(), getStore: () => ({ user: { tenantId: "t-1" } }) },
 }));
 
-const service = await import("../../src/services/scorecardTemplate.service.js");
+const service = await import("../../src/services/scorecard-template.service.js");
 const scorecardWriter = await import("../../src/services/interview-scorecard.service.js");
 
 const tenant = "t-1";

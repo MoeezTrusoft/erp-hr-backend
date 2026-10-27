@@ -123,7 +123,7 @@ const employeeBase = {
   routingNumber: optionalString,
   accountType: optionalString,
   // Opt-in AI resume parsing on create/update: only runs when BOTH a resumeMediaId
-  // (DAM asset) and parseResume:true are supplied. See resumeParsing.service.js.
+  // (DAM asset) and parseResume:true are supplied. See resume-parsing.service.js.
   resumeMediaId: optionalInt,
   parseResume: z.coerce.boolean().optional().default(false),
   // F-03: createSystemAccount persists an HR-owned provisioning intent in the

@@ -10,13 +10,13 @@ import {
   listRequisitionAttachments,
   addRequisitionAttachment,
   removeRequisitionAttachment,
-} from "../services/requisitionAttachment.service.js";
+} from "../services/requisition-attachment.service.js";
 import {
   publishRequisition,
   unpublishPosting,
   withdrawRequisition,
   listRequisitionPostings,
-} from "../services/requisitionPublication.service.js";
+} from "../services/requisition-publication.service.js";
 import {
   listQuestions,
   createQuestion,
@@ -24,10 +24,10 @@ import {
   deactivateQuestion,
   reorderQuestions,
   ApplicationQuestionError,
-} from "../services/applicationQuestion.service.js";
+} from "../services/application-question.service.js";
 import { respondPreconditionAware } from "../utils/httpError.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
-import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../lib/recruitment-access.util.js";
 
 // Phase 2.2 — the attachment service throws with an explicit `status` (404 for a
 // cross-tenant/unknown requisition, 403 for a caller who may not change

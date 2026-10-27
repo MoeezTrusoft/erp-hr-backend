@@ -4,7 +4,7 @@
 // DB-free: services are mocked; tool→service dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
-jest.unstable_mockModule('../../../src/services/interviewMgmt.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/interview-mgmt.service.js', () => ({
   listInterviewsManaged: jest.fn(async () => ({ success: true })),
   getInterviewManaged: jest.fn(async () => ({ success: true })),
   scoreInterview: jest.fn(async () => ({ success: true })),
@@ -12,7 +12,7 @@ jest.unstable_mockModule('../../../src/services/interviewMgmt.service.js', () =>
   // Phase 3.4 (remainder) — panel-feedback consolidation.
   consolidateInterviewFeedback: jest.fn(async () => ({ success: true })),
 }));
-jest.unstable_mockModule('../../../src/services/offerMgmt.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/offer-mgmt.service.js', () => ({
   listOffersManage: jest.fn(async () => ({ success: true })),
   getOfferManage: jest.fn(async () => ({ success: true })),
   previewOfferManage: jest.fn(async () => ({ success: true })),
@@ -20,8 +20,8 @@ jest.unstable_mockModule('../../../src/services/offerMgmt.service.js', () => ({
   markOfferPreboarding: jest.fn(async () => ({ success: true })),
 }));
 
-const { registerInterviewMgmtTools } = await import('../../../src/mcp/tools/interviewMgmtTools.js');
-const { registerOfferMgmtTools } = await import('../../../src/mcp/tools/offerMgmtTools.js');
+const { registerInterviewMgmtTools } = await import('../../../src/mcp/tools/interview-mgmt.tools.js');
+const { registerOfferMgmtTools } = await import('../../../src/mcp/tools/offer-mgmt.tools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
@@ -43,12 +43,12 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  // --- interviewMgmtTools.js (4 tools) ---
+  // --- interview-mgmt.tools.js (4 tools) ---
   { name: 'hr_interviews_manage_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_interview_manage_get', gate: 'hr:recruitment', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_interview_score', gate: 'hr:recruitment', action: 'CREATE', args: { interviewId: '1', ratings: { technicalSkills: 5, problemSolving: 4, communication: 4, cultureFit: 5 }, decision: 'PASS', recommendation: 'Strong hire' } },
   { name: 'hr_interview_set_outcome', gate: 'hr:recruitment', action: 'EDIT', args: { interviewId: '1', decision: 'PASS' } },
-  // --- offerMgmtTools.js (7 tools) ---
+  // --- offer-mgmt.tools.js (7 tools) ---
   { name: 'hr_offers_manage_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_offer_manage_get', gate: 'hr:recruitment', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_offer_create_full', gate: 'hr:recruitment', action: 'CREATE', args: { applicationId: '1', candidateId: '1', jobRequisitionId: '1', baseSalary: 80000 } },

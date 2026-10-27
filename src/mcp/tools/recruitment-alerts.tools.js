@@ -13,7 +13,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import { ALERT_METRICS, ALERT_STATUSES } from "../../lib/recruitment-alerts.util.js";
 import {
   acknowledgeRecruitmentAlert,

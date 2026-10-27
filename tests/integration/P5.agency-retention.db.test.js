@@ -36,12 +36,12 @@ for (const [key, value] of Object.entries(FLAGS)) {
 const { default: prisma } = await import('../../src/lib/prisma.js');
 const { mcpCtx } = await import('../../src/mcp/context.js');
 const { withAgencyContext } = await import('../../src/lib/agency-access.util.js');
-const { resolveRecruitmentScope } = await import('../../src/lib/recruitmentAccess.js');
-const { listApplications, getApplication } = await import('../../src/services/applicationService.js');
-const { listCandidates, getCandidate } = await import('../../src/services/candidateService.js');
+const { resolveRecruitmentScope } = await import('../../src/lib/recruitment-access.util.js');
+const { listApplications, getApplication } = await import('../../src/services/application.service.js');
+const { listCandidates, getCandidate } = await import('../../src/services/candidate.service.js');
 const { registerAgencyPortalTools } = await import('../../src/mcp/tools/agency-portal.tools.js');
-const { registerCandidatePipelineTools } = await import('../../src/mcp/tools/candidatePipelineTools.js');
-const { applyRetention } = await import('../../src/services/candidatePrivacy.service.js');
+const { registerCandidatePipelineTools } = await import('../../src/mcp/tools/candidate-pipeline.tools.js');
+const { applyRetention } = await import('../../src/services/candidate-privacy.service.js');
 const { runTenantRetention, signOffRetentionRun, disableRetentionApply } = await import('../../src/services/retention-run.service.js');
 
 const asSystem = (fn) => mcpCtx.run({ system: true }, async () => await fn());

@@ -45,15 +45,15 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../lib/requestContext.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
-import { candidateScopeWhere } from "../lib/recruitmentAccess.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { candidateScopeWhere } from "../lib/recruitment-access.util.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import {
     PARSE_MAX_ATTEMPTS,
     PARSE_TICKET_PREFIX,
     isParseTicket,
     lastErrorCode,
     parseTicketHash,
-} from "../lib/parseRetry.js";
+} from "../lib/parse-retry.util.js";
 
 const KIND = "CANDIDATE";
 

@@ -7,7 +7,7 @@
 // generated Prisma datamodel instead, recursively through relations.
 import { describe, it, expect } from "@jest/globals";
 import { Prisma } from "@prisma/client";
-import { PUBLIC_JOB_SELECT } from "../../src/lib/publicPortal.js";
+import { PUBLIC_JOB_SELECT } from "../../src/lib/public-portal.util.js";
 
 const models = new Map(Prisma.dmmf.datamodel.models.map((model) => [model.name, model]));
 

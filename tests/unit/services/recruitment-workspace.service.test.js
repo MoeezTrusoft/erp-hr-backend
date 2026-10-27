@@ -13,7 +13,7 @@ const prismaProxy = new Proxy({}, { get: (_t, key) => fake.db[key] });
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prismaProxy }));
 
 const { getInterviewerWorkspace, getManagerWorkspace } = await import("../../../src/services/recruitment-workspace.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 
 const T = "11111111-1111-4111-8111-111111111111";

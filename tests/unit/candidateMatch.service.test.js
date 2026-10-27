@@ -25,7 +25,7 @@ jest.unstable_mockModule("../../src/lib/logger.js", () => ({ default: { info: je
 const runAiTask = jest.fn();
 jest.unstable_mockModule("../../src/lib/aiPlaneClient.js", () => ({ runAiTask }));
 
-const { matchCandidateToRequisitionAdvisory, loadAliasIndex, requisitionSkillRequirements } = await import("../../src/services/candidateMatch.service.js");
+const { matchCandidateToRequisitionAdvisory, loadAliasIndex, requisitionSkillRequirements } = await import("../../src/services/candidate-match.service.js");
 
 const CAND = {
     id: 11,
@@ -152,7 +152,7 @@ describe("candidateMatch.service — advisory matching", () => {
             { alias: "JS", skillId: 9, scope: "TENANT", status: "ACTIVE", tenantId: "t-1" },
         ]);
         const index = await loadAliasIndex("t-1");
-        const { matchCandidateToRequisition } = await import("../../src/lib/skillNormalization.js");
+        const { matchCandidateToRequisition } = await import("../../src/lib/skill-normalization.util.js");
         const report = matchCandidateToRequisition(index, [{ name: "JS" }], { required: ["JS"] });
         expect(report.matched[0].skillId).toBe(9); // tenant shadow wins
     });

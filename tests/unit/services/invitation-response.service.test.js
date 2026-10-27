@@ -15,14 +15,14 @@ const intakeAcceptedNurtureInvitation = jest.fn();
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
-jest.unstable_mockModule("../../../src/lib/recruitmentFlags.js", () => ({ isRecruitmentFlagEnabled: (key) => flags.has(key) }));
-jest.unstable_mockModule("../../../src/lib/recruitmentOpsMetrics.js", () => ({ recordRetentionRun: jest.fn() }));
+jest.unstable_mockModule("../../../src/lib/recruitment-flags.util.js", () => ({ isRecruitmentFlagEnabled: (key) => flags.has(key) }));
+jest.unstable_mockModule("../../../src/lib/recruitment-ops-metrics.util.js", () => ({ recordRetentionRun: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 jest.unstable_mockModule("../../../src/services/talent-nurture.service.js", () => ({ intakeAcceptedNurtureInvitation }));
 
 const svc = await import("../../../src/services/invitation-response.service.js");
-const { respondToInvitation, withdrawInvitation, expireInvitations, listInvitations, inviteToApply } = await import("../../../src/services/talentPoolInvitation.service.js");
+const { respondToInvitation, withdrawInvitation, expireInvitations, listInvitations, inviteToApply } = await import("../../../src/services/talent-pool-invitation.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

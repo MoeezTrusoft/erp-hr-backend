@@ -29,7 +29,7 @@
 // hr:recruitment + VIEW is "hr.recruitment.read"; see rbacScopeKey below.
 //
 // Row scope is NOT a permission: what a holder of hr:recruitment sees is cut
-// by the caller's role claim through src/lib/recruitmentAccess.js (ORG,
+// by the caller's role claim through src/lib/recruitment-access.util.js (ORG,
 // MANAGED, ASSIGNED, FINANCE, AGENCY, ASSESSMENT). The role table at the end of
 // this file records both: the grants a role needs, and the scope its claim
 // resolves to.
@@ -92,7 +92,7 @@ function group(module, registrar, tools) {
  * registrars as tests/unit/mcp/recruitmentMcpInventory.test.js).
  */
 export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
-    group("recruitmentTools", "registerRecruitmentTools", [
+    group("recruitment.tools", "registerRecruitmentTools", [
         tool("hr_requisitions_list", REC, "VIEW"),
         tool("hr_candidates_list", REC, "VIEW"),
         tool("hr_requisition_create", REC, "CREATE"),
@@ -117,7 +117,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_talent_pool_add", REC, "CREATE"),
         tool("hr_talent_pool_remove", REC, "DELETE"),
     ]),
-    group("requisitionMgmtTools", "registerRequisitionMgmtTools", [
+    group("requisition-mgmt.tools", "registerRequisitionMgmtTools", [
         tool("hr_requisitions_manage_list", REC, "VIEW"),
         tool("hr_requisition_manage_get", REC, "VIEW"),
         tool("hr_requisition_submit", REC, "EDIT"),
@@ -133,12 +133,12 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_requisition_questions_reorder", REC, "EDIT"),
         tool("hr_requisitions_export", REC, "VIEW"),
     ]),
-    group("candidatePipelineTools", "registerCandidatePipelineTools", [
+    group("candidate-pipeline.tools", "registerCandidatePipelineTools", [
         tool("hr_candidate_pipeline_get", REC, "VIEW"),
         tool("hr_candidate_pipeline_list", REC, "VIEW"),
         tool("hr_candidate_360_get", REC, "VIEW"),
     ]),
-    group("interviewMgmtTools", "registerInterviewMgmtTools", [
+    group("interview-mgmt.tools", "registerInterviewMgmtTools", [
         tool("hr_interviews_manage_list", REC, "VIEW"),
         tool("hr_interview_manage_get", REC, "VIEW"),
         tool("hr_interview_feedback_consolidate", REC, "VIEW"),
@@ -158,7 +158,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_scorecard_template_link", REC, "CREATE"),
         tool("hr_scorecard_template_resolve", REC, "VIEW"),
     ]),
-    group("offerMgmtTools", "registerOfferMgmtTools", [
+    group("offer-mgmt.tools", "registerOfferMgmtTools", [
         tool("hr_offers_manage_list", REC, "VIEW"),
         tool("hr_offer_manage_get", REC, "VIEW"),
         tool("hr_offer_create_full", REC, "CREATE"),
@@ -167,7 +167,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_offer_approval_policy_get", REC, "VIEW"),
         tool("hr_offer_approval_policy_set", REC, "EDIT"),
     ]),
-    group("candidatePrivacyTools", "registerCandidatePrivacyTools", [
+    group("candidate-privacy.tools", "registerCandidatePrivacyTools", [
         tool("hr_candidate_consent_record", REC, "CREATE"),
         tool("hr_candidate_consent_list", REC, "VIEW"),
         tool("hr_candidate_dnc_record", REC, "CREATE"),
@@ -184,7 +184,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_candidate_request_list", REC, "VIEW"),
         tool("hr_candidate_request_close", REC, "EDIT"),
     ]),
-    group("talentPoolMgmtTools", "registerTalentPoolMgmtTools", [
+    group("talent-pool-mgmt.tools", "registerTalentPoolMgmtTools", [
         tool("hr_talent_pool_manage_list", REC, "VIEW"),
         tool("hr_talent_pool_profile_get", REC, "VIEW"),
         tool("hr_talent_pool_move_to_pipeline", REC, "CREATE"),
@@ -194,12 +194,12 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_talent_pool_segment", REC, "VIEW"),
         tool("hr_talent_pool_retention_sweep", REC, "EDIT"),
     ]),
-    group("recruitmentAnalyticsTools", "registerRecruitmentAnalyticsTools", [
+    group("recruitment-analytics.tools", "registerRecruitmentAnalyticsTools", [
         tool("hr_recruitment_analytics_get", REC, "VIEW"),
         tool("hr_recruitment_analytics_drilldown", REC, "VIEW"),
         tool("hr_recruitment_analytics_export", REC, "VIEW"),
     ]),
-    group("recruitmentExtraTools", "registerRecruitmentExtraTools", [
+    group("recruitment-extra.tools", "registerRecruitmentExtraTools", [
         tool("hr_candidate_merge", REC, "EDIT"),
         tool("hr_recruitment_cost_config_get", REC, "VIEW"),
         tool("hr_recruitment_cost_config_set", REC, "EDIT"),
@@ -208,7 +208,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_requisition_attachment_delete", REC, "EDIT"),
         tool("hr_candidate_resume_upload", REC, "CREATE"),
     ]),
-    group("applicationTools", "registerApplicationTools", [
+    group("application.tools", "registerApplicationTools", [
         tool("hr_application_list", REC, "VIEW"),
         tool("hr_application_get", REC, "VIEW"),
         tool("hr_application_delete", REC, "DELETE"),
@@ -227,7 +227,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
     ]),
     // The two employee-resume tools act on EMPLOYEE records (skills from an
     // employee's CV), so they assert the employee resource, not recruitment.
-    group("resumeTools", "registerResumeTools", [
+    group("resume.tools", "registerResumeTools", [
         tool("hr_resume_parse_preview", EMP, "VIEW"),
         tool("hr_resume_employee_ingest", EMP, "CREATE"),
         tool("hr_resume_candidate_ingest", REC, "CREATE"),
@@ -235,7 +235,7 @@ export const RECRUITMENT_TOOL_GROUPS = Object.freeze([
         tool("hr_skills_reconcile", REC, "VIEW"),
         tool("hr_skill_alias_suggest", REC, "CREATE"),
     ]),
-    group("onboardingTemplateTools", "registerOnboardingTemplateTools", [
+    group("onboarding-template.tools", "registerOnboardingTemplateTools", [
         tool("hr_onboarding_template_list", REC, "VIEW"),
         tool("hr_onboarding_template_set", REC, "EDIT"),
         tool("hr_onboarding_template_deactivate", REC, "EDIT"),
@@ -520,12 +520,12 @@ export function recruitmentGatewayToolMap() {
 // (section 7.9) and the Open lines of every recruitment phase in
 // coordination/STATE.md. Reviewed against what the code checks: the grants
 // are what the tools above assert, the scope is what the role claim resolves
-// to in src/lib/recruitmentAccess.js. Both are checked by the manifest test.
+// to in src/lib/recruitment-access.util.js. Both are checked by the manifest test.
 //
 // Read this before seeding:
 //   * The permission opens the SURFACE; the role claim cuts the ROWS. A role
 //     claim the row-scope library does not know resolves to NONE (no rows, no
-//     writes; recruitmentAccess.js choice 1), so a role RBAC grants
+//     writes; recruitment-access.util.js choice 1), so a role RBAC grants
 //     hr:recruitment must carry a claim in that vocabulary (scope below is not
 //     null) or it sees nothing. IT staff and plain employees get NO
 //     hr:recruitment.

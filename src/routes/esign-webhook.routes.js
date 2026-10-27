@@ -27,7 +27,7 @@
 import express from "express";
 
 import logger from "../lib/logger.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { verifyWebhook } from "../services/esign.client.js";
 import { handleEsignWebhookEvent } from "../services/offer-esign.service.js";
 

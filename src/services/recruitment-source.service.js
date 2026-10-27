@@ -15,7 +15,7 @@
 // service only merges the two result sets.
 import prisma from "../lib/prisma.js";
 import { withTenant } from "../lib/tenancy.js";
-import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
+import { applicationScopeWhere } from "../lib/recruitment-access.util.js";
 
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { status, code });
 

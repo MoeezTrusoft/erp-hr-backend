@@ -27,11 +27,11 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   rlsTenantExtension: jest.fn((client) => client),
 }));
 jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({ uploadFileToDAM: jest.fn(), deleteDamAsset: jest.fn() }));
-jest.unstable_mockModule("../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../src/services/application-workflow.service.js", () => ({
   transitionApplicationStageInTransaction: mockTransition,
   transitionApplicationStage: jest.fn(),
 }));
-jest.unstable_mockModule("../../src/services/recruitmentHandoff.service.js", () => ({
+jest.unstable_mockModule("../../src/services/recruitment-handoff.service.js", () => ({
   runOfferHandoff: mockRunOfferHandoff,
   getOfferHandoff: mockGetOfferHandoff,
 }));

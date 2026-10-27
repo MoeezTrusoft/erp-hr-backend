@@ -134,11 +134,11 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   rlsTenantExtension: jest.fn((client) => client),
 }));
 
-const { submitRequisition } = await import("../../src/services/requisitionMgmt.service.js");
+const { submitRequisition } = await import("../../src/services/requisition-mgmt.service.js");
 const { postRequisition, updateRequisition } = await import("../../src/services/requisition.service.js");
 const { submitRequisition: legacySubmit } = await import("../../src/services/hrContract.service.js");
 const { setHiringFreeze, liftHiringFreeze, listHiringFreezes, activeFreezeFor } = await import(
-  "../../src/services/recruitmentFreeze.service.js"
+  "../../src/services/recruitment-freeze.service.js"
 );
 
 beforeEach(() => {
@@ -326,7 +326,7 @@ describe("Phase 4 — the freeze blocks submission and publication, and nothing 
     prisma.jobRequisition.findFirst.mockResolvedValue({ ...REQUISITION, status: "POSTED" });
     prisma.jobRequisition.update.mockResolvedValue({ id: 5, status: "CLOSED" });
 
-    const { closeRequisition } = await import("../../src/services/requisitionMgmt.service.js");
+    const { closeRequisition } = await import("../../src/services/requisition-mgmt.service.js");
     await closeRequisition(5, TENANT, 9, "no longer needed");
     expect(prisma.requisitionTransition.create).toHaveBeenCalled();
   });

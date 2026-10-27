@@ -36,7 +36,7 @@ jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }))
 jest.unstable_mockModule("../../src/lib/logger.js", () => ({ default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 
 const { updateOffer } = await import("../../src/services/offer.service.js");
-const { updateCandidate } = await import("../../src/services/candidateService.js");
+const { updateCandidate } = await import("../../src/services/candidate.service.js");
 
 const TENANT = "t-1";
 

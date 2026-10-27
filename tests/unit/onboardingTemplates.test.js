@@ -25,9 +25,9 @@ const prisma = {
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({ tenantTransaction: (c, fn, o) => fn(c, o) }));
 
-const { validateTemplateTasks, resolveChecklistTasks } = await import("../../src/lib/onboardingTemplates.js");
-const { DEFAULT_ONBOARDING_TASKS, materializeOnboardingTaskRows } = await import("../../src/lib/onboardingDefaults.js");
-const templates = await import("../../src/services/onboardingTemplate.service.js");
+const { validateTemplateTasks, resolveChecklistTasks } = await import("../../src/lib/onboarding-templates.util.js");
+const { DEFAULT_ONBOARDING_TASKS, materializeOnboardingTaskRows } = await import("../../src/lib/onboarding-defaults.util.js");
+const templates = await import("../../src/services/onboarding-template.service.js");
 
 const goodTask = {
   title: "Provision the laptop",

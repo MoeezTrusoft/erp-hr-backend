@@ -26,7 +26,7 @@ import {
   nextPendingStep,
   resolveApprovalChain,
   ruleApplies,
-} from "../../src/lib/requisitionApprovalChain.js";
+} from "../../src/lib/requisition-approval-chain.util.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 
@@ -269,10 +269,10 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 
 const { enqueueHrDomainEvent } = await import("../../src/services/hrDomainEvent.service.js");
 const { approveRequisition } = await import("../../src/services/requisition.service.js");
-const { submitRequisition } = await import("../../src/services/requisitionMgmt.service.js");
+const { submitRequisition } = await import("../../src/services/requisition-mgmt.service.js");
 const { approveRequisition: legacyApprove } = await import("../../src/services/hrContract.service.js");
 const { setApprovalRules, seedDefaultChain, chainFor } = await import(
-  "../../src/services/requisitionApprovalChain.service.js"
+  "../../src/services/requisition-approval-chain.service.js"
 );
 
 const chainRules = [

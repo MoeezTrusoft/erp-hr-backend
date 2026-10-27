@@ -134,7 +134,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma 
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({ tenantTransaction, rlsTenantExtension: (c) => c }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings: async () => ({}) }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 jest.unstable_mockModule("../../../src/services/approval/service.js", () => ({ submitApproval }));
 
 const svc = await import("../../../src/services/offer-expiry.service.js");

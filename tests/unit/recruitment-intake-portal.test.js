@@ -114,7 +114,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
     rlsTenantExtension: jest.fn((client) => client),
 }));
 jest.unstable_mockModule("../../src/lib/notificationClient.js", () => ({ sendCandidateEmail }));
-jest.unstable_mockModule("../../src/lib/recruitmentFlags.js", () => ({
+jest.unstable_mockModule("../../src/lib/recruitment-flags.util.js", () => ({
     isRecruitmentFlagEnabled: jest.fn((key) => flags[key] === true),
 }));
 jest.unstable_mockModule("../../src/services/recruitment-settings.service.js", () => ({
@@ -123,9 +123,9 @@ jest.unstable_mockModule("../../src/services/recruitment-settings.service.js", (
 }));
 jest.unstable_mockModule("../../src/services/resume-parse-queue.service.js", () => ({ enqueueCandidateResumeParse }));
 
-const { submitPublicApplication, getPublicJob, parseSourceAttribution } = await import("../../src/services/publicPortal.service.js");
-const { saveApplicationDraft, submitApplicationDraft } = await import("../../src/services/applicationDraft.service.js");
-const { requestStatusLink } = await import("../../src/services/candidateStatus.service.js");
+const { submitPublicApplication, getPublicJob, parseSourceAttribution } = await import("../../src/services/public-portal.service.js");
+const { saveApplicationDraft, submitApplicationDraft } = await import("../../src/services/application-draft.service.js");
+const { requestStatusLink } = await import("../../src/services/candidate-status.service.js");
 
 const body = (overrides = {}) => ({
     firstName: "Ayesha",

@@ -4,7 +4,7 @@
 // DB-free: controllers/services are mocked; tool→service dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
-// --- Mocks: onboardingMcpController (used by onboardingTools.js) ---
+// --- Mocks: onboardingMcpController (used by onboarding.tools.js) ---
 jest.unstable_mockModule('../../../src/mcp/controllers/onboardingMcpController.js', () => ({
   mcpListOnboardingChecklists: jest.fn(async () => ({ success: true })),
   mcpListOnboardingSurveys: jest.fn(async () => ({ success: true })),
@@ -18,20 +18,20 @@ jest.unstable_mockModule('../../../src/mcp/controllers/onboardingMcpController.j
   mcpSubmitOnboardingSurvey: jest.fn(async () => ({ success: true })),
 }));
 
-// --- Mocks: onboardingMgmt.service (used by onboardingMgmtTools.js) ---
-jest.unstable_mockModule('../../../src/services/onboardingMgmt.service.js', () => ({
+// --- Mocks: onboardingMgmt.service (used by onboarding-mgmt.tools.js) ---
+jest.unstable_mockModule('../../../src/services/onboarding-mgmt.service.js', () => ({
   listOnboarding: jest.fn(async () => ({ success: true })),
 }));
 
-// --- Mocks: onboardingDetail.service (used by onboardingDetailTools.js) ---
-jest.unstable_mockModule('../../../src/services/onboardingDetail.service.js', () => ({
+// --- Mocks: onboardingDetail.service (used by onboarding-detail.tools.js) ---
+jest.unstable_mockModule('../../../src/services/onboarding-detail.service.js', () => ({
   getOnboardingDetail: jest.fn(async () => ({ success: true })),
   createOnboardingTask: jest.fn(async () => ({ success: true })),
   sendOnboardingReminder: jest.fn(async () => ({ success: true })),
 }));
 
-// --- Mocks: onboardingPortal.service (used by onboardingPortalTools.js) ---
-jest.unstable_mockModule('../../../src/services/onboardingPortal.service.js', () => ({
+// --- Mocks: onboardingPortal.service (used by onboarding-portal.tools.js) ---
+jest.unstable_mockModule('../../../src/services/onboarding-portal.service.js', () => ({
   getPreboarding: jest.fn(async () => ({ success: true })),
   updatePreboarding: jest.fn(async () => ({ success: true })),
   submitFeedback: jest.fn(async () => ({ success: true })),
@@ -41,10 +41,10 @@ jest.unstable_mockModule('../../../src/services/onboardingPortal.service.js', ()
 }));
 
 // --- Imports ---
-const { registerOnboardingTools } = await import('../../../src/mcp/tools/onboardingTools.js');
-const { registerOnboardingMgmtTools } = await import('../../../src/mcp/tools/onboardingMgmtTools.js');
-const { registerOnboardingDetailTools } = await import('../../../src/mcp/tools/onboardingDetailTools.js');
-const { registerOnboardingPortalTools } = await import('../../../src/mcp/tools/onboardingPortalTools.js');
+const { registerOnboardingTools } = await import('../../../src/mcp/tools/onboarding.tools.js');
+const { registerOnboardingMgmtTools } = await import('../../../src/mcp/tools/onboarding-mgmt.tools.js');
+const { registerOnboardingDetailTools } = await import('../../../src/mcp/tools/onboarding-detail.tools.js');
+const { registerOnboardingPortalTools } = await import('../../../src/mcp/tools/onboarding-portal.tools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
@@ -68,7 +68,7 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  // --- onboardingTools.js (8 tools) ---
+  // --- onboarding.tools.js (8 tools) ---
   { name: 'hr_onboarding_checklist_create', gate: 'hr:onboarding', action: 'CREATE', args: { employeeId: '7' } },
   { name: 'hr_onboarding_checklist_update', gate: 'hr:onboarding', action: 'EDIT', args: { id: '1' } },
   { name: 'hr_onboarding_task_add', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', title: 'Sign NDA' } },
@@ -77,13 +77,13 @@ const TOOLS = [
   { name: 'hr_onboarding_document_sign', gate: 'hr:onboarding', action: 'EDIT', args: { docId: '1' } },
   { name: 'hr_onboarding_buddy_assign', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', buddyId: '8' } },
   { name: 'hr_onboarding_survey_submit', gate: 'hr:onboarding', action: 'CREATE', args: { employeeId: '7', surveyType: 'ONBOARDING', responses: {} } },
-  // --- onboardingMgmtTools.js (1 tool) ---
+  // --- onboarding-mgmt.tools.js (1 tool) ---
   { name: 'hr_onboarding_manage_list', gate: 'hr:onboarding', action: 'VIEW', args: {} },
-  // --- onboardingDetailTools.js (3 tools) ---
+  // --- onboarding-detail.tools.js (3 tools) ---
   { name: 'hr_onboarding_detail_get', gate: 'hr:onboarding', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_onboarding_task_create', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', title: 'Setup laptop', stage: 'pre_boarding' } },
   { name: 'hr_onboarding_send_reminder', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', sendTo: 'newhire@test.com', subject: 'Reminder', message: 'Please complete' } },
-  // --- onboardingPortalTools.js (6 tools) ---
+  // --- onboarding-portal.tools.js (6 tools) ---
   { name: 'hr_onboarding_preboarding_get', gate: 'hr:onboarding', action: 'VIEW', args: { id: '1' } },
   { name: 'hr_onboarding_preboarding_update', gate: 'hr:onboarding', action: 'EDIT', args: { id: '1', group: 'readiness', key: 'bgCheck', value: true } },
   { name: 'hr_onboarding_feedback_submit', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', ratings: { roleClarity: 5 } } },

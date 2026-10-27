@@ -21,12 +21,12 @@ import {
   normalizeJobContent,
   normalizeVocabulary,
   pickRequisitionFields,
-} from "../../src/lib/requisitionFields.js";
+} from "../../src/lib/requisition-fields.util.js";
 import {
   RECRUITMENT_SCOPE,
   attachmentAudience,
   requisitionAttachmentScopeWhere,
-} from "../../src/lib/recruitmentAccess.js";
+} from "../../src/lib/recruitment-access.util.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 
@@ -301,7 +301,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   rlsTenantExtension: jest.fn((client) => client),
 }));
 
-const { submitRequisition } = await import("../../src/services/requisitionMgmt.service.js");
+const { submitRequisition } = await import("../../src/services/requisition-mgmt.service.js");
 const { updateRequisition } = await import("../../src/services/requisition.service.js");
 
 beforeEach(() => {

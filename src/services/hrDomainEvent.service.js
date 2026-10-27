@@ -36,7 +36,7 @@ import { EventEnvelope } from '@trusoft/contracts/envelopes';
 import { eventPayloadSchema } from '@trusoft/contracts/events';
 
 import logger from '../lib/logger.js';
-import { recordRecruitmentNotification } from '../lib/recruitmentOpsMetrics.js';
+import { recordRecruitmentNotification } from '../lib/recruitment-ops-metrics.util.js';
 
 // Payload schema version (EventEnvelope.version — independent of the name's vN).
 const DEFAULT_PAYLOAD_VERSION = 1;

@@ -14,10 +14,10 @@ const db = {
 const findActiveDnc = jest.fn();
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ findActiveDnc }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ findActiveDnc }));
 
 const { getCandidate360 } = await import("../../../src/services/candidate-360.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const ORG = resolveRecruitmentScope({ isAdmin: true, roles: [] });

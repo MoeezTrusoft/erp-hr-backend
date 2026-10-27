@@ -32,7 +32,7 @@ jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
     enqueueHrDomainEvent,
 }));
 
-const service = await import("../../src/services/interviewSchedule.service.js");
+const service = await import("../../src/services/interview-schedule.service.js");
 
 const tenant = "t-1";
 

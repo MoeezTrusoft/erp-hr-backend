@@ -36,7 +36,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
     tenantTransaction: (client, fn) => fn(client),
 }));
 
-const service = await import("../../src/services/interviewPacket.service.js");
+const service = await import("../../src/services/interview-packet.service.js");
 
 const tenant = "t-1";
 

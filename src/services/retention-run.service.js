@@ -38,9 +38,9 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { recordRetentionRun } from "../lib/recruitmentOpsMetrics.js";
-import { RECRUITMENT_SCOPE } from "../lib/recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { recordRetentionRun } from "../lib/recruitment-ops-metrics.util.js";
+import { RECRUITMENT_SCOPE } from "../lib/recruitment-access.util.js";
 import {
     RETENTION_RUN_MODE,
     RETENTION_RUN_STATUS,
@@ -51,7 +51,7 @@ import {
     readRunCandidates,
     signoffRefusal,
 } from "../lib/retention-run.util.js";
-import { applyRetention } from "./candidatePrivacy.service.js";
+import { applyRetention } from "./candidate-privacy.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { logAction } from "../utils/logs.js";
 

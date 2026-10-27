@@ -29,7 +29,7 @@ jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ 
 jest.unstable_mockModule("../../../src/lib/aiPlaneClient.js", () => ({ runAiTask, collectAiResult: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent: jest.fn() }));
 
-const resume = await import("../../../src/services/resumeParsing.service.js");
+const resume = await import("../../../src/services/resume-parsing.service.js");
 
 const CV = "Payroll specialist, SAP HCM, statutory reporting, team lead for five years.";
 
@@ -72,7 +72,7 @@ describe("one attempt per request", () => {
 
     it("refuses a second request while the first one's lease is live", async () => {
         // The ledger row for this very content, claimed a moment ago.
-        const { hashResumeContent } = await import("../../../src/lib/parseRetry.js");
+        const { hashResumeContent } = await import("../../../src/lib/parse-retry.util.js");
         prisma.resumeParseAttempt.findUnique.mockResolvedValue({
             id: 5, contentHash: hashResumeContent(Buffer.from(CV)), status: "RUNNING", attemptCount: 1,
             claimExpiresAt: new Date(Date.now() + 60_000), updatedAt: new Date(),

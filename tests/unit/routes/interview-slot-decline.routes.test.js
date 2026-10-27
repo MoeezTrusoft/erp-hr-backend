@@ -13,14 +13,14 @@ jest.unstable_mockModule("../../../src/services/interview-slot-offer.service.js"
     confirmSlotOffer: jest.fn(),
     declineSlotOffer,
 }));
-jest.unstable_mockModule("../../../src/services/publicPortal.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/public-portal.service.js", () => ({
     listPublicJobs: jest.fn(),
     getPublicJob: jest.fn(),
     submitPublicApplication: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({ consumeEmailVerification: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/candidateStatus.service.js", () => ({ requestStatusLink: jest.fn(), readStatusViaLink: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/applicationDraft.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-verification.service.js", () => ({ consumeEmailVerification: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/candidate-status.service.js", () => ({ requestStatusLink: jest.fn(), readStatusViaLink: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/application-draft.service.js", () => ({
     saveApplicationDraft: jest.fn(),
     loadApplicationDraft: jest.fn(),
     submitApplicationDraft: jest.fn(),
@@ -29,7 +29,7 @@ jest.unstable_mockModule("../../../src/services/applicationDraft.service.js", ()
 const TENANT = "11111111-1111-4111-8111-111111111111";
 process.env.HR_PORTAL_HOSTS = `careers.test=${TENANT}`;
 
-const { interviewSlotsRouter } = await import("../../../src/routes/publicPortal.routes.js");
+const { interviewSlotsRouter } = await import("../../../src/routes/public-portal.routes.js");
 const { resetRateLimitMemory } = await import("../../../src/lib/rate-limit.util.js");
 
 const app = express();

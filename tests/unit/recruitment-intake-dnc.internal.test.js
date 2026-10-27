@@ -46,12 +46,12 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
     rlsTenantExtension: jest.fn((c) => c),
 }));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../src/services/applicationWorkflow.service.js", () => ({ transitionApplicationStage }));
+jest.unstable_mockModule("../../src/services/application-workflow.service.js", () => ({ transitionApplicationStage }));
 jest.unstable_mockModule("../../src/services/scheduled-disposition.service.js", () => ({ cancelPendingDispositionsForApplication }));
 jest.unstable_mockModule("../../src/services/tagService.js", () => ({ upsertTags }));
 
-const { createApplication, updateApplicationStage, updateApplicationStatus } = await import("../../src/services/applicationService.js");
-const { createCandidate } = await import("../../src/services/candidateService.js");
+const { createApplication, updateApplicationStage, updateApplicationStatus } = await import("../../src/services/application.service.js");
+const { createCandidate } = await import("../../src/services/candidate.service.js");
 const { dncScopeBlocksIntake, checkIntakeDnc, hashEmailForLog } = await import("../../src/services/intake-dnc.service.js");
 
 const DNC = { id: 9, reasonCode: "CANDIDATE_REQUEST", scope: "ALL", status: "ACTIVE" };

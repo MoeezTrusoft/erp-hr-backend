@@ -64,11 +64,11 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 jest.unstable_mockModule("../../src/lib/notificationClient.js", () => ({
     sendCandidateEmail: jest.fn(async () => ({ sent: true })),
 }));
-jest.unstable_mockModule("../../src/lib/recruitmentFlags.js", () => ({
+jest.unstable_mockModule("../../src/lib/recruitment-flags.util.js", () => ({
     isRecruitmentFlagEnabled: jest.fn(() => true),
 }));
 const submitPublicApplication = jest.fn(async ({ body }) => ({ received: true, applicationId: 901, name: body.firstName }));
-jest.unstable_mockModule("../../src/services/publicPortal.service.js", () => ({
+jest.unstable_mockModule("../../src/services/public-portal.service.js", () => ({
     submitPublicApplication,
 }));
 
@@ -80,7 +80,7 @@ const {
     purgeDraftsForCandidate,
     purgeExpiredDrafts,
     parseDraftPayload,
-} = await import("../../src/services/applicationDraft.service.js");
+} = await import("../../src/services/application-draft.service.js");
 
 beforeEach(() => {
     jest.clearAllMocks();

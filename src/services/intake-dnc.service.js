@@ -27,7 +27,7 @@ import logger from "../lib/logger.js";
 // Namespace import: the privacy service is a large module that several test
 // suites replace with a partial double; a named import of a missing export
 // fails at link time for every importer, a property read fails only here.
-import * as candidatePrivacy from "./candidatePrivacy.service.js";
+import * as candidatePrivacy from "./candidate-privacy.service.js";
 
 export const INTAKE_DNC_CODE = "HR-RECRUITMENT-CANDIDATE-DNC";
 

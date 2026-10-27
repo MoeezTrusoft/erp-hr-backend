@@ -19,11 +19,11 @@ jest.unstable_mockModule("../../../src/services/intake-dnc.service.js", () => ({
     checkIntakeDnc: async () => ({ blocked: false, reason: null }),
     logIntakeSuppressed: () => undefined,
 }));
-jest.unstable_mockModule("../../../src/services/applicationService.js", () => ({ createApplicationInTx: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/application.service.js", () => ({ createApplicationInTx: jest.fn() }));
 
 const referrals = await import("../../../src/services/internal-referral.service.js");
 const board = await import("../../../src/services/internal-board.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 
 const T1 = "11111111-1111-4111-8111-111111111111";

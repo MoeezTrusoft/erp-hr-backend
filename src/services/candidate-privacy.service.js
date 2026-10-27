@@ -1,0 +1,989 @@
+// src/services/candidate-privacy.service.js
+//
+// Phase 2.5 / 10 — candidate privacy, Do-Not-Contact, retention, anonymization.
+//
+// Candidate records are PERSONAL DATA belonging to someone who is not an employee.
+// The rules that matter, and how they are enforced here:
+//
+//  1. A DNC entry BLOCKS contact, and it is keyed by NORMALIZED EMAIL, not by
+//     candidate id — the address is the durable identity. A person who asked not
+//     to be contacted stays that way even if a recruiter later re-imports them as
+//     a new candidate row.
+//  2. DNC and CONSENT are different things and are never conflated: DNC is a
+//     request about CONTACT, consent is a basis for PROCESSING. Either can block.
+//  3. Withdrawing consent must not erase history — consent rows are append-only,
+//     so an audit can see what was consented to, when, and under which policy
+//     version.
+//  4. Anonymization is IRREVERSIBLE, so it refuses to run while a legal hold is
+//     active, and it is idempotent (a second call reports the existing state
+//     instead of re-redacting). Aggregate data is deliberately preserved; PII is
+//     not.
+//  5. Retention is opt-in per tenant. With no policy there is no retention clock,
+//     so legacy candidate rows are never deleted by applying a migration.
+//
+// Every read and write is tenant-scoped, and every id-taking operation verifies
+// the row belongs to the caller's tenant before touching it.
+import prisma from "../lib/prisma.js";
+import { Prisma } from "@prisma/client";
+import { withTenant } from "../lib/tenancy.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { recordRetentionRun } from "../lib/recruitment-ops-metrics.util.js";
+import { deleteDamAsset } from "./dam.media.service.js";
+import { logAction } from "../utils/logs.js";
+
+export const DNC_STATUS = Object.freeze({ ACTIVE: "ACTIVE", LIFTED: "LIFTED" });
+export const CONSENT_STATUS = Object.freeze({ UNKNOWN: "UNKNOWN", GRANTED: "GRANTED", WITHDRAWN: "WITHDRAWN" });
+export const CONSENT_PURPOSES = Object.freeze(["PROCESSING", "TALENT_POOL", "MARKETING"]);
+export const RETENTION_POPULATIONS = Object.freeze(["APPLICANT", "TALENT_POOL"]);
+export const REQUEST_TYPES = Object.freeze(["ACCESS", "CORRECTION", "ERASURE"]);
+export const REQUEST_STATUS = Object.freeze({
+  RECEIVED: "RECEIVED",
+  IN_PROGRESS: "IN_PROGRESS",
+  FULFILLED: "FULFILLED",
+  REJECTED: "REJECTED",
+});
+const CLOSED_REQUEST_STATUSES = Object.freeze([REQUEST_STATUS.FULFILLED, REQUEST_STATUS.REJECTED]);
+
+// Statutory response window when a request is recorded. 30 days is the common
+// baseline (GDPR Art.12(3)); a tenant can still pass an explicit dueAt.
+const DEFAULT_REQUEST_SLA_DAYS = 30;
+
+const privacyError = (message, code, status = 409) =>
+  Object.assign(new Error(message), { status, code });
+
+export const normalizeEmail = (email) => String(email ?? "").trim().toLowerCase();
+
+const requireTenant = (tenantId) => {
+  if (tenantId === undefined || tenantId === null || tenantId === "") {
+    throw Object.assign(new Error("Tenant context is required"), { status: 400, code: "HR-TENANT-REQUIRED" });
+  }
+};
+
+const requireText = (value, field, code) => {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw privacyError(`${field} is required`, code, 400);
+  return text;
+};
+
+const requireEnum = (value, allowed, field, code) => {
+  const text = requireText(value, field, code);
+  if (!allowed.includes(text)) {
+    throw privacyError(`${field} must be one of ${allowed.join(", ")} (received "${text}")`, code, 400);
+  }
+  return text;
+};
+
+const requireCandidate = async (db, tenantId, candidateId) => {
+  const id = Number(candidateId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw privacyError("A valid candidate id is required", "HR-RECRUITMENT-CANDIDATE-REQUIRED", 400);
+  }
+  const candidate = await db.candidate.findFirst({
+    where: withTenant(tenantId, { id }),
+    select: { id: true, email: true, consentStatus: true, anonymizedAt: true },
+  });
+  if (!candidate) throw privacyError("Candidate not found", "HR-RECRUITMENT-CANDIDATE-NOT-FOUND", 404);
+  return candidate;
+};
+
+// ── Consent ──────────────────────────────────────────────────────────────────
+
+/**
+ * Append a consent decision. `PROCESSING` additionally mirrors the aggregate
+ * status onto Candidate.consentStatus so screening/portal queries can filter
+ * cheaply; the history row remains the evidence of record.
+ */
+export async function recordConsent(
+  { tenantId, candidateId, purpose, status, policyVersion = null, source = null, evidence = null, actorId = null } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedPurpose = requireEnum(purpose, CONSENT_PURPOSES, "purpose", "HR-RECRUITMENT-CONSENT-PURPOSE-INVALID");
+  const resolvedStatus = requireEnum(
+    status,
+    [CONSENT_STATUS.GRANTED, CONSENT_STATUS.WITHDRAWN],
+    "status",
+    "HR-RECRUITMENT-CONSENT-STATUS-INVALID",
+  );
+  const candidate = await requireCandidate(db, tenantId, candidateId);
+
+  const consent = await db.candidateConsent.create({
+    data: {
+      tenantId,
+      candidateId: candidate.id,
+      purpose: resolvedPurpose,
+      status: resolvedStatus,
+      policyVersion,
+      source,
+      evidence,
+      recordedById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    },
+  });
+
+  let candidateConsentStatus = candidate.consentStatus;
+  if (resolvedPurpose === "PROCESSING") {
+    candidateConsentStatus = resolvedStatus;
+    await db.candidate.updateMany({
+      where: withTenant(tenantId, { id: candidate.id }),
+      data: { consentStatus: resolvedStatus, consentUpdatedAt: new Date() },
+    });
+  }
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "Update",
+    module: "Candidate Consent",
+    result: "SUCCESS",
+    notes: `Consent ${resolvedStatus} for candidate ${candidate.id} (${resolvedPurpose}).`,
+    tenantId,
+  });
+
+  return { consent, candidateConsentStatus };
+}
+
+export async function listConsent({ tenantId, candidateId } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const candidate = await requireCandidate(db, tenantId, candidateId);
+  const consents = await db.candidateConsent.findMany({
+    where: withTenant(tenantId, { candidateId: candidate.id }),
+    orderBy: { occurredAt: "desc" },
+  });
+  return { candidateId: candidate.id, consentStatus: candidate.consentStatus, consents };
+}
+
+// ── Do Not Contact ───────────────────────────────────────────────────────────
+
+const activeDncWhere = (tenantId, email, at) => ({
+  ...withTenant(tenantId, { email, status: DNC_STATUS.ACTIVE }),
+  OR: [{ expiresAt: null }, { expiresAt: { gt: at } }],
+});
+
+/** Read-only DNC probe. Never throws for the not-on-DNC case. */
+export async function findActiveDnc({ tenantId, email, at = new Date() } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  return db.candidateDncEntry.findFirst({
+    where: activeDncWhere(tenantId, normalized, at),
+    orderBy: { effectiveFrom: "desc" },
+  });
+}
+
+export async function recordDnc(
+  { tenantId, email, candidateId = null, reasonCode, reason, scope = "ALL", expiresAt = null, actorId = null } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const normalized = normalizeEmail(email);
+  if (!normalized) throw privacyError("A candidate email is required", "HR-RECRUITMENT-DNC-EMAIL-REQUIRED", 400);
+  // A DNC without a recorded reason is not a compliance record.
+  const resolvedReasonCode = requireText(reasonCode, "reasonCode", "HR-RECRUITMENT-DNC-REASON-CODE-REQUIRED");
+  const resolvedReason = requireText(reason, "reason", "HR-RECRUITMENT-DNC-REASON-REQUIRED");
+
+  if (candidateId !== null && candidateId !== undefined) {
+    await requireCandidate(db, tenantId, candidateId);
+  }
+
+  const existing = await findActiveDnc({ tenantId, email: normalized }, { db });
+  if (existing) {
+    throw privacyError(
+      `${normalized} is already on the do-not-contact register (entry ${existing.id})`,
+      "HR-RECRUITMENT-DNC-EXISTS",
+    );
+  }
+
+  const entry = await db.candidateDncEntry.create({
+    data: {
+      tenantId,
+      email: normalized,
+      candidateId: candidateId == null ? null : Number(candidateId),
+      reasonCode: resolvedReasonCode,
+      reason: resolvedReason,
+      scope: scope || "ALL",
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      createdById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    },
+  });
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "Create",
+    module: "Candidate DNC",
+    result: "SUCCESS",
+    notes: `Do-not-contact recorded for ${normalized} (${resolvedReasonCode}).`,
+    tenantId,
+  });
+
+  return entry;
+}
+
+export async function liftDnc({ tenantId, id, reason, actorId = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedReason = requireText(reason, "reason", "HR-RECRUITMENT-DNC-LIFT-REASON-REQUIRED");
+  const entryId = Number(id);
+  if (!Number.isInteger(entryId) || entryId <= 0) {
+    throw privacyError("A valid do-not-contact entry id is required", "HR-RECRUITMENT-DNC-ID-INVALID", 400);
+  }
+
+  const entry = await db.candidateDncEntry.findFirst({ where: withTenant(tenantId, { id: entryId }) });
+  if (!entry) throw privacyError("Do-not-contact entry not found", "HR-RECRUITMENT-DNC-NOT-FOUND", 404);
+  if (entry.status !== DNC_STATUS.ACTIVE) {
+    throw privacyError(`Do-not-contact entry ${entryId} is already ${entry.status}`, "HR-RECRUITMENT-DNC-NOT-ACTIVE");
+  }
+
+  const lifted = await db.candidateDncEntry.update({
+    where: { id: entry.id },
+    data: {
+      status: DNC_STATUS.LIFTED,
+      liftedAt: new Date(),
+      liftedById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+      liftReason: resolvedReason,
+    },
+  });
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "Update",
+    module: "Candidate DNC",
+    result: "SUCCESS",
+    notes: `Do-not-contact lifted for ${entry.email}.`,
+    tenantId,
+  });
+
+  return lifted;
+}
+
+export async function listDnc({ tenantId, status = null, email = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const where = withTenant(tenantId, {});
+  if (status) where.status = requireEnum(status, Object.values(DNC_STATUS), "status", "HR-RECRUITMENT-DNC-STATUS-INVALID");
+  if (email) where.email = normalizeEmail(email);
+  return db.candidateDncEntry.findMany({ where, orderBy: { effectiveFrom: "desc" } });
+}
+
+// ── Communication gate ───────────────────────────────────────────────────────
+
+/**
+ * The single gate every candidate-facing send must pass.
+ *
+ * DNC is absolute: a recorded request not to be contacted blocks contact whatever
+ * the consent status says. Consent withdrawal blocks PROCESSING-requiring contact
+ * (screening, offers). `UNKNOWN` consent is deliberately NOT treated as withdrawn
+ * — legacy rows predate consent capture, and blocking them would silently break
+ * live recruiting; the plan requires explicit withdrawal to stop contact.
+ */
+export async function assertCommunicationsAllowed(
+  { tenantId, candidateId = null, email = null, purpose = "PROCESSING", at = new Date() } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+
+  let resolvedEmail = email ? normalizeEmail(email) : null;
+  let consentStatus = null;
+
+  if (candidateId !== null && candidateId !== undefined) {
+    const candidate = await requireCandidate(db, tenantId, candidateId);
+    resolvedEmail = resolvedEmail ?? normalizeEmail(candidate.email);
+    consentStatus = candidate.consentStatus;
+  }
+
+  if (resolvedEmail) {
+    const dnc = await findActiveDnc({ tenantId, email: resolvedEmail, at }, { db });
+    if (dnc) {
+      throw privacyError(
+        `This candidate is on the do-not-contact register (${dnc.reasonCode}) — contact is blocked`,
+        "HR-RECRUITMENT-DNC-BLOCKED",
+      );
+    }
+  }
+
+  if (consentStatus === CONSENT_STATUS.WITHDRAWN && CONSENT_PURPOSES.includes(String(purpose).toUpperCase())) {
+    throw privacyError(
+      `Candidate ${candidateId} has withdrawn consent for ${String(purpose).toUpperCase()} — contact is blocked`,
+      "HR-RECRUITMENT-CONSENT-WITHDRAWN",
+    );
+  }
+
+  return { allowed: true, email: resolvedEmail, consentStatus };
+}
+
+// ── Legal hold ───────────────────────────────────────────────────────────────
+
+export async function hasActiveLegalHold({ tenantId, candidateId } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const hold = await db.candidateLegalHold.findFirst({
+    where: withTenant(tenantId, { candidateId: Number(candidateId), releasedAt: null }),
+    select: { id: true, reason: true, placedAt: true },
+  });
+  return hold ?? null;
+}
+
+export async function placeLegalHold({ tenantId, candidateId, reason, actorId = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedReason = requireText(reason, "reason", "HR-RECRUITMENT-LEGAL-HOLD-REASON-REQUIRED");
+  const candidate = await requireCandidate(db, tenantId, candidateId);
+
+  const existing = await hasActiveLegalHold({ tenantId, candidateId: candidate.id }, { db });
+  if (existing) {
+    throw privacyError(
+      `Candidate ${candidate.id} is already under legal hold (${existing.id})`,
+      "HR-RECRUITMENT-LEGAL-HOLD-EXISTS",
+    );
+  }
+
+  const hold = await db.candidateLegalHold.create({
+    data: {
+      tenantId,
+      candidateId: candidate.id,
+      reason: resolvedReason,
+      placedById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    },
+  });
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "Create",
+    module: "Candidate Legal Hold",
+    result: "SUCCESS",
+    notes: `Legal hold placed on candidate ${candidate.id}.`,
+    tenantId,
+  });
+
+  return hold;
+}
+
+export async function releaseLegalHold({ tenantId, candidateId, reason, actorId = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedReason = requireText(reason, "reason", "HR-RECRUITMENT-LEGAL-HOLD-RELEASE-REASON-REQUIRED");
+  const candidate = await requireCandidate(db, tenantId, candidateId);
+
+  const existing = await hasActiveLegalHold({ tenantId, candidateId: candidate.id }, { db });
+  if (!existing) {
+    throw privacyError(`Candidate ${candidate.id} has no active legal hold`, "HR-RECRUITMENT-LEGAL-HOLD-NOT-FOUND", 404);
+  }
+
+  const released = await db.candidateLegalHold.update({
+    where: { id: existing.id },
+    data: {
+      releasedAt: new Date(),
+      releasedById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+      releaseReason: resolvedReason,
+    },
+  });
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "Update",
+    module: "Candidate Legal Hold",
+    result: "SUCCESS",
+    notes: `Legal hold released on candidate ${candidate.id}.`,
+    tenantId,
+  });
+
+  return released;
+}
+
+// ── Retention + anonymization ────────────────────────────────────────────────
+
+export async function setRetentionPolicy(
+  { tenantId, appliesTo, retentionMonths, legalBasis = null, actorId = null } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedPopulation = requireEnum(appliesTo, RETENTION_POPULATIONS, "appliesTo", "HR-RECRUITMENT-RETENTION-POPULATION-INVALID");
+  const months = Number(retentionMonths);
+  if (!Number.isInteger(months) || months <= 0) {
+    throw privacyError("retentionMonths must be a positive whole number", "HR-RECRUITMENT-RETENTION-MONTHS-INVALID", 400);
+  }
+
+  return db.candidateRetentionPolicy.upsert({
+    where: { tenantId_appliesTo: { tenantId, appliesTo: resolvedPopulation } },
+    create: {
+      tenantId,
+      appliesTo: resolvedPopulation,
+      retentionMonths: months,
+      legalBasis,
+      createdById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    },
+    update: { retentionMonths: months, legalBasis, isActive: true },
+  });
+}
+
+export async function getRetentionPolicy({ tenantId, appliesTo } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedPopulation = requireEnum(appliesTo, RETENTION_POPULATIONS, "appliesTo", "HR-RECRUITMENT-RETENTION-POPULATION-INVALID");
+  return db.candidateRetentionPolicy.findFirst({
+    where: withTenant(tenantId, { appliesTo: resolvedPopulation, isActive: true }),
+  });
+}
+
+// Phase 7 — what the retention form starts from. There is no invented default
+// window: with no policy stored there is no clock (rule 5), so the nightly run
+// skips the population. That is the default this reports, with isDefault true.
+export const DEFAULT_RETENTION_POLICY = Object.freeze({
+  retentionMonths: null,
+  legalBasis: null,
+  isActive: false,
+});
+
+const presentRetentionPolicy = (appliesTo, row) =>
+  row
+    ? {
+      appliesTo,
+      retentionMonths: row.retentionMonths ?? null,
+      legalBasis: row.legalBasis ?? null,
+      isActive: row.isActive === true,
+      isDefault: false,
+      createdById: row.createdById ?? null,
+      createdAt: row.created_at ?? null,
+      updatedAt: row.updated_at ?? null,
+    }
+    : { appliesTo, ...DEFAULT_RETENTION_POLICY, isDefault: true, createdById: null, createdAt: null, updatedAt: null };
+
+/**
+ * hr_candidate_retention_policy_get — the tenant's stored policy per
+ * population (APPLICANT, TALENT_POOL, or the one asked for), else the default
+ * the run uses (no clock) with isDefault true. A stored row that is not active
+ * is returned as stored (isActive false): the run ignores it as it does a
+ * missing one.
+ * @returns {Promise<{ items: object[] }>}
+ */
+export async function getRetentionPolicyView({ tenantId, appliesTo = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const populations = appliesTo == null || appliesTo === ""
+    ? [...RETENTION_POPULATIONS]
+    : [requireEnum(appliesTo, RETENTION_POPULATIONS, "appliesTo", "HR-RECRUITMENT-RETENTION-POPULATION-INVALID")];
+  const rows = await db.candidateRetentionPolicy.findMany({
+    where: withTenant(tenantId, { appliesTo: { in: populations } }),
+  });
+  const byPopulation = new Map(rows.map((row) => [row.appliesTo, row]));
+  return { items: populations.map((population) => presentRetentionPolicy(population, byPopulation.get(population))) };
+}
+
+const addMonths = (date, months) => {
+  const out = new Date(date);
+  out.setMonth(out.getMonth() + months);
+  return out;
+};
+
+/**
+ * The retention deadline a candidate created now should carry. Returns null when
+ * the tenant has no policy — no policy means no clock, never a guessed default.
+ */
+export async function computeRetentionUntil(
+  { tenantId, appliesTo = "APPLICANT", from = new Date() } = {},
+  options = {},
+) {
+  const policy = await getRetentionPolicy({ tenantId, appliesTo }, options);
+  if (!policy) return null;
+  return addMonths(from, policy.retentionMonths);
+}
+
+/** Candidates whose retention window has closed and who may therefore be erased. */
+export async function previewRetentionDue({ tenantId, asOf = new Date(), limit = 100 } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const cutoff = new Date(asOf);
+  // The closed-clock predicates run in the query, so `limit` bounds the DUE
+  // set rather than an arbitrary first page of every candidate (which hid due
+  // rows behind the first `limit` ids). The filter below stays as the rule.
+  const due = await db.candidate.findMany({
+    where: withTenant(tenantId, {
+      retentionUntil: { lte: cutoff },
+      anonymizedAt: null,
+      OR: [{ retentionPopulation: null }, { retentionPopulation: { not: "TALENT_POOL" } }],
+    }),
+    select: { id: true, email: true, retentionUntil: true, retentionPopulation: true, anonymizedAt: true },
+    orderBy: { id: "asc" },
+    take: Math.min(Number(limit) || 100, 500),
+  });
+
+  // FR-10 residue — ONLY the applicant clock. A TALENT_POOL clock belongs to a
+  // different lawful basis (kept on file for future roles), and its population's
+  // action is to leave the pool, not to be erased. NULL is a pre-existing clock,
+  // stamped before the population was recorded — under the APPLICANT policy,
+  // which is the only one that existed then, so it stays readable here.
+  const candidates = due.filter(
+    (c) =>
+      c.retentionUntil &&
+      new Date(c.retentionUntil) <= cutoff &&
+      !c.anonymizedAt &&
+      c.retentionPopulation !== "TALENT_POOL",
+  );
+
+  // A legal hold SUSPENDS retention: those rows are reported separately so an
+  // operator can see why a due candidate is not being erased.
+  const held = [];
+  const actionable = [];
+  for (const candidate of candidates) {
+    const hold = await hasActiveLegalHold({ tenantId, candidateId: candidate.id }, { db });
+    if (hold) held.push({ ...candidate, legalHoldId: hold.id });
+    else actionable.push(candidate);
+  }
+
+  return { asOf: cutoff, due: actionable, suspendedByLegalHold: held };
+}
+
+const REDACTED_FIELD_NAMES = Object.freeze([
+  "firstName",
+  "lastName",
+  "email",
+  "phone",
+  "location",
+  "resumeUrl",
+  "resumeMediaId",
+  "notes",
+  "parsedResume",
+  // D-12 — candidate data held on linked records, erased with the person.
+  "candidateSkills",
+  "applicationAnswers.value",
+  "applicationScreenings.notes",
+  "applicationScreenings.criteria",
+  "interviews.notes",
+  "interviewScorecards.notes",
+  "talentPoolInvitations.responseNote",
+  "candidateEmailVerifications",
+]);
+
+// D-12 — the person's own words and derived profile live on linked records
+// too: parsed skills, free-text answers, screening and interview notes, an
+// invitation reply, verification tokens bound to their address. Aggregate
+// facts (stages, scores, outcomes, dates) stay reportable; text does not.
+// Each step runs only when the client has the model (narrow test doubles).
+async function redactLinkedRecords(db, tenantId, candidateId, applicationIds) {
+  const where = withTenant(tenantId, { candidateId });
+  if (db.candidateSkill?.deleteMany) await db.candidateSkill.deleteMany({ where });
+  if (db.candidateEmailVerification?.deleteMany) await db.candidateEmailVerification.deleteMany({ where });
+  if (db.talentPoolInvitation?.updateMany) {
+    await db.talentPoolInvitation.updateMany({ where, data: { responseNote: null } });
+  }
+  if (!applicationIds.length) return;
+  const inApplications = { applicationId: { in: applicationIds } };
+  // ApplicationAnswer has no tenant column; its applications were read
+  // tenant-scoped above, so the id list is already inside the tenant.
+  if (db.applicationAnswer?.updateMany) {
+    await db.applicationAnswer.updateMany({ where: inApplications, data: { value: Prisma.DbNull } });
+  }
+  if (db.applicationScreening?.updateMany) {
+    await db.applicationScreening.updateMany({
+      where: withTenant(tenantId, inApplications),
+      data: { notes: null, criteria: Prisma.DbNull },
+    });
+  }
+  if (db.interview?.findMany) {
+    const interviews = await db.interview.findMany({
+      where: withTenant(tenantId, inApplications),
+      select: { id: true },
+    });
+    const interviewIds = interviews.map((row) => row.id);
+    if (interviewIds.length) {
+      await db.interview.updateMany({ where: withTenant(tenantId, { id: { in: interviewIds } }), data: { notes: null } });
+      if (db.interviewScorecard?.updateMany) {
+        await db.interviewScorecard.updateMany({
+          where: withTenant(tenantId, { interviewId: { in: interviewIds } }),
+          data: { notes: null },
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Irreversibly remove a candidate's PII while preserving aggregate facts.
+ *
+ * Refuses while a legal hold is active (the hold exists precisely to stop this).
+ * Idempotent: an already-anonymized candidate is reported, not re-processed.
+ */
+export async function anonymizeCandidate(
+  { tenantId, candidateId, reason, legalBasis = null, actorId = null, at = new Date() } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedReason = requireText(reason, "reason", "HR-RECRUITMENT-ANONYMIZE-REASON-REQUIRED");
+  const candidate = await requireCandidate(db, tenantId, candidateId);
+
+  if (candidate.anonymizedAt) {
+    return { candidateId: candidate.id, alreadyAnonymized: true, anonymizedAt: candidate.anonymizedAt };
+  }
+
+  const hold = await hasActiveLegalHold({ tenantId, candidateId: candidate.id }, { db });
+  if (hold) {
+    throw privacyError(
+      `Candidate ${candidate.id} is under legal hold (${hold.id}) — data cannot be anonymized`,
+      "HR-RECRUITMENT-LEGAL-HOLD-BLOCKS-ANONYMIZATION",
+    );
+  }
+
+  // Phase 10 (remainder) — DAM cleanup. The redaction below NULLs resumeMediaId,
+  // which removes HR's pointer to the resume but leaves the FILE where it lives
+  // (DAM). The asset ids are therefore collected FIRST, then deleted.
+  //
+  // FAIL-SOFT BUT AUDITED: a DAM outage must not block an erasure the data
+  // subject is entitled to (HR's copy is the one this service owns, and the DSR
+  // clock is running), but it must never be invisible either — every requested
+  // asset is recorded as deleted, skipped or failed on the log row, so a partial
+  // cleanup is retryable and provable.
+  const mediaIds = [candidate.resumeMediaId].filter((id) => id !== null && id !== undefined);
+  const damCleanup = {
+    requested: mediaIds.map(String),
+    deleted: [],
+    skipped: [],
+    failed: [],
+  };
+  for (const mediaId of mediaIds) {
+    const result = await deleteDamAsset(mediaId);
+    if (result.ok) damCleanup.deleted.push(String(mediaId));
+    else if (result.skipped) damCleanup.skipped.push({ mediaId: String(mediaId), reason: result.reason });
+    else damCleanup.failed.push({ mediaId: String(mediaId), error: result.error ?? "unknown" });
+  }
+
+  // Aggregate facts survive erasure: pipeline history stays reportable without PII.
+  const applications = await db.application.findMany({
+    where: withTenant(tenantId, { candidateId: candidate.id }),
+    select: { id: true, stage: true, status: true },
+  });
+  const retainedSummary = {
+    applications: applications.length,
+    stages: applications.reduce((acc, row) => {
+      const key = row.stage || "unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {}),
+    anonymizedAt: at.toISOString(),
+  };
+
+  // Email must stay unique per tenant (@@unique([tenantId, email])), so the
+  // tombstone is derived from the id rather than left as the real address.
+  await db.candidate.updateMany({
+    where: withTenant(tenantId, { id: candidate.id }),
+    data: {
+      firstName: "Anonymized",
+      lastName: null,
+      email: `anon-${candidate.id}@anonymized.invalid`,
+      phone: null,
+      location: null,
+      resumeUrl: null,
+      resumeMediaId: null,
+      notes: null,
+      parsedResume: null,
+      consentStatus: CONSENT_STATUS.WITHDRAWN,
+      consentUpdatedAt: at,
+      anonymizedAt: at,
+    },
+  });
+
+  await redactLinkedRecords(db, tenantId, candidate.id, applications.map((row) => row.id).filter(Boolean));
+
+  // FR-04.07 — drafts die with the person: an erasure must not leave a
+  // re-identifiable half-finished form behind. Best-effort (the tombstone is
+  // the erasure's contract; a purge failure is logged, not fatal), consistent
+  // with the DAM-cleanup posture above.
+  try {
+    if (db.applicationDraft?.deleteMany) {
+      await db.applicationDraft.deleteMany({ where: withTenant(tenantId, { candidateId: candidate.id }) });
+    }
+  } catch {
+    // Best-effort: the tombstone stands; the draft rows also carry their own
+    // 30-day sweep, so a failed purge here self-heals within a month.
+  }
+
+  const log = await db.candidateAnonymizationLog.create({
+    data: {
+      tenantId,
+      candidateId: candidate.id,
+      redactedFields: REDACTED_FIELD_NAMES,
+      reason: resolvedReason,
+      legalBasis,
+      retainedSummary,
+      damCleanup,
+      performedById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+      performedAt: at,
+    },
+  });
+
+  await logAction({
+    employeeId: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    type: "Update",
+    module: "Candidate Privacy",
+    result: "SUCCESS",
+    notes: `Candidate ${candidate.id} anonymized (retention/erasure).`,
+    tenantId,
+  });
+
+  return {
+    candidateId: candidate.id,
+    alreadyAnonymized: false,
+    redactedFields: REDACTED_FIELD_NAMES,
+    retainedSummary,
+    // Reported so the caller sees a partial erasure immediately rather than
+    // discovering it in the log during an audit.
+    damCleanup,
+    log,
+  };
+}
+
+// ── Archive behaviour (Phase 10 remainder) ───────────────────────────────────
+//
+// `Candidate.archivedAt` existed with nothing that ever set it, so "archived" was
+// a state no record could reach. Archiving is NOT erasure and NOT anonymization:
+// the data stays, exactly as it is, and the candidate simply stops appearing as
+// live pipeline work. That is the step between "still being considered" and "their
+// retention window has closed and they may be erased".
+//
+// A candidate is archivable when they have NO application in a live stage — every
+// application has reached hired/rejected/withdrawn — and their most recent
+// activity is older than the cutoff. The activity date is the newest application
+// update, falling back to the candidate row's own updatedAt; a candidate with no
+// applications at all is judged on the row itself.
+//
+// Only `archivedAt` is written. `Candidate.status` ("active"|"archived") is left
+// alone on purpose: other queries already read it, and silently redefining an
+// existing column's meaning would hide records from views that never asked to
+// hide them.
+const LIVE_APPLICATION_STAGES = Object.freeze(["applied", "screening", "interview", "offer"]);
+
+export async function archiveInactiveCandidates(
+  { tenantId, asOf = new Date(), inactiveMonths = 12, dryRun = true, limit = 200 } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const months = Number(inactiveMonths);
+  if (!Number.isInteger(months) || months <= 0) {
+    throw privacyError(
+      "inactiveMonths must be a positive whole number",
+      "HR-RECRUITMENT-ARCHIVE-MONTHS-INVALID",
+      400,
+    );
+  }
+  const cutoff = addMonths(new Date(asOf), -months);
+
+  const candidates = await db.candidate.findMany({
+    // Already-archived and already-anonymized rows are out of scope: the first is
+    // idempotent work, the second is a tombstone.
+    where: withTenant(tenantId, { archivedAt: null, anonymizedAt: null }),
+    select: {
+      id: true,
+      updatedAt: true,
+      applications: { select: { stage: true, updatedAt: true } },
+    },
+    orderBy: { id: "asc" },
+    take: Math.min(Number(limit) || 200, 500),
+  });
+
+  const archivable = candidates
+    .filter((candidate) => {
+      const applications = candidate.applications || [];
+      const live = applications.some((app) =>
+        LIVE_APPLICATION_STAGES.includes(String(app.stage || "").toLowerCase()),
+      );
+      if (live) return false;
+      const lastActivity = applications.reduce(
+        (latest, app) => (app.updatedAt && (!latest || app.updatedAt > latest) ? app.updatedAt : latest),
+        candidate.updatedAt || null,
+      );
+      return lastActivity != null && new Date(lastActivity) <= cutoff;
+    })
+    .map((candidate) => candidate.id);
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      asOf: new Date(asOf),
+      inactiveMonths: months,
+      cutoff,
+      wouldArchive: archivable,
+    };
+  }
+
+  if (archivable.length) {
+    await db.candidate.updateMany({
+      where: withTenant(tenantId, { id: { in: archivable } }),
+      data: { archivedAt: new Date(asOf) },
+    });
+  }
+
+  return { dryRun: false, asOf: new Date(asOf), inactiveMonths: months, cutoff, archived: archivable };
+}
+
+// The per-tenant apply switch (TenantRecruitmentSettings.retentionApplyEnabled).
+// A client without the settings model (narrow test doubles) reads "off".
+async function isTenantRetentionApplyEnabled(db, tenantId) {
+  if (!db.tenantRecruitmentSettings?.findUnique) return false;
+  const row = await db.tenantRecruitmentSettings.findUnique({
+    where: { tenantId },
+    select: { retentionApplyEnabled: true },
+  });
+  return row?.retentionApplyEnabled === true;
+}
+
+/**
+ * Apply retention. Defaults to a DRY RUN: erasure is irreversible, so the
+ * destructive path has to be asked for explicitly.
+ */
+export async function applyRetention({ tenantId, asOf = new Date(), actorId = null, dryRun = true, limit = 100 } = {}, options = {}) {
+  const preview = await previewRetentionDue({ tenantId, asOf, limit }, options);
+  if (dryRun) {
+    recordRetentionRun("dry-run");
+    return { dryRun: true, asOf: preview.asOf, wouldAnonymize: preview.due.map((c) => c.id), suspendedByLegalHold: preview.suspendedByLegalHold };
+  }
+  // Phase 15 — APPLY mode is flag-gated (HR_RECRUITMENT_RETENTION_AUTOMATION).
+  // DRY-RUN is always available regardless of the flag; this gate only stops
+  // the destructive path, mirroring §8's "dry-run until the policy owner
+  // approves, then tenant by tenant". Off → the caller gets the dry-run
+  // result with a flag-disabled marker instead of an error.
+  if (!isRecruitmentFlagEnabled("retention")) {
+    recordRetentionRun("refused-flag");
+    return {
+      dryRun: true,
+      refused: true,
+      reason: "flag-disabled",
+      asOf: preview.asOf,
+      wouldAnonymize: preview.due.map((c) => c.id),
+      suspendedByLegalHold: preview.suspendedByLegalHold,
+    };
+  }
+
+  // Recruitment Phase 5 (plan 6.9) — and per tenant: apply stays a dry-run
+  // until the tenant's data-policy owner has signed off a dry-run report and
+  // switched apply on (retention-run.service.js). Same refusal shape as the
+  // flag above, so callers need no new branch.
+  if (!(await isTenantRetentionApplyEnabled(options.db ?? prisma, tenantId))) {
+    recordRetentionRun("refused-tenant");
+    return {
+      dryRun: true,
+      refused: true,
+      reason: "tenant-not-signed-off",
+      asOf: preview.asOf,
+      wouldAnonymize: preview.due.map((c) => c.id),
+      suspendedByLegalHold: preview.suspendedByLegalHold,
+    };
+  }
+
+  const anonymized = [];
+  for (const candidate of preview.due) {
+    const result = await anonymizeCandidate(
+      {
+        tenantId,
+        candidateId: candidate.id,
+        reason: "Retention policy expiry",
+        actorId,
+        at: new Date(asOf),
+      },
+      options,
+    );
+    anonymized.push(result.candidateId);
+  }
+  recordRetentionRun("applied");
+  return { dryRun: false, asOf: preview.asOf, anonymized, suspendedByLegalHold: preview.suspendedByLegalHold };
+}
+
+// ── Data-subject requests ────────────────────────────────────────────────────
+
+export async function recordDataAccessRequest(
+  { tenantId, subjectEmail, type, candidateId = null, dueAt = null, notes = null, actorId = null } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const normalized = normalizeEmail(subjectEmail);
+  if (!normalized) throw privacyError("The data subject's email is required", "HR-RECRUITMENT-DAR-EMAIL-REQUIRED", 400);
+  const resolvedType = requireEnum(type, REQUEST_TYPES, "type", "HR-RECRUITMENT-DAR-TYPE-INVALID");
+
+  if (candidateId !== null && candidateId !== undefined) {
+    await requireCandidate(db, tenantId, candidateId);
+  }
+
+  const receivedAt = new Date();
+  const due = dueAt ? new Date(dueAt) : new Date(receivedAt.getTime() + DEFAULT_REQUEST_SLA_DAYS * 24 * 60 * 60 * 1000);
+
+  return db.candidateDataAccessRequest.create({
+    data: {
+      tenantId,
+      candidateId: candidateId == null ? null : Number(candidateId),
+      subjectEmail: normalized,
+      type: resolvedType,
+      dueAt: due,
+      notes,
+      handledById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    },
+  });
+}
+
+export async function closeDataAccessRequest(
+  { tenantId, id, status, notes = null, rejectionReason = null, actorId = null } = {},
+  options = {},
+) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const resolvedStatus = requireEnum(
+    status,
+    CLOSED_REQUEST_STATUSES,
+    "status",
+    "HR-RECRUITMENT-DAR-STATUS-INVALID",
+  );
+  const requestId = Number(id);
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    throw privacyError("A valid request id is required", "HR-RECRUITMENT-DAR-ID-INVALID", 400);
+  }
+  if (resolvedStatus === REQUEST_STATUS.REJECTED) {
+    requireText(rejectionReason, "rejectionReason", "HR-RECRUITMENT-DAR-REJECTION-REASON-REQUIRED");
+  }
+
+  const existing = await db.candidateDataAccessRequest.findFirst({
+    where: withTenant(tenantId, { id: requestId }),
+  });
+  if (!existing || isUnverifiedPortalRequest(existing)) {
+    throw privacyError("Data access request not found", "HR-RECRUITMENT-DAR-NOT-FOUND", 404);
+  }
+  if (CLOSED_REQUEST_STATUSES.includes(existing.status)) {
+    throw privacyError(`Request ${requestId} is already ${existing.status}`, "HR-RECRUITMENT-DAR-ALREADY-CLOSED");
+  }
+
+  return db.candidateDataAccessRequest.update({
+    where: { id: existing.id },
+    data: {
+      status: resolvedStatus,
+      closedAt: new Date(),
+      notes: notes ?? existing.notes,
+      rejectionReason,
+      handledById: Number.isInteger(Number(actorId)) && Number(actorId) > 0 ? Number(actorId) : null,
+    },
+  });
+}
+
+// Recruitment Phase 5 — a request from the portal counts only once the
+// requester proved the mailbox (verifiedAt); until then it is not in the HR
+// queue and is swept when its link expires (dsr-portal.service.js).
+export const REQUEST_SOURCES = Object.freeze({ HR: "HR", PORTAL: "PORTAL" });
+const inHrQueue = () => ({ OR: [{ source: REQUEST_SOURCES.HR }, { verifiedAt: { not: null } }] });
+const isUnverifiedPortalRequest = (row) => row?.source === REQUEST_SOURCES.PORTAL && !row?.verifiedAt;
+
+export async function listDataAccessRequests({ tenantId, status = null } = {}, options = {}) {
+  requireTenant(tenantId);
+  const db = options.db ?? prisma;
+  const where = withTenant(tenantId, inHrQueue());
+  if (status) {
+    where.status = requireEnum(status, Object.values(REQUEST_STATUS), "status", "HR-RECRUITMENT-DAR-STATUS-INVALID");
+  }
+  // Phase 6: the portal's verification token hash never leaves the service.
+  return db.candidateDataAccessRequest.findMany({
+    where,
+    orderBy: { receivedAt: "desc" },
+    omit: { verificationTokenHash: true },
+  });
+}

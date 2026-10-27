@@ -13,7 +13,7 @@ import {
     markCalendarSync,
     listLifecycleEvents,
     ScheduleError,
-} from "../services/interviewSchedule.service.js";
+} from "../services/interview-schedule.service.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorOf = (req) => req.user?.employeeId ?? null;

@@ -12,7 +12,7 @@ const { enqueueHrDomainEvent } = createEventRecorder();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 jest.unstable_mockModule("../../../src/lib/aiPlaneClient.js", () => ({ runAiTask: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/candidateMatch.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-match.service.js", () => ({
     loadAliasIndex: jest.fn(async () => new Map()),
     requisitionSkillRequirements: jest.fn(() => null),
 }));

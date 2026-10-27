@@ -21,7 +21,7 @@ jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ 
 
 const svc = await import("../../../src/services/offer-letter.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";

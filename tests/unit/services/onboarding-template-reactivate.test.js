@@ -32,8 +32,8 @@ const tenantTransaction = jest.fn((client, fn, opts) => fn(client, opts));
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({ tenantTransaction }));
 
-const svc = await import("../../../src/services/onboardingTemplate.service.js");
-const { registerOnboardingTemplateTools } = await import("../../../src/mcp/tools/onboardingTemplateTools.js");
+const svc = await import("../../../src/services/onboarding-template.service.js");
+const { registerOnboardingTemplateTools } = await import("../../../src/mcp/tools/onboarding-template.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const T1 = "11111111-1111-4111-8111-111111111111";

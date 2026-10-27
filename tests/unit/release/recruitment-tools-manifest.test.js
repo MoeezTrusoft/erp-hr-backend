@@ -37,9 +37,9 @@ function rejectingDb() {
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: rejectingDb() }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: pino({ level: "silent" }) }));
 
-const { RECRUITMENT_FLAG_DEFINITIONS } = await import("../../../src/lib/recruitmentFlags.js");
+const { RECRUITMENT_FLAG_DEFINITIONS } = await import("../../../src/lib/recruitment-flags.util.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { registerAllTools } = await import("../../../src/mcp/toolRegistry.js");
 const manifest = await import("../../../src/release/recruitment-tools.manifest.js");
 const {

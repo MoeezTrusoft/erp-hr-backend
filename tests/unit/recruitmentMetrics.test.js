@@ -26,7 +26,7 @@ import {
     stageFunnel,
     offerAcceptance,
     sourceEffectiveness,
-} from "../../src/lib/recruitmentMetrics.js";
+} from "../../src/lib/recruitment-metrics.util.js";
 
 const d = (s) => new Date(s);
 

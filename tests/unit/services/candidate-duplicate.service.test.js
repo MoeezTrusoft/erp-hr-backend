@@ -31,11 +31,11 @@ silent.child = () => silent;
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: silent }));
-jest.unstable_mockModule("../../../src/services/candidateMerge.service.js", () => ({ mergeCandidates }));
+jest.unstable_mockModule("../../../src/services/candidate-merge.service.js", () => ({ mergeCandidates }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 
 const svc = await import("../../../src/services/candidate-duplicate.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

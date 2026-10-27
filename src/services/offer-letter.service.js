@@ -49,8 +49,8 @@ import crypto from "node:crypto";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { RECRUITMENT_SCOPE, offerScopeWhere } from "../lib/recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { RECRUITMENT_SCOPE, offerScopeWhere } from "../lib/recruitment-access.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import {
     MERGE_FIELDS,

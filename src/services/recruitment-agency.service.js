@@ -26,8 +26,8 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
-import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisitionEligibility.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisition-eligibility.util.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { AGENCY_STATUS, AGENCY_USER_STATUS, ASSIGNMENT_STATUS } from "../lib/agency-access.util.js";
 import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 

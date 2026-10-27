@@ -49,8 +49,8 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { requisitionScopeWhere } from "../lib/recruitment-access.util.js";
 import {
     BONUS_STATUS,
     BONUS_STATUSES,

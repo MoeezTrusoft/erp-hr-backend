@@ -8,7 +8,7 @@ import { EMPLOYMENT_TOOLS } from "@trusoft/contracts/employment";
 // what that call may do. Forwarded x-user-* headers are never authorization
 // truth.
 import { mcpCtx } from "../mcp/context.js";
-import { recordDenial } from "../lib/recruitmentOpsMetrics.js";
+import { recordDenial } from "../lib/recruitment-ops-metrics.util.js";
 
 const PROTECTED = Symbol("F-02-route-protected");
 // Grants that place a caller on the payroll admin surface (actorScope.js).

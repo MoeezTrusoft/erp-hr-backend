@@ -25,9 +25,9 @@
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
-import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
+import { interviewScopeWhere } from "../lib/recruitment-access.util.js";
 import { resolveAssessmentAccess } from "../lib/assessment-access.util.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import {
     DEFAULT_TEST_WEIGHT_PCT,
@@ -43,7 +43,7 @@ import {
     testSectionsOf,
 } from "../lib/evaluation-form.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { FORM_TEMPLATE_SELECT } from "./scorecardTemplate.service.js";
+import { FORM_TEMPLATE_SELECT } from "./scorecard-template.service.js";
 import { generateEvaluationReportPdf, uploadEvaluationReportPdf } from "./evaluation-report-pdf.service.js";
 
 export const EVALUATION_SUMMARY_FROZEN_EVENT = "hr.recruitment.evaluation_summary_frozen.v1";

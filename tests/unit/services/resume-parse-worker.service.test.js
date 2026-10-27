@@ -43,8 +43,8 @@ jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 const worker = await import("../../../src/services/resume-parse-worker.service.js");
 const { enqueueCandidateResumeParse } = await import("../../../src/services/resume-parse-queue.service.js");
-const resume = await import("../../../src/services/resumeParsing.service.js");
-const { hashResumeContent } = await import("../../../src/lib/parseRetry.js");
+const resume = await import("../../../src/services/resume-parsing.service.js");
+const { hashResumeContent } = await import("../../../src/lib/parse-retry.util.js");
 
 const CV = "Senior Go engineer, Kubernetes, leadership of a platform team, CKA certified.";
 const OTHER_CV = "Accountant with ten years of IFRS reporting and audit experience.";

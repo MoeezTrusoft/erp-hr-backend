@@ -5,7 +5,7 @@ jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: {} }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction }));
 
 const { transitionApplicationStage, canTransitionApplicationStage } =
-  await import("../../src/services/applicationWorkflow.service.js");
+  await import("../../src/services/application-workflow.service.js");
 
 describe("Recruitment application workflow", () => {
   const makeDb = ({ stage = "applied", interviews = [], offers = [] } = {}) => {

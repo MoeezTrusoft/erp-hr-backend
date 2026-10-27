@@ -9,7 +9,7 @@ const deleteSession = jest.fn(async () => ({ id: 400, deleted: true }));
 
 jest.unstable_mockModule("../../../src/services/onboarding-session-plan.service.js", () => ({ previewOnboardingSessionPlan }));
 jest.unstable_mockModule("../../../src/services/onboarding-calendar-sync.service.js", () => ({ requeueOnboardingSessionCalendarSync }));
-jest.unstable_mockModule("../../../src/services/onboardingSchedule.service.js", () => ({ deleteSession }));
+jest.unstable_mockModule("../../../src/services/onboarding-schedule.service.js", () => ({ deleteSession }));
 
 const { registerOnboardingSessionPlanTools } = await import("../../../src/mcp/tools/onboarding-session-plan.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");

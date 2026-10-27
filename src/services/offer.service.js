@@ -6,18 +6,18 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { offerSentEvent } from "./hrEvents.js";
-import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
-import { getOfferHandoff, runOfferHandoff } from "./recruitmentHandoff.service.js";
-import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
-import { offerScopeWhere, maskOfferForScope, maskOffersForScope } from "../lib/recruitmentAccess.js";
+import { transitionApplicationStageInTransaction } from "./application-workflow.service.js";
+import { getOfferHandoff, runOfferHandoff } from "./recruitment-handoff.service.js";
+import { assertCommunicationsAllowed } from "./candidate-privacy.service.js";
+import { offerScopeWhere, maskOfferForScope, maskOffersForScope } from "../lib/recruitment-access.util.js";
 import { offerAcceptedEvent, offerCreatedEvent, offerUpdatedEvent, offerWithdrawnEvent } from "./hrEvents.js";
 import { eventContext } from "../lib/event-context.util.js";
 
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
 import { DECLINE_REASON_NOT_RECORDED, normalizeDeclineInput } from "../lib/offer-decline.util.js";
-import { bandWarningsView, safeBandCheck } from "./offerMgmt.service.js";
+import { bandWarningsView, safeBandCheck } from "./offer-mgmt.service.js";
 
 const EMPLOYEE_CATEGORIES = new Set(["MANAGEMENT", "EMPLOYEE", "INTERNEE"]);
 
@@ -234,7 +234,7 @@ export const respondOffer = async (id, accepted, tenantId, ctx = {}) => {
         if (!existing) throw Object.assign(new Error("Offer not found"), { status: 404 });
         // A replayed response is RETURNED, never re-processed: repeating an
         // acceptance hands back the same handoff instead of provisioning a second
-        // employee (recruitmentHandoff.service.js owns that idempotency).
+        // employee (recruitment-handoff.service.js owns that idempotency).
         if (existing.status === desired) return { row: existing, replayed: true };
         if (["ACCEPTED", "DECLINED", "EXPIRED", "WITHDRAWN"].includes(existing.status)) {
             throw Object.assign(
@@ -379,7 +379,7 @@ export async function addDeclinedCandidateToPool({ offer, tenantId, actorId = nu
         if (existing) return { added: false, reason: "ALREADY_IN_POOL", poolName, entryId: existing.id };
         // Loaded on demand: only an opted-in decline needs the pool module, so
         // the send / accept paths keep their import graph.
-        const { addToPool } = await import("./talentPool.service.js");
+        const { addToPool } = await import("./talent-pool.service.js");
         const entry = await addToPool({
             candidateId,
             poolName,

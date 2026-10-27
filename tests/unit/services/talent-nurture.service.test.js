@@ -35,10 +35,10 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
     enqueueHrDomainEvent: recorder.enqueueHrDomainEvent,
     default: recorder.enqueueHrDomainEvent,
 }));
-jest.unstable_mockModule("../../../src/lib/recruitmentFlags.js", () => ({ isRecruitmentFlagEnabled }));
-jest.unstable_mockModule("../../../src/services/candidateMatch.service.js", () => ({ requisitionSkillRequirements }));
-jest.unstable_mockModule("../../../src/services/applicationService.js", () => ({ createApplication }));
-jest.unstable_mockModule("../../../src/services/applicationScreening.service.js", () => ({ recordScreening }));
+jest.unstable_mockModule("../../../src/lib/recruitment-flags.util.js", () => ({ isRecruitmentFlagEnabled }));
+jest.unstable_mockModule("../../../src/services/candidate-match.service.js", () => ({ requisitionSkillRequirements }));
+jest.unstable_mockModule("../../../src/services/application.service.js", () => ({ createApplication }));
+jest.unstable_mockModule("../../../src/services/application-screening.service.js", () => ({ recordScreening }));
 
 const {
     TALENT_NURTURE_PROPOSED_EVENT,
@@ -49,8 +49,8 @@ const {
     runTalentNurtureProposalJob,
     sendNurtureRun,
 } = await import("../../../src/services/talent-nurture.service.js");
-const { respondToInvitation } = await import("../../../src/services/talentPoolInvitation.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { respondToInvitation } = await import("../../../src/services/talent-pool-invitation.service.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const A = "11111111-1111-4111-8111-111111111111";

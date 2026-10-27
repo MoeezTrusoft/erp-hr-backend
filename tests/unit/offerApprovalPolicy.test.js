@@ -16,7 +16,7 @@ import {
     OFFER_APPROVAL_STAGES,
     resolveOfferApprovalChain,
     validateOfferApprovalRules,
-} from "../../src/lib/offerApprovalPolicy.js";
+} from "../../src/lib/offer-approval-policy.util.js";
 
 const stages = (result) => result.steps.map((s) => s.stage);
 

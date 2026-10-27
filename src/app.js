@@ -62,7 +62,7 @@ import payrollRoutes from "./routes/payrollRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import recruitmentRoutes from "./routes/recruitment.routes.js";
-import publicPortalRoutes, { interviewSlotsRouter } from "./routes/publicPortal.routes.js";
+import publicPortalRoutes, { interviewSlotsRouter } from "./routes/public-portal.routes.js";
 import { privacyPortalRouter } from "./routes/privacy-portal.routes.js";
 import { invitationResponseRouter } from "./routes/invitation-response.routes.js";
 import { jobFeedRouter } from "./routes/job-feed.routes.js";
@@ -75,7 +75,7 @@ import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
 import { establishTenantContext } from "./middlewares/tenantContext.middleware.js";
 import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
-import { attachRecruitmentOpsMetrics } from "./lib/recruitmentOpsMetrics.js";
+import { attachRecruitmentOpsMetrics } from "./lib/recruitment-ops-metrics.util.js";
 import {
     createHttpMetricsMiddleware,
     attachHttpRequestDurationMetric,
@@ -92,7 +92,7 @@ import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 import onboardingRoutes from "./routes/onboarding.routes.js";
 import interviewRoutes from "./routes/interview.routes.js";
 import offerRoutes from "./routes/offer.routes.js";
-import talentPoolRoutes from "./routes/talentPool.routes.js";
+import talentPoolRoutes from "./routes/talent-pool.routes.js";
 import learningPathRoutes from "./routes/learningPath.routes.js";
 import trainingSessionRoutes from "./routes/trainingSession.routes.js";
 import certificationRoutes from "./routes/certification.routes.js";

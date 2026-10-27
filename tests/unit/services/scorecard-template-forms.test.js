@@ -14,8 +14,8 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 
-const svc = await import("../../../src/services/scorecardTemplate.service.js");
-const { resolveTemplate, latestPublishedVersion, FORM_TEMPLATE_SCOPES, TEMPLATE_SCOPES } = await import("../../../src/lib/scorecardTemplates.js");
+const svc = await import("../../../src/services/scorecard-template.service.js");
+const { resolveTemplate, latestPublishedVersion, FORM_TEMPLATE_SCOPES, TEMPLATE_SCOPES } = await import("../../../src/lib/scorecard-templates.util.js");
 const { tenantTransaction } = await import("../../../src/lib/rlsTenant.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 

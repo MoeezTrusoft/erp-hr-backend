@@ -29,7 +29,7 @@ const { getAllRequisitions, getByIdRequisitions } = await import(
   "../../src/services/requisition.service.js"
 );
 const { listInterviews } = await import("../../src/services/interview.service.js");
-const { resolveRecruitmentScope } = await import("../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../src/lib/recruitment-access.util.js");
 
 const TENANT = "tenant-a";
 

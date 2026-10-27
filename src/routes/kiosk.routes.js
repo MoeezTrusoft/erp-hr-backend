@@ -28,7 +28,7 @@ import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import logger from "../lib/logger.js";
 import { consumeRateLimit, resetRateLimitMemory } from "../lib/rate-limit.util.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { verifyWorkstationToken } from "../services/test-workstation.service.js";
 import {
     getKioskItem,

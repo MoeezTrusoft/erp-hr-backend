@@ -23,7 +23,7 @@
 // event in the write's transaction. Pure rules live in
 // src/lib/onboarding-provisioning.util.js.
 import prisma from "../lib/prisma.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { requireTenant, scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
 import { eventContext } from "../lib/event-context.util.js";

@@ -14,7 +14,7 @@ const scoreInterview = jest.fn(async () => ({ ok: true }));
 const setInterviewOutcome = jest.fn(async () => ({ outcome: true }));
 const submitEvaluationScorecard = jest.fn();
 
-jest.unstable_mockModule("../../../src/services/interviewMgmt.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/interview-mgmt.service.js", () => ({
   listInterviewsManaged: jest.fn(),
   getInterviewManaged: jest.fn(),
   scoreInterview,
@@ -27,7 +27,7 @@ jest.unstable_mockModule("../../../src/services/evaluation-form.service.js", () 
   saveScorecardDraft: jest.fn(async () => ({ draft: true })),
   draftFormWithAi: jest.fn(async () => ({ ai: true })),
 }));
-jest.unstable_mockModule("../../../src/services/scorecardTemplate.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/scorecard-template.service.js", () => ({
   createTemplate: jest.fn(async (args) => ({ created: args })),
   updateTemplate: jest.fn(async (args) => ({ updated: args })),
   deactivateTemplate: jest.fn(),
@@ -39,9 +39,9 @@ jest.unstable_mockModule("../../../src/services/scorecardTemplate.service.js", (
   FORM_TEMPLATE_SELECT: { id: true },
 }));
 
-const { registerInterviewMgmtTools } = await import("../../../src/mcp/tools/interviewMgmtTools.js");
+const { registerInterviewMgmtTools } = await import("../../../src/mcp/tools/interview-mgmt.tools.js");
 const { registerEvaluationFormTools } = await import("../../../src/mcp/tools/evaluation-form.tools.js");
-const templates = await import("../../../src/services/scorecardTemplate.service.js");
+const templates = await import("../../../src/services/scorecard-template.service.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const T = "55555555-5555-4555-8555-555555555555";

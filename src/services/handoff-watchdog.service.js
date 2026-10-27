@@ -25,9 +25,9 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { recordHandoff } from "../lib/recruitmentOpsMetrics.js";
-import { HANDOFF_STATUS } from "./recruitmentHandoff.service.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { recordHandoff } from "../lib/recruitment-ops-metrics.util.js";
+import { HANDOFF_STATUS } from "./recruitment-handoff.service.js";
 import { offerHandoffFailedEvent } from "./hrEvents.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 

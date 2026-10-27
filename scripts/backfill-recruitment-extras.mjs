@@ -5,8 +5,8 @@
 import PDFDocument from "pdfkit";
 import prisma from "../src/lib/prisma.js";
 import { mcpCtx } from "../src/mcp/context.js";
-import { setCostConfig } from "../src/services/recruitmentCost.service.js";
-import { uploadCandidateResume } from "../src/services/candidateResume.service.js";
+import { setCostConfig } from "../src/services/recruitment-cost.service.js";
+import { uploadCandidateResume } from "../src/services/candidate-resume.service.js";
 
 const TENANT = "14c350e8-d0bc-4ee9-90c7-dea2b7a7a007";
 

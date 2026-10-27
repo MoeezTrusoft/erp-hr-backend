@@ -15,7 +15,7 @@ jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction }));
 
 const { generateDsrAccessExport } = await import("../../../src/services/dsr-export.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";

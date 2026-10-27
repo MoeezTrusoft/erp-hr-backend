@@ -74,11 +74,11 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
 import { employeeDisplayName } from "../lib/employee-names.util.js";
 import { eventContext } from "../lib/event-context.util.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
-import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
+import { assertCommunicationsAllowed } from "./candidate-privacy.service.js";
 import {
     OFFER_EXTENSION_OPEN_STAGES,
     buildOfferExtensionRef,

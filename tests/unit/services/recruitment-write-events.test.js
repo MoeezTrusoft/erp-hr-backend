@@ -59,11 +59,11 @@ jest.unstable_mockModule("../../../src/services/interview-scorecard.service.js",
     upsertInterviewScorecard,
     default: upsertInterviewScorecard,
 }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({
     transitionApplicationStageInTransaction: jest.fn(async () => ({ success: true })),
     transitionApplicationStage: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({
     assertCommunicationsAllowed: jest.fn(async () => undefined),
     computeRetentionUntil: jest.fn(async () => null),
 }));
@@ -76,11 +76,11 @@ jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({
     uploadFileToDAM: jest.fn(),
     deleteDamAsset: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/recruitmentHandoff.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/recruitment-handoff.service.js", () => ({
     getOfferHandoff: jest.fn(),
     runOfferHandoff: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/requisitionWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/requisition-workflow.service.js", () => ({
     assertRequisitionTransition: jest.fn((_from, to) => String(to).toUpperCase()),
     assertRequisitionAdvanceAllowed: jest.fn(async () => undefined),
     recordRequisitionTransition: jest.fn(async () => undefined),
@@ -89,24 +89,24 @@ jest.unstable_mockModule("../../../src/services/rbac.client.js", () => ({
     getDepartmentById: jest.fn(async () => null),
     listDepartments: jest.fn(async () => []),
 }));
-jest.unstable_mockModule("../../../src/services/requisitionApprovalChain.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/requisition-approval-chain.service.js", () => ({
     emitRequisitionSubmittedEvent: jest.fn(async () => undefined),
 }));
-jest.unstable_mockModule("../../../src/services/requisitionPublication.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/requisition-publication.service.js", () => ({
     publishRequisition: jest.fn(),
     closeActivePostingsForRequisition: jest.fn(async () => 0),
 }));
 jest.unstable_mockModule("../../../src/services/financeValidity.service.js", () => ({
     assertFinanceValidityAtSubmit: jest.fn(async () => null),
 }));
-jest.unstable_mockModule("../../../src/services/applicationService.js", () => ({ createApplication: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/application.service.js", () => ({ createApplication: jest.fn() }));
 
 const interviewSvc = await import("../../../src/services/interview.service.js");
 const offerSvc = await import("../../../src/services/offer.service.js");
 const requisitionSvc = await import("../../../src/services/requisition.service.js");
-const requisitionMgmt = await import("../../../src/services/requisitionMgmt.service.js");
-const talentPool = await import("../../../src/services/talentPool.service.js");
-const talentPoolMgmt = await import("../../../src/services/talentPoolMgmt.service.js");
+const requisitionMgmt = await import("../../../src/services/requisition-mgmt.service.js");
+const talentPool = await import("../../../src/services/talent-pool.service.js");
+const talentPoolMgmt = await import("../../../src/services/talent-pool-mgmt.service.js");
 
 // Ids-only: every payload value is an id string, a status/enum fact, a number,
 // a boolean, an ISO instant, null, or a list of those. No names / emails /

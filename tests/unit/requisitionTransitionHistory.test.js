@@ -82,7 +82,7 @@ const {
   submitRequisition,
   rejectRequisition,
   closeRequisition,
-} = await import("../../src/services/requisitionMgmt.service.js");
+} = await import("../../src/services/requisition-mgmt.service.js");
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 

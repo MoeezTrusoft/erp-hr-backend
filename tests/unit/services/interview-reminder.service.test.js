@@ -21,7 +21,7 @@ const assertCommunicationsAllowed = jest.fn(async ({ candidateId }) => {
 const settingsByTenant = {};
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prismaProxy }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", async () => {
     const DEFAULTS = Object.freeze({ feedbackNudgeHours: 2, feedbackEscalationHours: 24 });
     return {

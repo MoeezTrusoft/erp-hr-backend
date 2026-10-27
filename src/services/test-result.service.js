@@ -35,7 +35,7 @@ import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
 import { eventContext } from "../lib/event-context.util.js";
-import { interviewScopeWhere } from "../lib/recruitmentAccess.js";
+import { interviewScopeWhere } from "../lib/recruitment-access.util.js";
 import { assertAssessmentCapability } from "../lib/assessment-access.util.js";
 import {
     ASSESSMENT_STATUS,
@@ -51,8 +51,8 @@ import {
     timeTakenSeconds,
 } from "../lib/test-band.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { cancelInterview } from "./interviewSchedule.service.js";
-import { transitionApplicationStage } from "./applicationWorkflow.service.js";
+import { cancelInterview } from "./interview-schedule.service.js";
+import { transitionApplicationStage } from "./application-workflow.service.js";
 import { ensureDispositionReasonCode } from "./scheduled-disposition.service.js";
 
 const COMPONENT = "test-result";

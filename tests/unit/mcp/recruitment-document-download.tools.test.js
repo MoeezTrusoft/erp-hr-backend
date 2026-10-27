@@ -19,12 +19,12 @@ const schedule = {
     setInterviewPanelRoles: jest.fn(async () => ({ interviewId: 500, changed: 1, panel: [] })),
 };
 jest.unstable_mockModule("../../../src/services/offer-letter.service.js", () => offerLetters);
-jest.unstable_mockModule("../../../src/services/interviewPacket.service.js", () => packet);
+jest.unstable_mockModule("../../../src/services/interview-packet.service.js", () => packet);
 jest.unstable_mockModule("../../../src/services/test-item.service.js", () => items);
-jest.unstable_mockModule("../../../src/services/interviewSchedule.service.js", () => schedule);
+jest.unstable_mockModule("../../../src/services/interview-schedule.service.js", () => schedule);
 
 const { registerRecruitmentDocumentDownloadTools } = await import("../../../src/mcp/tools/recruitment-document-download.tools.js");
-const { registerInterviewMgmtTools } = await import("../../../src/mcp/tools/interviewMgmtTools.js");
+const { registerInterviewMgmtTools } = await import("../../../src/mcp/tools/interview-mgmt.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const handlers = new Map();

@@ -21,7 +21,7 @@
 //     job title the candidate just applied to — never a resume, never a phone.
 import axios from "axios";
 import { signServiceJwtEdDSA, ambientTenantHeader } from "./serviceJwt.js";
-import { recordRecruitmentNotification } from "./recruitmentOpsMetrics.js";
+import { recordRecruitmentNotification } from "./recruitment-ops-metrics.util.js";
 
 const HUB_BASE_URL = process.env.NOTIFICATION_HUB_URL || "http://localhost:4500";
 const HUB_TIMEOUT = parseInt(process.env.NOTIFICATION_HUB_TIMEOUT || "5000", 10);

@@ -15,11 +15,11 @@ const transitionApplicationStage = jest.fn(async () => ({ success: true, changed
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prismaProxy }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../../src/services/scorecardTemplate.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/scorecard-template.service.js", () => ({
     resolveForInterview: jest.fn(async () => null),
     validateSubmission: jest.fn(() => ({ overall: null })),
 }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({ transitionApplicationStage }));
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({ transitionApplicationStage }));
 
 const prompts = await import("../../../src/services/interview-decision-prompt.service.js");
 const {
@@ -31,7 +31,7 @@ const {
     APPLICATION_NEXT_ROUND_EVENT,
     AUTO_ADVANCE_SOURCE,
 } = prompts;
-const { setInterviewOutcome } = await import("../../../src/services/interviewMgmt.service.js");
+const { setInterviewOutcome } = await import("../../../src/services/interview-mgmt.service.js");
 const { upsertInterviewScorecard } = await import("../../../src/services/interview-scorecard.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 

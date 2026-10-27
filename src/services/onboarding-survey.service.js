@@ -25,7 +25,7 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant, scopedData } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import {
     SURVEY_ISSUE_GRACE_DAYS,
     SURVEY_REMINDER_LEAD_DAYS,

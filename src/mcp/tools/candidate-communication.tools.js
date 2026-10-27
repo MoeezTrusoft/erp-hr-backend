@@ -15,7 +15,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { buildListPayload } from "../../utils/apiContract.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import {
   CANCEL_REASON_MAX,
   PERSONAL_NOTE_MAX,

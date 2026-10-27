@@ -11,8 +11,8 @@ import {
   listApprovalRules,
   seedDefaultChain,
   setApprovalRules,
-} from "../services/requisitionApprovalChain.service.js";
-import { DEFAULT_CHAIN } from "../lib/requisitionApprovalChain.js";
+} from "../services/requisition-approval-chain.service.js";
+import { DEFAULT_CHAIN } from "../lib/requisition-approval-chain.util.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 

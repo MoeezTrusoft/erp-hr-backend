@@ -19,7 +19,7 @@ const events = [];
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: fake.db, prisma: fake.db }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: async () => undefined }));
 jest.unstable_mockModule("../../src/services/tagService.js", () => ({ upsertTags: async () => [] }));
-jest.unstable_mockModule("../../src/services/candidatePrivacy.service.js", () => ({
+jest.unstable_mockModule("../../src/services/candidate-privacy.service.js", () => ({
     computeRetentionUntil: async () => null,
     findActiveDnc: async () => null,
 }));
@@ -32,11 +32,11 @@ jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
 
 const { mcpCtx } = await import("../../src/mcp/context.js");
 const { withAgencyContext } = await import("../../src/lib/agency-access.util.js");
-const { resolveRecruitmentScope } = await import("../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../src/lib/recruitment-access.util.js");
 const { registerAgencyPortalTools } = await import("../../src/mcp/tools/agency-portal.tools.js");
 const { registerRecruitmentAgencyTools } = await import("../../src/mcp/tools/recruitment-agency.tools.js");
-const { registerApplicationTools } = await import("../../src/mcp/tools/applicationTools.js");
-const { listCandidates, getCandidate } = await import("../../src/services/candidateService.js");
+const { registerApplicationTools } = await import("../../src/mcp/tools/application.tools.js");
+const { listCandidates, getCandidate } = await import("../../src/services/candidate.service.js");
 
 const handlers = new Map();
 const server = { tool: (name, _d, _s, handler) => handlers.set(name, handler) };

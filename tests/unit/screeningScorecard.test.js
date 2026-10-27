@@ -25,8 +25,8 @@ jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma 
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction }));
 jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({ tenantTransaction: (c, fn) => fn(c) }));
 
-const service = await import("../../src/services/applicationScreening.service.js");
-const { validateScreeningAgainstTemplate } = await import("../../src/lib/scorecardTemplates.js");
+const service = await import("../../src/services/application-screening.service.js");
+const { validateScreeningAgainstTemplate } = await import("../../src/lib/scorecard-templates.util.js");
 const { validateCriteria } = await import("../../src/lib/dispositionReasons.js");
 
 // A RESOLVED scope object (the shape services receive), not the level enum:

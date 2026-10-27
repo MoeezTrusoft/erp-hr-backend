@@ -25,7 +25,7 @@
 // collection, the result is gone and the caller must submit a new task.
 //
 // WHY THIS EXISTS: §7.1 says "no vendor hard-coded in HR — all Recruitment AI
-// calls go through the dedicated AI service plane". resumeParsing.service.js
+// calls go through the dedicated AI service plane". resume-parsing.service.js
 // previously held its own OpenAI SDK + OPENAI_API_KEY, which is exactly the
 // arrangement the fleet removed everywhere else (comms TTS, DAM enrichment, PM
 // planning). The plane also owns what HR cannot do in-tree: PII redaction

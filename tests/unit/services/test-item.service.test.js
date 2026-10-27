@@ -15,7 +15,7 @@ const requisitionSkillRequirements = jest.fn((req) => req?.jobContent?.skills ??
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 jest.unstable_mockModule("../../../src/lib/aiPlaneClient.js", () => ({ runAiTask }));
-jest.unstable_mockModule("../../../src/services/candidateMatch.service.js", () => ({ loadAliasIndex, requisitionSkillRequirements }));
+jest.unstable_mockModule("../../../src/services/candidate-match.service.js", () => ({ loadAliasIndex, requisitionSkillRequirements }));
 
 const svc = await import("../../../src/services/test-item.service.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");

@@ -18,7 +18,7 @@ jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.
 jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({ tenantTransaction: (client, fn) => fn(client) }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent: jest.fn(async () => null) }));
 
-const service = await import("../../../src/services/interviewSchedule.service.js");
+const service = await import("../../../src/services/interview-schedule.service.js");
 const { RECRUITMENT_SETTINGS_DEFAULTS } = await import("../../../src/services/recruitment-settings.service.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

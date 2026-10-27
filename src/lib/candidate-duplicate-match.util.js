@@ -35,7 +35,7 @@ const NAME_BONUS = 15; // phone 70 + name 15 = 85
 const EXTRA_SIGNAL_BONUS = 5;
 
 // Stages after which an application no longer competes for the seat. Same set
-// candidateMerge.service.js uses for its live-overlap refusal.
+// candidate-merge.service.js uses for its live-overlap refusal.
 const TERMINAL_STAGES = new Set(["hired", "rejected", "withdrawn"]);
 
 const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);

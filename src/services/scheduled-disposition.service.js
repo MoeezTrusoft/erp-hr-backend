@@ -30,8 +30,8 @@ import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
 import { mcpCtx } from "../mcp/context.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { applicationScopeWhere } from "../lib/recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { applicationScopeWhere } from "../lib/recruitment-access.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { DEFAULT_DISPOSITION_REASONS } from "../lib/dispositionReasons.js";
 import { RECRUITMENT_SETTINGS_DEFAULTS } from "./recruitment-settings.service.js";
@@ -66,7 +66,7 @@ const fail = (message, status, code) => Object.assign(new Error(message), { stat
 // Loaded lazily: the portal intake imports this module to schedule, and must
 // not pull the whole workflow graph in with it; the workflow may also import
 // the cancel hook below, which would otherwise be a static import cycle.
-const loadWorkflow = () => import("./applicationWorkflow.service.js");
+const loadWorkflow = () => import("./application-workflow.service.js");
 
 // ── Event ────────────────────────────────────────────────────────────────────
 

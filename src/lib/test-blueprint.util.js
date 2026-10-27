@@ -17,7 +17,7 @@
 //                               difficulty, else publishing is refused
 //   * pickBlueprintLink          most-specific-first resolution, REQUISITION,
 //                               then JOB_FAMILY_GRADE, then JOB_FAMILY (the
-//                               scorecardTemplates.js pattern)
+//                               scorecard-templates.util.js pattern)
 //   * isOnsiteInterview          which interviews need the test at all
 //   * assessmentRequirementFor   reuse of a still-valid result, and the retake
 //                               cooldown signal

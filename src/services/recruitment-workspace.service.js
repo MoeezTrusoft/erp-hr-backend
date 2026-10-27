@@ -7,7 +7,7 @@
 // shortlist review with masked notes, decisions."
 //
 // Both are read-only, tenant-scoped (withTenant) and cut by the same scope
-// predicates the list endpoints use (src/lib/recruitmentAccess.js); a scope
+// predicates the list endpoints use (src/lib/recruitment-access.util.js); a scope
 // with no reach gets empty sections, never a 403.
 //
 // Interviewer workspace rules:
@@ -38,7 +38,7 @@ import {
     interviewScopeWhere,
     offerScopeWhere,
     requisitionScopeWhere,
-} from "../lib/recruitmentAccess.js";
+} from "../lib/recruitment-access.util.js";
 import { AUDIENCES, resolvePacketView } from "../lib/documentAccess.js";
 import { activePanel, interviewEnd, missingScorecards } from "./interview-reminder.service.js";
 

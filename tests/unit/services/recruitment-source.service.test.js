@@ -8,7 +8,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 const { getRecruitmentSourceReport, mergeSourceCounts, buildSourceReportWhere } = await import(
     "../../../src/services/recruitment-source.service.js"
 );
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const ORG = resolveRecruitmentScope({ isAdmin: true, roles: [] });

@@ -7,7 +7,7 @@
 // registering tools"). Inside that grant, this module turns the caller's role
 // claims into capabilities, so a receptionist can check a candidate in without
 // ever seeing an item, a key or a score, and an author can never publish their
-// own item. Recruitment row scope (recruitmentAccess.js) still decides which
+// own item. Recruitment row scope (recruitment-access.util.js) still decides which
 // candidates and requisitions a caller may reach.
 //
 // When the RBAC repository seeds hr.recruitment.assessment and
@@ -15,7 +15,7 @@
 // top; the capabilities here stay the second, role-level check.
 //
 // Pure functions only.
-import { RECRUITMENT_SCOPE, resolveRecruitmentScope, rolesOf } from "./recruitmentAccess.js";
+import { RECRUITMENT_SCOPE, resolveRecruitmentScope, rolesOf } from "./recruitment-access.util.js";
 
 const AUTHOR_ROLES = Object.freeze(["ASSESSMENT_AUTHOR"]);
 const REVIEWER_ROLES = Object.freeze(["ASSESSMENT_REVIEWER"]);

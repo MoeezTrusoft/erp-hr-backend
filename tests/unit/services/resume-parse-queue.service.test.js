@@ -21,7 +21,7 @@ jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({
 
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 const queue = await import("../../../src/services/resume-parse-queue.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { registerResumeParseStatusTools } = await import("../../../src/mcp/tools/resume-parse-status.tools.js");
 
 const ORG = resolveRecruitmentScope({ isAdmin: true, roles: [] });

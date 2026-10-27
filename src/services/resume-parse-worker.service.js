@@ -26,7 +26,7 @@
 // later write is guarded by the token, so a claimant that outlived its lease
 // writes nothing.
 //
-// RETRIES follow the ledger's policy (lib/parseRetry.js): an attempt is spent
+// RETRIES follow the ledger's policy (lib/parse-retry.util.js): an attempt is spent
 // before the plane call, a retryable failure schedules nextAttemptAt with
 // backoffDelayMs, the third failure (or a permanent one) is terminal. A plane
 // answer that misses the wait window is collected on a later tick by its task
@@ -43,8 +43,8 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { recordResumeParse } from "../lib/recruitmentOpsMetrics.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { recordResumeParse } from "../lib/recruitment-ops-metrics.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { downloadDamAssetBuffer } from "./dam.media.service.js";
 import { enqueueCandidateResumeParse } from "./resume-parse-queue.service.js";
@@ -57,7 +57,7 @@ import {
     lastErrorCode,
     nextAttemptAfterFailure,
     storedErrorIsRetryable,
-} from "../lib/parseRetry.js";
+} from "../lib/parse-retry.util.js";
 import {
     PLANE_PENDING_CODE,
     candidateResumeParsedEvent,
@@ -65,7 +65,7 @@ import {
     executeParseAttempt,
     pendingMarkerOf,
     projectParsedResumeOntoCandidate,
-} from "./resumeParsing.service.js";
+} from "./resume-parsing.service.js";
 
 const KIND = "CANDIDATE";
 export const DEFAULT_TICK_LIMIT = 10;

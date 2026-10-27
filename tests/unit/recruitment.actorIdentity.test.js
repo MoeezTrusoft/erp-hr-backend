@@ -25,7 +25,7 @@ jest.unstable_mockModule("../../src/services/requisition.service.js", () => ({
 // Phase 4 — publication moved to its own service (per-channel postings), so this
 // is where the posting actor is observed now.
 const publishRequisition = jest.fn(async () => ({ requisition: { id: 1 }, postings: [] }));
-jest.unstable_mockModule("../../src/services/requisitionPublication.service.js", () => ({
+jest.unstable_mockModule("../../src/services/requisition-publication.service.js", () => ({
   publishRequisition,
   unpublishPosting: jest.fn(async () => ({ id: 1 })),
   withdrawRequisition: jest.fn(async () => ({ requisition: { id: 1 } })),
@@ -34,7 +34,7 @@ jest.unstable_mockModule("../../src/services/requisitionPublication.service.js",
 }));
 
 const addToPool = jest.fn(async () => ({ id: 1 }));
-jest.unstable_mockModule("../../src/services/talentPool.service.js", () => ({
+jest.unstable_mockModule("../../src/services/talent-pool.service.js", () => ({
   addToPool,
   listPools: jest.fn(async () => []),
   removeFromPool: jest.fn(async () => ({})),

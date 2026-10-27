@@ -1,7 +1,7 @@
 // src/controllers/resume.controller.js — REST surface for AI resume parsing.
 // Mirrors the MCP resume tools. Deny-by-default authorization via the
 // gateway-resolved entitlement blob (req.user.permissions), same as the payroll
-// guard. All heavy AI work is delegated to resumeParsing.service.js (lazy deps).
+// guard. All heavy AI work is delegated to resume-parsing.service.js (lazy deps).
 import { hasPermission } from "../mcp/utils/assertPermission.js";
 import { sendSuccess, sendError } from "../utils/response.js";
 import { normalizeError } from "../middlewares/error.middleware.js";
@@ -9,7 +9,7 @@ import {
   parseResumePreview,
   ingestEmployeeResume,
   ingestCandidateResume,
-} from "../services/resumeParsing.service.js";
+} from "../services/resume-parsing.service.js";
 
 // Recruitment Phase 7 (D17) — a flag that is off and an unavailable dependency
 // (the AI plane, DAM, a plane task still running) answer with the terminal

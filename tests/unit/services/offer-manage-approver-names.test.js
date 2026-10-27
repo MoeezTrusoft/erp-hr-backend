@@ -23,7 +23,7 @@ const prisma = {
 };
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
 
-const { listOffersManage, getOfferManage } = await import("../../../src/services/offerMgmt.service.js");
+const { listOffersManage, getOfferManage } = await import("../../../src/services/offer-mgmt.service.js");
 
 beforeEach(() => {
     jest.clearAllMocks();

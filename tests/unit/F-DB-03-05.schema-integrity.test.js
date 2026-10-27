@@ -45,8 +45,8 @@ describe("F-DB-03/F-DB-04 tenant-qualified and natural-key integrity", () => {
 
   test.each([
     ["dashboardLayout.service.js", "tenantId_employeeId_dashboardType"],
-    ["candidateService.js", "tenantId_email"],
-    ["resumeParsing.service.js", "tenantId_name"],
+    ["candidate.service.js", "tenantId_email"],
+    ["resume-parsing.service.js", "tenantId_name"],
     ["payrollCalendar.service.js", "payrollCalendar.upsert"],
     ["payrollRuleConfig.service.js", "payrollRuleConfig.upsert"],
     ["payrollConfigActions.service.js", "tenantId_version"],

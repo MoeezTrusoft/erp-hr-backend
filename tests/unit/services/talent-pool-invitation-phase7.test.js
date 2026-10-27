@@ -5,9 +5,9 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: {} }));
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: {} }));
-jest.unstable_mockModule("../../../src/lib/recruitmentOpsMetrics.js", () => ({ recordRetentionRun: jest.fn() }));
+jest.unstable_mockModule("../../../src/lib/recruitment-ops-metrics.util.js", () => ({ recordRetentionRun: jest.fn() }));
 
-const { listInvitations } = await import("../../../src/services/talentPoolInvitation.service.js");
+const { listInvitations } = await import("../../../src/services/talent-pool-invitation.service.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const row = (over = {}) => ({
@@ -58,20 +58,20 @@ describe("hr_talent_pool_invitation_list passes the filter", () => {
     it("validates nurtureRunId as a positive integer and hands it to the service", async () => {
         jest.resetModules();
         const listMock = jest.fn(async () => ({ items: [], total: 0 }));
-        jest.unstable_mockModule("../../../src/services/talentPoolInvitation.service.js", () => ({
+        jest.unstable_mockModule("../../../src/services/talent-pool-invitation.service.js", () => ({
             listInvitations: listMock,
             respondToInvitation: jest.fn(),
             segmentTalentPool: jest.fn(),
             sweepTalentPoolRetention: jest.fn(),
             withdrawInvitation: jest.fn(),
         }));
-        jest.unstable_mockModule("../../../src/services/talentPoolMgmt.service.js", () => ({
+        jest.unstable_mockModule("../../../src/services/talent-pool-mgmt.service.js", () => ({
             listManagedPool: jest.fn(),
             getPoolProfile: jest.fn(),
             moveToPipeline: jest.fn(),
             inviteCandidate: jest.fn(),
         }));
-        const { registerTalentPoolMgmtTools } = await import("../../../src/mcp/tools/talentPoolMgmtTools.js");
+        const { registerTalentPoolMgmtTools } = await import("../../../src/mcp/tools/talent-pool-mgmt.tools.js");
         const { mcpCtx } = await import("../../../src/mcp/context.js");
         const tools = new Map();
         registerTalentPoolMgmtTools({ tool: (name, _d, schema, handler) => tools.set(name, { schema, handler }) });

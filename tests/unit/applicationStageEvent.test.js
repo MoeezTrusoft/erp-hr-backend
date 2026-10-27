@@ -27,7 +27,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
   rlsTenantExtension: jest.fn((client) => client),
 }));
 
-const { transitionApplicationStage } = await import("../../src/services/applicationWorkflow.service.js");
+const { transitionApplicationStage } = await import("../../src/services/application-workflow.service.js");
 
 // The event contract validates tenantId as a UUID, and Application.tenantId is a
 // UUID column — so the tenant must be a real UUID here. A non-UUID tenant makes

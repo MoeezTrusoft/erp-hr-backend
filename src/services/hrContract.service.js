@@ -6,9 +6,9 @@ import {
   assertRequisitionTransition,
   assertRequisitionAdvanceAllowed,
   recordRequisitionTransition,
-} from "./requisitionWorkflow.service.js";
-import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
-import { closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+} from "./requisition-workflow.service.js";
+import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisition-fields.util.js";
+import { closeActivePostingsForRequisition } from "./requisition-publication.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
@@ -1234,7 +1234,7 @@ export const createEmployee = async (payload, actorId, ctx = {}) => {
   let resumeParsing = null;
   if (data.resumeMediaId && data.parseResume) {
     try {
-      const { ingestEmployeeResume } = await import("./resumeParsing.service.js");
+      const { ingestEmployeeResume } = await import("./resume-parsing.service.js");
       resumeParsing = await ingestEmployeeResume({
         employeeId: employee.id,
         mediaId: data.resumeMediaId,

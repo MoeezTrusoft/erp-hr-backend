@@ -15,7 +15,7 @@ What this repository ships for the other owners, all machine-checked:
 | `scripts/recruitment-smoke.mjs` | Release manager (staging) | run it (section 4) |
 
 This runbook itself is checked by `tests/unit/release/recruitment-golive-runbook.test.js`:
-every flag in `src/lib/recruitmentFlags.js` is placed exactly once in section 1,
+every flag in `src/lib/recruitment-flags.util.js` is placed exactly once in section 1,
 every alert is named in section 3, and every file the checklist cites exists.
 
 ## 1. Flag order
@@ -23,7 +23,7 @@ every alert is named in section 3, and every file the checklist cites exists.
 Plan section 12.1: security, then workflow, offer handoff, portal, analytics,
 AI, and retention last and per tenant. Each flip is followed by a day of
 watching its counter (and the tool's errors) before the next. Flags are read at
-call time; a restart applies them. Defaults are in `src/lib/recruitmentFlags.js`
+call time; a restart applies them. Defaults are in `src/lib/recruitment-flags.util.js`
 (`on` below means the default is on; do not switch those off in production).
 
 ### Stage 0: security (no flag)

@@ -25,7 +25,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { METHOD_ACTION, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { buildListPayload } from "../../utils/apiContract.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import { withAgencyMembership } from "../../lib/agency-access.util.js";
 import { assertAgencyPortalEnabled } from "../../services/recruitment-agency.service.js";
 import {

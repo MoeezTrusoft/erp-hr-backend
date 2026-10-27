@@ -14,7 +14,7 @@ import {
     resolveProvisioningActor,
     syncTargetForTask,
 } from "../../../src/lib/onboarding-provisioning.util.js";
-import { DEFAULT_ONBOARDING_TASKS } from "../../../src/lib/onboardingDefaults.js";
+import { DEFAULT_ONBOARDING_TASKS } from "../../../src/lib/onboarding-defaults.util.js";
 
 describe("vocabularies match the migration CHECKs", () => {
     it("kinds and statuses", () => {

@@ -19,18 +19,18 @@ const getRecruitmentSettings = jest.fn();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: logger }));
-jest.unstable_mockModule("../../../src/lib/recruitmentFlags.js", () => ({ isRecruitmentFlagEnabled: (key) => flags.has(key) }));
-jest.unstable_mockModule("../../../src/lib/recruitmentOpsMetrics.js", () => ({ recordRetentionRun: jest.fn() }));
+jest.unstable_mockModule("../../../src/lib/recruitment-flags.util.js", () => ({ isRecruitmentFlagEnabled: (key) => flags.has(key) }));
+jest.unstable_mockModule("../../../src/lib/recruitment-ops-metrics.util.js", () => ({ recordRetentionRun: jest.fn() }));
 jest.unstable_mockModule("../../../src/lib/notificationClient.js", () => ({ sendCandidateEmail }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({
     CONSENT_STATUS: Object.freeze({ UNKNOWN: "UNKNOWN", GRANTED: "GRANTED", WITHDRAWN: "WITHDRAWN" }),
     normalizeEmail: (email) => String(email ?? "").trim().toLowerCase(),
     findActiveDnc,
     assertCommunicationsAllowed: jest.fn(async () => ({ allowed: true })),
 }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
-jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({ PORTAL_STATUS_REQUEST_PATH: "/status" }));
+jest.unstable_mockModule("../../../src/services/candidate-verification.service.js", () => ({ PORTAL_STATUS_REQUEST_PATH: "/status" }));
 jest.unstable_mockModule("../../../src/services/talent-nurture.service.js", () => ({ intakeAcceptedNurtureInvitation: jest.fn() }));
 
 const { handleCandidateCommunicationEvent } = await import("../../../src/services/candidate-communication.consumer.js");

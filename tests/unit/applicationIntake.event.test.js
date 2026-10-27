@@ -30,7 +30,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 
-const { createApplication } = await import("../../src/services/applicationService.js");
+const { createApplication } = await import("../../src/services/application.service.js");
 
 describe("recruiter application intake", () => {
   beforeEach(() => jest.clearAllMocks());

@@ -38,7 +38,7 @@ for (const [key, value] of Object.entries(FLAGS)) {
 
 const { default: prisma } = await import('../../src/lib/prisma.js');
 const { mcpCtx } = await import('../../src/mcp/context.js');
-const { runOfferHandoff } = await import('../../src/services/recruitmentHandoff.service.js');
+const { runOfferHandoff } = await import('../../src/services/recruitment-handoff.service.js');
 const { runOnboardingReadinessJob } = await import('../../src/services/onboarding-readiness.service.js');
 
 const asSystem = (fn) => mcpCtx.run({ system: true }, async () => await fn());

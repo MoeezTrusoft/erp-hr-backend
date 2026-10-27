@@ -9,7 +9,7 @@ import { createOnboardingDb } from "./helpers/onboarding-sessions.fake.js";
 const { db, state, addSession } = createOnboardingDb();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 
-const schedule = await import("../../../src/services/onboardingSchedule.service.js");
+const schedule = await import("../../../src/services/onboarding-schedule.service.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

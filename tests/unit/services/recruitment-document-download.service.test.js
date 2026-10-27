@@ -29,9 +29,9 @@ jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({
 
 const { readRecruitmentDocument, RECRUITMENT_DOWNLOAD_MAX_BYTES } = await import("../../../src/services/recruitment-document-download.service.js");
 const { downloadOfferLetter } = await import("../../../src/services/offer-letter.service.js");
-const { downloadPacketDocument } = await import("../../../src/services/interviewPacket.service.js");
+const { downloadPacketDocument } = await import("../../../src/services/interview-packet.service.js");
 const { downloadTestItemPicture } = await import("../../../src/services/test-item.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { resolveAssessmentAccess } = await import("../../../src/lib/assessment-access.util.js");
 const { normalizeError } = await import("../../../src/middlewares/error.middleware.js");
 

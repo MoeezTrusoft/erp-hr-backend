@@ -12,7 +12,7 @@ import {
     FIT_MODEL_VERSION,
     KNOCKOUT_SCORE_CAP,
 } from "../../../src/lib/fit-score.util.js";
-import { buildAliasIndex } from "../../../src/lib/skillNormalization.js";
+import { buildAliasIndex } from "../../../src/lib/skill-normalization.util.js";
 
 const INDEX = buildAliasIndex(
     [{ alias: "JS", skillId: 1, scope: "PLATFORM", status: "ACTIVE", tenantId: null }],

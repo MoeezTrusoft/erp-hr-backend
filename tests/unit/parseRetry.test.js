@@ -18,7 +18,7 @@ const hash = (s) => createHash("sha256").update(s).digest("hex");
 
 // ── pure policy ──────────────────────────────────────────────────────────────
 const { PARSE_MAX_ATTEMPTS, backoffDelayMs, hashResumeContent, isRetryableFailure, storedErrorIsRetryable, decideParse } = await import(
-    "../../src/lib/parseRetry.js"
+    "../../src/lib/parse-retry.util.js"
 );
 
 describe("parseRetry pure policy (§4.5a)", () => {
@@ -117,7 +117,7 @@ describe("parseRetry pure policy (§4.5a)", () => {
     });
 
     it("schedules the next attempt with the backoff, and none at the ceiling or for a permanent failure", async () => {
-        const { nextAttemptAfterFailure, lastErrorCode, parseTicketHash, isParseTicket } = await import("../../src/lib/parseRetry.js");
+        const { nextAttemptAfterFailure, lastErrorCode, parseTicketHash, isParseTicket } = await import("../../src/lib/parse-retry.util.js");
         const now = new Date("2026-10-20T10:00:00Z");
         expect(nextAttemptAfterFailure({ attempt: 1, retryable: true, now })).toEqual(new Date("2026-10-20T10:00:01Z"));
         expect(nextAttemptAfterFailure({ attempt: 2, retryable: true, now })).toEqual(new Date("2026-10-20T10:00:04Z"));
@@ -169,7 +169,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({ tenantTransactio
 const enqueueHrDomainEvent = jest.fn(async () => ({}));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 
-const resumeService = await import("../../src/services/resumeParsing.service.js");
+const resumeService = await import("../../src/services/resume-parsing.service.js");
 
 const damPayload = (content) => ({
     // text/plain: extractResumeText takes the utf8 fast path — no pdf-parse
@@ -221,11 +221,11 @@ describe("parseResumeWithRetry (§4.5a wrapper)", () => {
         prisma.resumeParseAttempt.upsert.mockResolvedValue({ id: 2, attemptCount: 1 });
         prisma.resumeParseAttempt.update.mockResolvedValue({});
         // The vendor path would be called; make it fail fast and permanently.
-        jest.unstable_mockModule("../../src/services/resumeParsing.service.js", () => ({}));
+        jest.unstable_mockModule("../../src/services/resume-parsing.service.js", () => ({}));
 
         // Use a fresh import with an extracted-text stub: simplest is to verify
         // the DECISION only — the row lookup used content B's hash.
-        const { decideParse: decide } = await import("../../src/lib/parseRetry.js");
+        const { decideParse: decide } = await import("../../src/lib/parse-retry.util.js");
         const d = decide({
             priorAttempt: { contentHash: hash(contentA), status: "COMPLETED", attemptCount: 1, updatedAt: new Date() },
             contentHash: hash(contentB),

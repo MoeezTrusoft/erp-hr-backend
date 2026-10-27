@@ -11,13 +11,13 @@ const getRecruitmentSettings = jest.fn();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: logger }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
-jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-verification.service.js", () => ({
     PORTAL_STATUS_REQUEST_PATH: "/status",
 }));
 
 const { registerCandidateCommunicationTools } = await import("../../../src/mcp/tools/candidate-communication.tools.js");
 const service = await import("../../../src/services/candidate-communication.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

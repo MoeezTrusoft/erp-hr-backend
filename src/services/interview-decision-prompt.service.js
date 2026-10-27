@@ -42,11 +42,11 @@ import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
 import { mcpCtx } from "../mcp/context.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { transitionApplicationStage } from "./applicationWorkflow.service.js";
-import { consolidateInterviewFeedback } from "./interviewMgmt.service.js";
+import { transitionApplicationStage } from "./application-workflow.service.js";
+import { consolidateInterviewFeedback } from "./interview-mgmt.service.js";
 import {
     REMINDER_KIND,
     activePanel,
@@ -298,7 +298,7 @@ const none = (reason) => ({ action: "NONE", reason });
  * Follow a recorded interview decision with the automatic application move.
  * Runs on the caller's transaction, after the decision was written, so the
  * decision and its consequence commit together. Callers: setInterviewOutcome
- * (interviewMgmt.service.js) and the hr_interview_update decision path
+ * (interview-mgmt.service.js) and the hr_interview_update decision path
  * (interview.service.js).
  *
  * @param {object} tx  the caller's tenant transaction client

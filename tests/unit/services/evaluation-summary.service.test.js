@@ -17,9 +17,9 @@ jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM }));
 
 const summary = await import("../../../src/services/evaluation-summary.service.js");
-const { setInterviewOutcome, consolidateInterviewFeedback } = await import("../../../src/services/interviewMgmt.service.js");
+const { setInterviewOutcome, consolidateInterviewFeedback } = await import("../../../src/services/interview-mgmt.service.js");
 const { generateEvaluationReportPdf } = await import("../../../src/services/evaluation-report-pdf.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 
 const T = "33333333-3333-4333-8333-333333333333";

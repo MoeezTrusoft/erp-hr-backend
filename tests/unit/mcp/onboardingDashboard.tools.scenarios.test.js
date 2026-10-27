@@ -5,7 +5,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 // --- Mocks ---
-jest.unstable_mockModule('../../../src/services/onboardingDashboard.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/onboarding-dashboard.service.js', () => ({
   getOnboardingDashboard: jest.fn(async () => ({ success: true })),
   addNewHire: jest.fn(async () => ({ success: true })),
   getOnboardingExportRows: jest.fn(async () => []),
@@ -18,14 +18,14 @@ jest.unstable_mockModule('../../../src/middlewares/idempotency.middleware.js', (
 jest.unstable_mockModule('../../../src/lib/export.util.js', () => ({
   exportRows: jest.fn(async () => ({ ext: 'csv', mimeType: 'text/csv', buffer: Buffer.from('') })),
 }));
-jest.unstable_mockModule('../../../src/services/onboardingSchedule.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/onboarding-schedule.service.js', () => ({
   listSchedule: jest.fn(async () => ({ success: true })),
   createSession: jest.fn(async () => ({ success: true })),
   updateSession: jest.fn(async () => ({ success: true })),
   listDocuments: jest.fn(async () => ({ success: true })),
   addDocument: jest.fn(async () => ({ success: true })),
 }));
-jest.unstable_mockModule('../../../src/services/onboardingPortalScreen.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/onboarding-portal-screen.service.js', () => ({
   getOnboardingPortal: jest.fn(async () => ({ success: true })),
   createPortalTask: jest.fn(async () => ({ success: true })),
   updatePortalTask: jest.fn(async () => ({ success: true })),
@@ -35,14 +35,14 @@ jest.unstable_mockModule('../../../src/services/onboardingPortalScreen.service.j
   submitPortalFeedback: jest.fn(async () => ({ success: true })),
   sendTaskReminder: jest.fn(async () => ({ success: true })),
 }));
-jest.unstable_mockModule('../../../src/lib/onboardingTaxonomy.js', () => ({
+jest.unstable_mockModule('../../../src/lib/onboarding-taxonomy.util.js', () => ({
   ONBOARDING_TASK_CATEGORIES: ['IT_SETUP', 'WORKSPACE', 'DOCUMENTS', 'TRAINING', 'SOCIAL', 'OTHER'],
 }));
 
 // --- Imports ---
-const { registerOnboardingDashboardTools } = await import('../../../src/mcp/tools/onboardingDashboardTools.js');
-const { registerOnboardingScheduleTools } = await import('../../../src/mcp/tools/onboardingScheduleTools.js');
-const { registerOnboardingPortalScreenTools } = await import('../../../src/mcp/tools/onboardingPortalScreenTools.js');
+const { registerOnboardingDashboardTools } = await import('../../../src/mcp/tools/onboarding-dashboard.tools.js');
+const { registerOnboardingScheduleTools } = await import('../../../src/mcp/tools/onboarding-schedule.tools.js');
+const { registerOnboardingPortalScreenTools } = await import('../../../src/mcp/tools/onboarding-portal-screen.tools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
@@ -65,18 +65,18 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  // --- onboardingDashboardTools.js (4 tools) ---
+  // --- onboarding-dashboard.tools.js (4 tools) ---
   { name: 'hr_onboarding_dashboard_get', gate: 'hr:onboarding', action: 'VIEW', args: {} },
   { name: 'hr_onboarding_add_new_hire', gate: 'hr:onboarding', action: 'CREATE', args: { employeeId: '7', startDate: '2026-08-01' } },
   { name: 'hr_onboarding_export', gate: 'hr:onboarding', action: 'VIEW', args: { format: 'csv' } },
   { name: 'hr_onboarding_quick_progress', gate: 'hr:onboarding', action: 'VIEW', args: { id: '1' } },
-  // --- onboardingScheduleTools.js (5 tools) ---
+  // --- onboarding-schedule.tools.js (5 tools) ---
   { name: 'hr_onboarding_schedule_list', gate: 'hr:onboarding', action: 'VIEW', args: { checklistId: '1' } },
   { name: 'hr_onboarding_schedule_create', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', title: 'Day 1' } },
   { name: 'hr_onboarding_schedule_update', gate: 'hr:onboarding', action: 'EDIT', args: { id: '1' } },
   { name: 'hr_onboarding_documents_list', gate: 'hr:onboarding', action: 'VIEW', args: { checklistId: '1' } },
   { name: 'hr_onboarding_document_add', gate: 'hr:onboarding', action: 'CREATE', args: { checklistId: '1', employeeId: '7', title: 'NDA', mediaId: '10' } },
-  // --- onboardingPortalScreenTools.js (8 tools) ---
+  // --- onboarding-portal-screen.tools.js (8 tools) ---
   { name: 'hr_onboarding_portal_get', gate: 'hr:onboarding', action: 'VIEW', args: {} },
   { name: 'hr_onboarding_portal_task_create', gate: 'hr:onboarding', action: 'CREATE', args: { title: 'Setup workstation' } },
   { name: 'hr_onboarding_portal_task_update', gate: 'hr:onboarding', action: 'EDIT', args: { taskId: '1' } },

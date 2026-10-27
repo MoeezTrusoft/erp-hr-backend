@@ -7,7 +7,7 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
 const prisma = { onboardingChecklist: { findFirst: jest.fn() } };
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
 
-const { viewFeedback, readSurveyAnswers } = await import("../../../src/services/onboardingPortal.service.js");
+const { viewFeedback, readSurveyAnswers } = await import("../../../src/services/onboarding-portal.service.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 

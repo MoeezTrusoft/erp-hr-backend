@@ -22,8 +22,8 @@ jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction }));
 jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({ tenantTransaction: (client, fn) => fn(client) }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
 
-const service = await import("../../../src/services/interviewSchedule.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const service = await import("../../../src/services/interview-schedule.service.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const NOW = new Date("2026-10-27T09:00:00Z");

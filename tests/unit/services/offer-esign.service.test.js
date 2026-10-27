@@ -27,7 +27,7 @@ const TYPES = ["SENT", "VIEWED", "SIGNED", "DECLINED", "EXPIRED", "VOIDED"];
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ downloadDamAssetBuffer, uploadFileToDAM }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
 jest.unstable_mockModule("../../../src/services/offer.service.js", () => ({ respondOffer }));
@@ -42,7 +42,7 @@ jest.unstable_mockModule("../../../src/services/esign.client.js", () => ({
 
 const svc = await import("../../../src/services/offer-esign.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const ORG = resolveRecruitmentScope({ roles: ["RECRUITER"], employeeId: 7 });

@@ -38,10 +38,10 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { isInvitationExpired, resolveInvitationResponse } from "../lib/talentPoolPolicy.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { isInvitationExpired, resolveInvitationResponse } from "../lib/talent-pool-policy.util.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
-import { INVITATION_RESPONDED_VIA, respondToInvitation } from "./talentPoolInvitation.service.js";
+import { INVITATION_RESPONDED_VIA, respondToInvitation } from "./talent-pool-invitation.service.js";
 
 const log = logger.child({ component: "invitation-response" });
 

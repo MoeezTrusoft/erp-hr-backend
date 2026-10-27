@@ -113,18 +113,18 @@ const damFns = {
   uploadFileToDAM: jest.fn(async () => ({ id: 1, url: "asset://test" })),
 };
 
-jest.unstable_mockModule("../../src/services/candidateService.js", () => candidateFns);
-jest.unstable_mockModule("../../src/services/applicationService.js", () => applicationFns);
+jest.unstable_mockModule("../../src/services/candidate.service.js", () => candidateFns);
+jest.unstable_mockModule("../../src/services/application.service.js", () => applicationFns);
 jest.unstable_mockModule("../../src/services/offer.service.js", () => offerFns);
-jest.unstable_mockModule("../../src/services/recruitmentFreeze.service.js", () => ({
+jest.unstable_mockModule("../../src/services/recruitment-freeze.service.js", () => ({
   ...freezeFns,
   FREEZE_SCOPES: Object.freeze(["COMPANY", "BUSINESS_UNIT"]),
 }));
-jest.unstable_mockModule("../../src/services/offerApproval.service.js", () => ({
+jest.unstable_mockModule("../../src/services/offer-approval.service.js", () => ({
   ...approvalFns,
   OFFER_APPROVAL_STAGES: Object.freeze(["hiringManager", "hrHead", "finance"]),
 }));
-jest.unstable_mockModule("../../src/services/recruitmentHandoff.service.js", () => ({
+jest.unstable_mockModule("../../src/services/recruitment-handoff.service.js", () => ({
   ...handoffFns,
   HANDOFF_STATUS: Object.freeze({ PENDING: "pending", COMPLETED: "completed", FAILED: "failed" }),
 }));

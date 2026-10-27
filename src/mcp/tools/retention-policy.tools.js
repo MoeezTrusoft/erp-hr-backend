@@ -6,7 +6,7 @@
 //                                       isDefault
 //
 // The retention form used to start blank because only the write existed
-// (hr_candidate_retention_policy_set in candidatePrivacyTools.js). This read
+// (hr_candidate_retention_policy_set in candidate-privacy.tools.js). This read
 // carries the SAME gate as that write: hr:recruitment PUT (EDIT), the tenant
 // from the verified context only. It sits in its own registrar so the pinned
 // tool counts of candidatePrivacyTools stay as they are.
@@ -14,7 +14,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { getRetentionPolicyView, RETENTION_POPULATIONS } from "../../services/candidatePrivacy.service.js";
+import { getRetentionPolicyView, RETENTION_POPULATIONS } from "../../services/candidate-privacy.service.js";
 
 export const RETENTION_POLICY_TOOL_NAMES = Object.freeze(["hr_candidate_retention_policy_get"]);
 

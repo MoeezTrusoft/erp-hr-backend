@@ -133,8 +133,8 @@ const {
   withdrawRequisition,
   listRequisitionPostings,
   closeActivePostingsForRequisition,
-} = await import("../../src/services/requisitionPublication.service.js");
-const { closeRequisition } = await import("../../src/services/requisitionMgmt.service.js");
+} = await import("../../src/services/requisition-publication.service.js");
+const { closeRequisition } = await import("../../src/services/requisition-mgmt.service.js");
 const { updateRequisition } = await import("../../src/services/requisition.service.js");
 const {
   PUBLICATION_CHANNELS,
@@ -144,8 +144,8 @@ const {
   normalizeChannelList,
   isPostingOpen,
   assertPublishableStatus,
-} = await import("../../src/lib/requisitionPublication.js");
-const { assertRequisitionTransition } = await import("../../src/services/requisitionWorkflow.service.js");
+} = await import("../../src/lib/requisition-publication.util.js");
+const { assertRequisitionTransition } = await import("../../src/services/requisition-workflow.service.js");
 const { requisitionClosedEvent } = await import("../../src/services/hrEvents.js");
 const { enqueueHrDomainEvent } = await import("../../src/services/hrDomainEvent.service.js");
 

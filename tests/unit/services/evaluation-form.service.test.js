@@ -16,7 +16,7 @@ const runAiTask = jest.fn();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../../src/services/candidateMatch.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-match.service.js", () => ({
     requisitionSkillRequirements: jest.fn(() => ({ required: ["SQL"], preferred: ["Python"] })),
 }));
 jest.unstable_mockModule("../../../src/lib/aiPlaneClient.js", () => ({ runAiTask, extractModelJson: (v) => v }));

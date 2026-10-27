@@ -27,7 +27,7 @@ const {
     recordRetentionRun,
     attachRecruitmentOpsMetrics,
     _resetRecruitmentOpsMetricsForTests,
-} = await import("../../src/lib/recruitmentOpsMetrics.js");
+} = await import("../../src/lib/recruitment-ops-metrics.util.js");
 
 beforeEach(() => {
     _resetRecruitmentOpsMetricsForTests();

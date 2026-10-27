@@ -16,8 +16,8 @@ import {
     listShortlist,
     removeFromShortlist,
     ScreeningError,
-} from "../services/applicationScreening.service.js";
-import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
+} from "../services/application-screening.service.js";
+import { resolveRecruitmentScope } from "../lib/recruitment-access.util.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorOf = (req) => req.user?.employeeId ?? null;

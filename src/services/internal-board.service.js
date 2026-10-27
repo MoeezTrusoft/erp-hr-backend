@@ -59,7 +59,7 @@ import {
 // of createApplication (see the Phase 5 note). A named import of a missing
 // export would fail at link time for every importer; a property read fails
 // only on the call, with a clear code.
-import * as applicationService from "./applicationService.js";
+import * as applicationService from "./application.service.js";
 
 const log = logger.child({ component: "internal-board" });
 

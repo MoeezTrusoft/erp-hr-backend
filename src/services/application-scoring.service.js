@@ -35,17 +35,17 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../lib/requestContext.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import {
     RECRUITMENT_SCOPE,
     applicationScopeWhere,
     maskCandidateForScope,
     requisitionScopeWhere,
-} from "../lib/recruitmentAccess.js";
+} from "../lib/recruitment-access.util.js";
 import { computeFitScore, componentsAssessed, FIT_MODEL_VERSION } from "../lib/fit-score.util.js";
 import { logAction } from "../utils/logs.js";
-import { loadAliasIndex, requisitionSkillRequirements } from "./candidateMatch.service.js";
+import { loadAliasIndex, requisitionSkillRequirements } from "./candidate-match.service.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
@@ -68,7 +68,7 @@ const DEFAULT_JOB_LIMIT = 200;
 const MAX_PAGE_SIZE = 100;
 
 // parsedResume is free-form parser output; years of experience has appeared
-// under these keys (the same probe candidatePipeline.service.js uses).
+// under these keys (the same probe candidate-pipeline.service.js uses).
 const CANDIDATE_YEARS_KEYS = Object.freeze(["yearsOfExperience", "totalExperience", "experienceYears"]);
 // The requisition's minimum, when its job content carries one.
 const REQUISITION_MIN_YEARS_KEYS = Object.freeze(["minYearsExperience", "minExperienceYears"]);

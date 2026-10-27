@@ -41,7 +41,7 @@ jest.unstable_mockModule('../../../src/services/developmentPlan.service.js', () 
 }));
 
 // ── Register tools ─────────────────────────────────────────────────────────
-const { registerApplicationTools } = await import('../../../src/mcp/tools/applicationTools.js');
+const { registerApplicationTools } = await import('../../../src/mcp/tools/application.tools.js');
 const { registerLeaveTools } = await import('../../../src/mcp/tools/leaveTools.js');
 const { registerLifecycleComplianceTools } = await import('../../../src/mcp/tools/lifecycleComplianceTools.js');
 const { registerDevelopmentPlanTools } = await import('../../../src/mcp/tools/developmentPlanTools.js');

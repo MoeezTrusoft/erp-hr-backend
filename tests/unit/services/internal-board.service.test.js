@@ -39,7 +39,7 @@ const createApplicationInTx = jest.fn(async (tx, args) => {
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: dbProxy, prisma: dbProxy }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: dbProxy }));
 jest.unstable_mockModule("../../../src/services/intake-dnc.service.js", () => ({ checkIntakeDnc, logIntakeSuppressed }));
-jest.unstable_mockModule("../../../src/services/applicationService.js", () => ({ createApplicationInTx }));
+jest.unstable_mockModule("../../../src/services/application.service.js", () => ({ createApplicationInTx }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction }));
 
 const svc = await import("../../../src/services/internal-board.service.js");

@@ -60,7 +60,7 @@ const eventNames = () => tx.outboxEvent.create.mock.calls.map(([arg]) => arg.dat
 
 const prisma = (await import("../../src/config/prisma.js")).default;
 const { runOfferHandoff, listFailedHandoffs, HANDOFF_STATUS } = await import(
-  "../../src/services/recruitmentHandoff.service.js"
+  "../../src/services/recruitment-handoff.service.js"
 );
 
 const ACCEPTED_OFFER = {

@@ -41,11 +41,11 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { assertAssessmentCapability } from "../lib/assessment-access.util.js";
 import { runAiTask } from "../lib/aiPlaneClient.js";
 import { normalizeJobFamily } from "../lib/test-blueprint.util.js";
-import { resolveSkill } from "../lib/skillNormalization.js";
+import { resolveSkill } from "../lib/skill-normalization.util.js";
 import {
     AI_DRAFT_MAX,
     AI_DRAFT_TYPES,
@@ -62,7 +62,7 @@ import {
     sanitizeRichText,
 } from "../lib/test-item.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { loadAliasIndex, requisitionSkillRequirements } from "./candidateMatch.service.js";
+import { loadAliasIndex, requisitionSkillRequirements } from "./candidate-match.service.js";
 import { readRecruitmentDocument } from "./recruitment-document-download.service.js";
 import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 
@@ -271,7 +271,7 @@ function normalizeOrThrow(input) {
 /**
  * Check the skill and grade level ids of a batch of normalised items against
  * the tenant's taxonomy, and link a competency to its Skill when no skillId
- * was given (exact alias match only, see skillNormalization.js).
+ * was given (exact alias match only, see skill-normalization.util.js).
  * @returns {Promise<Array<Array<{ field: string, message: string }>>>} errors per item (mutates skillId)
  */
 export async function linkTaxonomy(db, tenantId, values) {

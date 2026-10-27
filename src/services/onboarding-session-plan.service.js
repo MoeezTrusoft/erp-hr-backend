@@ -21,7 +21,7 @@
 //     created, in the same transaction.
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import {
     SESSION_CALENDAR_ACTION,
     dateKey,
@@ -33,7 +33,7 @@ import {
     validateTemplateSessions,
 } from "../lib/onboarding-sessions.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { findDefaultTemplate } from "./onboardingTemplate.service.js";
+import { findDefaultTemplate } from "./onboarding-template.service.js";
 
 export const SESSIONS_SCHEDULED_EVENT = "hr.onboarding.sessions_scheduled.v1";
 

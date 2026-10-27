@@ -2,14 +2,14 @@ import { logAction } from "../utils/logs.js";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import * as utils from '../utils/analyticsUtils.js';
-import { isRecruitmentFlagEnabled } from '../lib/recruitmentFlags.js';
+import { isRecruitmentFlagEnabled } from '../lib/recruitment-flags.util.js';
 import {
     aggregateTimeToFill,
     metricsVersionBlock,
     offerAcceptance,
     openPositions as canonicalOpenPositions,
     timeToFillForRequisition,
-} from '../lib/recruitmentMetrics.js';
+} from '../lib/recruitment-metrics.util.js';
 
 
 /**
@@ -724,7 +724,7 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
 
         // HR-KPI-07 — flag KPIs that breach configured targets.
         // F-35 — the same numbers by the canonical definitions the recruitment
-        // analytics tool reports (src/lib/recruitmentMetrics.js), so the two
+        // analytics tool reports (src/lib/recruitment-metrics.util.js), so the two
         // surfaces can no longer disagree once the dashboard flag is on.
         const canonical = recruitmentDashboardCanonical(recruitmentData);
         const useCanonical = canonical && isRecruitmentFlagEnabled('canonicalDashboard');

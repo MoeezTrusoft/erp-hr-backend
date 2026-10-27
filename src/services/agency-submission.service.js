@@ -47,16 +47,16 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
-import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisitionEligibility.js";
+import { APPLICATION_ACCEPTING_STATUSES } from "../lib/requisition-eligibility.util.js";
 import {
     RECRUITMENT_SCOPE,
     agencyRequisitionScopeWhere,
     agencyRequisitionView,
-} from "../lib/recruitmentAccess.js";
+} from "../lib/recruitment-access.util.js";
 import { AGENCY_STATUS, ASSIGNMENT_STATUS } from "../lib/agency-access.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { createCandidate } from "./candidateService.js";
-import { createApplication } from "./applicationService.js";
+import { createCandidate } from "./candidate.service.js";
+import { createApplication } from "./application.service.js";
 import { deleteDamAsset, uploadFileToDAM } from "./dam.media.service.js";
 import { ONBOARDING_UPLOAD_MAX_BYTES, validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
 import { assertAgencyPortalEnabled, isRequisitionOpenForAgencies } from "./recruitment-agency.service.js";

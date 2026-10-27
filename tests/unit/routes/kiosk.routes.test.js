@@ -24,8 +24,8 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
     default: recorder.enqueueHrDomainEvent,
 }));
 jest.unstable_mockModule("../../../src/services/test-workstation.service.js", () => ({ verifyWorkstationToken }));
-jest.unstable_mockModule("../../../src/services/interviewSchedule.service.js", () => ({ cancelInterview: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({ transitionApplicationStage: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/interview-schedule.service.js", () => ({ cancelInterview: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({ transitionApplicationStage: jest.fn() }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 
 const { kioskRouter, resetKioskRateLimits } = await import("../../../src/routes/kiosk.routes.js");

@@ -21,10 +21,10 @@ const prisma = {
 };
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
-jest.unstable_mockModule("../../src/services/recruitmentCost.service.js", () => ({ getCostConfig: jest.fn(async () => ({ jobAds: 0, agencyFees: 0, tools: 0, other: 0, currency: "PKR" })) }));
+jest.unstable_mockModule("../../src/services/recruitment-cost.service.js", () => ({ getCostConfig: jest.fn(async () => ({ jobAds: 0, agencyFees: 0, tools: 0, other: 0, currency: "PKR" })) }));
 
 const { drillDownRecruitmentMetric, normalizeAnalyticsFilters } = await import(
-  "../../src/services/recruitmentAnalytics.service.js"
+  "../../src/services/recruitment-analytics.service.js"
 );
 
 const app = (id, over = {}) => ({
@@ -124,7 +124,7 @@ describe("NFR-12 — metric drill-down", () => {
 
 describe("D-15 — the shared filter pipeline reads what it filters on", () => {
   it("selects the requisition id that the requisitionIds filter and drill-down read", async () => {
-    const { loadFilteredApplications } = await import("../../src/services/recruitmentAnalytics.service.js");
+    const { loadFilteredApplications } = await import("../../src/services/recruitment-analytics.service.js");
     prisma.application.findMany.mockResolvedValueOnce([]);
     await loadFilteredApplications("t-1", {});
     const args = prisma.application.findMany.mock.calls.at(-1)[0];
@@ -133,7 +133,7 @@ describe("D-15 — the shared filter pipeline reads what it filters on", () => {
   });
 
   it("refuses an unscoped read instead of reading every tenant", async () => {
-    const { loadFilteredApplications } = await import("../../src/services/recruitmentAnalytics.service.js");
+    const { loadFilteredApplications } = await import("../../src/services/recruitment-analytics.service.js");
     await expect(loadFilteredApplications(undefined, {})).rejects.toMatchObject({ code: "HR-TENANT-REQUIRED" });
   });
 });

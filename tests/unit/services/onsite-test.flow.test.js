@@ -27,8 +27,8 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
     enqueueHrDomainEvent: recorder.enqueueHrDomainEvent,
     default: recorder.enqueueHrDomainEvent,
 }));
-jest.unstable_mockModule("../../../src/services/interviewSchedule.service.js", () => ({ cancelInterview }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({ transitionApplicationStage }));
+jest.unstable_mockModule("../../../src/services/interview-schedule.service.js", () => ({ cancelInterview }));
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({ transitionApplicationStage }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction }));
 
 const { mcpCtx } = await import("../../../src/mcp/context.js");

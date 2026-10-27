@@ -16,8 +16,8 @@ jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: pris
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({ tenantTransaction: (client, fn) => fn(client) }));
 
-const service = await import("../../../src/services/applicationScreening.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const service = await import("../../../src/services/application-screening.service.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const TENANT = "t-1";
 const ORG = resolveRecruitmentScope({ roles: ["RECRUITER"], employeeId: 5 });

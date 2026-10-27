@@ -25,7 +25,7 @@ const results = {
 jest.unstable_mockModule("../../../src/services/reception.service.js", () => reception);
 jest.unstable_mockModule("../../../src/services/test-result.service.js", () => results);
 // The flag check is the real one; the rest of the kiosk service is not needed.
-const { isRecruitmentFlagEnabled } = await import("../../../src/lib/recruitmentFlags.js");
+const { isRecruitmentFlagEnabled } = await import("../../../src/lib/recruitment-flags.util.js");
 jest.unstable_mockModule("../../../src/services/test-session.service.js", () => ({
     assertOnsiteTestEnabled: () => {
         if (!isRecruitmentFlagEnabled("onsiteTest")) {

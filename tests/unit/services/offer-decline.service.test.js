@@ -36,16 +36,16 @@ jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({
     rlsTenantExtension: jest.fn((client) => client),
 }));
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM: jest.fn(), deleteDamAsset: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({
     transitionApplicationStageInTransaction: mockTransition,
     transitionApplicationStage: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/recruitmentHandoff.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/recruitment-handoff.service.js", () => ({
     runOfferHandoff: mockRunOfferHandoff,
     getOfferHandoff: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
-jest.unstable_mockModule("../../../src/services/talentPool.service.js", () => ({ addToPool }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/talent-pool.service.js", () => ({ addToPool }));
 
 const { respondOffer, OFFER_DECLINED_EVENT } = await import("../../../src/services/offer.service.js");
 

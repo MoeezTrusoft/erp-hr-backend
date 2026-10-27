@@ -27,7 +27,7 @@
 // non-anonymized candidates are compared (a merged-away row is archived, so the
 // pair is not re-proposed); a candidate under legal hold is skipped entirely.
 //
-// MERGE. candidateMerge.service.js runs its own transaction and cannot join
+// MERGE. candidate-merge.service.js runs its own transaction and cannot join
 // ours, so the suggestion is CLAIMED first (OPEN -> MERGED with an atomic
 // updateMany, so two recruiters cannot merge one pair twice), the merge runs,
 // and a failed merge puts the claim back to OPEN. Other OPEN suggestions that
@@ -45,8 +45,8 @@ import { mcpCtx } from "../lib/requestContext.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
 import { eventContext } from "../lib/event-context.util.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
-import { maskCandidateForScope } from "../lib/recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
+import { maskCandidateForScope } from "../lib/recruitment-access.util.js";
 import {
     normalizeEmailKey,
     normalizePhoneKey,
@@ -57,7 +57,7 @@ import {
     scorePair,
 } from "../lib/candidate-duplicate-match.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { mergeCandidates } from "./candidateMerge.service.js";
+import { mergeCandidates } from "./candidate-merge.service.js";
 
 const log = logger.child({ component: "candidate-duplicate" });
 

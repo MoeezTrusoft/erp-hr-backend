@@ -98,7 +98,7 @@ const performanceCtl = await import('../../../src/mcp/controllers/performanceMcp
 
 const { registerAttendanceTools } = await import('../../../src/mcp/tools/attendanceTools.js');
 const { registerLeaveTools } = await import('../../../src/mcp/tools/leaveTools.js');
-const { registerRecruitmentTools } = await import('../../../src/mcp/tools/recruitmentTools.js');
+const { registerRecruitmentTools } = await import('../../../src/mcp/tools/recruitment.tools.js');
 const { registerPayrollTools } = await import('../../../src/mcp/tools/payrollTools.js');
 const { registerPerformanceTools } = await import('../../../src/mcp/tools/performanceTools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');

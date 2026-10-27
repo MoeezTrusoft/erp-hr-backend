@@ -8,7 +8,7 @@
 // neither may come from a forwarded header. Errors keep the established
 // recruitment shape (status + descriptive `code`) so an operator can tell a DNC
 // block from a validation failure.
-import * as privacy from "../services/candidatePrivacy.service.js";
+import * as privacy from "../services/candidate-privacy.service.js";
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
 import { runManualRetention } from "../services/retention-run.service.js";
 

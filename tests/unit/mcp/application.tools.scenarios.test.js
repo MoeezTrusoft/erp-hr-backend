@@ -11,12 +11,12 @@ const appService = {
   getApplication: jest.fn(async () => ({ id: 1, candidateId: 88 })),
   deleteApplication: jest.fn(async () => 1),
 };
-jest.unstable_mockModule('../../../src/services/applicationService.js', () => appService);
+jest.unstable_mockModule('../../../src/services/application.service.js', () => appService);
 jest.unstable_mockModule('../../../src/lib/prisma.js', () => ({
   default: { application: { findUnique: jest.fn(async () => ({ id: 1 })) } },
 }));
 
-const { registerApplicationTools } = await import('../../../src/mcp/tools/applicationTools.js');
+const { registerApplicationTools } = await import('../../../src/mcp/tools/application.tools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();

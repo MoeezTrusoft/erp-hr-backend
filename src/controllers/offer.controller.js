@@ -4,9 +4,9 @@ import { legacyDecision } from "../services/approval/legacy.js";
 import {
     getOfferApprovalPolicy as getOfferApprovalPolicySvc,
     setOfferApprovalPolicy as setOfferApprovalPolicySvc,
-} from "../services/offerApproval.service.js";
-import { getOfferHandoff, runOfferHandoff, listFailedHandoffs as listFailedHandoffsSvc } from "../services/recruitmentHandoff.service.js";
-import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
+} from "../services/offer-approval.service.js";
+import { getOfferHandoff, runOfferHandoff, listFailedHandoffs as listFailedHandoffsSvc } from "../services/recruitment-handoff.service.js";
+import { resolveRecruitmentScope } from "../lib/recruitment-access.util.js";
 
 export const createOffer = async (req, res) => {
     try {

@@ -48,7 +48,7 @@ jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({
     rlsTenantExtension: jest.fn((client) => client),
 }));
 jest.unstable_mockModule("../../../src/lib/notificationClient.js", () => ({ sendCandidateEmail: jest.fn(async () => ({ sent: true })) }));
-jest.unstable_mockModule("../../../src/lib/recruitmentFlags.js", () => ({ isRecruitmentFlagEnabled: jest.fn(() => true) }));
+jest.unstable_mockModule("../../../src/lib/recruitment-flags.util.js", () => ({ isRecruitmentFlagEnabled: jest.fn(() => true) }));
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({
     uploadFileToDAM: jest.fn(),
     deleteDamAsset: jest.fn(),
@@ -58,10 +58,10 @@ jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({
     damRequest: jest.fn(),
 }));
 const submitPublicApplication = jest.fn(async () => ({ received: true, requisitionId: 5 }));
-jest.unstable_mockModule("../../../src/services/publicPortal.service.js", () => ({ submitPublicApplication }));
+jest.unstable_mockModule("../../../src/services/public-portal.service.js", () => ({ submitPublicApplication }));
 
 const { sendCandidateEmail } = await import("../../../src/lib/notificationClient.js");
-const drafts = await import("../../../src/services/applicationDraft.service.js");
+const drafts = await import("../../../src/services/application-draft.service.js");
 const refs = await import("../../../src/services/portal-resume-upload.service.js");
 
 const ref = (over = {}) => refs.issuePortalResumeRef({ tenantId: TENANT, mediaId: 4242, fileName: "cv.pdf", ...over }).resumeRef;

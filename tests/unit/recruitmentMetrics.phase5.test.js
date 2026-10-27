@@ -13,7 +13,7 @@ import {
     metricsVersionBlock,
     recruiterWorkload,
     timeToStartForHire,
-} from "../../src/lib/recruitmentMetrics.js";
+} from "../../src/lib/recruitment-metrics.util.js";
 
 const d = (s) => new Date(s);
 const NOW = d("2026-10-20T10:00:00Z");

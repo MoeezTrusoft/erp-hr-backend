@@ -1,7 +1,7 @@
 // src/controllers/applicationController.js
-import * as applicationService from "../services/applicationService.js";
+import * as applicationService from "../services/application.service.js";
 import { respondServerError } from '../utils/httpError.js';
-import { resolveRecruitmentScope } from '../lib/recruitmentAccess.js';
+import { resolveRecruitmentScope } from '../lib/recruitment-access.util.js';
 
 // A service refusal keeps its own 4xx (409 HR-RECRUITMENT-CANDIDATE-DNC, 404);
 // anything else stays the historical 400.

@@ -9,7 +9,7 @@ const prisma = { scorecardTemplate: { findMany: jest.fn(async () => [{ id: 1, na
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
 
-const { registerInterviewMgmtTools } = await import("../../../src/mcp/tools/interviewMgmtTools.js");
+const { registerInterviewMgmtTools } = await import("../../../src/mcp/tools/interview-mgmt.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const handlers = new Map();

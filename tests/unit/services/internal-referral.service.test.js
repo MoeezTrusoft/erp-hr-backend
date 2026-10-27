@@ -15,7 +15,7 @@ jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: dbPr
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction }));
 
 const svc = await import("../../../src/services/internal-referral.service.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const { RECRUITMENT_SETTINGS_DEFAULTS } = await import("../../../src/services/recruitment-settings.service.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 

@@ -12,7 +12,7 @@ const proxy = new Proxy({}, { get: (_t, key) => fake.db[key] });
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: proxy, prisma: proxy }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: async () => undefined }));
 jest.unstable_mockModule("../../../src/services/tagService.js", () => ({ upsertTags: async () => [] }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({
     computeRetentionUntil: async () => null,
     findActiveDnc: async () => null,
 }));
@@ -24,7 +24,7 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
 }));
 
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
-const { AGENCY_MEMBERSHIP, resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { AGENCY_MEMBERSHIP, resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 const svc = await import("../../../src/services/agency-submission.service.js");
 const admin = await import("../../../src/services/recruitment-agency.service.js");
 

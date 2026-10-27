@@ -22,7 +22,7 @@ jest.unstable_mockModule("../../../src/mcp/controllers/recruitmentMcpController.
     ].map((name) => [name, recruitmentController[name]])
   ),
 }));
-jest.unstable_mockModule("../../../src/services/applicationQuestion.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-question.service.js", () => ({
   listQuestions: listed,
 }));
 jest.unstable_mockModule("../../../src/mcp/controllers/onboardingMcpController.js", () => ({
@@ -38,8 +38,8 @@ jest.unstable_mockModule("../../../src/mcp/controllers/onboardingMcpController.j
   mcpUpdateOnboardingTask: jest.fn(),
 }));
 
-const { registerRecruitmentTools } = await import("../../../src/mcp/tools/recruitmentTools.js");
-const { registerOnboardingTools } = await import("../../../src/mcp/tools/onboardingTools.js");
+const { registerRecruitmentTools } = await import("../../../src/mcp/tools/recruitment.tools.js");
+const { registerOnboardingTools } = await import("../../../src/mcp/tools/onboarding.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const resources = new Map();

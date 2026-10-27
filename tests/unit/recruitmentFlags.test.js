@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
 
 const { isRecruitmentFlagEnabled, recruitmentFlagSnapshot, RECRUITMENT_FLAG_DEFINITIONS } = await import(
-    "../../src/lib/recruitmentFlags.js"
+    "../../src/lib/recruitment-flags.util.js"
 );
 
 const ENV_KEYS = Object.values(RECRUITMENT_FLAG_DEFINITIONS).map((d) => d.env);

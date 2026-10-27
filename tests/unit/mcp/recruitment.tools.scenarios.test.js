@@ -42,25 +42,25 @@ jest.unstable_mockModule('../../../src/mcp/utils/listEnvelope.js', () => ({
   toListEnvelope: jest.fn((data) => ({ items: Array.isArray(data) ? data : [], total: Array.isArray(data) ? data.length : 0 })),
   toListQuery: jest.fn((args) => args),
 }));
-jest.unstable_mockModule('../../../src/services/recruitmentAnalytics.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/recruitment-analytics.service.js', () => ({
   computeRecruitmentAnalytics: jest.fn(async () => ({ success: true })),
   drillDownRecruitmentMetric: jest.fn(async () => ({ success: true })),
 }));
 jest.unstable_mockModule('../../../src/lib/export.util.js', () => ({
   exportRows: jest.fn(async () => ({ ext: 'csv', mimeType: 'text/csv', buffer: Buffer.from('') })),
 }));
-jest.unstable_mockModule('../../../src/services/recruitmentCost.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/recruitment-cost.service.js', () => ({
   getCostConfig: jest.fn(async () => ({ success: true })),
   setCostConfig: jest.fn(async () => ({ success: true })),
 }));
-jest.unstable_mockModule('../../../src/services/candidateResume.service.js', () => ({
+jest.unstable_mockModule('../../../src/services/candidate-resume.service.js', () => ({
   uploadCandidateResume: jest.fn(async () => ({ success: true })),
 }));
 
 // --- Imports ---
-const { registerRecruitmentTools } = await import('../../../src/mcp/tools/recruitmentTools.js');
-const { registerRecruitmentAnalyticsTools } = await import('../../../src/mcp/tools/recruitmentAnalyticsTools.js');
-const { registerRecruitmentExtraTools } = await import('../../../src/mcp/tools/recruitmentExtraTools.js');
+const { registerRecruitmentTools } = await import('../../../src/mcp/tools/recruitment.tools.js');
+const { registerRecruitmentAnalyticsTools } = await import('../../../src/mcp/tools/recruitment-analytics.tools.js');
+const { registerRecruitmentExtraTools } = await import('../../../src/mcp/tools/recruitment-extra.tools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
@@ -83,7 +83,7 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  // --- recruitmentTools.js (19 tools) ---
+  // --- recruitment.tools.js (19 tools) ---
   { name: 'hr_requisitions_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_candidates_list', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_requisition_create', gate: 'hr:recruitment', action: 'CREATE', args: { title: 'Sr Engineer', requestedById: '7' } },
@@ -103,11 +103,11 @@ const TOOLS = [
   { name: 'hr_offer_send', gate: 'hr:recruitment', action: 'CREATE', args: { id: '1' } },
   { name: 'hr_talent_pool_add', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1' } },
   { name: 'hr_talent_pool_remove', gate: 'hr:recruitment', action: 'DELETE', args: { id: '1' } },
-  // --- recruitmentAnalyticsTools.js (2 tools) ---
+  // --- recruitment-analytics.tools.js (2 tools) ---
   { name: 'hr_recruitment_analytics_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_recruitment_analytics_drilldown', gate: 'hr:recruitment', action: 'VIEW', args: { metric: 'totalHires' } },
   { name: 'hr_recruitment_analytics_export', gate: 'hr:recruitment', action: 'VIEW', args: { format: 'csv' } },
-  // --- recruitmentExtraTools.js (7 tools) ---
+  // --- recruitment-extra.tools.js (7 tools) ---
   { name: 'hr_recruitment_cost_config_get', gate: 'hr:recruitment', action: 'VIEW', args: {} },
   { name: 'hr_recruitment_cost_config_set', gate: 'hr:recruitment', action: 'EDIT', args: {} },
   { name: 'hr_candidate_resume_upload', gate: 'hr:recruitment', action: 'CREATE', args: { candidateId: '1', fileBase64: 'dGVzdA==' } },

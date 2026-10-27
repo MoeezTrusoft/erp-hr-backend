@@ -22,7 +22,7 @@ import {
     leaveOverlapsSlot,
     blockedInterviewers,
     validateConflictOverride,
-} from "../../src/lib/interviewScheduling.js";
+} from "../../src/lib/interview-scheduling.util.js";
 
 describe("interviewScheduling — §5.4 reason vocabulary", () => {
     it("exposes exactly the decision's suggested set", () => {

@@ -25,10 +25,10 @@ jest.unstable_mockModule("axios", () => ({ default: axiosMock }));
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/config/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 jest.unstable_mockModule("../../../src/lib/notificationClient.js", () => ({ sendCandidateEmail }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({
     transitionApplicationStageInTransaction: jest.fn(async () => ({})),
     transitionApplicationStage: jest.fn(),
 }));

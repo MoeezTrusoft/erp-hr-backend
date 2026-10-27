@@ -27,7 +27,7 @@ jest.unstable_mockModule("../../src/services/interview-scorecard.service.js", ()
   upsertInterviewScorecard: jest.fn(),
 }));
 
-const { setInterviewOutcome, getInterviewManaged } = await import("../../src/services/interviewMgmt.service.js");
+const { setInterviewOutcome, getInterviewManaged } = await import("../../src/services/interview-mgmt.service.js");
 
 describe("Interview outcome rules (Phase 3.4)", () => {
   beforeEach(() => {

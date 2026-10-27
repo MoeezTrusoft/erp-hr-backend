@@ -1,8 +1,8 @@
 // src/controllers/candidateController.js
-import * as candidateService from "../services/candidateService.js";
+import * as candidateService from "../services/candidate.service.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
-import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../lib/recruitment-access.util.js";
 
 
 export const createCandidate = async (req, res) => {
@@ -56,7 +56,7 @@ export const createCandidate = async (req, res) => {
         let resumeParsing = null;
         if (resumeMediaId && parseResume) {
             try {
-                const { ingestCandidateResume } = await import("../services/resumeParsing.service.js");
+                const { ingestCandidateResume } = await import("../services/resume-parsing.service.js");
                 resumeParsing = await ingestCandidateResume({
                     candidateId: candidate.id,
                     mediaId: resumeMediaId,

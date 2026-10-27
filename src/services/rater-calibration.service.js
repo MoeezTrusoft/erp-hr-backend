@@ -33,7 +33,7 @@ import {
     storedCriteriaOf,
 } from "../lib/evaluation-form.util.js";
 import { assertEvaluationFormsEnabled } from "./evaluation-summary.service.js";
-import { FORM_TEMPLATE_SELECT } from "./scorecardTemplate.service.js";
+import { FORM_TEMPLATE_SELECT } from "./scorecard-template.service.js";
 
 export const CALIBRATION_MIN_SAMPLE = 5;
 export const LENIENCY_BAND = 0.5;

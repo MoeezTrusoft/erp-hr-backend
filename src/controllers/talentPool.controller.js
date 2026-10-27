@@ -1,11 +1,11 @@
-import * as svc from "../services/talentPool.service.js";
+import * as svc from "../services/talent-pool.service.js";
 import {
     listInvitations as listInvitationsSvc,
     respondToInvitation,
     segmentTalentPool,
     sweepTalentPoolRetention,
     withdrawInvitation,
-} from "../services/talentPoolInvitation.service.js";
+} from "../services/talent-pool-invitation.service.js";
 import { respondServerError } from '../utils/httpError.js';
 import { resolveEmployeeActor } from "../lib/employeeActor.js";
 

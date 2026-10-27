@@ -44,10 +44,10 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { HR_EVENTS_STREAM } from "../jobs/outbox.dispatcher.js";
 import { COMMUNICATION_TARGETS, EVENTS, isReinstatement, templateForEvent } from "./candidate-communication.templates.js";
-import { isInvitationExpired } from "../lib/talentPoolPolicy.js";
+import { isInvitationExpired } from "../lib/talent-pool-policy.util.js";
 import {
     COMMUNICATION_STATUS,
     buildCommunicationRow,

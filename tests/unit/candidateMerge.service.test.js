@@ -54,7 +54,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 
-const { mergeCandidates } = await import("../../src/services/candidateMerge.service.js");
+const { mergeCandidates } = await import("../../src/services/candidate-merge.service.js");
 
 const seedPair = (sourceOverrides = {}, targetOverrides = {}) => {
     rows.clear();

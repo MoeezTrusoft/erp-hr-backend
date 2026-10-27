@@ -1,0 +1,307 @@
+// src/services/candidate.service.js
+import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js"; // TEN-2: GUC-in-tx for FORCE-RLS writes
+import { upsertTags } from "./tagService.js";
+import { computeRetentionUntil } from "./candidate-privacy.service.js";
+import { candidateScopeWhere, maskCandidateForScope, maskCandidatesForScope } from "../lib/recruitment-access.util.js";
+import { logAction } from "../utils/logs.js";
+import {
+  decodeCursor,
+  keysetWhere,
+  nextCursorFrom,
+} from "../mcp/utils/cursorPagination.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { assertIntakeAllowed } from "./intake-dnc.service.js";
+
+/**
+ * Create candidate with optional tags (skill names).
+ *
+ * Recruitment Phase 2 — D-11: an address on the do-not-contact register is
+ * refused with 409 HR-RECRUITMENT-CANDIDATE-DNC before anything is written;
+ * the message does not echo the address.
+ */
+export const createCandidate = async ({
+    firstName,
+    lastName,
+    email,
+    phone,
+    source,
+    notes,
+    resumeMediaId,
+    tagNames = [],
+    tenantId,
+    createdById,
+}) => {
+
+      // 🔍 1. Validate if email already exists (before transaction)
+    const existing = await prisma.candidate.findUnique({
+        where: { tenantId_email: { tenantId, email } }
+    });
+
+    if (existing) {
+        // ❗ Log failed attempt
+        await logAction({
+            employeeId: createdById ?? null,
+            type: "CREATE",
+            module: "Candidate",
+            result: "FAILED",
+            notes: `Candidate creation failed. Email "${email}" already exists.`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
+
+        // ❗ Throw friendly error
+        const error = new Error(`Candidate with email "${email}" already exists.`);
+        error.status = 409; // Conflict
+        throw error;
+    }
+    // D-11 — before any write (tags included), on the request's tenant context.
+    await assertIntakeAllowed({ tenantId, email });
+
+    const tags = await upsertTags({
+        names: tagNames,
+        tenantId,
+        createdById,
+    });
+
+    return tenantTransaction(prisma, async (tx) => {
+        // Phase 10 — stamp the retention clock from the tenant's policy. No policy
+        // means NO clock (null), never a guessed default: a candidate must never be
+        // scheduled for erasure because we assumed a retention period nobody set.
+        const retentionUntil = await computeRetentionUntil({ tenantId, appliesTo: "APPLICANT" }, { db: tx });
+
+        const candidate = await tx.candidate.create({
+            data: {
+                firstName,
+                lastName,
+                email,
+                phone,
+                source,
+                notes,
+                resumeMediaId: resumeMediaId != null ? Number(resumeMediaId) : null,
+                tenantId: tenantId ?? null,
+                retentionUntil,
+                // FR-10 residue — NAME the clock's population. A candidate created
+                // here applied, so this is the APPLICANT basis; the pool basis is
+                // stamped when they are added to a talent pool. Without the
+                // marker a later sweep cannot tell which clock it is reading.
+                retentionPopulation: retentionUntil ? "APPLICANT" : null,
+                // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
+                // finite creator id, else null (createdById is nullable).
+                createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
+            },
+        });
+
+        if (tags.length) {
+            await tx.candidateTag.createMany({
+                data: tags.map((tag) => ({
+                    candidateId: candidate.id,
+                    tagId: tag.id,
+                    tenantId: tenantId ?? null,
+                })),
+                skipDuplicates: true,
+            });
+        }
+   // ⭐ Add the logging here   
+        await logAction({
+            employeeId: createdById ?? null,
+            type: "CREATE",
+            module: "Candidate",
+            result: "SUCCESS",
+            notes: `Candidate "${candidate.id}" created successfully.`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
+
+        return tx.candidate.findUnique({
+            where: { id: candidate.id },
+            include: {
+                tags: { include: { tag: true } },
+            },
+        });
+    });
+};
+
+/**
+ * Update candidate basic info + (optionally) tags by names.
+ */
+export const updateCandidate = async ({
+    id,
+    tenantId,
+    data,
+    tagNames,
+    updatedById,
+    expectedVersion,
+}) => {
+    // API-2 — optimistic-concurrency guard (opt-in). Absent ⇒ no reject.
+    const expected = normalizeExpectedVersion(expectedVersion);
+    return tenantTransaction(prisma, async (tx) => {
+        // API-2 — atomic compare-and-set + version bump, still tenant-scoped.
+        const versionWhere = expected == null ? {} : { version: expected };
+        const { count } = await tx.candidate.updateMany({
+            where: { id, tenantId: tenantId ?? null, ...versionWhere },
+            data: {
+                ...data,
+                // Do NOT overwrite createdById on update — it records the original
+                // creator, not the updater. (No updatedById column yet; when one is
+                // added, set it here instead.)
+                version: { increment: 1 },
+            },
+        });
+        if (count === 0 && expected != null) {
+            const fresh = await tx.candidate.findFirst({
+                where: { id, tenantId: tenantId ?? null },
+                select: { version: true },
+            });
+            throw preconditionFailedError(fresh?.version);
+        }
+
+        if (Array.isArray(tagNames)) {
+            const tags = await upsertTags({
+                names: tagNames,
+                tenantId,
+                createdById: Number(updatedById),
+            });
+
+            await tx.candidateTag.deleteMany({
+                where: { candidateId: id, tenantId: tenantId ?? null },
+            });
+
+            if (tags.length) {
+                await tx.candidateTag.createMany({
+                    data: tags.map((tag) => ({
+                        candidateId: id,
+                        tagId: tag.id,
+                    })),
+                    skipDuplicates: true,
+                });
+            }
+        }
+
+          await logAction({
+            employeeId: updatedById,
+            type: "UPDATE",
+            module: "Candidate",
+            result: "SUCCESS",
+            notes: `Candidate "${id}" updated successfully.`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
+
+        return tx.candidate.findFirst({
+            where: { id, tenantId: tenantId ?? null },
+            include: {
+                tags: { include: { tag: true } },
+                applications: {
+                    include: {
+                        jobRequisition: true,
+                    },
+                },
+            },
+        });
+    });
+};
+
+/**
+ * Get candidate by ID (with tags and applications)
+ */
+// Phase 1.4 — `scope` narrows the row (a manager reaches only candidates who
+// applied to their requisitions; an interviewer only those they are meeting) and
+// masks the recruiter's internal notes for outward scopes.
+export const getCandidate = async ({ id, tenantId, scope = null }) => {
+    const candidate = await prisma.candidate.findFirst({
+        where: {
+            id,
+            tenantId: tenantId ?? null,
+            ...(scope ? candidateScopeWhere(scope) : {}),
+        },
+        include: {
+            tags: { include: { tag: true } },
+            applications: {
+                include: {
+                    jobRequisition: true,
+                },
+            },
+        },
+    });
+    return maskCandidateForScope(candidate, scope);
+};
+
+/**
+ * List candidates with search, tag filter, pagination
+ */
+export const listCandidates = async ({
+    tenantId,
+    search,
+    tagIds = [],
+    page = 1,
+    limit = 20,
+    cursor, // API-4: opaque keyset cursor (optional; additive, back-compatible)
+    scope = null, // Phase 1.4 — record-level narrowing (optional)
+}) => {
+    const skip = (page - 1) * limit;
+
+    const baseWhere = {
+        tenantId: tenantId ?? null,
+        status: "active",
+        ...(scope ? candidateScopeWhere(scope) : {}),
+        ...(search
+            ? {
+                OR: [
+                    { firstName: { contains: search, mode: "insensitive" } },
+                    { lastName: { contains: search, mode: "insensitive" } },
+                    { email: { contains: search, mode: "insensitive" } },
+                ],
+            }
+            : {}),
+        ...(tagIds.length
+            ? {
+                tags: {
+                    some: {
+                        tagId: { in: tagIds },
+                    },
+                },
+            }
+            : {}),
+    };
+
+    // API-4: keyset pagination is OPT-IN via `cursor`. When present we page by
+    // (createdAt desc, id desc) and drop the offset (skip) — this is stable under
+    // concurrent inserts and avoids a growing OFFSET scan on deep pages. When
+    // absent the original offset/page behavior is preserved verbatim.
+    const decoded = decodeCursor(cursor);
+    const useCursor = decoded != null;
+    const where = useCursor
+        ? { AND: [baseWhere, keysetWhere(decoded, { castId: Number })] }
+        : baseWhere;
+
+    const [items, total] = await Promise.all([
+        prisma.candidate.findMany({
+            where,
+            // The parsed resume is the detail read's; a list returns the profile.
+            omit: { parsedResume: true },
+            include: {
+                tags: { include: { tag: true } },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            ...(useCursor ? {} : { skip }),
+            take: limit,
+        }),
+        prisma.candidate.count({ where: baseWhere }),
+    ]);
+
+    // nextCursor is emitted ALONGSIDE the existing page fields; clients that
+    // ignore it are unaffected.
+    const nextCursor = nextCursorFrom(items, limit);
+    return { items: maskCandidatesForScope(items, scope), total, page, limit, nextCursor };
+};
+
+export const updateCandidateResumeMedia = async ({ id, mediaId, tenantId }) => {
+    const candidate = await prisma.candidate.findFirst({
+        where: { id: Number(id), tenantId: tenantId ?? null },
+        select: { id: true },
+    });
+    if (!candidate) throw Object.assign(new Error("Candidate not found"), { status: 404 });
+
+    return prisma.candidate.update({
+        where: { id: candidate.id },
+        data: { resumeMediaId: Number(mediaId) },
+    });
+};

@@ -2,7 +2,7 @@
 //
 // Recruitment Phase 5 (plan 6.2, flag agencyPortal) — WHO an agency caller is.
 //
-// recruitmentAccess.js turns role claims into a row scope and must stay pure
+// recruitment-access.util.js turns role claims into a row scope and must stay pure
 // and synchronous (dozens of call sites resolve it inline). An AGENCY caller,
 // though, is only meaningful together with a database fact: the verified RBAC
 // user id is mapped to one RecruitmentAgency through RecruitmentAgencyUser.
@@ -29,8 +29,8 @@
 import prisma from "./prisma.js";
 import logger from "./logger.js";
 import { mcpCtx } from "./requestContext.js";
-import { isRecruitmentFlagEnabled } from "./recruitmentFlags.js";
-import { AGENCY_MEMBERSHIP, RECRUITMENT_SCOPE, resolveRecruitmentScope } from "./recruitmentAccess.js";
+import { isRecruitmentFlagEnabled } from "./recruitment-flags.util.js";
+import { AGENCY_MEMBERSHIP, RECRUITMENT_SCOPE, resolveRecruitmentScope } from "./recruitment-access.util.js";
 
 export const AGENCY_STATUS = Object.freeze({ ACTIVE: "ACTIVE", SUSPENDED: "SUSPENDED" });
 export const AGENCY_USER_STATUS = Object.freeze({ ACTIVE: "ACTIVE", REVOKED: "REVOKED" });

@@ -25,7 +25,7 @@ const screening = {
 };
 
 jest.unstable_mockModule("../../../src/services/application-scoring.service.js", async () => {
-    const { isRecruitmentFlagEnabled } = await import("../../../src/lib/recruitmentFlags.js");
+    const { isRecruitmentFlagEnabled } = await import("../../../src/lib/recruitment-flags.util.js");
     return {
         ...scoring,
         assertScoringEnabled: () => {
@@ -35,13 +35,13 @@ jest.unstable_mockModule("../../../src/services/application-scoring.service.js",
         },
     };
 });
-jest.unstable_mockModule("../../../src/services/applicationScreening.service.js", () => screening);
-jest.unstable_mockModule("../../../src/services/applicationService.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-screening.service.js", () => screening);
+jest.unstable_mockModule("../../../src/services/application.service.js", () => ({
     listApplications: jest.fn(),
     getApplication: jest.fn(),
     deleteApplication: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/interviewPacket.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/interview-packet.service.js", () => ({
     addPacketItem: jest.fn(),
     listPacket: jest.fn(),
     removePacketItem: jest.fn(),
@@ -49,7 +49,7 @@ jest.unstable_mockModule("../../../src/services/interviewPacket.service.js", () 
 }));
 
 const { registerRecruitmentScoringTools } = await import("../../../src/mcp/tools/recruitment-scoring.tools.js");
-const { registerApplicationTools } = await import("../../../src/mcp/tools/applicationTools.js");
+const { registerApplicationTools } = await import("../../../src/mcp/tools/application.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
 
 const handlers = new Map();

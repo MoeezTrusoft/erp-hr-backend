@@ -18,7 +18,7 @@
 // payload and the alert's details, the same HR-role path the referral bonus
 // event uses, so an alert is never announced to nobody.
 //
-// The metric arithmetic is the canonical one (src/lib/recruitmentMetrics.js):
+// The metric arithmetic is the canonical one (src/lib/recruitment-metrics.util.js):
 // time to fill per requisition, the offer outcome rates and the stage SLA the
 // analytics payload reports, so an alert never disagrees with the dashboard.
 //
@@ -40,7 +40,7 @@ import { mcpCtx } from "../mcp/context.js";
 import { scopedEmployeeWhere, withTenant } from "../lib/tenancy.js";
 import { employeeNamesById, nameOf } from "../lib/employee-names.util.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import {
     ACTIVE_APPLICATION_STAGES,
     aggregateTimeToFill,
@@ -49,7 +49,7 @@ import {
     slaAging,
     timeInStageForApplication,
     timeToFillForRequisition,
-} from "../lib/recruitmentMetrics.js";
+} from "../lib/recruitment-metrics.util.js";
 import {
     ACTIVE_ALERT_STATUSES,
     ALERT_METRICS,
@@ -67,7 +67,7 @@ import {
     watchedMetrics,
 } from "../lib/recruitment-alerts.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { getStageSlaConfig } from "./recruitmentAnalytics.service.js";
+import { getStageSlaConfig } from "./recruitment-analytics.service.js";
 
 const log = logger.child({ component: "recruitment-alerts" });
 

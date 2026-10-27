@@ -29,7 +29,7 @@ jest.unstable_mockModule("../../../src/services/offer-expiry.service.js", () => 
     MAX_EXTENSION_DAYS: 60,
     REOPEN_WINDOW_DAYS: 7,
 }));
-jest.unstable_mockModule("../../../src/services/offerMgmt.service.js", () => ({ checkOfferSalaryBand }));
+jest.unstable_mockModule("../../../src/services/offer-mgmt.service.js", () => ({ checkOfferSalaryBand }));
 
 const { registerOfferLifecycleTools } = await import("../../../src/mcp/tools/offer-lifecycle.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");

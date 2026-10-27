@@ -130,10 +130,10 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 
 const { autoPublishApprovedRequisitions, closePostingsPastClosesAt, publishRequisition } = await import(
-  "../../src/services/requisitionPublication.service.js"
+  "../../src/services/requisition-publication.service.js"
 );
 const { resolveDefaultPublicationChannels, DEFAULT_PUBLICATION_CHANNELS } = await import(
-  "../../src/lib/requisitionPublication.js"
+  "../../src/lib/requisition-publication.util.js"
 );
 
 const requisition = (overrides = {}) => ({

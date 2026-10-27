@@ -91,7 +91,7 @@ jest.unstable_mockModule("../../src/services/approval/legacy.js", () => ({
 
 const { enqueueHrDomainEvent } = await import("../../src/services/hrDomainEvent.service.js");
 const { submitRequisition, updateRequisition } = await import("../../src/services/requisition.service.js");
-const { submitRequisition: mgmtSubmit } = await import("../../src/services/requisitionMgmt.service.js");
+const { submitRequisition: mgmtSubmit } = await import("../../src/services/requisition-mgmt.service.js");
 const { submitRequisition: legacySubmit } = await import("../../src/services/hrContract.service.js");
 
 const submittedEventOf = (nth = 0) => {

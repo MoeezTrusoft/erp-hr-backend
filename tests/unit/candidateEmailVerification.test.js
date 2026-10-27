@@ -46,7 +46,7 @@ const {
   sendVerificationEmail,
   consumeEmailVerification,
   notifyMailboxOwner,
-} = await import("../../src/services/candidateVerification.service.js");
+} = await import("../../src/services/candidate-verification.service.js");
 
 beforeEach(() => {
   jest.clearAllMocks();

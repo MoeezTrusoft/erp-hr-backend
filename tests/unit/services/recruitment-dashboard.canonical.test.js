@@ -10,7 +10,7 @@ jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn() }));
 
 const { getRecruitmentDashboard } = await import("../../../src/services/analyticsService.js");
-const { openPositions } = await import("../../../src/lib/recruitmentMetrics.js");
+const { openPositions } = await import("../../../src/lib/recruitment-metrics.util.js");
 
 const at = (iso) => new Date(iso);
 // Two seats on one posted requisition, one filled; one requisition still

@@ -11,8 +11,8 @@
 // "IN_PROCESS" on another is what one module prevents.
 //
 // No DB and no I/O here (src/lib may not import src/services).
-import { INTERNAL_BOARD_CHANNELS } from "./requisitionPublication.js";
-import { APPLICATION_ACCEPTING_STATUSES } from "./requisitionEligibility.js";
+import { INTERNAL_BOARD_CHANNELS } from "./requisition-publication.util.js";
+import { APPLICATION_ACCEPTING_STATUSES } from "./requisition-eligibility.util.js";
 
 const fail = (message, status, code, details) =>
     Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });

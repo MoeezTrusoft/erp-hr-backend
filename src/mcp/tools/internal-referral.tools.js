@@ -17,7 +17,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import {
   BONUS_DECISION_TARGETS,
   BONUS_FORFEIT_REASONS,

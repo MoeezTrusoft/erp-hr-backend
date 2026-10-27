@@ -35,7 +35,7 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere, scopedData, scopedEmployeeWhere, requireTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { cleanFileName, fileExtension, normalizeMimeType, validateOnboardingUpload } from "../lib/onboarding-upload.util.js";
 import { liveSessionWhere } from "../lib/onboarding-sessions.util.js";

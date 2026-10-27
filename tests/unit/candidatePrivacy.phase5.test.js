@@ -22,7 +22,7 @@ jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({
     normalizeDamAssetResponse: jest.fn((p) => p ?? null),
 }));
 
-const privacy = await import("../../src/services/candidatePrivacy.service.js");
+const privacy = await import("../../src/services/candidate-privacy.service.js");
 const { mcpCtx } = await import("../../src/lib/requestContext.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

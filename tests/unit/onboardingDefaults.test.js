@@ -6,7 +6,7 @@ import { describe, it, expect } from "@jest/globals";
 import {
   DEFAULT_ONBOARDING_TASKS,
   buildOnboardingTaskRows,
-} from "../../src/lib/onboardingDefaults.js";
+} from "../../src/lib/onboarding-defaults.util.js";
 
 const STAGES = new Set(["pre_joining", "pre_boarding", "first_week", "equipment"]);
 const CATEGORIES = new Set([

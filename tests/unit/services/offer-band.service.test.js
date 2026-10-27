@@ -26,15 +26,15 @@ jest.unstable_mockModule("../../../src/lib/rlsTenant.js", () => ({
     rlsTenantExtension: jest.fn((client) => client),
 }));
 jest.unstable_mockModule("../../../src/services/dam.media.service.js", () => ({ uploadFileToDAM: jest.fn(), deleteDamAsset: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/application-workflow.service.js", () => ({
     transitionApplicationStageInTransaction: mockTransition,
     transitionApplicationStage: jest.fn(),
 }));
-jest.unstable_mockModule("../../../src/services/recruitmentHandoff.service.js", () => ({ runOfferHandoff: jest.fn(), getOfferHandoff: jest.fn() }));
-jest.unstable_mockModule("../../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/recruitment-handoff.service.js", () => ({ runOfferHandoff: jest.fn(), getOfferHandoff: jest.fn() }));
+jest.unstable_mockModule("../../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed: jest.fn() }));
 jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent: jest.fn(async () => null) }));
 
-const { compareSalaryToBand, checkOfferSalaryBand, createOfferFull, resolveRequisitionBand } = await import("../../../src/services/offerMgmt.service.js");
+const { compareSalaryToBand, checkOfferSalaryBand, createOfferFull, resolveRequisitionBand } = await import("../../../src/services/offer-mgmt.service.js");
 const { createOffer } = await import("../../../src/services/offer.service.js");
 
 const BAND = { id: 3, name: "G5", minSalary: "100000.0000", maxSalary: "150000.0000", bandCurrency: "PKR" };
@@ -128,7 +128,7 @@ describe("createOffer warnings", () => {
 
 describe("getOfferManage detail (Phase 3a panel)", () => {
     it("carries the version for If-Match and the employee category for e-signature", async () => {
-        const { getOfferManage } = await import("../../../src/services/offerMgmt.service.js");
+        const { getOfferManage } = await import("../../../src/services/offer-mgmt.service.js");
         prisma.offer.findFirst.mockResolvedValue({ ...offerRow, version: 4, employeeCategory: "PERMANENT", candidate: { firstName: "A", lastName: "K" }, jobRequisition: { title: "Engineer" } });
         await expect(getOfferManage(9, { tenantId: TENANT })).resolves.toMatchObject({ version: 4, employeeCategory: "PERMANENT" });
         prisma.offer.findFirst.mockResolvedValue({ ...offerRow, candidate: null, jobRequisition: null });

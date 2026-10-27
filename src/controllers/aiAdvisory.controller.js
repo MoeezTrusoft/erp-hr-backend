@@ -10,7 +10,7 @@
 // §7.3 in one line: nothing in this controller advances, rejects, offers or
 // hires — every handler is a read that returns evidence.
 
-import { matchCandidateToRequisitionAdvisory } from "../services/candidateMatch.service.js";
+import { matchCandidateToRequisitionAdvisory } from "../services/candidate-match.service.js";
 import { reconcileParsedSkillsPreview } from "../services/skillTaxonomy.service.js";
 
 export async function matchCandidateHandler(req, res, next) {

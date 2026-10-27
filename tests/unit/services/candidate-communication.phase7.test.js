@@ -18,7 +18,7 @@ const getRecruitmentSettings = jest.fn();
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: db }));
 jest.unstable_mockModule("../../../src/lib/logger.js", () => ({ default: logger }));
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings }));
-jest.unstable_mockModule("../../../src/services/candidateVerification.service.js", () => ({ PORTAL_STATUS_REQUEST_PATH: "/status" }));
+jest.unstable_mockModule("../../../src/services/candidate-verification.service.js", () => ({ PORTAL_STATUS_REQUEST_PATH: "/status" }));
 
 const { handleCandidateCommunicationEvent } = await import("../../../src/services/candidate-communication.consumer.js");
 const { templateForEvent, getCommunicationTemplate } = await import("../../../src/services/candidate-communication.templates.js");

@@ -24,7 +24,7 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import {
     buildJobDescriptionHtml,
     buildJobFeedXml,

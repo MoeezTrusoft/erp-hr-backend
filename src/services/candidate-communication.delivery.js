@@ -34,10 +34,10 @@ import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { sendCandidateEmail } from "../lib/notificationClient.js";
 import { generateWorkerId, sanitiseWorkerId } from "../jobs/outbox.dispatcher.js";
-import { CONSENT_STATUS, findActiveDnc, normalizeEmail } from "./candidatePrivacy.service.js";
+import { CONSENT_STATUS, findActiveDnc, normalizeEmail } from "./candidate-privacy.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { RESPONSE_LINKS, getCommunicationTemplate } from "./candidate-communication.templates.js";
 import {

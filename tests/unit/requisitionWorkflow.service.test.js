@@ -56,7 +56,7 @@ jest.unstable_mockModule("../../src/services/rbac.client.js", () => ({
 const {
   assertRequisitionTransition,
   canTransitionRequisition,
-} = await import("../../src/services/requisitionWorkflow.service.js");
+} = await import("../../src/services/requisition-workflow.service.js");
 const { approveRequisition, createRequisition, postRequisition } = await import(
   "../../src/services/requisition.service.js"
 );

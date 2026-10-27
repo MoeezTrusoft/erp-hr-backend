@@ -25,10 +25,10 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
 }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({ enqueueHrDomainEvent: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../src/services/candidatePrivacy.service.js", () => ({ assertCommunicationsAllowed }));
+jest.unstable_mockModule("../../src/services/candidate-privacy.service.js", () => ({ assertCommunicationsAllowed }));
 
 const { scheduleInterview } = await import("../../src/services/interview.service.js");
-const { inviteToApply } = await import("../../src/services/talentPoolInvitation.service.js");
+const { inviteToApply } = await import("../../src/services/talent-pool-invitation.service.js");
 
 beforeEach(() => {
   jest.clearAllMocks();

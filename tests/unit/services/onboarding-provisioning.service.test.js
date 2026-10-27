@@ -16,7 +16,7 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
 }));
 
 const svc = await import("../../../src/services/onboarding-provisioning.service.js");
-const { materializeOnboardingTaskRows, DEFAULT_ONBOARDING_TASKS } = await import("../../../src/lib/onboardingDefaults.js");
+const { materializeOnboardingTaskRows, DEFAULT_ONBOARDING_TASKS } = await import("../../../src/lib/onboarding-defaults.util.js");
 const { mcpCtx } = await import("../../../src/lib/requestContext.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

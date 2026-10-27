@@ -4,7 +4,7 @@
 import { jest, describe, it, expect } from "@jest/globals";
 
 const parseResumePreview = jest.fn();
-jest.unstable_mockModule("../../../src/services/resumeParsing.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/resume-parsing.service.js", () => ({
     parseResumePreview, ingestEmployeeResume: jest.fn(), ingestCandidateResume: jest.fn(),
 }));
 const { previewResume } = await import("../../../src/controllers/resume.controller.js");

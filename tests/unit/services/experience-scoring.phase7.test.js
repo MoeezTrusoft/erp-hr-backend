@@ -38,10 +38,10 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
 jest.unstable_mockModule("../../../src/services/recruitment-settings.service.js", () => ({ getRecruitmentSettings: jest.fn() }));
 jest.unstable_mockModule("../../../src/utils/logs.js", () => ({ logAction: jest.fn() }));
 
-const resume = await import("../../../src/services/resumeParsing.service.js");
+const resume = await import("../../../src/services/resume-parsing.service.js");
 const { buildFitInputs } = await import("../../../src/services/application-scoring.service.js");
 const { computeFitScore } = await import("../../../src/lib/fit-score.util.js");
-const { normalizeJobContent, pickRequisitionFields } = await import("../../../src/lib/requisitionFields.js");
+const { normalizeJobContent, pickRequisitionFields } = await import("../../../src/lib/requisition-fields.util.js");
 
 const CV = "Backend engineer: Node.js, SQL and PostgreSQL across two companies since 2016.";
 const PLANE_RESULT = {

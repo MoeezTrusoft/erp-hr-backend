@@ -1,9 +1,9 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
-import { interviewScopeWhere, maskInterviewsForScope } from "../lib/recruitmentAccess.js";
+import { interviewScopeWhere, maskInterviewsForScope } from "../lib/recruitment-access.util.js";
 import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
 import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
-import { transitionApplicationStageInTransaction } from "./applicationWorkflow.service.js";
+import { transitionApplicationStageInTransaction } from "./application-workflow.service.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { logAction } from "../utils/logs.js";
 import {
@@ -17,14 +17,14 @@ import { eventContext } from "../lib/event-context.util.js";
 // Phase 7 / §5.2/5.2a — the SAME availability rule the reschedule-confirm path
 // uses, so a fresh schedule and a moved schedule cannot disagree about what
 // counts as a conflict.
-import { blockedInterviewers } from "../lib/interviewScheduling.js";
-import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
+import { blockedInterviewers } from "../lib/interview-scheduling.util.js";
+import { assertCommunicationsAllowed } from "./candidate-privacy.service.js";
 // Recruitment Phase 3a — every create and every calendar-relevant edit queues
 // the interview for the calendar sync worker in the same transaction.
-import { CALENDAR_SYNC_ACTION, calendarSyncMark, nextCalendarAction, resetRemindersForReschedule } from "./interviewSchedule.service.js";
+import { CALENDAR_SYNC_ACTION, calendarSyncMark, nextCalendarAction, resetRemindersForReschedule } from "./interview-schedule.service.js";
 // Recruitment Phase 7 (B5) — each panelist's role (which form sections they
 // rate) is validated by the same rule the change-before-start path uses.
-import { assertPanelRolesEnabled, hasPanelRoleInput, normalizePanelRoles } from "./interviewSchedule.service.js";
+import { assertPanelRolesEnabled, hasPanelRoleInput, normalizePanelRoles } from "./interview-schedule.service.js";
 // Recruitment Phase 3a (stream B) — a NEXT_ROUND decision may advance the
 // application in the decision's own transaction.
 import { applyDecisionAutoAdvance } from "./interview-decision-prompt.service.js";
@@ -32,7 +32,7 @@ import { applyDecisionAutoAdvance } from "./interview-decision-prompt.service.js
 // published test blueprint is marked assessment-required in its own
 // transaction (flag onsiteTest; a no-op otherwise).
 import { markInterviewAssessmentInTransaction } from "./test-blueprint.service.js";
-import { pinEvaluationFormForInterview } from "./scorecardTemplate.service.js";
+import { pinEvaluationFormForInterview } from "./scorecard-template.service.js";
 import { assertAssessmentGate } from "../lib/evaluation-form.util.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
@@ -294,7 +294,7 @@ const normalizeInterviewUpdateData = (data = {}) => {
 };
 
 // F-37 — the interview outcome vocabulary, shared with setInterviewOutcome
-// (interviewMgmt.service.js): a decisive outcome (NEXT_ROUND / REJECTED) is what
+// (interview-mgmt.service.js): a decisive outcome (NEXT_ROUND / REJECTED) is what
 // the OFFER prerequisite reads off Interview.decision, so it needs evidence.
 const UPDATE_DECISIONS = new Set(["NEXT_ROUND", "HOLD", "REJECTED"]);
 const DECISIVE_UPDATE_DECISIONS = new Set(["NEXT_ROUND", "REJECTED"]);

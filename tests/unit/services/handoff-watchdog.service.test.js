@@ -17,11 +17,11 @@ jest.unstable_mockModule("../../../src/services/hrDomainEvent.service.js", () =>
     default: recorder.enqueueHrDomainEvent,
 }));
 // The handoff module drags payroll in; the watchdog only needs its statuses.
-jest.unstable_mockModule("../../../src/services/recruitmentHandoff.service.js", () => ({
+jest.unstable_mockModule("../../../src/services/recruitment-handoff.service.js", () => ({
     HANDOFF_STATUS: Object.freeze({ IN_PROGRESS: "IN_PROGRESS", COMPLETED: "COMPLETED", FAILED: "FAILED" }),
 }));
 
-const { HANDOFF_METRIC, _resetRecruitmentOpsMetricsForTests } = await import("../../../src/lib/recruitmentOpsMetrics.js");
+const { HANDOFF_METRIC, _resetRecruitmentOpsMetricsForTests } = await import("../../../src/lib/recruitment-ops-metrics.util.js");
 const { runHandoffWatchdogJob } = await import("../../../src/services/handoff-watchdog.service.js");
 
 const A = "11111111-1111-4111-8111-111111111111";

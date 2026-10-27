@@ -14,7 +14,7 @@ import {
   liftHiringFreeze,
   listHiringFreezes,
   setHiringFreeze,
-} from "../services/recruitmentFreeze.service.js";
+} from "../services/recruitment-freeze.service.js";
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
 const actorOf = (req) => resolveEmployeeActor(req.user);

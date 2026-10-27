@@ -24,15 +24,15 @@
 // construction — InterviewScorecard.interviewId is a cascading FK on Interview.
 import prisma from '../lib/prisma.js';
 import { mcpCtx } from '../mcp/context.js';
-import { resolveForInterview, validateSubmission } from './scorecardTemplate.service.js';
-import { isRecruitmentFlagEnabled } from '../lib/recruitmentFlags.js';
+import { resolveForInterview, validateSubmission } from './scorecard-template.service.js';
+import { isRecruitmentFlagEnabled } from '../lib/recruitment-flags.util.js';
 import logger from '../lib/logger.js';
 
 const asSystem = (fn) => mcpCtx.run({ system: true }, fn);
 
 // Phase 3a — when the LAST panel scorecard is submitted, the hiring manager is
 // prompted to decide at once rather than on the next job run. The prompt
-// service consolidates feedback through interviewMgmt.service.js, which imports
+// service consolidates feedback through interview-mgmt.service.js, which imports
 // this module, so it is loaded lazily (and only with the flag on). The hook is
 // fail-soft: the scorecard is already written, and the decision-prompt job is
 // the backstop for any prompt this misses.

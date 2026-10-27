@@ -60,7 +60,7 @@ jest.unstable_mockModule("../../src/lib/logger.js", () => ({ default: { info: je
 
 const memoryStore = (await import("../../src/lib/idempotency-store.js")).createMemoryStore({ ttlMs: 60_000 });
 const { idempotency } = await import("../../src/middlewares/idempotency.middleware.js");
-const { createApplication } = await import("../../src/services/applicationService.js");
+const { createApplication } = await import("../../src/services/application.service.js");
 
 function mockReq({ key, body = {} }) {
     return {

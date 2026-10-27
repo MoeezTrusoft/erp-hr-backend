@@ -2,10 +2,10 @@
 //
 // Recruitment Phase 5 (plan 6.9) — data-subject requests from the careers
 // portal. Mounted by the lead under /public, OUTSIDE the /api service guard,
-// next to publicPortal.routes.js, and guarded the same way:
+// next to public-portal.routes.js, and guarded the same way:
 //
 //   * TENANT PINNING — the tenant comes from the portal host mapping (or the
-//     trusted edge header), via publicPortal.routes.js resolvePortalTenant;
+//     trusted edge header), via public-portal.routes.js resolvePortalTenant;
 //     never from the body. No tenant is the same 404 as an unknown site.
 //   * RATE LIMITS — a fixed window per IP and route class, shared by every
 //     pod through Redis (lib/rate-limit.util.js; memory when Redis is down),
@@ -23,7 +23,7 @@ import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import logger from "../lib/logger.js";
 import { rateLimit as sharedRateLimit, resetRateLimitMemory } from "../lib/rate-limit.util.js";
-import { resolvePortalTenant } from "./publicPortal.routes.js";
+import { resolvePortalTenant } from "./public-portal.routes.js";
 import { submitPortalDsr, verifyPortalDsr } from "../services/dsr-portal.service.js";
 
 export const privacyPortalRouter = express.Router();

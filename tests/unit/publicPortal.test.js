@@ -54,7 +54,7 @@ describe("Phase 5 — the public job listing (§3.1)", () => {
   let getPublicJob;
 
   beforeAll(async () => {
-    ({ listPublicJobs, getPublicJob } = await import("../../src/lib/publicPortal.js"));
+    ({ listPublicJobs, getPublicJob } = await import("../../src/lib/public-portal.util.js"));
   });
 
   it("lists only eligible POSTED jobs, stripped to the public shape", async () => {
@@ -168,7 +168,7 @@ describe("Phase 5 — public application intake (§3.2/§3.4/§3.5)", () => {
     jest.unstable_mockModule("../../src/lib/notificationClient.js", () => ({
       sendCandidateEmail: jest.fn(async () => ({ sent: true })),
     }));
-    ({ submitPublicApplication } = await import("../../src/services/publicPortal.service.js"));
+    ({ submitPublicApplication } = await import("../../src/services/public-portal.service.js"));
     ({ sendCandidateEmail } = await import("../../src/lib/notificationClient.js"));
   });
 
@@ -402,8 +402,8 @@ describe("Phase 5 — the public router's guards", () => {
   it("rate-limits the application endpoint and the reader separately", async () => {
     jest.resetModules();
     process.env.HR_PORTAL_HOSTS = `careers.test=${TENANT}`;
-    const { default: router } = await import("../../src/routes/publicPortal.routes.js");
-    const { resolvePortalTenant } = await import("../../src/routes/publicPortal.routes.js");
+    const { default: router } = await import("../../src/routes/public-portal.routes.js");
+    const { resolvePortalTenant } = await import("../../src/routes/public-portal.routes.js");
 
     const req = { hostname: "careers.test", get: () => null };
     expect(resolvePortalTenant(req)).toBe(TENANT);
@@ -434,7 +434,7 @@ describe("Phase 5 — the public router's guards", () => {
 
   it("honours the trusted-edge tenant header only when explicitly enabled", async () => {
     jest.resetModules();
-    const { resolvePortalTenant } = await import("../../src/routes/publicPortal.routes.js");
+    const { resolvePortalTenant } = await import("../../src/routes/public-portal.routes.js");
 
     // Express's req.get is case-insensitive; the fake matches that behaviour.
     const req = { hostname: "unknown.test", get: (h) => (String(h).toLowerCase() === "x-portal-tenant" ? TENANT : null) };

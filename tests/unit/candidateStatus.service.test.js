@@ -37,8 +37,8 @@ jest.unstable_mockModule("../../src/lib/notificationClient.js", () => ({
 }));
 
 const { sendCandidateEmail } = await import("../../src/lib/notificationClient.js");
-const { requestStatusLink, readStatusViaLink } = await import("../../src/services/candidateStatus.service.js");
-const { projectCandidateStatusList } = await import("../../src/lib/candidateStatusView.js");
+const { requestStatusLink, readStatusViaLink } = await import("../../src/services/candidate-status.service.js");
+const { projectCandidateStatusList } = await import("../../src/lib/candidate-status-view.util.js");
 
 beforeEach(() => {
     jest.clearAllMocks();

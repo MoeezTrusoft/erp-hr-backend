@@ -20,20 +20,20 @@
 
 import { describe, it, expect } from "@jest/globals";
 
-import { registerRecruitmentTools } from "../../../src/mcp/tools/recruitmentTools.js";
-import { registerRequisitionMgmtTools } from "../../../src/mcp/tools/requisitionMgmtTools.js";
-import { registerCandidatePipelineTools } from "../../../src/mcp/tools/candidatePipelineTools.js";
-import { registerInterviewMgmtTools } from "../../../src/mcp/tools/interviewMgmtTools.js";
-import { registerOfferMgmtTools } from "../../../src/mcp/tools/offerMgmtTools.js";
-import { registerCandidatePrivacyTools } from "../../../src/mcp/tools/candidatePrivacyTools.js";
+import { registerRecruitmentTools } from "../../../src/mcp/tools/recruitment.tools.js";
+import { registerRequisitionMgmtTools } from "../../../src/mcp/tools/requisition-mgmt.tools.js";
+import { registerCandidatePipelineTools } from "../../../src/mcp/tools/candidate-pipeline.tools.js";
+import { registerInterviewMgmtTools } from "../../../src/mcp/tools/interview-mgmt.tools.js";
+import { registerOfferMgmtTools } from "../../../src/mcp/tools/offer-mgmt.tools.js";
+import { registerCandidatePrivacyTools } from "../../../src/mcp/tools/candidate-privacy.tools.js";
 import { registerRecruitmentDocumentDownloadTools } from "../../../src/mcp/tools/recruitment-document-download.tools.js";
 import { registerRetentionPolicyTools } from "../../../src/mcp/tools/retention-policy.tools.js";
-import { registerTalentPoolMgmtTools } from "../../../src/mcp/tools/talentPoolMgmtTools.js";
-import { registerRecruitmentAnalyticsTools } from "../../../src/mcp/tools/recruitmentAnalyticsTools.js";
-import { registerRecruitmentExtraTools } from "../../../src/mcp/tools/recruitmentExtraTools.js";
-import { registerApplicationTools } from "../../../src/mcp/tools/applicationTools.js";
-import { registerResumeTools } from "../../../src/mcp/tools/resumeTools.js";
-import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboardingTemplateTools.js";
+import { registerTalentPoolMgmtTools } from "../../../src/mcp/tools/talent-pool-mgmt.tools.js";
+import { registerRecruitmentAnalyticsTools } from "../../../src/mcp/tools/recruitment-analytics.tools.js";
+import { registerRecruitmentExtraTools } from "../../../src/mcp/tools/recruitment-extra.tools.js";
+import { registerApplicationTools } from "../../../src/mcp/tools/application.tools.js";
+import { registerResumeTools } from "../../../src/mcp/tools/resume.tools.js";
+import { registerOnboardingTemplateTools } from "../../../src/mcp/tools/onboarding-template.tools.js";
 import { registerOnboardingProvisioningTools } from "../../../src/mcp/tools/onboarding-provisioning.tools.js";
 import { registerOnboardingSessionPlanTools } from "../../../src/mcp/tools/onboarding-session-plan.tools.js";
 import { registerOnboardingReadinessTools } from "../../../src/mcp/tools/onboarding-readiness.tools.js";

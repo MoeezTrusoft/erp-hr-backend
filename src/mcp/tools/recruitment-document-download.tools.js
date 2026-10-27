@@ -19,10 +19,10 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import { resolveAssessmentAccess } from "../../lib/assessment-access.util.js";
 import { downloadOfferLetter } from "../../services/offer-letter.service.js";
-import { downloadPacketDocument } from "../../services/interviewPacket.service.js";
+import { downloadPacketDocument } from "../../services/interview-packet.service.js";
 import { downloadTestItemPicture } from "../../services/test-item.service.js";
 
 const RESOURCE = "hr:recruitment";

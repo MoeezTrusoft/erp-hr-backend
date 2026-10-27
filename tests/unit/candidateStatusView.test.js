@@ -17,7 +17,7 @@ import {
     projectCandidateStatusList,
     visibleToLabel,
     CANDIDATE_VISIBLE_STATUSES,
-} from "../../src/lib/candidateStatusView.js";
+} from "../../src/lib/candidate-status-view.util.js";
 
 const NOW = new Date("2026-09-21T12:00:00.000Z");
 

@@ -2,11 +2,11 @@
 //
 // Recruitment Phase 6 (flag `invitationLinks`) — the candidate answers a talent
 // pool invitation from the emailed link. Mounted by the lead under /public,
-// OUTSIDE the /api service guard, next to publicPortal.routes.js, and guarded
+// OUTSIDE the /api service guard, next to public-portal.routes.js, and guarded
 // the same way:
 //
 //   * TENANT PINNING — the tenant comes from the portal host mapping (or the
-//     trusted edge header) via publicPortal.routes.js resolvePortalTenant,
+//     trusted edge header) via public-portal.routes.js resolvePortalTenant,
 //     never from the body; no tenant is the same 404 as an unknown site.
 //   * RATE LIMITS — a fixed window per IP and route class, shared by every
 //     pod through Redis (lib/rate-limit.util.js; memory when Redis is down),
@@ -25,7 +25,7 @@ import express from "express";
 import { mcpCtx } from "../lib/requestContext.js";
 import logger from "../lib/logger.js";
 import { rateLimit as sharedRateLimit, resetRateLimitMemory } from "../lib/rate-limit.util.js";
-import { resolvePortalTenant } from "./publicPortal.routes.js";
+import { resolvePortalTenant } from "./public-portal.routes.js";
 import { getInvitationForCandidate, respondViaInvitationLink } from "../services/invitation-response.service.js";
 
 export const invitationResponseRouter = express.Router();

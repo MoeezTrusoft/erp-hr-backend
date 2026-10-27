@@ -17,9 +17,9 @@ const prisma = {
 const getCostConfig = jest.fn(async () => null);
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
-jest.unstable_mockModule("../../../src/services/recruitmentCost.service.js", () => ({ getCostConfig }));
+jest.unstable_mockModule("../../../src/services/recruitment-cost.service.js", () => ({ getCostConfig }));
 
-const analytics = await import("../../../src/services/recruitmentAnalytics.service.js");
+const analytics = await import("../../../src/services/recruitment-analytics.service.js");
 const { computeRecruitmentAnalytics, drillDownRecruitmentMetric } = analytics;
 
 const TENANT = "11111111-1111-4111-8111-111111111111";

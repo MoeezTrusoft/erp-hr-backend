@@ -17,7 +17,7 @@ const prisma = {
 
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
 
-const { maskOfferForScope, maskOffersForScope } = await import("../../src/lib/recruitmentAccess.js");
+const { maskOfferForScope, maskOffersForScope } = await import("../../src/lib/recruitment-access.util.js");
 const offerService = await import("../../src/services/offer.service.js");
 
 const ORG = { level: "ORG", employeeId: 3, unrestricted: true, canSeeInternalNotes: true, canSeeCompensation: true };

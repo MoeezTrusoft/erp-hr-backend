@@ -44,10 +44,10 @@ import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { withTenant } from "../lib/tenancy.js";
 import { mcpCtx } from "../mcp/context.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
-import { assertCommunicationsAllowed } from "./candidatePrivacy.service.js";
+import { assertCommunicationsAllowed } from "./candidate-privacy.service.js";
 import { getRecruitmentSettings, RECRUITMENT_SETTINGS_DEFAULTS } from "./recruitment-settings.service.js";
 
 const COMPONENT = "interview-reminder";

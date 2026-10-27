@@ -29,9 +29,9 @@ jest.unstable_mockModule("../../src/lib/logger.js", () => ({
   default: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), child: () => ({ warn: jest.fn() }) },
 }));
 const computeRetentionUntil = jest.fn();
-jest.unstable_mockModule("../../src/services/candidatePrivacy.service.js", () => ({ computeRetentionUntil }));
+jest.unstable_mockModule("../../src/services/candidate-privacy.service.js", () => ({ computeRetentionUntil }));
 
-const { addToPool } = await import("../../src/services/talentPool.service.js");
+const { addToPool } = await import("../../src/services/talent-pool.service.js");
 
 const TENANT = "33333333-3333-4333-8333-333333333333";
 

@@ -12,9 +12,9 @@ const createApplication = jest.fn(async (args) => ({ id: 31, ...args }));
 
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
-jest.unstable_mockModule("../../src/services/applicationService.js", () => ({ createApplication }));
+jest.unstable_mockModule("../../src/services/application.service.js", () => ({ createApplication }));
 
-const { moveToPipeline } = await import("../../src/services/talentPoolMgmt.service.js");
+const { moveToPipeline } = await import("../../src/services/talent-pool-mgmt.service.js");
 
 describe("talent pool move to pipeline", () => {
   beforeEach(() => jest.clearAllMocks());

@@ -15,8 +15,8 @@ import { jest } from "@jest/globals";
 
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: {} }));
 jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: {} }));
-jest.unstable_mockModule("../../src/lib/recruitmentOpsMetrics.js", () => ({ recordRetentionRun: jest.fn() }));
-jest.unstable_mockModule("../../src/lib/recruitmentFlags.js", () => ({
+jest.unstable_mockModule("../../src/lib/recruitment-ops-metrics.util.js", () => ({ recordRetentionRun: jest.fn() }));
+jest.unstable_mockModule("../../src/lib/recruitment-flags.util.js", () => ({
   isRecruitmentFlagEnabled: jest.fn(() => true),
 }));
 
@@ -28,9 +28,9 @@ const {
   segmentTalentPool,
   sweepTalentPoolRetention,
   withdrawInvitation,
-} = await import("../../src/services/talentPoolInvitation.service.js");
-const { isRecruitmentFlagEnabled } = await import("../../src/lib/recruitmentFlags.js");
-const { recordRetentionRun } = await import("../../src/lib/recruitmentOpsMetrics.js");
+} = await import("../../src/services/talent-pool-invitation.service.js");
+const { isRecruitmentFlagEnabled } = await import("../../src/lib/recruitment-flags.util.js");
+const { recordRetentionRun } = await import("../../src/lib/recruitment-ops-metrics.util.js");
 
 const TENANT = "tenant-a";
 

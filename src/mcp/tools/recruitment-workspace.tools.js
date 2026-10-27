@@ -15,7 +15,7 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import { resolveRecruitmentScope } from "../../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../../lib/recruitment-access.util.js";
 import { getInterviewerWorkspace, getManagerWorkspace } from "../../services/recruitment-workspace.service.js";
 
 const RESOURCE = "hr:recruitment";

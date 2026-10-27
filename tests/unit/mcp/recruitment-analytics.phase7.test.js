@@ -26,12 +26,12 @@ const prisma = {
 };
 
 jest.unstable_mockModule("../../../src/lib/prisma.js", () => ({ default: prisma }));
-jest.unstable_mockModule("../../../src/services/recruitmentCost.service.js", () => ({ getCostConfig: jest.fn(async () => null) }));
+jest.unstable_mockModule("../../../src/services/recruitment-cost.service.js", () => ({ getCostConfig: jest.fn(async () => null) }));
 
-const service = await import("../../../src/services/recruitmentAnalytics.service.js");
-const { registerRecruitmentAnalyticsTools, filtersFromArgs } = await import("../../../src/mcp/tools/recruitmentAnalyticsTools.js");
+const service = await import("../../../src/services/recruitment-analytics.service.js");
+const { registerRecruitmentAnalyticsTools, filtersFromArgs } = await import("../../../src/mcp/tools/recruitment-analytics.tools.js");
 const { mcpCtx } = await import("../../../src/mcp/context.js");
-const { resolveRecruitmentScope } = await import("../../../src/lib/recruitmentAccess.js");
+const { resolveRecruitmentScope } = await import("../../../src/lib/recruitment-access.util.js");
 
 const handlers = new Map();
 registerRecruitmentAnalyticsTools({ tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]) });

@@ -27,15 +27,15 @@ const prisma = {
 
 jest.unstable_mockModule("../../src/config/prisma.js", () => ({ default: prisma }));
 jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: jest.fn(async () => undefined) }));
-jest.unstable_mockModule("../../src/services/applicationWorkflow.service.js", () => ({
+jest.unstable_mockModule("../../src/services/application-workflow.service.js", () => ({
   transitionApplicationStage: jest.fn(),
 }));
 
 const { getApplication, deleteApplication, listApplications } = await import(
-  "../../src/services/applicationService.js"
+  "../../src/services/application.service.js"
 );
 const { resolveRecruitmentScope, applicationScopeWhere } = await import(
-  "../../src/lib/recruitmentAccess.js"
+  "../../src/lib/recruitment-access.util.js"
 );
 
 const TENANT = "tenant-a";

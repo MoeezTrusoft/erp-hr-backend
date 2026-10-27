@@ -23,7 +23,7 @@ import { withToolError } from "../utils/toolError.js";
 import { ONBOARDING_SESSION_ASSIGNEES, ONBOARDING_SESSION_TYPES } from "../../lib/onboarding-sessions.util.js";
 import { previewOnboardingSessionPlan } from "../../services/onboarding-session-plan.service.js";
 import { requeueOnboardingSessionCalendarSync } from "../../services/onboarding-calendar-sync.service.js";
-import { deleteSession } from "../../services/onboardingSchedule.service.js";
+import { deleteSession } from "../../services/onboarding-schedule.service.js";
 
 const RESOURCE = "hr:onboarding";
 

@@ -1,6 +1,6 @@
 // Recruitment Phase 4 (stream M) — the failed-handoff alerting rules parse,
 // and every expression names the metric and the outcome label the code
-// actually records (recruitmentOpsMetrics.js), so a rename cannot silently
+// actually records (recruitment-ops-metrics.util.js), so a rename cannot silently
 // leave the page wired to a series that no longer exists.
 import { describe, it, expect, beforeEach } from "@jest/globals";
 import { readFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import {
     HANDOFF_METRIC,
     recordHandoff,
     _resetRecruitmentOpsMetricsForTests,
-} from "../../../src/lib/recruitmentOpsMetrics.js";
+} from "../../../src/lib/recruitment-ops-metrics.util.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const RULES_PATH = path.resolve(here, "../../../observability/alerts/recruitment-onboarding.rules.yml");

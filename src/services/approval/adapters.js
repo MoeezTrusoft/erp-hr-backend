@@ -544,8 +544,8 @@ export async function onSubmit(tx, env, kind, s, meta = {}) {
   // rolled-back submit leaves neither; a committed one cannot miss them.
   if (kind === "REQUISITION") {
     const [{ recordRequisitionTransition }, { emitRequisitionSubmittedEvent }] = await Promise.all([
-      import("../requisitionWorkflow.service.js"),
-      import("../requisitionApprovalChain.service.js"),
+      import("../requisition-workflow.service.js"),
+      import("../requisition-approval-chain.service.js"),
     ]);
     await recordRequisitionTransition(tx, {
       requisitionId: s.row.id,
@@ -769,7 +769,7 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
     });
     // Recruitment keeps its own immutable transition history and decision event,
     // written in this same transaction as the Management decision.
-    const { recordRequisitionTransition } = await import("../requisitionWorkflow.service.js");
+    const { recordRequisitionTransition } = await import("../requisition-workflow.service.js");
     const { requisitionDecisionEvent } = await import("../hrEvents.js");
     await recordRequisitionTransition(tx, {
       requisitionId: row.id,

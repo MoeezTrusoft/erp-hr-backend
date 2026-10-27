@@ -35,7 +35,7 @@
 // exact comparison, never a fuzzy one.
 import { createHash } from "node:crypto";
 
-import { aliasKey, resolveSkill } from "./skillNormalization.js";
+import { aliasKey, resolveSkill } from "./skill-normalization.util.js";
 
 export const FIT_MODEL_VERSION = "fit-v1";
 
@@ -174,7 +174,7 @@ function hashInputs(normalised) {
  * @param {number|null} inputs.answerScore     deterministic answer total
  * @param {number|null} inputs.answerMaxScore  its ceiling, null/0 = unscored
  * @param {object} [options]
- * @param {Map} [options.aliasIndex]  from buildAliasIndex (skillNormalization.js)
+ * @param {Map} [options.aliasIndex]  from buildAliasIndex (skill-normalization.util.js)
  * @returns {{score:number, band:string, components:object[], modelVersion:string, inputsHash:string, assessed:boolean}}
  */
 export function computeFitScore(

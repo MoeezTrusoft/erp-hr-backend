@@ -1,7 +1,7 @@
 # observability/alerts/recruitment-onboarding.rules.yml
 #
 # Recruitment Phase 4 — "failures page someone". Prometheus alerting rules on
-# the handoff counter exported by src/lib/recruitmentOpsMetrics.js:
+# the handoff counter exported by src/lib/recruitment-ops-metrics.util.js:
 #
 #   hr_recruitment_handoffs_total{outcome="completed"|"failed"}
 #

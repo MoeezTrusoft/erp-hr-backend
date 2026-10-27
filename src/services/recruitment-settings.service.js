@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { CHANNELS_REQUIRING_URL, PUBLICATION_CHANNELS } from "../lib/requisitionPublication.js";
+import { CHANNELS_REQUIRING_URL, PUBLICATION_CHANNELS } from "../lib/requisition-publication.util.js";
 
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { status, code });
 

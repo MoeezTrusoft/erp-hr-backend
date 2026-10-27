@@ -9,9 +9,9 @@
 
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
-import { buildAliasIndex, reconcileParsedSkills, recordAliasSuggestion } from "../lib/skillNormalization.js";
+import { buildAliasIndex, reconcileParsedSkills, recordAliasSuggestion } from "../lib/skill-normalization.util.js";
 
-export { loadAliasIndex } from "./candidateMatch.service.js";
+export { loadAliasIndex } from "./candidate-match.service.js";
 
 /**
  * Reconcile a candidate's parsed resume skills onto the taxonomy (§7.2a).

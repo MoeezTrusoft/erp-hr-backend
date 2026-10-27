@@ -5,7 +5,7 @@
 // role claims.
 import { describe, it, expect } from "@jest/globals";
 
-import { RECRUITMENT_SCOPE, resolveRecruitmentScope, applicationScopeWhere, candidateScopeWhere, offerScopeWhere } from "../../../src/lib/recruitmentAccess.js";
+import { RECRUITMENT_SCOPE, resolveRecruitmentScope, applicationScopeWhere, candidateScopeWhere, offerScopeWhere } from "../../../src/lib/recruitment-access.util.js";
 import { assertAssessmentCapability, resolveAssessmentAccess } from "../../../src/lib/assessment-access.util.js";
 
 const NONE = { id: { in: [] } };

@@ -41,7 +41,7 @@ jest.unstable_mockModule("../../src/services/dam.media.service.js", () => ({
   normalizeDamAssetResponse: jest.fn((payload) => payload ?? null),
 }));
 
-const privacy = await import("../../src/services/candidatePrivacy.service.js");
+const privacy = await import("../../src/services/candidate-privacy.service.js");
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const CANDIDATE = { id: 7, email: "Ayesha@Example.com", consentStatus: "GRANTED", anonymizedAt: null };

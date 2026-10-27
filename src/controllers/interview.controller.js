@@ -1,6 +1,6 @@
 import * as svc from "../services/interview.service.js";
 import { respondServerError } from '../utils/httpError.js';
-import { resolveRecruitmentScope } from "../lib/recruitmentAccess.js";
+import { resolveRecruitmentScope } from "../lib/recruitment-access.util.js";
 
 export const scheduleInterview = async (req, res) => {
     try {

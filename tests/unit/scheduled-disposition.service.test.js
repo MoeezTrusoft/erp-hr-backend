@@ -102,7 +102,7 @@ jest.unstable_mockModule("../../src/lib/rlsTenant.js", () => ({
     }),
     rlsTenantExtension: jest.fn((c) => c),
 }));
-jest.unstable_mockModule("../../src/lib/recruitmentFlags.js", () => ({
+jest.unstable_mockModule("../../src/lib/recruitment-flags.util.js", () => ({
     isRecruitmentFlagEnabled: jest.fn((key) => flags[key] === true),
 }));
 jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
@@ -110,7 +110,7 @@ jest.unstable_mockModule("../../src/services/hrDomainEvent.service.js", () => ({
         if (args) events.push(args);
     }),
 }));
-jest.unstable_mockModule("../../src/services/applicationWorkflow.service.js", () => ({ transitionApplicationStage }));
+jest.unstable_mockModule("../../src/services/application-workflow.service.js", () => ({ transitionApplicationStage }));
 jest.unstable_mockModule("../../src/services/recruitment-settings.service.js", () => ({
     RECRUITMENT_SETTINGS_DEFAULTS: { knockoutDelayHours: 24 },
 }));

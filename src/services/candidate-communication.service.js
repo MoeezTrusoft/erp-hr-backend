@@ -24,14 +24,14 @@ import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { withTenant } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
-import { isRecruitmentFlagEnabled } from "../lib/recruitmentFlags.js";
+import { isRecruitmentFlagEnabled } from "../lib/recruitment-flags.util.js";
 import {
     RECRUITMENT_SCOPE,
     applicationScopeWhere,
     candidateScopeWhere,
-} from "../lib/recruitmentAccess.js";
+} from "../lib/recruitment-access.util.js";
 import { getRecruitmentSettings } from "./recruitment-settings.service.js";
-import { PORTAL_STATUS_REQUEST_PATH } from "./candidateVerification.service.js";
+import { PORTAL_STATUS_REQUEST_PATH } from "./candidate-verification.service.js";
 import {
     getCommunicationTemplate,
     listCommunicationTemplateSummaries,

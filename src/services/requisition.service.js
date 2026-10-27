@@ -5,17 +5,17 @@ import {
   assertRequisitionTransition,
   assertRequisitionAdvanceAllowed,
   recordRequisitionTransition,
-} from "./requisitionWorkflow.service.js";
+} from "./requisition-workflow.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
-import { requisitionScopeWhere } from "../lib/recruitmentAccess.js";
+import { requisitionScopeWhere } from "../lib/recruitment-access.util.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { requisitionDecisionEvent, requisitionPostedEvent, requisitionCreatedEvent, requisitionClosedEvent } from "./hrEvents.js";
 import { eventContext } from "../lib/event-context.util.js";
 import { getDepartmentById, listDepartments } from "./rbac.client.js"; // department is owned by RBAC (Company → Department)
-import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisitionFields.js";
-import { publishRequisition, closeActivePostingsForRequisition } from "./requisitionPublication.service.js";
+import { pickRequisitionFields, assertReplacementPairing, assertRequisitionFieldsEditable } from "../lib/requisition-fields.util.js";
+import { publishRequisition, closeActivePostingsForRequisition } from "./requisition-publication.service.js";
 import { assertFinanceValidityAtSubmit } from "./financeValidity.service.js";
 
 // The HR Approval Centre request for a requisition, reduced to what a detail

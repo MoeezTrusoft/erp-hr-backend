@@ -10,7 +10,7 @@
 // outbound contact. The system builds the segment; a recruiter decides. One run
 // per requisition (the schema's unique key), so a requisition is proposed once,
 // even when nobody matches, and the job never rebuilds it.
-import { APPLICATION_ACCEPTING_STATUSES } from "./requisitionEligibility.js";
+import { APPLICATION_ACCEPTING_STATUSES } from "./requisition-eligibility.util.js";
 
 const fail = (message, code, status = 422) => Object.assign(new Error(message), { status, code });
 
