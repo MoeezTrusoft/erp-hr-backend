@@ -226,7 +226,14 @@ export function captureDb(seed = {}, hooks = {}) {
   db.$executeRaw = async () => 1;
   db.$queryRaw = async (strings, ...values) => {
     if (String(strings.sql || strings.join?.("") || "").includes("pg_try_advisory"))
-      return [{ acquired: true }];
+      // Tests mark an employee as held by another worker with db.busyEmployees.
+      return [
+        {
+          acquired: !(db.busyEmployees ?? new Set()).has(
+            Number(String(values[0]).split(":").at(-1)),
+          ),
+        },
+      ];
     if (String(strings?.sql || strings.join?.('') || '').includes('attendance_evaluation_jobs'))
       return copy(state.attendanceEvaluationJob.filter(e=>['PENDING','FAILED'].includes(e.state)&&
         new Date(e.nextAttemptAt)<=new Date(values[0]||strings.values?.[0])).slice(0,1));
@@ -236,7 +243,8 @@ export function captureDb(seed = {}, hooks = {}) {
           (e) =>
             ["PENDING", "FAILED"].includes(e.state) &&
             e.attempts < 8 &&
-            e.nextAttemptAt <= values[0],
+            e.nextAttemptAt <= values[0] &&
+            !(values[1] ?? []).includes(e.employeeId),
         )
         .slice(0, 1),
     );
