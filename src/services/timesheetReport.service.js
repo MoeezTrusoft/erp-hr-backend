@@ -480,7 +480,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
 
   let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, where),
-    select: { date: true, status: true, employee: { select: { id: true, employee_code: true } } },
+    select: { date: true, status: true, employee: { select: EMPLOYEE_SELECT } },
   });
   // TIMESHEET-ELIG-02 — span-cap before daily aggregation.
   rows = filterRowsByEmploymentSpan(rows, gridSpanEnds);
@@ -507,7 +507,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
       if (r.employee) {
         bucket.absentees.push({
           id: r.employee.id,
-          name: r.employee.employee_code || 'Employee code required',
+          name: fullName(r.employee),
         });
       }
     }

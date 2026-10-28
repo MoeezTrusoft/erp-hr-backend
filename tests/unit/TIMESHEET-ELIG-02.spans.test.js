@@ -124,3 +124,17 @@ describe('TIMESHEET-ABSENTEE-02 ABSENT-only weekly tooltip', () => {
     expect(problem.has('ABSENT')).toBe(true);
   });
 });
+
+describe('TIMESHEET-ABSENTEE-03 heatmap hover names the person', () => {
+  it('lists the absentee by name, falling back to the code only without one', async () => {
+    const named = { id: 4, employee_code: 'EMP-004', first_name: 'Ayesha', middle_name: null, last_name: 'Khan', preferred_name: null, employee_name: null };
+    const nameless = { id: 1, employee_code: 'EMP-001', first_name: null, middle_name: null, last_name: null, preferred_name: null, employee_name: null };
+    prismaMock.attendance.findMany.mockResolvedValue([
+      { date: new Date('2026-09-07T00:00:00Z'), status: 'ABSENT', employee: named },
+      { date: new Date('2026-09-07T00:00:00Z'), status: 'ABSENT', employee: nameless },
+    ]);
+    const grid = await svc.getAttendanceMonthGrid({ tenantId: TRUSOFT, month: '2026-09' });
+    const day = grid.days.find((d) => d.date === '2026-09-07');
+    expect(day.absentees.map((a) => a.name)).toEqual(['Ayesha Khan', 'EMP-001']);
+  });
+});
