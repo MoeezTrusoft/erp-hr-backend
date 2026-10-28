@@ -289,39 +289,31 @@ export async function reEnrol({
   );
   if (!device?.active || !device.allowedTenantIds.includes(tenantId))
     throw captureError("Device is not permitted for this tenant", 403);
-  // Cross-tenant collision lookup requires SYSTEM at the transaction boundary
-  // so the RLS bypass GUC is set; every mutation below is explicitly scoped.
+  // SYSTEM at the transaction boundary sets the RLS bypass GUC for the shared
+  // device row; the collision lookup and every mutation are explicitly scoped
+  // to this company.
   return mcpCtx.run({ system: true }, () =>
     tenantTransaction(
       prisma,
       async (tx) => {
-        const employee = await verifyEmployee(tx, tenantId, employeeId);
+        await verifyEmployee(tx, tenantId, employeeId);
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`device-id:${sn}:${newDeviceUserId}`}))`;
-        const conflicts = (
-          await tx.employeeDeviceEnrolment.findMany({
-            where: { deviceUserId: newDeviceUserId, OR: [{ sn }, { sn: null }] },
-          })
-        ).filter((r) => r.employeeId !== employeeId && enrolmentEnd(r) >= +from);
-        // ATT-SHARED-PERSON-01: the same person's record in ANOTHER company may
-        // share the ID (the punch is credited to both). A different person, or
-        // a second record of this person in this company, is still an overlap.
-        const owners = conflicts.length
-          ? await tx.employee.findMany({
-              where: { id: { in: [...new Set(conflicts.map((r) => r.employeeId))] } },
-            })
-          : [];
-        const samePersonElsewhere = (r) =>
-          Boolean(employee.personId) &&
-          r.tenantId !== tenantId &&
-          owners.some(
-            (o) =>
-              o.id === r.employeeId &&
-              o.tenant_id === r.tenantId &&
-              o.personId === employee.personId,
-          );
-        if (!conflicts.every(samePersonElsewhere))
+        // ATT-DEVICE-PER-COMPANY-01: each company resolves its own employees,
+        // so an overlap only matters inside this company.
+        const conflicts = await tx.employeeDeviceEnrolment.findMany({
+          where: {
+            tenantId,
+            deviceUserId: newDeviceUserId,
+            OR: [{ sn }, { sn: null }],
+          },
+        });
+        if (
+          conflicts.some(
+            (r) => r.employeeId !== employeeId && enrolmentEnd(r) >= +from,
+          )
+        )
           throw captureError(
-            "Device ID overlaps another employee enrolment",
+            "Device ID overlaps another employee enrolment in this company",
             409,
           );
         const rows = await tx.employeeDeviceEnrolment.findMany({

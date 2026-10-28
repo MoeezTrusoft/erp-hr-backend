@@ -19,23 +19,10 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
 const system = (fn) => mcpCtx.run({ system: true }, fn);
 
-// employeeId → personId for enrolments that share a device ID.
-async function personsFor(db, enrolmentRows) {
-  const ids = [...new Set(enrolmentRows.map((r) => r.employeeId))].filter(
-    Number.isInteger,
-  );
-  if (!ids.length) return new Map();
-  const rows = await db.employee.findMany({
-    where: { id: { in: ids } },
-    select: { id: true, personId: true },
-  });
-  return new Map(rows.filter((r) => r.personId).map((r) => [r.id, r.personId]));
-}
-
 // A planned event repeats a stored one when that company's own copy exists, or
 // the company-neutral (or pre-ATT-PUNCH-KEY-01) key of the same punch is
 // already held by this company or still unattributed. Identity recovery owns
-// fanning an unattributed event out to a second company.
+// resolving an unattributed event for each company that later enrols the ID.
 async function partitionRepeats(db, events, sn) {
   const keys = new Map();
   for (const event of events) {
@@ -342,51 +329,56 @@ export async function receiveCapture(
         byDeviceUser.set(row.deviceUserId, []);
       byDeviceUser.get(row.deviceUserId).push(row);
     }
-    // Person links are only needed where one device ID has several enrolments.
-    const personOf = await personsFor(
-      db,
-      [...byDeviceUser.values()].filter((r) => r.length > 1).flat(),
-    );
     const receiptId = randomUUID();
+    const supervised =
+      device.acceptanceMode === "SUPERVISED" ? "ONSITE_SUPERVISED_REVIEW" : null;
     const events = parsed.flatMap(({ raw, parsed: punch, reason }) => {
       const outcome = punch
         ? source === "MANUAL"
-          ? { hits: [{ employeeId: manualEmployeeId, tenantId }] }
+          ? { hits: [{ employeeId: manualEmployeeId, tenantId }], issues: [] }
           : chooseEnrolments(
               byDeviceUser.get(punch.deviceUserId) || [],
               punch.deviceUserId,
               sn,
               punch.punchedAt,
               source === "DEVICE_SYNC" ? [tenantId] : device.allowedTenantIds,
-              personOf,
             )
         : {};
-      const issue = reason || outcome.reason || (device.acceptanceMode === "SUPERVISED" ? "ONSITE_SUPERVISED_REVIEW" : null);
-      const hits = outcome.hits || [{}];
-      const shared = hits.length > 1;
-      return hits.map((hit) => ({
-        id: randomUUID(),
-        tenantId: hit.tenantId || owner,
-        receiptId,
-        source,
-        sn,
-        fingerprint: punch
-          ? punchFingerprint(sn, punch, shared ? hit.tenantId : null)
-          : fingerprint([sn, raw]),
-        deviceUserId: punch?.deviceUserId,
-        raw: {
-          ...(device.acceptanceSiteRef ? { acceptanceSiteRef: device.acceptanceSiteRef, acceptanceMode: device.acceptanceMode } : {}),
-          line: raw,
-          receivedAt: new Date().toISOString(),
-          ...(notes ? { notes: String(notes).slice(0, 2000) } : {}),
-          ...(shared ? { sharedPerson: { tenantIds: hits.map((h) => h.tenantId) } } : {}),
-        },
-        ...(punch ? { parsed: jsonValue(punch) } : {}),
-        employeeId: hit.employeeId,
-        enrolmentId: hit.enrolmentId,
-        state: issue ? "NEEDS_REVIEW" : "PENDING",
-        reason: issue || null,
-      }));
+      // ATT-DEVICE-PER-COMPANY-01: one copy per company that enrolled the ID,
+      // each resolved (or held for review) by that company alone.
+      const targets = outcome.hits
+        ? [
+            ...outcome.hits.map((hit) => ({ ...hit, issue: null })),
+            ...outcome.issues.map((i) => ({ tenantId: i.tenantId, issue: i.reason })),
+          ]
+        : [{ issue: outcome.reason || null }];
+      const perCompany = targets.length > 1;
+      return targets.map((target) => {
+        const issue = reason || target.issue || supervised;
+        return {
+          id: randomUUID(),
+          tenantId: target.tenantId || owner,
+          receiptId,
+          source,
+          sn,
+          fingerprint: punch
+            ? punchFingerprint(sn, punch, perCompany ? target.tenantId : null)
+            : fingerprint([sn, raw]),
+          deviceUserId: punch?.deviceUserId,
+          raw: {
+            ...(device.acceptanceSiteRef ? { acceptanceSiteRef: device.acceptanceSiteRef, acceptanceMode: device.acceptanceMode } : {}),
+            line: raw,
+            receivedAt: new Date().toISOString(),
+            ...(notes ? { notes: String(notes).slice(0, 2000) } : {}),
+            ...(perCompany ? { companies: targets.map((t) => t.tenantId) } : {}),
+          },
+          ...(punch ? { parsed: jsonValue(punch) } : {}),
+          employeeId: target.employeeId,
+          enrolmentId: target.enrolmentId,
+          state: issue ? "NEEDS_REVIEW" : "PENDING",
+          reason: issue || null,
+        };
+      });
     });
     if (dryRun)
       return {
@@ -700,7 +692,6 @@ export async function reconcileCaptureIdentities(
         },
       }),
     ]);
-    const personOf = await personsFor(db, enrolments);
     for (const row of rows) {
       const device = devices.find((d) => d.sn === row.sn);
       if (!device || !row.parsed) continue;
@@ -710,15 +701,18 @@ export async function reconcileCaptureIdentities(
         row.sn,
         new Date(row.parsed.punchedAt),
         device.allowedTenantIds,
-        personOf,
       );
       if (outcome.reason) continue;
-      // ATT-SHARED-PERSON-01: the stored event becomes the copy for the company
-      // it was received under (else the first); every other company of the same
-      // person receives its own copy of the same evidence.
+      // ATT-DEVICE-PER-COMPANY-01: a company's own held copy resolves only for
+      // that company. A company-neutral unresolved event becomes the copy for
+      // the company it was received under (else the first match), and every
+      // other company that now enrols the ID receives its own copy.
+      const perCompanyCopy = Array.isArray(row.raw?.companies);
       const hit =
-        outcome.hits.find((h) => h.tenantId === row.tenantId) || outcome.hits[0];
-      const copies = outcome.hits.filter((h) => h !== hit);
+        outcome.hits.find((h) => h.tenantId === row.tenantId) ||
+        (perCompanyCopy ? null : outcome.hits[0]);
+      if (!hit) continue;
+      const copies = perCompanyCopy ? [] : outcome.hits.filter((h) => h !== hit);
       await tenantTransaction(
         db,
         async (tx) => {
@@ -739,7 +733,8 @@ export async function reconcileCaptureIdentities(
                 deviceUserId: row.deviceUserId,
                 raw: jsonValue({
                   ...row.raw,
-                  sharedPerson: { tenantIds: outcome.hits.map((h) => h.tenantId), copiedFrom: row.id },
+                  companies: outcome.hits.map((h) => h.tenantId),
+                  copiedFrom: row.id,
                 }),
                 parsed: row.parsed,
                 employeeId: copy.employeeId,
@@ -754,8 +749,8 @@ export async function reconcileCaptureIdentities(
               await captureAudit(tx, {
                 tenantId: copy.tenantId,
                 eventId: row.id,
-                action: "IDENTITY_SHARED",
-                reason: "Same person enrolled in another company; punch credited to both",
+                action: "IDENTITY_RESOLVED_FOR_COMPANY",
+                reason: "Another company enrolled this device ID; punch resolved for it independently",
                 detail: { employeeId: copy.employeeId, enrolmentId: copy.enrolmentId },
               });
           };

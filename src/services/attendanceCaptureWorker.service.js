@@ -19,25 +19,6 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 // guesses, so the sessioniser and evaluator honour them as recorded.
 const VERIFIED_DIRECTION_SOURCES = new Set(["BIOMETRIC", "MANUAL"]);
 
-async function withoutSiblingCopies(tx, punches, event, employee) {
-  const foreign = punches.filter(
-    (r) => r.employeeId && r.tenantId !== event.tenantId,
-  );
-  if (!foreign.length || !employee?.personId) return punches;
-  const owners = await tx.employee.findMany({
-    where: { id: { in: [...new Set(foreign.map((r) => r.employeeId))] } },
-    select: { id: true, tenant_id: true, personId: true },
-  });
-  const sibling = (r) =>
-    owners.some(
-      (o) =>
-        o.id === r.employeeId &&
-        o.tenant_id === r.tenantId &&
-        o.personId === employee.personId,
-    );
-  return punches.filter((r) => !(foreign.includes(r) && sibling(r)));
-}
-
 export async function assertCapturePeriodOpen(db, tenantId, days) {
   const ordered=[...days].sort();
   if(ordered.length)await assertAttendancePeriodOpen(db,tenantId,ordered[0],ordered.at(-1));
@@ -126,9 +107,12 @@ export async function drainCapture(
                   status: p.status,
                 },
               });
-              // ATT-SHARED-PERSON-01: the same person's copy of this punch in
-              // another company is a sibling, not a competing attribution.
-              const existing = await withoutSiblingCopies(tx, found, event, employee);
+              // ATT-DEVICE-PER-COMPANY-01: another company's attributed copy of
+              // this punch was resolved independently and is not a competing
+              // attribution. Unattributed legacy punches still route below.
+              const existing = found.filter(
+                (r) => !(r.employeeId && r.tenantId !== event.tenantId),
+              );
               if (
                 existing.some(
                   (r) =>
