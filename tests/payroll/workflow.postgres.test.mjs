@@ -49,23 +49,20 @@ test(
         data: { isPrimary: false },
       }),
     );
-    assert.equal(
-      (
-        await as("EMPLOYEE", () =>
-          getBlockingIssues({ tenantId: company, runId: run.id }),
-        )
-      )[0].code,
-      "BANK_REQUIRED",
-    );
-    await assert.rejects(
-      as("EMPLOYEE", () =>
-        previewPayslip({
-          tenantId: company,
-          runId: run.id,
-          employeeCode: people.EMPLOYEE.employee_code,
-        }),
-      ),
-      /Primary bank/,
+    const missingBank = (
+      await as("EMPLOYEE", () =>
+        getBlockingIssues({ tenantId: company, runId: run.id }),
+      )
+    )[0];
+    assert.equal(missingBank.code, "BANK_REQUIRED");
+    // A missing bank account only blocks finalize; calculation and preview go ahead.
+    assert.equal(missingBank.phase, "FINALIZE");
+    await as("EMPLOYEE", () =>
+      previewPayslip({
+        tenantId: company,
+        runId: run.id,
+        employeeCode: people.EMPLOYEE.employee_code,
+      }),
     );
     await db((tx) =>
       tx.bankDetail.updateMany({
