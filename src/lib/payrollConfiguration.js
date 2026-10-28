@@ -7,6 +7,7 @@ export const SUPPORTED_PAY_RULES = Object.freeze([
   "midMonthJoinerProration",
   "lwpRecovery",
   "garnishmentRecovery",
+  "cashDisbursement",
   "garnishmentCapPct",
   "deductionBasis",
   "eobiEnabled",
