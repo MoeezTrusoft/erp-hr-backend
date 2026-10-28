@@ -20,6 +20,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope } from "../utils/listEnvelope.js";
+import { legacyReviewList } from "../../validators/performance.schema.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -87,12 +88,7 @@ export function registerPerformanceTools(server) {
   server.tool(
     "hr_performance_reviews_list",
     "List performance reviews (paginated) for the HR performance screen",
-    {
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().max(200).optional(),
-      cycleId: z.coerce.number().int().positive().optional(),
-      employeeId: z.coerce.number().int().positive().optional(),
-    },
+    legacyReviewList.shape,
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:performance", user.isAdmin);

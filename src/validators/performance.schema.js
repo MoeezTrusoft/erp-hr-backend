@@ -122,4 +122,5 @@ export const legacyReviewList = z.object({
   pageSize: legacyPerformanceId.pipe(z.number().max(200)).default(50),
   cycleId: legacyPerformanceId.optional(),
   employeeId: legacyPerformanceId.optional(),
+  q: z.string().trim().max(200).optional(),
 }).strict();

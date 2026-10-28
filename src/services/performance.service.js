@@ -56,8 +56,12 @@ export const createPerformanceReview = async (data,createdBy,tenantId) => {
 
 // ✅ Get all reviews (admin or HR)
 export const getAllReviews = async (tenantId, options = {}) => {
-  const { page, pageSize, cycleId, employeeId } = legacyReviewList.parse(options);
-  const where = scopedWhere(tenantId, { ...(cycleId ? { cycleId } : {}), ...(employeeId ? { employeeId } : {}) });
+  const { page, pageSize, cycleId, employeeId, q } = legacyReviewList.parse(options);
+  const where = scopedWhere(tenantId, {
+    ...(cycleId ? { cycleId } : {}), ...(employeeId ? { employeeId } : {}),
+    ...(q ? { employee: { is: { OR: ['employee_name', 'employee_code', 'first_name', 'last_name']
+      .map(field => ({ [field]: { contains: q, mode: 'insensitive' } })) } } } : {}),
+  });
   const identity = performanceIdentity;
   const [items, total] = await Promise.all([prisma.performanceReview.findMany({
     where,

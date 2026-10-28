@@ -421,6 +421,16 @@ export async function legacyRegressions(
     assert.deepEqual(Object.keys(first.items[0].employee).sort(),
       ['id', 'employee_name', 'employee_code', 'first_name', 'last_name'].sort());
     assert.equal(first.items[0].feedbacks, undefined);
+    const employeeCode = first.items[0].employee.employee_code;
+    const searched = await as('HR', () => getAllReviews(tenant, { cycleId: cycle.id, q: employeeCode.toLowerCase(), pageSize: 1 }));
+    assert.equal(searched.total, 1);
+    assert.equal(searched.items[0].id, first.items[0].id);
+    const searchedOther = await as('HR', () => getAllReviews(other, { q: employeeCode }), undefined, other);
+    assert.equal(searchedOther.total, 0);
+    assert.equal(searchedOther.items.length, 0);
+    for (const options of [{ q: true }, { q: 'x'.repeat(201) }, { page: true }, { employeeId: false }]) {
+      await assert.rejects(as('HR', () => getAllReviews(tenant, options)), e => e.name === 'ZodError');
+    }
     await assert.rejects(as('HR', () => getAllReviews(tenant, { pageSize: 201 })), e => e.name === 'ZodError');
     const cross = await as('HR', () => getAllReviews(other, { cycleId: cycle.id }), undefined, other);
     assert.equal(cross.items.length, 0);

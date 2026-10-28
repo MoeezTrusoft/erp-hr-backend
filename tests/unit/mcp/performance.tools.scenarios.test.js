@@ -3,6 +3,7 @@
 // Per-tool scenario matrix for HR performance tools (13 tools).
 // DB-free: controller is mocked; tool→controller dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { z } from 'zod';
 
 jest.unstable_mockModule('../../../src/mcp/controllers/performanceMcpController.js', () => ({
   mcpListPerformanceReviews: jest.fn(async () => ({ success: true })),
@@ -26,9 +27,13 @@ const { registerPerformanceTools } = await import('../../../src/mcp/tools/perfor
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
+const schemas = new Map();
 const resources = new Map();
 const recording = {
-  tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
+  tool: (name, ...rest) => {
+    schemas.set(name, rest[rest.length - 2]);
+    handlers.set(name, rest[rest.length - 1]);
+  },
   resource: (_name, uri, _options, callback) => resources.set(uri, callback),
 };
 registerPerformanceTools(recording);
@@ -79,6 +84,15 @@ const TOOLS = [
 ];
 
 describe('PERFORMANCE-SCENARIOS — registration', () => {
+  it('validates canonical identifiers before the MCP SDK can coerce booleans', () => {
+    const schema = z.object(schemas.get('hr_performance_reviews_list'));
+    for (const value of [true, false, '1e2', '1.0', -1, 0]) {
+      expect(schema.safeParse({ employeeId: value }).success).toBe(false);
+      expect(schema.safeParse({ page: value }).success).toBe(false);
+    }
+    expect(schema.parse({ page: '2', q: ' EMP-1 ' })).toMatchObject({ page: 2, pageSize: 50, q: 'EMP-1' });
+    expect(schema.safeParse({ q: 'x'.repeat(201) }).success).toBe(false);
+  });
   it.each(TOOLS.map((t) => t.name))('%s is registered', (name) => {
     expect(handlers.has(name)).toBe(true);
   });
