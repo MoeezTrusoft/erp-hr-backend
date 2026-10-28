@@ -1,4 +1,5 @@
 const payrollError = (message, status = 409) => Object.assign(new Error(message), {status});
+import { hasTimesheetSubmission } from '../lib/timesheetSubmissionCheck.js';
 import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/payrollConfiguration.js';
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
 import { loadSource } from './approval/adapters.js';
@@ -1131,12 +1132,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
     // has no submission was created out-of-band — refuse it.
     if (!preview) {
         const month = `${payrollRun.periodStart.getUTCFullYear()}-${String(payrollRun.periodStart.getUTCMonth() + 1).padStart(2, '0')}`;
-        const submission = await prisma.payrollAuditLog.findFirst({
-            where: withTenant(tenantId, {
-                action: 'TIMESHEET_SUBMITTED',
-                details: { contains: month },
-            }),
-            select: { id: true },
+        const submission = await hasTimesheetSubmission(prisma, {
+            tenantId,
+            run: payrollRun,
+            month,
+            withTenant,
         });
         if (!submission) {
             throw payrollError(`HR-TP-03 timesheet for ${month} has not been submitted — submit the timesheet before running payroll (operator workflow 2026-09-17)`);
