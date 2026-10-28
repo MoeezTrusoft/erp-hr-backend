@@ -118,6 +118,20 @@ test("company-private saved views and recoverable, permission checked exports", 
         columns: ["employeeCode", "date", "outcome"],
         format: "csv",
       };
+      // TS-AWAITING-OFF-01 — a working day with no stored record is "awaiting"
+      // and is no longer listed, so give the day a real record to export.
+      await db((tx) =>
+        tx.attendance.create({
+          data: {
+            tenantId: company,
+            employeeId: people.EMPLOYEE.id,
+            date: new Date("2026-02-12"),
+            status: "PRESENT",
+            processingState: "FINALIZED",
+            day_credit: 1,
+          },
+        }),
+      );
       await assert.rejects(
         actor("HR", () => startAttendanceExport(input), { exportGrant: false }),
         /permissions/,
