@@ -1,8 +1,8 @@
 {
-  "version": 5,
-  "state": "HR98_V7_FINAL_FAILURE_CORRECTIONS_RUNTIME_PENDING",
+  "version": 6,
+  "state": "CURRENT_MAIN_COMPOSITE_FULL_KUBERNETES_QUALIFICATION_PENDING",
   "execution": "KUBERNETES_ONLY",
-  "scope": "All original350HRJest87native36contractsVitest8contractsNative and195migrations retained; four observed native failures corrected in test fixtures/transport only. Training placeholder remains deferred.",
+  "scope": "All351HRJest88native36contractsVitest8contractsNative and196migrations; current-main attendance and security updates preserved. Full rerun required because production code and dependency lock changed.",
   "sourceBaseAssembly": {
     "file": "company-job-board-settings-assembly-20261024-v4.json",
     "sha256": "a8ad019eb3db730c7d4c6c4029107f1a4e7d2947bb15b5cee56c83b88f85ac91"
@@ -10,7 +10,7 @@
   "runnerSelection": "Static source inventory only. Actual runtime discovery must exactly match, with no skipped or cancelled cases. Preserve any mismatch as a failed qualification; do not lower inventory or silently exclude tests.",
   "hr": {
     "jest": {
-      "count": 350,
+      "count": 351,
       "argv": [
         "node",
         "--experimental-vm-modules",
@@ -413,6 +413,12 @@
           "sha256": "63156e3fdfafef6af9b0ebef593555cf8976b257e9cbfaaa981bcb1ccfece9f1"
         },
         {
+          "path": "tests/unit/HR-ATT-SCOPE-02.scope-options.test.js",
+          "sha256": "ab37dba3ec07812a97711d718a607d557fb7d5e1fa37545bb0745f7718374316",
+          "bytes": 5770,
+          "mode": 420
+        },
+        {
           "path": "tests/unit/HR-ATT-SESSION-01.close-before-open.test.js",
           "bytes": 5941,
           "mode": 420,
@@ -558,9 +564,9 @@
         },
         {
           "path": "tests/unit/HR-ROSTER-02.roster-versioning.test.js",
-          "bytes": 8873,
+          "bytes": 9171,
           "mode": 420,
-          "sha256": "f73fbe1d6d63cd921daedcad5ec59fcd532c8dfc32103e3722ecac979f6d5e33"
+          "sha256": "b3a8849780a2662bfb34be17db3655af46b9192bbcdb2e059e85f4de30b3ea23"
         },
         {
           "path": "tests/unit/HR-ROSTER-03.pattern-validation.test.js",
@@ -576,9 +582,9 @@
         },
         {
           "path": "tests/unit/HR-ROSTER-05.coverage-and-autoclose.test.js",
-          "bytes": 9414,
+          "bytes": 9728,
           "mode": 420,
-          "sha256": "f28c598796fab158f606af9929217f7ee971684a4da2ee8d4416f1c82672e0ed"
+          "sha256": "78618b82ec6fc0947595dadc63d01ee37d47d0cad34c27327ba42b0904fae76f"
         },
         {
           "path": "tests/unit/HR-TIMESHEET-WINDOW-01.default-period.test.js",
@@ -918,9 +924,9 @@
         },
         {
           "path": "tests/unit/attendanceRosterWrites.test.js",
-          "bytes": 4709,
+          "bytes": 9100,
           "mode": 420,
-          "sha256": "125df2148faf4796c1d3ad4141ed90ec056ce4c0fe79f85d5c566326b5a331ed"
+          "sha256": "bce131f455b8ff65be154c0437cefd3aa162648325ce5cedfa801b2fcd435d01"
         },
         {
           "path": "tests/unit/attendanceRulePayroll.test.js",
@@ -948,9 +954,9 @@
         },
         {
           "path": "tests/unit/attendanceSetupRuntime.test.js",
-          "bytes": 8116,
+          "bytes": 11546,
           "mode": 420,
-          "sha256": "0614118d83a1f04ce6268eeec28c38605da699b1940d6576f455caee1103dd4c"
+          "sha256": "a099dd1bc0f73b66a26507a1f0d73f4283567d8f1f34a6b805acca2739c6983d"
         },
         {
           "path": "tests/unit/attendanceTimingPolicy.test.js",
@@ -1655,10 +1661,22 @@
           "sha256": "46ffe776f8fa4d1d610986a5d75fb5fa658fe2eb535853bef7edf5398a06ed80"
         },
         {
+          "path": "tests/unit/native-verification-lifecycle.test.js",
+          "sha256": "56212d0797141bc216537dc95eb30c451c162c4e339296778eca3bc463a891dc",
+          "bytes": 15086,
+          "mode": 420
+        },
+        {
           "path": "tests/unit/native-verification-operator.test.js",
           "bytes": 8914,
           "mode": 420,
           "sha256": "c848d33fee4865e44f15fb97d94454226b5b3a8f579ae4f29a4d7d63a9dcf0a1"
+        },
+        {
+          "path": "tests/unit/native-verification-status.test.js",
+          "sha256": "3250103bf1486638d7e26710b30a253ee12281c1af166e8260dda0c3cac52383",
+          "bytes": 11613,
+          "mode": 420
         },
         {
           "path": "tests/unit/offerAcceptance.service.test.js",
@@ -2058,9 +2076,9 @@
         },
         {
           "path": "tests/unit/services/workSchedule.service.tenant-scope.test.js",
-          "bytes": 8323,
+          "bytes": 8653,
           "mode": 420,
-          "sha256": "b4d82eeffd6adbb2a364651ada7a56b46c9b87fc82803720268f627c7c73f1e6"
+          "sha256": "3daffba7e1480dc873859175eadb64cf2658f36680c9c99e7d2a20c80230d043"
         },
         {
           "path": "tests/unit/skillNormalization.test.js",
@@ -2109,18 +2127,6 @@
           "bytes": 4277,
           "mode": 420,
           "sha256": "15c6295221db32eae4e8aeac0915ecbe4bad26758a68f29838a02a239b7b77f4"
-        },
-        {
-          "path": "tests/unit/native-verification-status.test.js",
-          "sha256": "3250103bf1486638d7e26710b30a253ee12281c1af166e8260dda0c3cac52383",
-          "bytes": 11613,
-          "mode": 420
-        },
-        {
-          "path": "tests/unit/native-verification-lifecycle.test.js",
-          "sha256": "56212d0797141bc216537dc95eb30c451c162c4e339296778eca3bc463a891dc",
-          "bytes": 15086,
-          "mode": 420
         }
       ]
     },
@@ -2143,7 +2149,7 @@
       ]
     },
     "native": {
-      "count": 87,
+      "count": 88,
       "recruitmentCount": 60,
       "argvPrefix": [
         "node",
@@ -2170,6 +2176,12 @@
           "sha256": "826de6894fe21a6b65781a8e29b8585dceba96af2cd57db6d28931cd5b4bed4b"
         },
         {
+          "path": "tests/approval/attendanceResolutionRequest.test.mjs",
+          "sha256": "aaa2545da836709c692a54f03244fd5b2df65c4212157f291e2061bde7301ae7",
+          "bytes": 20431,
+          "mode": 420
+        },
+        {
           "path": "tests/approval/migration.test.mjs",
           "bytes": 4868,
           "mode": 420,
@@ -2177,9 +2189,9 @@
         },
         {
           "path": "tests/approval/workflow.postgres.test.mjs",
-          "bytes": 20457,
+          "bytes": 21639,
           "mode": 420,
-          "sha256": "aa62db029deeb89edd15761295a37f527abfb90f33412e0ff1602881249ea76e"
+          "sha256": "9d28fcef7adac937d2c857194401960909b5e70afa031d17f9d7da6fab02a95e"
         },
         {
           "path": "tests/assessment/appraisal-summary.test.mjs",
@@ -7094,10 +7106,19 @@
     }
   ],
   "unchangedScreenPixelDiffRequired": 0,
-  "predecessorPlanSha256": "d0e65d45ab61a496d7974f811f076392902cd9acc82549860c53983e97a962b2",
+  "predecessorPlanSha256": "c10363df3f92245afa06a2299bb48911886e015e24129c47993357bdcf3644f0",
   "canonicalSchema": {
     "sha256": "4b21cb516db9cfea141a958504f732bbfbcf72ccd4a5a8a3632bfc82006de522",
     "reviewSha256": "a2e00e7dde5ba73b677fda0244c597d716923ca53ce7f87ea9bd7f996b22d776"
   },
-  "correctionEvidenceSha256": "a189ce9c6e90eda38abf683775ece6ccdacf8dd5151747d18e7956e6ad032920"
+  "correctionEvidenceSha256": "a189ce9c6e90eda38abf683775ece6ccdacf8dd5151747d18e7956e6ad032920",
+  "currentMainIntegration": {
+    "qualifiedParentCommit": "866a76b9aa4015577359d0d1687df13de4c6b2d9",
+    "mainCommit": "99bb97b46dca9d9edfca19e0f0e0f90568bd8d2f",
+    "sourceCompositeTree": "15da34b169a8342abc3f882fa61271bc78a59a2f",
+    "newMigration": "20261027120000_attendance_anomaly_raised_by",
+    "newNativeFixture": "isolated hr_task_assessment_test through existing restricted assessment URL, no new administrator allowlist",
+    "dependencyLockChanged": true,
+    "priorPassReuseCannotQualifyCurrentCandidate": true
+  }
 }

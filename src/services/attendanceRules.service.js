@@ -1,5 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { legacyDecision } from './approval/legacy.js';
 import { requireApproval } from './approval/adapters.js';
+import {
+  submitApproval,
+  submitApprovalOnBehalf,
+} from "./approval/service.js";
 import prisma from "../lib/prisma.js";
 import {
   dateKey,
@@ -45,6 +50,14 @@ const requireHr = (user) => {
 const requireManagement = (user) => {
   if (!isManagement(user))
     fail(403, "Only the Management role may decide attendance anomalies");
+};
+// Display name for the filer snapshot. Mirrors attendanceAnomaly.service.js:
+// the denormalised name wins, otherwise the composed one.
+const fullName = (emp) => {
+  if (!emp) return null;
+  const denormalised = emp.employee_name && emp.employee_name.trim();
+  if (denormalised) return denormalised;
+  return `${emp.first_name ?? ""} ${emp.last_name ?? ""}`.trim() || null;
 };
 export async function employeeScope(db, user, employeeId) {
   const employee = await db.employee.findFirst({
@@ -142,16 +155,20 @@ export async function attendanceFilterOptions({user,from,to},db=prisma) {
   const [runtime,employees,departments] = await Promise.all([
     loadAttendanceRuntime({tenantId:user.tenantId,from,to,db}),
     db.employee.findMany({where:{tenant_id:user.tenantId,...(!isAttendanceHr(user)&&!isManagement(user)?{OR:[{id:Number(user.employeeId)||-1},{managerId:Number(user.employeeId)||-1}]}:{})},select:{id:true}}),
-    db.businessUnit.findMany({where:{tenantId:user.tenantId},select:{id:true,name:true}}),
+    db.businessUnit.findMany({where:{tenantId:user.tenantId},select:{id:true,name:true},orderBy:{name:'asc'}}),
   ]);
-  const sites=new Map(), shifts=new Set(), departmentIds=new Set();
+  const sites=new Map(), shifts=new Set();
   for(const employee of employees) for(const day of days) {
     const info=runtime.resolve(employee.id,day);
-    if(info.departmentId) departmentIds.add(info.departmentId);
     const key=shiftKey(info.shift); if(key) shifts.add(key);
     for(const site of info.sites||[]) if(info.siteAssignment?.siteIds?.includes(site.id)) sites.set(site.id,site.name);
   }
-  return {sites:[...sites].map(([id,name])=>({id,name})),departments:departments.filter(d=>departmentIds.has(d.id)),shifts:[...shifts].sort().map(key=>({id:key,name:key}))};
+  // Departments are the company's own list, not "departments seen in this
+  // window". The scope's department select must offer every department the
+  // company has (operator item 19): filtering to departments that happened to
+  // resolve for these dates hid a department with no scheduled staff yet, so an
+  // empty timesheet looked like a missing department rather than no rows.
+  return {sites:[...sites].map(([id,name])=>({id,name})),departments:departments.map(d=>({id:d.id,name:d.name})),shifts:[...shifts].sort().map(key=>({id:key,name:key}))};
 }
 export async function myAttendanceDay({user},db=prisma) {
   if(!user.employeeId) return {linked:false};
@@ -176,17 +193,29 @@ export async function exportAttendanceRecords({user,...filters},db=prisma) {
   return {reference:receipt.id,generatedAt,company:user.tenantId,filters,total:result.total,items:result.items.map(row=>({employeeCode:row.employee?.code,date:dateKey(row.date),calendar:row.calendarStatus,outcome:row.status,processing:row.processingState,checkIn:row.checkIn,checkOut:row.checkOut,decimalHours:row.totalHours,timeZone:row.timeZone}))};
 }
 export async function employeeCodeOptions({ user, q = '', page = 1, pageSize = 50 }, db = prisma) {
-  const where = { tenant_id: user.tenantId, employee_code: { contains: q, mode: 'insensitive' },
-    ...(!isAttendanceHr(user) && !isManagement(user) ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] } : {}),
-  };
-  const select = { id: true, employee_code: true, status:true, hire_date:true, businessUnit:{select:{name:true}} };
-  const exact = q ? await db.employee.findFirst({ where: {...where, employee_code:{equals:q,mode:'insensitive'}}, select }) : null;
+  // Operator item 19: search matches the employee's NAME as well as the code,
+  // so HR can type "Ayesha" instead of remembering EMP-014. Both predicates sit
+  // under AND with the permission scope — the scope is itself an OR, and a
+  // flat spread would let one OR overwrite the other and leak other managers'
+  // staff.
+  const scope = !isAttendanceHr(user) && !isManagement(user)
+    ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] }
+    : {};
+  const term = String(q || '').trim();
+  const match = term
+    ? { OR: ['employee_code', 'first_name', 'middle_name', 'last_name', 'preferred_name'].map((field) => ({ [field]: { contains: term, mode: 'insensitive' } })) }
+    : {};
+  const clauses = [scope, match].filter((clause) => Object.keys(clause).length);
+  const where = { tenant_id: user.tenantId, ...(clauses.length ? { AND: clauses } : {}) };
+  const select = { id: true, employee_code: true, first_name:true, middle_name:true, last_name:true, preferred_name:true, status:true, hire_date:true, businessUnit:{select:{name:true}} };
+  const exact = term ? await db.employee.findFirst({ where: {...where, employee_code:{equals:term,mode:'insensitive'}}, select }) : null;
   const [remaining, total] = await Promise.all([
     db.employee.findMany({ where: {...where,...(exact?{id:{not:exact.id}}:{})}, select, orderBy: { employee_code: 'asc' }, skip: Math.max(0,(page - 1) * pageSize - (exact ? 1 : 0)), take: pageSize - (exact && page === 1 ? 1 : 0) }),
     db.employee.count({ where }),
   ]);
   const rows = exact && page === 1 ? [exact,...remaining] : remaining;
-  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code,department:e.businessUnit?.name,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
+  const nameOf = (e) => [e.first_name, e.last_name].filter(Boolean).join(' ') || e.preferred_name || e.middle_name || null;
+  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code, name:nameOf(e), department:e.businessUnit?.name,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
 }
 export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
   const row = await db.attendanceAnomaly.findFirst({
@@ -324,6 +353,216 @@ export async function commentRuleCase(
     db,
   );
 }
+// ── TS-REQUEST-HYBRID-01 (operator, 2026-10-27) ─────────────────────────────
+// Raising the resolution request for a case the rules engine detected.
+//
+// The hybrid model: the evaluator detects the anomaly and the Timesheet shows
+// it immediately (Late Check-in / Early Check-out / …) with the Request column
+// reading "Not Submitted". The request is then raised by the EMPLOYEE, or by HR
+// ON THEIR BEHALF, with a single free-text reason. Everything else — type,
+// date, expected/actual time, measured minutes, session — is already derived by
+// the evaluator and the decision route is fixed, so the raise takes no other
+// input.
+//
+// The raise COMPLETES the existing rules-v2 case and never creates a second
+// anomaly row: the ATTENDANCE approval adapter refuses to finalize a source
+// that is not rules-v2 ("Re-evaluate this legacy attendance case under the
+// current evidence rules"), so a legacy-shaped row could never be decided.
+//   • `reason` and the filer snapshot are stamped here — the reason is the only
+//     content an approver judges, and the approval seals a snapshot of it (the
+//     ATTENDANCE field list in approval/adapters.js);
+//   • the approval is created against `<anomalyId>@<factHash>`, the reference
+//     `finalizeRuleCase` consumes when Management decides — so APPROVED
+//     resolves the case with NO payroll deduction and REJECTED deducts (only
+//     REJECTED + decisionRole=Management cases are priced: ruleDeductions);
+//   • the Level-1 manager stage is PAUSED (lib/approvalStagePolicy.js), so the
+//     submitted request lands in HR verification and Management then decides.
+//
+// Raising is deliberately the LAST write before submission: the approval binds
+// to the current fact hash, so any later evidence change invalidates it and the
+// centre asks for a fresh review instead of deciding on stale facts.
+const REASON_LIMIT = 4000;
+
+// The raise targets one case. Callers that already show the case (the Timesheet
+// row) pass its id; the employee's own dialog is about a DAY, so it passes the
+// date — and the type when the day carries more than one case (a late check-in
+// and a missing check-out can coexist on one day).
+async function resolveCaseId(tx, user, { anomalyId, date, type, employeeId }) {
+  if (anomalyId) return anomalyId;
+  if (!date) fail(400, "An attendance case id, or the work date, is required");
+  // The subject is the caller on a self raise and the named employee on an
+  // on-behalf one — never the caller, who is HR in that case.
+  const owner = employeeId != null ? Number(employeeId) : Number(user.employeeId);
+  if (!Number.isInteger(owner) || owner < 1)
+    fail(400, "The employee is required to raise a case by date");
+  const rows = await tx.attendanceAnomaly.findMany({
+    where: {
+      tenantId: user.tenantId,
+      employeeId: owner,
+      date: dateOnly(date),
+      rulesVersion: 2,
+      status: "PENDING",
+      evidenceState: "ACTIVE",
+      ...(type ? { type } : {}),
+    },
+    select: { id: true, type: true },
+    orderBy: { id: "asc" },
+  });
+  if (!rows.length) fail(404, "No open attendance case for that day");
+  if (rows.length > 1)
+    fail(
+      409,
+      `That day has ${rows.length} open cases (${rows
+        .map((row) => row.type)
+        .join(", ")}); raise the one you mean`,
+    );
+  return rows[0].id;
+}
+
+async function assertRaiseable(tx, user, anomalyId, { onBehalf }) {
+  const row = await tx.attendanceAnomaly.findFirst({
+    where: { tenantId: user.tenantId, id: anomalyId, rulesVersion: 2 },
+  });
+  if (!row) fail(404, "Attendance case not found");
+  await employeeScope(tx, user, row.employeeId);
+  if (onBehalf) {
+    // HR filing for an employee. The approval centre re-asserts the HR grant
+    // on submission (submitApprovalOnBehalf); here we only establish the
+    // attendance-side scope and refuse a pointless on-behalf raise of the
+    // caller's own case.
+    requireHr(user);
+    if (Number(user.employeeId) === row.employeeId)
+      fail(403, "Raise your own case from your own account");
+  } else if (row.employeeId !== Number(user.employeeId)) {
+    fail(403, "Only the employee concerned may raise this case");
+  }
+  if (row.status !== "PENDING" || row.evidenceState !== "ACTIVE")
+    fail(409, "This case is already closed");
+  return row;
+}
+
+async function raiseRuleCase(
+  { user, anomalyId, date, type, employeeId, reason, requestKey, onBehalf = false },
+  db = prisma,
+) {
+  if (!user?.tenantId) fail(401, "Authentication required");
+  const trimmed = String(reason ?? "").trim();
+  if (!trimmed) fail(400, "A reason is required to raise the request");
+  if (trimmed.length > REASON_LIMIT)
+    fail(400, `The reason must be at most ${REASON_LIMIT} characters`);
+  // Phase 1 — complete the case. Its own transaction: the approval service owns
+  // its own locking and idempotency receipt, and nesting the two would take the
+  // attendance period lock and the anomaly row lock out of order.
+  const prepared = await command(
+    user,
+    async (tx) => {
+      const targetId = await resolveCaseId(tx, user, {
+        anomalyId,
+        date,
+        type,
+        employeeId,
+      });
+      const row = await assertRaiseable(tx, user, targetId, { onBehalf });
+      if (onBehalf && employeeId != null && Number(employeeId) !== row.employeeId)
+        fail(400, "The case belongs to a different employee");
+      const filerId = Number(user.employeeId) || null;
+      // raisedById === the subject's own id on a self raise, which is how the
+      // Timesheet tells a self-filed request from an on-behalf one.
+      const onBehalfRaise = onBehalf && filerId != null && filerId !== row.employeeId;
+      let raisedByName = null;
+      if (onBehalfRaise) {
+        const filer = await tx.employee.findFirst({
+          where: { tenant_id: user.tenantId, id: filerId },
+          select: { employee_name: true, first_name: true, last_name: true },
+        });
+        raisedByName = fullName(filer);
+      }
+      const employee = await tx.employee.findFirst({
+        where: { tenant_id: user.tenantId, id: row.employeeId },
+        select: {
+          employee_code: true,
+          Position: { select: { title: true } },
+          businessUnit: { select: { name: true } },
+        },
+      });
+      if (!employee?.employee_code)
+        fail(422, "The employee has no employee code; the request cannot be routed");
+      const existing = await tx.hrApprovalRequest.findUnique({
+        where: {
+          tenantId_kind_sourceRef: {
+            tenantId: user.tenantId,
+            kind: "ATTENDANCE",
+            sourceRef: `${row.id}@${row.factHash}`,
+          },
+        },
+      });
+      if (existing && existing.stage !== "INITIATOR")
+        fail(
+          409,
+          `A resolution request for this case is already with ${
+            existing.stage === "HR"
+              ? "HR"
+              : existing.stage === "MANAGEMENT"
+                ? "Management"
+                : existing.stage
+          }`,
+        );
+      const changed = await tx.attendanceAnomaly.updateMany({
+        where: { tenantId: user.tenantId, id: row.id, workflowVersion: row.workflowVersion },
+        data: {
+          reason: trimmed,
+          applicationDate: new Date(),
+          raisedById: onBehalfRaise ? filerId : row.employeeId,
+          raisedByName,
+          positionSnapshot: employee.Position?.title ?? null,
+          departmentSnapshot: employee.businessUnit?.name ?? null,
+          workflowVersion: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1)
+        fail(409, "The case changed; refresh before raising the request");
+      await audit(
+        tx,
+        user,
+        onBehalfRaise ? "REQUEST_RAISED_ON_BEHALF" : "REQUEST_RAISED",
+        { reason: trimmed, raisedById: onBehalfRaise ? filerId : row.employeeId },
+        row.employeeId,
+        row.id,
+      );
+      return {
+        anomalyId: row.id,
+        sourceRef: `${row.id}@${row.factHash}`,
+        employeeCode: employee.employee_code,
+        expectedVersion: existing?.version ?? 0,
+      };
+    },
+    db,
+  );
+  // Phase 2 — hand it to the HR Approval Centre at the first engaged stage.
+  const submit = onBehalf ? submitApprovalOnBehalf : submitApproval;
+  const result = await submit({
+    kind: "ATTENDANCE",
+    sourceRef: prepared.sourceRef,
+    employeeCode: prepared.employeeCode,
+    expectedVersion: prepared.expectedVersion,
+    reason: trimmed,
+    requestKey: requestKey || randomUUID(),
+  });
+  return { ...result.record, anomalyId: prepared.anomalyId };
+}
+
+// The employee's own raise: "this is my day, here is my explanation".
+export async function raiseRuleRequest(args, db = prisma) {
+  return raiseRuleCase({ ...args, onBehalf: false }, db);
+}
+
+// TS-ONBEHALF-01 — HR raises the resolution request for an employee who has not
+// answered their own case. Same lifecycle, same single reason; only the filer
+// differs, and the filer is recorded on both the case and the approval trail.
+export async function raiseRuleRequestOnBehalf(args, db = prisma) {
+  return raiseRuleCase({ ...args, onBehalf: true }, db);
+}
+
 export async function finalizeRuleCase(
   { user, anomalyId, version, decision, comment },
   db = prisma,

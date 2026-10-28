@@ -2,17 +2,29 @@ import prisma from './prisma.js';
 import { badSetup, dateOnly, dateKey } from './attendanceDates.js';
 import { resolveEmployeeDay } from './attendanceSetup.js';
 
+// ROSTER-REEVAL-01 — schedule windows resolve from the live WorkSchedule
+// table, not only from the published release snapshot. The snapshot stays the
+// source of truth for policy, deductions, grace, approvals and calendars;
+// only the roster itself goes live, so an HR shift update takes effect in
+// evaluation as soon as it is saved. Set ATTENDANCE_LIVE_ROSTERS=false to
+// restore snapshot-only resolution without a redeploy.
+const liveRostersEnabled = (override) =>
+  override !== undefined
+    ? override
+    : process.env.ATTENDANCE_LIVE_ROSTERS !== 'false';
+
 export async function loadAttendanceRuntime({
   tenantId,
   from,
   to,
   db = prisma,
   ignoreLeaves = false,
+  liveRosters,
 }) {
   if (!tenantId) throw badSetup('Tenant is required', 403);
   const first = dateOnly(from),
     last = dateOnly(to);
-  const [releases, assignments, leaves, requests, callIns] = await Promise.all([
+  const [releases, assignments, leaves, requests, callIns, liveRosterRows] = await Promise.all([
     db.attendanceSetupRelease.findMany({
       where: { tenantId, effectiveFrom: { lte: last } },
       orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
@@ -40,7 +52,29 @@ export async function loadAttendanceRuntime({
     db.attendanceCallIn.findMany({
       where: { tenantId, date: { gte: first, lte: last } },
     }),
+    // Rosters in force for ANY day of the window, across the tenant's whole
+    // version history: historical rows are never deleted (only future ones),
+    // so for every day inside the window the live table holds the same rows
+    // the snapshot was built from — possibly corrected in place.
+    liveRostersEnabled(liveRosters) && db.workSchedule
+      ? db.workSchedule.findMany({
+          where: {
+            tenantId,
+            effective_start_date: { lte: last },
+            OR: [
+              { effective_end_date: null },
+              { effective_end_date: { gte: first } },
+            ],
+          },
+        })
+      : Promise.resolve([]),
   ]);
+  const liveRostersByEmployee = new Map();
+  for (const row of liveRosterRows || []) {
+    if (!liveRostersByEmployee.has(row.employeeId))
+      liveRostersByEmployee.set(row.employeeId, []);
+    liveRostersByEmployee.get(row.employeeId).push(row);
+  }
   const configOn = (day) => {
     // An expired latest release is a setup exception, never a fall-back to an older one.
     const release = releases.find(
@@ -101,24 +135,37 @@ export async function loadAttendanceRuntime({
           setupVersion: config?.version ?? null,
         };
       const cacheKey = `${config.version}:${employeeId}`;
-      if (!configByEmployee.has(cacheKey))
+      if (!configByEmployee.has(cacheKey)) {
+        const own = liveRostersByEmployee.get(employeeId);
         configByEmployee.set(cacheKey, {
           ...config,
           periods: config.periods.filter((r) => r.employeeId === employeeId),
-          schedules: config.schedules.filter(
-            (r) => r.employeeId === employeeId,
-          ),
+          // ROSTER-REEVAL-01 — the live roster version chain replaces the
+          // snapshot's rows for this employee wholesale. Rows are never
+          // deleted (only future ones), so for every day the live table
+          // carries the snapshot rows, corrected or versioned in place.
+          schedules: own?.length
+            ? [
+                ...config.schedules.filter((r) => r.employeeId !== employeeId),
+                ...own,
+              ]
+            : config.schedules.filter((r) => r.employeeId === employeeId),
+          rosterSource: own?.length ? 'live' : undefined,
           calendarAssignments: config.calendarAssignments.filter(
             (r) => r.employeeId === employeeId,
           ),
         });
-      return resolveEmployeeDay(configByEmployee.get(cacheKey), employee, day, {
+      }
+      const employeeConfig = configByEmployee.get(cacheKey);
+      const info = resolveEmployeeDay(employeeConfig, employee, day, {
         anchor,
         forLeave: ignoreLeaves,
         assignments: indexed.get(`${employeeId}:${dateKey(day)}`) || [],
         leaves: ignoreLeaves ? [] : leavesByEmployee.get(employeeId) || [],
         callIns: callsByEmployee.get(employeeId) || [],
       });
+      if (employeeConfig.rosterSource === 'live') info.rosterSource = 'live';
+      return info;
     },
   };
 }

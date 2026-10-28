@@ -18,6 +18,7 @@ const { registry, requireApproval } =
 const { actApproval, listApprovals, readApproval } =
   await import("../../src/services/approval/service.js");
 const { HR_APPROVAL_KINDS } = await import("@trusoft/contracts/hr-approval");
+const { isStagePaused } = await import("../../src/lib/approvalStagePolicy.js");
 test(
   "all HR request approval stages through non-owner PostgreSQL, including returns and final effects",
   { timeout: 180000 },
@@ -33,6 +34,10 @@ test(
           " complete approval, Management return to HR, HR resolution, and audit",
         async () => {
           const s = await fixture(kind);
+          // TS-REQUEST-HYBRID-01 — the Level-1 manager stage is PAUSED for
+          // ATTENDANCE: a raised anomaly resolution goes straight to HR
+          // verification, and the submission's own audit row records the jump.
+          const managerPaused = isStagePaused(kind, "LINE_MANAGER");
           let row = await submit(s);
           if (kind === "OFFER") {
             const policy = async () => (await db(tx => tx.hrApprovalRequest.findFirstOrThrow({
@@ -58,7 +63,11 @@ test(
             await assert.rejects(act("MANAGEMENT", row, "APPROVE"), e => e.status === 403);
             return;
           }
-          assert.equal(row.stage, "LINE_MANAGER");
+          assert.equal(row.stage, managerPaused ? "HR" : "LINE_MANAGER");
+          if (managerPaused) {
+            assert.equal(row.history[0].fromStage, "INITIATOR");
+            assert.equal(row.history[0].toStage, "HR");
+          }
           for (const who of ["HR", "MANAGEMENT", "OTHER", "ADMIN"])
             await assert.rejects(act(who, row, "APPROVE"), (e) =>
               [403, 404].includes(e.status),
@@ -67,15 +76,20 @@ test(
             act("EMPLOYEE", row, "RECOMMEND_APPROVAL"),
             (e) => e.status === 403,
           );
-          row = await act("MANAGER", row, "RECOMMEND_REJECTION");
-          assert.equal(row.stage, "HR");
+          if (!managerPaused) {
+            row = await act("MANAGER", row, "RECOMMEND_REJECTION");
+            assert.equal(row.stage, "HR");
+          }
           row = await act("HR", row, "VERIFY");
           assert.equal(row.stage, "MANAGEMENT");
           const before = row;
           row = await act("MANAGEMENT", row, "REVERT");
           assert.equal(row.stage, "HR");
           assert.equal(row.verification, null);
-          assert.equal(row.recommendation, "RECOMMEND_REJECTION");
+          assert.equal(
+            row.recommendation,
+            managerPaused ? null : "RECOMMEND_REJECTION",
+          );
           await assert.rejects(
             act("MANAGEMENT", before, "APPROVE"),
             (e) => e.status === 412,
@@ -83,8 +97,8 @@ test(
           row = await act("HR", row, "VERIFY");
           row = await act("MANAGEMENT", row, "APPROVE");
           assert.equal(row.stage, "APPROVED");
-          assert.equal(row.history.length, 6);
-          assert.equal(row.history[3].toStage, "HR");
+          assert.equal(row.history.length, managerPaused ? 5 : 6);
+          assert.equal(row.history[managerPaused ? 2 : 3].toStage, "HR");
           if (
             [
               "ASSESSMENT_RELEASE",
@@ -157,6 +171,11 @@ test(
         kind + " manager/HR returns restart review; only Management rejects",
         async () => {
           const s = await fixture(kind);
+          // TS-REQUEST-HYBRID-01 — with the manager stage paused for ATTENDANCE
+          // the first engaged reviewer is HR, so the return comes from HR and
+          // still lands on the initiator (HR_REVERT_TARGET) rather than
+          // stranding the request in a paused stage.
+          const managerPaused = isStagePaused(kind, "LINE_MANAGER");
           let row = await submit(s);
           if (kind === "OFFER") {
             row = await act("MANAGER", row, "REVERT");
@@ -175,11 +194,12 @@ test(
             assert.equal(row.stage, "REJECTED");
             return;
           }
-          row = await act("MANAGER", row, "REVERT");
+          row = await act(managerPaused ? "HR" : "MANAGER", row, "REVERT");
           assert.equal(row.stage, "INITIATOR");
           row = await submit(s, row.version);
           assert.equal(row.round, 2);
-          row = await act("MANAGER", row, "RECOMMEND_APPROVAL");
+          if (!managerPaused)
+            row = await act("MANAGER", row, "RECOMMEND_APPROVAL");
           row = await act("HR", row, "VERIFY");
           row = await act("MANAGEMENT", row, "REVERT");
           row = await act("HR", row, "REVERT");
@@ -188,7 +208,8 @@ test(
           assert.equal(row.verification, null);
           row = await submit(s, row.version);
           assert.equal(row.round, 3);
-          row = await act("MANAGER", row, "RECOMMEND_REJECTION");
+          if (!managerPaused)
+            row = await act("MANAGER", row, "RECOMMEND_REJECTION");
           await assert.rejects(
             act("HR", row, "REJECT"),
             (e) => e.status === 403,
@@ -196,7 +217,7 @@ test(
           row = await act("HR", row, "VERIFY");
           row = await act("MANAGEMENT", row, "REJECT");
           assert.equal(row.stage, "REJECTED");
-          assert.ok(row.history.length > 10);
+          assert.ok(row.history.length > (managerPaused ? 8 : 10));
         },
       );
     await t.test(

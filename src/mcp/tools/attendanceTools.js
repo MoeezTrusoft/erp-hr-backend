@@ -477,7 +477,7 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_work_schedule_create",
-    "Create a work schedule for an employee. Rejects periods that overlap an existing schedule for the same employee.",
+    "Create a work schedule for an employee. Rejects periods that overlap an existing schedule for the same employee. On save, attendance is automatically re-queued for evaluation from the new effective date (payroll-locked periods are rejected first); the response carries the reevaluation horizon.",
     {
       dryRun: z.boolean().optional(),
       previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
@@ -507,7 +507,7 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_work_schedule_update",
-    "Update a work schedule (partial). Only the fields you send are changed.",
+    "Update a work schedule (partial). Only the fields you send are changed. On save, attendance is automatically re-queued for evaluation across the previous and new coverage (payroll-locked periods are rejected first); the response carries the reevaluation horizon.",
     {
       dryRun: z.boolean().optional(),
       previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),

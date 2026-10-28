@@ -6,7 +6,7 @@ FROM node:24-bookworm-slim AS base
 RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global npm@12.2.0 --ignore-scripts \
-  && npm --prefix /tmp/npm-security install --no-save --package-lock=false --ignore-scripts brace-expansion@5.0.11 undici@6.28.1 \
+  && npm --prefix /tmp/npm-security install --no-save --package-lock=false --ignore-scripts brace-expansion@5.0.11 undici@6.29.1 \
   && rm -rf /usr/local/lib/node_modules/npm/node_modules/brace-expansion /usr/local/lib/node_modules/npm/node_modules/undici \
   && cp -R /tmp/npm-security/node_modules/. /usr/local/lib/node_modules/npm/node_modules/ \
   && rm -rf /tmp/npm-security \

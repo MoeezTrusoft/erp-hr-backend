@@ -27,11 +27,19 @@ const prisma = {
   },
   overtimeRule: { findFirst: jest.fn(), findUnique: jest.fn() },
   employee: { findFirst: jest.fn() },
+  // ROSTER-REEVAL-01 — the roster write re-queues evaluation for the employee.
+  attendanceEvaluationJob: { updateMany: jest.fn(async () => ({ count: 1 })) },
+  attendance: { count: jest.fn(async () => 0) },
 };
 
 jest.unstable_mockModule('../../../src/lib/rlsTenant.js',()=>({tenantTransaction:async(_db,fn)=>fn(prisma)}));
 jest.unstable_mockModule('../../../src/lib/prisma.js', () => ({ default: prisma }));
 jest.unstable_mockModule('../../../src/utils/logs.js', () => ({ logAction: jest.fn(async () => {}) }));
+// ROSTER-REEVAL-01 — the roster write now dynamically imports the finalization
+// service to queue re-evaluation; mock it so the suite stays unit-scoped.
+jest.unstable_mockModule('../../../src/services/attendanceFinalization.service.js', () => ({
+  enqueueEvaluationRange: jest.fn(async () => undefined),
+}));
 
 const service = await import('../../../src/services/workScheduleService.js');
 
