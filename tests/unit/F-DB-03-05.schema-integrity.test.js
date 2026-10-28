@@ -32,7 +32,14 @@ describe("F-DB-03/F-DB-04 tenant-qualified and natural-key integrity", () => {
     ["PayrollConfigMeta", "@@unique([tenantId])"],
     ["PayrollConfigSnapshot", "@@unique([tenantId, version])"],
   ])("%s declares %s", (name, key) => {
-    expect(model(name)).toContain(key);
+    // Prisma introspection represents single-column unique indexes inline.
+    // Both forms enforce the same tenant key; composite keys remain explicit.
+    const body = model(name);
+    if (key === "@@unique([tenantId])") {
+      expect(body.includes(key) || /^\s*tenantId\s+String\??\s+@unique\b/m.test(body)).toBe(true);
+    } else {
+      expect(body).toContain(key);
+    }
   });
 
   test("global uniqueness is removed from tenant-owned fields", () => {

@@ -18,6 +18,7 @@ COPY --from=contracts package.json /contracts/package.json
 COPY --from=contracts src /contracts/src
 COPY package.json package-lock.json .npmrc ./
 COPY prisma ./prisma
+COPY vendor ./vendor
 RUN npm ci --omit=dev --ignore-scripts \
   && npx prisma generate \
   && npm cache clean --force

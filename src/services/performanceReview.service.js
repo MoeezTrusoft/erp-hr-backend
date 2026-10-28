@@ -1,3 +1,4 @@
+import { performanceIdentity } from "./performanceIdentity.js";
 import { z } from "zod";
 import { getCtx } from '../mcp/context.js';
 import { actor } from './separation/base.js';
@@ -17,7 +18,7 @@ export const initiateReviewsService = async (cycleId, employeeIds, reviewedBy, t
   if(!tenantId || !Array.isArray(employeeIds) || !employeeIds.length || employeeIds.length>10000) throw Object.assign(new Error('Verified tenant and eligible employees are required'),{status:422});
   const create=await tenantTransaction(prisma,async tx=>{
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId+':legacy-launch:'+cycleId},0))`;
-    const cycle=await tx.performanceCycle.findFirst({where:{id:Number(cycleId),tenantId}});
+    const cycle=await tx.performanceCycle.findFirst({where:{id:Number(cycleId),tenantId,archivedAt:null}});
     if(!cycle)throw Object.assign(new Error('Cycle not found'),{status:404});
     const ids=[...new Set(employeeIds.map(Number))];
     if(ids.some(id=>!Number.isSafeInteger(id)||id<1))throw Object.assign(new Error('Invalid employee identifiers'),{status:422});
@@ -68,8 +69,8 @@ export const getCycleReviewsService = async (cycleId, tenantId) => {
   return prisma.performanceReview.findMany({
     where: scopedWhere(tenantId, { cycleId: Number(cycleId) }),
     include: {
-      employee: true,
-      reviewer: true,
+      employee: { select: performanceIdentity },
+      reviewer: { select: performanceIdentity },
       feedbacks: true,
     },
   });

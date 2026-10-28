@@ -4,7 +4,7 @@ const url = process.env.ASSESSMENT_TEST_DATABASE_URL;
 if (
   !url ||
   new URL(url).hostname !== "127.0.0.1" ||
-  new URL(url).pathname !== "/hr_task_assessment_test"
+  !(/^\/(?:hr_task_assessment_test|hr_appraisal_release_[a-f0-9]{32})$/.test(new URL(url).pathname))
 )
   throw new Error("Use the isolated local HR test database");
 process.env.DATABASE_URL = url;

@@ -1,19 +1,27 @@
+import { performanceIdentity } from "./performanceIdentity.js";
 import { legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
-import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { scopedWhere, scopedData, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { legacyGoalCreate, legacyGoalUpdate, legacyGoalProgress } from '../validators/performance.schema.js';
 
 // C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
 // into goal reads and stamped on creates, fail-closed when present.
 
 // ✅ Create a new goal
 export const createGoalService = async (data, createdBy, tenantId) => {
+  data = legacyGoalCreate.parse(data);
   const { employeeId, title, description, category, start_date, end_date, target_value } = data;
 
   if (!employeeId || !title) throw new Error("Employee ID and Title are required");
 
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: employeeId }),
+    select: { id: true },
+  });
+  if (!employee) throw Object.assign(new Error("Employee not found"), { status: 404 });
   const create = await prisma.goal.create({
     data: scopedData(tenantId, {
       employeeId: Number(employeeId),
@@ -44,8 +52,8 @@ export const getGoalsService = async (employeeId, tenantId) => {
   return prisma.goal.findMany({
     where,
     include: {
-      employee: true,
-      approvedBy: true,
+      employee: { select: performanceIdentity },
+      approvedBy: { select: performanceIdentity },
       progressUpdates: { orderBy: { update_date: "desc" } },
     },
     orderBy: { created_at: "desc" },
@@ -54,6 +62,7 @@ export const getGoalsService = async (employeeId, tenantId) => {
 
 // ✅ Update goal details or progress
 export const updateGoalService = async (id, data,updatedBy,tenantId) => {
+  data = legacyGoalUpdate.parse(data);
   const { title, description, progress, status } = data;
 
   // API-2 — optimistic-concurrency guard (opt-in via expectedVersion). Absent ⇒ no reject.
@@ -109,6 +118,7 @@ export const approveGoalService = async (id, status, approvedBy, tenantId) => {
 
 // ✅ Add a progress update
 export const addGoalProgressService = async (data,createdBy,tenantId) => {
+  data = legacyGoalProgress.parse(data);
   const { goalId, comment, progress, } = data;
 
   if (!Number.isFinite(Number(progress)) || Number(progress)<0 || Number(progress)>100) throw Object.assign(new Error('Progress must be from 0 to 100'),{status:422});
@@ -142,7 +152,7 @@ export const getGoalProgressService = async (id, tenantId) => {
 
   return prisma.goalProgress.findMany({
     where: scopedWhere(tenantId, { goalId: Number(id) }),
-    include: { createdBy: true },
+    include: { createdBy: { select: performanceIdentity } },
     orderBy: { update_date: "desc" },
   });
 };

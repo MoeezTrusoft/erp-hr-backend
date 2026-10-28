@@ -22,6 +22,11 @@ if (
   throw new Error("Refusing a non-local or non-assessment test database");
 if (!process.argv.includes("--reset"))
   throw new Error("Pass --reset to recreate only this disposable test schema");
+if (service === 'hr') {
+  const { prepareFullHrDatabase } = await import('../helpers/prepareFullHrDatabase.mjs');
+  await prepareFullHrDatabase(raw, true);
+  process.exit(0);
+}
 const generated = spawnSync(
   process.execPath,
   [

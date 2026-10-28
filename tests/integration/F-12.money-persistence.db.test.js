@@ -1,3 +1,4 @@
+import { randomUUID as fixtureEmployeeCode } from 'node:crypto';
 // F-12 / ARCH-01 §2.3, §5.1 / ARCH-06 C-06, C-11.
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import prisma from '../../src/lib/prisma.js';
@@ -30,7 +31,7 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
   }
 
   const employee = await prisma.employee.create({
-    data: { tenant_id: TENANT, first_name: 'Exact', last_name: 'Money', status: 'active' },
+    data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT, first_name: 'Exact', last_name: 'Money', status: 'active' },
   });
   ids.employee = employee.id;
   const earningType = await prisma.payrollEarningType.create({

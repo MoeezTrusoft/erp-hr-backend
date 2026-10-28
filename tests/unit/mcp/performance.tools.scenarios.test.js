@@ -3,6 +3,7 @@
 // Per-tool scenario matrix for HR performance tools (13 tools).
 // DB-free: controller is mocked; tool→controller dispatch + gate is asserted.
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { z } from 'zod';
 
 jest.unstable_mockModule('../../../src/mcp/controllers/performanceMcpController.js', () => ({
   mcpListPerformanceReviews: jest.fn(async () => ({ success: true })),
@@ -26,9 +27,14 @@ const { registerPerformanceTools } = await import('../../../src/mcp/tools/perfor
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
+const schemas = new Map();
+const resources = new Map();
 const recording = {
-  tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
-  resource: () => {},
+  tool: (name, ...rest) => {
+    schemas.set(name, rest[rest.length - 2]);
+    handlers.set(name, rest[rest.length - 1]);
+  },
+  resource: (_name, uri, _options, callback) => resources.set(uri, callback),
 };
 registerPerformanceTools(recording);
 
@@ -41,6 +47,26 @@ function call(name, args, { user = USER, permissions } = {}) {
   return mcpCtx.run({ user, permissions: permissions || {} }, () => handlers.get(name)(args));
 }
 const parse = (res) => JSON.parse(res.content[0].text);
+
+describe.each(['hr://performance/reviews', 'hr://goals', 'hr://calibration', 'hr://performance/metrics'])('%s resource authorization', uri => {
+  const read = (permissions, user = USER) => mcpCtx.run({ user, permissions }, () => resources.get(uri)(new URL(uri)));
+  it('denies missing, write-only and forged-admin grants', async () => {
+    const controllers = await import('../../../src/mcp/controllers/performanceMcpController.js');
+    jest.clearAllMocks();
+    for (const permissions of [{}, { 'hr:performance': ['CREATE', 'EDIT'] }]) {
+      await expect(read(permissions, { ...USER, isAdmin: true })).rejects.toMatchObject({ status: 403 });
+    }
+    for (const name of ['mcpListPerformanceReviews', 'mcpListGoals', 'mcpListCalibrationSessions', 'mcpListPerformanceMetrics']) {
+      expect(controllers[name]).not.toHaveBeenCalled();
+    }
+  });
+  it('requires authentication and accepts the canonical read grant', async () => {
+    await expect(read(['hr.performance.read'], null)).rejects.toMatchObject({ status: 401 });
+    const result = await read(['hr.performance.read']);
+    expect(result.contents[0].uri).toBe(uri);
+    expect(result.contents[0].mimeType).toBe('application/json');
+  });
+});
 
 const TOOLS = [
   { name: 'hr_performance_reviews_list', gate: 'hr:performance', action: 'VIEW', args: {} },
@@ -58,6 +84,15 @@ const TOOLS = [
 ];
 
 describe('PERFORMANCE-SCENARIOS — registration', () => {
+  it('validates canonical identifiers before the MCP SDK can coerce booleans', () => {
+    const schema = z.object(schemas.get('hr_performance_reviews_list'));
+    for (const value of [true, false, '1e2', '1.0', -1, 0]) {
+      expect(schema.safeParse({ employeeId: value }).success).toBe(false);
+      expect(schema.safeParse({ page: value }).success).toBe(false);
+    }
+    expect(schema.parse({ page: '2', q: ' EMP-1 ' })).toMatchObject({ page: 2, pageSize: 50, q: 'EMP-1' });
+    expect(schema.safeParse({ q: 'x'.repeat(201) }).success).toBe(false);
+  });
   it.each(TOOLS.map((t) => t.name))('%s is registered', (name) => {
     expect(handlers.has(name)).toBe(true);
   });

@@ -9,7 +9,9 @@ import pg from "pg";
 
 test(
   "Production appraisal migrations apply unchanged to the pinned pre-appraisal schema",
-  { timeout: 90000 },
+  // Prisma compiles the full pre-appraisal schema before PostgreSQL applies
+  // the migrations. Allow that compilation on Windows release-check hosts.
+  { timeout: 180000 },
   async () => {
     const database =
       "performance_appraisals_migration_" + randomUUID().replaceAll("-", "");
@@ -60,6 +62,9 @@ test(
         "20261026040000_appraisal_approval_bridge",
         "20261026050000_appraisal_launch_journal",
         "20261026060000_appraisal_peer_feedback",
+        "20261026070000_legacy_performance_integrity",
+        "20261026080000_legacy_performance_evidence_freeze",
+        "20261026090000_legacy_performance_parent_guards",
       ]) {
         await db.query("BEGIN");
         await db.query(

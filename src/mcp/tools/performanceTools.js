@@ -20,6 +20,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope } from "../utils/listEnvelope.js";
+import { legacyReviewList } from "../../validators/performance.schema.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -35,7 +36,8 @@ export function registerPerformanceTools(server) {
     "hr://performance/reviews",
     { description: "List all performance reviews" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
       const data = await mcpListPerformanceReviews(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -46,7 +48,8 @@ export function registerPerformanceTools(server) {
     "hr://goals",
     { description: "List all employee goals" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
       const data = await mcpListGoals(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -57,7 +60,8 @@ export function registerPerformanceTools(server) {
     "hr://calibration",
     { description: "List all calibration sessions" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
       const data = await mcpListCalibrationSessions(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -68,7 +72,8 @@ export function registerPerformanceTools(server) {
     "hr://performance/metrics",
     { description: "List all performance metrics" },
     async (uri) => {
-      const { user } = getCtx();
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
       const data = await mcpListPerformanceMetrics(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -83,14 +88,11 @@ export function registerPerformanceTools(server) {
   server.tool(
     "hr_performance_reviews_list",
     "List performance reviews (paginated) for the HR performance screen",
-    {
-      page: z.coerce.number().int().positive().optional(),
-      pageSize: z.coerce.number().int().positive().optional(),
-    },
+    legacyReviewList.shape,
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
-      const data = await mcpListPerformanceReviews(user);
+      const data = await mcpListPerformanceReviews(user, args);
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_performance_reviews_list")
   );

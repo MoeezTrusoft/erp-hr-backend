@@ -5,7 +5,7 @@ export const createGoal = async (req, res) => {
   try {
          const createdBy = req.headers['employee-id'];
 
-    const goal = await goalService.createGoalService(req.body,createdBy);
+    const goal = await goalService.createGoalService(req.body,createdBy, req.user?.tenantId ?? null);
     res.status(201).json({ success: true, goal });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -15,7 +15,7 @@ export const createGoal = async (req, res) => {
 export const getGoals = async (req, res) => {
   try {
     const { employeeId } = req.query;
-    const goals = await goalService.getGoalsService(employeeId);
+    const goals = await goalService.getGoalsService(employeeId, req.user?.tenantId ?? null);
     res.status(200).json({ success: true, goals });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -27,7 +27,7 @@ export const updateGoal = async (req, res) => {
     const { id } = req.params;
          const updatedBy = req.headers['employee-id'];
 
-    const updated = await goalService.updateGoalService(id, req.body, updatedBy);
+    const updated = await goalService.updateGoalService(id, req.body, updatedBy, req.user?.tenantId ?? null);
     res.status(200).json({ success: true, goal: updated });
   } catch (error) {
     // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
@@ -42,7 +42,7 @@ export const approveGoal = async (req, res) => {
          const approvedBy = req.headers['employee-id'];
 
     const {status } = req.body;
-    const goal = await goalService.approveGoalService(id, status, approvedBy);
+    const goal = await goalService.approveGoalService(id, status, approvedBy, req.user?.tenantId ?? null);
     res.status(200).json({ success: true, goal });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -53,7 +53,7 @@ export const addGoalProgress = async (req, res) => {
   try {
          const createdBy = req.headers['employee-id'];
 
-    const progress = await goalService.addGoalProgressService(req.body,createdBy);
+    const progress = await goalService.addGoalProgressService(req.body,createdBy, req.user?.tenantId ?? null);
     res.status(201).json({ success: true, progress });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -63,7 +63,7 @@ export const addGoalProgress = async (req, res) => {
 export const getGoalProgress = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = await goalService.getGoalProgressService(id);
+    const updates = await goalService.getGoalProgressService(id, req.user?.tenantId ?? null);
     res.status(200).json({ success: true, updates });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

@@ -6,6 +6,7 @@
 
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -483,7 +484,19 @@ model Employee {
   // HR-BENEFITS-04 — benefit enrollments for this employee.
   benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
 
+  PerfCheckin_PerfCheckin_tenantId_employeeIdToEmployee         PerfCheckin[]                  @relation("PerfCheckin_tenantId_employeeIdToEmployee")
+  PerfCheckin_PerfCheckin_tenantId_managerIdToEmployee          PerfCheckin[]                  @relation("PerfCheckin_tenantId_managerIdToEmployee")
+  PerfFeedback_PerfFeedback_tenantId_authorIdToEmployee         PerfFeedback[]                 @relation("PerfFeedback_tenantId_authorIdToEmployee")
+  PerfFeedback_PerfFeedback_tenantId_employeeIdToEmployee       PerfFeedback[]                 @relation("PerfFeedback_tenantId_employeeIdToEmployee")
+  PerfGoal                                                      PerfGoal[]
+  PerfParticipant_PerfParticipant_tenantId_employeeIdToEmployee PerfParticipant[]              @relation("PerfParticipant_tenantId_employeeIdToEmployee")
+  PerfParticipant_PerfParticipant_tenantId_managerIdToEmployee  PerfParticipant[]              @relation("PerfParticipant_tenantId_managerIdToEmployee")
+  PerfReview_PerfReview_tenantId_employeeIdToEmployee           PerfReview[]                   @relation("PerfReview_tenantId_employeeIdToEmployee")
+  PerfReview_PerfReview_tenantId_managerIdToEmployee            PerfReview[]                   @relation("PerfReview_tenantId_managerIdToEmployee")
+  attendance_call_ins                                           AttendanceCallIn[]
+  attendance_correction_requests                                AttendanceCorrectionRequest[]
   @@unique([tenant_id, employee_code])
+  @@unique([tenant_id, id], map: "Employee_tenant_id_id_unique")
   @@index([biometric_id])
   @@index([personId])
   @@index([positionId])
@@ -658,11 +671,12 @@ model Attendance {
   // HR-ATT-IMPORT-01: one attendance row per employee per day. `date` is stored
   // at midnight (see the matching migration) so the DAY is the key — this is what
   // makes a bulk import idempotent and re-runnable without doubling history.
-  @@unique([tenantId, employeeId, date], map: "Attendance_tenant_employee_day_key")
   // F-DB-07: employee history and latest-day reads are tenant-leading and
   // deterministic when multiple marks share a date.
+  @@unique([tenantId, employeeId, date], map: "Attendance_tenant_employee_day_key")
   @@index([tenantId, employeeId, date(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_employee_date_id_idx")
   @@index([tenantId, date(sort: Desc), check_in(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_date_checkin_id_idx")
+  @@index([tenantId, manually_corrected], map: "Attendance_manually_corrected_idx", where: raw("manually_corrected"))
 }
 
 // HR-ATT-DEVICE-INTAKE-01 — durable raw store of every punch pushed by a
@@ -690,6 +704,7 @@ model AttendanceCallIn {
 
   tenantId String? @db.Uuid // stamped by tenantScope on create; FORCE-RLS
 
+  Employee   Employee @relation(fields: [employeeId], references: [id])
   @@unique([tenantId, employeeId, date], map: "attendance_call_ins_day_key")
   @@index([tenantId, date], map: "attendance_call_ins_tenant_date_idx")
   @@map("attendance_call_ins")
@@ -801,6 +816,7 @@ model AttendanceDevicePunch {
 
   // Idempotency: the device re-pushes the same rows on reconnect. One physical
   // punch = one (tenant, device, user, time, status).
+  attendance_capture_events AttendanceCaptureEvent? @relation(fields: [captureEventId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "capture_event_fk")
   @@unique([tenantId, sn, deviceUserId, punchedAt, status], map: "attendance_device_punch_natural_key")
   @@index([tenantId, deviceUserId, punchedAt(sort: Desc)], map: "attendance_device_punch_user_time_idx")
   @@index([tenantId, employeeId, punchedAt(sort: Desc)], map: "attendance_device_punch_emp_time_idx")
@@ -877,9 +893,9 @@ model AttendanceAnomaly {
 
   tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@unique([tenantId, sourceKind, sourceRef], map: "attendance_anomalies_source_key")
   // F-DB-07: the default HR review queue filters tenant + status and sorts by
   // createdAt, with id as the stable pagination tie-break.
+  @@unique([tenantId, sourceKind, sourceRef], map: "attendance_anomalies_source_key")
   @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)], map: "attendance_anomalies_tenant_status_created_id_idx")
   @@index([employeeId])
   @@index([status])
@@ -935,7 +951,7 @@ model AttendanceExportJob {
   generatedAt DateTime?
   expiresAt DateTime
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt   DateTime  @default(now()) @updatedAt
   @@index([tenantId, ownerUserId, createdAt], map: "attendance_export_owner")
   @@index([status, leaseUntil], map: "attendance_export_queue")
   @@map("attendance_export_jobs")
@@ -949,7 +965,7 @@ model AttendanceSavedView {
   filters Json
   version Int @default(1)
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
   @@index([tenantId, ownerUserId], map: "attendance_view_owner")
   @@map("attendance_saved_views")
 }
@@ -970,7 +986,9 @@ model AttendanceCorrectionRequest {
   version Int @default(1)
   evaluationVersion Int
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt         DateTime @default(now()) @updatedAt
+  Employee          Employee @relation(fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  @@unique([tenantId, employeeId, date, sessionKey], map: "attendance_correction_active", where: raw("(status = 'PENDING'::text)"))
   @@index([tenantId, employeeId, date], map: "attendance_correction_scope")
   @@map("attendance_correction_requests")
 }
@@ -1014,8 +1032,8 @@ model AttendancePayrollAdjustment {
   appliedPayslipId Int?
   revision Int
   createdAt DateTime @default(now())
-  sourcePayslip PayrollPayslip @relation("AttendanceAdjustmentSource",fields:[sourcePayslipId],references:[id],onDelete:Restrict)
-  appliedPayslip PayrollPayslip? @relation("AttendanceAdjustmentTarget",fields:[appliedPayslipId],references:[id],onDelete:SetNull)
+  sourcePayslip    PayrollPayslip  @relation("AttendanceAdjustmentSource", fields: [sourcePayslipId], references: [id])
+  appliedPayslip   PayrollPayslip? @relation("AttendanceAdjustmentTarget", fields: [appliedPayslipId], references: [id])
   @@unique([tenantId, sourcePayslipId, revision])
   @@index([tenantId, employeeId, appliedPayslipId])
   @@map("attendance_payroll_adjustments")
@@ -1104,9 +1122,8 @@ model AttendancePolicyConfig {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+  tenantId                   String?      @unique @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@unique([tenantId])
   @@map("attendance_policy_config")
 }
 
@@ -1273,12 +1290,12 @@ model LeaveRequest {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  // F-DB-07: payslip leave-overlap accounting qualifies all four leading
+  // predicates; id makes equal ranges deterministic.
   @@index([employeeId])
   @@index([status])
   @@index([startDate, endDate])
   @@index([tenantId])
-  // F-DB-07: payslip leave-overlap accounting qualifies all four leading
-  // predicates; id makes equal ranges deterministic.
   @@index([tenantId, employeeId, status, startDate, endDate, id], map: "leave_requests_tenant_employee_status_dates_id_idx")
   @@index([tenantId, status, created_at(sort: Desc), id(sort: Desc)], map: "leave_requests_tenant_status_created_id_idx")
   @@map("leave_requests")
@@ -1656,9 +1673,9 @@ model OvertimeRequest {
 
   tenantId String? @db.Uuid
 
-  @@index([employeeId])
   // F-DB-07: manager queue and employee-period aggregation have different
   // selective prefixes; both carry date + id ordering.
+  @@index([employeeId])
   @@index([tenantId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_status_date_id_idx")
   @@index([tenantId, employeeId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_employee_status_date_id_idx")
   @@map("overtime_requests")
@@ -1718,7 +1735,7 @@ model AttendanceSetupDraft {
   tenantId String @id @db.Uuid
   version Int @default(1)
   settings Json @default("{}")
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
   @@map("attendance_setup_drafts")
 }
 
@@ -1787,6 +1804,7 @@ model PerformanceReview {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, employeeId, cycleId, type])
   @@index([tenantId])
   @@index([employeeId])
   @@index([cycleId])
@@ -2070,6 +2088,7 @@ model TrainingEnrollment {
 }
 
 model PerformanceCycle {
+  archivedAt DateTime?
   id          Int         @id @default(autoincrement())
   name        String
   description String?
@@ -2091,6 +2110,7 @@ model PerformanceCycle {
 }
 
 model PerformanceTemplate {
+  archivedAt DateTime?
   id             Int      @id @default(autoincrement())
   name           String
   description    String?
@@ -2149,7 +2169,7 @@ model GoalProgress {
 
   // Relations
   goal      Goal?     @relation(fields: [goalId], references: [id])
-  createdBy Employee? @relation("GoalProgressCreatedBy", fields: [created_by], references: [id])
+  createdBy   Employee @relation("GoalProgressCreatedBy", fields: [created_by], references: [id])
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
@@ -2157,6 +2177,7 @@ model GoalProgress {
 }
 
 model GoalAlignment {
+  archivedAt DateTime?
   id            Int  @id @default(autoincrement())
   parentGoalId  Int?
   alignedGoalId Int?
@@ -2169,6 +2190,7 @@ model GoalAlignment {
 
   tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
 
+  @@unique([tenantId, parentGoalId, alignedGoalId])
   @@index([tenantId])
 }
 
@@ -2243,9 +2265,9 @@ model PayrollFinanceSummary {
   reason String
   preparedBy String
   approvedBy String?
-  createdAt DateTime @default(now()) @db.Timestamptz
-  approvedAt DateTime? @db.Timestamptz
-  run PayrollRun @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: Restrict)
+  createdAt  DateTime   @default(now()) @db.Timestamptz(6)
+  approvedAt DateTime?  @db.Timestamptz(6)
+  run        PayrollRun @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   @@unique([tenantId, month, revision])
   @@unique([tenantId, requestId])
   @@map("payroll_finance_summaries")
@@ -2291,8 +2313,9 @@ model PayrollRun {
   // is unique WITHIN a tenant, so two DIFFERENT tenants may each own the same
   // (periodStart, periodEnd). The app-level overlap guard in createPayrollRun is
   // already tenant-scoped (withTenant), so this aligns the DB constraint with it.
-  @@index([tenantId, periodStart, periodEnd])
   @@unique([tenantId, id], map: "payroll_runs_tenant_id_id")
+  @@unique([tenantId, periodStart, periodEnd], map: "payroll_runs_live_period_key", where: raw("(status <> 'CANCELLED'::\"PayrollRunStatus\")"))
+  @@index([tenantId, periodStart, periodEnd])
   @@index([tenantId])
   @@map("payroll_runs")
 }
@@ -2336,8 +2359,8 @@ model PayrollPayslip {
   attendanceAdjustmentsFrom AttendancePayrollAdjustment[] @relation("AttendanceAdjustmentSource")
   attendanceAdjustmentsApplied AttendancePayrollAdjustment[] @relation("AttendanceAdjustmentTarget")
 
-  @@unique([payrollRunId, employeeId])
   // F-DB-08: employee payroll history is the dominant list/read path.
+  @@unique([payrollRunId, employeeId])
   @@index([tenantId, employeeId, created_at(sort: Desc), id(sort: Desc)], map: "payroll_payslips_tenant_employee_created_id_idx")
   @@map("payroll_payslips")
 }
@@ -2460,6 +2483,7 @@ model EmployeeDeviceEnrolment {
 
   @@index([tenantId, deviceUserId, effectiveFrom])
   @@index([tenantId, employeeId, effectiveFrom])
+  @@index([tenantId, employeeId, isPrimary, effectiveFrom], map: "employee_device_enrolments_primary_idx")
   @@map("employee_device_enrolments")
 }
 
@@ -2592,11 +2616,11 @@ model LoanRepayment {
 
   loan Loan @relation(fields: [loanId], references: [id])
 
-  @@index([tenantId, loanId, deductedAt])
   // N-02 / T-1.2 — one repayment per (loan, run). Partial (NULL-run legacy rows
   // like the "Pre-system installment" history are allowed); the application
   // layer also checks before decrementing, this is the belt to the braces.
-  @@index([loanId, payrollRunId])
+  @@unique([loanId, payrollRunId], map: "loan_repayments_loanId_payrollRunId_uniq", where: raw("(\"payrollRunId\" IS NOT NULL)"))
+  @@index([tenantId, loanId, deductedAt])
   @@map("loan_repayments")
 }
 
@@ -2725,9 +2749,8 @@ model PayrollCalendar {
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
 
-  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+  tenantId            String?        @unique @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@unique([tenantId])
   @@map("payroll_calendars")
 }
 
@@ -2785,9 +2808,8 @@ model PayrollRuleConfig {
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
-  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+  tenantId                String?      @unique @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@unique([tenantId])
   @@map("payroll_rule_config")
 }
 
@@ -2829,9 +2851,8 @@ model PayrollConfigMeta {
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
-  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+  tenantId         String?      @unique @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
 
-  @@unique([tenantId])
   @@map("payroll_config_meta")
 }
 
@@ -2989,6 +3010,7 @@ model PerformanceMetric {
   updatedAt   DateTime @updatedAt
 
   reviewItems PerformanceReviewItem[]
+  @@unique([tenantId, name])
 }
 
 model PerformanceReviewItem {
@@ -4016,6 +4038,8 @@ model OutboxEvent {
   // F-DB-06: retained for tenant-scoped operational inspection. Dispatcher
   // indexes are partial SQL indexes deployed outside Prisma transactions.
   @@index([tenantId, publishedAt])
+  @@index([claimExpiresAt, createdAt, id], map: "outbox_events_expired_claim_created_id_idx", where: raw("((\"publishedAt\" IS NULL) AND (\"claimExpiresAt\" IS NOT NULL))"))
+  @@index([createdAt, id], map: "outbox_events_ready_created_id_idx", where: raw("((\"publishedAt\" IS NULL) AND (\"claimedAt\" IS NULL))"))
   @@map("outbox_events")
 }
 
@@ -4050,6 +4074,9 @@ model SystemAccountProvisioning {
   @@unique([tenantId, employeeId])
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status, updatedAt])
+  @@index([claimExpiresAt, nextAttemptAt, createdAt, id], map: "system_account_provisioning_processing_expired_idx", where: raw("(status = 'PROCESSING'::\"SystemAccountProvisioningStatus\")"))
+  @@index([nextAttemptAt, claimExpiresAt, createdAt, id], map: "system_account_provisioning_ready_expired_idx", where: raw("((status = ANY (ARRAY['PENDING'::\"SystemAccountProvisioningStatus\", 'RETRY_WAIT'::\"SystemAccountProvisioningStatus\"])) AND (\"claimedAt\" IS NOT NULL))"))
+  @@index([nextAttemptAt, createdAt, id], map: "system_account_provisioning_ready_unclaimed_idx", where: raw("((status = ANY (ARRAY['PENDING'::\"SystemAccountProvisioningStatus\", 'RETRY_WAIT'::\"SystemAccountProvisioningStatus\"])) AND (\"claimedAt\" IS NULL))"))
   @@map("system_account_provisioning")
 }
 
@@ -4069,7 +4096,7 @@ model MonthlyPayrollAttendance {
   updatedById Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  employee Employee @relation(fields:[employeeId], references:[id])
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   @@unique([tenantId, employeeId, month])
   @@index([tenantId, month])
   @@map("monthly_payroll_attendance")
@@ -4132,6 +4159,7 @@ model AttendanceDeviceAccessRequest {
   @@index([tenantId, state])
   @@index([ownerTenantId, state])
   @@index([deviceId, tenantId, state])
+  @@unique([deviceId, tenantId], map: "attendance_device_access_requests_open_key", where: raw("((state)::text = ANY ((ARRAY['PENDING'::character varying, 'APPROVED'::character varying])::text[]))"))
   @@map("attendance_device_access_requests")
 }
 model AttendanceCaptureReceipt {
@@ -4144,6 +4172,7 @@ model AttendanceCaptureReceipt {
   actorId String?
   summary Json
   createdAt DateTime @default(now())
+  attendance_capture_events AttendanceCaptureEvent[]
   @@unique([tenantId, source, requestKey])
   @@index([tenantId, createdAt])
   @@map("attendance_capture_receipts")
@@ -4173,6 +4202,8 @@ model AttendanceCaptureEvent {
   biometricApprovedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  attendance_capture_receipts AttendanceCaptureReceipt @relation(fields: [receiptId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "capture_receipt_fk")
+  attendance_device_punches   AttendanceDevicePunch?
   @@index([state, nextAttemptAt, createdAt])
   @@index([tenantId, state, id])
   @@index([tenantId, employeeId, createdAt])
@@ -4193,9 +4224,10 @@ model AttendanceBiometricProfile {
   active Boolean @default(true)
   enrolledBy String
   enrolledDeviceId String @db.Uuid
-  enrolledDevice AttendanceCaptureDevice @relation(fields: [enrolledDeviceId], references: [id], onDelete: Restrict)
+  enrolledDevice    AttendanceCaptureDevice @relation(fields: [enrolledDeviceId], references: [id])
   createdAt DateTime @default(now())
   revokedAt DateTime?
+  @@unique([tenantId, employeeId, modality, slot], map: "attendance_biometric_profiles_active_slot", where: raw("active"))
   @@index([tenantId, employeeId, modality, active], map: "attendance_biometric_profiles_lookup")
   @@map("attendance_biometric_profiles")
 }
@@ -4206,7 +4238,7 @@ model AttendanceBiometricChallenge {
   employeeId Int
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   deviceId String @db.Uuid
-  device AttendanceCaptureDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  device            AttendanceCaptureDevice @relation(fields: [deviceId], references: [id])
   expectedProfileId String? @db.Uuid
   deviceConfigHash String
   modality String
@@ -4269,6 +4301,7 @@ model AssessmentIdentity {
   verifiedAt DateTime @default(now())
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, employeeRowId])
+  @@unique([tenantId, id], map: "AssessmentIdentity_tenant_id_guard")
 }
 model AssessmentCategory {
   id String @id @default(uuid()) @db.Uuid
@@ -4278,6 +4311,7 @@ model AssessmentCategory {
   active Boolean @default(true)
   version Int @default(1)
   @@unique([tenantId, categoryCode])
+  @@unique([tenantId, id], map: "AssessmentCategory_tenant_id_guard")
 }
 model AssessmentTaskVersion {
   id String @id @default(uuid()) @db.Uuid
@@ -4294,7 +4328,9 @@ model AssessmentTaskVersion {
   version Int @default(1)
   createdAt DateTime @default(now())
   publishedAt DateTime?
+  AssessmentProfileTask AssessmentProfileTask[]
   @@unique([tenantId, taskCode, taskVersion])
+  @@unique([tenantId, id], map: "AssessmentTaskVersion_tenant_id_guard")
   @@index([tenantId, familyCode, status])
 }
 model AssessmentProfileVersion {
@@ -4316,7 +4352,12 @@ model AssessmentProfileVersion {
   version Int @default(1)
   createdAt DateTime @default(now())
   publishedAt DateTime?
+  AssessmentAssignment      AssessmentAssignment[]
+  AssessmentGuideVersion    AssessmentGuideVersion[]
+  AssessmentProfileTask     AssessmentProfileTask[]
+  EmployeeAssessmentProfile EmployeeAssessmentProfile[]
   @@unique([tenantId, profileCode, profileVersion])
+  @@unique([tenantId, id], map: "AssessmentProfileVersion_tenant_id_guard")
   @@index([tenantId, departmentRef, categoryCode, positionRef, status])
 }
 model AssessmentProfileTask {
@@ -4327,7 +4368,10 @@ model AssessmentProfileTask {
   taskCode String
   requirement Json
   ordinal Int
+  AssessmentProfileVersion AssessmentProfileVersion @relation(fields: [tenantId, profileRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentProfileTask_profileRef_tenant_fk")
+  AssessmentTaskVersion    AssessmentTaskVersion    @relation(fields: [tenantId, taskRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentProfileTask_taskRef_tenant_fk")
   @@unique([tenantId, profileRef, taskCode])
+  @@unique([tenantId, id], map: "AssessmentProfileTask_tenant_id_guard")
 }
 model AssessmentGuideVersion {
   id String @id @default(uuid()) @db.Uuid
@@ -4338,7 +4382,9 @@ model AssessmentGuideVersion {
   content Json
   digest String
   publishedAt DateTime @default(now())
+  AssessmentProfileVersion AssessmentProfileVersion @relation(fields: [tenantId, profileRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentGuideVersion_profileRef_tenant_fk")
   @@unique([tenantId, profileRef, locale, version])
+  @@unique([tenantId, id], map: "AssessmentGuideVersion_tenant_id_guard")
 }
 model EmployeeAssessmentProfile {
   id String @id @default(uuid()) @db.Uuid
@@ -4350,6 +4396,8 @@ model EmployeeAssessmentProfile {
   approvedByCode String
   sourceEventRef String?
   version Int @default(1)
+  AssessmentProfileVersion AssessmentProfileVersion @relation(fields: [tenantId, profileRef], references: [tenantId, id], onUpdate: NoAction, map: "EmployeeAssessmentProfile_profileRef_tenant_fk")
+  @@unique([tenantId, id], map: "EmployeeAssessmentProfile_tenant_id_guard")
   @@index([tenantId, employeeCode, effectiveFrom])
 }
 model AssessmentQualification {
@@ -4365,6 +4413,7 @@ model AssessmentQualification {
   completedAssessments Int @default(0)
   version Int @default(1)
   @@unique([tenantId, employeeCode, familyCode])
+  @@unique([tenantId, id], map: "AssessmentQualification_tenant_id_guard")
 }
 model AssessmentConfiguration {
   id String @id @default(uuid()) @db.Uuid
@@ -4378,6 +4427,7 @@ model AssessmentConfiguration {
   version Int @default(1)
   updatedByCode String
   updatedAt DateTime @updatedAt
+  @@unique([tenantId, id], map: "AssessmentConfiguration_tenant_id_guard")
 }
 model AssessmentTriggerPolicy {
   id String @id @default(uuid()) @db.Uuid
@@ -4388,6 +4438,7 @@ model AssessmentTriggerPolicy {
   enabled Boolean @default(false)
   version Int @default(1)
   @@unique([tenantId, triggerType])
+  @@unique([tenantId, id], map: "AssessmentTriggerPolicy_tenant_id_guard")
 }
 model AssessmentAssignment {
   id String @id @default(uuid()) @db.Uuid
@@ -4413,7 +4464,13 @@ model AssessmentAssignment {
   stageStartedAt DateTime @default(now())
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  AssessmentProfileVersion AssessmentProfileVersion @relation(fields: [tenantId, profileRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentAssignment_profileRef_tenant_fk")
+  AssessmentEvidenceLink   AssessmentEvidenceLink[]
+  AssessmentObservation    AssessmentObservation[]
+  AssessmentRevision       AssessmentRevision[]
+  AssessmentSignOff        AssessmentSignOff[]
   @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, id], map: "AssessmentAssignment_tenant_id_guard")
   @@index([tenantId, raterCode, state, dueAt])
   @@index([tenantId, employeeCode, state])
 }
@@ -4432,7 +4489,11 @@ model AssessmentRevision {
   approvedAt DateTime?
   publishedAt DateTime?
   sequence Int?
+  AssessmentAppraisalInput AssessmentAppraisalInput[]
+  AssessmentCapability     AssessmentCapability[]
+  AssessmentAssignment     AssessmentAssignment       @relation(fields: [tenantId, assessmentRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentRevision_assessmentRef_tenant_fk")
   @@unique([tenantId, assessmentRef, revisionNo])
+  @@unique([tenantId, id], map: "AssessmentRevision_tenant_id_guard")
 }
 model AssessmentObservation {
   id String @id @default(uuid()) @db.Uuid
@@ -4453,7 +4514,10 @@ model AssessmentObservation {
   durationSeconds Int?
   observedAt DateTime @default(now())
   assessorCode String
+  AssessmentDimension     AssessmentDimension[]
+  AssessmentAssignment    AssessmentAssignment  @relation(fields: [tenantId, assessmentRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentObservation_assessmentRef_tenant_fk")
   @@unique([tenantId, assessmentRef, revisionNo, taskCode])
+  @@unique([tenantId, id], map: "AssessmentObservation_tenant_id_guard")
 }
 model AssessmentDimension {
   id String @id @default(uuid()) @db.Uuid
@@ -4468,7 +4532,9 @@ model AssessmentDimension {
   behaviorCheck Json?
   calculation Json?
   expiresAt DateTime?
+  AssessmentObservation AssessmentObservation @relation(fields: [tenantId, observationRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentDimension_observationRef_tenant_fk")
   @@unique([tenantId, observationRef, dimension])
+  @@unique([tenantId, id], map: "AssessmentDimension_tenant_id_guard")
 }
 model AssessmentCase {
   id String @id @default(uuid()) @db.Uuid
@@ -4482,7 +4548,10 @@ model AssessmentCase {
   observedAt DateTime
   idempotencyKey String
   inputDigest String
+  AssessmentEvidence     AssessmentEvidence[]
+  AssessmentTimingSample AssessmentTimingSample[]
   @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, id], map: "AssessmentCase_tenant_id_guard")
 }
 model AssessmentEvidence {
   id String @id @default(uuid()) @db.Uuid
@@ -4512,7 +4581,11 @@ model AssessmentEvidence {
   withdrawnAt DateTime?
   retentionUntil DateTime
   legalHold Boolean @default(false)
+  AssessmentCase         AssessmentCase           @relation(fields: [tenantId, caseRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentEvidence_caseRef_tenant_fk")
+  AssessmentEvidenceLink AssessmentEvidenceLink[]
+  AssessmentTimingSample AssessmentTimingSample[]
   @@unique([tenantId, source, sourceRecordId, sourceVersion, employeeCode])
+  @@unique([tenantId, id], map: "AssessmentEvidence_tenant_id_guard")
   @@index([tenantId, employeeCode, captureAt])
 }
 model AssessmentEvidenceLink {
@@ -4528,7 +4601,10 @@ model AssessmentEvidenceLink {
   acceptanceConfirmed Boolean @default(false)
   behaviorCheck String?
   confirmedByCode String
+  AssessmentAssignment  AssessmentAssignment @relation(fields: [tenantId, assessmentRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentEvidenceLink_assessmentRef_tenant_fk")
+  AssessmentEvidence    AssessmentEvidence   @relation(fields: [tenantId, evidenceRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentEvidenceLink_evidenceRef_tenant_fk")
   @@unique([tenantId, assessmentRef, revisionNo, taskCode, evidenceRef])
+  @@unique([tenantId, id], map: "AssessmentEvidenceLink_tenant_id_guard")
 }
 model AssessmentTimingSample {
   id String @id @default(uuid()) @db.Uuid
@@ -4555,7 +4631,10 @@ model AssessmentTimingSample {
   input Json
   capturedAt DateTime
   withdrawnAt DateTime?
+  AssessmentCase      AssessmentCase     @relation(fields: [tenantId, caseRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentTimingSample_caseRef_tenant_fk")
+  AssessmentEvidence  AssessmentEvidence @relation(fields: [tenantId, evidenceRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentTimingSample_evidenceRef_tenant_fk")
   @@unique([tenantId, evidenceRef, taskCode])
+  @@unique([tenantId, id], map: "AssessmentTimingSample_tenant_id_guard")
   @@index([tenantId, taskCode, taskVersion, capturedAt])
 }
 model AssessmentBenchmark {
@@ -4579,6 +4658,7 @@ model AssessmentBenchmark {
   reviewAt DateTime
   createdAt DateTime @default(now())
   @@unique([tenantId, taskCode, taskVersion, scopeKey, version])
+  @@unique([tenantId, id], map: "AssessmentBenchmark_tenant_id_guard")
 }
 model AssessmentSignOff {
   id String @id @default(uuid()) @db.Uuid
@@ -4593,6 +4673,8 @@ model AssessmentSignOff {
   reason String?
   metadata Json
   createdAt DateTime @default(now())
+  AssessmentAssignment AssessmentAssignment @relation(fields: [tenantId, assessmentRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentSignOff_assessmentRef_tenant_fk")
+  @@unique([tenantId, id], map: "AssessmentSignOff_tenant_id_guard")
   @@index([tenantId, assessmentRef, revisionNo])
 }
 model AssessmentRestriction {
@@ -4607,6 +4689,7 @@ model AssessmentRestriction {
   liftedByCode String?
   restorationRef String?
   @@unique([tenantId, employeeCode, taskCode, cause, sourceRef])
+  @@unique([tenantId, id], map: "AssessmentRestriction_tenant_id_guard")
   @@index([tenantId, employeeCode, liftedAt])
 }
 model AssessmentCapability {
@@ -4623,7 +4706,9 @@ model AssessmentCapability {
   sequence Int
   expiresAt DateTime
   publishedAt DateTime
+  AssessmentRevision AssessmentRevision @relation(fields: [tenantId, revisionRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentCapability_revisionRef_tenant_fk")
   @@unique([tenantId, employeeCode, taskCode, scopeKey, dimension])
+  @@unique([tenantId, id], map: "AssessmentCapability_tenant_id_guard")
   @@index([tenantId, expiresAt])
 }
 model AssessmentAudit {
@@ -4637,6 +4722,7 @@ model AssessmentAudit {
   resultDigest String
   metadata Json
   createdAt DateTime @default(now())
+  @@unique([tenantId, id], map: "AssessmentAudit_tenant_id_guard")
   @@index([tenantId, aggregateRef, createdAt])
 }
 model AssessmentAutomationRun {
@@ -4651,6 +4737,7 @@ model AssessmentAutomationRun {
   outcome String
   createdAt DateTime @default(now())
   @@unique([tenantId, runKey])
+  @@unique([tenantId, id], map: "AssessmentAutomationRun_tenant_id_guard")
 }
 model AssessmentException {
   id String @id @default(uuid()) @db.Uuid
@@ -4666,6 +4753,7 @@ model AssessmentException {
   resolvedAt DateTime?
   version Int @default(1)
   @@unique([tenantId, key])
+  @@unique([tenantId, id], map: "AssessmentException_tenant_id_guard")
   @@index([tenantId, kind, status])
 }
 model AssessmentInboxEvent {
@@ -4682,6 +4770,7 @@ model AssessmentInboxEvent {
   createdAt DateTime @default(now())
   processedAt DateTime?
   @@unique([tenantId, eventId])
+  @@unique([tenantId, id], map: "AssessmentInboxEvent_tenant_id_guard")
   @@index([status, nextAttemptAt])
 }
 model AssessmentIntegration {
@@ -4698,6 +4787,7 @@ model AssessmentIntegration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@unique([tenantId, kind, key])
+  @@unique([tenantId, id], map: "AssessmentIntegration_tenant_id_guard")
 }
 model AssessmentAppraisalInput {
   id String @id @default(uuid()) @db.Uuid
@@ -4708,7 +4798,9 @@ model AssessmentAppraisalInput {
   content Json
   amendment Boolean @default(false)
   createdAt DateTime @default(now())
+  AssessmentRevision AssessmentRevision @relation(fields: [tenantId, revisionRef], references: [tenantId, id], onUpdate: NoAction, map: "AssessmentAppraisalInput_revisionRef_tenant_fk")
   @@unique([tenantId, employeeCode, cycleId, revisionRef])
+  @@unique([tenantId, id], map: "AssessmentAppraisalInput_tenant_id_guard")
 }
 model AssessmentCodeChange {
   id String @id @default(uuid()) @db.Uuid
@@ -4720,6 +4812,7 @@ model AssessmentCodeChange {
   changedAt DateTime @default(now())
   propagationState String @default("PENDING")
   @@unique([tenantId, oldCode])
+  @@unique([tenantId, id], map: "AssessmentCodeChange_tenant_id_guard")
 }
 model AssessmentNotification {
   id String @id @default(uuid()) @db.Uuid
@@ -4733,6 +4826,7 @@ model AssessmentNotification {
   readAt DateTime?
   payload Json
   @@unique([tenantId, key])
+  @@unique([tenantId, id], map: "AssessmentNotification_tenant_id_guard")
   @@index([tenantId, employeeCode, sentAt])
 }
 
@@ -4881,6 +4975,7 @@ model HrSetupReview {
   failure String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  @@unique([tenantId, subjectKey], map: "HrSetupReview_open_subject", where: raw("(state <> ALL (ARRAY['ACTIVE'::text, 'REJECTED'::text]))"))
   @@index([tenantId, kind, state, createdAt])
   @@index([tenantId, subjectKey])
 }
@@ -4938,9 +5033,6 @@ model Separation {
   version Int @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  @@unique([tenantId, id])
-  @@index([tenantId, employeeCode, state])
-  @@index([tenantId, deferredUntil])
   separationTransitions SeparationTransition[]
   noticePeriodRecords NoticePeriodRecord[]
   replacementPlans ReplacementPlan[]
@@ -4953,6 +5045,10 @@ model Separation {
   finalSettlementSheets FinalSettlementSheet[]
   separationDocuments SeparationDocument[]
   separationSourceSnapshots SeparationSourceSnapshot[]
+  @@unique([tenantId, id])
+  @@unique([tenantId, employeeCode], map: "hr_one_open_separation", where: raw("(state <> ALL (ARRAY['EXIT_COMPLETED'::\"SeparationState\", 'WITHDRAWN'::\"SeparationState\", 'CANCELLED'::\"SeparationState\"]))"))
+  @@index([tenantId, employeeCode, state])
+  @@index([tenantId, deferredUntil])
 }
 
 model SeparationTransition {
@@ -5246,6 +5342,8 @@ model HrApprovalRequest {
   execution String @default("PENDING")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  HrApprovalAudit     HrApprovalAudit[]
+  PerfApprovalBinding PerfApprovalBinding?
   @@unique([tenantId, kind, sourceRef])
   @@unique([tenantId, id])
   @@index([tenantId, stage, id])
@@ -5264,6 +5362,7 @@ model HrApprovalAudit {
   reason String
   sourceHash String
   createdAt DateTime @default(now())
+  HrApprovalRequest HrApprovalRequest @relation(fields: [tenantId, approvalRef], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction, map: "hr_approval_audit_parent")
   @@unique([tenantId, approvalRef, version])
 }
 model HrApprovalReceipt {
@@ -5338,10 +5437,10 @@ model PerfConfiguration {
   version Int @default(0)
   coreEnabled Boolean @default(false)
   policy Json
-  updatedAt DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
 }
 model PerfTemplateVersion {
-  id String @id @default(uuid()) @db.Uuid
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   name String
   status String @default("DRAFT")
@@ -5350,11 +5449,12 @@ model PerfTemplateVersion {
   createdBy Int
   publishedAt DateTime?
   createdAt DateTime @default(now())
+  PerfCycle   PerfCycle[]
   @@unique([tenantId, name, id])
   @@unique([tenantId, id])
 }
 model PerfCycle {
-  id String @id @default(uuid()) @db.Uuid
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   name String
   templateId String @db.Uuid
@@ -5371,11 +5471,16 @@ model PerfCycle {
   closingSnapshot Json?
   closedAt DateTime?
   createdAt DateTime @default(now())
+  PerfTemplateVersion PerfTemplateVersion @relation(fields: [tenantId, templateId], references: [tenantId, id], onUpdate: NoAction, map: "PerfCycle_templateId_tenant_fk")
+  PerfGoal            PerfGoal[]
+  PerfLaunchRun       PerfLaunchRun?
+  PerfParticipant     PerfParticipant[]
+  PerfReview          PerfReview[]
   @@unique([tenantId, name])
   @@unique([tenantId, id])
 }
 model PerfParticipant {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                                           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   cycleId String @db.Uuid
   employeeId Int
@@ -5386,12 +5491,18 @@ model PerfParticipant {
   originalSelfDue DateTime
   originalManagerDue DateTime
   createdAt DateTime @default(now())
+  PerfLaunchBatch_PerfLaunchBatch_tenantId_firstParticipantIdToPerfParticipant PerfLaunchBatch[] @relation("PerfLaunchBatch_tenantId_firstParticipantIdToPerfParticipant")
+  PerfLaunchBatch_PerfLaunchBatch_tenantId_lastParticipantIdToPerfParticipant  PerfLaunchBatch[] @relation("PerfLaunchBatch_tenantId_lastParticipantIdToPerfParticipant")
+  PerfCycle                                                                    PerfCycle         @relation(fields: [tenantId, cycleId], references: [tenantId, id], onUpdate: NoAction, map: "PerfParticipant_cycleId_tenant_fk")
+  Employee_PerfParticipant_tenantId_employeeIdToEmployee                       Employee          @relation("PerfParticipant_tenantId_employeeIdToEmployee", fields: [tenantId, employeeId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_participant_employee_fk")
+  Employee_PerfParticipant_tenantId_managerIdToEmployee                        Employee          @relation("PerfParticipant_tenantId_managerIdToEmployee", fields: [tenantId, managerId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_participant_manager_fk")
+  PerfReview                                                                   PerfReview?
   @@unique([tenantId, cycleId, employeeId, reviewType])
   @@unique([tenantId, id])
-  @@index([tenantId, cycleId, id])
+  @@index([tenantId, cycleId, id], map: "PerfParticipant_0_idx")
 }
 model PerfReview {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                                               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   participantId String @db.Uuid
   cycleId String @db.Uuid
@@ -5410,14 +5521,31 @@ model PerfReview {
   appealDeadline String?
   acknowledgedAt DateTime?
   createdAt DateTime @default(now())
+  PerfAppeal                                                                       PerfAppeal?
+  PerfDecisionCase                                                                 PerfDecisionCase[]
+  PerfEvidenceLink                                                                 PerfEvidenceLink[]
+  PerfFeedback                                                                     PerfFeedback[]
+  PerfPeerRound                                                                    PerfPeerRound?
+  PerfReminderIntent                                                               PerfReminderIntent[]
+  PerfResponse                                                                     PerfResponse[]
+  PerfReviewRevision_PerfReview_tenantId_currentRevisionIdToPerfReviewRevision     PerfReviewRevision?  @relation("PerfReview_tenantId_currentRevisionIdToPerfReviewRevision", fields: [tenantId, currentRevisionId], references: [tenantId, id], onUpdate: NoAction, map: "PerfReview_currentRevisionId_tenant_fk")
+  PerfCycle                                                                        PerfCycle            @relation(fields: [tenantId, cycleId], references: [tenantId, id], onUpdate: NoAction, map: "PerfReview_cycleId_tenant_fk")
+  PerfParticipant                                                                  PerfParticipant      @relation(fields: [tenantId, participantId], references: [tenantId, id], onUpdate: NoAction, map: "PerfReview_participantId_tenant_fk")
+  PerfReviewRevision_PerfReview_tenantId_id_currentRevisionIdToPerfReviewRevision  PerfReviewRevision?  @relation("PerfReview_tenantId_id_currentRevisionIdToPerfReviewRevision", fields: [tenantId, id, currentRevisionId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_current_revision_same_review")
+  PerfReviewRevision_PerfReview_tenantId_id_releasedRevisionIdToPerfReviewRevision PerfReviewRevision?  @relation("PerfReview_tenantId_id_releasedRevisionIdToPerfReviewRevision", fields: [tenantId, id, releasedRevisionId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_released_revision_same_review")
+  Employee_PerfReview_tenantId_employeeIdToEmployee                                Employee             @relation("PerfReview_tenantId_employeeIdToEmployee", fields: [tenantId, employeeId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_review_employee_fk")
+  Employee_PerfReview_tenantId_managerIdToEmployee                                 Employee             @relation("PerfReview_tenantId_managerIdToEmployee", fields: [tenantId, managerId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_review_manager_fk")
+  PerfReviewRevision_PerfReviewRevision_tenantId_reviewIdToPerfReview              PerfReviewRevision[] @relation("PerfReviewRevision_tenantId_reviewIdToPerfReview")
+  PerfSignoff                                                                      PerfSignoff[]
   @@unique([tenantId, participantId])
   @@unique([tenantId, id])
-  @@index([tenantId, cycleId, state])
-  @@index([tenantId, employeeId])
-  @@index([tenantId, managerId])
+  @@index([tenantId, cycleId, state], map: "PerfReview_0_idx")
+  @@index([tenantId, employeeId], map: "PerfReview_1_idx")
+  @@index([tenantId, managerId], map: "PerfReview_2_idx")
+  @@index([tenantId, state, id], map: "PerfReview_due_scan")
 }
 model PerfResponse {
-  id String @id @default(uuid()) @db.Uuid
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   role String
@@ -5426,11 +5554,13 @@ model PerfResponse {
   answers Json
   submittedAt DateTime?
   createdAt DateTime @default(now())
+  PerfReview  PerfReview @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfResponse_reviewId_tenant_fk")
   @@unique([tenantId, reviewId, role, authorId, responseNo])
   @@unique([tenantId, id])
+  @@index([tenantId, reviewId, role, responseNo], map: "PerfResponse_review_role")
 }
 model PerfReviewRevision {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                                                              String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   revisionNo Int
@@ -5440,11 +5570,27 @@ model PerfReviewRevision {
   score Json
   reason String?
   createdAt DateTime @default(now())
+  PerfAppeal_PerfAppeal_tenantId_revisionIdToPerfReviewRevision                                   PerfAppeal[]          @relation("PerfAppeal_tenantId_revisionIdToPerfReviewRevision")
+  PerfAppeal_PerfAppeal_tenantId_reviewId_revisionIdToPerfReviewRevision                          PerfAppeal[]           @relation("PerfAppeal_tenantId_reviewId_revisionIdToPerfReviewRevision")
+  PerfApprovalBinding                                                                             PerfApprovalBinding[]
+  PerfDecisionCase_PerfDecisionCase_tenantId_revisionIdToPerfReviewRevision                       PerfDecisionCase[]    @relation("PerfDecisionCase_tenantId_revisionIdToPerfReviewRevision")
+  PerfDecisionCase_PerfDecisionCase_tenantId_reviewId_revisionIdToPerfReviewRevision              PerfDecisionCase[]    @relation("PerfDecisionCase_tenantId_reviewId_revisionIdToPerfReviewRevision")
+  PerfReview_PerfReview_tenantId_currentRevisionIdToPerfReviewRevision                            PerfReview[]          @relation("PerfReview_tenantId_currentRevisionIdToPerfReviewRevision")
+  PerfReview_PerfReview_tenantId_id_currentRevisionIdToPerfReviewRevision                         PerfReview[]           @relation("PerfReview_tenantId_id_currentRevisionIdToPerfReviewRevision")
+  PerfReview_PerfReview_tenantId_id_releasedRevisionIdToPerfReviewRevision                        PerfReview[]           @relation("PerfReview_tenantId_id_releasedRevisionIdToPerfReviewRevision")
+  PerfReviewRevision_PerfReviewRevision_tenantId_predecessorIdToPerfReviewRevision                PerfReviewRevision?   @relation("PerfReviewRevision_tenantId_predecessorIdToPerfReviewRevision", fields: [tenantId, predecessorId], references: [tenantId, id], onUpdate: NoAction, map: "PerfReviewRevision_predecessorId_tenant_fk")
+  other_PerfReviewRevision_PerfReviewRevision_tenantId_predecessorIdToPerfReviewRevision          PerfReviewRevision[]  @relation("PerfReviewRevision_tenantId_predecessorIdToPerfReviewRevision")
+  PerfReview_PerfReviewRevision_tenantId_reviewIdToPerfReview                                     PerfReview            @relation("PerfReviewRevision_tenantId_reviewIdToPerfReview", fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfReviewRevision_reviewId_tenant_fk")
+  PerfReviewRevision_PerfReviewRevision_tenantId_reviewId_predecessorIdToPerfReviewRevision       PerfReviewRevision?   @relation("PerfReviewRevision_tenantId_reviewId_predecessorIdToPerfReviewRevision", fields: [tenantId, reviewId, predecessorId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_predecessor_same_review")
+  other_PerfReviewRevision_PerfReviewRevision_tenantId_reviewId_predecessorIdToPerfReviewRevision PerfReviewRevision[]  @relation("PerfReviewRevision_tenantId_reviewId_predecessorIdToPerfReviewRevision")
+  PerfSignoff_PerfSignoff_tenantId_revisionIdToPerfReviewRevision                                 PerfSignoff[]         @relation("PerfSignoff_tenantId_revisionIdToPerfReviewRevision")
+  PerfSignoff_PerfSignoff_tenantId_reviewId_revisionIdToPerfReviewRevision                        PerfSignoff[]         @relation("PerfSignoff_tenantId_reviewId_revisionIdToPerfReviewRevision")
   @@unique([tenantId, reviewId, revisionNo])
   @@unique([tenantId, id])
+  @@unique([tenantId, reviewId, id], map: "perf_revision_review_id_unique")
 }
 model PerfSignoff {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                                              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   revisionId String? @db.Uuid
@@ -5454,10 +5600,13 @@ model PerfSignoff {
   reason String?
   requestHash String
   createdAt DateTime @default(now())
+  PerfReview                                                                      PerfReview          @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfSignoff_reviewId_tenant_fk")
+  PerfReviewRevision_PerfSignoff_tenantId_revisionIdToPerfReviewRevision          PerfReviewRevision? @relation("PerfSignoff_tenantId_revisionIdToPerfReviewRevision", fields: [tenantId, revisionId], references: [tenantId, id], onUpdate: NoAction, map: "PerfSignoff_revisionId_tenant_fk")
+  PerfReviewRevision_PerfSignoff_tenantId_reviewId_revisionIdToPerfReviewRevision PerfReviewRevision? @relation("PerfSignoff_tenantId_reviewId_revisionIdToPerfReviewRevision", fields: [tenantId, reviewId, revisionId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_signoff_same_review")
   @@unique([tenantId, id])
 }
 model PerfEvidenceLink {
-  id String @id @default(uuid()) @db.Uuid
+  id            String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   source String
@@ -5467,10 +5616,11 @@ model PerfEvidenceLink {
   verifiedBy Int
   snapshot Json
   createdAt DateTime @default(now())
+  PerfReview    PerfReview @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfEvidenceLink_reviewId_tenant_fk")
   @@unique([tenantId, id])
 }
 model PerfAppeal {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                                             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   revisionId String @db.Uuid
@@ -5482,11 +5632,15 @@ model PerfAppeal {
   decisionReason String?
   decidedAt DateTime?
   createdAt DateTime @default(now())
+  PerfReview                                                                     PerfReview         @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfAppeal_reviewId_tenant_fk")
+  PerfReviewRevision_PerfAppeal_tenantId_revisionIdToPerfReviewRevision          PerfReviewRevision @relation("PerfAppeal_tenantId_revisionIdToPerfReviewRevision", fields: [tenantId, revisionId], references: [tenantId, id], onUpdate: NoAction, map: "PerfAppeal_revisionId_tenant_fk")
+  PerfReviewRevision_PerfAppeal_tenantId_reviewId_revisionIdToPerfReviewRevision PerfReviewRevision @relation("PerfAppeal_tenantId_reviewId_revisionIdToPerfReviewRevision", fields: [tenantId, reviewId, revisionId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_appeal_same_review")
   @@unique([tenantId, id])
-  @@index([tenantId, reviewId, status])
+  @@unique([tenantId, reviewId], map: "PerfAppeal_one_open", where: raw("(status = 'OPEN'::text)"))
+  @@index([tenantId, reviewId, status], map: "PerfAppeal_0_idx")
 }
 model PerfCommandReceipt {
-  id String @id @default(uuid()) @db.Uuid
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   actorId Int
   operation String
@@ -5498,7 +5652,7 @@ model PerfCommandReceipt {
   @@unique([tenantId, id])
 }
 model PerfAudit {
-  id String @id @default(uuid()) @db.Uuid
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   aggregateId String @db.Uuid
   actorId Int
@@ -5509,10 +5663,11 @@ model PerfAudit {
   metadata Json @default("{}")
   createdAt DateTime @default(now())
   @@unique([tenantId, id])
-  @@index([tenantId, aggregateId, createdAt])
+  @@index([tenantId, aggregateId, createdAt], map: "PerfAudit_0_idx")
+  @@index([tenantId, aggregateId, createdAt], map: "PerfAudit_aggregate_history")
 }
 model PerfGoal {
-  id String @id @default(uuid()) @db.Uuid
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   cycleId String @db.Uuid
   employeeId Int
@@ -5523,10 +5678,15 @@ model PerfGoal {
   keyResults Json
   approvedBy Int?
   createdAt DateTime @default(now())
+  PerfCycle       PerfCycle         @relation(fields: [tenantId, cycleId], references: [tenantId, id], onUpdate: NoAction, map: "PerfGoal_cycleId_tenant_fk")
+  PerfGoal        PerfGoal?         @relation("PerfGoalToPerfGoal", fields: [tenantId, parentId], references: [tenantId, id], onUpdate: NoAction, map: "PerfGoal_parentId_tenant_fk")
+  other_PerfGoal  PerfGoal[]        @relation("PerfGoalToPerfGoal")
+  Employee        Employee          @relation(fields: [tenantId, employeeId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_goal_employee_fk")
+  PerfMeasurement PerfMeasurement[]
   @@unique([tenantId, id])
 }
 model PerfMeasurement {
-  id String @id @default(uuid()) @db.Uuid
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   goalId String @db.Uuid
   keyResultId String
@@ -5538,11 +5698,12 @@ model PerfMeasurement {
   progress Json
   recordedBy Int
   createdAt DateTime @default(now())
+  PerfGoal      PerfGoal @relation(fields: [tenantId, goalId], references: [tenantId, id], onUpdate: NoAction, map: "PerfMeasurement_goalId_tenant_fk")
   @@unique([tenantId, goalId, keyResultId, sourceSystem, sourceRef, period, sourceVersion])
   @@unique([tenantId, id])
 }
 model PerfCheckin {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   employeeId Int
   managerId Int
@@ -5554,10 +5715,12 @@ model PerfCheckin {
   employeeConfirmedAt DateTime?
   managerConfirmedAt DateTime?
   createdAt DateTime @default(now())
+  Employee_PerfCheckin_tenantId_employeeIdToEmployee Employee  @relation("PerfCheckin_tenantId_employeeIdToEmployee", fields: [tenantId, employeeId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_checkin_employee_fk")
+  Employee_PerfCheckin_tenantId_managerIdToEmployee  Employee  @relation("PerfCheckin_tenantId_managerIdToEmployee", fields: [tenantId, managerId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_checkin_manager_fk")
   @@unique([tenantId, id])
 }
 model PerfFeedback {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   employeeId Int
   authorId Int
@@ -5565,10 +5728,13 @@ model PerfFeedback {
   audience String
   text String
   createdAt DateTime @default(now())
+  PerfReview                                          PerfReview? @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfFeedback_reviewId_tenant_fk")
+  Employee_PerfFeedback_tenantId_authorIdToEmployee   Employee    @relation("PerfFeedback_tenantId_authorIdToEmployee", fields: [tenantId, authorId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_feedback_author_fk")
+  Employee_PerfFeedback_tenantId_employeeIdToEmployee Employee    @relation("PerfFeedback_tenantId_employeeIdToEmployee", fields: [tenantId, employeeId], references: [tenant_id, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_feedback_employee_fk")
   @@unique([tenantId, id])
 }
 model PerfDecisionCase {
-  id String @id @default(uuid()) @db.Uuid
+  id                                                                                   String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   revisionId String @db.Uuid
@@ -5583,10 +5749,14 @@ model PerfDecisionCase {
   budgetApprover Int?
   executionApprover Int?
   createdAt DateTime @default(now())
+  PerfReview                                                                           PerfReview               @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfDecisionCase_reviewId_tenant_fk")
+  PerfReviewRevision_PerfDecisionCase_tenantId_revisionIdToPerfReviewRevision          PerfReviewRevision       @relation("PerfDecisionCase_tenantId_revisionIdToPerfReviewRevision", fields: [tenantId, revisionId], references: [tenantId, id], onUpdate: NoAction, map: "PerfDecisionCase_revisionId_tenant_fk")
+  PerfReviewRevision_PerfDecisionCase_tenantId_reviewId_revisionIdToPerfReviewRevision PerfReviewRevision       @relation("PerfDecisionCase_tenantId_reviewId_revisionIdToPerfReviewRevision", fields: [tenantId, reviewId, revisionId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction, map: "perf_decision_same_review")
+  PerfIntegrationHandoff                                                               PerfIntegrationHandoff[]
   @@unique([tenantId, id])
 }
 model PerfIntegrationHandoff {
-  id String @id @default(uuid()) @db.Uuid
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   decisionId String @db.Uuid
   decisionVersion Int
@@ -5597,12 +5767,13 @@ model PerfIntegrationHandoff {
   receiverReceipt Json?
   lastError String?
   createdAt DateTime @default(now())
+  PerfDecisionCase PerfDecisionCase @relation(fields: [tenantId, decisionId], references: [tenantId, id], onUpdate: NoAction, map: "PerfIntegrationHandoff_decisionId_tenant_fk")
   @@unique([tenantId, destination, decisionId, decisionVersion])
   @@unique([tenantId, businessKey])
   @@unique([tenantId, id])
 }
 model PerfReminderIntent {
-  id String @id @default(uuid()) @db.Uuid
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   reviewId String @db.Uuid
   recipientId Int
@@ -5612,11 +5783,12 @@ model PerfReminderIntent {
   state String @default("PENDING")
   hubReceipt String?
   createdAt DateTime @default(now())
+  PerfReview      PerfReview @relation(fields: [tenantId, reviewId], references: [tenantId, id], onUpdate: NoAction, map: "PerfReminderIntent_reviewId_tenant_fk")
   @@unique([tenantId, reviewId, recipientId, scheduleVersion, stage])
   @@unique([tenantId, id])
 }
 model PerfInbox {
-  id String @id @default(uuid()) @db.Uuid
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   consumer String
   eventId String
@@ -5635,6 +5807,8 @@ model PerfApprovalBinding {
   reviewVersion Int
   purpose String
   createdAt DateTime @default(now())
+  HrApprovalRequest  HrApprovalRequest  @relation(fields: [tenantId, approvalRef], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  PerfReviewRevision PerfReviewRevision @relation(fields: [tenantId, reviewId, revisionId], references: [tenantId, reviewId, id], onDelete: NoAction, onUpdate: NoAction)
   @@unique([tenantId, approvalRef])
   @@unique([tenantId, reviewId, revisionId, reviewVersion, purpose])
 }
@@ -5652,8 +5826,10 @@ model PerfLaunchRun {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   completedAt DateTime?
-  @@unique([tenantId,id])
-  @@unique([tenantId,cycleId])
+  PerfLaunchBatch PerfLaunchBatch[]
+  PerfCycle       PerfCycle         @relation(fields: [tenantId, cycleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  @@unique([tenantId, id])
+  @@unique([tenantId, cycleId])
 }
 model PerfLaunchBatch {
   id String @id @default(uuid()) @db.Uuid
@@ -5665,7 +5841,10 @@ model PerfLaunchBatch {
   count Int
   digest String
   createdAt DateTime @default(now())
-  @@unique([tenantId,runId,batchNo])
+  PerfParticipant_PerfLaunchBatch_tenantId_firstParticipantIdToPerfParticipant PerfParticipant @relation("PerfLaunchBatch_tenantId_firstParticipantIdToPerfParticipant", fields: [tenantId, firstParticipantId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  PerfParticipant_PerfLaunchBatch_tenantId_lastParticipantIdToPerfParticipant  PerfParticipant @relation("PerfLaunchBatch_tenantId_lastParticipantIdToPerfParticipant", fields: [tenantId, lastParticipantId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  PerfLaunchRun                                                                PerfLaunchRun   @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  @@unique([tenantId, runId, batchNo])
 }
 
 model PerfPeerRound {
@@ -5681,8 +5860,11 @@ model PerfPeerRound {
   createdBy Int
   createdAt DateTime @default(now())
   closedAt DateTime?
-  @@unique([tenantId,id])
-  @@unique([tenantId,reviewId])
+  PerfPeerNomination PerfPeerNomination[]
+  PerfPeerResponse   PerfPeerResponse[]
+  PerfReview         PerfReview           @relation(fields: [tenantId, reviewId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  @@unique([tenantId, id])
+  @@unique([tenantId, reviewId])
 }
 model PerfPeerNomination {
   id String @id @default(uuid()) @db.Uuid
@@ -5697,9 +5879,11 @@ model PerfPeerNomination {
   decisionReason String?
   decidedAt DateTime?
   createdAt DateTime @default(now())
-  @@unique([tenantId,id])
-  @@unique([tenantId,roundId,employeeId])
-  @@index([tenantId,employeeId,id])
+  PerfPeerRound    PerfPeerRound     @relation(fields: [tenantId, roundId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  PerfPeerResponse PerfPeerResponse?
+  @@unique([tenantId, id])
+  @@unique([tenantId, roundId, employeeId])
+  @@index([tenantId, employeeId, id])
 }
 model PerfPeerResponse {
   id String @id @default(uuid()) @db.Uuid
@@ -5710,7 +5894,9 @@ model PerfPeerResponse {
   answers Json
   digest String
   submittedAt DateTime @default(now())
-  @@unique([tenantId,id])
-  @@unique([tenantId,nominationId])
-  @@unique([tenantId,roundId,authorId])
+  PerfPeerNomination PerfPeerNomination @relation(fields: [tenantId, nominationId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  PerfPeerRound      PerfPeerRound      @relation(fields: [tenantId, roundId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  @@unique([tenantId, id])
+  @@unique([tenantId, nominationId])
+  @@unique([tenantId, roundId, authorId])
 }

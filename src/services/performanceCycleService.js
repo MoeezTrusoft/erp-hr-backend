@@ -17,7 +17,7 @@ export const createPerformanceCycle = async (data, createdBy) => {
   if(!Number.isFinite(+new Date(start_date))||!Number.isFinite(+new Date(end_date))||new Date(start_date)>new Date(end_date))throw Object.assign(new Error('Valid ordered cycle dates are required'),{status:422});
 
   const template = await prisma.performanceTemplate.findFirst({
-    where: scopedWhere(tenantId, { id: templateId }),
+    where: scopedWhere(tenantId, { id: templateId, archivedAt: null }),
   });
 
   if (!template) {
@@ -51,7 +51,7 @@ export const createPerformanceCycle = async (data, createdBy) => {
 
 export const getAllPerformanceCycles = async (tenantId) => {
   return prisma.performanceCycle.findMany({
-    where: scopedWhere(tenantId, {}),
+    where: scopedWhere(tenantId, { archivedAt: null }),
     include: { template: true, reviews: true },
     orderBy: { id: "desc" },
   });
@@ -59,7 +59,7 @@ export const getAllPerformanceCycles = async (tenantId) => {
 
 export const getPerformanceCycleById = async (id, tenantId) => {
   const cycle = await prisma.performanceCycle.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), archivedAt: null }),
     include: { template: true, reviews: true },
   });
   if (!cycle) throw new Error("Performance Cycle not found");
@@ -68,11 +68,11 @@ export const getPerformanceCycleById = async (id, tenantId) => {
 
 export const updatePerformanceCycle = async (id, data,updatedBy, tenantId) => {
     data = performanceCycleUpdate.parse(data);
-    const existing  = await prisma.performanceCycle.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
+    const existing  = await prisma.performanceCycle.findFirst({ where: scopedWhere(tenantId, { id: Number(id), archivedAt: null }) })
     if (!existing) throw new Error("Performnce cycle not found");
   if(Object.keys(data).some(k=>!["name","description","start_date","end_date","templateId"].includes(k)))throw Object.assign(new Error('Unsupported cycle field'),{status:422});
   if(await prisma.performanceReview.count({where:scopedWhere(tenantId,{cycleId:Number(id)})}))throw Object.assign(new Error('A launched legacy cycle cannot be edited'),{status:409});
-  if(data.templateId&&!await prisma.performanceTemplate.findFirst({where:scopedWhere(tenantId,{id:Number(data.templateId)})}))throw Object.assign(new Error('Template not found'),{status:404});
+  if(data.templateId&&!await prisma.performanceTemplate.findFirst({where:scopedWhere(tenantId,{id:Number(data.templateId),archivedAt:null})}))throw Object.assign(new Error('Template not found'),{status:404});
   const start=new Date(data.start_date||existing.start_date),end=new Date(data.end_date||existing.end_date);
   if(!Number.isFinite(+start)||!Number.isFinite(+end)||start>end)throw Object.assign(new Error('Valid ordered cycle dates are required'),{status:422});
   data={...data,...(data.start_date?{start_date:start}:{}),...(data.end_date?{end_date:end}:{})};
@@ -94,19 +94,20 @@ export const updatePerformanceCycle = async (id, data,updatedBy, tenantId) => {
 };
 
 export const deletePerformanceCycle = async (id, deletedBy, tenantId) => {
-    const existing  = await prisma.performanceCycle.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
+    const existing  = await prisma.performanceCycle.findFirst({ where: scopedWhere(tenantId, { id: Number(id), archivedAt: null }) })
     if (!existing) throw new Error("Performnce cycle not found");
     
-  const deleted = await prisma.performanceCycle.delete({
+  const deleted = await prisma.performanceCycle.update({
     where: { id: Number(id) },
+    data: { archivedAt: new Date() },
   });
 
  await logAction({
     employeeId: Number(deletedBy),
-    type: "Delete", // 👈 changed from CREATE to UPDATE
+    type: "Archive", // 👈 changed from CREATE to UPDATE
     module: "Performance Cycle",
     result: "SUCCESS",
-    notes: `Performance Cycle "${id}" Deleted successfully`,
+    notes: `Performance Cycle "${id}" Archived successfully`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 

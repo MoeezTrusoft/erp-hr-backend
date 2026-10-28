@@ -1,3 +1,9 @@
 # Test fixture request key (a random UUID, not a credential) committed in
 # 6034234; the test now generates it with randomUUID().
 6034234c3d371fb802fe99a30ebd508158529bf0:tests/unit/payrollControls.test.js:generic-api-key:77
+# Public synthetic C4 keys used only by the isolated migration test job in
+# c447cdc. No personnel data or deployed credentials used these values.
+# The workflow now generates fresh random keys for each job. Keep history
+# scanning enabled; exclude only these two verified historical fixture lines.
+c447cdc78ebd1e374af8a19fb49d45b9e05d58d4:.github/workflows/ci.yml:generic-api-key:68
+c447cdc78ebd1e374af8a19fb49d45b9e05d58d4:.github/workflows/ci.yml:generic-api-key:69
