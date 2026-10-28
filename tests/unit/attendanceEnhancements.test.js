@@ -380,19 +380,44 @@ describe("timesheet and anomaly projection", () => {
     const db = captureDb({
       employee: [{ id: 1, tenant_id: TENANT, employee_code: "EMP-001" }],
       attendanceAnomaly: [
-        "ABSENT",
-        "LATE_CHECKIN",
-        "EARLY_CHECKOUT",
-        "MISSING_CHECKOUT",
-      ].map((type, i) => ({
-        id: i + 1,
-        tenantId: TENANT,
-        employeeId: 1,
-        date: new Date("2026-10-12"),
-        type,
-        status: i % 2 ? "APPROVED" : "PENDING",
-        rulesVersion: i === 3 ? 1 : 2,
-      })),
+        ...[
+          "ABSENT",
+          "LATE_CHECKIN",
+          "EARLY_CHECKOUT",
+          "MISSING_CHECKOUT",
+        ].map((type, i) => ({
+          id: i + 1,
+          tenantId: TENANT,
+          employeeId: 1,
+          date: new Date("2026-10-12"),
+          type,
+          status: i % 2 ? "APPROVED" : "PENDING",
+          evidenceState: "ACTIVE",
+          rulesVersion: i === 3 ? 1 : 2,
+        })),
+        // TS-KPI-01 — a case the evaluator closed is no longer detected, and an
+        // older legacy row beside its rules-v2 successor is the same day.
+        {
+          id: 5,
+          tenantId: TENANT,
+          employeeId: 1,
+          date: new Date("2026-10-12"),
+          type: "LATE_CHECKIN",
+          status: "RESOLVED",
+          evidenceState: "RESOLVED",
+          rulesVersion: 2,
+        },
+        {
+          id: 6,
+          tenantId: TENANT,
+          employeeId: 1,
+          date: new Date("2026-10-12"),
+          type: "ABSENT",
+          status: "PENDING",
+          evidenceState: "ACTIVE",
+          rulesVersion: 1,
+        },
+      ],
     });
     const query = {
       user: { tenantId: TENANT, roles: ["HR Manager"] },
@@ -401,17 +426,23 @@ describe("timesheet and anomaly projection", () => {
       pageSize: 2,
     };
     const a = await listRuleCases(query, db),
-      b = await listRuleCases({ ...query, page: 2 }, db);
+      b = await listRuleCases({ ...query, page: 2 }, db),
+      c = await listRuleCases({ ...query, page: 3 }, db);
+    // Tiles: distinct, still-detected employee-days. The review table still
+    // lists every record, so `total` is the number of records.
     expect(a.summary).toEqual({
       absent: 1,
       late: 1,
       early: 1,
       other: 1,
-      total: 4,
+      total: 6,
+      open: 2,
     });
-    expect([...a.items, ...b.items]).toHaveLength(a.summary.total);
+    expect([...a.items, ...b.items, ...c.items]).toHaveLength(a.summary.total);
     const pending = await listRuleCases({ ...query, status: "PENDING" }, db);
-    expect(pending.summary.total).toBe(pending.items.length);
-    expect(pending.summary.total).toBe(2);
+    // Three PENDING records, listed two to a page.
+    expect(pending.summary.total).toBe(3);
+    expect(pending.total).toBe(3);
+    expect(pending.items).toHaveLength(2);
   });
 });

@@ -372,7 +372,9 @@ test("recorded punches, absence, holiday rows, worked hours and case counts agre
   assert.equal(cases.total, cases.items.length);
   assert.equal(
     Object.entries(cases.summary)
-      .filter(([key]) => key !== "total")
+      // `total` is the record count and `open` is a subset of the categories
+      // (cases still awaiting a decision), so neither is a category.
+      .filter(([key]) => !["total", "open"].includes(key))
       .reduce((n, [, value]) => n + value, 0),
     cases.total,
   );

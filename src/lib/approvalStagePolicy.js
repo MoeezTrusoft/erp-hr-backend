@@ -36,3 +36,13 @@ export const stageAfterSubmission = (kind) =>
 
 // Whether submission needs an active independent line manager to be configured.
 export const requiresLineManager = (kind) => !isStagePaused(kind, "LINE_MANAGER");
+
+// Operator decision (2026-10-28): a request that HR raises ON BEHALF of an
+// employee is HR-verified by the act of raising it. HR has already reviewed the
+// day and filed the case, so a second HR verification of the same request would
+// be HR approving its own filing. These kinds therefore enter the first stage
+// after HR verification (MANAGEMENT) with the verification recorded against the
+// filer. The employee's own submission is unaffected and still lands at HR.
+const VERIFIED_ON_BEHALF = Object.freeze(["ATTENDANCE"]);
+
+export const isVerifiedOnBehalf = (kind) => VERIFIED_ON_BEHALF.includes(kind);

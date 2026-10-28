@@ -206,7 +206,11 @@ test(
       );
       const after = await rowFor();
       assert.equal(after.request.status, "PENDING");
-      assert.equal(after.request.stage, "HR", "HR verification is next");
+      assert.equal(
+        after.request.stage,
+        "MANAGEMENT",
+        "HR raised it, so it is already HR-verified and Management decides next",
+      );
       assert.equal(String(after.request.approvalRef), String(record.approvalRef));
       assert.equal(after.request.raisedById, people.HR.id, "and it says who filed it");
       assert.equal(after.request.type, "LATE_CHECKIN");
@@ -270,12 +274,21 @@ test(
           requestKey: randomUUID(),
         }),
       );
-      assert.equal(record.stage, "HR");
+      assert.equal(record.stage, "MANAGEMENT", "HR-verified by the act of raising");
       assert.equal(
         record.employeeCode,
         people.EMPLOYEE.employee_code,
         "the request belongs to the subject employee",
       );
+      // The trail keeps both steps: submission into HR, then HR's own verification.
+      assert.deepEqual(
+        record.history.slice(0, 2).map((h) => [h.action, h.fromStage, h.toStage]),
+        [
+          ["SUBMIT", "INITIATOR", "HR"],
+          ["VERIFY", "HR", "MANAGEMENT"],
+        ],
+      );
+      assert.equal(record.history[1].actorCode, people.HR.employee_code);
       const stored = await readCase(anomaly.id);
       assert.equal(stored.raisedById, people.HR.id, "filed by HR, not the employee");
       assert.ok(stored.raisedByName, "the filer name is snapshotted on the case");
@@ -368,8 +381,8 @@ test(
           requestKey: randomUUID(),
         }),
       );
-      let row = await act("HR", record, "VERIFY");
-      row = await act("MANAGEMENT", row, "REJECT");
+      assert.equal(record.stage, "MANAGEMENT", "an on-behalf raise needs no second HR step");
+      const row = await act("MANAGEMENT", record, "REJECT");
       assert.equal(row.stage, "REJECTED");
       const decided = await readCase(anomaly.id);
       assert.equal(decided.status, "REJECTED");
