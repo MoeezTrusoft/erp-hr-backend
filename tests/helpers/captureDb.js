@@ -107,6 +107,7 @@ export function captureDb(seed = {}, hooks = {}) {
     workSchedule: [],
     businessUnit: [],
     attendanceSetupDraft: [],
+    attendancePolicyConfig: [],
     leaveRequest: [],
     attendanceCallIn: [],
     attendanceCorrectionRequest: [],

@@ -24,6 +24,18 @@ const MINUTE_KEYS = [
   "checkoutLeniencyMin",
   "overtimeAfterMinutes",
   "duplicatePunchWindowMin",
+  "deductMajorThresholdMinutes",
+  "minSessionMinutes",
+];
+
+// Whole numbers >= 1: how many minor incidents make one pooled deduction.
+const POSITIVE_INT_KEYS = ["deductPoolSize"];
+// Days of salary, 0-31 in steps of any fraction (0.5 = half a day).
+const DAY_KEYS = [
+  "deductAbsentDays",
+  "deductMissingPunchDays",
+  "deductMajorTimingDays",
+  "deductPooledMinorDays",
 ];
 
 // Percent-of-rostered-shift bands. Deliberately NOT absolute hours: this fleet
@@ -52,6 +64,13 @@ export function defaultAttendancePolicy() {
     halfDayMinPercent: 50,
     halfDayAfterPercentOfShift: null,
     duplicatePunchWindowMin: 5,
+    deductMajorThresholdMinutes: 30,
+    deductPoolSize: 3,
+    deductAbsentDays: 1,
+    deductMissingPunchDays: 0.5,
+    deductMajorTimingDays: 0.5,
+    deductPooledMinorDays: 1,
+    minSessionMinutes: 5,
     shiftGapHours: 11,
     defaultShiftStart: "09:00",
     status: "DRAFT",
@@ -71,6 +90,20 @@ export async function updateAttendancePolicy({ tenantId, ...input }) {
     if (input[key] === undefined) continue;
     const n = Number(input[key]);
     if (!Number.isInteger(n) || n < 0) throw badRequest(`${key} must be a whole number >= 0`);
+    data[key] = n;
+  }
+
+  for (const key of POSITIVE_INT_KEYS) {
+    if (input[key] === undefined) continue;
+    const n = Number(input[key]);
+    if (!Number.isInteger(n) || n < 1 || n > 100) throw badRequest(`${key} must be a whole number between 1 and 100`);
+    data[key] = n;
+  }
+
+  for (const key of DAY_KEYS) {
+    if (input[key] === undefined) continue;
+    const n = Number(input[key]);
+    if (!Number.isFinite(n) || n < 0 || n > 31) throw badRequest(`${key} must be a number of days between 0 and 31`);
     data[key] = n;
   }
 

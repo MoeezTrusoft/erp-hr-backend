@@ -80,6 +80,20 @@ export function registerAttendanceSetupTools(server) {
         .describe("PERCENT of the rostered shift that must be worked for a half day; must be <= fullDayMinPercent"),
       duplicatePunchWindowMin: z.coerce.number().int().min(0).optional()
         .describe("Anti-passback: identical punches within this many minutes collapse to one"),
+      deductMajorThresholdMinutes: z.coerce.number().int().min(0).max(1440).optional()
+        .describe("PAYROLL: a late arrival or early departure longer than this many minutes is a MAJOR case, priced on its own (default 30)"),
+      deductPoolSize: z.coerce.number().int().min(1).max(100).optional()
+        .describe("PAYROLL: minor lateness/early-leave incidents per employee, within one payroll period, that make one pooled deduction (default 3). The pool does not carry over between periods"),
+      deductAbsentDays: z.coerce.number().min(0).max(31).optional()
+        .describe("PAYROLL: days of salary deducted for a rejected ABSENT case (default 1)"),
+      deductMissingPunchDays: z.coerce.number().min(0).max(31).optional()
+        .describe("PAYROLL: days deducted for a rejected missing check-in or check-out (default 0.5)"),
+      deductMajorTimingDays: z.coerce.number().min(0).max(31).optional()
+        .describe("PAYROLL: days deducted for a rejected MAJOR late/early case (default 0.5)"),
+      deductPooledMinorDays: z.coerce.number().min(0).max(31).optional()
+        .describe("PAYROLL: days deducted for each full pool of minor incidents (default 1)"),
+      minSessionMinutes: z.coerce.number().int().min(0).max(60).optional()
+        .describe("A day whose only presence is a session shorter than this is an accidental double tap and becomes a punch conflict, not an early checkout (default 5, 0 = off)"),
       shiftGapHours: z.coerce.number().int().min(2).max(23).optional()
         .describe("Gap that separates one shift from the next. Below this, punches belong to the same shift — this is what carries a night shift past midnight"),
       defaultShiftStart: z.string().optional()
