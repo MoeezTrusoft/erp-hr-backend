@@ -1,10 +1,12 @@
 const payrollError = (message, status = 409) => Object.assign(new Error(message), {status});
+import { hasTimesheetSubmission } from '../lib/timesheetSubmissionCheck.js';
 import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/payrollConfiguration.js';
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
 import { loadSource } from './approval/adapters.js';
 import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.js';
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
+import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
 import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
 import { lockAttendancePeriod } from './attendancePeriod.service.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
@@ -668,7 +670,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // so the multiplier is scaled by 100 before the BigInt. `BigInt(0.5)` threw
     // a RangeError and took the whole payslip build down with it.
     let attendanceBasisMinor = '0', attendancePeriodDays = 1;
-    const assessment = ruleDeductions(bridges.anomalyRows || [], {from:payrollRun.periodStart,to:payrollRun.periodEnd});
+    const assessment = ruleDeductions(bridges.anomalyRows || [], {from:payrollRun.periodStart,to:payrollRun.periodEnd,rules:bridges.deductionRules});
     if (employmentTerm) {
         const baseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
 
@@ -1130,12 +1132,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
     // has no submission was created out-of-band — refuse it.
     if (!preview) {
         const month = `${payrollRun.periodStart.getUTCFullYear()}-${String(payrollRun.periodStart.getUTCMonth() + 1).padStart(2, '0')}`;
-        const submission = await prisma.payrollAuditLog.findFirst({
-            where: withTenant(tenantId, {
-                action: 'TIMESHEET_SUBMITTED',
-                details: { contains: month },
-            }),
-            select: { id: true },
+        const submission = await hasTimesheetSubmission(prisma, {
+            tenantId,
+            run: payrollRun,
+            month,
+            withTenant,
         });
         if (!submission) {
             throw payrollError(`HR-TP-03 timesheet for ${month} has not been submitted — submit the timesheet before running payroll (operator workflow 2026-09-17)`);
@@ -1329,6 +1330,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             asOf: ratesEffectiveAt
         });
         const ruleVersion = computeRuleVersion(effectiveRates, ratesEffectiveAt);
+        // The anomaly-deduction rules this run is priced with; a copy is kept with the
+        // run (not for a preview) so the pricing can be audited later.
+        const deductionRules = await loadDeductionRules(tenantId);
+        if (!preview) await snapshotDeductionRules(prisma, { tenantId, runId: id, rules: deductionRules, actorId: updatedBy });
 
         // Resolve the persisted type ids the pure engine leaves null (base
         // salary earning) once per run.
@@ -1412,6 +1417,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             if (!preview) await releaseFailedCarry(prisma,{tenantId,employeeId:employee.id});
             const attendanceAdjustments=await prisma.attendancePayrollAdjustment.findMany({where:{tenantId,employeeId:employee.id,currencyCode:currency,sourcePeriodEnd:{lt:payrollRun.periodStart},OR:[{appliedPayslipId:null},...(previousSlip?[{appliedPayslipId:previousSlip.id}]:[])]}});
             const bridges = {
+                deductionRules,
                 attendanceAdjustments,
                 manualAttendance: monthlyByEmployee.get(employee.id),
                 overtimeLines: overtimeRequests.map(ot => ({

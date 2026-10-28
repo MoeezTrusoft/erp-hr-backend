@@ -90,7 +90,7 @@ export async function setupPayroll() {
       data: {
         tenantId: company,
         action: "TIMESHEET_SUBMITTED",
-        details: "Fictional verified timesheet 2026-09",
+        details: "Timesheet for 2026-09 submitted (fictional verification)",
       },
     });
   });

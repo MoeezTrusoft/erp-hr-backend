@@ -146,6 +146,9 @@ function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, 
     fullDayMinPercent: policy.fullDayMinPercent ?? 90,
     halfDayMinPercent: policy.halfDayMinPercent ?? 50,
     duplicatePunchWindowMin: policy.duplicatePunchWindowMin ?? 5,
+    // D3 (2026-10-28): a whole day's presence shorter than this is an accidental
+    // double tap, not a departure. 0 turns the rule off.
+    minSessionMinutes: policy.minSessionMinutes ?? 5,
   };
 
   const evalTime = now instanceof Date ? now : new Date();
@@ -234,6 +237,25 @@ function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, 
   }
   // A completed interval followed by another arrival still has a missing OUT.
   if (pairing.open) checkOut = null;
+
+  // Accidental double tap: IN and OUT a moment apart is not a day worked and not
+  // an early departure. Hold it as a punch conflict for a person to resolve
+  // instead of docking pay. Only a day whose entire presence is that one short
+  // session; real multi-interval days are untouched.
+  if (
+    p.minSessionMinutes > 0 &&
+    checkIn &&
+    checkOut &&
+    !pairing.open &&
+    pairing.intervals.length <= 1 &&
+    minutesBetween(checkIn, checkOut) < p.minSessionMinutes
+  ) {
+    const issues = [{ code: "SESSION_TOO_SHORT", minutes: minutesBetween(checkIn, checkOut) }];
+    return {status:'PUNCH_CONFLICT',dayCredit:null,requiresRegularization:true,
+      anomalies:[{type:'OTHER',detail:'SESSION_TOO_SHORT'}],
+      ...accounting,scheduledMinutes,workedPercent:null,latenessMinutes:null,
+      checkIn,checkOut,intervals:pairing.intervals,issues};
+  }
 
   // ── Missing check-in ──────────────────────────────────────────────────────
   // A departure with no arrival. Blocking: the day cannot be scored, so it is
