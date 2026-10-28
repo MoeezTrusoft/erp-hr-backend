@@ -21,6 +21,8 @@ import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import prisma from "../../lib/prisma.js";
+import { legacySubmit } from "../../services/approval/legacy.js";
+import { fileLeaveForApproval } from "../../lib/leaveSubmission.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -188,7 +190,16 @@ export function registerLeaveTools(server) {
         args.employeeId = String(actingEmployeeId);
       }
       const data = await mcpCreateLeaveRequest(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      // A request nobody submitted never reaches the Approval Centre, so file it
+      // there now. Only for the employee's own request; on-behalf requests by HR
+      // stay PENDING. A submit failure keeps the request and says so.
+      const body = await fileLeaveForApproval({
+        response: data,
+        filedForSelf: !canWriteOthers || Number(args.employeeId) === Number(user.employeeId),
+        reason: args.reason,
+        submit: legacySubmit,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(body) }] };
     })
   );
 
