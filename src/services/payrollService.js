@@ -1038,6 +1038,8 @@ export const isStaleProcessing = (run, now = Date.now()) =>
 export const payrollEligibleFilter = (payrollRun) => ({
     AND: [
         { payroll_included: { not: false } },
+        // attendance_only: tracked for attendance, never paid through a payroll run.
+        { attendance_only: { not: true } },
         // Active is not evidence of employment in this pay period. Explicit
         // spells take precedence; otherwise use hire date, then joining date.
         { OR: [
