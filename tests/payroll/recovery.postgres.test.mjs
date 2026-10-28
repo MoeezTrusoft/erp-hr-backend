@@ -24,7 +24,9 @@ test(
     await calculate();
     const strand = (minutesAgo) =>
       db((tx) =>
-        tx.$executeRaw`UPDATE payroll_runs SET status='PROCESSING', updated_at=now() - make_interval(mins => ${minutesAgo}) WHERE id=${run.id}`,
+        // Prisma's timestamp-without-timezone values encode UTC. Do not let the
+        // local PostgreSQL timezone turn a stale fixture into a future timestamp.
+        tx.$executeRaw`UPDATE payroll_runs SET status='PROCESSING', updated_at=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - make_interval(mins => ${minutesAgo}) WHERE id=${run.id}`,
       );
     await strand(1);
     await assert.rejects(calculate(), /processing/i);

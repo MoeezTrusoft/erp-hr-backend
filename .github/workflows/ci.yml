@@ -64,9 +64,6 @@ jobs:
       DATABASE_URL: postgresql://appraisal_admin@127.0.0.1:55443/hr_appraisal_release_00000000000000000000000000000001
       DATABASE_DIRECT_URL: postgresql://appraisal_admin@127.0.0.1:55443/hr_appraisal_release_00000000000000000000000000000001
       HR_REQUIRE_DB_TESTS: '1'
-      # Public, synthetic test keys. This isolated database contains no personnel data.
-      HR_C4_ENCRYPTION_KEY: RpGAX25dxV8Prwx61cTjO3Z48ESk+0qap3sXYRB5lIs=
-      HR_C4_BLIND_INDEX_KEY: 5VAHsWnr6plLECxn2g3sJZpnryiODjPshS9/w+/T3Zc=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -83,6 +80,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx --no-install prisma generate
+      - name: Generate ephemeral encryption keys for synthetic test data
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomBytes } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+          for (const name of ['HR_C4_ENCRYPTION_KEY', 'HR_C4_BLIND_INDEX_KEY']) {
+            appendFileSync(process.env.GITHUB_ENV, `${name}=${randomBytes(32).toString('base64')}\n`);
+          }
+          NODE
       - name: Prepare historical migration grantees in the disposable database
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE ROLE erp NOLOGIN NOSUPERUSER NOBYPASSRLS; CREATE ROLE hr_app LOGIN NOSUPERUSER NOBYPASSRLS;'
       - run: npx --no-install prisma migrate deploy

@@ -21,6 +21,7 @@ import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
 import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
 import { completeTimesheetRows } from '../lib/timesheetRows.js';
+import { rowAnomalies } from '../lib/timesheetRowAnomalies.js';
 import { attendanceActorCodes } from '../lib/attendanceActorCodes.js';
 
 // Statuses that count as "showed up" for a working day.
@@ -480,7 +481,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
 
   let rows = await prisma.attendance.findMany({
     where: scopedWhere(tenantId, where),
-    select: { date: true, status: true, employee: { select: { id: true, employee_code: true } } },
+    select: { date: true, status: true, employee: { select: EMPLOYEE_SELECT } },
   });
   // TIMESHEET-ELIG-02 — span-cap before daily aggregation.
   rows = filterRowsByEmploymentSpan(rows, gridSpanEnds);
@@ -507,7 +508,7 @@ export async function getAttendanceMonthGrid({ tenantId, month, employeeId }) {
       if (r.employee) {
         bucket.absentees.push({
           id: r.employee.id,
-          name: r.employee.employee_code || 'Employee code required',
+          name: fullName(r.employee),
         });
       }
     }
@@ -1004,6 +1005,7 @@ export async function listCheckInOuts({
     select: {
       id: true, employeeId: true, date: true, type: true, status: true,
       evidenceState: true,
+      rulesVersion: true,
       sourceKind: true,
       // TS-REQUEST-HYBRID-01 — a raise binds its approval to `id@factHash`, so
       // the hash is what lets this read model show the request for the exact
@@ -1060,7 +1062,19 @@ export async function listCheckInOuts({
   // submitted", and an approval whose evidence has since been re-evaluated is
   // not found, so the row falls back to "Not submitted" rather than claiming a
   // request that no longer describes the current facts.
-  const approvalRefs = [...anomalyByKey.values()]
+  // TS-MULTI-ANOM-01 — every active rules-v2 case of a day, not only the one the
+  // row's single `request` follows, so each can be shown and raised on its own.
+  const casesByDay = new Map();
+  for (const an of anomaliesForWindow) {
+    if (an.date == null || Number(an.rulesVersion) !== 2 || an.evidenceState !== "ACTIVE") continue;
+    const key = `${an.employeeId}:${dayKey(an.date)}`;
+    if (!casesByDay.has(key)) casesByDay.set(key, []);
+    casesByDay.get(key).push(an);
+  }
+  const approvalCandidates = new Map(
+    [...anomalyByKey.values(), ...[...casesByDay.values()].flat()].map((an) => [an.id, an]),
+  );
+  const approvalRefs = [...approvalCandidates.values()]
     .filter((an) => an.factHash)
     .map((an) => `${an.id}@${an.factHash}`);
   const approvalByAnomaly = new Map();
@@ -1075,9 +1089,9 @@ export async function listCheckInOuts({
     for (const request of requests)
       approvalByAnomaly.set(String(request.sourceRef).split("@")[0], request);
   }
-  const approvalRows = anomalyByKey.size
+  const approvalRows = approvalCandidates.size
     ? await prisma.attendanceAnomalyApproval.findMany({
-        where: { anomalyId: { in: [...anomalyByKey.values()].map((a) => a.id) } },
+        where: { anomalyId: { in: [...approvalCandidates.keys()] } },
         select: { anomalyId: true, level: true, approverRole: true, decision: true, comments: true, decidedAt: true },
         orderBy: [{ anomalyId: "asc" }, { level: "asc" }],
       })
@@ -1191,6 +1205,9 @@ export async function listCheckInOuts({
       absenceAnomaly:a.absenceAnomaly === true,
       workMode: a.work_mode ?? null,
       request,
+      anomalies: key
+        ? rowAnomalies(casesByDay.get(key) ?? [], { approvalByAnomaly, decisionsByAnomaly })
+        : [],
       // internal sort keys (not serialized to the FE)
       _checkIn: a.check_in ? a.check_in.getTime() : null,
       _checkOut: a.check_out ? a.check_out.getTime() : null,
