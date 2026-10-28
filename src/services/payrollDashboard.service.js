@@ -314,7 +314,9 @@ export async function getBlockingIssues({ tenantId, runId } = {}) {
   if (!run) return [];
 
   const employees=await prisma.employee.findMany({where:{tenant_id:tenantId,...payrollEligibleFilter(run)},include:{employmentTerms:{where:{tenantId,effectiveFrom:{lte:run.periodEnd},OR:[{effectiveTo:null},{effectiveTo:{gte:run.periodStart}}]},orderBy:{effectiveFrom:'desc'},take:1}}});
-  return (await payrollReadiness({tenantId,run,employees,checkAttendanceSetup:true})).issues;
+  // Setup coverage only matters while the run can still be (re)calculated.
+  const canCalculate = ['PENDING', 'COMPLETED', 'FAILED', 'REJECTED'].includes(run.status);
+  return (await payrollReadiness({tenantId,run,employees,checkAttendanceSetup:canCalculate})).issues;
 }
 
 // ── employees table ──────────────────────────────────────────────────────────

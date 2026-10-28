@@ -2,7 +2,7 @@ import prisma from "../lib/prisma.js";
 import { employeeCode } from "../lib/payrollConfiguration.js";
 import { dateRange } from "../lib/attendanceDates.js";
 
-// Loaded on demand: the attendance setup service is heavy and only the run screen needs this check.
+// Loaded on demand, and only when a caller asks for the setup-coverage check.
 const defaultLoadRuntime = async (args) => (await import("./attendanceSetup.service.js")).loadAttendanceRuntime(args);
 
 // Issues that stop a payslip being CALCULATED are always blocking. These three

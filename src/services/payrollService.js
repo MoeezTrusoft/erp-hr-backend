@@ -1156,7 +1156,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
     // A precondition error is tagged so the catch below can tell it from a real
     // calculation failure.
     const preflightGuard = async (fn) => {
-        try { return await fn(); } catch (error) { error.preflight = true; throw error; }
+        try { return await fn(); } catch (error) { if (error && typeof error === 'object') error.preflight = true; throw error; }
     };
     if (!preview) await tenantTransaction(prisma,async tx=>{
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':approval-source:PAYROLL:' + id},0))`;
@@ -1255,17 +1255,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             }
         });
 
-        // Remove only unapproved, undistributed, zero-value leftovers for
-        // employees who no longer qualify for this period. Keep a full audit.
-        if (!preview) await tenantTransaction(prisma, async tx => {
-            const stale=await tx.payrollPayslip.findMany({where:withTenant(tenantId,{payrollRunId:id,employeeId:{notIn:employees.map(e=>e.id)}}),include:{earnings:true,deductions:true}});
-            for(const slip of stale) {
-                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})) throw payrollError('An ineligible employee has a protected or nonzero payslip; review employee setup before recalculation');
-                await tx.payrollAuditLog.create({data:{tenantId,action:'INELIGIBLE_ZERO_PAYSLIP_REMOVED',payrollRunId:id,employeeId:slip.employeeId,details:'Employee was not employed in this payroll period. Removed only an undistributed DRAFT payslip with all totals zero.',oldValues:JSON.parse(JSON.stringify(slip))}});
-                await tx.payrollPayslip.delete({where:{id:slip.id}});
-            }
-        });
-
         // Read both current and legacy leave stores. An approved leave must
         // excuse attendance even if device roll-up has not marked ON_LEAVE yet.
         const [approvedRequests, approvedLegacyLeaves] = await Promise.all([
@@ -1308,20 +1297,20 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         const attendanceRuntime=await preflightGuard(()=>loadAttendanceRuntime({tenantId,from:payrollRun.periodStart,to:payrollRun.periodEnd}));
         const periodDays=dateRange(payrollRun.periodStart,payrollRun.periodEnd);
         await preflightGuard(async()=>{
-        for(const day of periodDays) {
-            if(!attendanceRuntime.configOn(day)) throw badSetup('Publish attendance setup covering this payroll period',409);
-        }
-        for(const employee of employees) {
-            const modes=new Set();
             for(const day of periodDays) {
-                if(!employedOn(employee,employee.employmentPeriods||[],day))continue;
-                const info=attendanceRuntime.resolve(employee.id,day);
-                if(info.working==null)throw badSetup('Complete attendance setup for '+employeeCode(employee)+' on '+day,409);
-                modes.add(info.profile?.mode);
+                if(!attendanceRuntime.configOn(day)) throw badSetup('Publish attendance setup covering this payroll period',409);
             }
-            if(modes.size>1)throw badSetup('Attendance input mode changes inside the payroll period for '+employeeCode(employee),409);
-            if(modes.size)employee.attendanceInputMode=[...modes][0];
-        }
+            for(const employee of employees) {
+                const modes=new Set();
+                for(const day of periodDays) {
+                    if(!employedOn(employee,employee.employmentPeriods||[],day))continue;
+                    const info=attendanceRuntime.resolve(employee.id,day);
+                    if(info.working==null)throw badSetup('Complete attendance setup for '+employeeCode(employee)+' on '+day,409);
+                    modes.add(info.profile?.mode);
+                }
+                if(modes.size>1)throw badSetup('Attendance input mode changes inside the payroll period for '+employeeCode(employee),409);
+                if(modes.size)employee.attendanceInputMode=[...modes][0];
+            }
         });
 
 
@@ -1333,6 +1322,18 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             assertReady(result.issues, { stage: 'CALCULATE' });
             return result;
         });
+        // Runs only after the preflight checks passed: a refused run must not have lost payslips.
+        // Remove only unapproved, undistributed, zero-value leftovers for
+        // employees who no longer qualify for this period. Keep a full audit.
+        if (!preview) await tenantTransaction(prisma, async tx => {
+            const stale=await tx.payrollPayslip.findMany({where:withTenant(tenantId,{payrollRunId:id,employeeId:{notIn:employees.map(e=>e.id)}}),include:{earnings:true,deductions:true}});
+            for(const slip of stale) {
+                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})) throw payrollError('An ineligible employee has a protected or nonzero payslip; review employee setup before recalculation');
+                await tx.payrollAuditLog.create({data:{tenantId,action:'INELIGIBLE_ZERO_PAYSLIP_REMOVED',payrollRunId:id,employeeId:slip.employeeId,details:'Employee was not employed in this payroll period. Removed only an undistributed DRAFT payslip with all totals zero.',oldValues:JSON.parse(JSON.stringify(slip))}});
+                await tx.payrollPayslip.delete({where:{id:slip.id}});
+            }
+        });
+
         const config = readiness.snapshot.config;
         const ruleConfig = config.payRules || {};
         const components = config.salaryComponents || [];
