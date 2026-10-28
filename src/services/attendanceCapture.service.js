@@ -10,11 +10,70 @@ import {
   parseCaptureRow,
   parseCaptureTimestamp,
   chooseEnrolment,
+  chooseEnrolments,
+  punchFingerprint,
+  legacyPunchFingerprints,
   validTimeZone,
 } from "../lib/attendanceCapture.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
 const system = (fn) => mcpCtx.run({ system: true }, fn);
+
+// employeeId → personId for enrolments that share a device ID.
+async function personsFor(db, enrolmentRows) {
+  const ids = [...new Set(enrolmentRows.map((r) => r.employeeId))].filter(
+    Number.isInteger,
+  );
+  if (!ids.length) return new Map();
+  const rows = await db.employee.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, personId: true },
+  });
+  return new Map(rows.filter((r) => r.personId).map((r) => [r.id, r.personId]));
+}
+
+// A planned event repeats a stored one when that company's own copy exists, or
+// the company-neutral (or pre-ATT-PUNCH-KEY-01) key of the same punch is
+// already held by this company or still unattributed. Identity recovery owns
+// fanning an unattributed event out to a second company.
+async function partitionRepeats(db, events, sn) {
+  const keys = new Map();
+  for (const event of events) {
+    if (!event.parsed) {
+      keys.set(event.id, { own: [event.fingerprint], neutral: [] });
+      continue;
+    }
+    const punch = {
+      deviceUserId: event.parsed.deviceUserId,
+      punchedAt: new Date(event.parsed.punchedAt),
+    };
+    keys.set(event.id, {
+      own: [punchFingerprint(sn, punch, event.tenantId)],
+      neutral: [punchFingerprint(sn, punch), ...legacyPunchFingerprints(sn, punch)],
+    });
+  }
+  const all = [...new Set([...keys.values()].flatMap((k) => [...k.own, ...k.neutral]))];
+  const stored = all.length
+    ? await db.attendanceCaptureEvent.findMany({
+        where: { fingerprint: { in: all } },
+        select: { id: true, tenantId: true, employeeId: true, fingerprint: true, parsed: true },
+      })
+    : [];
+  const byKey = new Map(stored.map((r) => [r.fingerprint, r]));
+  const fresh = [],
+    repeats = [];
+  for (const event of events) {
+    const { own, neutral } = keys.get(event.id);
+    const existing =
+      own.map((k) => byKey.get(k)).find(Boolean) ||
+      neutral
+        .map((k) => byKey.get(k))
+        .find((r) => r && (r.tenantId === event.tenantId || r.employeeId == null));
+    if (existing) repeats.push({ event, existing });
+    else fresh.push(event);
+  }
+  return { fresh, repeats };
+}
 export const devicePublic = (device) => {
   const safe = { ...device };
   delete safe.credentialHash;
@@ -283,49 +342,51 @@ export async function receiveCapture(
         byDeviceUser.set(row.deviceUserId, []);
       byDeviceUser.get(row.deviceUserId).push(row);
     }
+    // Person links are only needed where one device ID has several enrolments.
+    const personOf = await personsFor(
+      db,
+      [...byDeviceUser.values()].filter((r) => r.length > 1).flat(),
+    );
     const receiptId = randomUUID();
-    const events = parsed.map(({ raw, parsed: punch, reason }) => {
-      const hit = punch
+    const events = parsed.flatMap(({ raw, parsed: punch, reason }) => {
+      const outcome = punch
         ? source === "MANUAL"
-          ? { employeeId: manualEmployeeId, tenantId }
-          : chooseEnrolment(
+          ? { hits: [{ employeeId: manualEmployeeId, tenantId }] }
+          : chooseEnrolments(
               byDeviceUser.get(punch.deviceUserId) || [],
               punch.deviceUserId,
               sn,
               punch.punchedAt,
               source === "DEVICE_SYNC" ? [tenantId] : device.allowedTenantIds,
+              personOf,
             )
         : {};
-      const issue = reason || hit.reason || (device.acceptanceMode === "SUPERVISED" ? "ONSITE_SUPERVISED_REVIEW" : null);
-      return {
+      const issue = reason || outcome.reason || (device.acceptanceMode === "SUPERVISED" ? "ONSITE_SUPERVISED_REVIEW" : null);
+      const hits = outcome.hits || [{}];
+      const shared = hits.length > 1;
+      return hits.map((hit) => ({
         id: randomUUID(),
         tenantId: hit.tenantId || owner,
         receiptId,
         source,
         sn,
-        fingerprint: fingerprint(
-          punch
-            ? [
-                sn,
-                punch.deviceUserId,
-                punch.punchedAt.toISOString(),
-                punch.status,
-              ]
-            : [sn, raw],
-        ),
+        fingerprint: punch
+          ? punchFingerprint(sn, punch, shared ? hit.tenantId : null)
+          : fingerprint([sn, raw]),
         deviceUserId: punch?.deviceUserId,
         raw: {
           ...(device.acceptanceSiteRef ? { acceptanceSiteRef: device.acceptanceSiteRef, acceptanceMode: device.acceptanceMode } : {}),
           line: raw,
           receivedAt: new Date().toISOString(),
           ...(notes ? { notes: String(notes).slice(0, 2000) } : {}),
+          ...(shared ? { sharedPerson: { tenantIds: hits.map((h) => h.tenantId) } } : {}),
         },
         ...(punch ? { parsed: jsonValue(punch) } : {}),
         employeeId: hit.employeeId,
         enrolmentId: hit.enrolmentId,
         state: issue ? "NEEDS_REVIEW" : "PENDING",
         reason: issue || null,
-      };
+      }));
     });
     if (dryRun)
       return {
@@ -364,38 +425,41 @@ export async function receiveCapture(
               replayed: true,
             };
           }
+          const { fresh, repeats } = await partitionRepeats(tx, events, sn);
           const stored = await tx.attendanceCaptureEvent.createMany({
-            data: events,
+            data: fresh,
             skipDuplicates: true,
           });
           const inserted = await tx.attendanceCaptureEvent.findMany({
             where: { receiptId },
             select: { state: true },
           });
-          const duplicateEvents = await tx.attendanceCaptureEvent.findMany({
-            where: {
-              fingerprint: { in: events.map((e) => e.fingerprint) },
-              NOT: { receiptId },
-            },
-            select: { id: true, tenantId: true },
-          });
-          if (duplicateEvents.length)
+          if (repeats.length)
             await tx.attendanceCaptureAudit.createMany({
-              data: duplicateEvents.map((e) => ({
-                tenantId: e.tenantId,
-                eventId: e.id,
-                receiptId,
-                actorId: String(actorId || "attendance-capture"),
-                action: "DUPLICATE_RECEIVED",
-                reason:
-                  "Repeated delivery preserved; attendance is not evaluated again",
-                detail: { source },
-              })),
+              data: repeats.map(({ event, existing }) => {
+                const conflict =
+                  existing.parsed?.status != null &&
+                  event.parsed?.status != null &&
+                  existing.parsed.status !== event.parsed.status;
+                return {
+                  tenantId: existing.tenantId,
+                  eventId: existing.id,
+                  receiptId,
+                  actorId: String(actorId || "attendance-capture"),
+                  action: conflict ? "DIRECTION_CONFLICT" : "DUPLICATE_RECEIVED",
+                  reason: conflict
+                    ? "Same punch re-delivered with a different direction; the stored punch is kept"
+                    : "Repeated delivery preserved; attendance is not evaluated again",
+                  detail: conflict
+                    ? { source, storedStatus: existing.parsed.status, receivedStatus: event.parsed.status }
+                    : { source },
+                };
+              }),
             });
           const summary = {
             received: rows.length,
             stored: stored.count,
-            duplicates: rows.length - stored.count,
+            duplicates: events.length - stored.count,
             pending: inserted.filter((e) => e.state === "PENDING").length,
             needsReview: inserted.filter((e) => e.state === "NEEDS_REVIEW")
               .length,
@@ -636,20 +700,65 @@ export async function reconcileCaptureIdentities(
         },
       }),
     ]);
+    const personOf = await personsFor(db, enrolments);
     for (const row of rows) {
       const device = devices.find((d) => d.sn === row.sn);
       if (!device || !row.parsed) continue;
-      const hit = chooseEnrolment(
+      const outcome = chooseEnrolments(
         enrolments,
         row.deviceUserId,
         row.sn,
         new Date(row.parsed.punchedAt),
         device.allowedTenantIds,
+        personOf,
       );
-      if (hit.reason) continue;
+      if (outcome.reason) continue;
+      // ATT-SHARED-PERSON-01: the stored event becomes the copy for the company
+      // it was received under (else the first); every other company of the same
+      // person receives its own copy of the same evidence.
+      const hit =
+        outcome.hits.find((h) => h.tenantId === row.tenantId) || outcome.hits[0];
+      const copies = outcome.hits.filter((h) => h !== hit);
       await tenantTransaction(
         db,
         async (tx) => {
+          const shareCopies = async () => {
+            if (!copies.length) return;
+            const punch = {
+              deviceUserId: row.parsed.deviceUserId,
+              punchedAt: new Date(row.parsed.punchedAt),
+            };
+            await tx.attendanceCaptureEvent.createMany({
+              data: copies.map((copy) => ({
+                id: randomUUID(),
+                tenantId: copy.tenantId,
+                receiptId: row.receiptId,
+                source: row.source,
+                sn: row.sn,
+                fingerprint: punchFingerprint(row.sn, punch, copy.tenantId),
+                deviceUserId: row.deviceUserId,
+                raw: jsonValue({
+                  ...row.raw,
+                  sharedPerson: { tenantIds: outcome.hits.map((h) => h.tenantId), copiedFrom: row.id },
+                }),
+                parsed: row.parsed,
+                employeeId: copy.employeeId,
+                enrolmentId: copy.enrolmentId,
+                state: "PENDING",
+                reason: null,
+                nextAttemptAt: new Date(),
+              })),
+              skipDuplicates: true,
+            });
+            for (const copy of copies)
+              await captureAudit(tx, {
+                tenantId: copy.tenantId,
+                eventId: row.id,
+                action: "IDENTITY_SHARED",
+                reason: "Same person enrolled in another company; punch credited to both",
+                detail: { employeeId: copy.employeeId, enrolmentId: copy.enrolmentId },
+              });
+          };
           const changed = await tx.attendanceCaptureEvent.updateMany({
             where: { id: row.id, version: row.version, employeeId: null },
             data: {
@@ -661,6 +770,7 @@ export async function reconcileCaptureIdentities(
             },
           });
           if (!changed.count) return;
+          await shareCopies();
           if (row.tenantId !== hit.tenantId)
             await captureAudit(tx, {
               tenantId: row.tenantId,

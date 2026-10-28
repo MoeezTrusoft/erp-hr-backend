@@ -19,6 +19,25 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 // guesses, so the sessioniser and evaluator honour them as recorded.
 const VERIFIED_DIRECTION_SOURCES = new Set(["BIOMETRIC", "MANUAL"]);
 
+async function withoutSiblingCopies(tx, punches, event, employee) {
+  const foreign = punches.filter(
+    (r) => r.employeeId && r.tenantId !== event.tenantId,
+  );
+  if (!foreign.length || !employee?.personId) return punches;
+  const owners = await tx.employee.findMany({
+    where: { id: { in: [...new Set(foreign.map((r) => r.employeeId))] } },
+    select: { id: true, tenant_id: true, personId: true },
+  });
+  const sibling = (r) =>
+    owners.some(
+      (o) =>
+        o.id === r.employeeId &&
+        o.tenant_id === r.tenantId &&
+        o.personId === employee.personId,
+    );
+  return punches.filter((r) => !(foreign.includes(r) && sibling(r)));
+}
+
 export async function assertCapturePeriodOpen(db, tenantId, days) {
   const ordered=[...days].sort();
   if(ordered.length)await assertAttendancePeriodOpen(db,tenantId,ordered[0],ordered.at(-1));
@@ -99,7 +118,7 @@ export async function drainCapture(
             const days = batch.map((e) => new Date(e.parsed.punchedAt));
             for (const event of batch) {
               const p = event.parsed;
-              const existing = await tx.attendanceDevicePunch.findMany({
+              const found = await tx.attendanceDevicePunch.findMany({
                 where: {
                   sn: event.sn,
                   deviceUserId: event.deviceUserId,
@@ -107,6 +126,9 @@ export async function drainCapture(
                   status: p.status,
                 },
               });
+              // ATT-SHARED-PERSON-01: the same person's copy of this punch in
+              // another company is a sibling, not a competing attribution.
+              const existing = await withoutSiblingCopies(tx, found, event, employee);
               if (
                 existing.some(
                   (r) =>

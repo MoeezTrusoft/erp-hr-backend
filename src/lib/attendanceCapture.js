@@ -124,7 +124,20 @@ export function enrolmentEnd(row) {
   // Existing date-only end values mean the WHOLE last civil day.
   return +date + (date.toISOString().endsWith("T00:00:00.000Z") ? 86399999 : 0);
 }
-export function chooseEnrolment(rows, deviceUserId, sn, at, allowedTenantIds) {
+// ATT-SHARED-PERSON-01 — one person may be employed by several companies and
+// enrolled under the same device ID in each. Their punch is credited to every
+// one of those companies. Several current enrolments are only shared when they
+// all belong to one person (`personOf`: employeeId → personId) in distinct
+// companies; two different people, or two records of one person in the same
+// company, remain AMBIGUOUS_ENROLMENT.
+export function chooseEnrolments(
+  rows,
+  deviceUserId,
+  sn,
+  at,
+  allowedTenantIds,
+  personOf = new Map(),
+) {
   const history = rows.filter(
     (r) => r.deviceUserId === String(deviceUserId) && (!r.sn || r.sn === sn),
   );
@@ -133,25 +146,52 @@ export function chooseEnrolment(rows, deviceUserId, sn, at, allowedTenantIds) {
   );
   const exact = current.filter((r) => r.sn === sn);
   const candidates = exact.length ? exact : current;
-  if (candidates.length !== 1)
+  if (!candidates.length)
     return {
-      reason: candidates.length
-        ? "AMBIGUOUS_ENROLMENT"
-        : history.length
-          ? "OUTSIDE_ENROLMENT_PERIOD"
-          : "UNKNOWN_IDENTITY",
+      reason: history.length ? "OUTSIDE_ENROLMENT_PERIOD" : "UNKNOWN_IDENTITY",
     };
-  const row = candidates[0];
-  if (
-    !row.tenantId ||
-    (allowedTenantIds && !allowedTenantIds.includes(row.tenantId))
-  )
-    return { reason: "TENANT_NOT_PERMITTED" };
+  if (candidates.length > 1) {
+    const people = new Set(candidates.map((r) => personOf.get(r.employeeId) ?? null));
+    const tenants = new Set(candidates.map((r) => r.tenantId));
+    if (people.size !== 1 || people.has(null) || tenants.size !== candidates.length)
+      return { reason: "AMBIGUOUS_ENROLMENT" };
+  }
+  const permitted = candidates.filter(
+    (r) =>
+      r.tenantId && (!allowedTenantIds || allowedTenantIds.includes(r.tenantId)),
+  );
+  if (!permitted.length) return { reason: "TENANT_NOT_PERMITTED" };
   return {
-    employeeId: row.employeeId,
-    tenantId: row.tenantId,
-    enrolmentId: row.id,
+    hits: permitted.map((r) => ({
+      employeeId: r.employeeId,
+      tenantId: r.tenantId,
+      enrolmentId: r.id,
+    })),
   };
+}
+// Single-answer callers (review RESOLVE, the legacy resolver) never share.
+export function chooseEnrolment(rows, deviceUserId, sn, at, allowedTenantIds) {
+  const outcome = chooseEnrolments(rows, deviceUserId, sn, at, allowedTenantIds);
+  return outcome.reason ? outcome : outcome.hits[0];
+}
+
+// ATT-PUNCH-KEY-01 — a physical punch is device + user + timestamp; the
+// direction code is a property of the punch, not part of its identity. A copy
+// credited to a second company of the same person carries that company.
+export function punchFingerprint(sn, punch, sharedTenantId = null) {
+  return fingerprint([
+    "PUNCH-V2",
+    sn,
+    punch.deviceUserId,
+    punch.punchedAt.toISOString(),
+    ...(sharedTenantId ? [sharedTenantId] : []),
+  ]);
+}
+// Keys stored before ATT-PUNCH-KEY-01 included the direction; status is 0–5.
+export function legacyPunchFingerprints(sn, punch) {
+  return [0, 1, 2, 3, 4, 5].map((status) =>
+    fingerprint([sn, punch.deviceUserId, punch.punchedAt.toISOString(), status]),
+  );
 }
 export function affectedDays(days) {
   return [

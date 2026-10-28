@@ -130,6 +130,7 @@ async function verifyEmployee(tx, tenantId, employeeId) {
   });
   if (!employee) throw captureError("Employee not found", 404);
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`enrolment:${tenantId}:${employeeId}`}))`;
+  return employee;
 }
 async function changePrimary({
   tenantId,
@@ -294,16 +295,31 @@ export async function reEnrol({
     tenantTransaction(
       prisma,
       async (tx) => {
-        await verifyEmployee(tx, tenantId, employeeId);
+        const employee = await verifyEmployee(tx, tenantId, employeeId);
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`device-id:${sn}:${newDeviceUserId}`}))`;
-        const conflicts = await tx.employeeDeviceEnrolment.findMany({
-          where: { deviceUserId: newDeviceUserId, OR: [{ sn }, { sn: null }] },
-        });
-        if (
-          conflicts.some(
-            (r) => r.employeeId !== employeeId && enrolmentEnd(r) >= +from,
-          )
-        )
+        const conflicts = (
+          await tx.employeeDeviceEnrolment.findMany({
+            where: { deviceUserId: newDeviceUserId, OR: [{ sn }, { sn: null }] },
+          })
+        ).filter((r) => r.employeeId !== employeeId && enrolmentEnd(r) >= +from);
+        // ATT-SHARED-PERSON-01: the same person's record in ANOTHER company may
+        // share the ID (the punch is credited to both). A different person, or
+        // a second record of this person in this company, is still an overlap.
+        const owners = conflicts.length
+          ? await tx.employee.findMany({
+              where: { id: { in: [...new Set(conflicts.map((r) => r.employeeId))] } },
+            })
+          : [];
+        const samePersonElsewhere = (r) =>
+          Boolean(employee.personId) &&
+          r.tenantId !== tenantId &&
+          owners.some(
+            (o) =>
+              o.id === r.employeeId &&
+              o.tenant_id === r.tenantId &&
+              o.personId === employee.personId,
+          );
+        if (!conflicts.every(samePersonElsewhere))
           throw captureError(
             "Device ID overlaps another employee enrolment",
             409,
