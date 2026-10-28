@@ -10,6 +10,7 @@ import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.ser
 import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
 import { lockAttendancePeriod } from './attendancePeriod.service.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
+import { runUpdateAfterFailure } from '../lib/payrollRunFailure.js';
 import { dateRange, employedOn, badSetup } from '../lib/attendanceDates.js';
 import { approvedLeaveCoverage } from "../lib/approvedLeaveCoverage.js";
 import { calculatePayrollPaidDays } from '../lib/payrollPaidDays.js';
@@ -1148,6 +1149,15 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
     // Update status to PROCESSING (scoped: updateMany so the tenant predicate
     // applies — a cross-tenant id would touch zero rows). Stamp processedBy so
     // the approver can be enforced as a DISTINCT employee at finalize time.
+    // What the run looked like before processing started, so a refused run (a
+    // precondition failed before any payslip was calculated) can be put back as
+    // it was instead of being marked FAILED.
+    let previousRun = null;
+    // A precondition error is tagged so the catch below can tell it from a real
+    // calculation failure.
+    const preflightGuard = async (fn) => {
+        try { return await fn(); } catch (error) { error.preflight = true; throw error; }
+    };
     if (!preview) await tenantTransaction(prisma,async tx=>{
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':approval-source:PAYROLL:' + id},0))`;
         await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
@@ -1160,6 +1170,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         if(!actor?.employee_code) throw payrollError('A verified employee code is required to process payroll');
         if(approval && approval.employeeCode!==actor.employee_code) throw payrollError('The payroll initiator must perform the recalculation');
         if(interrupted) await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_PROCESSING_INTERRUPTED',details:`Recalculating a run left in PROCESSING since ${new Date(current.updated_at).toISOString()}`,employeeId:actor.id}});
+        previousRun = { status: current.status, processedBy: current.processedBy ?? null, approvedBy: current.approvedBy ?? null, approvedAt: current.approvedAt ?? null };
         await tx.payrollRun.update({where:{id},data:{status:'PROCESSING',processedBy:actor.id,approvedBy:null,approvedAt:null}});
     },{tenantId});
 
@@ -1294,8 +1305,9 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
 
         // Published setup supplies employee calendars and shift coverage;
         // Management decisions supply the fixed anomaly deduction rules.
-        const attendanceRuntime=await loadAttendanceRuntime({tenantId,from:payrollRun.periodStart,to:payrollRun.periodEnd});
+        const attendanceRuntime=await preflightGuard(()=>loadAttendanceRuntime({tenantId,from:payrollRun.periodStart,to:payrollRun.periodEnd}));
         const periodDays=dateRange(payrollRun.periodStart,payrollRun.periodEnd);
+        await preflightGuard(async()=>{
         for(const day of periodDays) {
             if(!attendanceRuntime.configOn(day)) throw badSetup('Publish attendance setup covering this payroll period',409);
         }
@@ -1310,13 +1322,17 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             if(modes.size>1)throw badSetup('Attendance input mode changes inside the payroll period for '+employeeCode(employee),409);
             if(modes.size)employee.attendanceInputMode=[...modes][0];
         }
+        });
 
 
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
         // is the same as everything off.
-        const readiness = await payrollReadiness({tenantId,run:{...payrollRun,calculationConfigVersion:null},employees});
-        assertReady(readiness.issues, { stage: 'CALCULATE' });
+        const readiness = await preflightGuard(async()=>{
+            const result = await payrollReadiness({tenantId,run:{...payrollRun,calculationConfigVersion:null},employees});
+            assertReady(result.issues, { stage: 'CALCULATE' });
+            return result;
+        });
         const config = readiness.snapshot.config;
         const ruleConfig = config.payRules || {};
         const components = config.salaryComponents || [];
@@ -1645,11 +1661,14 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
 
         return updatedRun;
     } catch (error) {
-        // Mark as failed if processing fails (scoped)
-        if (!preview) await prisma.payrollRun.updateMany({
-            where: withTenant(tenantId, { id }),
-            data: { status: 'FAILED' }
-        });
+        // A refused precondition leaves the run as it was; a real calculation
+        // failure marks it FAILED (scoped).
+        if (!preview) {
+            await prisma.payrollRun.updateMany({
+                where: withTenant(tenantId, { id }),
+                data: runUpdateAfterFailure(error, previousRun)
+            });
+        }
         throw error;
     }
 };
