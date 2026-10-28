@@ -1,11 +1,11 @@
 const payrollError = (message, status = 409) => Object.assign(new Error(message), {status});
-import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
 import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/payrollConfiguration.js';
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
 import { loadSource } from './approval/adapters.js';
 import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.js';
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
+import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
 import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
 import { lockAttendancePeriod } from './attendancePeriod.service.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
