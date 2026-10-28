@@ -1,3 +1,4 @@
+import { APPRAISAL_TOOLS } from '@trusoft/contracts/performance-appraisals';
 import { ACCEPTANCE_TOOLS } from '@trusoft/contracts/attendance-acceptance';
 import { COMPANY_SETUP_TOOLS } from '@trusoft/contracts/hr-company-setup';
 import { HR_APPROVAL_TOOLS } from '@trusoft/contracts/hr-approval';
@@ -152,6 +153,12 @@ export function resolveHrRoutePolicy(req) {
     if(!d||method!=='POST')return null;
     return {permission:d.permission,anyOf:[d.permission],resource:'hr.setup',action:'command',self:false,ownership:null,servicePrincipals:[]};
   }
+  if (path.startsWith('/api/hr/appraisals/')) {
+      const name = 'hr_appraisal_' + path.slice('/api/hr/appraisals/'.length);
+      const definition = APPRAISAL_TOOLS[name];
+      if (!definition || method !== 'POST') return null;
+      return {permission:definition[0],anyOf:[definition[0]],resource:'hr.performance',action:'command',self:false,ownership:null,servicePrincipals:[]};
+    }
   if (path.startsWith('/api/hr/company-setup/')) {
     const d=Object.values(COMPANY_SETUP_TOOLS).find(d=>path==='/api/hr/company-setup/'+d.route);
     if(!d||method!=='POST')return null;

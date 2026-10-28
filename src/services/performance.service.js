@@ -29,15 +29,8 @@ export const createPerformanceReview = async (data,createdBy,tenantId) => {
       period_end: new Date(period_end),
       comments,
       ...(reviewType ? { type: reviewType } : {}),
-      createdById: Number(createdBy)
+
     }),
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
   });
   // Log the update action
   await logAction({
@@ -116,7 +109,8 @@ export const getEmployeeNineBox = async (tenantId) => {
   for (const { employee, perf, potential } of byEmployee.values()) {
     const performanceRating = mean(perf);
     if (performanceRating == null) continue; // no scored review → not plottable
-    const potentialRating = mean(potential) ?? performanceRating;
+    const potentialRating = mean(potential);
+    if (potentialRating == null) continue;
     const name =
       employee?.employee_name ||
       [employee?.first_name, employee?.last_name].filter(Boolean).join(" ").trim() ||
@@ -126,7 +120,7 @@ export const getEmployeeNineBox = async (tenantId) => {
       name,
       performanceRating: Math.round(performanceRating * 100) / 100,
       potentialRating: Math.round(potentialRating * 100) / 100,
-      riskLevel: performanceRating < 2.5 ? "HIGH" : "LOW",
+      riskLevel: null,
     });
   }
 
@@ -152,22 +146,16 @@ export const updateReview = async (id, data,updatedBy,tenantId) => {
   const existing = await prisma.performanceReview.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Review not found");
 
+  if (existing.status === 'FINALIZED' || data.status !== undefined && data.status !== existing.status) throw Object.assign(new Error('Use the approval workflow for state changes; finalized reviews are immutable'), {status:409});
   const updated = await prisma.performanceReview.update({
     where: { id: Number(id) },
     data: {
       // Tool sends `overallRating`; accept the snake_case alias too for back-compat.
       overall_rating: data.overallRating ?? data.overall_rating ?? existing.overall_rating,
       comments: data.comments ?? existing.comments,
-      status: data.status ?? existing.status,
-      updatedById: Number(updatedBy),
+      status: existing.status,
+
     },
-     updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      }
   });
 
   // Log the update action
@@ -188,7 +176,7 @@ export const addFeedback = async (data,createdBy,tenantId) => {
   if (!reviewId || !reviewerId || !feedback)
     throw new Error("reviewId, reviewerId, and feedback are required");
 
-   const review = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(reviewId)})})
+   const review = await prisma.performanceReview.findFirst({where: scopedWhere(tenantId, {id: Number(reviewId)})})
   if(!review) throw new Error("Employee not Found");
 
      const reviewer = await prisma.employee.findFirst({where: scopedEmployeeWhere(tenantId, {id: Number(reviewerId)})})
@@ -199,16 +187,9 @@ export const addFeedback = async (data,createdBy,tenantId) => {
       reviewId: Number(reviewId),
       reviewerId: Number(reviewerId),
       feedback,
-      rating: rating ? Number(rating) : null,
-      createdById : Number(createdBy),
+      rating: rating == null ? null : Number(rating),
+
     }),
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
   });
   // Log the update action
   await logAction({
@@ -237,15 +218,8 @@ export const updateFeedback = async (id, data, updatedBy, tenantId) => {
       reviewerId: existing.reviewerId,
       feedback,
       rating: Number(rating),
-      updatedById: Number(updatedBy),
+
     },
-     updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      }
   });
   // Log the update action
   await logAction({

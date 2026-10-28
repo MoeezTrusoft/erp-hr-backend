@@ -124,10 +124,8 @@ export function enrolmentEnd(row) {
   // Existing date-only end values mean the WHOLE last civil day.
   return +date + (date.toISOString().endsWith("T00:00:00.000Z") ? 86399999 : 0);
 }
-export function chooseEnrolment(rows, deviceUserId, sn, at, allowedTenantIds) {
-  const history = rows.filter(
-    (r) => r.deviceUserId === String(deviceUserId) && (!r.sn || r.sn === sn),
-  );
+// One enrolment decision per company, never across companies.
+function chooseWithinCompany(history, sn, at) {
   const current = history.filter(
     (r) => +new Date(r.effectiveFrom) <= +at && enrolmentEnd(r) >= +at,
   );
@@ -142,16 +140,78 @@ export function chooseEnrolment(rows, deviceUserId, sn, at, allowedTenantIds) {
           : "UNKNOWN_IDENTITY",
     };
   const row = candidates[0];
-  if (
-    !row.tenantId ||
-    (allowedTenantIds && !allowedTenantIds.includes(row.tenantId))
-  )
-    return { reason: "TENANT_NOT_PERMITTED" };
   return {
     employeeId: row.employeeId,
     tenantId: row.tenantId,
     enrolmentId: row.id,
   };
+}
+
+// ATT-DEVICE-PER-COMPANY-01 — companies are independent. Each company that a
+// device serves keeps its own enrolments, and a punch is resolved separately
+// against every one of them: one current enrolment credits that company's
+// employee; several in the same company leave that company's copy
+// AMBIGUOUS_ENROLMENT; a company with no enrolment for the ID is not involved.
+// Returns { hits, issues } when at least one company enrolled the ID, else
+// { reason }.
+export function chooseEnrolments(rows, deviceUserId, sn, at, allowedTenantIds) {
+  const history = rows.filter(
+    (r) => r.deviceUserId === String(deviceUserId) && (!r.sn || r.sn === sn),
+  );
+  if (!history.length) return { reason: "UNKNOWN_IDENTITY" };
+  const permitted = history.filter(
+    (r) =>
+      r.tenantId && (!allowedTenantIds || allowedTenantIds.includes(r.tenantId)),
+  );
+  if (!permitted.length) return { reason: "TENANT_NOT_PERMITTED" };
+  const byCompany = new Map();
+  for (const row of permitted) {
+    if (!byCompany.has(row.tenantId)) byCompany.set(row.tenantId, []);
+    byCompany.get(row.tenantId).push(row);
+  }
+  const hits = [],
+    issues = [];
+  for (const [tenantId, own] of byCompany) {
+    const outcome = chooseWithinCompany(own, sn, at);
+    if (outcome.reason) issues.push({ tenantId, reason: outcome.reason });
+    else hits.push(outcome);
+  }
+  // A company whose enrolment has ended (or not begun) is not part of this punch.
+  const live = issues.filter((i) => i.reason === "AMBIGUOUS_ENROLMENT");
+  if (!hits.length && !live.length)
+    return {
+      reason: issues.some((i) => i.reason === "OUTSIDE_ENROLMENT_PERIOD")
+        ? "OUTSIDE_ENROLMENT_PERIOD"
+        : "UNKNOWN_IDENTITY",
+    };
+  return { hits, issues: live };
+}
+// Single-answer callers (review RESOLVE within one company, the legacy
+// resolver) need exactly one employee.
+export function chooseEnrolment(rows, deviceUserId, sn, at, allowedTenantIds) {
+  const outcome = chooseEnrolments(rows, deviceUserId, sn, at, allowedTenantIds);
+  if (outcome.reason) return outcome;
+  if (outcome.hits.length === 1 && !outcome.issues.length) return outcome.hits[0];
+  return { reason: "AMBIGUOUS_ENROLMENT" };
+}
+
+// ATT-PUNCH-KEY-01 — a physical punch is device + user + timestamp; the
+// direction code is a property of the punch, not part of its identity. A copy
+// credited to a second company of the same person carries that company.
+export function punchFingerprint(sn, punch, sharedTenantId = null) {
+  return fingerprint([
+    "PUNCH-V2",
+    sn,
+    punch.deviceUserId,
+    punch.punchedAt.toISOString(),
+    ...(sharedTenantId ? [sharedTenantId] : []),
+  ]);
+}
+// Keys stored before ATT-PUNCH-KEY-01 included the direction; status is 0–5.
+export function legacyPunchFingerprints(sn, punch) {
+  return [0, 1, 2, 3, 4, 5].map((status) =>
+    fingerprint([sn, punch.deviceUserId, punch.punchedAt.toISOString(), status]),
+  );
 }
 export function affectedDays(days) {
   return [

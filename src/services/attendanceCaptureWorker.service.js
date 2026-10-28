@@ -99,7 +99,7 @@ export async function drainCapture(
             const days = batch.map((e) => new Date(e.parsed.punchedAt));
             for (const event of batch) {
               const p = event.parsed;
-              const existing = await tx.attendanceDevicePunch.findMany({
+              const found = await tx.attendanceDevicePunch.findMany({
                 where: {
                   sn: event.sn,
                   deviceUserId: event.deviceUserId,
@@ -107,6 +107,12 @@ export async function drainCapture(
                   status: p.status,
                 },
               });
+              // ATT-DEVICE-PER-COMPANY-01: another company's attributed copy of
+              // this punch was resolved independently and is not a competing
+              // attribution. Unattributed legacy punches still route below.
+              const existing = found.filter(
+                (r) => !(r.employeeId && r.tenantId !== event.tenantId),
+              );
               if (
                 existing.some(
                   (r) =>

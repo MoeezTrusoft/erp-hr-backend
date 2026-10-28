@@ -130,6 +130,7 @@ async function verifyEmployee(tx, tenantId, employeeId) {
   });
   if (!employee) throw captureError("Employee not found", 404);
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`enrolment:${tenantId}:${employeeId}`}))`;
+  return employee;
 }
 async function changePrimary({
   tenantId,
@@ -288,16 +289,23 @@ export async function reEnrol({
   );
   if (!device?.active || !device.allowedTenantIds.includes(tenantId))
     throw captureError("Device is not permitted for this tenant", 403);
-  // Cross-tenant collision lookup requires SYSTEM at the transaction boundary
-  // so the RLS bypass GUC is set; every mutation below is explicitly scoped.
+  // SYSTEM at the transaction boundary sets the RLS bypass GUC for the shared
+  // device row; the collision lookup and every mutation are explicitly scoped
+  // to this company.
   return mcpCtx.run({ system: true }, () =>
     tenantTransaction(
       prisma,
       async (tx) => {
         await verifyEmployee(tx, tenantId, employeeId);
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`device-id:${sn}:${newDeviceUserId}`}))`;
+        // ATT-DEVICE-PER-COMPANY-01: each company resolves its own employees,
+        // so an overlap only matters inside this company.
         const conflicts = await tx.employeeDeviceEnrolment.findMany({
-          where: { deviceUserId: newDeviceUserId, OR: [{ sn }, { sn: null }] },
+          where: {
+            tenantId,
+            deviceUserId: newDeviceUserId,
+            OR: [{ sn }, { sn: null }],
+          },
         });
         if (
           conflicts.some(
@@ -305,7 +313,7 @@ export async function reEnrol({
           )
         )
           throw captureError(
-            "Device ID overlaps another employee enrolment",
+            "Device ID overlaps another employee enrolment in this company",
             409,
           );
         const rows = await tx.employeeDeviceEnrolment.findMany({

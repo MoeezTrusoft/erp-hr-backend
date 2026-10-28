@@ -3,6 +3,7 @@
 // Covers PerformanceCycle, PerformanceTemplate, and PerformanceMetric.
 // All gated on hr:performance and tenant-scoped.
 import { z } from "zod";
+import { performanceMetricCreate } from '../../validators/performance.schema.js';
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
@@ -63,6 +64,7 @@ export function registerPerformanceConfigTools(server) {
     "Create a new performance review cycle",
     {
       name: z.string().min(1).describe("Cycle name"),
+      templateId: z.number().int().positive().describe("Review template identifier"),
       startDate: z.string().describe("Start date (ISO 8601)"),
       endDate: z.string().describe("End date (ISO 8601)"),
       description: z.string().optional().describe("Cycle description"),
@@ -70,7 +72,8 @@ export function registerPerformanceConfigTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await createPerformanceCycle(args, user.employeeId || user.userId);
+      const { startDate, endDate, ...fields } = args;
+      const data = await createPerformanceCycle({ ...fields, start_date: startDate, end_date: endDate, tenantId: user.tenantId }, user.employeeId || user.userId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_cycle_create")
   );
@@ -83,12 +86,13 @@ export function registerPerformanceConfigTools(server) {
       name: z.string().optional().describe("Cycle name"),
       startDate: z.string().optional().describe("Start date"),
       endDate: z.string().optional().describe("End date"),
-      status: z.string().optional().describe("Cycle status"),
+      description: z.string().optional().describe("Cycle description"),
     },
     withToolError(async ({ id, ...data }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
-      const result = await updatePerformanceCycle(id, data, user.employeeId || user.userId, user.tenantId);
+      const { startDate, endDate, ...fields } = data;
+      const result = await updatePerformanceCycle(id, { ...fields, ...(startDate ? {start_date:startDate} : {}), ...(endDate ? {end_date:endDate} : {}) }, user.employeeId || user.userId, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }, "hr_performance_cycle_update")
   );
@@ -141,7 +145,7 @@ export function registerPerformanceConfigTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await createPerformanceTemplate(args, user.employeeId || user.userId);
+      const data = await createPerformanceTemplate({ ...args, tenantId: user.tenantId }, user.employeeId || user.userId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_template_create")
   );
@@ -203,7 +207,7 @@ export function registerPerformanceConfigTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
-      const data = await createMetric({ ...args, tenantId: user.tenantId, createdById: user.employeeId || user.userId });
+      const data = await createMetric({ ...performanceMetricCreate.parse(args), tenantId: user.tenantId, createdById: user.employeeId || user.userId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_metric_create")
   );
@@ -215,7 +219,7 @@ export function registerPerformanceConfigTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:performance", user.isAdmin);
-      const data = await deactivateMetric({ id, tenantId: user.tenantId });
+      const data = await deactivateMetric({ id: Number(id), tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_performance_metric_deactivate")
   );
