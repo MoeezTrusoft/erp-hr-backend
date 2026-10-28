@@ -329,6 +329,8 @@ model Employee {
   // Defaults TRUE: attendance is the norm and exclusion must be stated, so
   // nobody drops out by accident or by a backfill that missed them.
   payroll_included     Boolean   @default(true)
+  // Tracked for attendance but never paid through payroll (no payslip, not in any run).
+  attendance_only      Boolean   @default(false)
   // HR-IMPORT-01 — the label HR's workbook uses for this person ("G Rasool",
   // "Hasaam", "Shokat"). Sheet columns are headed with informal names, and
   // matching them by fuzzy token overlap put "G Rasool" onto Abdul Rasool
