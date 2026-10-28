@@ -152,7 +152,44 @@ export function applyAnomalyRules(result, { shift = {}, policy = {} } = {}) {
     requiresRegularization: anomalies.length > 0,
   };
 }
-export function ruleDeductions(anomalies = [], { from, to } = {}) {
+// The deduction rules payroll prices anomalies with. DEFAULT_DEDUCTION_RULES are
+// the values that were hard-coded here before they became configurable, so a
+// tenant that has not changed anything is priced exactly as before.
+//   • A late arrival / early departure longer than majorThresholdMinutes is a
+//     MAJOR case and is priced on its own (majorTimingDays).
+//   • Shorter ones are MINOR: every `poolSize` of them, per employee, within the
+//     payroll period being priced, cost pooledMinorDays. The pool is per period:
+//     leftovers do not carry into the next period.
+export const DEFAULT_DEDUCTION_RULES = Object.freeze({
+  majorThresholdMinutes: 30,
+  poolSize: 3,
+  absentDays: 1,
+  missingPunchDays: 0.5,
+  majorTimingDays: 0.5,
+  pooledMinorDays: 1,
+});
+const POLICY_RULE_FIELDS = {
+  majorThresholdMinutes: "deductMajorThresholdMinutes",
+  poolSize: "deductPoolSize",
+  absentDays: "deductAbsentDays",
+  missingPunchDays: "deductMissingPunchDays",
+  majorTimingDays: "deductMajorTimingDays",
+  pooledMinorDays: "deductPooledMinorDays",
+};
+// A tenant's rules from its attendance policy row; any field not set falls back
+// to the default. Values outside the editor's limits are ignored, never priced.
+export function deductionRulesFromPolicy(policy = {}) {
+  const rules = { ...DEFAULT_DEDUCTION_RULES };
+  for (const [key, column] of Object.entries(POLICY_RULE_FIELDS)) {
+    const value = Number(policy?.[column]);
+    if (policy?.[column] == null || !Number.isFinite(value) || value < 0) continue;
+    if (key === "poolSize" && (!Number.isInteger(value) || value < 1)) continue;
+    rules[key] = value;
+  }
+  return rules;
+}
+export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
+  const r = { ...DEFAULT_DEDUCTION_RULES, ...(rules || {}) };
   const seen = new Set(),
     lines = [],
     minors = [];
@@ -175,9 +212,9 @@ export function ruleDeductions(anomalies = [], { from, to } = {}) {
     if (seen.has(key)) continue;
     seen.add(key);
     if (a.type === "ABSENT")
-      lines.push({ anomalyIds: [a.id], days: 1, date: keyDate(a.date) });
+      lines.push({ anomalyIds: [a.id], days: r.absentDays, date: keyDate(a.date) });
     else if (["MISSING_CHECKIN", "MISSING_CHECKOUT"].includes(a.type))
-      lines.push({ anomalyIds: [a.id], days: 0.5, date: keyDate(a.date) });
+      lines.push({ anomalyIds: [a.id], days: r.missingPunchDays, date: keyDate(a.date) });
     else if (["LATE_CHECKIN", "EARLY_CHECKOUT"].includes(a.type)) {
       const minutes =
         a.measuredMinutes ??
@@ -188,8 +225,8 @@ export function ruleDeductions(anomalies = [], { from, to } = {}) {
         throw new Error(
           "Timing evidence is required before pricing an anomaly",
         );
-      if (minutes > 30)
-        lines.push({ anomalyIds: [a.id], days: 0.5, date: keyDate(a.date) });
+      if (minutes > r.majorThresholdMinutes)
+        lines.push({ anomalyIds: [a.id], days: r.majorTimingDays, date: keyDate(a.date) });
       else minors.push(a);
     }
   }
@@ -198,14 +235,14 @@ export function ruleDeductions(anomalies = [], { from, to } = {}) {
   let remainder = 0;
   for (const id of employees) {
     const own = minors.filter((a) => a.employeeId === id);
-    for (let i = 0; i + 2 < own.length; i += 3)
+    for (let i = 0; i + r.poolSize <= own.length; i += r.poolSize)
       lines.push({
-        anomalyIds: own.slice(i, i + 3).map((a) => a.id),
-        days: 1,
-        date: keyDate(own[i + 2].date),
+        anomalyIds: own.slice(i, i + r.poolSize).map((a) => a.id),
+        days: r.pooledMinorDays,
+        date: keyDate(own[i + r.poolSize - 1].date),
         pooled: true,
       });
-    remainder += own.length % 3;
+    remainder += own.length % r.poolSize;
   }
   return {
     days: lines.reduce((sum, line) => sum + line.days, 0),

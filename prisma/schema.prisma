@@ -1083,6 +1083,22 @@ model AttendancePolicyConfig {
 
   defaultShiftStart String @default("09:00")
 
+  // Anomaly deductions that drive payroll (rules v2). Defaults are the values
+  // that were hard-coded before this became configurable, so adding the columns
+  // changes no payslip. Minutes late/early beyond the threshold are a MAJOR case
+  // priced on its own; shorter ones share a pool of `deductPoolSize` per
+  // employee per payroll period (no carry-over between periods).
+  deductMajorThresholdMinutes Int   @default(30)
+  deductPoolSize              Int   @default(3)
+  deductAbsentDays            Float @default(1)
+  deductMissingPunchDays      Float @default(0.5)
+  deductMajorTimingDays       Float @default(0.5)
+  deductPooledMinorDays       Float @default(1)
+
+  // A day whose only presence is a session shorter than this is an accidental
+  // double tap and is held as a punch conflict. 0 turns it off.
+  minSessionMinutes Int @default(5)
+
   status    ConfigStatus @default(DRAFT)
   version   Int          @default(1)
   createdAt DateTime     @default(now())
