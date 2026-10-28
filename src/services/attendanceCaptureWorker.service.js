@@ -19,6 +19,13 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 // guesses, so the sessioniser and evaluator honour them as recorded.
 const VERIFIED_DIRECTION_SOURCES = new Set(["BIOMETRIC", "MANUAL"]);
 
+// Attempts after which an event stops retrying and is handed to a person.
+const MAX_ATTEMPTS = 8;
+const BUSY = Symbol("employee-busy");
+// How many employees held by another worker one drain cycle steps over before it
+// reports the queue as empty.
+const MAX_BUSY_SKIPS = 10;
+
 export async function assertCapturePeriodOpen(db, tenantId, days) {
   const ordered=[...days].sort();
   if(ordered.length)await assertAttendancePeriodOpen(db,tenantId,ordered[0],ordered.at(-1));
@@ -33,6 +40,7 @@ export async function drainCapture(
   return mcpCtx.run({ system: true }, async () => {
     let processed = 0,
       failed = 0;
+    const busyEmployees = [];
     for (let n = 0; n < limit; n++) {
       let candidate;
       try {
@@ -40,15 +48,18 @@ export async function drainCapture(
           db,
           async (tx) => {
             const rows =
-              await tx.$queryRaw`SELECT * FROM attendance_capture_events WHERE state IN ('PENDING','FAILED') AND attempts < 8 AND "nextAttemptAt" <= ${now} ORDER BY "nextAttemptAt", "createdAt" FOR UPDATE SKIP LOCKED LIMIT 1`;
+              await tx.$queryRaw`SELECT * FROM attendance_capture_events WHERE state IN ('PENDING','FAILED') AND attempts < 8 AND "nextAttemptAt" <= ${now} AND ("employeeId" IS NULL OR "employeeId" <> ALL(${busyEmployees}::int[])) ORDER BY "nextAttemptAt", "createdAt" FOR UPDATE SKIP LOCKED LIMIT 1`;
             candidate = rows[0];
             if (!candidate) return false;
             await lockAttendancePeriod(tx,candidate.tenantId);
             const [{ acquired }] =
               await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(hashtext(${`attendance:${candidate.tenantId}:${candidate.employeeId}`})) AS acquired`;
             if (!acquired) {
+              // Another worker owns this employee. Step over them (bounded) so the
+              // rest of the queue is not starved by one busy employee.
+              busyEmployees.push(candidate.employeeId);
               candidate = null;
-              return false;
+              return BUSY;
             }
             const related = await tx.attendanceCaptureEvent.findMany({
               where: {
@@ -76,44 +87,51 @@ export async function drainCapture(
                 tenant_id: candidate.tenantId,
               },
             });
+            if (!employee)
+              throw captureError(
+                "IDENTITY_REMOVED: employee no longer exists",
+                409,
+              );
+            // One bad punch must not hold back the valid ones. Each event is
+            // judged on its own: a failing one goes to review with its own reason
+            // and leaves the batch; the rest are processed as usual.
+            const allPunches = await tx.attendanceDevicePunch.findMany({
+              where: {
+                OR: batch.map((e) => ({
+                  sn: e.sn,
+                  deviceUserId: e.deviceUserId,
+                  punchedAt: new Date(e.parsed.punchedAt),
+                  status: e.parsed.status,
+                })),
+              },
+            });
+            const deviceCache = new Map();
+            const valid = [];
             for (const event of batch) {
-              if (event.raw?.acceptanceMode === 'SUPERVISED')
-                throw captureError('ONSITE_SUPERVISED_REVIEW: attendance correction approval is required',409);
-              if (
+              const p = event.parsed;
+              // ATT-DEVICE-PER-COMPANY-01: another company's attributed copy of
+              // this punch was resolved independently and is not a competing
+              // attribution. Unattributed legacy punches still route below.
+              const existing = allPunches.filter(
+                (r) =>
+                  r.sn === event.sn &&
+                  r.deviceUserId === event.deviceUserId &&
+                  +r.punchedAt === +new Date(p.punchedAt) &&
+                  r.status === p.status &&
+                  !(r.employeeId && r.tenantId !== event.tenantId),
+              );
+              let problem = null;
+              if (event.raw?.acceptanceMode === "SUPERVISED")
+                problem = "ONSITE_SUPERVISED_REVIEW: attendance correction approval is required";
+              else if (
                 event.source === "BIOMETRIC" &&
                 (!event.raw?.biometric?.matched ||
                   ((event.raw.biometric.pad !== "PASSED" ||
                     event.raw.biometric.delayedUpload) &&
                     !event.biometricApprovedBy))
               )
-                throw captureError(
-                  "BIOMETRIC_PAD_UNVERIFIED: explicit exception approval is required",
-                  409,
-                );
-            }
-            if (!employee)
-              throw captureError(
-                "IDENTITY_REMOVED: employee no longer exists",
-                409,
-              );
-            const days = batch.map((e) => new Date(e.parsed.punchedAt));
-            for (const event of batch) {
-              const p = event.parsed;
-              const found = await tx.attendanceDevicePunch.findMany({
-                where: {
-                  sn: event.sn,
-                  deviceUserId: event.deviceUserId,
-                  punchedAt: new Date(p.punchedAt),
-                  status: p.status,
-                },
-              });
-              // ATT-DEVICE-PER-COMPANY-01: another company's attributed copy of
-              // this punch was resolved independently and is not a competing
-              // attribution. Unattributed legacy punches still route below.
-              const existing = found.filter(
-                (r) => !(r.employeeId && r.tenantId !== event.tenantId),
-              );
-              if (
+                problem = "BIOMETRIC_PAD_UNVERIFIED: explicit exception approval is required";
+              else if (
                 existing.some(
                   (r) =>
                     r.employeeId &&
@@ -121,38 +139,62 @@ export async function drainCapture(
                       r.employeeId !== event.employeeId),
                 )
               )
-                throw captureError(
-                  "ATTRIBUTION_CONFLICT: historical punch belongs to another employee",
-                  409,
-                );
+                problem = "ATTRIBUTION_CONFLICT: historical punch belongs to another employee";
+              else if (existing.length && existing[0].tenantId !== event.tenantId) {
+                if (!deviceCache.has(event.sn))
+                  deviceCache.set(
+                    event.sn,
+                    await tx.attendanceCaptureDevice.findUnique({
+                      where: { sn: event.sn },
+                    }),
+                  );
+                const device = deviceCache.get(event.sn);
+                if (
+                  !device?.active ||
+                  !device.allowedTenantIds.includes(event.tenantId) ||
+                  (existing[0].tenantId &&
+                    !device.allowedTenantIds.includes(existing[0].tenantId))
+                )
+                  problem = "ATTRIBUTION_CONFLICT: legacy company is not authorized for this device";
+              }
+              if (problem) {
+                await tx.attendanceCaptureEvent.update({
+                  where: { id: event.id },
+                  data: {
+                    state: "NEEDS_REVIEW",
+                    reason: problem,
+                    attempts: { increment: 1 },
+                    version: { increment: 1 },
+                  },
+                });
+                await captureAudit(tx, {
+                  tenantId: event.tenantId,
+                  eventId: event.id,
+                  action: "PROCESSING_FAILED",
+                  reason: problem,
+                  detail: { attempt: event.attempts + 1, exhausted: false, isolated: true },
+                });
+                continue;
+              }
+              valid.push({ event, existing });
+            }
+            if (!valid.length) return batch.length;
+            const days = valid.map(({ event }) => new Date(event.parsed.punchedAt));
+            for (const { event, existing } of valid) {
+              const p = event.parsed;
               if (existing.length) {
-                if (existing[0].tenantId !== event.tenantId) {
-                  const device = await tx.attendanceCaptureDevice.findUnique({
-                    where: { sn: event.sn },
+                if (existing[0].tenantId !== event.tenantId && existing[0].tenantId)
+                  await captureAudit(tx, {
+                    tenantId: existing[0].tenantId,
+                    eventId: event.id,
+                    action: "LEGACY_IDENTITY_ROUTED",
+                    reason:
+                      "Unassigned legacy punch resolved using dated enrolment",
+                    detail: {
+                      punchId: existing[0].id,
+                      destinationTenantId: event.tenantId,
+                    },
                   });
-                  if (
-                    !device?.active ||
-                    !device.allowedTenantIds.includes(event.tenantId) ||
-                    (existing[0].tenantId &&
-                      !device.allowedTenantIds.includes(existing[0].tenantId))
-                  )
-                    throw captureError(
-                      "ATTRIBUTION_CONFLICT: legacy company is not authorized for this device",
-                      409,
-                    );
-                  if (existing[0].tenantId)
-                    await captureAudit(tx, {
-                      tenantId: existing[0].tenantId,
-                      eventId: event.id,
-                      action: "LEGACY_IDENTITY_ROUTED",
-                      reason:
-                        "Unassigned legacy punch resolved using dated enrolment",
-                      detail: {
-                        punchId: existing[0].id,
-                        destinationTenantId: event.tenantId,
-                      },
-                    });
-                }
                 await tx.attendanceDevicePunch.update({
                   where: { id: existing[0].id },
                   data: {
@@ -198,7 +240,7 @@ export async function drainCapture(
               tenantId: candidate.tenantId,
               employeeIds: [candidate.employeeId],
               days,
-              evidenceIds:batch.map(e=>e.id),
+              evidenceIds: valid.map(({ event }) => event.id),
               now,
               db: tx,
             });
@@ -222,7 +264,7 @@ export async function drainCapture(
             const setupMissing = attendance.some(
               (r) => r.status === "SETUP_REQUIRED",
             );
-            for (const event of batch) {
+            for (const { event } of valid) {
               await tx.attendanceCaptureEvent.update({
                 where: { id: event.id },
                 data: {
@@ -255,7 +297,7 @@ export async function drainCapture(
               aggregateId: candidate.id,
               payload: {
                 employeeId: String(candidate.employeeId),
-                eventIds: batch.map((e) => e.id),
+                eventIds: valid.map(({ event }) => event.id),
                 attendanceIds: attendance.map((r) => String(r.id)),
                 needsReview: setupMissing,
               },
@@ -264,6 +306,11 @@ export async function drainCapture(
           },
           { system: true, txOptions: { timeout: 60000, maxWait: 5000 } },
         );
+        if (result === BUSY) {
+          if (busyEmployees.length >= MAX_BUSY_SKIPS) break;
+          n--; // a skip is not a processed event
+          continue;
+        }
         if (!result) break;
         processed += result;
       } catch (err) {
@@ -276,7 +323,10 @@ export async function drainCapture(
         await tenantTransaction(
           db,
           async (tx) => {
-            const review = err.status === 409;
+            const exhausted = candidate.attempts + 1 >= MAX_ATTEMPTS;
+            // A person handles what automatic retries could not: an event that ran
+            // out of attempts is queued for review, not left FAILED and invisible.
+            const review = err.status === 409 || exhausted;
             const changed = await tx.attendanceCaptureEvent.updateMany({
               where: {
                 id: candidate.id,
@@ -285,7 +335,12 @@ export async function drainCapture(
               },
               data: {
                 state: review ? "NEEDS_REVIEW" : "FAILED",
-                reason: review ? err.message : "PROCESSING_FAILED",
+                reason:
+                  err.status === 409
+                    ? err.message
+                    : exhausted
+                      ? "RETRIES_EXHAUSTED"
+                      : "PROCESSING_FAILED",
                 attempts: { increment: 1 },
                 nextAttemptAt: retryAt(candidate.attempts + 1, now),
                 version: { increment: 1 },
@@ -296,12 +351,15 @@ export async function drainCapture(
                 tenantId: candidate.tenantId,
                 eventId: candidate.id,
                 action: "PROCESSING_FAILED",
-                reason: review
-                  ? err.message
-                  : "Processing failed; retry scheduled",
+                reason:
+                  err.status === 409
+                    ? err.message
+                    : exhausted
+                      ? "Retries exhausted; queued for review"
+                      : "Processing failed; retry scheduled",
                 detail: {
                   attempt: candidate.attempts + 1,
-                  exhausted: candidate.attempts + 1 >= 8,
+                  exhausted,
                 },
               });
           },
