@@ -1,5 +1,9 @@
 import prisma from "../lib/prisma.js";
 import { employeeCode } from "../lib/payrollConfiguration.js";
+import { dateRange } from "../lib/attendanceDates.js";
+
+// Loaded on demand, and only when a caller asks for the setup-coverage check.
+const defaultLoadRuntime = async (args) => (await import("./attendanceSetup.service.js")).loadAttendanceRuntime(args);
 
 // Issues that stop a payslip being CALCULATED are always blocking. These three
 // only stop the run being FINALIZED (paid out), so calculation may go ahead and
@@ -11,6 +15,10 @@ export async function payrollReadiness({
   run,
   employees,
   db = prisma,
+  // The run screen also asks whether a published attendance setup covers the period;
+  // processing and finalize run their own checks, so they leave this off.
+  checkAttendanceSetup = false,
+  loadRuntime = defaultLoadRuntime,
 }) {
   const ids = employees.map((e) => e.id),
     issues = [];
@@ -55,6 +63,17 @@ export async function payrollReadiness({
     add("NO_EMPLOYEES", "No eligible employees in this period");
   if (!snapshot)
     add("CONFIG_REQUIRED", "Publish Payroll Setup before calculation");
+  if (checkAttendanceSetup) {
+    let covered = false;
+    try {
+      const runtime = await loadRuntime({ tenantId, from: run.periodStart, to: run.periodEnd });
+      covered = dateRange(run.periodStart, run.periodEnd).every((day) => runtime.configOn(day));
+    } catch {
+      covered = false;
+    }
+    if (!covered)
+      add("ATTENDANCE_SETUP_REQUIRED", "Publish attendance setup covering this payroll period");
+  }
   const rates = snapshot?.config?.taxSlabs || [];
   const cashDisbursement = snapshot?.config?.payRules?.cashDisbursement === true;
   const effective = rates
