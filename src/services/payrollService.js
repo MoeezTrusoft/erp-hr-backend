@@ -1316,7 +1316,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         // run. Absent row means the tenant never configured payroll rules, which
         // is the same as everything off.
         const readiness = await payrollReadiness({tenantId,run:{...payrollRun,calculationConfigVersion:null},employees});
-        assertReady(readiness.issues);
+        assertReady(readiness.issues, { stage: 'CALCULATE' });
         const config = readiness.snapshot.config;
         const ruleConfig = config.payRules || {};
         const components = config.salaryComponents || [];

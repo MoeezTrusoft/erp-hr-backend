@@ -22,7 +22,7 @@ function pctChange(current, previous) {
   const c = Number(current) || 0;
   const p = Number(previous) || 0;
   if (!p) return 0;
-  return ((c - p) / Math.abs(p)) * 100;
+  return Math.round(((c - p) / Math.abs(p)) * 1000) / 10;
 }
 
 // Employee display name from the snake_case columns.
@@ -151,6 +151,7 @@ export async function getPayrollThisMonth({ tenantId, runId } = {}) {
       periodStart: run.periodStart,
       periodEnd: run.periodEnd,
       status: run.status,
+      currencyCode: run.currencyCode,
     },
     netPayroll,
     netPayrollMoMPct,
