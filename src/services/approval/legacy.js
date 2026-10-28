@@ -115,6 +115,7 @@ export async function legacySubmit(
   kind,
   sourceRef,
   reason = "Employee submitted the request",
+  options = {},
 ) {
   const ctx = getCtx();
   if (!ctx.actorVerified) fail("Verified employee identity required", 401);
@@ -142,7 +143,7 @@ export async function legacySubmit(
     },
     { tenantId: ctx.user.tenantId },
   );
-  await submitApproval(input);
+  await submitApproval(input, options);
   return tenantTransaction(
     prisma,
     async (tx) =>

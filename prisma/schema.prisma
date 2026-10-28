@@ -5286,3 +5286,387 @@ model AttendanceAcceptanceEvidence {
   createdAt DateTime @default(now())
   @@index([tenantId, siteRef])
 }
+
+// Performance Appraisals — versioned domain, 2026-10-26.
+// Tenant composite foreign keys and immutability triggers are installed by the matching migration.
+model PerfConfiguration {
+  tenantId String @id @db.Uuid
+  version Int @default(0)
+  coreEnabled Boolean @default(false)
+  policy Json
+  updatedAt DateTime @updatedAt
+}
+model PerfTemplateVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  name String
+  status String @default("DRAFT")
+  version Int @default(0)
+  rubric Json
+  createdBy Int
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, name, id])
+  @@unique([tenantId, id])
+}
+model PerfCycle {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  name String
+  templateId String @db.Uuid
+  status String @default("DRAFT")
+  version Int @default(0)
+  policy Json
+  timezone String
+  periodStart String
+  periodEnd String
+  selfDue DateTime
+  managerDue DateTime
+  launchCursor Int @default(0)
+  launchedAt DateTime?
+  closingSnapshot Json?
+  closedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, name])
+  @@unique([tenantId, id])
+}
+model PerfParticipant {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  cycleId String @db.Uuid
+  employeeId Int
+  managerId Int
+  reviewType String @default("ANNUAL")
+  snapshot Json
+  inclusionState String @default("INCLUDED")
+  originalSelfDue DateTime
+  originalManagerDue DateTime
+  createdAt DateTime @default(now())
+  @@unique([tenantId, cycleId, employeeId, reviewType])
+  @@unique([tenantId, id])
+  @@index([tenantId, cycleId, id])
+}
+model PerfReview {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  participantId String @db.Uuid
+  cycleId String @db.Uuid
+  employeeId Int
+  managerId Int
+  state String @default("SELF_OPEN")
+  version Int @default(0)
+  revisionNo Int @default(0)
+  currentRevisionId String? @db.Uuid
+  releasedRevisionId String? @db.Uuid
+  scheduleVersion Int @default(0)
+  selfWaiver String?
+  selfDue DateTime
+  managerDue DateTime
+  releasedAt DateTime?
+  appealDeadline String?
+  acknowledgedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, participantId])
+  @@unique([tenantId, id])
+  @@index([tenantId, cycleId, state])
+  @@index([tenantId, employeeId])
+  @@index([tenantId, managerId])
+}
+model PerfResponse {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  role String
+  authorId Int
+  responseNo Int
+  answers Json
+  submittedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewId, role, authorId, responseNo])
+  @@unique([tenantId, id])
+}
+model PerfReviewRevision {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionNo Int
+  predecessorId String? @db.Uuid
+  content Json
+  digest String
+  score Json
+  reason String?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewId, revisionNo])
+  @@unique([tenantId, id])
+}
+model PerfSignoff {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String? @db.Uuid
+  actorId Int
+  action String
+  approvedVersion Int
+  reason String?
+  requestHash String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfEvidenceLink {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  source String
+  sourceId String
+  sourceVersion String
+  description String
+  verifiedBy Int
+  snapshot Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfAppeal {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String @db.Uuid
+  filedBy Int
+  reason String
+  status String @default("OPEN")
+  decideBy String
+  decidedBy Int?
+  decisionReason String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+  @@index([tenantId, reviewId, status])
+}
+model PerfCommandReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  actorId Int
+  operation String
+  requestKey String
+  digest String
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, actorId, operation, requestKey])
+  @@unique([tenantId, id])
+}
+model PerfAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  aggregateId String @db.Uuid
+  actorId Int
+  operation String
+  version Int
+  inputDigest String
+  correlationId String?
+  metadata Json @default("{}")
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+  @@index([tenantId, aggregateId, createdAt])
+}
+model PerfGoal {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  cycleId String @db.Uuid
+  employeeId Int
+  title String
+  parentId String? @db.Uuid
+  status String @default("DRAFT")
+  version Int @default(0)
+  keyResults Json
+  approvedBy Int?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfMeasurement {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  goalId String @db.Uuid
+  keyResultId String
+  actual Float
+  sourceSystem String
+  sourceRef String
+  period String
+  sourceVersion Int
+  progress Json
+  recordedBy Int
+  createdAt DateTime @default(now())
+  @@unique([tenantId, goalId, keyResultId, sourceSystem, sourceRef, period, sourceVersion])
+  @@unique([tenantId, id])
+}
+model PerfCheckin {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  managerId Int
+  scheduledAt DateTime
+  agenda String
+  actions Json
+  version Int @default(0)
+  notes String?
+  employeeConfirmedAt DateTime?
+  managerConfirmedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfFeedback {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  authorId Int
+  reviewId String? @db.Uuid
+  audience String
+  text String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfDecisionCase {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String @db.Uuid
+  employeeId Int
+  kind String
+  rationale String
+  instruction Json
+  proposedBy Int
+  state String @default("PROPOSED")
+  version Int @default(0)
+  hrApprover Int?
+  budgetApprover Int?
+  executionApprover Int?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfIntegrationHandoff {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  decisionId String @db.Uuid
+  decisionVersion Int
+  destination String
+  businessKey String
+  payloadHash String
+  state String @default("SHADOW")
+  receiverReceipt Json?
+  lastError String?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, destination, decisionId, decisionVersion])
+  @@unique([tenantId, businessKey])
+  @@unique([tenantId, id])
+}
+model PerfReminderIntent {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  recipientId Int
+  scheduleVersion Int
+  stage String
+  dueAt DateTime
+  state String @default("PENDING")
+  hubReceipt String?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewId, recipientId, scheduleVersion, stage])
+  @@unique([tenantId, id])
+}
+model PerfInbox {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  consumer String
+  eventId String
+  digest String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, consumer, eventId])
+  @@unique([tenantId, id])
+}
+
+model PerfApprovalBinding {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  approvalRef String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String @db.Uuid
+  reviewVersion Int
+  purpose String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, approvalRef])
+  @@unique([tenantId, reviewId, revisionId, reviewVersion, purpose])
+}
+
+model PerfLaunchRun {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  cycleId String @db.Uuid
+  state String @default("QUEUED")
+  version Int @default(0)
+  total Int
+  processed Int @default(0)
+  batchNo Int @default(0)
+  jobId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+  @@unique([tenantId,id])
+  @@unique([tenantId,cycleId])
+}
+model PerfLaunchBatch {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  runId String @db.Uuid
+  batchNo Int
+  firstParticipantId String @db.Uuid
+  lastParticipantId String @db.Uuid
+  count Int
+  digest String
+  createdAt DateTime @default(now())
+  @@unique([tenantId,runId,batchNo])
+}
+
+model PerfPeerRound {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  minimum Int
+  closesAt DateTime
+  state String @default("OPEN")
+  version Int @default(0)
+  rubric Json
+  summary Json?
+  createdBy Int
+  createdAt DateTime @default(now())
+  closedAt DateTime?
+  @@unique([tenantId,id])
+  @@unique([tenantId,reviewId])
+}
+model PerfPeerNomination {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  roundId String @db.Uuid
+  employeeId Int
+  proposedBy Int
+  reason String
+  state String @default("PROPOSED")
+  version Int @default(0)
+  decidedBy Int?
+  decisionReason String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId,id])
+  @@unique([tenantId,roundId,employeeId])
+  @@index([tenantId,employeeId,id])
+}
+model PerfPeerResponse {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  roundId String @db.Uuid
+  nominationId String @db.Uuid
+  authorId Int
+  answers Json
+  digest String
+  submittedAt DateTime @default(now())
+  @@unique([tenantId,id])
+  @@unique([tenantId,nominationId])
+  @@unique([tenantId,roundId,authorId])
+}

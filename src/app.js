@@ -42,6 +42,7 @@ import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
 import attendanceRoutes from "./routes/attendance.routes.js";
 import deviceAttendanceRoutes from "./routes/deviceAttendance.routes.js";
+import appraisalsRoutes from './routes/appraisals.routes.js';
 import performanceRoutes from "./routes/performance.routes.js";
 import positionRoutes from "./routes/position.routes.js";
 import requisitionRoutes from "./routes/requisition.routes.js";
@@ -180,6 +181,7 @@ export const createApp = () => {
     // guard has filled req.user.tenantId.
     app.use("/api", establishTenantContext);
     const authorizedRouters = [
+        ["/api/hr/appraisals", appraisalsRoutes],
         ["/api/hr/attendance-acceptance", attendanceAcceptanceRoutes],
         ["/api/hr/company-setup", setupRoutes],
         ["/api/hr/approvals", approvalRoutes],
