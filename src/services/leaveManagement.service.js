@@ -36,6 +36,25 @@ import {
   rejectLeaveRequest as canonicalRejectLeaveRequest,
 } from "./leave.service.js";
 
+// A request that spans two months counts only its share in each: totalDays is
+// the working-day total of the whole request, so scale it by the calendar-day
+// overlap with the window (the whole value when it sits inside the window).
+export const daysInWindow = (request, from, to) => {
+  const DAY = 86400000;
+  const utcDay = (v) => {
+    const d = new Date(v);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  };
+  const s = utcDay(request.startDate);
+  const e = utcDay(request.endDate);
+  const lo = Math.max(s, utcDay(from));
+  const hi = Math.min(e, utcDay(to));
+  if (hi < lo) return 0;
+  const span = Math.round((e - s) / DAY) + 1;
+  const overlap = Math.round((hi - lo) / DAY) + 1;
+  return (Number(request.totalDays) || 0) * (overlap / span);
+};
+
 // ── type bucketing ─────────────────────────────────────────────────────────
 // The 4 canonical buckets + "other". A policy is bucketed by a case-insensitive
 // substring match on its leaveTypeCode first, then its name.
@@ -282,13 +301,14 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
   for (const r of requests) {
     if (r.status === "CANCELLED") continue;
     const bucket = bucketOf(r);
-    if (r.status === "APPROVED") byType[bucket] += r.totalDays || 0;
+    const shareDays = daysInWindow(r, from, to);
+    if (r.status === "APPROVED") byType[bucket] += shareDays;
     const dept = deptOf.get(r.employeeId) || "Unassigned";
     if (!byDepartment.has(dept)) byDepartment.set(dept, { department: dept, employees: new Set(), requests: 0, days: 0 });
     const bucketDept = byDepartment.get(dept);
     bucketDept.employees.add(r.employeeId);
     bucketDept.requests += 1;
-    bucketDept.days += r.totalDays || 0;
+    bucketDept.days += shareDays;
 
     // Per-day overlaps for the heatmap. "requested" = still PENDING.
     const s = startOfDay(new Date(r.startDate));

@@ -23,9 +23,8 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
   },
 }));
 
-const { getLeaveMonthOverview } = await import(
-  '../../src/services/leaveManagement.service.js'
-);
+const leaveManagement = await import('../../src/services/leaveManagement.service.js');
+const { getLeaveMonthOverview } = leaveManagement;
 
 describe('HR-LEAVE-OVERVIEW-01 · getLeaveMonthOverview', () => {
   it('selects totalDays, so per-department and per-type day counts are real', async () => {
@@ -49,5 +48,25 @@ describe('HR-LEAVE-OVERVIEW-01 · getLeaveMonthOverview', () => {
     await expect(getLeaveMonthOverview({ month: 'October 2026' })).rejects.toThrow(
       /month must be YYYY-MM/,
     );
+  });
+});
+
+describe('daysInWindow', () => {
+  const { daysInWindow } = leaveManagement;
+  const oct = [new Date('2026-10-01T00:00:00Z'), new Date('2026-10-31T23:59:59Z')];
+  const sep = [new Date('2026-09-01T00:00:00Z'), new Date('2026-09-30T23:59:59Z')];
+  it('keeps a request inside the month whole', () => {
+    expect(daysInWindow({ startDate: '2026-10-05', endDate: '2026-10-07', totalDays: 3 }, ...oct)).toBe(3);
+  });
+  it('splits a request across two months instead of counting it twice', () => {
+    const r = { startDate: '2026-09-16', endDate: '2026-10-16', totalDays: 31 };
+    const a = daysInWindow(r, ...sep);
+    const b = daysInWindow(r, ...oct);
+    expect(Math.round((a + b) * 100) / 100).toBe(31);
+    expect(a).toBeGreaterThan(14);
+    expect(a).toBeLessThan(16);
+  });
+  it('is zero outside the window', () => {
+    expect(daysInWindow({ startDate: '2026-11-02', endDate: '2026-11-03', totalDays: 2 }, ...oct)).toBe(0);
   });
 });
