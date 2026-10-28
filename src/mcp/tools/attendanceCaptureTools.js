@@ -13,6 +13,13 @@ import {
   updateCaptureDevice,
 } from "../../services/attendanceCapture.service.js";
 import { reEnrol } from "../../services/deviceEnrolment.service.js";
+import {
+  requestDeviceAccess,
+  decideDeviceAccess,
+  withdrawDeviceAccessRequest,
+  endDeviceAccess,
+  listDeviceAccess,
+} from "../../services/attendanceDeviceAccess.service.js";
 import { getAttendanceImport } from "../../services/attendanceImport.service.js";
 import {
   configureBiometricDevice,
@@ -173,6 +180,63 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     reEnrol,
+    "device",
+  );
+  // ATT-DEVICE-ACCESS-01 — a company asks to use another company's device; the
+  // owning company approves, and either side can end the access later.
+  tool(
+    "hr_attendance_device_access_list",
+    "Devices your company owns or uses, and device access requests in both directions",
+    {},
+    "PUT",
+    listDeviceAccess,
+  );
+  tool(
+    "hr_attendance_device_access_request",
+    "Ask the company that owns a device (by serial number) to let your company use it",
+    {
+      sn: z.string().min(1).max(64),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    requestDeviceAccess,
+    "device",
+  );
+  tool(
+    "hr_attendance_device_access_decide",
+    "As the device-owning company, approve or reject another company's access request",
+    {
+      id: z.string().uuid(),
+      version: z.number().int().positive(),
+      decision: z.enum(["APPROVE", "REJECT"]),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    decideDeviceAccess,
+    "device",
+  );
+  tool(
+    "hr_attendance_device_access_withdraw",
+    "Withdraw your company's pending device access request",
+    {
+      id: z.string().uuid(),
+      version: z.number().int().positive(),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    withdrawDeviceAccessRequest,
+    "device",
+  );
+  tool(
+    "hr_attendance_device_access_end",
+    "End a company's use of a device: the owner removes another company, or your company gives up its own access",
+    {
+      sn: z.string().min(1).max(64),
+      companyTenantId: z.string().uuid().optional(),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    endDeviceAccess,
     "device",
   );
   tool(
