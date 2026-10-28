@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
@@ -17,35 +18,18 @@ export const createGoalAlignmentService = async (data, createdBy) => {
   if (parentGoalId === alignedGoalId)
     throw new Error("A goal cannot be aligned to itself");
 
-  // Check both goals exist (within this tenant)
-  const [parentGoal, alignedGoal] = await Promise.all([
-    prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(parentGoalId) }) }),
-    prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(alignedGoalId) }) }),
-  ]);
-
-  if (!parentGoal || !alignedGoal)
-    throw new Error("Invalid goal IDs — one or both goals not found");
-
-  // Check if already aligned
-  const existing = await prisma.goalAlignment.findFirst({
-    where: scopedWhere(tenantId, { parentGoalId: Number(parentGoalId), alignedGoalId: Number(alignedGoalId) }),
-  });
-  if (existing) throw new Error("These goals are already aligned");
-
-  const create = await prisma.goalAlignment.create({
-    data: scopedData(tenantId, {
-      parentGoalId: Number(parentGoalId),
-      alignedGoalId: Number(alignedGoalId),
-      createdById: Number(createdBy),
-    }),
-    createdBy: {
-      select: {
-        id: true,
-        first_name: true,
-        last_name: true
-      }
-    },
-  });
+  const create=await tenantTransaction(prisma,async tx=>{
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId+':legacy-goal-alignment'},0))`;
+    const ids=[Number(parentGoalId),Number(alignedGoalId)];
+    if(ids.some(id=>!Number.isSafeInteger(id)||id<1))throw Object.assign(new Error('Invalid goal identifiers'),{status:422});
+    const goals=await tx.goal.findMany({where:scopedWhere(tenantId,{id:{in:ids}}),select:{id:true}});
+    if(goals.length!==2)throw Object.assign(new Error('Goals not found or self alignment requested'),{status:404});
+    const edges=await tx.goalAlignment.findMany({where:scopedWhere(tenantId),select:{parentGoalId:true,alignedGoalId:true}});
+    if(edges.some(e=>e.parentGoalId===ids[0]&&e.alignedGoalId===ids[1]))throw Object.assign(new Error('These goals are already aligned'),{status:409});
+    const seen=new Set(),pending=[ids[0]];
+    while(pending.length){const id=pending.pop();if(id===ids[1])throw Object.assign(new Error('Alignment would create a cycle'),{status:409});if(seen.has(id))continue;seen.add(id);pending.push(...edges.filter(e=>e.alignedGoalId===id).map(e=>e.parentGoalId));}
+    return tx.goalAlignment.create({data:scopedData(tenantId,{parentGoalId:ids[0],alignedGoalId:ids[1]})});
+  },{tenantId});
   await logAction({
     employeeId: Number(createdBy),
     type: "Create", // 👈 changed from CREATE to UPDATE

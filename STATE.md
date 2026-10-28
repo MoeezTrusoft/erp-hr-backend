@@ -1,0 +1,5 @@
+2026-10-28 Performance Appraisals: opt-in tenant-verified Notification Hub reminder dispatcher added, with RBAC identity resolution, stale schedule cancellation, stable dedupe keys and acceptance receipts.
+Validation: 50 native appraisal/database checks cover identity isolation, notification crash/replay, obsolete reminders and existing lifecycle regressions; full HR gate and Hub tests are rerun for this follow-up.
+Dependencies: contracts 0.19.0 remains pinned to 938717bb875654a74d5af8d5ed92c0a0e5a76f22; coordinated draft gateway #34, RBAC #35 and frontend #115 remain required.
+Release: prior HR head passed remote CI; this follow-up requires its own checks and the Notification Hub template companion. No production migration, deployment, notification or role assignment performed.
+Handover: user will pull manually when qualified; deployed notification authorization/receipt acceptance, DAM, downstream execution, AI governance and remaining requirements stay open. See docs/appraisal-notifications.md; this is not the completed 69-enhancement release.

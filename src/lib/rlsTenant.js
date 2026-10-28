@@ -61,6 +61,8 @@ export function tenantTransaction(client, fn, opts = {}) {
 // see across tenants. Physical tables: bank_details, employment_terms,
 // EmergencyContacts (see hr_rls_pilot_extend migration).
 const RLS_MODELS = new Set([
+    'PerfPeerRound', 'PerfPeerNomination', 'PerfPeerResponse',
+    'PerfLaunchRun', 'PerfLaunchBatch', 'PerfApprovalBinding', 'PerfConfiguration', 'PerfTemplateVersion', 'PerfCycle', 'PerfParticipant', 'PerfReview', 'PerfResponse', 'PerfReviewRevision', 'PerfSignoff', 'PerfEvidenceLink', 'PerfAppeal', 'PerfCommandReceipt', 'PerfAudit', 'PerfGoal', 'PerfMeasurement', 'PerfCheckin', 'PerfFeedback', 'PerfDecisionCase', 'PerfIntegrationHandoff', 'PerfReminderIntent', 'PerfInbox',
     'PayrollFinanceSummary',
     'AttendanceAcceptanceSite', 'AttendanceAcceptanceAudit', 'AttendanceAcceptanceEvidence',
     'HrSetupReview', 'HrSetupAudit', 'HrSetupReceipt', 'HrSetupTask', 'HrSetupEvidence',
