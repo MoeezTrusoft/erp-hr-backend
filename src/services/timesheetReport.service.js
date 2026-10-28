@@ -52,6 +52,13 @@ const NON_WORKING_STATUSES = ["WEEKLY_OFF", "HOLIDAY", "ON_LEAVE"];
 // working day again. Same asymmetry the KPI tile already uses, so the bar and
 // the tile can never disagree.
 const UNRESOLVED_MISSING_STATUSES = ["MISSING_CHECKIN", "MISSING_CHECKOUT"];
+// TS-AWAITING-OFF-01 (operator, 2026-10-28) — "Awaiting attendance" is not a
+// record. A shift still in progress, or one whose setup is not published, has no
+// verdict yet, so it is neither a day somebody attended nor a day they missed.
+// It is not listed in the table (see listCheckInOuts) and drops out of every
+// denominator here, so an old stored row can never inflate the shifts owed or
+// dilute attendance and absenteeism.
+const NOT_YET_SCORED_STATUSES = ["PENDING_ATTENDANCE", "SETUP_REQUIRED"];
 // work_mode values that count as remote/WFH.
 const REMOTE_MODES = ["Remote", "Hybrid"];
 
@@ -364,6 +371,7 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
   // employees stop gaining rows). Feeds the FE "X / Y shifts" denominators.
   const availableShifts = rows.reduce((n, r) => {
     if (NON_WORKING_STATUSES.includes(r.status)) return n;
+    if (NOT_YET_SCORED_STATUSES.includes(r.status)) return n;
     return n + 1;
   }, 0);
 
@@ -570,7 +578,10 @@ export async function getAttendanceSummaryWeekly({ tenantId, month, employeeId }
     // graph and the report cannot disagree. TS-WEEKLY-01: unresolved missing-
     // punch days are excluded from the denominator (see the constant above).
     const expectedDays = inWeek.filter(
-      (r) => !NON_WORKING_STATUSES.includes(r.status) && !UNRESOLVED_MISSING_STATUSES.includes(r.status),
+      (r) =>
+        !NON_WORKING_STATUSES.includes(r.status) &&
+        !UNRESOLVED_MISSING_STATUSES.includes(r.status) &&
+        !NOT_YET_SCORED_STATUSES.includes(r.status),
     ).length;
     // TS-WEEKLY-02 — a week with NO expected days is NO DATA, not 0%: a
     // future week of the current month read as a 0% bar and implied catastrophic
@@ -661,6 +672,9 @@ export async function getAbsenteeismTrend({ tenantId, month, employeeId }) {
   const absentByDay = new Map();
   for (const r of rows) {
     if (NON_WORKING_STATUSES.includes(r.status)) continue;
+    // A shift with no verdict yet is not "rostered and present" — counting it
+    // flattered today's absenteeism the moment the first rows were created.
+    if (NOT_YET_SCORED_STATUSES.includes(r.status)) continue;
     const key = startOfDay(r.date).toISOString().slice(0, 10);
     if (!rosteredByDay.has(key)) rosteredByDay.set(key, new Set());
     rosteredByDay.get(key).add(r.employeeId);
@@ -1008,7 +1022,10 @@ export async function listCheckInOuts({
     const runtime=await loadAttendanceRuntime({tenantId,from:period.from,to:period.to});
     records=completeTimesheetRows({records,employees,anomalies:anomaliesForWindow,runtime,from:period.from,to:period.to,filters:{site,department,shift}});
   }
+  // TS-AWAITING-OFF-01 — a shift with no verdict yet is not an attendance
+  // record: neither the stored rows nor the calendar projection list it.
   records=filterRowsByEmploymentSpan(records,spanEnds).filter(r=>
+    r.status!=='PENDING_ATTENDANCE' &&
     (!enumStatus || r.status===enumStatus) && !(where.status?.notIn||where.NOT?.status?.in||[]).includes(r.status));
   const anomalyByKey = new Map();
   for (const an of anomaliesForWindow) {
@@ -1181,10 +1198,20 @@ export async function listCheckInOuts({
     };
   });
 
-  // q = employee-name contains, case-insensitive (JS filter after fetch).
+  // q = the Employee column's search, case-insensitive, over what the cell
+  // SHOWS: the person's name first, then the payroll code, designation and
+  // department. It used to match the code alone, so typing a name — the
+  // person-first cell shows nothing else prominently — found nothing.
+  // Every word must match somewhere ("ali kha" finds Ali Khan).
   if (q && q.trim()) {
-    const needle = q.trim().toLowerCase();
-    rows = rows.filter((r) => (r.employee?.code || '').toLowerCase().includes(needle));
+    const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    rows = rows.filter((r) => {
+      const hay = [r.employee?.name, r.employee?.code, r.employee?.position, r.employee?.department]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
   }
 
   const total = rows.length;
@@ -1196,8 +1223,8 @@ export async function listCheckInOuts({
     let bv;
     switch (sortBy) {
       case "employee":
-        av = (a.employee?.code ?? "").toLowerCase();
-        bv = (b.employee?.code ?? "").toLowerCase();
+        av = (a.employee?.name || a.employee?.code || "").toLowerCase();
+        bv = (b.employee?.name || b.employee?.code || "").toLowerCase();
         break;
       case "status":
         av = a.status;

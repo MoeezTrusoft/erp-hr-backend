@@ -133,8 +133,20 @@ export async function listRuleCases(
   const categoryOf = row => row.type==='ABSENT'?'absent':row.type==='LATE_CHECKIN'?'late':row.type==='EARLY_CHECKOUT'?'early':'other';
   const runtime = site || department || shift ? await loadAttendanceRuntime({tenantId:user.tenantId,from,to,db}) : null;
   const all = fetched.filter(row => (!category || categoryOf(row) === category) && (!runtime || attendanceViewMatches(runtime.resolve(row.employeeId,row.date),{site,department,shift})));
-  const summary={absent:0,late:0,early:0,other:0,total:all.length};
-  for(const row of all) summary[categoryOf(row)]++;
+  // TS-KPI-01 (operator, 2026-10-28) — the Timesheet tiles count EMPLOYEE-DAYS
+  // that are detected NOW. A case the evaluator later closed (evidence RESOLVED:
+  // a punch arrived, a roster was corrected) is no longer an absence or a late
+  // arrival, and a day carrying the same fact twice (an older legacy row beside
+  // its rules-v2 successor) is one day, not two. `open` is the same set limited
+  // to cases still awaiting a decision, for "anomalies per working day".
+  const summary={absent:0,late:0,early:0,other:0,total:all.length,open:0};
+  const counted=new Set(), openDays=new Set();
+  for(const row of all) {
+    if(row.evidenceState!=='ACTIVE') continue;
+    const day=`${row.employeeId}|${dateKey(row.date)}`, category=categoryOf(row), key=`${day}|${category}`;
+    if(!counted.has(key)) { counted.add(key); summary[category]++; }
+    if(row.status==='PENDING' && !openDays.has(key)) { openDays.add(key); summary.open++; }
+  }
   const items=all.slice((page-1)*pageSize,page*pageSize);
   return {
     items: items.map((a) => ({

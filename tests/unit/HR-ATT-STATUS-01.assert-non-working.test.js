@@ -25,7 +25,10 @@ describe('explicit non-working attendance',()=>{
  it('batch-loads source data for a month and produces one revision per date',async()=>{
   const db=evaluationDb({pattern:{...fixed,offDays:[1,2,3,4,5,6]}});
   await evaluate(db,{from:'2026-08-01',to:'2026-08-31'});
-  expect(db.snapshot().attendance).toHaveLength(31);
+  // 31 days, minus the four Sundays after the evaluation time: those shifts have
+  // no verdict yet, and an awaiting shift is not an attendance record
+  // (TS-AWAITING-OFF-01).
+  expect(db.snapshot().attendance).toHaveLength(27);
   expect(db.calls.filter(c=>c.method==='findMany'&&!['attendanceAnomaly','attendanceRuleAudit'].includes(c.model)).length).toBeLessThan(50);
   expect(db.calls.filter(c=>c.model==='employee'&&c.method==='findMany')).toHaveLength(2);
  });

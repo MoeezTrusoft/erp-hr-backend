@@ -19,6 +19,7 @@ import {
   hrRevertTarget,
 } from "@trusoft/contracts/hr-approval-rules";
 import {
+  isVerifiedOnBehalf,
   requiresLineManager,
   stageAfterSubmission,
 } from "../../lib/approvalStagePolicy.js";
@@ -358,9 +359,44 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
       "SUBMIT",
       input.reason,
     );
+    // HR raising on behalf has reviewed the day: the filing IS the HR
+    // verification (lib/approvalStagePolicy.js). The trail keeps both steps —
+    // SUBMIT into HR, then VERIFY by the same filer into MANAGEMENT — so the
+    // auto-verification is visible rather than implied.
+    let current = next;
+    if (onBehalf && isVerifiedOnBehalf(input.kind) && next.stage === "HR") {
+      current = await tx.hrApprovalRequest.update({
+        where: { id: next.id },
+        data: {
+          stage: "MANAGEMENT",
+          verification: input.reason,
+          hrActorCode: env.who.employee_code,
+          version: { increment: 1 },
+        },
+      });
+      if (input.kind === "ATTENDANCE")
+        await tx.attendanceRuleAudit.create({
+          data: {
+            tenantId: env.tenantId,
+            employeeId: source.row.employeeId,
+            anomalyId: source.row.id,
+            action: "COMMENT",
+            actorId: env.who.employee_code,
+            data: {
+              kind: "HR",
+              comment: input.reason,
+              factHash: source.row.factHash,
+              approvalRef: next.id,
+              round: next.round,
+              verifiedOnBehalf: true,
+            },
+          },
+        });
+      await audit(tx, env, next, current, "VERIFY", input.reason);
+    }
     return {
       actorCode: env.who.employee_code,
-      record: await view(tx, env, next),
+      record: await view(tx, env, current),
     };
 }
 

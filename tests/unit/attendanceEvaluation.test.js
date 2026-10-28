@@ -279,10 +279,13 @@ describe("persisted evaluation and finalization", () => {
       config({ shift: { from: "22:00", to: "06:00" }, offDays: [] }),
     );
     await apply(db, { now: new Date("2026-10-02T03:00:00+05:00") });
-    expect(db.snapshot().attendance[0]).toMatchObject({
-      status: "PENDING_ATTENDANCE",
-      day_credit: null,
-      processingState: "OPEN",
+    // TS-AWAITING-OFF-01 — a shift still open with no punch is not an
+    // attendance record: no row, but the day stays scheduled for its deadline.
+    expect(
+      db.snapshot().attendance.filter((r) => r.status === "PENDING_ATTENDANCE"),
+    ).toHaveLength(0);
+    expect(db.snapshot().attendanceEvaluationJob[0]).toMatchObject({
+      state: "PENDING",
     });
   });
   it("retains a data hold while captured biometric evidence awaits review", async () => {
