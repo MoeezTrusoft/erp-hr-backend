@@ -1101,6 +1101,22 @@ model AttendancePolicyConfig {
 
   defaultShiftStart String @default("09:00")
 
+  // Anomaly deductions that drive payroll (rules v2). Defaults are the values
+  // that were hard-coded before this became configurable, so adding the columns
+  // changes no payslip. Minutes late/early beyond the threshold are a MAJOR case
+  // priced on its own; shorter ones share a pool of `deductPoolSize` per
+  // employee per payroll period (no carry-over between periods).
+  deductMajorThresholdMinutes Int   @default(30)
+  deductPoolSize              Int   @default(3)
+  deductAbsentDays            Float @default(1)
+  deductMissingPunchDays      Float @default(0.5)
+  deductMajorTimingDays       Float @default(0.5)
+  deductPooledMinorDays       Float @default(1)
+
+  // A day whose only presence is a session shorter than this is an accidental
+  // double tap and is held as a punch conflict. 0 turns it off.
+  minSessionMinutes Int @default(5)
+
   status    ConfigStatus @default(DRAFT)
   version   Int          @default(1)
   createdAt DateTime     @default(now())
@@ -4116,6 +4132,35 @@ model AttendanceCaptureDevice {
   updatedAt DateTime @updatedAt
   @@index([tenantId, active])
   @@map("attendance_capture_devices")
+}
+// ATT-DEVICE-ACCESS-01 — a company asks to use another company's device and the
+// device-owning company decides. Approval adds the requester to the device's
+// allowedTenantIds; each company still resolves only its own enrolments.
+// `tenantId` is the REQUESTING company; both companies may read the row.
+model AttendanceDeviceAccessRequest {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @db.Uuid
+  ownerTenantId  String    @db.Uuid
+  deviceId       String    @db.Uuid
+  sn             String    @db.VarChar(64)
+  state          String    @default("PENDING") @db.VarChar(16) // PENDING | APPROVED | REJECTED | WITHDRAWN | REVOKED
+  reason         String
+  requestedBy    String
+  requestedAt    DateTime  @default(now())
+  decidedBy      String?
+  decidedAt      DateTime?
+  decisionReason String?
+  endedBy        String?
+  endedAt        DateTime?
+  endReason      String?
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  @@index([tenantId, state])
+  @@index([ownerTenantId, state])
+  @@index([deviceId, tenantId, state])
+  @@unique([deviceId, tenantId], map: "attendance_device_access_requests_open_key", where: raw("((state)::text = ANY ((ARRAY['PENDING'::character varying, 'APPROVED'::character varying])::text[]))"))
+  @@map("attendance_device_access_requests")
 }
 model AttendanceCaptureReceipt {
   id String @id @default(uuid()) @db.Uuid

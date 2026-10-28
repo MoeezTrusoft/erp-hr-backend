@@ -69,10 +69,12 @@ describe("tenant-safe dated enrolment changes", () => {
       deviceUserId: "102",
     });
   });
-  it("overlapping identity is refused before any history changes", async () => {
+  // ATT-DEVICE-PER-COMPANY-01: overlaps are judged within one company; another
+  // company enrolling the same ID is covered by the independent-resolution suite.
+  it("overlapping identity in the same company is refused before any history changes", async () => {
     await db.employeeDeviceEnrolment.create({
       data: {
-        tenantId: OTHER_TENANT,
+        tenantId: TENANT,
         employeeId: 2,
         deviceUserId: "102",
         sn: "DEVICE-1",

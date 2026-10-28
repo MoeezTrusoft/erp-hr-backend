@@ -240,6 +240,7 @@ export async function applyEvaluatedShifts(args) {
     corrections: 0,
     retracted: 0,
     nonWorking: 0,
+    awaiting: 0,
     byStatus: {},
     anomaliesPersisted: 0,
     changes: [],
@@ -308,7 +309,12 @@ export async function applyEvaluatedShifts(args) {
     });
     const hash = fingerprint(snapshot),
       changed = old?.evaluationHash !== hash;
-    if (changed)
+    // TS-AWAITING-OFF-01 (operator, 2026-10-28) — a shift with no verdict yet is
+    // not an attendance record. No row is created for it (an existing one is
+    // left to resolve normally); the evaluation job below still wakes the day at
+    // its deadline, when it becomes PRESENT / LATE / ABSENT and is written.
+    const awaiting = !old && verdict.status === "PENDING_ATTENDANCE";
+    if (changed && !awaiting)
       summary.changes.push({
         employeeId,
         employeeCode: employeeMap.get(employeeId)?.employee_code || null,
@@ -364,9 +370,10 @@ export async function applyEvaluatedShifts(args) {
             ? "Attendance setup required: " + first.setupSnapshot.reason
             : "Evaluated attendance",
     };
-    summary[!old ? "created" : changed ? "updated" : "unchanged"]++;
+    summary[awaiting ? "awaiting" : !old ? "created" : changed ? "updated" : "unchanged"]++;
     if (dryRun) continue;
     let row = old;
+    if (!awaiting) {
     if (!old)
       row = await db.attendance.create({
         data: { tenantId, employeeId, date: day, ...data },
@@ -409,6 +416,7 @@ export async function applyEvaluatedShifts(args) {
       });
       // Per-shift cases are synchronized above; day-level legacy evidence is retained.
       summary.anomaliesPersisted += verdict.anomalies.length;
+    }
     }
     const job = await db.attendanceEvaluationJob.findFirst({
       where: { tenantId, employeeId, date: day },

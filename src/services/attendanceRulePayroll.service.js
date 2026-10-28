@@ -1,5 +1,6 @@
 import * as money from "../lib/money.js";
 import { ruleDeductions } from "../lib/attendanceAnomalyRules.js";
+import { rulesForRun } from "./deductionRules.service.js";
 import { lockAttendancePeriod } from "./attendancePeriod.service.js";
 
 export const RULE_DEDUCTION_CODE = "ATTENDANCE_RULES_V2";
@@ -214,9 +215,11 @@ export async function reconcileRulePayroll(
         rulesVersion: 2,
       },
     });
+    // The rules this run was priced with, not whatever is configured today.
     const assessment = ruleDeductions(cases, {
       from: run.periodStart,
       to: run.periodEnd,
+      rules: await rulesForRun(db, { tenantId, runId: run.id }),
     });
     const desired = priceRuleDays(
       assessment.days,

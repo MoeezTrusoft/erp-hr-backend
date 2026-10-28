@@ -51,6 +51,7 @@ export function validatePolicy(policy) {
     'checkoutLeniencyMin',
     'overtimeAfterMinutes',
     'duplicatePunchWindowMin',
+    'minSessionMinutes',
   ]) {
     if (
       policy[k] != null &&

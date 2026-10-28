@@ -46,6 +46,7 @@ const prismaMock = {
     payrollAuditLog: mk(),
     payrollRuleConfig: mk(),
     attendanceDeductionRule: mk(),
+    attendancePolicyConfig: mk(),
     overtimeRequest: mk(),
     leaveRequest: mk(),
     employeeBenefit: mk(),
