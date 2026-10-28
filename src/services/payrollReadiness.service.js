@@ -1,6 +1,11 @@
 import prisma from "../lib/prisma.js";
 import { employeeCode } from "../lib/payrollConfiguration.js";
 
+// Issues that stop a payslip being CALCULATED are always blocking. These three
+// only stop the run being FINALIZED (paid out), so calculation may go ahead and
+// HR fixes them before closing the run.
+export const FINALIZE_ONLY = new Set(["BANK_REQUIRED", "NEGATIVE_LEAVE", "OVERTIME_PENDING"]);
+
 export async function payrollReadiness({
   tenantId,
   run,
@@ -40,6 +45,7 @@ export async function payrollReadiness({
     issues.push({
       code,
       type: code,
+      phase: FINALIZE_ONLY.has(code) ? "FINALIZE" : "CALCULATE",
       severity: "high",
       count: 1,
       message: employee ? `${employeeCode(employee)}: ${message}` : message,
@@ -50,6 +56,7 @@ export async function payrollReadiness({
   if (!snapshot)
     add("CONFIG_REQUIRED", "Publish Payroll Setup before calculation");
   const rates = snapshot?.config?.taxSlabs || [];
+  const cashDisbursement = snapshot?.config?.payRules?.cashDisbursement === true;
   const effective = rates
     .filter(
       (r) =>
@@ -106,7 +113,8 @@ export async function payrollReadiness({
         e,
       );
     const bank = banks.find((b) => b.employeeId === e.id);
-    if (!bank?.accountNumber || !bank?.routingNumber)
+    // A company that pays in cash (banking paused) publishes payRules.cashDisbursement.
+    if (!cashDisbursement && (!bank?.accountNumber || !bank?.routingNumber))
       add(
         "BANK_REQUIRED",
         "Primary bank account and routing details are required",
@@ -120,10 +128,13 @@ export async function payrollReadiness({
   return { issues, snapshot };
 }
 
-export function assertReady(issues) {
-  if (issues.length)
+// stage "CALCULATE" ignores the finalize-only issues; the default blocks on all.
+export function assertReady(issues, { stage = "FINALIZE" } = {}) {
+  const blocking =
+    stage === "CALCULATE" ? issues.filter((i) => !FINALIZE_ONLY.has(i.code)) : issues;
+  if (blocking.length)
     throw Object.assign(
-      new Error("HR-4302: " + issues.map((i) => i.message).join("; ")),
-      { status: 409, code: "HR-4302", details: { issues } },
+      new Error("HR-4302: " + blocking.map((i) => i.message).join("; ")),
+      { status: 409, code: "HR-4302", details: { issues: blocking } },
     );
 }

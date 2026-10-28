@@ -358,7 +358,9 @@ export const createTaxRate = async (req, res) => {
 // Audit Logs
 export const getAuditLogs = async (req, res) => {
     try {
-        const { page = 1, limit = 10, payrollRunId, payslipId } = req.query;
+        // The audit screen reads the latest 200 entries; callers may ask for fewer (max 500).
+        const { page = 1, payrollRunId, payslipId } = req.query;
+        const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 200));
         const result = await payrollService.getAuditLogs({
             page: parseInt(page),
             limit: parseInt(limit),
