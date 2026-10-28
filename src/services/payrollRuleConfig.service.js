@@ -22,6 +22,8 @@ const BOOL_KEYS = [
   "complianceHold",
   "garnishmentRecovery",
   "offCycleRelease",
+  // Banking paused: bank details are not required, salaries are paid in cash.
+  "cashDisbursement",
   // HR-PAYROLL-EOBI-01. Off for every tenant until someone deliberately turns
   // it on; see the rate/ceiling validation below.
   "eobiEnabled",
@@ -45,6 +47,7 @@ function defaultRules() {
     garnishmentRecovery: true,
     garnishmentCapPct: 33,
     offCycleRelease: true,
+    cashDisbursement: false,
     // HR-PAYROLL-DEDUCTION-BASIS-01 — a deducted day is charged against the
     // contracted package (base + allowances) over the month's calendar days.
     deductionBasis: "GROSS",

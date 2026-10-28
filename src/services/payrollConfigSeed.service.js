@@ -34,6 +34,7 @@ const RULE_CONFIG_KEYS = [
   "garnishmentRecovery",
   "garnishmentCapPct",
   "offCycleRelease",
+  "cashDisbursement",
   "deductionBasis",
   "eobiEnabled",
   "eobiEmployeeRatePct",

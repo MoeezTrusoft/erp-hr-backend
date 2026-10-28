@@ -75,6 +75,10 @@ export function registerPayrollSetupActionsTools(server) {
         .boolean()
         .optional()
         .describe("Unsupported legacy setting; off-cycle payroll release is not implemented"),
+      cashDisbursement: z
+        .boolean()
+        .optional()
+        .describe("Pay salaries in cash (banking paused): employee bank details are not required to finalize (PayrollRuleConfig.cashDisbursement)"),
       // HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
       deductionBasis: z
         .enum(["BASIC", "GROSS"])

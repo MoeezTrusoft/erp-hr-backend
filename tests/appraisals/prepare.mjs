@@ -79,6 +79,7 @@ try {
     "20261026060000_appraisal_peer_feedback",
     // Employee.attendance_only: the current Prisma client selects it, the pinned baseline predates it.
     "20261029090000_employee_attendance_only",
+    "20261029120000_payroll_cash_disbursement",
   ])
     await db.query(
       await readFile(`prisma/migrations/${name}/migration.sql`, "utf8"),
