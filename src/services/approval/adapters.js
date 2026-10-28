@@ -370,6 +370,26 @@ export async function loadSource(
   if (!who?.employee_code)
     fail("The request requires an employee initiator with an employee code");
   const data = pick(row, d.fields);
+  if (kind === 'PERFORMANCE') {
+    // Approve the exact scored evidence, not just the parent text and average.
+    // Child writers lock this parent, so final approval and edits serialize.
+    data.evidenceVersion = 1;
+    data.items = await tx.performanceReviewItem.findMany({
+      where: { tenantId: env.tenantId, reviewId: id }, orderBy: { metricId: 'asc' },
+      select: { metricId: true, rating: true, comment: true,
+        metric: { select: { name: true, category: true } } },
+    });
+    data.feedback = await tx.reviewFeedback.findMany({
+      where: { tenantId: env.tenantId, reviewId: id }, orderBy: { id: 'asc' },
+      select: { id: true, feedback: true, rating: true,
+        reviewer: { select: { employee_code: true } } },
+    });
+    const reviewer = row.reviewerId == null ? null : await tx.employee.findFirst({
+      where: { tenant_id: env.tenantId, id: row.reviewerId }, select: { employee_code: true },
+    });
+    if (row.reviewerId != null && !reviewer) fail('Reviewer is outside this company');
+    data.reviewerCode = reviewer?.employee_code ?? null;
+  }
   if (kind === "NOTICE_CHANGE") data.payload = row.payload.pending;
   if (kind === "SHIFT_SWAP" && row.targetId) {
     const target = await tx.employee.findFirst({

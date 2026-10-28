@@ -32,6 +32,8 @@ test(
           /model HrApproval(?:Request|Audit|Receipt) \{[\s\S]*?\n\}/g,
           "",
         )
+        // The pre-approval snapshot cannot retain relations to removed models.
+        .replace(/^\s*\w+\s+HrApproval(?:Request|Audit|Receipt)(?:\[\]|\?)?[^\n]*$/gm, "")
         .replace(/enum LoanStatus \{[\s\S]*?\n\}/, (block) =>
           block.replace(/\n\s+(PENDING|REJECTED)\b/g, ""),
         )

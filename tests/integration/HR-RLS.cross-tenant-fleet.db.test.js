@@ -1,3 +1,4 @@
+import { randomUUID as fixtureEmployeeCode } from 'node:crypto';
 // C.2 / T-P2.6 — CROSS-TENANT NEGATIVE suite across the full HR RLS surface.
 //
 // Extends HR-RLS.pilot.db.test.js (which proves the pattern on Attendance) to
@@ -23,6 +24,7 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import prisma from '../../src/lib/prisma.js';
+import { mcpCtx } from '../../src/mcp/context.js';
 
 const TENANT_A = '14c350e8-d0bc-4ee9-90c7-dea2b7a7a007';
 const TENANT_B = 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a';
@@ -54,7 +56,7 @@ let ready = false;
 let appClient = null;
 const created = { employees: [], emergency: [], bank: [] };
 
-beforeAll(async () => {
+beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     const url = hrAppUrl();
     if (!url) return;
     try {
@@ -69,8 +71,8 @@ beforeAll(async () => {
     }
 
     try {
-        const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'RLS', last_name: 'FA', status: 'active' } });
-        const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'RLS', last_name: 'FB', status: 'active' } });
+        const empA = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_A, first_name: 'RLS', last_name: 'FA', status: 'active' } });
+        const empB = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_B, first_name: 'RLS', last_name: 'FB', status: 'active' } });
         created.employees.push(empA.id, empB.id);
 
         const ecA = await prisma.emergencyContacts.create({ data: { tenantId: TENANT_A, employee_Id: empA.id, Contact_name: 'A-kin', phone: '111' } });
@@ -91,15 +93,15 @@ beforeAll(async () => {
         // false so the substantive specs early-return instead of false-failing.
         ready = false;
     }
-});
+}));
 
-afterAll(async () => {
+afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (created.bank.length) await prisma.bankDetail.deleteMany({ where: { id: { in: created.bank } } }).catch(() => {});
     if (created.emergency.length) await prisma.emergencyContacts.deleteMany({ where: { id: { in: created.emergency } } }).catch(() => {});
     if (created.employees.length) await prisma.employee.deleteMany({ where: { id: { in: created.employees } } }).catch(() => {});
     if (appClient) await appClient.$disconnect();
     await prisma.$disconnect();
-});
+}));
 
 // SET app.tenant_id + SELECT in ONE transaction so they share a connection.
 async function visibleIdsAs(table, tenantId, ids) {
@@ -120,7 +122,10 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
         { table: 'bank_details', a: 'bkA', b: 'bkB' },
     ]) {
         it(`${t.table}: tenant A sees ONLY A; B is invisible at the DB`, async () => {
-            if (!ready) return;
+            if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
             const ids = [created[t.a], created[t.b]];
             const visible = await visibleIdsAs(t.table, TENANT_A, ids);
             expect(visible).toContain(created[t.a]);
@@ -128,7 +133,10 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
         });
 
         it(`${t.table}: no tenant set → fail-closed (neither row visible)`, async () => {
-            if (!ready) return;
+            if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
             const ids = [created[t.a], created[t.b]];
             const visible = await visibleIdsAs(t.table, null, ids);
             expect(visible).not.toContain(created[t.a]);
@@ -136,7 +144,10 @@ describe('C.2 RLS cross-tenant negative — seeded isolation on high-PII tables'
         });
 
         it(`${t.table}: cross-tenant UPDATE affects 0 rows (WITH CHECK / USING)`, async () => {
-            if (!ready) return;
+            if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
             const affected = await appClient.$transaction(async (tx) => {
                 await tx.$executeRawUnsafe(`SET LOCAL app.tenant_id = '${TENANT_A}'`);
                 // touch a harmless column that exists on both tables

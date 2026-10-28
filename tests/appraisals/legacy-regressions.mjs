@@ -1,21 +1,28 @@
 import assert from "node:assert/strict";
+import pg from 'pg';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   createPerformanceTemplate,
   updatePerformanceTemplate,
+  deletePerformanceTemplate,
+  getAllPerformanceTemplates,
 } from "../../src/services/performanceTemplateService.js";
-import { createPerformanceCycle } from "../../src/services/performanceCycleService.js";
+import { createPerformanceCycle, deletePerformanceCycle, getAllPerformanceCycles } from "../../src/services/performanceCycleService.js";
 import {
   initiateReviewsService,
   submitReviewService,
+  getCycleReviewsService,
 } from "../../src/services/performanceReview.service.js";
 import { adjustRatingService } from "../../src/services/calibration.service.js";
 import { getCycleComparisonService } from "../../src/services/calibrationReport.service.js";
 import {
   createGoalService,
   addGoalProgressService,
+  getGoalsService,
+  getGoalProgressService,
 } from "../../src/services/goal.service.js";
-import { createGoalAlignmentService } from "../../src/services/goalAlignment.service.js";
-import { addFeedback } from "../../src/services/performance.service.js";
+import { createGoalAlignmentService, deleteGoalAlignmentService, getGoalAlignmentsService } from "../../src/services/goalAlignment.service.js";
+import { addFeedback, getAllReviews, createPerformanceReview, updateFeedback, deleteFeedback } from "../../src/services/performance.service.js";
 import { runReviewReminderJob } from "../../src/services/reminderScheduler.service.js";
 import { createMetric, upsertReviewItems, getReviewItems } from "../../src/services/performanceMetricService.js";
 import { upsertReviewItems as replaceItemsController } from "../../src/controllers/performanceMetricController.js";
@@ -310,6 +317,24 @@ export async function legacyRegressions(
       assert.equal(progress.progress, 40);
     },
   );
+  await t.test("Legacy appraisal and goal lists expose only minimal employee identity", async () => {
+    const reviews = await as('HR', () => getCycleReviewsService(cycle.id, tenant));
+    const goals = await as('HR', () => getGoalsService(people.EMPLOYEE.id, tenant));
+    const allowed = ['employee_code', 'employee_name', 'first_name', 'id', 'last_name'];
+    for (const row of [...reviews, ...goals]) {
+      for (const key of ['employee', 'reviewer', 'approvedBy']) {
+        if (row[key]) assert.deepEqual(Object.keys(row[key]).sort(), allowed);
+      }
+    }
+    assert.ok(reviews.length && goals.length);
+    const updates = await as('HR', () => getGoalProgressService(goals[0].id, tenant));
+    assert.ok(updates.length);
+    for (const update of updates) assert.deepEqual(Object.keys(update.createdBy).sort(), allowed);
+    await assert.rejects(as('HR', () => createGoalService({
+      employeeId: 2147483647, title: 'Unknown employee',
+      start_date: '2026-01-01', end_date: '2026-12-31',
+    }, people.HR.id, tenant)), /Employee not found/);
+  });
   await t.test(
     "Legacy alignment rejects a transitive cycle and concurrent inverse edge",
     async () => {
@@ -376,4 +401,103 @@ export async function legacyRegressions(
       assert.equal(reminder.sentToId, people.EMPLOYEE.id);
     },
   );
+  await t.test('Legacy unique keys reject duplicate reviews and metrics without removing evidence', async () => {
+    await assert.rejects(db(tx => tx.performanceReview.create({ data: {
+      tenantId: tenant, employeeId: review.employeeId, cycleId: review.cycleId, type: review.type,
+    } })), e => e.code === 'P2002');
+    const metric = await as('HR', () => createMetric({ tenantId: tenant, name: 'Unique metric ' + tenant }));
+    await assert.rejects(as('HR', () => createMetric({ tenantId: tenant, name: metric.name })), e => e.code === 'P2002');
+    assert.equal(await db(tx => tx.performanceReview.count({ where: { id: review.id } })), 1);
+  });
+  await t.test('Legacy review list pages in the database and returns minimal identities', async () => {
+    await as('HR', () => createPerformanceReview({ employeeId: people.MANAGER.id,
+      cycleId: cycle.id, period_start: '2026-01-01', period_end: '2026-12-31' }, people.HR.id, tenant));
+    const first = await as('HR', () => getAllReviews(tenant, { cycleId: cycle.id, page: 1, pageSize: 1 }));
+    const second = await as('HR', () => getAllReviews(tenant, { cycleId: cycle.id, page: 2, pageSize: 1 }));
+    assert.equal(first.total, 2);
+    assert.equal(first.items.length, 1);
+    assert.equal(second.items.length, 1);
+    assert.notEqual(first.items[0].id, second.items[0].id);
+    assert.deepEqual(Object.keys(first.items[0].employee).sort(),
+      ['id', 'employee_name', 'employee_code', 'first_name', 'last_name'].sort());
+    assert.equal(first.items[0].feedbacks, undefined);
+    await assert.rejects(as('HR', () => getAllReviews(tenant, { pageSize: 201 })), e => e.name === 'ZodError');
+    const cross = await as('HR', () => getAllReviews(other, { cycleId: cycle.id }), undefined, other);
+    assert.equal(cross.items.length, 0);
+    assert.equal(cross.total, 0);
+  });
+  await t.test('Legacy feedback updates preserve missing ratings and reject author reassignment', async () => {
+    const feedback = await as('MANAGER', () => addFeedback({ reviewId: review.id,
+      reviewerId: people.MANAGER.id, feedback: 'Verified evidence', rating: 0 }, people.MANAGER.id, tenant));
+    const edited = await as('MANAGER', () => updateFeedback(feedback.id, { feedback: 'Clarified evidence' }, people.MANAGER.id, tenant));
+    assert.equal(edited.rating, 0);
+    await assert.rejects(as('HR', () => addFeedback({ reviewId: review.id,
+      reviewerId: people.MANAGER.id, feedback: 'Forged manager feedback' }, people.MANAGER.id, tenant)), e => e.status === 403);
+    await assert.rejects(as('HR', () => updateFeedback(feedback.id, { feedback: 'Overwritten evidence' }, people.MANAGER.id, tenant)), e => e.status === 403);
+    await assert.rejects(as('HR', () => deleteFeedback(feedback.id, people.MANAGER.id, tenant)), e => e.status === 403);
+    const retained = await db(tx => tx.reviewFeedback.findUnique({ where: { id: feedback.id } }));
+    assert.equal(retained.feedback, 'Clarified evidence');
+
+    await assert.rejects(as('HR', () => updateFeedback(feedback.id, { reviewerId: people.HR.id }, people.HR.id, tenant)), e => e.status === 409);
+  });
+  await t.test('Concurrent archive commits before a waiting review insert can reuse the cycle', async () => {
+    const parent = await as('HR', () => createPerformanceCycle({ tenantId: tenant,
+      name: 'Archive race ' + tenant, templateId: cycle.templateId,
+      start_date: '2026-01-01', end_date: '2026-12-31' }, people.HR.id));
+    const locker = new pg.Client({ connectionString: 'postgresql://appraisal_runtime@127.0.0.1:55443/performance_appraisals_test' });
+    await locker.connect();
+    let pending;
+    try {
+      await locker.query('BEGIN');
+      await locker.query("SELECT set_config('app.tenant_id',$1,true)", [tenant]);
+      const { rows: [{ pid }] } = await locker.query('SELECT pg_backend_pid() AS pid');
+      await locker.query('UPDATE "PerformanceCycle" SET "archivedAt"=CURRENT_TIMESTAMP WHERE id=$1', [parent.id]);
+      // Attach rejection handling immediately while the insert waits for the parent.
+      pending = as('HR', () => createPerformanceReview({ employeeId: people.HR.id,
+        cycleId: parent.id, period_start: '2026-01-01', period_end: '2026-12-31' }, people.HR.id, tenant))
+        .then(value => ({ value }), error => ({ error }));
+      let blocked = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const result = await admin.query('SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid]);
+        if (result.rowCount) { blocked = true; break; }
+        await delay(20);
+      }
+      assert.ok(blocked, 'Review insertion must wait for the archiving transaction');
+      await locker.query('COMMIT');
+      assert.match(String((await pending).error), /Active appraisal cycle required/);
+      assert.equal(await db(tx => tx.performanceReview.count({ where: { cycleId: parent.id } })), 0);
+    } finally {
+      await locker.query('ROLLBACK');
+      await locker.end();
+      if (pending) await pending;
+    }
+  });
+  await t.test('Legacy archives retain referenced history and prevent reuse in new launches', async () => {
+    const edge = await db(tx => tx.goalAlignment.findFirst({ where: { tenantId: tenant, archivedAt: null } }));
+    const archivedEdge = await as('HR', () => deleteGoalAlignmentService(edge.id, people.HR.id, tenant));
+    assert.ok(archivedEdge.archivedAt);
+    const visible = await as('HR', () => getGoalAlignmentsService(edge.parentGoalId, tenant));
+    assert.ok(!visible.some(item => item.id === edge.id));
+    assert.equal(await db(tx => tx.goalAlignment.count({ where: { id: edge.id } })), 1);
+    await as('HR', () => deletePerformanceCycle(cycle.id, people.HR.id, tenant));
+    await as('HR', () => deletePerformanceTemplate(cycle.templateId, people.HR.id, tenant));
+    assert.ok(!(await as('HR', () => getAllPerformanceCycles(tenant))).some(item => item.id === cycle.id));
+    assert.ok(!(await as('HR', () => getAllPerformanceTemplates(tenant))).some(item => item.id === cycle.templateId));
+    const retained = await db(tx => tx.performanceReview.findFirst({ where: { id: review.id }, include: { cycle: { include: { template: true } } } }));
+    assert.ok(retained.cycle.archivedAt);
+    assert.ok(retained.cycle.template.archivedAt);
+    await assert.rejects(as('HR', () => initiateReviewsService(cycle.id, [people.MANAGER.id], people.HR.id, tenant)), e => e.status === 404);
+    // Database guards also protect stale callers that checked before archival.
+    await assert.rejects(db(tx => tx.performanceReview.create({ data: {
+      tenantId: tenant, employeeId: people.HR.id, cycleId: cycle.id, type: 'SELF',
+    } })), /Active appraisal cycle required/);
+    await assert.rejects(db(tx => tx.performanceCycle.create({ data: {
+      tenantId: tenant, name: 'Archived template reuse ' + tenant, templateId: cycle.templateId,
+      start_date: new Date('2026-01-01'), end_date: new Date('2026-12-31'),
+    } })), /Active appraisal template required/);
+    await assert.rejects(db(tx => tx.performanceTemplate.update({ where: { id: cycle.templateId },
+      data: { criteria: ['Retrospective change'] } })), /Referenced appraisal templates are immutable/);
+    await assert.rejects(db(tx => tx.performanceCycle.update({ where: { id: cycle.id },
+      data: { end_date: new Date('2027-12-31') } })), /Launched appraisal cycle configuration is immutable/);
+  });
 }

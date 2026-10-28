@@ -77,6 +77,9 @@ try {
     "20261026040000_appraisal_approval_bridge",
     "20261026050000_appraisal_launch_journal",
     "20261026060000_appraisal_peer_feedback",
+        "20261026070000_legacy_performance_integrity",
+        "20261026080000_legacy_performance_evidence_freeze",
+        "20261026090000_legacy_performance_parent_guards",
   ])
     await db.query(
       await readFile(`prisma/migrations/${name}/migration.sql`, "utf8"),

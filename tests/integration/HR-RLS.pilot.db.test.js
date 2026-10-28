@@ -1,3 +1,4 @@
+import { randomUUID as fixtureEmployeeCode } from 'node:crypto';
 // C.2 / T-P2.6 — RLS PILOT proof (defense-in-depth at the database).
 //
 // withTenant() is the primary, application-layer tenant fence. This test proves
@@ -60,8 +61,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
         return;
     }
 
-    const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'RLS', last_name: 'A', status: 'active' } });
-    const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'RLS', last_name: 'B', status: 'active' } });
+    const empA = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_A, first_name: 'RLS', last_name: 'A', status: 'active' } });
+    const empB = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_B, first_name: 'RLS', last_name: 'B', status: 'active' } });
     created.employees.push(empA.id, empB.id);
 
     const attA = await prisma.attendance.create({ data: { employeeId: empA.id, status: 'PRESENT', tenantId: TENANT_A } });
@@ -102,7 +103,10 @@ describe('C.2 RLS pilot — the DB denies cross-tenant on a leaked (non-privileg
     });
 
     it('tenant A session sees ONLY tenant A rows (tenant B row is invisible at the DB)', async () => {
-        if (!ready) return;
+        if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
         const ids = [created.attA, created.attB];
         const visible = await visibleIdsAs(TENANT_A, ids);
         expect(visible).toContain(created.attA);
@@ -110,7 +114,10 @@ describe('C.2 RLS pilot — the DB denies cross-tenant on a leaked (non-privileg
     });
 
     it('tenant B session sees ONLY tenant B rows (tenant A row is invisible at the DB)', async () => {
-        if (!ready) return;
+        if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
         const ids = [created.attA, created.attB];
         const visible = await visibleIdsAs(TENANT_B, ids);
         expect(visible).toContain(created.attB);
@@ -118,7 +125,10 @@ describe('C.2 RLS pilot — the DB denies cross-tenant on a leaked (non-privileg
     });
 
     it('no tenant set → fail-closed: the leaked connection sees neither tenant', async () => {
-        if (!ready) return;
+        if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
         const ids = [created.attA, created.attB];
         const visible = await visibleIdsAs(null, ids);
         expect(visible).not.toContain(created.attA);
@@ -126,7 +136,10 @@ describe('C.2 RLS pilot — the DB denies cross-tenant on a leaked (non-privileg
     });
 
     it('a cross-tenant WRITE is rejected by the RLS WITH CHECK policy', async () => mcpCtx.run({ system: true }, async () => {
-        if (!ready) return;
+        if (!ready) {
+        if (process.env.HR_REQUIRE_DB_TESTS === '1') throw new Error('Required RLS database fixture is not ready');
+        return;
+    }
         // As tenant A, try to flip tenant B's attendance row → the row is not
         // even visible (USING), so the UPDATE affects 0 rows; and an INSERT with
         // a foreign tenantId is blocked by WITH CHECK.

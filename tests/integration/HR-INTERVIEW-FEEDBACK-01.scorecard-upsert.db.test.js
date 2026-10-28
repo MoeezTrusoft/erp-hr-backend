@@ -1,3 +1,4 @@
+import { randomUUID as fixtureEmployeeCode } from 'node:crypto';
 // HR-INTERVIEW-FEEDBACK-01 — "Score and feed back" must be re-submittable.
 //
 // Reported (live capture, /hr/interview-management → Submit Feedback):
@@ -50,7 +51,7 @@ const made = { interviews: [], applications: [], candidates: [], requisitions: [
 async function seedInterview(tenantId) {
     return asSystem(async () => {
         const reviewer = await prisma.employee.create({
-            data: { tenant_id: tenantId, first_name: 'Rev', last_name: 'Iewer', status: 'active' },
+            data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: tenantId, first_name: 'Rev', last_name: 'Iewer', status: 'active' },
         });
         const requisition = await prisma.jobRequisition.create({
             data: { tenantId, title: 'HR-INTERVIEW-FEEDBACK-01 role', requestedById: reviewer.id },

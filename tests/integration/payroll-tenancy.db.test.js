@@ -1,3 +1,4 @@
+import { randomUUID as fixtureEmployeeCode } from 'node:crypto';
 // HR-04 / T-P2.2 — seeded two-tenant DB probe.
 //
 // This is the strongest cross-tenant isolation proof: it seeds REAL rows for
@@ -33,8 +34,8 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
     }
 
     // Two employees, one per tenant.
-    const empA = await prisma.employee.create({ data: { tenant_id: TENANT_A, first_name: 'A', last_name: 'Owner', status: 'active' } });
-    const empB = await prisma.employee.create({ data: { tenant_id: TENANT_B, first_name: 'B', last_name: 'Owner', status: 'active' } });
+    const empA = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_A, first_name: 'A', last_name: 'Owner', status: 'active' } });
+    const empB = await prisma.employee.create({ data: { employee_code: fixtureEmployeeCode().toUpperCase(), employeeCategory: "EMPLOYEE", tenant_id: TENANT_B, first_name: 'B', last_name: 'Owner', status: 'active' } });
     created.employees.push(empA.id, empB.id);
 
     // One payroll run per tenant (distinct periods to respect the global

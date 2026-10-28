@@ -36,7 +36,7 @@ export const createPerformanceTemplate = async (data, createdBy) => {
 
 export const getAllPerformanceTemplates = async (tenantId) => {
   return prisma.performanceTemplate.findMany({
-    where: scopedWhere(tenantId, {}),
+    where: scopedWhere(tenantId, { archivedAt: null }),
     include: { cycles: true },
     orderBy: { id: "desc" },
   });
@@ -44,7 +44,7 @@ export const getAllPerformanceTemplates = async (tenantId) => {
 
 export const getPerformanceTemplateById = async (id, tenantId) => {
   const template = await prisma.performanceTemplate.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), archivedAt: null }),
     include: { cycles: true },
   });
   if (!template) throw new Error("Template not found");
@@ -54,7 +54,7 @@ export const getPerformanceTemplateById = async (id, tenantId) => {
 export const updatePerformanceTemplate = async (id, data, updatedBy, tenantId) => {
   data = performanceTemplateUpdate.parse(data);
 
-  const performanceTemplate = await prisma.performanceTemplate.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) })
+  const performanceTemplate = await prisma.performanceTemplate.findFirst({ where: scopedWhere(tenantId, { id: Number(id), archivedAt: null }) })
   if (!performanceTemplate) throw new Error("Performance Template Not Found");
   if(Object.keys(data).some(k=>!["name","description","criteria","overall_rating"].includes(k)))throw Object.assign(new Error('Unsupported template field'),{status:422});
   if(await prisma.performanceCycle.count({where:scopedWhere(tenantId,{templateId:Number(id)})}))throw Object.assign(new Error('Referenced templates are immutable; create a new template version'),{status:409});
@@ -79,21 +79,22 @@ export const updatePerformanceTemplate = async (id, data, updatedBy, tenantId) =
 
 export const deletePerformanceTemplate = async (id, deletedBy, tenantId) => {
   const existing = await prisma.performanceTemplate.findFirst({
-    where: scopedWhere(tenantId, { id: Number(id) }),
+    where: scopedWhere(tenantId, { id: Number(id), archivedAt: null }),
   });
   if (!existing) {
     throw new Error(`Performance Template Not Found ${id}`);
 
   }
-  const deleted = await prisma.performanceTemplate.delete({
+  const deleted = await prisma.performanceTemplate.update({
     where: { id: Number(id) },
+    data: { archivedAt: new Date() },
   });
   await logAction({
     employeeId: Number(deletedBy),
-    type: "Delete", // 👈 changed from CREATE to UPDATE
+    type: "Archive", // 👈 changed from CREATE to UPDATE
     module: "Performance Template",
     result: "SUCCESS",
-    notes: `Performance Template "${id}" Deleted successfully`,
+    notes: `Performance Template "${id}" Archived successfully`,
     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
