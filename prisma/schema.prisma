@@ -5248,12 +5248,36 @@ model HrApprovalRequest {
   sourceHash String
   snapshot Json
   execution String @default("PENDING")
+  // Configurable matrix: the published route sealed at submission, the level the request waits at
+  // and the employee codes allowed to act there. NULL route = the four fixed stages.
+  route Json?
+  level Int?
+  pendingCodes String[] @default([])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@unique([tenantId, kind, sourceRef])
+  @@index([pendingCodes], type: Gin)
   @@unique([tenantId, id])
   @@index([tenantId, stage, id])
   @@index([tenantId, employeeCode])
+}
+// Versioned approval route per company and kind (ATTENDANCE, PAYROLL): ordered levels with their
+// action, required flag and approvers. One DRAFT and one PUBLISHED row per kind.
+model ApprovalMatrix {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  kind String
+  version Int
+  status String
+  levels Json
+  note String?
+  createdById String
+  publishedById String?
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@unique([tenantId, kind, version])
+  @@map("approval_matrices")
 }
 model HrApprovalAudit {
   id String @id @default(uuid()) @db.Uuid

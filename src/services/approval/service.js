@@ -40,6 +40,17 @@ import {
   onReturn,
   applyDecision,
 } from "./adapters.js";
+import { Prisma } from "@prisma/client";
+import {
+  MATRIX_KINDS,
+  PERMISSION_BY_ACTION,
+  amountOf,
+  buildRoute,
+  levelActions,
+  nextActionable,
+  previousActionable,
+} from "../../lib/approvalMatrix.js";
+import { loadPublishedMatrix } from "../approvalMatrix.service.js";
 const seal = (value) => ({
   sealed: encryptString(JSON.stringify(json(value))),
 });
@@ -123,6 +134,144 @@ async function execute(input, operation, fn) {
     { tenantId: ctx.user.tenantId, txOptions: { timeout: 60000 } },
   );
 }
+// ── Configurable matrix (ATTENDANCE / PAYROLL with a published route) ─────────────────────────────
+// A request that sealed a route waits at stage LEVEL; everything else keeps the fixed stages.
+const INACTIVE = /inactive|terminated|exited|separated/i;
+const stageLabel = (row) =>
+  row.stage === "LEVEL" && row.route?.levels?.[row.level]
+    ? `LEVEL ${row.level + 1}: ${row.route.levels[row.level].name}`
+    : row.stage;
+const routeView = (row) =>
+  row.route && ["LEVEL", "APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)
+    ? {
+        matrixVersion: row.route.matrixVersion,
+        current: row.stage === "LEVEL" ? row.level : null,
+        levels: row.route.levels.map(
+          ({ index, name, action, required, engaged, auto, skipped }) => ({
+            index, name, action, required, engaged, auto, skipped,
+          }),
+        ),
+      }
+    : null;
+function levelActionsFor(env, row) {
+  const level = row.route?.levels?.[row.level];
+  if (!level || !env.identityCodes.some((c) => row.pendingCodes.includes(c))) return [];
+  return permits(env, PERMISSION_BY_ACTION[level.action]) ? levelActions(level) : [];
+}
+async function sealRoute(tx, env, kind, matrix, source) {
+  const ids = [...new Set(matrix.levels.flatMap((l) => l.approverIds))];
+  const named = ids.length
+    ? await tx.employee.findMany({ where: { tenant_id: env.tenantId, id: { in: ids } } })
+    : [];
+  const live = (e) =>
+    e?.employee_code && !INACTIVE.test(`${e.status} ${e.employement_status}`) ? e.employee_code : null;
+  const byId = new Map(named.map((e) => [e.id, live(e)]));
+  const manager = source.who.managerId
+    ? await tx.employee.findFirst({ where: { tenant_id: env.tenantId, id: source.who.managerId } })
+    : null;
+  return buildRoute({
+    kind,
+    matrixVersion: matrix.version,
+    levels: matrix.levels,
+    initiator: env.who.employee_code,
+    subject: source.who.employee_code,
+    amount: amountOf(kind, source),
+    approvers: (l) =>
+      l.approverMode === "EMPLOYEE_MANAGER" ? [live(manager)] : l.approverIds.map((id) => byId.get(id)),
+  });
+}
+const advancePatch = (route, from, acted) => {
+  const next = nextActionable(route, from + 1, acted.map((a) => a.code));
+  if (!next) fail("The approval route has no level left to act", 409);
+  return { level: next.index, pendingCodes: next.codes };
+};
+const verifyComment = (tx, env, source, row, extra = {}) =>
+  tx.attendanceRuleAudit.create({
+    data: {
+      tenantId: env.tenantId,
+      employeeId: source.row.employeeId,
+      anomalyId: source.row.id,
+      action: "COMMENT",
+      actorId: env.who.employee_code,
+      data: {
+        kind: "HR",
+        comment: extra.comment,
+        factHash: source.row.factHash,
+        approvalRef: row.id,
+        round: row.round,
+        ...(extra.verifiedOnBehalf ? { verifiedOnBehalf: true } : {}),
+      },
+    },
+  });
+// Levels the initiator satisfies by raising the request (HR raising payroll or an attendance case).
+async function settleAutoLevels(tx, env, row, source, reason) {
+  let current = row;
+  while (current.route.levels[current.level]?.auto) {
+    const level = current.route.levels[current.level];
+    const acted = [...current.route.acted, { level: current.level, code: env.who.employee_code }];
+    const verify = level.action === "VERIFY";
+    const updated = await tx.hrApprovalRequest.update({
+      where: { id: current.id },
+      data: {
+        ...advancePatch(current.route, current.level, acted),
+        route: { ...current.route, acted },
+        ...(verify
+          ? { verification: reason, hrActorCode: env.who.employee_code }
+          : { recommendation: "RECOMMEND_APPROVAL", managerActorCode: env.who.employee_code, managerCode: env.who.employee_code }),
+        version: { increment: 1 },
+      },
+    });
+    if (verify && current.kind === "ATTENDANCE")
+      await verifyComment(tx, env, source, current, {
+        comment: reason,
+        verifiedOnBehalf: source.who.employee_code !== env.who.employee_code,
+      });
+    await audit(tx, env, current, updated, verify ? "VERIFY" : "RECOMMEND_APPROVAL", reason);
+    current = updated;
+  }
+  return current;
+}
+async function levelTransition(tx, env, row, source, input) {
+  const route = row.route;
+  const level = route.levels[row.level];
+  const me = env.who.employee_code;
+  if (input.action === "REVERT") {
+    const previous = previousActionable(route, row.level);
+    if (previous === null) {
+      await onReturn(tx, row.kind, source, "INITIATOR");
+      return {
+        stage: "INITIATOR", level: null, pendingCodes: [], recommendation: null, verification: null,
+        managerActorCode: null, hrActorCode: null, route: { ...route, acted: [] },
+      };
+    }
+    const acted = route.acted.filter((a) => a.level < previous);
+    return {
+      level: previous,
+      pendingCodes: route.levels[previous].approverCodes.filter((c) => !acted.some((a) => a.code === c)),
+      route: { ...route, acted },
+      verification: null,
+      hrActorCode: null,
+    };
+  }
+  if (source.digest !== row.sourceHash)
+    fail("The request or evidence changed. Revert to the initiator for a fresh review.");
+  if (level.viaManager) {
+    const manager = source.who.managerId
+      ? await tx.employee.findFirst({ where: { tenant_id: env.tenantId, id: source.who.managerId } })
+      : null;
+    if (manager?.employee_code !== level.approverCodes[0])
+      fail("The line manager changed. Revert to the initiator for a fresh recommendation.");
+  }
+  const acted = [...route.acted, { level: row.level, code: me }];
+  const base = { route: { ...route, acted } };
+  if (input.action.startsWith("RECOMMEND_"))
+    return { ...base, ...advancePatch(route, row.level, acted), recommendation: input.action, managerActorCode: me, managerCode: me };
+  if (input.action === "VERIFY") {
+    if (row.kind === "ATTENDANCE") await verifyComment(tx, env, source, row, { comment: input.reason });
+    return { ...base, ...advancePatch(route, row.level, acted), verification: input.reason, hrActorCode: me };
+  }
+  return { ...base, stage: input.action === "APPROVE" ? "APPROVED" : "REJECTED", pendingCodes: [] };
+}
 async function actionsFor(tx, env, row) {
   if (isAppraisalApproval(row)) return appraisalApprovalActions(tx, env, row);
   if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
@@ -137,6 +286,7 @@ async function actionsFor(tx, env, row) {
             : []),
         ]
       : [];
+  if (row.stage === "LEVEL") return levelActionsFor(env, row);
   if (row.stage === "LINE_MANAGER")
     return subject.managerId === env.who.id && permits(env, "manager")
       ? HR_APPROVAL_ACTIONS.LINE_MANAGER
@@ -160,6 +310,8 @@ async function canRead(tx, env, row) {
     permits(env, "verify") ||
     permits(env, "approve")
   )
+    return true;
+  if (row.stage === "LEVEL" && env.identityCodes.some((c) => row.pendingCodes.includes(c)))
     return true;
   const subject = await employee(tx, env.tenantId, row.employeeCode);
   return permits(env, "manager") && subject.managerId === env.who.id;
@@ -188,6 +340,9 @@ async function view(tx, env, row, summary = false) {
     sourceRef: row.sourceRef,
     employeeCode: row.employeeCode,
     stage: row.stage,
+    level: row.level,
+    route: routeView(row),
+    pendingCodes: row.stage === "LEVEL" ? row.pendingCodes : [],
     version: row.version,
     round: row.round,
     managerCode: row.managerCode,
@@ -230,8 +385,8 @@ async function audit(tx, env, before, after, action, reason) {
       version: after.version,
       round: after.round,
       actorCode: env.who.employee_code,
-      fromStage: before.stage,
-      toStage: after.stage,
+      fromStage: stageLabel(before),
+      toStage: stageLabel(after),
       action,
       reason,
       sourceHash: after.sourceHash,
@@ -306,7 +461,10 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
     }
     // A paused manager stage needs no manager configured — the request enters
     // the HR verification stage instead (see lib/approvalStagePolicy.js).
-    const needsManager = requiresLineManager(input.kind);
+    const matrix = MATRIX_KINDS.includes(input.kind)
+      ? await loadPublishedMatrix(tx, env.tenantId, input.kind)
+      : null;
+    const needsManager = !matrix && requiresLineManager(input.kind);
     const manager = needsManager
       ? await tx.employee.findFirst({
           where: { tenant_id: env.tenantId, id: source.who.managerId ?? -1 },
@@ -322,11 +480,15 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
     )
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
+    const route = matrix ? await sealRoute(tx, env, input.kind, matrix, source) : null;
     const data = {
       // The canonical owner code of the source, not the caller's: identical for
       // a self submission, the employee's for an on-behalf one.
       employeeCode: source.who.employee_code,
-      stage: stageAfterSubmission(input.kind),
+      stage: route ? "LEVEL" : stageAfterSubmission(input.kind),
+      route: route ?? Prisma.DbNull,
+      level: route ? route.levels.findIndex((l) => l.engaged) : null,
+      pendingCodes: route ? route.levels.find((l) => l.engaged).approverCodes : [],
       managerCode: manager?.employee_code ?? null,
       managerActorCode: null,
       hrActorCode: null,
@@ -364,7 +526,8 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
     // SUBMIT into HR, then VERIFY by the same filer into MANAGEMENT — so the
     // auto-verification is visible rather than implied.
     let current = next;
-    if (onBehalf && isVerifiedOnBehalf(input.kind) && next.stage === "HR") {
+    if (route) current = await settleAutoLevels(tx, env, next, source, input.reason);
+    else if (onBehalf && isVerifiedOnBehalf(input.kind) && next.stage === "HR") {
       current = await tx.hrApprovalRequest.update({
         where: { id: next.id },
         data: {
@@ -447,6 +610,8 @@ export function actApproval(raw) {
     if (input.action === "WITHDRAW") {
       data.stage = "WITHDRAWN";
       data.execution = "APPLIED";
+    } else if (row.stage === "LEVEL") {
+      Object.assign(data, await levelTransition(tx, env, row, source, input));
     } else if (input.action === "REVERT") {
       data.stage = hrRevertTarget(row.stage);
       data.verification = null;
@@ -615,6 +780,15 @@ export function listApprovals(raw) {
                   { managerActorCode: null },
                   { managerActorCode: { notIn: env.identityCodes } },
                 ],
+              },
+            ]
+          : []),
+        ...(["manager", "verify", "approve"].some((k) => permits(env, k))
+          ? [
+              {
+                stage: "LEVEL",
+                employeeCode: { notIn: env.identityCodes },
+                pendingCodes: { hasSome: env.identityCodes },
               },
             ]
           : []),

@@ -91,6 +91,8 @@ try {
   await db.query(tracker.slice(tracker.indexOf('-- TRACKER_SECURITY')));
   const approvals=await readFile('prisma/migrations/20261015120000_hr_approval_workflow/migration.sql','utf8');
   await db.query(approvals.slice(approvals.indexOf('-- Approval security guards')));
+  const matrix=await readFile('prisma/migrations/20261030090000_approval_matrix/migration.sql','utf8');
+  await db.query(matrix.slice(matrix.indexOf('-- APPROVAL_MATRIX_SECURITY')));
   const workspace=await readFile('prisma/migrations/20261020090000_attendance_workspace/migration.sql','utf8');
   await db.query(workspace.slice(workspace.indexOf('-- WORKSPACE_SECURITY')));
   const acceptance=await readFile('prisma/migrations/20261020120000_attendance_onsite_acceptance/migration.sql','utf8');
