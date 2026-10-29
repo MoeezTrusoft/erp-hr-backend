@@ -27,6 +27,7 @@ const level = z
     name: z.string().describe("Level name shown in the Approval Centre"),
     action: z.enum(["RECOMMEND", "VERIFY", "APPROVE"]).describe("What the approver does. Only the last level may APPROVE"),
     required: z.boolean().optional().describe("A required level cannot be skipped (default true)"),
+    paused: z.boolean().optional().describe("Keep the level in the route but skip it for now (default false). The deciding level cannot pause"),
     approverMode: z.enum(["NAMED", "EMPLOYEE_MANAGER"]).describe("Named employees, or the subject employee's line manager"),
     approverIds: z.array(z.coerce.number().int().positive()).optional().describe("Employee ids when NAMED"),
     canReject: z.boolean().optional().describe("May reject / recommend rejection (default true)"),

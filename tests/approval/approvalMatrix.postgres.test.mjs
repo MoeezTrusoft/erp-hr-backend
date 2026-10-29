@@ -233,6 +233,39 @@ test("ATTENDANCE: a changed line manager invalidates the recommendation level", 
   }
 });
 
+test("a paused line-manager level stays in the route but is skipped; un-pausing switches it on", async () => {
+  const route = (paused) => [
+    { name: "Line manager", action: "RECOMMEND", approverMode: "EMPLOYEE_MANAGER", required: false, paused },
+    level("HR verification", "VERIFY", "HR"),
+    level("Management", "APPROVE", "MANAGEMENT"),
+  ];
+  await publish("ATTENDANCE", route(true));
+  const paused = await submit(await fixture("ATTENDANCE"));
+  assert.equal(paused.stage, "LEVEL");
+  assert.equal(paused.level, 1);
+  assert.deepEqual(paused.pendingCodes, [people.HR.employee_code]);
+  assert.deepEqual(paused.route.levels.map((l) => [l.name, l.engaged, l.skipped]), [
+    ["Line manager", false, "PAUSED"], ["HR verification", true, null], ["Management", true, null],
+  ]);
+  assert.equal(paused.history[0].toStage, "LEVEL 2: HR verification");
+  await assert.rejects(act("MANAGER", paused, "RECOMMEND_APPROVAL"), /cannot perform this action/);
+  // Un-pause: the employee's own manager (dynamic) is asked first.
+  await publish("ATTENDANCE", route(false));
+  const live = await submit(await fixture("ATTENDANCE"));
+  assert.equal(live.level, 0);
+  assert.deepEqual(live.pendingCodes, [people.MANAGER.employee_code]);
+  // An employee without a manager skips the optional level instead of blocking.
+  await db((tx) => tx.employee.update({ where: { id: people.EMPLOYEE.id }, data: { managerId: null } }));
+  try {
+    const noManager = await submit(await fixture("ATTENDANCE"));
+    assert.equal(noManager.route.levels[0].skipped, "NO_APPROVER");
+    assert.equal(noManager.level, 1);
+  } finally {
+    await db((tx) => tx.employee.update({ where: { id: people.EMPLOYEE.id }, data: { managerId: people.MANAGER.id } }));
+  }
+  await assert.rejects(call(matrix.saveApprovalMatrixDraft, { kind: "ATTENDANCE", levels: [level("Management", "APPROVE", "MANAGEMENT", { paused: true })] }), /cannot be paused/);
+});
+
 test("without a published matrix both kinds keep the four fixed stages (nothing in flight changes)", async () => {
   await retire("ATTENDANCE");
   await retire("PAYROLL");
