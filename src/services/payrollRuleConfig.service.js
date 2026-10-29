@@ -14,14 +14,11 @@ function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
 }
 
-// The six boolean policy toggles editable on the Pay Rules screen.
+// The boolean policy toggles the payroll engine reads.
 const BOOL_KEYS = [
   "midMonthJoinerProration",
-  "midMonthExitSettlement",
   "lwpRecovery",
-  "complianceHold",
   "garnishmentRecovery",
-  "offCycleRelease",
   // Banking paused: bank details are not required, salaries are paid in cash.
   "cashDisbursement",
   // HR-PAYROLL-EOBI-01. Off for every tenant until someone deliberately turns
@@ -41,12 +38,9 @@ function defaultRules() {
   return {
     id: null,
     midMonthJoinerProration: true,
-    midMonthExitSettlement: true,
     lwpRecovery: true,
-    complianceHold: true,
     garnishmentRecovery: true,
     garnishmentCapPct: 33,
-    offCycleRelease: true,
     cashDisbursement: false,
     // HR-PAYROLL-DEDUCTION-BASIS-01 — a deducted day is charged against the
     // contracted package (base + allowances) over the month's calendar days.
@@ -65,9 +59,18 @@ function defaultRules() {
   };
 }
 
+// Columns kept in the table but never read by the payroll engine; they are not part of the API.
+const UNUSED_COLUMNS = ["midMonthExitSettlement", "complianceHold", "offCycleRelease"];
+export function publicRules(row) {
+  if (!row) return row;
+  const rest = { ...row };
+  for (const key of UNUSED_COLUMNS) delete rest[key];
+  return rest;
+}
+
 export async function getPayrollRules({ tenantId }) {
   const row = await prisma.payrollRuleConfig.findUnique({ where: { tenantId } });
-  return row ?? defaultRules();
+  return publicRules(row ?? defaultRules());
 }
 
 export async function updatePayrollRules({ tenantId, ...toggles }) {
@@ -127,5 +130,5 @@ export async function updatePayrollRules({ tenantId, ...toggles }) {
   });
 
   logger.info({ id: row.id }, "payroll rules updated");
-  return row;
+  return publicRules(row);
 }
