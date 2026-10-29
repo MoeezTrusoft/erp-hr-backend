@@ -28,12 +28,9 @@ function conflict(message) {
 // defaultRules() on the target — deliberate (defaults are August-identical).
 const RULE_CONFIG_KEYS = [
   "midMonthJoinerProration",
-  "midMonthExitSettlement",
   "lwpRecovery",
-  "complianceHold",
   "garnishmentRecovery",
   "garnishmentCapPct",
-  "offCycleRelease",
   "cashDisbursement",
   "deductionBasis",
   "eobiEnabled",
