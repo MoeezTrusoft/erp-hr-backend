@@ -16,6 +16,7 @@
 //
 // PERIOD DEFAULT: when from/to (or month) are omitted we default to the CURRENT
 // calendar month, computed from new Date().
+import { levelStageLabel } from "../lib/approvalMatrix.js";
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
@@ -1084,7 +1085,7 @@ export async function listCheckInOuts({
         kind: "ATTENDANCE",
         sourceRef: { in: approvalRefs },
       }),
-      select: { id: true, sourceRef: true, stage: true, version: true, updatedAt: true },
+      select: { id: true, sourceRef: true, stage: true, route: true, level: true, version: true, updatedAt: true },
     });
     for (const request of requests)
       approvalByAnomaly.set(String(request.sourceRef).split("@")[0], request);
@@ -1142,6 +1143,8 @@ export async function listCheckInOuts({
         // Null for a row decided through the legacy chain, which the FE already
         // renders from `decisions`.
         stage: approval?.stage ?? null,
+        // A request on a configured route waits at stage LEVEL: say which level.
+        stageLabel: levelStageLabel(approval?.route, approval?.level),
         approvalRef: approval?.id ?? null,
         type: an.type,
         submittedAt: an.createdAt,

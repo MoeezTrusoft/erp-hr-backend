@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 938717bb875654a74d5af8d5ed92c0a0e5a76f22 # contracts 0.19.0 appraisal candidate (erp-contracts PR #19)
+          ref: 9c53ceb3b4f46065ea174fc715bdc8a3db354628 # contracts 0.19.0 appraisal candidate (erp-contracts PR #19)
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 938717bb875654a74d5af8d5ed92c0a0e5a76f22
+          ref: 9c53ceb3b4f46065ea174fc715bdc8a3db354628
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false

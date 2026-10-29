@@ -1,3 +1,4 @@
+import { levelStageLabel } from "../lib/approvalMatrix.js";
 import { randomUUID } from "node:crypto";
 import { legacyDecision } from './approval/legacy.js';
 import { requireApproval } from './approval/adapters.js';
@@ -192,7 +193,7 @@ export async function myAttendanceDay({user},db=prisma) {
   let nextShift=null;
   for(const next of dateRange(addDays(day,1),addDays(day,14),14)) {const info=runtime.resolve(employee.id,next);if(info.working && info.shift?.start){nextShift={date:next,...info.shift};break;}}
   const [record,requests]=await Promise.all([db.attendance.findFirst({where:{tenantId:user.tenantId,employeeId:employee.id,date:dateOnly(day)}}),db.hrApprovalRequest.findMany({where:{tenantId:user.tenantId,employeeCode:employee.employee_code,kind:{in:['ATTENDANCE_CORRECTION','ATTENDANCE','LEAVE','OVERTIME','SHIFT_SWAP','TIME_CREDIT']}},orderBy:{updatedAt:'desc'},take:10})]);
-  return {linked:true,employeeCode:employee.employee_code,date:day,timeZone:zone,shift:plan.shift,calendar:plan.calendarStatus || (plan.working?'WORKDAY':plan.reason),sites:(plan.sites||[]).filter(site=>plan.siteAssignment?.siteIds?.includes(site.id)).map(site=>site.name),record:record?{checkIn:record.check_in,checkOut:record.check_out,status:record.status,processing:record.processingState}:null,nextShift,requests:requests.map(r=>({reference:r.id,sourceRef:r.sourceRef,kind:r.kind,stage:r.stage,updatedAt:r.updatedAt}))};
+  return {linked:true,employeeCode:employee.employee_code,date:day,timeZone:zone,shift:plan.shift,calendar:plan.calendarStatus || (plan.working?'WORKDAY':plan.reason),sites:(plan.sites||[]).filter(site=>plan.siteAssignment?.siteIds?.includes(site.id)).map(site=>site.name),record:record?{checkIn:record.check_in,checkOut:record.check_out,status:record.status,processing:record.processingState}:null,nextShift,requests:requests.map(r=>({reference:r.id,sourceRef:r.sourceRef,kind:r.kind,stage:r.stage,stageLabel:levelStageLabel(r.route,r.level),updatedAt:r.updatedAt}))};
 }
 export async function exportAttendanceRecords({user,...filters},db=prisma) {
   dateRange(filters.from,filters.to,92);

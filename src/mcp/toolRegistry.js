@@ -62,6 +62,7 @@ import { registerOnboardingPortalScreenTools } from "./tools/onboardingPortalScr
 import { registerEmployeeImportTools } from "./tools/employeeImportTools.js";
 import { registerAttendanceImportTools } from "./tools/attendanceImportTools.js";
 import { registerAttendancePunchImportTools } from "./tools/attendancePunchImportTools.js";
+import { registerApprovalMatrixTools } from "./tools/approvalMatrixTools.js";
 import { registerRegionTools } from "./tools/regionTools.js";
 import { registerHolidayCalendarTools } from "./tools/holidayCalendarTools.js";
 import { registerPerformanceConfigTools } from "./tools/performanceConfigTools.js";
@@ -320,6 +321,7 @@ export function registerAllTools(server) {
   registerEmployeeImportTools(server);
   registerAttendanceImportTools(server);
   registerAttendancePunchImportTools(server);
+  registerApprovalMatrixTools(server);
   registerAttendanceCaptureTools(server);
   registerRegionTools(server);
   registerHolidayCalendarTools(server);

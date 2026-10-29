@@ -66,7 +66,7 @@ const RLS_MODELS = new Set([
     'PayrollFinanceSummary',
     'AttendanceAcceptanceSite', 'AttendanceAcceptanceAudit', 'AttendanceAcceptanceEvidence',
     'HrSetupReview', 'HrSetupAudit', 'HrSetupReceipt', 'HrSetupTask', 'HrSetupEvidence',
-    'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt',
+    'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt', 'ApprovalMatrix',
     'EmployeeCodeConfiguration', 'EmployeeCodeSequence', 'EmployeeCodeReservation', 'EmployeeCodeAlias', 'EmployeeCategoryConversion', 'SeparationPolicy', 'Separation', 'EmploymentCommandReceipt', 'EmploymentDelivery', 'SeparationTransition', 'NoticePeriodRecord', 'ReplacementPlan', 'ReplacementSession', 'KnowledgeTransferItem', 'AssetHandoverItem', 'AccessRevocationTask', 'ClearanceItem', 'ExitInterview', 'FinalSettlementSheet', 'SeparationDocument', 'SeparationSourceSnapshot',
     'AssessmentIdentity', 'AssessmentCategory', 'AssessmentTaskVersion', 'AssessmentProfileVersion', 'AssessmentProfileTask', 'AssessmentGuideVersion', 'EmployeeAssessmentProfile', 'AssessmentQualification', 'AssessmentConfiguration', 'AssessmentTriggerPolicy', 'AssessmentAssignment', 'AssessmentRevision', 'AssessmentObservation', 'AssessmentDimension', 'AssessmentCase', 'AssessmentEvidence', 'AssessmentEvidenceLink', 'AssessmentTimingSample', 'AssessmentBenchmark', 'AssessmentSignOff', 'AssessmentRestriction', 'AssessmentCapability', 'AssessmentAudit', 'AssessmentAutomationRun', 'AssessmentException', 'AssessmentInboxEvent', 'AssessmentIntegration', 'AssessmentAppraisalInput', 'AssessmentCodeChange', 'AssessmentNotification',
     'AttendanceExportJob', 'AttendanceSavedView', 'AttendanceCorrectionRequest', 'AttendanceGraceRule', 'AttendanceGraceMembership', 'AttendanceManualTime',
