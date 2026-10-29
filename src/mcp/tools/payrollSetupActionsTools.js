@@ -49,18 +49,10 @@ export function registerPayrollSetupActionsTools(server) {
         .boolean()
         .optional()
         .describe("Pro-rate a mid-month joiner's pay by calendar days from join date (PayrollRuleConfig.midMonthJoinerProration)"),
-      midMonthExitSettlement: z
-        .boolean()
-        .optional()
-        .describe("Unsupported legacy setting; final settlement uses the separation workflow"),
       lwpRecovery: z
         .boolean()
         .optional()
         .describe("Recover approved unpaid leave using the published deduction basis and calendar-day divisor"),
-      complianceHold: z
-        .boolean()
-        .optional()
-        .describe("Unsupported legacy setting; statutory filing evidence is not an automatic bank integration"),
       garnishmentRecovery: z
         .boolean()
         .optional()
@@ -71,10 +63,6 @@ export function registerPayrollSetupActionsTools(server) {
         .max(100)
         .optional()
         .describe("Loan recovery cap as a percent of gross pay, 0-100 (PayrollRuleConfig.garnishmentCapPct)"),
-      offCycleRelease: z
-        .boolean()
-        .optional()
-        .describe("Unsupported legacy setting; off-cycle payroll release is not implemented"),
       cashDisbursement: z
         .boolean()
         .optional()
