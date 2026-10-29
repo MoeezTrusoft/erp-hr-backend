@@ -52,6 +52,26 @@ describe("approval matrix rules", () => {
     expect(own.levels[0].approverCodes).toEqual(["EMP-HR"]);
   });
 
+  it("keeps a paused level in the route but skips it, without needing approvers or a manager", () => {
+    const manager = (l) => (l.approverMode === "EMPLOYEE_MANAGER" ? [null] : approvers(l));
+    const levels = parseLevels("ATTENDANCE", [
+      { name: "Line manager", action: "RECOMMEND", approverMode: "EMPLOYEE_MANAGER", paused: true },
+      named("Management", "APPROVE", [2]),
+    ]);
+    expect(levels[0].paused).toBe(true);
+    const route = buildRoute({ kind: "ATTENDANCE", matrixVersion: 2, levels, initiator: "EMP-STAFF", subject: "EMP-STAFF", amount: 0, approvers: manager });
+    expect(route.levels[0]).toMatchObject({ engaged: false, skipped: "PAUSED", paused: true, approverCodes: [] });
+    expect(nextActionable(route, 0)).toEqual({ index: 1, codes: ["EMP-MGMT"] });
+    // Un-paused with no manager: an optional level is skipped, a required one blocks the submission.
+    const live = parseLevels("ATTENDANCE", [{ name: "Line manager", action: "RECOMMEND", approverMode: "EMPLOYEE_MANAGER", required: false }, named("Management", "APPROVE", [2])]);
+    const noManager = buildRoute({ kind: "ATTENDANCE", matrixVersion: 2, levels: live, initiator: "EMP-STAFF", subject: "EMP-STAFF", amount: 0, approvers: manager });
+    expect(noManager.levels[0].skipped).toBe("NO_APPROVER");
+  });
+
+  it("never pauses the deciding level", () => {
+    expect(() => parseLevels("PAYROLL", [named("Management", "APPROVE", [2], { paused: true })])).toThrow(/cannot be paused/);
+  });
+
   it("blocks a required level nobody can act on, and skips an optional one", () => {
     expect(() => seal([named("HR only", "VERIFY", [1]), named("Management", "APPROVE", [2])])).toThrow(/no active approver other than the initiator/);
     const route = seal([named("HR only", "VERIFY", [1], { required: false }), named("Management", "APPROVE", [2])]);

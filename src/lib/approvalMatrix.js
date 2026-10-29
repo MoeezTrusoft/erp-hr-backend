@@ -34,6 +34,9 @@ const Level = z
     name: z.string().trim().min(1).max(60),
     action: z.enum(LEVEL_ACTIONS),
     required: z.boolean().default(true),
+    // A paused level stays in the route but is skipped, exactly like the paused manager stage of
+    // the fixed stages. Un-pause it to switch it back on; the last (deciding) level cannot pause.
+    paused: z.boolean().default(false),
     approverMode: z.enum(APPROVER_MODES),
     approverIds: z.array(z.number().int().positive()).max(20).default([]),
     canReject: z.boolean().default(true),
@@ -71,7 +74,8 @@ export function parseLevels(kind, raw) {
       throw bad(`${at}: only the last level can approve`);
     if (last && l.action !== "APPROVE")
       throw bad(`${at}: the last level must approve`);
-    if (l.approverMode === "NAMED" && !l.approverIds.length)
+    if (last && l.paused) throw bad(`${at}: the deciding level cannot be paused`);
+    if (l.approverMode === "NAMED" && !l.approverIds.length && !l.paused)
       throw bad(`${at}: assign at least one approver`);
     if (l.approverMode === "EMPLOYEE_MANAGER" && l.approverIds.length)
       throw bad(`${at}: remove the named approvers or choose named approvers`);
@@ -102,6 +106,12 @@ const uniq = (codes) => [...new Set(codes.filter(Boolean))];
 export function buildRoute({ kind, matrixVersion, levels, initiator, subject, amount, approvers }) {
   const sealed = levels.map((l, i) => {
     const at = `Level ${i + 1} (${l.name})`;
+    if (l.paused)
+      return {
+        index: i, name: l.name, action: l.action, required: l.required, paused: true,
+        canReject: l.canReject, canReturn: l.canReturn, approverCodes: [],
+        viaManager: l.approverMode === "EMPLOYEE_MANAGER", engaged: false, auto: false, skipped: "PAUSED",
+      };
     const assigned = uniq(approvers(l));
     const eligible = assigned.filter((c) => c !== initiator && c !== subject);
     const out = {
