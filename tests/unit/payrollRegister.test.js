@@ -27,3 +27,16 @@ it('retains employment deduction explanations in the register',()=>{
  const m=buildPayrollRegister({run,payslips:[{...slip,deductions:[{amount:'15.25',description:'Joining/leaving date deduction (20 days outside employment)',deductionType:{code:'EMPLOYMENT_PRORATION'}}]}]});
  expect(m.offices[0].departments[0].rows[0].employmentDeductions).toEqual([{amount:1525n,description:'Joining/leaving date deduction (20 days outside employment)'}]);expect(m.totals.otherDeductions).toBe(1525n);
 });
+
+it('shows the employee full name, and falls back to the code when no name is recorded',()=>{
+ const named=buildPayrollRegister({run,payslips:[{...slip,employee:{...slip.employee,employee_name:'Asad Ullah',employee_code:'EMP-00482'}}]});
+ expect(named.offices[0].departments[0].rows[0].name).toBe('Asad Ullah');
+ const unnamed=buildPayrollRegister({run,payslips:[{...slip,employee:{...slip.employee,employee_name:null,employee_code:'EMP-00482'}}]});
+ expect(unnamed.offices[0].departments[0].rows[0].name).toBe('EMP-00482');
+});
+
+it('names the PDF after the month and the company',async()=>{
+ const {payrollRegisterFilename}=await import('../../src/services/payrollRegisterPdf.service.js');
+ expect(payrollRegisterFilename({run:{periodStart:new Date('2026-09-01T00:00:00Z')},companyName:'TruSoft'})).toBe('September Payroll - TruSoft.pdf');
+ expect(payrollRegisterFilename({run:{periodStart:new Date('2026-10-01T00:00:00Z')},companyName:'A/B'})).toBe('October Payroll - AB.pdf');
+});

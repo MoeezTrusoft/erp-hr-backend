@@ -1,5 +1,5 @@
 import * as money from './money.js';
-const name=e=>e.employee_code||'Employee code required';
+const name=e=>e.employee_name||e.employee_code||'Employee code required';
 const keys=['basic','otherEarnings','bonus','commission','gross','tax','advance','loan','otherDeductions','deductions','net'];
 const empty=()=>Object.fromEntries(keys.map(k=>[k,0n]));
 export function buildPayrollRegister({run,payslips,companyName='',signatories=[]}){
