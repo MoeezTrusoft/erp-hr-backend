@@ -37,6 +37,22 @@ export const stageAfterSubmission = (kind) =>
 // Whether submission needs an active independent line manager to be configured.
 export const requiresLineManager = (kind) => !isStagePaused(kind, "LINE_MANAGER");
 
+// Employee-originated time and money requests do not stop when the employee has no usable line manager (none set, the
+// submitter as their own manager, or an inactive manager). They enter HR verification instead, and the submission's audit row
+// records the jump. Found 2026-10-31: no Trusoft employee has a manager, so leave could not be submitted at all (HR-4200).
+// Performance, goals and the other kinds keep the hard requirement: a review needs an independent reviewer.
+const HR_WHEN_NO_MANAGER = Object.freeze([
+  "LEAVE",
+  "OVERTIME",
+  "CLAIM",
+  "LOAN",
+  "SHIFT_SWAP",
+  "TIME_CREDIT",
+  "ATTENDANCE_CORRECTION",
+]);
+
+export const skipsManagerWhenNone = (kind) => HR_WHEN_NO_MANAGER.includes(kind);
+
 // Operator decision (2026-10-28): a request that HR raises ON BEHALF of an
 // employee is HR-verified by the act of raising it. HR has already reviewed the
 // day and filed the case, so a second HR verification of the same request would

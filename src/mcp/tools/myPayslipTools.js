@@ -204,4 +204,30 @@ export function registerMyPayslipTools(server) {
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_payslip_question_create")
   );
+
+  // Self-service twin of hr_payslip_question_create. The gateway maps the original to hr.payroll.create (a payroll admin
+  // permission, GW-1431 for every employee: issue 154) and cannot be changed from here. This one carries no gateway mapping, like
+  // the other hr_my_payslip* tools, so the gate is the identity check below: the question is always about the caller's OWN slip.
+  server.tool(
+    "hr_my_payslip_question_create",
+    "Ask a question about your own payslip (creates an OPEN PayslipQuestion). Self-service: only the caller's own payslips",
+    {
+      payslipId: z.coerce.number().int().positive().describe("PayrollPayslip.id of YOUR payslip"),
+      question: z.string().min(1).describe("Your question about the payslip"),
+    },
+    withToolError(async ({ payslipId, question }) => {
+      const { user, permissions, correlationId } = getCtx();
+      assertSelfOrPayrollRead(user, permissions);
+      const empId = resolveEmployeeId(user, permissions, undefined, { allowUnbound: false });
+      const data = await questionPayslip({
+        tenantId: user.tenantId,
+        employeeId: empId,
+        payslipId,
+        question,
+        employeeScoped: true,
+        ctx: { actorId: user.userId ?? user.employeeId, correlationId },
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_my_payslip_question_create")
+  );
 }
