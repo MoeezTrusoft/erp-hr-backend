@@ -109,6 +109,20 @@ describe('TS-SUBMIT-01 — gate 2: zero unresolved anomaly requests (NO override
     expect(state.createdRuns).toHaveLength(0);
   });
 
+  it('counts a rules-v2 case only once it was raised; an unraised one is charged at payroll', async () => {
+    state.calendar = { attendanceCutoff: new Date(Date.now() - 86400e3) };
+    state.anomalies = 0;
+    const { default: prisma } = await import('../../src/lib/prisma.js');
+    prisma.attendanceAnomaly.count.mockClear();
+    await submitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 });
+    const { where } = prisma.attendanceAnomaly.count.mock.calls[0][0];
+    expect(where.OR).toEqual([
+      { sourceKind: 'PAPER_FORM' },
+      { sourceKind: 'RULES_V2', raisedById: { not: null } },
+    ]);
+    expect(where.status).toEqual({ in: ['PENDING'] });
+  });
+
   it('passes when all anomaly requests are resolved', async () => {
     state.calendar = { attendanceCutoff: new Date(Date.now() - 86400e3) };
     state.anomalies = 0;

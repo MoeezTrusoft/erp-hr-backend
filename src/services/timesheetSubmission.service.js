@@ -131,7 +131,9 @@ async function pendingAnomalyCount(tenantId, { from, to }, db = prisma) {
     where: scopedWhere(tenantId, {
       date: { gte: from, lte: to },
       status: { in: PENDING_ANOMALY_STATUSES },
-      sourceKind: {in:["PAPER_FORM","RULES_V2"]},
+      // A rules-v2 case blocks only once someone raised it: an unraised one is charged at payroll
+      // (operator, 2026-10-30), so it is not an open request.
+      OR: [{ sourceKind: "PAPER_FORM" }, { sourceKind: "RULES_V2", raisedById: { not: null } }],
       evidenceState: 'ACTIVE',
     }),
   });
