@@ -12,7 +12,7 @@ test('employee drafts, immutable evidence, concurrency and final missing-time ap
   await setup();
   const date = '2026-02-12';
   const [session] = await db(tx => replayTenant({ tenantId: company, employeeIds: [people.EMPLOYEE.id], from: date, to: date, db: tx, includeEmpty: true }));
-  const input = { id: randomUUID(), version: 0, date, sessionKey: session.sessionKey, checkIn: '09:00:01', checkOut: '17:00:00', reason: 'Reader missed the recorded arrival', evidence: 'TEST-REGISTER-012: supervised arrival and departure record', reasonCategory:'MISSED_PUNCH',evidenceDate:date };
+  const input = { id: randomUUID(), version: 0, date, sessionKey: session.sessionKey, checkIn: '09:01:00', checkOut: '17:00:00', reason: 'Reader missed the recorded arrival', evidence: 'TEST-REGISTER-012: supervised arrival and departure record', reasonCategory:'MISSED_PUNCH',evidenceDate:date };
   await assert.rejects(enterRuleTime({ user: { tenantId: company, roles: ['HR Manager'] } }), e => e.status === 410);
   await assert.rejects(as('EMPLOYEE', () => saveCorrectionRequest({ ...input, checkOut: '23:00:00' })), /cutoff/);
   let draft = await as('EMPLOYEE', () => saveCorrectionRequest({...input,checkIn:null,checkOut:null,reason:'',evidence:'',reasonCategory:null,evidenceDate:null}));
@@ -38,7 +38,7 @@ test('employee drafts, immutable evidence, concurrency and final missing-time ap
   assert.equal(request.execution, 'APPLIED');
   const marks = await db(tx => tx.attendanceManualTime.findMany({ where: { tenantId: company, employeeId: people.EMPLOYEE.id } }));
   assert.equal(marks.length, 2);
-  assert.equal(marks.find(p => p.direction === 'IN').timestamp.toISOString(), date + 'T09:00:01.000Z');
+  assert.equal(marks.find(p => p.direction === 'IN').timestamp.toISOString(), date + 'T09:01:00.000Z');
   assert.ok(marks.every(p => p.actorId === people.MANAGEMENT.employee_code));
   const attendance = await db(tx => tx.attendance.findFirst({ where: { tenantId: company, employeeId: people.EMPLOYEE.id, date: new Date(date) } }));
   assert.equal(attendance.status, 'LATE');
