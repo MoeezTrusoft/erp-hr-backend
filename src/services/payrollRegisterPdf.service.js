@@ -8,7 +8,7 @@ export async function loadPayrollRegister({tenantId,runId,companyName}){
  if(!Number.isInteger(runId)||runId<1)throw Object.assign(new Error('Select a payroll run'),{status:400});
  const run=await prisma.payrollRun.findFirst({where:{tenantId,id:runId}});
  if(!run)throw Object.assign(new Error('Payroll run not found'),{status:404});
- const payslips=await prisma.payrollPayslip.findMany({where:{tenantId,payrollRunId:runId},include:{employee:{select:{employee_code:true,job_title:true,businessUnit:{select:{name:true}},additional_fields:true}},earnings:{include:{earningType:true}},deductions:{include:{deductionType:true}}},orderBy:{employeeId:'asc'}});
+ const payslips=await prisma.payrollPayslip.findMany({where:{tenantId,payrollRunId:runId},include:{employee:{select:{employee_code:true,employee_name:true,job_title:true,businessUnit:{select:{name:true}},additional_fields:true}},earnings:{include:{earningType:true}},deductions:{include:{deductionType:true}}},orderBy:{employeeId:'asc'}});
  if(!payslips.length)throw Object.assign(new Error('Process the payroll run before exporting its register'),{status:409});
  const missingDayIds=payslips.filter(p=>p.payableDays==null).map(p=>p.id);
  const dayAudits=missingDayIds.length ? await prisma.payrollAuditLog.findMany({where:{tenantId,payrollRunId:runId,payslipId:{in:missingDayIds},action:{in:['PAYSLIP_CREATED','PAYSLIP_REPROCESSED']}},orderBy:[{created_at:'desc'},{id:'desc'}],distinct:['payslipId'],select:{payslipId:true,newValues:true}}) : [];
@@ -18,7 +18,10 @@ export async function loadPayrollRegister({tenantId,runId,companyName}){
  const approval=await prisma.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(runId)}}});
  const actions=approval ? await prisma.hrApprovalAudit.findMany({where:{tenantId,approvalRef:approval.id},orderBy:{version:'desc'}}) : [];
  const approved=actions.find(a=>a.action==='APPROVE');
- const defaults=[{label:'INITIATOR',name:approval?.employeeCode||''},{label:'LINE MANAGER',name:approval?.managerActorCode||''},{label:'HR VERIFICATION',name:approval?.hrActorCode||''},{label:'MANAGEMENT',name:approved?.actorCode||''}];
+ const codes=[approval?.employeeCode,approval?.managerActorCode,approval?.hrActorCode,approved?.actorCode].filter(Boolean);
+ const people=codes.length ? await prisma.employee.findMany({where:{tenant_id:tenantId,employee_code:{in:codes}},select:{employee_code:true,employee_name:true}}) : [];
+ const fullName=code=>code ? (people.find(p=>p.employee_code===code)?.employee_name||code) : '';
+ const defaults=[{label:'INITIATOR',name:fullName(approval?.employeeCode)},{label:'LINE MANAGER',name:fullName(approval?.managerActorCode)},{label:'HR VERIFICATION',name:fullName(approval?.hrActorCode)},{label:'MANAGEMENT',name:fullName(approved?.actorCode)}];
  return buildPayrollRegister({run,payslips,companyName:profile?.companyName||companyName,signatories:defaults});
 }
 export function renderPayrollRegister(model){
@@ -34,8 +37,8 @@ export function renderPayrollRegister(model){
  const period=new Date(model.run.periodStart).toLocaleDateString('en-GB',{month:'long',year:'numeric',timeZone:'UTC'});
  function header(){
   y=24;text(`${model.companyName||'Payroll'} - ${period}`,M,y,W,23,{bold:true,color:teal,size:14});y+=24;
-  text(`Run #${model.run.id} | ${model.currency} | ${model.run.status} | ${model.count} employees | Blank signatures are not approval records`,M,y,W,16,{size:7});y+=19;
-  for(let i=0;i<15;i++){const span=[0,1,2,3,14].includes(i);box(x[i],y,widths[i],span?38:19,teal);if(span)text(['#','Employee Code','Position','Paid\nDays'][i]||'Net Pay',x[i],y+5,widths[i],33,{bold:true,align:'center',color:'white',size:7.5});}
+  y+=4;
+  for(let i=0;i<15;i++){const span=[0,1,2,3,14].includes(i);box(x[i],y,widths[i],span?38:19,teal);if(span)text(['#','Employee','Position','Paid\nDays'][i]||'Net Pay',x[i],y+5,widths[i],33,{bold:true,align:'center',color:'white',size:7.5});}
   box(x[4],y,x[9]-x[4],19,teal);text('Earnings',x[4],y,x[9]-x[4],19,{bold:true,align:'center',color:'white'});
   box(x[9],y,x[14]-x[9],19,teal);text('Deductions',x[9],y,x[14]-x[9],19,{bold:true,align:'center',color:'white'});
   ['Basic','Allowances','Bonus','Comm','Gross','WHT','Adv.','Loan','Other','Total'].forEach((label,j)=>{const i=j+4;box(x[i],y+19,widths[i],19,teal);text(label,x[i],y+19,widths[i],19,{bold:true,align:'center',color:'white'});});y+=38;
@@ -62,9 +65,9 @@ export function renderPayrollRegister(model){
  ensure(190);band('Consolidated office summary');
  total('Payroll Totals - All offices',model.totals,'#cde7e5');y+=17;
  const labels=model.signatories.map((s,i)=>s.label||['PREPARED BY','VERIFIED BY','AUTHORIZED BY','APPROVED BY'][i]),gap=9,sw=(W-(labels.length-1)*gap)/labels.length;
- labels.forEach((label,i)=>{const xx=M+i*(sw+gap),s=model.signatories[i]||{};box(xx,y,sw,96,'#ffffff');box(xx,y,sw,24,pale);text(label,xx,y+3,sw,22,{bold:true,align:'center',color:teal});text(s.name||'',xx+5,y+32,sw-10,20,{bold:true,size:8});text(s.title||'',xx+5,y+52,sw-10,16,{size:7});doc.moveTo(xx+9,y+79).lineTo(xx+sw/2-6,y+79).stroke().moveTo(xx+sw/2+6,y+79).lineTo(xx+sw-9,y+79).stroke();text('DATE',xx+5,y+80,sw/2,14,{size:5});text('SIGNATURE',xx+sw/2+2,y+80,sw/2-5,14,{size:5});});y+=105;
+ labels.forEach((label,i)=>{const xx=M+i*(sw+gap),s=model.signatories[i]||{};box(xx,y,sw,96,'#ffffff');box(xx,y,sw,24,pale);text(label,xx,y+3,sw,22,{bold:true,align:'center',color:teal});text(s.name||'',xx+5,y+32,sw-10,20,{bold:true,size:8});text(s.title||'',xx+5,y+52,sw-10,16,{size:7});doc.moveTo(xx+9,y+79).lineTo(xx+sw/2-6,y+79).stroke().moveTo(xx+sw/2+6,y+79).lineTo(xx+sw-9,y+79).stroke();text('SIGNATURE',xx+5,y+80,sw/2,14,{size:5});text('DATE',xx+sw/2+2,y+80,sw/2-5,14,{size:5});});y+=105;
  text('Paid days reflect payroll proration and recorded attendance/leave deductions; "-" means insufficient payroll evidence. Department and position use employee records.',M,y,W,25,{size:6.5});
- const pages=doc.bufferedPageRange();for(let p=0;p<pages.count;p++){doc.switchToPage(p);const oldBottom=doc.page.margins.bottom;doc.page.margins.bottom=0;doc.font('Helvetica').fontSize(7).fillColor('#536b6b').text(`Confidential payroll | Run #${model.run.id} | Page ${p+1} of ${pages.count}`,M,doc.page.height-22,{width:W,align:'right',lineBreak:false});doc.page.margins.bottom=oldBottom;}
+ const pages=doc.bufferedPageRange();for(let p=0;p<pages.count;p++){doc.switchToPage(p);const oldBottom=doc.page.margins.bottom;doc.page.margins.bottom=0;doc.font('Helvetica').fontSize(7).fillColor('#536b6b').text(`Page ${p+1} of ${pages.count}`,M,doc.page.height-22,{width:W,align:'right',lineBreak:false});doc.page.margins.bottom=oldBottom;}
  doc.end();
  });
 }
