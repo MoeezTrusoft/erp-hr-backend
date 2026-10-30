@@ -232,7 +232,7 @@ function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, 
     return {status:'PUNCH_CONFLICT',dayCredit:null,requiresRegularization:true,
       anomalies:[{type:'OTHER',detail:pairing.issues.map(i=>i.code).join(', ')}],
       ...accounting,scheduledMinutes,workedPercent:null,latenessMinutes:null,
-      checkIn,checkOut,intervals:pairing.intervals,issues:pairing.issues,marks:pairing.marks,marks:pairing.marks};
+      checkIn,checkOut,intervals:pairing.intervals,issues:pairing.issues,marks:pairing.marks};
   }
   // The check-out is the last departure after the check-in (an OUT before it is a stray mark).
   if (checkIn && checkOut && checkOut <= checkIn) {
