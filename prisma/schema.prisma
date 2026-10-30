@@ -1093,7 +1093,9 @@ model AttendancePolicyConfig {
   deductMajorThresholdMinutes Int   @default(30)
   deductPoolSize              Int   @default(3)
   deductAbsentDays            Float @default(1)
-  deductMissingPunchDays      Float @default(0.5)
+  deductMissingPunchDays      Float @default(1)
+  // Missing check-ins/check-outs per employee and period that cost deductMissingPunchDays (a pool, like minors).
+  deductMissingPoolSize       Int   @default(3)
   deductMajorTimingDays       Float @default(0.5)
   deductPooledMinorDays       Float @default(1)
 

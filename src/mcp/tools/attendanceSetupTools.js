@@ -87,7 +87,9 @@ export function registerAttendanceSetupTools(server) {
       deductAbsentDays: z.coerce.number().min(0).max(31).optional()
         .describe("PAYROLL: days of salary deducted for a rejected ABSENT case (default 1)"),
       deductMissingPunchDays: z.coerce.number().min(0).max(31).optional()
-        .describe("PAYROLL: days deducted for a rejected missing check-in or check-out (default 0.5)"),
+        .describe("PAYROLL: days deducted for each full pool of disapproved or unraised missing check-ins/check-outs (default 1)"),
+      deductMissingPoolSize: z.coerce.number().int().min(1).max(100).optional()
+        .describe("PAYROLL: missing check-ins/check-outs per employee, within one payroll period, that make one pooled deduction (default 3). The pool does not carry over between periods"),
       deductMajorTimingDays: z.coerce.number().min(0).max(31).optional()
         .describe("PAYROLL: days deducted for a rejected MAJOR late/early case (default 0.5)"),
       deductPooledMinorDays: z.coerce.number().min(0).max(31).optional()

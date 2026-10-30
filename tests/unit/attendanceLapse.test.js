@@ -90,7 +90,7 @@ describe("decisions made on the earlier case of the same day", () => {
 });
 
 describe("pricing of cases nobody raised", () => {
-  const rules = { majorThresholdMinutes: 30, poolSize: 3, absentDays: 1, missingPunchDays: 0.5, majorTimingDays: 0.5, pooledMinorDays: 1 };
+  const rules = { majorThresholdMinutes: 30, poolSize: 3, absentDays: 1, missingPunchDays: 1, missingPoolSize: 3, majorTimingDays: 0.5, pooledMinorDays: 1 };
   const price = (cases) => ruleDeductions(cases, { rules });
 
   it("charges a lapsed case exactly like a disapproved one", () => {
@@ -115,11 +115,10 @@ describe("pricing of cases nobody raised", () => {
     expect(r.minorCount).toBe(3);
   });
 
-  it("prices major lateness and missing punches at the configured days", () => {
-    const r = price([
-      { ...kase("2026-10-01", "LATE_CHECKIN", { measuredMinutes: 45 }), lapsed: true },
-      { ...kase("2026-10-02", "MISSING_CHECKOUT"), lapsed: true },
-    ]);
-    expect(r.days).toBe(1);
+  it("prices major lateness at the configured days and pools missing punches", () => {
+    const missing = (day, type = "MISSING_CHECKOUT") => ({ ...kase(`2026-10-0${day}`, type), lapsed: true });
+    const late = { ...kase("2026-10-01", "LATE_CHECKIN", { measuredMinutes: 45 }), lapsed: true };
+    expect(price([late, missing(2)]).days).toBe(0.5);
+    expect(price([late, missing(2), missing(3, "MISSING_CHECKIN"), missing(4)]).days).toBe(1.5);
   });
 });

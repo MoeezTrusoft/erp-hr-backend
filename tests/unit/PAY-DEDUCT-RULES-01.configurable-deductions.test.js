@@ -55,20 +55,25 @@ describe("defaults are today's behaviour", () => {
       majorThresholdMinutes: 30,
       poolSize: 3,
       absentDays: 1,
-      missingPunchDays: 0.5,
+      missingPunchDays: 1,
+      missingPoolSize: 3,
       majorTimingDays: 0.5,
       pooledMinorDays: 1,
     });
   });
-  it("prices the fixture identically to the previous implementation", () => {
-    const rows = fixture();
-    expect(ruleDeductions(rows, PERIOD)).toEqual(before(rows, PERIOD));
-    expect(ruleDeductions(rows, { ...PERIOD, rules: DEFAULT_DEDUCTION_RULES })).toEqual(
+  // Missing check-ins/check-outs are pooled since 2026-10-30 (three = one day), so the frozen
+  // reference only applies to every other kind of line.
+  const unpooled = (rows) => rows.filter((r) => !/^MISSING/.test(r.type));
+  const core = ({ missingCount, missingRemainder, ...rest }) => rest; // fields added with the pool
+  it("prices the fixture identically to the previous implementation (apart from missing punches)", () => {
+    const rows = unpooled(fixture());
+    expect(core(ruleDeductions(rows, PERIOD))).toEqual(before(rows, PERIOD));
+    expect(core(ruleDeductions(rows, { ...PERIOD, rules: DEFAULT_DEDUCTION_RULES }))).toEqual(
       before(rows, PERIOD),
     );
     // sanity: the fixture really exercises every kind of line
     const result = before(rows, PERIOD);
-    expect(result.days).toBeGreaterThan(3);
+    expect(result.days).toBeGreaterThan(2);
     expect(result.lines.some((l) => l.pooled)).toBe(true);
     expect(result.minorRemainder).toBeGreaterThan(0);
   });
@@ -83,7 +88,8 @@ describe("defaults are today's behaviour", () => {
         const minutes = /LATE|EARLY/.test(type) ? 1 + Math.floor(rand() * 90) : null;
         rows.push(mk(1 + Math.floor(rand() * 4), 1 + Math.floor(rand() * 28), type, minutes));
       }
-      expect(ruleDeductions(rows, PERIOD)).toEqual(before(rows, PERIOD));
+      const kept = unpooled(rows);
+      expect(core(ruleDeductions(kept, PERIOD))).toEqual(before(kept, PERIOD));
     }
   });
 });
@@ -106,8 +112,25 @@ describe("settings change the pricing", () => {
   });
   it("day values per anomaly type are configurable", () => {
     const rows = [mk(1, 1, "ABSENT"), mk(1, 2, "MISSING_CHECKIN"), mk(1, 3, "LATE_CHECKIN", 40)];
-    const rules = { absentDays: 2, missingPunchDays: 0.25, majorTimingDays: 0.75 };
+    const rules = { absentDays: 2, missingPunchDays: 0.25, missingPoolSize: 1, majorTimingDays: 0.75 };
     expect(ruleDeductions(rows, { ...PERIOD, rules }).days).toBe(3);
+  });
+  it("three missing check-ins and check-outs together cost one day; leftovers do not carry", () => {
+    const rows = [mk(1, 1, "MISSING_CHECKIN"), mk(1, 2, "MISSING_CHECKOUT"), mk(1, 3, "MISSING_CHECKIN")];
+    const three = ruleDeductions(rows, PERIOD);
+    expect(three.days).toBe(1);
+    expect(three.missingCount).toBe(3);
+    const two = ruleDeductions(rows.slice(0, 2), PERIOD);
+    expect(two.days).toBe(0);
+    expect(two.missingRemainder).toBe(2);
+    const four = ruleDeductions([...rows, mk(1, 4, "MISSING_CHECKOUT")], PERIOD);
+    expect(four.days).toBe(1);
+    expect(four.missingRemainder).toBe(1);
+  });
+  it("the missing punch pool is per employee and its size and days are settings", () => {
+    const rows = [mk(1, 1, "MISSING_CHECKIN"), mk(2, 2, "MISSING_CHECKIN"), mk(1, 3, "MISSING_CHECKOUT"), mk(2, 4, "MISSING_CHECKOUT")];
+    expect(ruleDeductions(rows, PERIOD).days).toBe(0);
+    expect(ruleDeductions(rows, { ...PERIOD, rules: { missingPoolSize: 2, missingPunchDays: 0.5 } }).days).toBe(1);
   });
   it("a partial rules object keeps the defaults for what it omits", () => {
     expect(ruleDeductions([mk(1, 1, "ABSENT")], { ...PERIOD, rules: { poolSize: 5 } }).days).toBe(1);
@@ -124,9 +147,9 @@ describe("rules from the policy row", () => {
       deductMajorThresholdMinutes: 45,
       deductPoolSize: 0, // invalid: keeps 3
       deductAbsentDays: 2,
-      deductMissingPunchDays: -1, // invalid: keeps 0.5
+      deductMissingPunchDays: -1, // invalid: keeps 1
     });
-    expect(rules).toMatchObject({ majorThresholdMinutes: 45, poolSize: 3, absentDays: 2, missingPunchDays: 0.5 });
+    expect(rules).toMatchObject({ majorThresholdMinutes: 45, poolSize: 3, absentDays: 2, missingPunchDays: 1, missingPoolSize: 3 });
   });
 });
 

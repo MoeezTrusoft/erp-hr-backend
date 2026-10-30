@@ -9,8 +9,8 @@ describe('fixed attachment rules replace legacy pooled-floor modes',()=>{
  it.each(['GROSS','POOLED_FLOOR','POOLED_FLOOR_DIRECT'])('pools only disapproved minor lateness/early departure in %s mode',deductionBasis=>{
   expect(amount(build([decided(1,'LATE_CHECKIN'),decided(2,'EARLY_CHECKOUT'),decided(3,'LATE_CHECKIN')],{deductionBasis}))).toBe(1000);
  });
- it('prices three missing punches at half a day each and never pools them as minor timing',()=>{
-  expect(amount(build([1,2,3].map(id=>decided(id,'MISSING_CHECKOUT')),{deductionBasis:'POOLED_FLOOR_DIRECT'}))).toBe(1500);
+ it('prices three missing punches as one day together and never pools them as minor timing',()=>{
+  expect(amount(build([1,2,3].map(id=>decided(id,'MISSING_CHECKOUT')),{deductionBasis:'POOLED_FLOOR_DIRECT'}))).toBe(1000);
  });
  it('keeps a major half-day even with an incomplete minor group',()=>{
   expect(amount(build([decided(1,'LATE_CHECKIN',45),decided(2,'EARLY_CHECKOUT',20)],{deductionBasis:'POOLED_FLOOR'}))).toBe(500);
