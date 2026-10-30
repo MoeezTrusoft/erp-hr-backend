@@ -26,6 +26,7 @@ import { withTenant } from "../lib/tenancy.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { payrollRunFinalizedEvent } from "./hrEvents.js";
 import { assertIfMatch, versionOf } from "../lib/optimisticConcurrency.js";
+import { displayName } from "../lib/personIdentity.js";
 
 // HR-ATT-PAYROLL-BRIDGE-01 / HR-PAYROLL-DEDUCTION-TYPE-01 — EVERY deduction the
 // engine emits without a tenant-configured type carries a stable CODE, and the
@@ -924,9 +925,9 @@ export const getPayrollRuns = async ({ page, limit, status, tenantId }) => {
     if (empIds.length > 0) {
         const emps = await prisma.employee.findMany({
             where: { id: { in: empIds }, tenant_id: tenantId },
-            select: { id: true, employee_code: true },
+            select: { id: true, employee_code: true, employee_name: true, first_name: true, last_name: true, preferred_name: true },
         });
-        empMap = Object.fromEntries(emps.map(e => [e.id, e.employee_code]));
+        empMap = Object.fromEntries(emps.map(e => [e.id, displayName(e)]));
     }
 
     const enrichedRuns = payrollRuns.map(r => ({
