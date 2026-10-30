@@ -304,13 +304,13 @@ function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, 
     // (dayCredit stays null while in progress).
     const lateNow = latenessMinutes(checkIn, shift.start);
     const openStatus =
-      lateNow != null && lateNow > p.graceMinutes ? "LATE" : "PRESENT";
+      lateNow != null && Math.floor(lateNow) > p.graceMinutes ? "LATE" : "PRESENT";
     return {
       status: openStatus,
       dayCredit: null,
       requiresRegularization: false,
       anomalies:
-        lateNow != null && lateNow > p.graceMinutes
+        lateNow != null && Math.floor(lateNow) > p.graceMinutes
           ? [{
               type: "LATE_CHECKIN",
               fromTime: shift.start ?? null,
@@ -338,7 +338,8 @@ function evaluateShiftCore({ punches = [], shift = {}, policy = {}, now = null, 
 
   // Half-day threshold is hoisted above (shared with the in-progress branch).
 
-  if (late != null && late > p.graceMinutes) {
+  // Whole minutes: inside the 5th minute with a 5 minute grace is on time; the 6th minute is late.
+  if (late != null && Math.floor(late) > p.graceMinutes) {
     // T&A-RULE-07 — the label is LATE for any arrival past grace; crossing the
     // half-day threshold (default 30 min) changes only the CREDIT: the day is
     // docked half a day, the table still says Late (display ≠ deduction).

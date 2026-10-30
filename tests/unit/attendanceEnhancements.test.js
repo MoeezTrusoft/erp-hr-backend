@@ -45,7 +45,7 @@ const punch = (time, status) => ({
 
 describe("exact grace boundaries", () => {
   it.each([0, 5])(
-    "keeps equality on time with %i minutes grace, including seconds",
+    "counts the check-in grace in whole minutes (%i): the last second of the grace minute is on time, the next minute is late",
     (grace) => {
       const start = at("09:00:00"),
         end = at("17:00:00");
@@ -62,8 +62,10 @@ describe("exact grace boundaries", () => {
       const inBoundary = new Date(+start + grace * 60000),
         outBoundary = new Date(+end - grace * 60000);
       expect(run(inBoundary, outBoundary).anomalies).toEqual([]);
+      // Inside the grace minute (09:05:59 with 5 minutes) is still on time; 09:06:00 is late.
+      expect(run(new Date(+inBoundary + 59000), end).anomalies).toEqual([]);
       expect(
-        run(new Date(+inBoundary + 1000), end).anomalies.some(
+        run(new Date(+inBoundary + 60000), end).anomalies.some(
           (a) => a.type === "LATE_CHECKIN",
         ),
       ).toBe(true);

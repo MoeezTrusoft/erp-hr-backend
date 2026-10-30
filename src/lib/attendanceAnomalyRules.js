@@ -107,7 +107,9 @@ export function anomalyFacts({
     checkOut && shift.end
       ? (+new Date(shift.end) - +new Date(checkOut)) / 60000
       : 0;
-  if (late > (grace.checkInMinutes ?? 0))
+  // Grace is counted in whole minutes (operator, 2026-10-30): with 5 minutes, any arrival inside the
+  // 5th minute (09:05:xx for a 09:00 start) is on time, and the 6th minute (09:06:00) is late.
+  if (Math.floor(late) > (grace.checkInMinutes ?? 0))
     add("LATE_CHECKIN", shift.start, checkIn, late);
   if (early > (grace.checkOutMinutes ?? 0)) {
     // Leaving before the half-day mark is an absence (operator, 2026-10-30): it replaces the

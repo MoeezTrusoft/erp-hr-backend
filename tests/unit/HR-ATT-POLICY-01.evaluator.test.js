@@ -53,14 +53,14 @@ describe('HR-ATT-POLICY-01 arrival', () => {
     });
 
     // Grace boundaries use exact timestamps; seconds must not be discarded.
-    it('keeps seconds when comparing arrival with the exact grace boundary', () => {
+    it('counts grace in whole minutes: 5m47s is still the 5th minute, so not late', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:05:47Z'), OUT('2026-08-14T18:30:00Z')],
             shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.latenessMinutes).toBeCloseTo(5 + 47/60);
-        expect(r.status).toBe('LATE'); // 5m47s is beyond an exact 5-minute grace.
+        expect(r.status).toBe('PRESENT'); // operator, 2026-10-30: the 5th minute is on time, the 6th is late.
     });
 
     it('still flags LATE once elapsed minutes EXCEED grace', () => {

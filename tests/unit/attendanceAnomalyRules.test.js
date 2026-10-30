@@ -21,7 +21,8 @@ describe('attached attendance rules',()=>{
  });
  it('uses strict grace and severity boundaries without subtracting grace from severity',()=>{
   expect(anomalyFacts({checkIn:at('09:30'),checkOut:at('17:00'),shift,grace:{checkInMinutes:30}})).toEqual([]);
-  const facts=anomalyFacts({checkIn:new Date(+at('09:30')+1000),checkOut:at('17:00'),shift,grace:{checkInMinutes:30}});
+  expect(anomalyFacts({checkIn:new Date(+at('09:30')+59000),checkOut:at('17:00'),shift,grace:{checkInMinutes:30}})).toEqual([]); // still the 30th minute
+  const facts=anomalyFacts({checkIn:new Date(+at('09:30')+60000),checkOut:at('17:00'),shift,grace:{checkInMinutes:30}});
   expect(facts[0].severity).toBe('MAJOR');expect(facts[0].minutes).toBeGreaterThan(30);
  });
  it('does not wrap a long overnight late arrival backwards across twelve hours',()=>{
