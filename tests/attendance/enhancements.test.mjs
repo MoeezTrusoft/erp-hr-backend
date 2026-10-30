@@ -311,7 +311,7 @@ test("recorded punches, absence, holiday rows, worked hours and case counts agre
       },
     });
     for (const [date, time, status] of [
-      ["2026-10-12", "09:00:01", 0],
+      ["2026-10-12", "09:01:00", 0],
       ["2026-10-12", "17:00:00", 1],
       ["2026-10-13", "09:00:00", 0],
       ["2026-10-13", "13:00:00", 1],
@@ -352,10 +352,11 @@ test("recorded punches, absence, holiday rows, worked hours and case counts agre
   assert.equal(byDate("2026-10-12").status, "late");
   assert.equal(
     byDate("2026-10-12").checkIn.toISOString(),
-    "2026-10-12T09:00:01.000Z",
+    "2026-10-12T09:01:00.000Z",
   );
   assert.equal(byDate("2026-10-13").calendarStatus, "HOLIDAY");
-  assert.equal(byDate("2026-10-13").status, "early-checkout");
+  // Work on a holiday is extra work (operator, 2026-10-30): never an early check-out or any other anomaly.
+  assert.equal(byDate("2026-10-13").status, "on-time");
   assert.equal(byDate("2026-10-13").totalHours, 4);
   assert.equal(byDate("2026-10-14").status, "absent");
   assert.equal(byDate("2026-10-18").status, "weekly-off");
