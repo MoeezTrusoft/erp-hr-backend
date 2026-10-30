@@ -33,7 +33,7 @@ const server = http.createServer(async (req, res) => {
     if(req.method==='POST'&&url.pathname==='/fixture/punch') {
       const direction=url.searchParams.get('direction');
       if(!['IN','OUT'].includes(direction))throw new Error('Invalid fixture direction');
-      const day='2026-02-16',clock=direction==='IN'?'09:00:01':'17:00:00';
+      const day='2026-02-16',requested=url.searchParams.get('clock'),clock=requested&&/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(requested)?requested:direction==='IN'?'09:00:01':'17:00:00';
       await db(async tx=>{await tx.attendanceDevicePunch.create({data:{tenantId:company,employeeId:people.EMPLOYEE.id,sn:'TEST-DEVICE',siteId:'HO',deviceUserId:'101',punchedAt:new Date(`${day}T${clock}Z`),status:direction==='IN'?0:1,directionVerified:true}});await applyEvaluatedShifts({tenantId:company,employeeIds:[people.EMPLOYEE.id],from:day,to:day,db:tx,dryRun:false});});
       res.end(JSON.stringify({recorded:true}));return;
     }
