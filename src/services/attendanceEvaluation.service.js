@@ -9,6 +9,8 @@ import {
   addDays,
 } from "../lib/attendanceDates.js";
 import { loadAttendanceRuntime } from "./attendanceSetup.service.js";
+import { markLapsedCases } from "./attendanceLapse.service.js";
+import { RULE_TYPES } from "../lib/attendanceAnomalyRules.js";
 import {
   attendanceTransaction,
   assertAttendancePeriodOpen,
@@ -23,11 +25,11 @@ import { captureAudit } from "./attendanceCapture.service.js";
 import { jsonValue } from "../lib/attendanceCapture.js";
 
 export async function attendanceCompleteness(
-  { tenantId, from, to, employeeIds },
+  { tenantId, from, to, employeeIds, asOf = new Date() },
   db = prisma,
 ) {
   const days = dateRange(from, to, 370);
-  const [employees, runtime, rows, events, jobs, corrections] = await Promise.all(
+  const [employees, runtime, rows, events, jobs, corrections, ruleCases] = await Promise.all(
     [
       db.employee.findMany({
         where: {
@@ -69,8 +71,30 @@ export async function attendanceCompleteness(
         where: { tenantId, status: "PENDING", date: { gte: dateOnly(from), lte: dateOnly(to) }, ...(employeeIds ? { employeeId: { in: employeeIds } } : {}) },
         select: { id: true, employeeId: true, date: true },
       }),
+      db.attendanceAnomaly.findMany({
+        where: {
+          tenantId,
+          rulesVersion: 2,
+          evidenceState: "ACTIVE",
+          date: { gte: dateOnly(from), lte: dateOnly(to) },
+          ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
+        },
+        select: { id: true, employeeId: true, date: true, type: true, status: true, raisedById: true, rulesVersion: true, evidenceState: true },
+      }),
     ],
   );
+  // A day held only by rules-v2 cases settles once each case is decided, or was never raised and its
+  // two working days are over (it is then charged at payroll, not held). A raised case still waiting
+  // for a decision, or an unraised one still inside its window, keeps the day open.
+  const marked = await markLapsedCases(ruleCases.filter((c) => RULE_TYPES.includes(c.type)), { tenantId, asOf, db });
+  const casesByDay = new Map();
+  for (const c of marked) {
+    const k = c.employeeId + "|" + dateKey(c.date);
+    const day = casesByDay.get(k) ?? { any: false, held: false };
+    day.any = true;
+    if (c.status === "PENDING" && (c.raisedById != null || !c.lapsed)) day.held = true;
+    casesByDay.set(k, day);
+  }
   const byDay = new Map(
     rows.map((r) => [r.employeeId + "|" + dateKey(r.date), r]),
   );
@@ -118,7 +142,10 @@ export async function attendanceCompleteness(
         issues.push({ ...entry, code: "MISSING_ATTENDANCE_ROW" });
         continue;
       }
-      const settled = row.processingState === "FINALIZED" && row.day_credit != null && row.calculation?.algorithmVersion === EVALUATION_ALGORITHM;
+      const ruleDay = casesByDay.get(employee.id + "|" + date);
+      const settledByCases = row.processingState === "NEEDS_REVIEW" && !["PUNCH_CONFLICT", "SETUP_REQUIRED"].includes(row.status)
+        && row.calculation?.algorithmVersion === EVALUATION_ALGORITHM && ruleDay?.any === true && !ruleDay.held;
+      const settled = (row.processingState === "FINALIZED" && row.day_credit != null && row.calculation?.algorithmVersion === EVALUATION_ALGORITHM) || settledByCases;
       entry.settled = Boolean(settled);
       if (!settled) {
         totals.unsettledDays++;

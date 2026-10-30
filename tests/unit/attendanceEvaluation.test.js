@@ -568,6 +568,21 @@ describe("site evidence, review and recovery safeguards", () => {
       "Punch changed",
     );
   });
+  it("settles a day held only by an unraised case once its window is over, not before", async () => {
+    const db = database([["09:00", 0]]);
+    await apply(db);
+    const open = { tenantId: TENANT, from: date, to: date };
+    expect((await attendanceCompleteness({ ...open, asOf: new Date(0) }, db)).ready).toBe(false);
+    expect((await attendanceCompleteness({ ...open, asOf: new Date("2100-01-01T00:00:00Z") }, db)).ready).toBe(true);
+  });
+  it("keeps a day open while a raised case waits for a decision, even after the window", async () => {
+    const db = database([["09:00", 0]]);
+    await apply(db);
+    for (const a of db.snapshot().attendanceAnomaly)
+      await db.attendanceAnomaly.update({ where: { id: a.id }, data: { raisedById: 9 } });
+    const r = await attendanceCompleteness({ tenantId: TENANT, from: date, to: date, asOf: new Date("2100-01-01T00:00:00Z") }, db);
+    expect(r.ready).toBe(false);
+  });
   it("does not let a legacy day-level request settle new per-shift rules", async () => {
     const db = database([["09:00", 0]]);
     await apply(db);
@@ -583,7 +598,7 @@ describe("site evidence, review and recovery safeguards", () => {
     expect(
       (
         await attendanceCompleteness(
-          { tenantId: TENANT, from: date, to: date },
+          { tenantId: TENANT, from: date, to: date, asOf: new Date(0) },
           db,
         )
       ).ready,
@@ -634,7 +649,7 @@ describe("site evidence, review and recovery safeguards", () => {
       missingDays: 550,
     });
     expect(db.calls.filter((c) => c.method === "findMany").length).toBeLessThan(
-      12,
+      14,
     );
   });
 });
