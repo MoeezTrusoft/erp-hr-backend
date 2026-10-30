@@ -58,7 +58,7 @@ export const IMPORT_COLUMNS = [
   { key: "emergency_contact_relationship", kind: "opt", label: "Emergency Contact Relationship", group: "emergency", enum: ["Spouse", "Parent", "Sibling", "Child", "Friend", "Relative", "Other"], note: "Pick from the dropdown." },
   { key: "emergency_contact_phone", kind: "opt", label: "Emergency Contact Phone", group: "emergency", phone: true, note: "Phone of the emergency contact." },
   { key: "emergency_contact_email", kind: "opt", label: "Emergency Contact Email", group: "emergency", email: true, note: "Email of the emergency contact (optional)." },
-  { key: "total_salary", kind: "opt", label: "Total Monthly Salary", group: "salary", money: true, note: "Total gross monthly salary. The system auto-splits it into Basic 45%, House Rent 20%, Transport 15%, Medical 12.5%, Utilities 7.5%." },
+  { key: "total_salary", kind: "opt", label: "Total Monthly Salary", group: "salary", money: true, note: "Total gross monthly salary. The system auto-splits it into Basic 45%, House Rent 20%, Conveyance 15%, Medical 12.5%, Utility 7.5%." },
   { key: "salary_currency", kind: "opt", label: "Salary Currency", group: "salary", enum: ["PKR", "USD", "EUR", "GBP", "AED", "SAR"], note: "Pick the currency (default PKR)." },
   { key: "create_login", kind: "opt", label: "Create Login? (Yes/No)", enum: ["yes", "no"], create: "createSystemAccount", note: "Pick Yes to give this employee an ERP login. The role and a secure password are assigned automatically." },
   { key: "login_email", kind: "opt", label: "Login Email", email: true, create: "systemEmail", note: "Login email (used only if Create Login = Yes). Blank → uses the Work Email." },
@@ -74,11 +74,15 @@ export const IMPORT_COLUMNS = [
 export const BASIC_PCT_OF_TOTAL = 45;
 export const SALARY_SPLIT = [
   { code: "HRA", name: "House Rent Allowance", pctOfTotal: 20 },
-  { code: "CONV", name: "Transport Allowance", pctOfTotal: 15 },
-  { code: "MED", name: "Medical Allowance", pctOfTotal: 12.5 },
-  { code: "UTIL", name: "Utilities Allowance", pctOfTotal: 7.5 },
+  { code: "CONVEYANCE", name: "Conveyance Allowance", pctOfTotal: 15 },
+  { code: "MEDICAL", name: "Medical Allowance", pctOfTotal: 12.5 },
+  { code: "UTILITY", name: "Utility Allowance", pctOfTotal: 7.5 },
 ];
 // Percent-of-BASIC to store on each SalaryComponent (see note above).
+// Codes an earlier version of the importer created for the same allowances. They must not stay active next to the
+// standard ones: employees carry their own allowance assignments coded HRA / CONVEYANCE / MEDICAL / UTILITY, and a
+// salary component is skipped only on an identical code, so a CONV / MED / UTIL component pays the allowance twice.
+export const LEGACY_ALLOWANCE_CODES = ["CONV", "MED", "UTIL"];
 export const componentPctOfBasic = (pctOfTotal) => (pctOfTotal / BASIC_PCT_OF_TOTAL) * 100;
 
 // Parse a money cell: strip currency symbols / thousands separators / spaces.

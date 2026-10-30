@@ -9,7 +9,7 @@
 //    (data validation), dates are date-typed cells, so bad values are hard to
 //    enter in the first place
 //  • total salary is entered once and auto-segregated into a standard component
-//    structure (Basic 45 / House 20 / Transport 15 / Medical 12.5 / Utilities 7.5)
+//    structure (Basic 45 / House 20 / Conveyance 15 / Medical 12.5 / Utility 7.5)
 //  • one emergency contact captured inline; biometric device ID captured
 //    separately from the ERP employee code
 //  • logins are provisioned with an auto-assigned role + an auto-generated
@@ -49,6 +49,7 @@ import {
   parseMoney,
   nearest,
   SALARY_SPLIT,
+  LEGACY_ALLOWANCE_CODES,
   BASIC_PCT_OF_TOTAL,
   componentPctOfBasic,
 } from "../lib/employeeImportTaxonomy.js";
@@ -211,7 +212,7 @@ export async function generateImportTemplate({ tenantId } = {}) {
     ["3", "Wherever you see a small arrow in a cell, click it and PICK from the dropdown (Gender, Marital Status, Department, Grade, Manager, Employment Type/Status, Work Mode, Currency, Create Login, Emergency Contact Relationship). Dates open a simple date entry — type them as YYYY-MM-DD (e.g. 2026-07-01)."],
     ["4", "Employee Code (ERP) is your internal code. The Biometric / Device ID (★) is SEPARATE — set it to the exact user-ID enrolled on the attendance device so punches auto-map. Keep both UNIQUE."],
     ["5", "Manager: pick from the dropdown, which lists the Employee Codes you enter in THIS sheet — so a manager and their reports can all be added together (the manager just needs to be a row here too, or already exist by their Employee Code). Department / Position / Grade are matched to existing records — unknown values are flagged with the closest suggestion."],
-    ["6", "Total Monthly Salary: enter ONE number (gross). The system automatically splits it into Basic 45%, House Rent 20%, Transport 15%, Medical 12.5%, Utilities 7.5%."],
+    ["6", "Total Monthly Salary: enter ONE number (gross). The system automatically splits it into Basic 45%, House Rent 20%, Conveyance 15%, Medical 12.5%, Utility 7.5%."],
     ["7", "Create Login = Yes gives the employee an ERP login. The role and a secure password are assigned AUTOMATICALLY — you do not enter them. Retrieve passwords later with the 'read login password' action."],
     ["8", "Emergency Contact: fill the one contact's name, relationship, phone and (optional) email."],
     ["9", "Import runs a PREVIEW first: you get this sheet back with a colour-coded Status (GREEN = ok, YELLOW = auto-fixed, RED = needs your attention) and a plain-English 'Issues found' column. Fix the RED cells and re-upload."],
@@ -591,6 +592,11 @@ async function ensureSalaryComponents(tenantId) {
       value, taxable: true, active: true, sortOrder: sort,
     }).catch((e) => logger.warn({ code: s.code, err: e?.message }, "employee import: salary component ensure failed"));
   }
+  // Switch off the codes an earlier importer used for the same allowances (see LEGACY_ALLOWANCE_CODES).
+  await prisma.salaryComponent.updateMany({
+    where: scopedWhere(tenantId, { code: { in: LEGACY_ALLOWANCE_CODES }, active: true }),
+    data: { active: false },
+  }).catch((e) => logger.warn({ err: e?.message }, "employee import: legacy allowance components not switched off"));
 }
 
 // ── Public: run the import ───────────────────────────────────────────────────
