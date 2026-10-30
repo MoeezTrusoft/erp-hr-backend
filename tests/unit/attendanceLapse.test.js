@@ -84,6 +84,13 @@ describe("decisions made on the earlier case of the same day", () => {
   it("excuses every case of a day whose earlier approved appeal was of type OTHER", async () => {
     expect(await run([kase("2026-10-01", "ABSENT"), kase("2026-10-01", "LATE_CHECKIN")], [earlier("APPROVED", { type: "OTHER" })])).toEqual([false, false]);
   });
+  it("marks a case settled by an earlier approved or rejected appeal as decided, a pending one as not", async () => {
+    const decided = async (status) =>
+      (await markLapsedCases([kase("2026-10-01", "LATE_CHECKIN")], { tenantId: TENANT, db: withEarlier([earlier(status)]), asOf: new Date("2026-10-20T00:00:00Z") })).map((c) => c.decided);
+    expect(await decided("APPROVED")).toEqual([true]);
+    expect(await decided("REJECTED")).toEqual([true]);
+    expect(await decided("PENDING")).toEqual([false]);
+  });
   it("ignores an earlier case that was never raised or is for another type", async () => {
     expect(await run([kase("2026-10-01", "LATE_CHECKIN")], [earlier("PENDING", { raisedById: null }), earlier("APPROVED", { type: "ABSENT" })])).toEqual([true]);
   });

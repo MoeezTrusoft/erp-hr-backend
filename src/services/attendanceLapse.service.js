@@ -45,16 +45,21 @@ async function earlierDecisions(open, { tenantId, db }) {
   return out;
 }
 
-// Returns the cases with `lapsed` set. Needs raisedById on every case.
+// Returns the cases with `lapsed` set (charged at payroll) and `decided` set (an earlier decision already
+// settled it: approved = excused, rejected = charged). Needs raisedById on every case.
 export async function markLapsedCases(cases, { tenantId, asOf = new Date(), db } = {}) {
   const open = cases.filter(isCandidate);
-  if (!open.length) return cases.map((a) => ({ ...a, lapsed: false }));
+  if (!open.length) return cases.map((a) => ({ ...a, lapsed: false, decided: false }));
   const earlier = await earlierDecisions(open, { tenantId, db });
   const lapsed = new Set();
+  const decided = new Set();
   const waiting = [];
   for (const a of open) {
     const before = earlier.get(`${a.employeeId}|${dayOf(a.date)}|*`) ?? earlier.get(keyOf(a));
-    if (before?.status === "REJECTED") lapsed.add(a);
+    if (before?.status === "REJECTED") {
+      lapsed.add(a);
+      decided.add(a);
+    } else if (before?.status === "APPROVED") decided.add(a);
     else if (before?.rank >= 1) continue;
     else waiting.push(a);
   }
@@ -77,5 +82,5 @@ export async function markLapsedCases(cases, { tenantId, asOf = new Date(), db }
       if (+deadline < +asOf) lapsed.add(a);
     }
   }
-  return cases.map((a) => ({ ...a, lapsed: lapsed.has(a) }));
+  return cases.map((a) => ({ ...a, lapsed: lapsed.has(a), decided: decided.has(a) }));
 }

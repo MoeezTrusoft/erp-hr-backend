@@ -575,6 +575,15 @@ describe("site evidence, review and recovery safeguards", () => {
     expect((await attendanceCompleteness({ ...open, asOf: new Date(0) }, db)).ready).toBe(false);
     expect((await attendanceCompleteness({ ...open, asOf: new Date("2100-01-01T00:00:00Z") }, db)).ready).toBe(true);
   });
+  it("settles a day whose unraised case was already excused by an earlier approved appeal", async () => {
+    const db = database([["09:00", 0]]);
+    await apply(db);
+    await db.attendanceAnomaly.create({
+      data: { tenantId: TENANT, employeeId: 1, date: at("00:00"), type: "MISSING_CHECKOUT", rulesVersion: 1, sourceKind: "REGULARIZATION", status: "APPROVED", raisedById: 1 },
+    });
+    const open = { tenantId: TENANT, from: date, to: date };
+    expect((await attendanceCompleteness({ ...open, asOf: new Date(0) }, db)).ready).toBe(true);
+  });
   it("keeps a day open while a raised case waits for a decision, even after the window", async () => {
     const db = database([["09:00", 0]]);
     await apply(db);
