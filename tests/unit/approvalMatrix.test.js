@@ -107,3 +107,38 @@ describe("approval matrix rules", () => {
     expect(levelActions({ action: "APPROVE", canReject: true, canReturn: true })).toEqual(["APPROVE", "REJECT", "REVERT"]);
   });
 });
+
+describe("self verification", () => {
+  const selfLevels = () => parseLevels("ATTENDANCE", [named("HR", "VERIFY", [1], { allowSelf: true }), named("Management", "APPROVE", [2])]);
+  const route = (initiator, subject) =>
+    buildRoute({ kind: "ATTENDANCE", matrixVersion: 3, levels: selfLevels(), initiator, subject, amount: 0, approvers });
+
+  it("counts the verifier raising their own case as the verification, then Management decides", () => {
+    const r = route("EMP-HR", "EMP-HR");
+    expect(r.levels[0]).toMatchObject({ auto: true, engaged: true, allowSelf: true });
+    expect(r.levels[1].approverCodes).toEqual(["EMP-MGMT"]);
+    expect(nextActionable(r, 0)).toEqual({ index: 1, codes: ["EMP-MGMT"] });
+  });
+
+  it("keeps the subject eligible when somebody else raised the case", () => {
+    const r = route("EMP-FIN", "EMP-HR");
+    expect(r.levels[0]).toMatchObject({ auto: false });
+    expect(r.levels[0].approverCodes).toEqual(["EMP-HR"]);
+  });
+
+  it("is off by default, so nobody verifies their own case", () => {
+    const levels = parseLevels("ATTENDANCE", [named("HR", "VERIFY", [1]), named("Management", "APPROVE", [2])]);
+    expect(() => buildRoute({ kind: "ATTENDANCE", matrixVersion: 1, levels, initiator: "EMP-HR", subject: "EMP-HR", amount: 0, approvers })).toThrow(/no active approver/);
+  });
+
+  it("never lets the deciding level or a manager level allow self", () => {
+    expect(() => parseLevels("ATTENDANCE", [named("M", "APPROVE", [2], { allowSelf: true })])).toThrow(/verification level/);
+    expect(() => parseLevels("ATTENDANCE", [{ name: "Mgr", action: "VERIFY", approverMode: "EMPLOYEE_MANAGER", allowSelf: true }, named("M", "APPROVE", [2])])).toThrow(/named approvers/);
+  });
+
+  it("does not let the subject approve their own case even with self verification on", () => {
+    expect(() =>
+      buildRoute({ kind: "ATTENDANCE", matrixVersion: 3, levels: selfLevels(), initiator: "EMP-HR", subject: "EMP-MGMT", amount: 0, approvers }),
+    ).toThrow(/no active approver other than the initiator/);
+  });
+});

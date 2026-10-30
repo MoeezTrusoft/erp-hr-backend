@@ -206,13 +206,14 @@ export async function getAnomalyFormDefaults({ tenantId, employeeId, date, type 
  * day AFTER. A working day is one whose working verdict is not explicitly
  * false — a missing roster verdict never shortens the window.
  */
-export async function computeAnomalyDeadline({ tenantId, employeeId, anomalyDate, type }) {
+export async function computeAnomalyDeadline({ tenantId, employeeId, anomalyDate, type, runtime }) {
   const day = startOfDay(anomalyDate);
   // Scan generously: a long holiday stretch must never truncate the window.
   const horizonEnd = new Date(day.getTime() + 30 * 86_400_000);
   const working = await resolveWorkingDays({
     tenantId,
     employeeId,
+    runtime,
     from: day.toISOString().slice(0, 10),
     to: horizonEnd.toISOString().slice(0, 10),
   });

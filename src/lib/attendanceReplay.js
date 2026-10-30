@@ -392,7 +392,10 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       }
       return patterns.get(key);
     };
-    const sessions=sessioniseByRoster(rows,patternForDay);
+    // Punches that match no shift on the first covered day (the previous night's taps on the day a
+    // setup begins) belong to a day this setup does not cover. They are not a conflict on the covered day.
+    const sessions=sessioniseByRoster(rows,patternForDay).filter(s=>!(s.unassigned &&
+      !runtime.configOn?.(new Date(+startOfDay(s.day)-DAY_MS))));
     if(includeEmpty) for(const key of dateRange(from,to)) {
       const day=new Date(key+'T00:00:00Z'), info=runtime.resolve(employeeId,day);
       const windows=info.pattern?.shifts?.length ? shiftCandidates(info.pattern,day):[info.shift||{}];

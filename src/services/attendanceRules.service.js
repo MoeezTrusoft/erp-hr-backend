@@ -1,3 +1,4 @@
+import { markLapsedCases } from "./attendanceLapse.service.js";
 import { levelStageLabel } from "../lib/approvalMatrix.js";
 import { randomUUID } from "node:crypto";
 import { legacyDecision } from './approval/legacy.js';
@@ -288,15 +289,17 @@ export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
       },
     }),
   ]);
+  // The period's other cases, as payroll will price them (unraised cases past their window count).
+  const priced = await markLapsedCases(periodCases, { tenantId: user.tenantId, db });
   return {
     anomaly: row,
     employee,
     history: await (async()=>{const {attendanceActorCodes}=await import('../lib/attendanceActorCodes.js');const codes=await attendanceActorCodes(db,user.tenantId,history.map(a=>a.actorId));return history.map(a=>({...a,actorCode:codes.get(String(a.actorId)) || null}));})(),
     attendance,
     period: { ...period, provisional: !run },
-    assessment: ruleDeductions(periodCases),
+    assessment: ruleDeductions(priced),
     preview: ruleDeductions(
-      periodCases.map((a) =>
+      priced.map((a) =>
         a.id === row.id
           ? { ...a, status: "REJECTED", decisionRole: "Management" }
           : a,

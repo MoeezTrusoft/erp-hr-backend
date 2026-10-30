@@ -2,18 +2,35 @@
 // actual instants, where available, determine elapsed time.
 const minutes = (a, b) => Math.max(0, (+b - +a) / 60000);
 const instant = (p) => (p.occurredAt ? new Date(p.occurredAt) : p.timestamp);
+// Pairs one shift's punches into worked intervals.
+//   * The first IN opens the shift; a later IN while it is open is only marked (REPEATED_IN).
+//   * An OUT closes the open interval. An OUT with nothing open that follows a closed interval is
+//     the real departure: it extends that interval (EXTRA_OUT). An OUT with nothing before it at
+//     all is marked (UNMATCHED_OUT) and leaves the shift without a check-in.
+//   * `marks` are facts about the punches, never reasons to hold the day. `issues` is reserved for
+//     punches whose direction is unknown, which cannot be placed at all.
 export function pairAttendance(punches) {
   const intervals = [],
-    issues = [];
+    issues = [],
+    marks = [];
   let open = null;
   for (const p of punches) {
     if (p.type === "IN") {
-      if (open) issues.push({ code: "REPEATED_IN", at: p.timestamp });
+      if (open) marks.push({ code: "REPEATED_IN", at: p.timestamp });
       else open = p;
     } else if (p.type === "OUT") {
-      if (!open) issues.push({ code: "UNMATCHED_OUT", at: p.timestamp });
-      else if (+p.timestamp <= +open.timestamp || +instant(p) <= +instant(open))
-        issues.push({ code: "INVALID_INTERVAL", at: p.timestamp });
+      if (!open) {
+        const last = intervals.at(-1);
+        if (last && +p.timestamp > +last.end && +instant(p) > +last.occurredEnd) {
+          marks.push({ code: "EXTRA_OUT", at: p.timestamp });
+          last.end = p.timestamp;
+          last.occurredEnd = instant(p);
+          last.toSiteId = p.siteId ?? null;
+          last.outEventId = p.eventId ?? null;
+          last.elapsedMinutes = minutes(last.occurredStart, last.occurredEnd);
+        } else marks.push({ code: "UNMATCHED_OUT", at: p.timestamp });
+      } else if (+p.timestamp <= +open.timestamp || +instant(p) <= +instant(open))
+        marks.push({ code: "UNMATCHED_OUT", at: p.timestamp });
       else {
         intervals.push({
           start: open.timestamp,
@@ -30,7 +47,7 @@ export function pairAttendance(punches) {
       }
     } else issues.push({ code: "UNKNOWN_DIRECTION", at: p.timestamp });
   }
-  return { intervals, issues, open };
+  return { intervals, issues, marks, open };
 }
 
 export function unionWindows(windows = []) {

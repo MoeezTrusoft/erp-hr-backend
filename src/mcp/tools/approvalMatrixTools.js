@@ -33,6 +33,7 @@ const level = z
     canReject: z.boolean().optional().describe("May reject / recommend rejection (default true)"),
     canReturn: z.boolean().optional().describe("May return the request to the previous level (default true)"),
     satisfiedByInitiator: z.boolean().optional().describe("The initiator raising the request counts as this level (e.g. HR raising payroll)"),
+    allowSelf: z.boolean().optional().describe("Verification levels only: the employee a request is about may verify their own request (raising it counts as verifying)"),
     thresholdAmount: z.number().nullable().optional().describe("PAYROLL only: engage this optional level at or above this net total"),
   })
   .strict();
