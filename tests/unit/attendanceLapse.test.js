@@ -62,6 +62,30 @@ describe("cases nobody raised in time", () => {
   });
 });
 
+describe("decisions made on the earlier case of the same day", () => {
+  const withEarlier = (rows) => {
+    const d = db();
+    for (const r of rows) d.attendanceAnomaly.create({ data: { tenantId: TENANT, ...r } });
+    return d;
+  };
+  const run = async (cases, rows) =>
+    (await markLapsedCases(cases, { tenantId: TENANT, db: withEarlier(rows), asOf: new Date("2026-10-20T00:00:00Z") })).map((c) => c.lapsed);
+  const earlier = (status, extra = {}) => ({ id: 900 + ++id, employeeId: 1, date: new Date("2026-10-01T00:00:00Z"), type: "LATE_CHECKIN", status, rulesVersion: 1, raisedById: 1, ...extra });
+
+  it("excuses a day whose earlier appeal was approved", async () => {
+    expect(await run([kase("2026-10-01", "LATE_CHECKIN")], [earlier("APPROVED")])).toEqual([false]);
+  });
+  it("charges a day whose earlier appeal was rejected, even inside the window", async () => {
+    expect(await run([kase("2026-10-19", "LATE_CHECKIN")], [earlier("REJECTED", { date: new Date("2026-10-19T00:00:00Z") })])).toEqual([true]);
+  });
+  it("holds a day whose earlier appeal is still being decided", async () => {
+    expect(await run([kase("2026-10-01", "LATE_CHECKIN")], [earlier("PENDING")])).toEqual([false]);
+  });
+  it("ignores an earlier case that was never raised or is for another type", async () => {
+    expect(await run([kase("2026-10-01", "LATE_CHECKIN")], [earlier("PENDING", { raisedById: null }), earlier("APPROVED", { type: "ABSENT" })])).toEqual([true]);
+  });
+});
+
 describe("pricing of cases nobody raised", () => {
   const rules = { majorThresholdMinutes: 30, poolSize: 3, absentDays: 1, missingPunchDays: 0.5, majorTimingDays: 0.5, pooledMinorDays: 1 };
   const price = (cases) => ruleDeductions(cases, { rules });

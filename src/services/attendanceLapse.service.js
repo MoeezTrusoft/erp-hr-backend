@@ -17,27 +17,63 @@ const isCandidate = (a) =>
   RULE_TYPES.includes(a.type) &&
   a.raisedById == null;
 
+const dayOf = (d) => new Date(d).toISOString().slice(0, 10);
+const keyOf = (a) => `${a.employeeId}|${dayOf(a.date)}|${a.type}`;
+
+// Decisions made on the earlier (pre rules-v2) cases of the same employee, day and type. They are not
+// carried into the v2 case that re-evaluation opens, so they are applied here: an approved appeal
+// excuses the day, a rejected one is charged, a raised one is still held.
+async function earlierDecisions(open, { tenantId, db }) {
+  if (!db || !open.length) return new Map();
+  const days = open.map((a) => +new Date(a.date));
+  const rows = await db.attendanceAnomaly.findMany({
+    where: {
+      tenantId,
+      rulesVersion: 1,
+      employeeId: { in: [...new Set(open.map((a) => a.employeeId))] },
+      date: { gte: new Date(Math.min(...days)), lte: new Date(Math.max(...days)) },
+    },
+  });
+  const out = new Map();
+  for (const r of rows) {
+    const rank = { APPROVED: 3, REJECTED: 2, PENDING: r.raisedById == null ? 0 : 1 }[r.status] ?? 0;
+    const have = out.get(keyOf(r));
+    if (!have || rank > have.rank) out.set(keyOf(r), { rank, status: r.status, raised: r.raisedById != null });
+  }
+  return out;
+}
+
 // Returns the cases with `lapsed` set. Needs raisedById on every case.
 export async function markLapsedCases(cases, { tenantId, asOf = new Date(), db } = {}) {
   const open = cases.filter(isCandidate);
   if (!open.length) return cases.map((a) => ({ ...a, lapsed: false }));
-  const days = open.map((a) => +new Date(a.date));
-  const runtime = await loadAttendanceRuntime({
-    tenantId,
-    from: new Date(Math.min(...days)),
-    to: new Date(Math.max(...days) + 31 * DAY),
-    db,
-  });
+  const earlier = await earlierDecisions(open, { tenantId, db });
   const lapsed = new Set();
+  const waiting = [];
   for (const a of open) {
-    const { deadline } = await computeAnomalyDeadline({
+    const before = earlier.get(keyOf(a));
+    if (before?.status === "REJECTED") lapsed.add(a);
+    else if (before?.rank >= 1) continue;
+    else waiting.push(a);
+  }
+  if (waiting.length) {
+    const days = waiting.map((a) => +new Date(a.date));
+    const runtime = await loadAttendanceRuntime({
       tenantId,
-      employeeId: a.employeeId,
-      anomalyDate: a.date,
-      type: a.type,
-      runtime,
+      from: new Date(Math.min(...days)),
+      to: new Date(Math.max(...days) + 31 * DAY),
+      db,
     });
-    if (+deadline < +asOf) lapsed.add(a);
+    for (const a of waiting) {
+      const { deadline } = await computeAnomalyDeadline({
+        tenantId,
+        employeeId: a.employeeId,
+        anomalyDate: a.date,
+        type: a.type,
+        runtime,
+      });
+      if (+deadline < +asOf) lapsed.add(a);
+    }
   }
   return cases.map((a) => ({ ...a, lapsed: lapsed.has(a) }));
 }
