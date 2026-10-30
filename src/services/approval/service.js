@@ -277,6 +277,9 @@ async function actionsFor(tx, env, row) {
   if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
   const subject = await employee(tx, env.tenantId, row.employeeCode),
     self = ownsCode(env, row.employeeCode);
+  // A verification level may allow the employee to verify their own request (matrix `allowSelf`).
+  if (self && row.stage === "LEVEL" && row.route?.levels?.[row.level]?.allowSelf)
+    return levelActionsFor(env, row);
   if (self)
     return permits(env, "self")
       ? [

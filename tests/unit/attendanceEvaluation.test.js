@@ -98,12 +98,13 @@ describe("interval attendance calculation", () => {
     expect(draft.issues.some(i=>i.code.startsWith('CORRECTION_AWAITING_'))).toBe(false);
   });
   it("never invents an OUT from repeated authenticated IN events", () => {
-    expect(
-      score([
-        ["09:00", "IN"],
-        ["17:00", "IN"],
-      ]),
-    ).toMatchObject({ status: "PUNCH_CONFLICT", dayCredit: null });
+    const repeated = score([
+      ["09:00", "IN"],
+      ["17:00", "IN"],
+    ]);
+    // The first IN is the check-in; the second is only a mark, and no OUT is invented.
+    expect(repeated).toMatchObject({ status: "MISSING_CHECKOUT", dayCredit: null });
+    expect(repeated.marks.map((m) => m.code)).toEqual(["REPEATED_IN"]);
     expect(
       score(
         [

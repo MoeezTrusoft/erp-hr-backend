@@ -27,9 +27,10 @@ describe('activation across an overnight shift', () => {
     const evaluate = from => applyEvaluatedShifts({ tenantId: TENANT, from, to: '2026-10-13',
       employeeIds: [1, 2], now: new Date('2026-10-13T00:30:00Z'), db, dryRun: false });
     await evaluate('2026-10-13');
-    // Until the prior work date is published these punches have no valid shift
-    // window. Preserve them for review instead of attaching them to tonight.
-    expect(db.snapshot().attendance.filter(r => r.status === 'PUNCH_CONFLICT')).toHaveLength(2);
+    // Until the prior work date is published these departures belong to a day this setup does not
+    // cover. They are neither attached to tonight nor turned into a conflict on the first covered
+    // day; they are picked up when the prior day is published (below).
+    expect(db.snapshot().attendance.filter(r => r.status === 'PUNCH_CONFLICT')).toHaveLength(0);
     await db.attendanceSetupRelease.create({ data: { tenantId: TENANT, version: 2,
       effectiveFrom: new Date('2026-10-12'), coverageThrough: new Date('2026-10-12'), config: { ...config, version: 2 } } });
     await evaluate('2026-10-12');

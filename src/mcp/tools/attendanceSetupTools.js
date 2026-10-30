@@ -93,7 +93,7 @@ export function registerAttendanceSetupTools(server) {
       deductPooledMinorDays: z.coerce.number().min(0).max(31).optional()
         .describe("PAYROLL: days deducted for each full pool of minor incidents (default 1)"),
       minSessionMinutes: z.coerce.number().int().min(0).max(60).optional()
-        .describe("A day whose only presence is a session shorter than this is an accidental double tap and becomes a punch conflict, not an early checkout (default 5, 0 = off)"),
+        .describe("No longer used: a short session is recorded as the check-out and judged by the early check-out rule. Accepted so saved setups stay valid"),
       shiftGapHours: z.coerce.number().int().min(2).max(23).optional()
         .describe("Gap that separates one shift from the next. Below this, punches belong to the same shift — this is what carries a night shift past midnight"),
       defaultShiftStart: z.string().optional()

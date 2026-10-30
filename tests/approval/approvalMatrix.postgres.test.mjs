@@ -281,3 +281,33 @@ test("without a published matrix both kinds keep the four fixed stages (nothing 
 test.after(async () => {
   await prisma.$disconnect();
 });
+
+test("ATTENDANCE: the verifier's own case is verified by her raising it, and Management decides", async () => {
+  const ownCase = async () => {
+    const s = await fixture("ATTENDANCE");
+    await db((tx) => tx.attendanceAnomaly.update({ where: { id: s.row.id }, data: { employeeId: people.HR.id } }));
+    return s;
+  };
+  const raise = (s) =>
+    as("HR", () =>
+      submitApproval({
+        kind: s.kind, sourceRef: s.ref, employeeCode: people.HR.employee_code, expectedVersion: 0,
+        reason: "HR raises her own case", requestKey: randomUUID(),
+      }),
+    ).then((r) => r.record);
+
+  await publish("ATTENDANCE", [level("HR verification", "VERIFY", "HR", { allowSelf: true }), level("Management approval", "APPROVE", "MANAGEMENT")]);
+  const row = await raise(await ownCase());
+  assert.equal(row.stage, "LEVEL");
+  assert.equal(row.level, 1);
+  assert.deepEqual(row.pendingCodes, [people.MANAGEMENT.employee_code]);
+  assert.deepEqual(row.route.levels.map((l) => [l.name, l.auto]), [["HR verification", true], ["Management approval", false]]);
+  await assert.rejects(act("HR", row, "APPROVE"), /cannot perform this action/);
+  // Management is the one who decides (applying the decision needs real punch evidence for HR's own
+  // case, which this fixture re-points from another employee, so the decision itself is not run here).
+  assert.deepEqual(row.history.at(-1).toStage, "LEVEL 2: Management approval");
+
+  // Without the option nobody may verify their own case: the submission is refused with a clear message.
+  await publish("ATTENDANCE", [level("HR verification", "VERIFY", "HR"), level("Management approval", "APPROVE", "MANAGEMENT")]);
+  await assert.rejects(raise(await ownCase()), /no active approver other than the initiator/);
+});

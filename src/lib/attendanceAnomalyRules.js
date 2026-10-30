@@ -81,6 +81,8 @@ export function anomalyFacts({
   shift = {},
   grace = {},
   closed = true,
+  workedPercent = null,
+  halfDayMinPercent = 50,
 }) {
   const facts = [];
   const add = (type, expectedTime, actualTime, minutes = null) =>
@@ -107,8 +109,13 @@ export function anomalyFacts({
       : 0;
   if (late > (grace.checkInMinutes ?? 0))
     add("LATE_CHECKIN", shift.start, checkIn, late);
-  if (early > (grace.checkOutMinutes ?? 0))
+  if (early > (grace.checkOutMinutes ?? 0)) {
+    // Leaving before the half-day mark is an absence (operator, 2026-10-30): it replaces the
+    // lateness and early-leave facts so the day is priced once.
+    if (closed && workedPercent != null && workedPercent < halfDayMinPercent)
+      return [{ type: "ABSENT", expectedTime: shift.start || null, actualTime: checkOut || null, minutes: null, severity: null, reason: "EARLY_CHECKOUT_BEFORE_HALF_DAY" }];
     add("EARLY_CHECKOUT", shift.end, checkOut, early);
+  }
   return facts;
 }
 export function applyAnomalyRules(result, { shift = {}, policy = {} } = {}) {
@@ -123,6 +130,8 @@ export function applyAnomalyRules(result, { shift = {}, policy = {} } = {}) {
     shift,
     grace,
     closed: !result.inProgress,
+    workedPercent: result.workedPercent,
+    halfDayMinPercent: policy.halfDayMinPercent ?? 50,
   });
   const status = [
     "ABSENT",
@@ -196,11 +205,15 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
   for (const a of [...anomalies].sort(
     (a, b) => +new Date(a.date) - +new Date(b.date) || a.id - b.id,
   )) {
+    // Priced: a case Management disapproved, or one nobody raised in time (`lapsed`, set by
+    // services/attendanceLapse.service.js once its two working days have passed). A raised case is
+    // held until it is decided; an approved one is excused.
+    const disapproved = a.status === "REJECTED" && a.decisionRole === "Management";
+    const lapsed = a.status === "PENDING" && a.lapsed === true;
     if (
       a.rulesVersion !== 2 ||
-      a.status !== "REJECTED" ||
-      a.evidenceState !== "ACTIVE" ||
-      a.decisionRole !== "Management"
+      !(disapproved || lapsed) ||
+      a.evidenceState !== "ACTIVE"
     )
       continue;
     if (

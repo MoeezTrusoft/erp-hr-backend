@@ -10,6 +10,7 @@ import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.ser
 import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
 import { lockAttendancePeriod } from './attendancePeriod.service.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
+import { markLapsedCases } from './attendanceLapse.service.js';
 import { runUpdateAfterFailure } from '../lib/payrollRunFailure.js';
 import { dateRange, employedOn, badSetup } from '../lib/attendanceDates.js';
 import { approvedLeaveCoverage } from "../lib/approvedLeaveCoverage.js";
@@ -1250,7 +1251,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                             lte: payrollRun.periodEnd
                         }
                     },
-                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true, expectedTime:true, actualTime:true, rulesVersion:true, sessionKey:true, measuredMinutes:true, decisionRole:true, evidenceState:true, employeeId:true }
+                    select: { id: true, date: true, status: true, type: true, manualDeductionDays: true, expectedTime:true, actualTime:true, rulesVersion:true, sessionKey:true, measuredMinutes:true, decisionRole:true, evidenceState:true, employeeId:true, raisedById:true }
                 }
             }
         });
@@ -1263,6 +1264,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         ]);
         const leaveCoverage=approvedLeaveCoverage([...approvedRequests,...approvedLegacyLeaves],payrollRun.periodStart,payrollRun.periodEnd);
         for(const employee of employees) employee.attendanceAnomalies.push(...leaveCoverage.filter(a=>a.employeeId===employee.id));
+        // Cases nobody raised within their two working days are charged (attendanceLapse.service.js).
+        {
+            const v2=employees.flatMap(e=>e.attendanceAnomalies).filter(a=>a.rulesVersion===2);
+            const marked=await markLapsedCases(v2,{tenantId});
+            v2.forEach((a,i)=>{ if(marked[i].lapsed) a.lapsed=true; });
+        }
 
         // An explicitly authorized, run-specific attendance snapshot can be
         // shared by a person paid by two companies. Raw attendance is retained

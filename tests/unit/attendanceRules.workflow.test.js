@@ -39,7 +39,7 @@ describe('per-shift anomaly review',()=>{
   const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);let row=current(db)[0];
   await commentRuleCase({user:hr,anomalyId:row.id,version:0,kind:'HR',comment:'Verified'},db);row=current(db)[0];
   await prove(db,row);await finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Disapproved'},db);
-  await db.attendanceDevicePunch.create({data:{tenantId:TENANT,employeeId:1,punchedAt:at('12:00'),status:0,directionVerified:true,sn:'DEVICE-1'}});
+  await db.attendanceDevicePunch.create({data:{tenantId:TENANT,employeeId:1,punchedAt:at('12:00'),status:99,directionVerified:true,sn:'DEVICE-1'}});
   await evaluate(db);
   expect(current(db)[0].status).toBe('REJECTED');
   expect(db.snapshot().attendance[0].processingState).toBe('NEEDS_REVIEW');
@@ -57,7 +57,7 @@ describe('per-shift anomaly review',()=>{
  it('evaluates both manually supplied boundaries and rejects a second attempt to overwrite them',async()=>{
   const db=fixture();await evaluate(db);
   await enterRuleTime({user:hr,employeeId:1,date,checkIn:'13:00',checkOut:'14:00',version:1,reason:'Verified attendance'},db);
-  expect(current(db).map(a=>a.type).sort()).toEqual(['EARLY_CHECKOUT','LATE_CHECKIN']);
+  expect(current(db).map(a=>a.type).sort()).toEqual(['ABSENT']);
   expect(db.snapshot().attendance[0]).toMatchObject({total_hours:1,day_credit:null});
   await expect(enterRuleTime({user:hr,employeeId:1,date,checkIn:'09:00',version:db.snapshot().attendance[0].evaluationVersion,reason:'Try replacement'},db)).rejects.toThrow('already recorded');
  });

@@ -195,16 +195,16 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
     // T&A-RULE-06 — a checkout before the half-day mark is a HALF DAY (half
     // credit), not ABSENT: the person showed up and worked a real, if short,
     // slice of the day.
-    it('classifies early checkout independently of worked-duration bands', () => {
+    it('treats a checkout before half the shift as an absence (operator, 2026-10-30)', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T12:00:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
         expect(r.workedPercent).toBeCloseTo(25, 0);
-        expect(r.status).toBe('EARLY_CHECKOUT');   // arrival said PRESENT; the CHECKOUT decides
-        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
-        expect(r.anomalies.map((a) => a.type)).toContain('EARLY_CHECKOUT');
+        expect(r.status).toBe('ABSENT');
+        expect(r.dayCredit).toBeNull(); // the absence is a case until it is decided or lapses
+        expect(r.anomalies.map((a) => a.type)).toEqual(['ABSENT']);
     });
 
     it('holds credit in the middle band, labelled EARLY_CHECKOUT', () => {
@@ -257,14 +257,14 @@ describe('HR-ATT-POLICY-01 duration and precedence', () => {
     // T&A-RULE-06 — both early-checkout bands cost half a day and BOTH count
     // as early checkout. Before the mark the day reads HALF_DAY; after it,
     // EARLY_CHECKOUT.
-    it('holds an early checkout before half the shift for review', () => {
+    it('treats an early checkout just before half the shift as an absence', () => {
         const r = evaluateShift({
             punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T13:59:00Z')],
             shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
         });
 
-        expect(r.status).toBe('EARLY_CHECKOUT');
-        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+        expect(r.status).toBe('ABSENT');
+        expect(r.anomalies.map((a) => a.type)).toEqual(['ABSENT']);
     });
 
     it('classifies checkout after half the shift but before the end as EARLY_CHECKOUT', () => {

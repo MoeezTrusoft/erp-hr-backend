@@ -42,6 +42,9 @@ const Level = z
     canReject: z.boolean().default(true),
     canReturn: z.boolean().default(true),
     satisfiedByInitiator: z.boolean().default(false),
+    // The employee a request is about may be the verifier of their own request (a verifier whose
+    // own cases have no other verifier). Their raising it then counts as this level. VERIFY only.
+    allowSelf: z.boolean().default(false),
     thresholdAmount: z.number().nonnegative().nullable().default(null),
   })
   .strict();
@@ -79,6 +82,10 @@ export function parseLevels(kind, raw) {
       throw bad(`${at}: assign at least one approver`);
     if (l.approverMode === "EMPLOYEE_MANAGER" && l.approverIds.length)
       throw bad(`${at}: remove the named approvers or choose named approvers`);
+    if (l.allowSelf && l.action !== "VERIFY")
+      throw bad(`${at}: only a verification level can allow the employee to verify their own request`);
+    if (l.allowSelf && l.approverMode !== "NAMED")
+      throw bad(`${at}: choose named approvers to allow self verification`);
     if (l.action === "APPROVE" && l.satisfiedByInitiator)
       throw bad(`${at}: the decision cannot be satisfied by the initiator`);
     if (l.action === "APPROVE" && !l.canReject && !l.canReturn)
@@ -113,7 +120,7 @@ export function buildRoute({ kind, matrixVersion, levels, initiator, subject, am
         viaManager: l.approverMode === "EMPLOYEE_MANAGER", engaged: false, auto: false, skipped: "PAUSED",
       };
     const assigned = uniq(approvers(l));
-    const eligible = assigned.filter((c) => c !== initiator && c !== subject);
+    const eligible = l.allowSelf ? assigned : assigned.filter((c) => c !== initiator && c !== subject);
     const out = {
       index: i,
       name: l.name,
@@ -121,6 +128,7 @@ export function buildRoute({ kind, matrixVersion, levels, initiator, subject, am
       required: l.required,
       canReject: l.canReject,
       canReturn: l.canReturn,
+      allowSelf: l.allowSelf,
       approverCodes: eligible,
       viaManager: l.approverMode === "EMPLOYEE_MANAGER",
       engaged: true,
@@ -133,10 +141,10 @@ export function buildRoute({ kind, matrixVersion, levels, initiator, subject, am
     // always raised by the person it was processed by; for any other kind the raiser must be someone
     // other than the employee the request is about (nobody verifies their own case).
     if (
-      l.satisfiedByInitiator &&
+      (l.satisfiedByInitiator || (l.allowSelf && initiator === subject)) &&
       l.action !== "APPROVE" &&
       assigned.includes(initiator) &&
-      (kind === "PAYROLL" || initiator !== subject)
+      (kind === "PAYROLL" || initiator !== subject || l.allowSelf)
     )
       return { ...out, auto: true };
     if (!eligible.length) {

@@ -1,4 +1,5 @@
-// Plan item 2.5 (D3): a session under the floor is a punch conflict, not an early checkout.
+// A very short session is no longer a punch conflict (operator, 2026-10-30): the short check-out is
+// recorded, and if the real check-out never arrives the day is judged by the early-check-out rule.
 import { describe, it, expect } from "@jest/globals";
 import { evaluateShift } from "../../src/lib/attendanceEvaluator.js";
 
@@ -13,27 +14,25 @@ const run = (items, policy = {}) =>
     now,
   });
 
-describe("minimum session length", () => {
-  it("09:00 IN / 09:01 OUT is a punch conflict, not an early checkout", () => {
+describe("short sessions", () => {
+  it("09:00 IN / 09:01 OUT is recorded as the check-out, not a conflict", () => {
     const r = run([["09:00", "IN"], ["09:01", "OUT"]]);
-    expect(r.status).toBe("PUNCH_CONFLICT");
-    expect(r.requiresRegularization).toBe(true);
-    expect(r.dayCredit).toBeNull();
-    expect(r.issues[0].code).toBe("SESSION_TOO_SHORT");
-    expect(r.anomalies.some((a) => a.type === "EARLY_CHECKOUT")).toBe(false);
+    expect(r.status).toBe("ABSENT");
+    expect(r.checkOut).toEqual(at("09:01"));
+    expect(r.issues).toEqual([]);
   });
-  it("a 4 minute session is held, a 6 minute one is a real (short) session", () => {
-    expect(run([["09:00", "IN"], ["09:04", "OUT"]]).status).toBe("PUNCH_CONFLICT");
-    expect(run([["09:00", "IN"], ["09:06", "OUT"]]).status).not.toBe("PUNCH_CONFLICT");
+  it("no session length is held as a conflict any more", () => {
+    for (const out of ["09:01", "09:04", "09:06", "09:08"])
+      expect(run([["09:00", "IN"], [out, "OUT"]]).status).not.toBe("PUNCH_CONFLICT");
+    expect(run([["09:00", "IN"], ["09:08", "OUT"]], { minSessionMinutes: 10 }).status).not.toBe("PUNCH_CONFLICT");
   });
-  it("the floor is configurable and 0 turns it off", () => {
-    expect(run([["09:00", "IN"], ["09:08", "OUT"]], { minSessionMinutes: 10 }).status).toBe("PUNCH_CONFLICT");
-    expect(run([["09:00", "IN"], ["09:01", "OUT"]], { minSessionMinutes: 0 }).status).not.toBe("PUNCH_CONFLICT");
+  it("the real check-out that arrives later replaces the short one", () => {
+    expect(run([["09:00", "IN"], ["09:01", "OUT"], ["18:00", "OUT"]]).status).toBe("PRESENT");
   });
   it("a normal full day is unaffected", () => {
     expect(run([["09:00", "IN"], ["18:00", "OUT"]]).status).toBe("PRESENT");
   });
   it("a normal day with a short break is unaffected", () => {
-    expect(run([["09:00", "IN"], ["13:00", "OUT"], ["13:03", "IN"], ["18:00", "OUT"]]).status).not.toBe("PUNCH_CONFLICT");
+    expect(run([["09:00", "IN"], ["13:00", "OUT"], ["13:03", "IN"], ["18:00", "OUT"]]).status).toBe("PRESENT");
   });
 });

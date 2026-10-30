@@ -2,6 +2,7 @@ import * as money from "../lib/money.js";
 import { ruleDeductions } from "../lib/attendanceAnomalyRules.js";
 import { rulesForRun } from "./deductionRules.service.js";
 import { lockAttendancePeriod } from "./attendancePeriod.service.js";
+import { markLapsedCases } from "./attendanceLapse.service.js";
 
 export const RULE_DEDUCTION_CODE = "ATTENDANCE_RULES_V2";
 export const ADJUSTMENT_CODE = "ATTENDANCE_RULES_ADJUSTMENT";
@@ -207,14 +208,18 @@ export async function reconcileRulePayroll(
         { status: 409 },
       );
     }
-    const cases = await db.attendanceAnomaly.findMany({
-      where: {
-        tenantId,
-        employeeId,
-        date: { gte: run.periodStart, lte: run.periodEnd },
-        rulesVersion: 2,
-      },
-    });
+    // Cases nobody raised are priced as they stood when this run was processed.
+    const cases = await markLapsedCases(
+      await db.attendanceAnomaly.findMany({
+        where: {
+          tenantId,
+          employeeId,
+          date: { gte: run.periodStart, lte: run.periodEnd },
+          rulesVersion: 2,
+        },
+      }),
+      { tenantId, db, asOf: run.processedAt ?? new Date() },
+    );
     // The rules this run was priced with, not whatever is configured today.
     const assessment = ruleDeductions(cases, {
       from: run.periodStart,
