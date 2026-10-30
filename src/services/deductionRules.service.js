@@ -44,6 +44,6 @@ export async function rulesForRun(db, { tenantId, runId }) {
     orderBy: { id: "desc" },
   });
   return snap?.newValues?.rules
-    ? { ...deductionRulesFromPolicy({}), ...snap.newValues.rules }
+    ? { ...deductionRulesFromPolicy({}), missingPoolSize: 1, ...snap.newValues.rules } // runs priced before the missing-punch pool keep one case = one charge
     : loadDeductionRules(tenantId, db);
 }

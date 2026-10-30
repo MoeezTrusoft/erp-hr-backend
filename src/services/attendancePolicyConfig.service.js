@@ -29,7 +29,7 @@ const MINUTE_KEYS = [
 ];
 
 // Whole numbers >= 1: how many minor incidents make one pooled deduction.
-const POSITIVE_INT_KEYS = ["deductPoolSize"];
+const POSITIVE_INT_KEYS = ["deductPoolSize", "deductMissingPoolSize"];
 // Days of salary, 0-31 in steps of any fraction (0.5 = half a day).
 const DAY_KEYS = [
   "deductAbsentDays",
@@ -67,7 +67,8 @@ export function defaultAttendancePolicy() {
     deductMajorThresholdMinutes: 30,
     deductPoolSize: 3,
     deductAbsentDays: 1,
-    deductMissingPunchDays: 0.5,
+    deductMissingPunchDays: 1,
+    deductMissingPoolSize: 3,
     deductMajorTimingDays: 0.5,
     deductPooledMinorDays: 1,
     minSessionMinutes: 5,

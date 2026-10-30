@@ -107,7 +107,9 @@ export function anomalyFacts({
     checkOut && shift.end
       ? (+new Date(shift.end) - +new Date(checkOut)) / 60000
       : 0;
-  if (late > (grace.checkInMinutes ?? 0))
+  // Grace is counted in whole minutes (operator, 2026-10-30): with 5 minutes, any arrival inside the
+  // 5th minute (09:05:xx for a 09:00 start) is on time, and the 6th minute (09:06:00) is late.
+  if (Math.floor(late) > (grace.checkInMinutes ?? 0))
     add("LATE_CHECKIN", shift.start, checkIn, late);
   if (early > (grace.checkOutMinutes ?? 0)) {
     // Leaving before the half-day mark is an absence (operator, 2026-10-30): it replaces the
@@ -173,7 +175,8 @@ export const DEFAULT_DEDUCTION_RULES = Object.freeze({
   majorThresholdMinutes: 30,
   poolSize: 3,
   absentDays: 1,
-  missingPunchDays: 0.5,
+  missingPunchDays: 1,
+  missingPoolSize: 3,
   majorTimingDays: 0.5,
   pooledMinorDays: 1,
 });
@@ -182,6 +185,7 @@ const POLICY_RULE_FIELDS = {
   poolSize: "deductPoolSize",
   absentDays: "deductAbsentDays",
   missingPunchDays: "deductMissingPunchDays",
+  missingPoolSize: "deductMissingPoolSize",
   majorTimingDays: "deductMajorTimingDays",
   pooledMinorDays: "deductPooledMinorDays",
 };
@@ -192,7 +196,7 @@ export function deductionRulesFromPolicy(policy = {}) {
   for (const [key, column] of Object.entries(POLICY_RULE_FIELDS)) {
     const value = Number(policy?.[column]);
     if (policy?.[column] == null || !Number.isFinite(value) || value < 0) continue;
-    if (key === "poolSize" && (!Number.isInteger(value) || value < 1)) continue;
+    if ((key === "poolSize" || key === "missingPoolSize") && (!Number.isInteger(value) || value < 1)) continue;
     rules[key] = value;
   }
   return rules;
@@ -201,7 +205,8 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
   const r = { ...DEFAULT_DEDUCTION_RULES, ...(rules || {}) };
   const seen = new Set(),
     lines = [],
-    minors = [];
+    minors = [],
+    missing = [];
   for (const a of [...anomalies].sort(
     (a, b) => +new Date(a.date) - +new Date(b.date) || a.id - b.id,
   )) {
@@ -226,8 +231,7 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
     seen.add(key);
     if (a.type === "ABSENT")
       lines.push({ anomalyIds: [a.id], days: r.absentDays, date: keyDate(a.date) });
-    else if (["MISSING_CHECKIN", "MISSING_CHECKOUT"].includes(a.type))
-      lines.push({ anomalyIds: [a.id], days: r.missingPunchDays, date: keyDate(a.date) });
+    else if (["MISSING_CHECKIN", "MISSING_CHECKOUT"].includes(a.type)) missing.push(a);
     else if (["LATE_CHECKIN", "EARLY_CHECKOUT"].includes(a.type)) {
       const minutes =
         a.measuredMinutes ??
@@ -242,6 +246,20 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
         lines.push({ anomalyIds: [a.id], days: r.majorTimingDays, date: keyDate(a.date) });
       else minors.push(a);
     }
+  }
+  // Missing check-ins and check-outs share one pool per employee: every `missingPoolSize` of them
+  // cost `missingPunchDays`. Like the minors, leftovers do not carry into the next period.
+  let missingRemainder = 0;
+  for (const id of [...new Set(missing.map((a) => a.employeeId))]) {
+    const own = missing.filter((a) => a.employeeId === id);
+    for (let i = 0; i + r.missingPoolSize <= own.length; i += r.missingPoolSize)
+      lines.push({
+        anomalyIds: own.slice(i, i + r.missingPoolSize).map((a) => a.id),
+        days: r.missingPunchDays,
+        date: keyDate(own[i + r.missingPoolSize - 1].date),
+        pooled: true,
+      });
+    missingRemainder += own.length % r.missingPoolSize;
   }
   // Pool per employee; callers may also use this helper for a whole-site preview.
   const employees = [...new Set(minors.map((a) => a.employeeId))];
@@ -261,6 +279,8 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
     days: lines.reduce((sum, line) => sum + line.days, 0),
     minorCount: minors.length,
     minorRemainder: remainder,
+    missingCount: missing.length,
+    missingRemainder,
     lines,
   };
 }

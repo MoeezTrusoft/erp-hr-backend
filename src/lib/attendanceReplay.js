@@ -466,6 +466,11 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
           now:civilNow(now,info.timeZone),credits:ownCredits});
         if(info.reason==='PAID_NO_PUNCH')Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,
           anomalies:[],processingState:'FINALIZED',issues:[]});
+        // Work on a weekly off or holiday is extra work (operator, 2026-10-30): never late, never short,
+        // never an anomaly. The rostered shift is only a guide for the hours worked there.
+        else if(!info.working && info.reason!=='APPROVED_LEAVE' && verdict.status!=='PUNCH_CONFLICT' && !verdict.inProgress)
+          Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,
+            anomalies:[],processingState:'FINALIZED',latenessMinutes:null});
       }
       const siteIssues=evaluateSiteEvidence(session.punches.filter(p=>!p.manual),info,ownCredits);
       if(session.punches.some(p=>p.clockIssue))siteIssues.push({code:"AMBIGUOUS_LEGACY_TIMESTAMP"});

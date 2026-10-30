@@ -292,7 +292,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
 
     it('handles fractional deduction days', () => {
         const slip = build({
-            anomalyRows:[decided('MISSING_CHECKOUT')],
+            anomalyRows:[{...decided('LATE_CHECKIN'),measuredMinutes:45}],
         });
         const line = slip.deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
         // half of 8387.09 → 4193.54 → 4194 whole rupees (N-22)
