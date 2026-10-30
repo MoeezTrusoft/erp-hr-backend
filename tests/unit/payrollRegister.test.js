@@ -34,3 +34,9 @@ it('shows the employee full name, and falls back to the code when no name is rec
  const unnamed=buildPayrollRegister({run,payslips:[{...slip,employee:{...slip.employee,employee_name:null,employee_code:'EMP-00482'}}]});
  expect(unnamed.offices[0].departments[0].rows[0].name).toBe('EMP-00482');
 });
+
+it('names the PDF after the month and the company',async()=>{
+ const {payrollRegisterFilename}=await import('../../src/services/payrollRegisterPdf.service.js');
+ expect(payrollRegisterFilename({run:{periodStart:new Date('2026-09-01T00:00:00Z')},companyName:'TruSoft'})).toBe('September Payroll - TruSoft.pdf');
+ expect(payrollRegisterFilename({run:{periodStart:new Date('2026-10-01T00:00:00Z')},companyName:'A/B'})).toBe('October Payroll - AB.pdf');
+});

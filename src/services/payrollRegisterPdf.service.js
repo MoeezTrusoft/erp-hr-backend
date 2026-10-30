@@ -71,4 +71,6 @@ export function renderPayrollRegister(model){
  doc.end();
  });
 }
-export async function exportPayrollPdf(args){const model=await loadPayrollRegister(args),pdf=await renderPayrollRegister(model);return {format:'pdf',encoding:'base64',mimeType:'application/pdf',filename:`payroll-${model.run.periodStart.toISOString().slice(0,7)}-run-${model.run.id}.pdf`,content:pdf.toString('base64')};}
+// "September Payroll - TruSoft.pdf": the month of the run and the company's display name.
+export const payrollRegisterFilename=model=>`${new Date(model.run.periodStart).toLocaleDateString('en-GB',{month:'long',timeZone:'UTC'})} Payroll - ${String(model.companyName||'Company').replace(/[\\/:*?"<>|]/g,'')}.pdf`;
+export async function exportPayrollPdf(args){const model=await loadPayrollRegister(args),pdf=await renderPayrollRegister(model);return {format:'pdf',encoding:'base64',mimeType:'application/pdf',filename:payrollRegisterFilename(model),content:pdf.toString('base64')};}
