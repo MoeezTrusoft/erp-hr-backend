@@ -37,8 +37,10 @@ async function earlierDecisions(open, { tenantId, db }) {
   const out = new Map();
   for (const r of rows) {
     const rank = { APPROVED: 3, REJECTED: 2, PENDING: r.raisedById == null ? 0 : 1 }[r.status] ?? 0;
-    const have = out.get(keyOf(r));
-    if (!have || rank > have.rank) out.set(keyOf(r), { rank, status: r.status, raised: r.raisedById != null });
+    // An approved appeal of type OTHER (a paper form, leave or illness explanation) covers the whole day.
+    const key = r.type === "OTHER" && r.status === "APPROVED" ? `${r.employeeId}|${dayOf(r.date)}|*` : keyOf(r);
+    const have = out.get(key);
+    if (!have || rank > have.rank) out.set(key, { rank, status: r.status, raised: r.raisedById != null });
   }
   return out;
 }
@@ -51,7 +53,7 @@ export async function markLapsedCases(cases, { tenantId, asOf = new Date(), db }
   const lapsed = new Set();
   const waiting = [];
   for (const a of open) {
-    const before = earlier.get(keyOf(a));
+    const before = earlier.get(`${a.employeeId}|${dayOf(a.date)}|*`) ?? earlier.get(keyOf(a));
     if (before?.status === "REJECTED") lapsed.add(a);
     else if (before?.rank >= 1) continue;
     else waiting.push(a);

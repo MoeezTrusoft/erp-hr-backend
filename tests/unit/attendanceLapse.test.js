@@ -81,6 +81,9 @@ describe("decisions made on the earlier case of the same day", () => {
   it("holds a day whose earlier appeal is still being decided", async () => {
     expect(await run([kase("2026-10-01", "LATE_CHECKIN")], [earlier("PENDING")])).toEqual([false]);
   });
+  it("excuses every case of a day whose earlier approved appeal was of type OTHER", async () => {
+    expect(await run([kase("2026-10-01", "ABSENT"), kase("2026-10-01", "LATE_CHECKIN")], [earlier("APPROVED", { type: "OTHER" })])).toEqual([false, false]);
+  });
   it("ignores an earlier case that was never raised or is for another type", async () => {
     expect(await run([kase("2026-10-01", "LATE_CHECKIN")], [earlier("PENDING", { raisedById: null }), earlier("APPROVED", { type: "ABSENT" })])).toEqual([true]);
   });
