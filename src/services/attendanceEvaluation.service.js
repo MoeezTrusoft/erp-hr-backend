@@ -92,7 +92,7 @@ export async function attendanceCompleteness(
     const k = c.employeeId + "|" + dateKey(c.date);
     const day = casesByDay.get(k) ?? { any: false, held: false };
     day.any = true;
-    if (c.status === "PENDING" && (c.raisedById != null || !c.lapsed)) day.held = true;
+    if (c.status === "PENDING" && !c.decided && (c.raisedById != null || !c.lapsed)) day.held = true;
     casesByDay.set(k, day);
   }
   const byDay = new Map(
