@@ -1267,7 +1267,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         // Cases nobody raised within their two working days are charged (attendanceLapse.service.js).
         {
             const v2=employees.flatMap(e=>e.attendanceAnomalies).filter(a=>a.rulesVersion===2);
-            const marked=await markLapsedCases(v2,{tenantId});
+            const marked=await markLapsedCases(v2,{tenantId,db:prisma});
             v2.forEach((a,i)=>{ if(marked[i].lapsed) a.lapsed=true; });
         }
 
