@@ -62,7 +62,7 @@ function yearBounds(date) {
 
 const PAYSLIP_INCLUDE = {
   employee: {select:{employee_code:true,employee_name:true,first_name:true,last_name:true,preferred_name:true,job_title:true,photo_url:true,Position:{select:{title:true}},businessUnit:{select:{name:true}}}},
-  payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true, processedAt: true, status: true } },
+  payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true, processedAt: true, status: true, calculationConfigVersion: true } },
   earnings: {
     include: { earningType: { select: { code: true, name: true, isTaxable: true } } },
   },
@@ -114,6 +114,21 @@ function isTaxDeduction(d) {
 
 // Runs whose payslips an employee must not see in their own list.
 const HIDDEN_RUN_STATUSES = ["CANCELLED", "FAILED", "REJECTED"];
+
+// How this payslip is paid, from the payroll setup the run was calculated with. Never blocks the payslip.
+async function computePaymentMethod({ tenantId, run }) {
+  try {
+    const snapshot = await prisma.payrollConfigSnapshot.findFirst({
+      where: scopedWhere(tenantId, run?.calculationConfigVersion ? { version: run.calculationConfigVersion } : {}),
+      orderBy: { version: "desc" },
+    });
+    if (!snapshot) return null;
+    return snapshot.config?.payRules?.cashDisbursement === true ? "CASH" : "BANK";
+  } catch (err) {
+    logger.warn({ err: err?.message }, "payslip payment method unavailable");
+    return null;
+  }
+}
 
 // Dated attendance charges, priced exactly as the run priced them. Never blocks the payslip.
 async function computeAttendanceCharges({ tenantId, employeeId, run }) {
@@ -213,7 +228,7 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
   const periodStart = slip.payrollRun?.periodStart ?? null;
   const periodEnd = slip.payrollRun?.periodEnd ?? null;
 
-  const [ytd, leaveTaken, overtimeHours, attendanceCharges] = await Promise.all([
+  const [ytd, leaveTaken, overtimeHours, attendanceCharges, paymentMethod] = await Promise.all([
     computeYtd({ tenantId, employeeId: empId, periodEnd: periodEnd ?? slip.created_at }),
     periodStart && periodEnd
       ? computeLeaveTaken({ tenantId, employeeId: empId, periodStart, periodEnd })
@@ -222,6 +237,7 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
       ? computeOvertimeHours({ tenantId, employeeId: empId, periodStart, periodEnd })
       : Promise.resolve(0),
     computeAttendanceCharges({ tenantId, employeeId: empId, run: slip.payrollRun }),
+    computePaymentMethod({ tenantId, run: slip.payrollRun }),
   ]);
 
   const totalWorkingDays = slip.attendancePeriodDays ?? (periodStart && periodEnd ? Math.round((new Date(periodEnd)-new Date(periodStart))/86400000)+1 : null);
@@ -263,6 +279,7 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
       amount: Number(d.amount) || 0,
     })),
     attendanceCharges,
+    paymentMethod,
   };
 }
 
