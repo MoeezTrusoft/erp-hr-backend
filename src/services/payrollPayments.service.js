@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import * as money from "../lib/money.js";
+import { identitiesByCode } from "../lib/personIdentity.js";
 import { encryptString, decryptString } from "../lib/crypto.js";
 const historyOf = (value) =>
   value?.encrypted
@@ -40,6 +41,11 @@ export async function payrollPaymentStatus({ tenantId, runId }) {
     include: { employee: { select: { employee_code: true } } },
     orderBy: { id: "asc" },
   });
+  const people = await identitiesByCode(
+    prisma,
+    tenantId,
+    slips.map((s) => s.employee.employee_code),
+  );
   return {
     runId,
     status: run.status,
@@ -48,6 +54,7 @@ export async function payrollPaymentStatus({ tenantId, runId }) {
     integration: "EVIDENCE_RECORDING",
     items: slips.map((s) => ({
       employeeCode: s.employee.employee_code,
+      employee: people.get(s.employee.employee_code) ?? null,
       netAmount: s.netAmount,
       paidAt: s.paidAt,
       reference: s.paymentReference,
