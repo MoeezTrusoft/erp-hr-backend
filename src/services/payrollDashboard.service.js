@@ -1,4 +1,5 @@
 import { employeeCode } from '../lib/payrollConfiguration.js';
+import { displayName } from '../lib/personIdentity.js';
 import { payrollReadiness } from './payrollReadiness.service.js';
 import { payrollEligibleFilter } from './payrollService.js';
 // src/services/payrollDashboard.service.js — "Payroll This Month" company dashboard.
@@ -25,8 +26,8 @@ function pctChange(current, previous) {
   return Math.round(((c - p) / Math.abs(p)) * 1000) / 10;
 }
 
-// Employee display name from the snake_case columns.
-const employeeName = employeeCode;
+// Employee display name: the person's full name (code only when no name is on file).
+const employeeName = displayName;
 
 // PayslipStatus enum → FE display label.
 const STATUS_DISPLAY = {
@@ -385,6 +386,12 @@ export async function listPayrollEmployees({
       select: {
         id: true,
         employee_code: true,
+        employee_name: true,
+        first_name: true,
+        last_name: true,
+        preferred_name: true,
+        job_title: true,
+        Position: { select: { title: true } },
         photo_url: true,
         businessUnitId: true,
         gradeLevelId: true,
@@ -451,6 +458,7 @@ export async function listPayrollEmployees({
         employeeCode: employeeCode(emp),
         avatar: emp?.photo_url ?? null,
         department: emp?.businessUnit?.name ?? null,
+        position: emp?.Position?.title ?? emp?.job_title ?? null,
         businessUnitId: emp?.businessUnitId ?? null,
       },
       payGrade: emp?.gradeLevel?.name ?? null,

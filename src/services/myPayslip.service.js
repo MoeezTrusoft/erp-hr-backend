@@ -12,6 +12,7 @@
 // (employeeId) is applied on TOP so an authenticated employee can only ever
 // reach their own rows. questionPayslip runs inside a tenantTransaction so the
 // PayslipQuestion write + outbox enqueue share one RLS-bound connection.
+import { toIdentity } from "../lib/personIdentity.js";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
 import { scopedWhere } from "../lib/tenancy.js";
@@ -56,7 +57,7 @@ function yearBounds(date) {
 }
 
 const PAYSLIP_INCLUDE = {
-  employee: {select:{employee_code:true}},
+  employee: {select:{employee_code:true,employee_name:true,first_name:true,last_name:true,preferred_name:true,job_title:true,photo_url:true,Position:{select:{title:true}},businessUnit:{select:{name:true}}}},
   payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true } },
   earnings: {
     include: { earningType: { select: { code: true, name: true, isTaxable: true } } },
@@ -198,6 +199,7 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
     // calls (trend, payslip list) off this id instead of failing.
     employeeId: slip.employeeId,
     employeeCode: slip.employee?.employee_code || "Employee code required",
+    employee: slip.employee ? toIdentity(slip.employee) : null,
     currencyCode: slip.payrollRun?.currencyCode,
     period: { from: periodStart, to: periodEnd },
     status: slip.status,

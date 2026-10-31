@@ -244,6 +244,29 @@ describe("D-08 hr_payslip_question_create self-service", () => {
   });
 });
 
+describe("issue 154 hr_my_payslip_question_create (gateway-unmapped self-service twin)", () => {
+  it("lets an employee ask about their own slip, always scoped to it", async () => {
+    ctx = makeCtx({ employeeId: 489, tenantId: "t1", isAdmin: false }, { "hr:self": ["VIEW"] });
+    await server.tools.get("hr_my_payslip_question_create").handler({ payslipId: 374, question: "Why?" });
+    expect(questionPayslip).toHaveBeenCalledWith(
+      expect.objectContaining({ employeeId: 489, payslipId: 374, employeeScoped: true }),
+    );
+  });
+
+  it("refuses a session with no self-service grant and no payroll grant", async () => {
+    ctx = makeCtx({ employeeId: 489, tenantId: "t1", isAdmin: false }, {});
+    await expect(
+      server.tools.get("hr_my_payslip_question_create").handler({ payslipId: 374, question: "Why?" }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("never lets the caller pick another employee (no employeeId argument, scoped to the caller)", async () => {
+    ctx = makeCtx({ employeeId: 489, tenantId: "t1", isAdmin: false }, { "hr:self": ["VIEW"] });
+    await server.tools.get("hr_my_payslip_question_create").handler({ payslipId: 374, question: "Why?", employeeId: 480 });
+    expect(questionPayslip).toHaveBeenCalledWith(expect.objectContaining({ employeeId: 489, employeeScoped: true }));
+  });
+});
+
 // ── T1.6 / T1.7 surface gates (audit 2026-09-21) ────────────────────────────
 describe("HR-RBAC-01 T1.6/T1.7 surface gates", () => {
   it("assertDirectoryAccess accepts hr:employee VIEW", () => {

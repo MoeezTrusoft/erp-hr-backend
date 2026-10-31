@@ -448,6 +448,17 @@ export async function loadSource(
   const snapshot = json({ employeeCode: who.employee_code, ...data });
   return { row, who, definition: d, snapshot, digest: hash(snapshot) };
 }
+const sentenceCase = (v) =>
+  String(v ?? "").toLowerCase().replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+const shortDate = (d) =>
+  new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+// A saved request is described in words ("Late check-in on 30 Oct 2026"), never by its raw kind.
+function candidateLabel(kind, row) {
+  if (kind === "ATTENDANCE" && row.type)
+    return row.date ? `${sentenceCase(row.type)} on ${shortDate(row.date)}` : sentenceCase(row.type);
+  return row.title || row.reason || sentenceCase(row.kind || kind);
+}
+
 export async function sourceCandidates(tx, env, kind) {
   const kinds = kind ? [kind] : Object.keys(registry),
     candidates = [];
@@ -502,7 +513,7 @@ export async function sourceCandidates(tx, env, kind) {
           kind: k,
           sourceRef,
           employeeCode: env.who.employee_code,
-          label: row.title || row.reason || row.kind || k,
+          label: candidateLabel(k, row),
         });
     }
   }

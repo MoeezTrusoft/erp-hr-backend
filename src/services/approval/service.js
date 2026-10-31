@@ -21,6 +21,7 @@ import {
 import {
   isVerifiedOnBehalf,
   requiresLineManager,
+  skipsManagerWhenNone,
   stageAfterSubmission,
 } from "../../lib/approvalStagePolicy.js";
 import {
@@ -41,6 +42,7 @@ import {
   applyDecision,
 } from "./adapters.js";
 import { Prisma } from "@prisma/client";
+import { identitiesByCode } from "../../lib/personIdentity.js";
 import {
   MATRIX_KINDS,
   PERMISSION_BY_ACTION,
@@ -319,7 +321,7 @@ async function canRead(tx, env, row) {
   const subject = await employee(tx, env.tenantId, row.employeeCode);
   return permits(env, "manager") && subject.managerId === env.who.id;
 }
-async function view(tx, env, row, summary = false) {
+async function view(tx, env, row, summary = false, people = null) {
   if (!(await canRead(tx, env, row))) fail("Request not found", 404);
   const leavePolicies =
     !summary && row.kind === "LEAVE" && permits(env, "verify")
@@ -337,11 +339,19 @@ async function view(tx, env, row, summary = false) {
         where: { tenantId: env.tenantId, approvalRef: row.id },
         orderBy: { version: "asc" },
       });
+  const who =
+    people ??
+    (await identitiesByCode(tx, env.tenantId, [
+      row.employeeCode,
+      row.managerCode,
+      ...history.map((h) => h.actorCode),
+    ]));
   return {
     approvalRef: row.id,
     kind: row.kind,
     sourceRef: row.sourceRef,
     employeeCode: row.employeeCode,
+    employee: who.get(row.employeeCode) ?? { code: row.employeeCode, name: row.employeeCode },
     stage: row.stage,
     level: row.level,
     route: routeView(row),
@@ -368,6 +378,7 @@ async function view(tx, env, row, summary = false) {
         createdAt,
       }) => ({
         actorCode,
+        actor: who.get(actorCode) ?? { code: actorCode, name: actorCode },
         fromStage,
         toStage,
         action,
@@ -473,14 +484,16 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
           where: { tenant_id: env.tenantId, id: source.who.managerId ?? -1 },
         })
       : null;
-    if (
+    const noUsableManager =
       needsManager &&
       (!manager?.employee_code ||
         manager.id === env.who.id ||
         /inactive|terminated|exited|separated/i.test(
           `${manager.status} ${manager.employement_status}`,
-        ))
-    )
+        ));
+    // Leave, overtime, claims and loans go to HR when there is no usable manager; other kinds still need one.
+    const sentToHr = noUsableManager && skipsManagerWhenNone(input.kind);
+    if (noUsableManager && !sentToHr)
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
     const route = matrix ? await sealRoute(tx, env, input.kind, matrix, source) : null;
@@ -488,11 +501,11 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
       // The canonical owner code of the source, not the caller's: identical for
       // a self submission, the employee's for an on-behalf one.
       employeeCode: source.who.employee_code,
-      stage: route ? "LEVEL" : stageAfterSubmission(input.kind),
+      stage: route ? "LEVEL" : sentToHr ? "HR" : stageAfterSubmission(input.kind),
       route: route ?? Prisma.DbNull,
       level: route ? route.levels.findIndex((l) => l.engaged) : null,
       pendingCodes: route ? route.levels.find((l) => l.engaged).approverCodes : [],
-      managerCode: manager?.employee_code ?? null,
+      managerCode: sentToHr ? null : (manager?.employee_code ?? null),
       managerActorCode: null,
       hrActorCode: null,
       recommendation: null,
@@ -522,7 +535,9 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
       row || { stage: "INITIATOR" },
       next,
       "SUBMIT",
-      input.reason,
+      sentToHr
+        ? `${input.reason ?? ""} [No active line manager: sent to HR for verification]`.trim()
+        : input.reason,
     );
     // HR raising on behalf has reviewed the day: the filing IS the HR
     // verification (lib/approvalStagePolicy.js). The trail keeps both steps —
@@ -795,13 +810,18 @@ export function listApprovals(raw) {
               },
             ]
           : []),
+        // `notIn` never matches a NULL column in SQL. A request with no line-manager step (no manager, or a paused level) has
+        // managerActorCode NULL, so Management never saw it (issue 137: six production requests are stuck this way). NULL is
+        // "nobody acted", which is not the approver, so it must match.
         ...(permits(env, "approve")
           ? [
               {
                 stage: "MANAGEMENT",
                 employeeCode: { notIn: env.identityCodes },
-                managerActorCode: { notIn: env.identityCodes },
-                hrActorCode: { notIn: env.identityCodes },
+                AND: [
+                  { OR: [{ managerActorCode: null }, { managerActorCode: { notIn: env.identityCodes } }] },
+                  { OR: [{ hrActorCode: null }, { hrActorCode: { notIn: env.identityCodes } }] },
+                ],
               },
             ]
           : []),
@@ -848,14 +868,17 @@ export function listApprovals(raw) {
       }),
       page = rows.slice(0, input.limit);
     const items = [];
-    for (const row of page) items.push(await view(tx, env, row, true));
+    const people = await identitiesByCode(tx, env.tenantId, page.map((r) => r.employeeCode));
+    for (const row of page) items.push(await view(tx, env, row, true, people));
+    const candidates =
+      input.scope === "MINE" && permits(env, "self")
+        ? await sourceCandidates(tx, env, input.kind)
+        : [];
+    const owners = await identitiesByCode(tx, env.tenantId, candidates.map((c) => c.employeeCode));
     return {
       actorCode: env.who.employee_code,
       items,
-      candidates:
-        input.scope === "MINE" && permits(env, "self")
-          ? await sourceCandidates(tx, env, input.kind)
-          : [],
+      candidates: candidates.map((c) => ({ ...c, employee: owners.get(c.employeeCode) ?? null })),
       nextCursor: rows.length > input.limit ? page.at(-1).id : null,
     };
   });

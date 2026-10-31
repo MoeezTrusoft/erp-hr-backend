@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 9c53ceb3b4f46065ea174fc715bdc8a3db354628 # same pinned candidate as the main HR CI
+          ref: aceda4d757ba5d1d9075e505257341f4ec55d5d5 # same pinned contracts as the main HR CI
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
