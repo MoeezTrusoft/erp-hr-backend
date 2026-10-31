@@ -2858,6 +2858,7 @@ model PayrollConfigSnapshot {
 
 model PayrollAuditLog {
   id           Int      @id @default(autoincrement())
+  actorUserId  Int? // RBAC user behind the action (stamped by lib/auditActor.js); null for system jobs and older rows
   tenantId     String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   action       String
   details      String?
@@ -2875,6 +2876,7 @@ model PayrollAuditLog {
 
   // F-DB-08: tenant audit pagination is newest-first with a stable id tie-break.
   @@index([tenantId, created_at(sort: Desc), id(sort: Desc)], map: "payroll_audit_logs_tenant_created_id_idx")
+  @@index([tenantId, action], map: "payroll_audit_logs_tenant_action_idx")
   @@map("payroll_audit_logs")
 }
 

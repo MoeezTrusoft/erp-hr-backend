@@ -1,4 +1,5 @@
 const payrollError = (message, status = 409) => Object.assign(new Error(message), {status});
+import { identitiesByCode, identitiesByUserId } from '../lib/personIdentity.js';
 import { hasTimesheetSubmission } from '../lib/timesheetSubmissionCheck.js';
 import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/payrollConfiguration.js';
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
@@ -1852,7 +1853,7 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
 
   return getPayrollRunById(id, tenantId);
 };
-export const cancelPayrollRun = async (id, deletedBy, tenantId) => tenantTransaction(prisma,async tx=>{
+export const cancelPayrollRun = async (id, deletedBy, tenantId, reason = '') => tenantTransaction(prisma,async tx=>{
   await lockAttendancePeriod(tx,tenantId,true);
   await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
   const run=await tx.payrollRun.findFirst({where:{id,tenantId}});
@@ -1872,7 +1873,7 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId) => tenantTransac
   }
   await tx.loanRepayment.deleteMany({where:{tenantId,payrollRunId:id,settledAt:null}});
   await tx.payrollRun.update({where:{id},data:{status:'CANCELLED'}});
-  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_CANCELLED',details:'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
+  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_CANCELLED',details:reason ? `Cancelled without deleting payroll history. Reason: ${reason}` : 'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
   return {id,status:'CANCELLED'};
 },{tenantId});
 
@@ -2265,6 +2266,13 @@ export const getAuditLogs = async ({ page, limit, payrollRunId, payslipId, tenan
         }),
         prisma.payrollAuditLog.count({ where: scoped })
     ]);
+    // Who did it: the signed-in user behind each row, as a name with position and department.
+    const people = await identitiesByUserId(prisma, tenantId, auditLogs.map((r) => r.actorUserId));
+    const actorOf = (id) => (id == null ? null : people.get(Number(id)) ?? { name: `User ${id}` });
+    for (const row of auditLogs) row.actor = actorOf(row.actorUserId);
+    // The employee an entry is about (a payslip's owner), by name rather than code.
+    const subjects = await identitiesByCode(prisma, tenantId, auditLogs.map((r) => r.employee?.employee_code));
+    for (const row of auditLogs) row.subject = subjects.get(row.employee?.employee_code) ?? null;
 
     return {
         auditLogs,

@@ -456,6 +456,12 @@ const shortDate = (d) =>
 function candidateLabel(kind, row) {
   if (kind === "ATTENDANCE" && row.type)
     return row.date ? `${sentenceCase(row.type)} on ${shortDate(row.date)}` : sentenceCase(row.type);
+  // A payroll draft is told apart by the month it pays for, not by the processor's code.
+  if (kind === "PAYROLL" && row.periodStart) {
+    const month = new Date(row.periodStart).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+    const net = row.totalNet != null && row.currencyCode ? `, net ${row.currencyCode} ${Number(row.totalNet).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "";
+    return `Payroll for ${month}${net}`;
+  }
   return row.title || row.reason || sentenceCase(row.kind || kind);
 }
 
