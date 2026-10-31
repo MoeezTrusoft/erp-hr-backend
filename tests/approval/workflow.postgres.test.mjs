@@ -144,7 +144,7 @@ test(
       );
     for (const kind of HR_APPROVAL_KINDS)
       await t.test(
-        kind + " manager/HR returns restart review; only Management rejects",
+        kind + " manager/HR returns restart review; Management rejects after HR verifies",
         async () => {
           const s = await fixture(kind);
           // TS-REQUEST-HYBRID-01 — with the manager stage paused for ATTENDANCE
@@ -169,10 +169,13 @@ test(
           assert.equal(row.round, 3);
           if (!managerPaused)
             row = await act("MANAGER", row, "RECOMMEND_REJECTION");
-          await assert.rejects(
-            act("HR", row, "REJECT"),
-            (e) => e.status === 403,
-          );
+          // Operator 2026-11-01: HR may reject outright (covered in hrReject.postgres.test.mjs), except an
+          // attendance case, which payroll prices only when Management disapproves it.
+          if (kind === "ATTENDANCE")
+            await assert.rejects(
+              act("HR", row, "REJECT"),
+              (e) => e.status === 403,
+            );
           row = await act("HR", row, "VERIFY");
           row = await act("MANAGEMENT", row, "REJECT");
           assert.equal(row.stage, "REJECTED");

@@ -20,7 +20,7 @@ export const MAX_LEVELS = 8;
 // The Approval Centre actions a level offers (the vocabulary is shared with the fixed stages).
 export const ACTIONS_BY_LEVEL = Object.freeze({
   RECOMMEND: ["RECOMMEND_APPROVAL", "RECOMMEND_REJECTION"],
-  VERIFY: ["VERIFY"],
+  VERIFY: ["VERIFY", "REJECT"],
   APPROVE: ["APPROVE", "REJECT"],
 });
 export const PERMISSION_BY_ACTION = Object.freeze({
@@ -187,7 +187,7 @@ export function levelActions(level) {
   const actions = [...ACTIONS_BY_LEVEL[level.action]];
   const filtered = actions.filter((a) => {
     if (level.action === "RECOMMEND" && a === "RECOMMEND_REJECTION") return level.canReject;
-    if (level.action === "APPROVE" && a === "REJECT") return level.canReject;
+    if ((level.action === "APPROVE" || level.action === "VERIFY") && a === "REJECT") return level.canReject;
     return true;
   });
   return level.canReturn ? [...filtered, "REVERT"] : filtered;

@@ -1,3 +1,4 @@
+import { requestTitle } from "../../lib/approvalTitle.js";
 import { isAppraisalApproval, appraisalApprovalPermission, canReadAppraisalApproval,
   appraisalApprovalActions, appraisalApprovalSource, actAppraisalApproval } from "../appraisals/approval-bridge.js";
 import { has as hasAppraisal } from "../appraisals/base.js";
@@ -158,7 +159,10 @@ const routeView = (row) =>
 function levelActionsFor(env, row) {
   const level = row.route?.levels?.[row.level];
   if (!level || !env.identityCodes.some((c) => row.pendingCodes.includes(c))) return [];
-  return permits(env, PERMISSION_BY_ACTION[level.action]) ? levelActions(level) : [];
+  const actions = permits(env, PERMISSION_BY_ACTION[level.action]) ? levelActions(level) : [];
+  // HR may reject outright (a reason is required), except an attendance case: payroll prices only the cases
+  // Management disapproves, so an HR rejection would leave the day uncharged and unreviewed. HR returns those.
+  return row.kind === "ATTENDANCE" && level.action === "VERIFY" ? actions.filter((a) => a !== "REJECT") : actions;
 }
 async function sealRoute(tx, env, kind, matrix, source) {
   const ids = [...new Set(matrix.levels.flatMap((l) => l.approverIds))];
@@ -298,7 +302,7 @@ async function actionsFor(tx, env, row) {
       : [];
   if (row.stage === "HR")
     return permits(env, "verify") && !ownsCode(env, row.managerActorCode)
-      ? HR_APPROVAL_ACTIONS.HR
+      ? [...HR_APPROVAL_ACTIONS.HR, ...(row.kind === "ATTENDANCE" ? [] : ["REJECT"])]
       : [];
   if (row.stage === "MANAGEMENT")
     return permits(env, "approve") &&
@@ -320,6 +324,14 @@ async function canRead(tx, env, row) {
     return true;
   const subject = await employee(tx, env.tenantId, row.employeeCode);
   return permits(env, "manager") && subject.managerId === env.who.id;
+}
+// The sealed snapshot of the request, for its title only; a row without a readable one has no title.
+function safeSnapshot(row) {
+  try {
+    return row.snapshot ? unseal(row.snapshot) : null;
+  } catch {
+    return null;
+  }
 }
 async function view(tx, env, row, summary = false, people = null) {
   if (!(await canRead(tx, env, row))) fail("Request not found", 404);
@@ -352,6 +364,7 @@ async function view(tx, env, row, summary = false, people = null) {
     sourceRef: row.sourceRef,
     employeeCode: row.employeeCode,
     employee: who.get(row.employeeCode) ?? { code: row.employeeCode, name: row.employeeCode },
+    title: requestTitle(row.kind, safeSnapshot(row)),
     stage: row.stage,
     level: row.level,
     route: routeView(row),
@@ -759,11 +772,8 @@ export function listApprovals(raw) {
       fail("Approval access required", 403);
     if (input.scope === "ALL" && !permits(env, "read") && !hasAppraisal(env, "hr.performance.read.all"))
       fail("Approval audit access required", 403);
-    const where = {
-      tenantId: env.tenantId,
-      ...(input.kind ? { kind: input.kind } : {}),
-      ...(input.cursor ? { id: { gt: input.cursor } } : {}),
-    };
+    // The scope filter alone: the same rows the counts are taken over, whatever type or page is shown.
+    const where = { tenantId: env.tenantId };
     if (input.scope === "MINE") where.employeeCode = { in: env.identityCodes };
     // Scope in SQL before pagination so a busy tenant cannot hide a manager's queue.
     if (input.scope === "QUEUE") {
@@ -828,11 +838,20 @@ export function listApprovals(raw) {
       ];
     }
     const appraisalVisible = hasAppraisal(env, "hr.performance.read.all");
-    const normal = { NOT: { sourceRef: { startsWith: "perf:" } }, ...where };
-    if (!["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))) normal.id = { in: [] };
+    const normalFor = ({ kind, cursor }) => {
+      const w = {
+        NOT: { sourceRef: { startsWith: "perf:" } },
+        ...where,
+        ...(kind ? { kind } : {}),
+        ...(cursor ? { id: { gt: cursor } } : {}),
+      };
+      if (!["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))) w.id = { in: [] };
+      return w;
+    };
+    const appraisalFor = async ({ kind, cursor }) => {
     const appraisalWhere = { tenantId: env.tenantId, kind: "PERFORMANCE",
-      sourceRef: { startsWith: "perf:" }, ...(input.cursor ? { id: { gt: input.cursor } } : {}) };
-    if (input.kind && input.kind !== "PERFORMANCE") appraisalWhere.AND = [{ id: { in: [] } }];
+      sourceRef: { startsWith: "perf:" }, ...(cursor ? { id: { gt: cursor } } : {}) };
+    if (kind && kind !== "PERFORMANCE") appraisalWhere.AND = [{ id: { in: [] } }];
     if (input.scope === "QUEUE") {
       appraisalWhere.stage = "MANAGEMENT";
       appraisalWhere.employeeCode = { notIn: env.identityCodes };
@@ -860,7 +879,24 @@ export function listApprovals(raw) {
       }, select: { approvalRef: true } });
       appraisalWhere.NOT = { id: { in: bindings.map((b) => b.approvalRef) } };
     }
-    const scopedWhere = { OR: [normal, appraisalWhere] };
+    return appraisalWhere;
+    };
+    const scopedWhere = {
+      OR: [
+        normalFor({ kind: input.kind, cursor: input.cursor }),
+        await appraisalFor({ kind: input.kind, cursor: input.cursor }),
+      ],
+    };
+    // One source for "how many": the same scope, counted by type, ignoring the type filter and the page.
+    const countRows = await tx.hrApprovalRequest.groupBy({
+      by: ["kind"],
+      where: { OR: [normalFor({}), await appraisalFor({})] },
+      _count: { _all: true },
+    });
+    const counts = {
+      total: countRows.reduce((sum, r) => sum + r._count._all, 0),
+      byKind: Object.fromEntries(countRows.map((r) => [r.kind, r._count._all])),
+    };
     const rows = await tx.hrApprovalRequest.findMany({
         where: scopedWhere,
         orderBy: { id: "asc" },
@@ -880,6 +916,7 @@ export function listApprovals(raw) {
       items,
       candidates: candidates.map((c) => ({ ...c, employee: owners.get(c.employeeCode) ?? null })),
       nextCursor: rows.length > input.limit ? page.at(-1).id : null,
+      counts,
     };
   });
 }
