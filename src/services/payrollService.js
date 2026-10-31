@@ -1,5 +1,5 @@
 const payrollError = (message, status = 409) => Object.assign(new Error(message), {status});
-import { identitiesByUserId } from '../lib/personIdentity.js';
+import { identitiesByCode, identitiesByUserId } from '../lib/personIdentity.js';
 import { hasTimesheetSubmission } from '../lib/timesheetSubmissionCheck.js';
 import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/payrollConfiguration.js';
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
@@ -2270,6 +2270,9 @@ export const getAuditLogs = async ({ page, limit, payrollRunId, payslipId, tenan
     const people = await identitiesByUserId(prisma, tenantId, auditLogs.map((r) => r.actorUserId));
     const actorOf = (id) => (id == null ? null : people.get(Number(id)) ?? { name: `User ${id}` });
     for (const row of auditLogs) row.actor = actorOf(row.actorUserId);
+    // The employee an entry is about (a payslip's owner), by name rather than code.
+    const subjects = await identitiesByCode(prisma, tenantId, auditLogs.map((r) => r.employee?.employee_code));
+    for (const row of auditLogs) row.subject = subjects.get(row.employee?.employee_code) ?? null;
 
     return {
         auditLogs,
