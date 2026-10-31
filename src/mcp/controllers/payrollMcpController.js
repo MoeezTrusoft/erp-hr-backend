@@ -30,7 +30,8 @@ export const mcpProcessPayrollRun = (user, id) => runController(processPayrollRu
 export const mcpApprovePayrollRun = (user, id) => runController(approvePayrollRun, { user, params: { id: String(id) } });
 export const mcpRejectPayrollRun = (user, id, reason) => runController(rejectPayrollRun, { user, params: { id: String(id) }, body: { reason } });
 export const mcpFinalizePayrollRun = (user, id, ifMatch) => runController(finalizePayrollRun, { user, params: { id: String(id) }, headers: ifMatch == null ? {} : { "if-match": String(ifMatch) } });
-export const mcpCancelPayrollRun = (user, id) => runController(cancelPayrollRun, { user, params: { id: String(id) } });
+export const mcpCancelPayrollRun = (user, id, reason) =>
+  runController(cancelPayrollRun, { user, params: { id: String(id) }, body: { reason } });
 export const mcpDistributePayslip = (user, id) => runController(distributePayslip, { user, params: { id: String(id) } });
 
 // HR-BANKFILE-03 / HR-PAY-04 — bank/ACH disbursement export for a FINALIZED run.

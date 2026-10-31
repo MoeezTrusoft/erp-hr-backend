@@ -141,7 +141,7 @@ export const cancelPayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
         const cancelledBy = req.user?.employeeId;
-        await payrollService.cancelPayrollRun(parseInt(id), cancelledBy, tenantOf(req));
+        await payrollService.cancelPayrollRun(parseInt(id), cancelledBy, tenantOf(req), String(req.body?.reason ?? '').trim().slice(0, 500));
         res.json({ success: true, message: 'Payroll run cancelled successfully' });
     } catch (error) {
         // ERR-3: Normalize error to avoid leaking raw Prisma/DB messages to clients
@@ -358,9 +358,9 @@ export const createTaxRate = async (req, res) => {
 // Audit Logs
 export const getAuditLogs = async (req, res) => {
     try {
-        // The audit screen reads the latest 200 entries; callers may ask for fewer (max 500).
+        // The audit screen reads the latest 5,000 entries (it filters and pages them on screen); callers may ask for fewer.
         const { page = 1, payrollRunId, payslipId } = req.query;
-        const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 200));
+        const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit) || 5000));
         const result = await payrollService.getAuditLogs({
             page: parseInt(page),
             limit: parseInt(limit),

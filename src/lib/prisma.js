@@ -19,6 +19,7 @@ dotenv.config();
 
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { auditActorExtension } from './auditActor.js';
 import { c4EncryptionExtension } from './c4Encryption.js';
 import { rlsTenantExtension } from './rlsTenant.js';
 import { tenantScopeExtension } from './tenantScope.js';
@@ -55,7 +56,7 @@ const prisma =
         log: process.env.PRISMA_LOG_LEVEL
             ? process.env.PRISMA_LOG_LEVEL.split(',').map((s) => s.trim()).filter(Boolean)
             : ['warn', 'error'],
-    }).$extends(c4EncryptionExtension).$extends(rlsTenantExtension).$extends(tenantScopeExtension);
+    }).$extends(c4EncryptionExtension).$extends(rlsTenantExtension).$extends(tenantScopeExtension).$extends(auditActorExtension);
 
 if (process.env.NODE_ENV !== 'production') {
     globalForPrisma.__hrPrisma = prisma;

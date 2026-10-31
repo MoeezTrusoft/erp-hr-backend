@@ -75,7 +75,9 @@ export function createPayrollFinanceService(db) {
           payments: input.payments, advances: input.advances,
           paymentStatus: paid === 0n ? 'UNPAID' : paid === payrollMinor(source.netPay) ? 'PAID' : 'PARTIAL' };
         HrPayrollFinanceSummaryV1.parse({ ...payload, approvedBy: 'pending-independent-approval' });
-        return tx.payrollFinanceSummary.create({ data: { id, tenantId, month: source.month, runId: input.runId, revision, requestId: input.requestId, inputHash, preparedBy, reason: input.reason, payload } });
+        const created = await tx.payrollFinanceSummary.create({ data: { id, tenantId, month: source.month, runId: input.runId, revision, requestId: input.requestId, inputHash, preparedBy, reason: input.reason, payload } });
+        await tx.payrollAuditLog.create({ data: { tenantId, payrollRunId: input.runId, action: 'FINANCE_SUMMARY_PREPARED', details: `Summary ${id} revision ${revision} prepared; RBAC user ${preparedBy}; ${input.reason}` } });
+        return created;
       });
     },
     async approve(ctx, input) {
@@ -94,7 +96,9 @@ export function createPayrollFinanceService(db) {
         const event = await enqueueHrDomainEvent(tx, { eventName: PAYROLL_FINANCE_EVENT, tenantId, actorId: approvedBy, actorType: 'user', correlationId: ctx.correlationId,
           aggregateType: 'PayrollFinanceSummary', aggregateId: row.id, payload });
         if (!event) fail('Payroll summary outbox is unavailable', 503);
-        return tx.payrollFinanceSummary.update({ where: { id: row.id, tenantId }, data: { status: 'APPROVED', approvedBy, approvedAt: new Date(), version: { increment: 1 }, payload } });
+        const approvedRow = await tx.payrollFinanceSummary.update({ where: { id: row.id, tenantId }, data: { status: 'APPROVED', approvedBy, approvedAt: new Date(), version: { increment: 1 }, payload } });
+        await tx.payrollAuditLog.create({ data: { tenantId, payrollRunId: row.runId, action: 'FINANCE_SUMMARY_APPROVED', details: `Summary ${row.id} approved and sent to Finance; RBAC user ${approvedBy}` } });
+        return approvedRow;
       });
     },
     async cancel(ctx, input) {

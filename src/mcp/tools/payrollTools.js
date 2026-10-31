@@ -245,11 +245,14 @@ export function registerPayrollTools(server) {
   server.tool(
     "hr_payroll_run_delete",
     "Cancel/delete a payroll run",
-    { id: z.string().min(1).describe("Payroll run id (numeric string) — PayrollRun.id to cancel/delete") },
-    withToolError(async ({ id }) => {
+    {
+      id: z.string().min(1).describe("Payroll run id (numeric string) — PayrollRun.id to cancel/delete"),
+      reason: z.string().max(500).optional().describe("Why the run is cancelled (kept in the audit)"),
+    },
+    withToolError(async ({ id, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:payroll", user.isAdmin);
-      const data = await mcpCancelPayrollRun(user, id);
+      const data = await mcpCancelPayrollRun(user, id, reason);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
