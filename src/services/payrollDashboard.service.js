@@ -172,13 +172,23 @@ export async function getPayrollThisMonth({ tenantId, runId } = {}) {
 
 // Resolve the month's pay date from the calendar rule and diff against today.
 function computeDaysUntilPayDate({ run, calendar }) {
-  // Use the run's period-end month as the target month.
+  // The pay date is the first one the calendar gives on or after the period end: a run for
+  // 1 to 30 September with a "10th of the month" calendar is paid on 10 October, never on 10 September.
   const ref = new Date(run.periodEnd);
-  const year = ref.getUTCFullYear();
-  const month = ref.getUTCMonth() + 1; // 1-based
+  const end = Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth(), ref.getUTCDate());
+  let year = ref.getUTCFullYear();
+  let month = ref.getUTCMonth() + 1; // 1-based
   let payDateIso;
   try {
     payDateIso = resolvePayDate({ year, month, calendar: calendar || undefined });
+    if (new Date(`${payDateIso}T00:00:00.000Z`).getTime() < end) {
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+      payDateIso = resolvePayDate({ year, month, calendar: calendar || undefined });
+    }
   } catch {
     return { daysUntilPayDate: 0, payDate: null, payDateOffsetDays: null };
   }
