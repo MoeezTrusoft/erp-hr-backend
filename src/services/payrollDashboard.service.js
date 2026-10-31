@@ -144,7 +144,7 @@ export async function getPayrollThisMonth({ tenantId, runId } = {}) {
     .sort((a, b) => b.amount - a.amount);
 
   // Days until this month's pay date (>= 0).
-  const daysUntilPayDate = computeDaysUntilPayDate({ run, calendar });
+  const { daysUntilPayDate, payDate, payDateOffsetDays } = computeDaysUntilPayDate({ run, calendar });
 
   return {
     run: {
@@ -159,6 +159,10 @@ export async function getPayrollThisMonth({ tenantId, runId } = {}) {
     employeeCount: run.employeeCount ?? total,
     processedPct,
     daysUntilPayDate,
+    // The pay date itself and a signed distance to it (negative = overdue), so screens can say
+    // "due in 3 days" or "overdue by 2 days" instead of "0 days".
+    payDate,
+    payDateOffsetDays,
     gross: Number(run.totalGross) || 0,
     totalDeductions: Number(run.totalDeductions) || 0,
     deductionBreakdown,
@@ -176,13 +180,13 @@ function computeDaysUntilPayDate({ run, calendar }) {
   try {
     payDateIso = resolvePayDate({ year, month, calendar: calendar || undefined });
   } catch {
-    return 0;
+    return { daysUntilPayDate: 0, payDate: null, payDateOffsetDays: null };
   }
   const pay = new Date(`${payDateIso}T00:00:00.000Z`);
   const now = new Date();
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const diff = Math.ceil((pay.getTime() - today.getTime()) / 86400000);
-  return diff > 0 ? diff : 0;
+  return { daysUntilPayDate: diff > 0 ? diff : 0, payDate: payDateIso, payDateOffsetDays: diff };
 }
 
 // ── variance vs last month ───────────────────────────────────────────────────
