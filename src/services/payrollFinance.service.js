@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { HrPayrollFinanceSummaryV1, PAYROLL_FINANCE_EVENT, PayrollMoney, payrollMinor } from '@trusoft/contracts/payroll-finance';
+import { identitiesByUserId } from '../lib/personIdentity.js';
 import { tenantTransaction } from '../lib/rlsTenant.js';
 import { enqueueHrDomainEvent } from './hrDomainEvent.service.js';
 
@@ -123,6 +124,13 @@ export function createPayrollFinanceService(db) {
         return {summaryId:row.id,republished:true};
       });
     },
-    async list(ctx, input) { actor(ctx); return transact(ctx, async tx => ({ items: await tx.payrollFinanceSummary.findMany({ where: { tenantId: ctx.user.tenantId, month: input.month }, orderBy: { revision: 'desc' }, take: 100 }) })); },
+    async list(ctx, input) {
+      actor(ctx);
+      return transact(ctx, async tx => {
+        const items = await tx.payrollFinanceSummary.findMany({ where: { tenantId: ctx.user.tenantId, month: input.month }, orderBy: { revision: 'desc' }, take: 100 });
+        const people = await identitiesByUserId(tx, ctx.user.tenantId, items.flatMap(r => [r.preparedBy, r.approvedBy]));
+        return { items: items.map(r => ({ ...r, preparedByIdentity: people.get(Number(r.preparedBy)) ?? null, approvedByIdentity: r.approvedBy == null ? null : people.get(Number(r.approvedBy)) ?? null })) };
+      });
+    },
   };
 }
