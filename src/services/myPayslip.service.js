@@ -12,6 +12,8 @@
 // (employeeId) is applied on TOP so an authenticated employee can only ever
 // reach their own rows. questionPayslip runs inside a tenantTransaction so the
 // PayslipQuestion write + outbox enqueue share one RLS-bound connection.
+import { ruleDeductions } from "../lib/attendanceAnomalyRules.js";
+import { describeAttendanceCharges, payMonthOf } from "../lib/payslipCharges.js";
 import { toIdentity } from "../lib/personIdentity.js";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
@@ -23,6 +25,8 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 // internal instead of -32004 not-found).
 import { HR_ERRORS } from "../constants/errorCodes.js";
 import { payslipQuestionRaisedEvent } from "./hrEvents.js";
+import { markLapsedCases } from "./attendanceLapse.service.js";
+import { rulesForRun } from "./deductionRules.service.js";
 
 
 
@@ -58,7 +62,7 @@ function yearBounds(date) {
 
 const PAYSLIP_INCLUDE = {
   employee: {select:{employee_code:true,employee_name:true,first_name:true,last_name:true,preferred_name:true,job_title:true,photo_url:true,Position:{select:{title:true}},businessUnit:{select:{name:true}}}},
-  payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true } },
+  payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true, processedAt: true, status: true, calculationConfigVersion: true } },
   earnings: {
     include: { earningType: { select: { code: true, name: true, isTaxable: true } } },
   },
@@ -94,16 +98,62 @@ async function resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped 
     where.employeeId = Number(employeeId);
   }
   if (employeeScoped) where.status = { in: EMPLOYEE_VISIBLE_STATUSES };
+  // "My latest payslip" never lands on a cancelled or failed run; an explicit id still opens.
+  if (payslipId == null) where.payrollRun = { status: { notIn: HIDDEN_RUN_STATUSES } };
   return prisma.payrollPayslip.findFirst({
     where,
     include: PAYSLIP_INCLUDE,
-    orderBy: [{ payrollRun: { periodEnd: "desc" } }, { id: "desc" }],
+    orderBy: [{ payrollRun: { periodStart: "desc" } }, { id: "desc" }],
   });
 }
 
 function isTaxDeduction(d) {
   const code = d?.deductionType?.code || "";
   return String(code).toUpperCase().includes("TAX");
+}
+
+// Runs whose payslips an employee must not see in their own list.
+const HIDDEN_RUN_STATUSES = ["CANCELLED", "FAILED", "REJECTED"];
+
+// How this payslip is paid, from the payroll setup the run was calculated with. Never blocks the payslip.
+async function computePaymentMethod({ tenantId, run }) {
+  try {
+    const snapshot = await prisma.payrollConfigSnapshot.findFirst({
+      where: scopedWhere(tenantId, run?.calculationConfigVersion ? { version: run.calculationConfigVersion } : {}),
+      orderBy: { version: "desc" },
+    });
+    if (!snapshot) return null;
+    return snapshot.config?.payRules?.cashDisbursement === true ? "CASH" : "BANK";
+  } catch (err) {
+    logger.warn({ err: err?.message }, "payslip payment method unavailable");
+    return null;
+  }
+}
+
+// Dated attendance charges, priced exactly as the run priced them. Never blocks the payslip.
+async function computeAttendanceCharges({ tenantId, employeeId, run }) {
+  if (!run?.periodStart || !run?.periodEnd) return [];
+  try {
+    const cases = await markLapsedCases(
+      await prisma.attendanceAnomaly.findMany({
+        where: scopedWhere(tenantId, {
+          employeeId,
+          date: { gte: run.periodStart, lte: run.periodEnd },
+          rulesVersion: 2,
+        }),
+      }),
+      { tenantId, db: prisma, asOf: run.processedAt ?? new Date() },
+    );
+    const assessment = ruleDeductions(cases, {
+      from: run.periodStart,
+      to: run.periodEnd,
+      rules: await rulesForRun(prisma, { tenantId, runId: run.id }),
+    });
+    return describeAttendanceCharges(assessment.lines, cases);
+  } catch (err) {
+    logger.warn({ err: err?.message }, "payslip attendance charges unavailable");
+    return [];
+  }
 }
 
 async function computeYtd({ tenantId, employeeId, periodEnd }) {
@@ -178,7 +228,7 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
   const periodStart = slip.payrollRun?.periodStart ?? null;
   const periodEnd = slip.payrollRun?.periodEnd ?? null;
 
-  const [ytd, leaveTaken, overtimeHours] = await Promise.all([
+  const [ytd, leaveTaken, overtimeHours, attendanceCharges, paymentMethod] = await Promise.all([
     computeYtd({ tenantId, employeeId: empId, periodEnd: periodEnd ?? slip.created_at }),
     periodStart && periodEnd
       ? computeLeaveTaken({ tenantId, employeeId: empId, periodStart, periodEnd })
@@ -186,6 +236,8 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
     periodStart && periodEnd
       ? computeOvertimeHours({ tenantId, employeeId: empId, periodStart, periodEnd })
       : Promise.resolve(0),
+    computeAttendanceCharges({ tenantId, employeeId: empId, run: slip.payrollRun }),
+    computePaymentMethod({ tenantId, run: slip.payrollRun }),
   ]);
 
   const totalWorkingDays = slip.attendancePeriodDays ?? (periodStart && periodEnd ? Math.round((new Date(periodEnd)-new Date(periodStart))/86400000)+1 : null);
@@ -201,7 +253,7 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
     employeeCode: slip.employee?.employee_code || "Employee code required",
     employee: slip.employee ? toIdentity(slip.employee) : null,
     currencyCode: slip.payrollRun?.currencyCode,
-    period: { from: periodStart, to: periodEnd },
+    period: { from: periodStart, to: periodEnd, month: payMonthOf(periodStart, periodEnd) },
     status: slip.status,
     netPay: Number(slip.netAmount) || 0,
     receivedOn: slip.paidAt ?? null,
@@ -226,6 +278,8 @@ export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeSc
       name: d.deductionType?.name ?? null,
       amount: Number(d.amount) || 0,
     })),
+    attendanceCharges,
+    paymentMethod,
   };
 }
 
@@ -272,10 +326,10 @@ export async function getEarningTrend6mo({ tenantId, employeeId }) {
   const slips = await prisma.payrollPayslip.findMany({
     where: scopedWhere(tenantId, {
       employeeId: Number(employeeId),
-      payrollRun: { periodEnd: { gte: windowStart } },
+      payrollRun: { periodStart: { gte: windowStart }, status: { notIn: HIDDEN_RUN_STATUSES } },
       status:{in:YTD_OFFICIAL_STATUSES},
     }),
-    include: { payrollRun: { select: { periodEnd: true } } },
+    include: { payrollRun: { select: { periodStart: true } } },
   });
 
   // Seed the 6 month buckets (YYYY-MM) with 0.
@@ -289,7 +343,7 @@ export async function getEarningTrend6mo({ tenantId, employeeId }) {
   }
 
   for (const s of slips) {
-    const pe = s.payrollRun?.periodEnd;
+    const pe = s.payrollRun?.periodStart;
     if (!pe) continue;
     const d = new Date(pe);
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -307,14 +361,17 @@ export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize 
   const currentPage = Math.max(1, Number(page) || 1);
   const skip = (currentPage - 1) * take;
 
-  const where = scopedWhere(tenantId, { employeeId: Number(employeeId) });
+  const where = scopedWhere(tenantId, {
+    employeeId: Number(employeeId),
+    payrollRun: { status: { notIn: HIDDEN_RUN_STATUSES } },
+  });
   if (employeeScoped) where.status = { in: EMPLOYEE_VISIBLE_STATUSES };
 
   const [rows, total] = await Promise.all([
     prisma.payrollPayslip.findMany({
       where,
       include: { payrollRun: { select: { periodStart: true, periodEnd: true } } },
-      orderBy: [{ payrollRun: { periodEnd: "desc" } }, { id: "desc" }],
+      orderBy: [{ payrollRun: { periodStart: "desc" } }, { id: "desc" }],
       skip,
       take,
     }),
@@ -323,7 +380,11 @@ export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize 
 
   const items = rows.map((s) => ({
     id: s.id,
-    period: { from: s.payrollRun?.periodStart ?? null, to: s.payrollRun?.periodEnd ?? null },
+    period: {
+      from: s.payrollRun?.periodStart ?? null,
+      to: s.payrollRun?.periodEnd ?? null,
+      month: payMonthOf(s.payrollRun?.periodStart, s.payrollRun?.periodEnd),
+    },
     net: Number(s.netAmount) || 0,
     status: s.status,
     // Same meaning as getMyPayslip: receivedOn is the reconciled bank credit;

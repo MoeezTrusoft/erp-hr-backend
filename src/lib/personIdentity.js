@@ -1,6 +1,18 @@
 // People are shown by name, position and department, never by employee code alone.
 // One batched read per call; callers pass codes from any number of rows.
 
+const IDENTITY_SELECT = {
+  employee_code: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  preferred_name: true,
+  job_title: true,
+  photo_url: true,
+  Position: { select: { title: true } },
+  businessUnit: { select: { name: true } },
+};
+
 const clean = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
 
 export const displayName = (e) =>
@@ -37,4 +49,15 @@ export async function identitiesByCode(db, tenantId, codes) {
     },
   });
   return new Map(rows.map((r) => [r.employee_code, toIdentity(r)]));
+}
+
+/** Map of RBAC user id to identity, for rows that store the signed-in user rather than an employee code. */
+export async function identitiesByUserId(db, tenantId, userIds) {
+  const wanted = [...new Set((userIds ?? []).map(Number).filter(Number.isInteger))];
+  if (!wanted.length) return new Map();
+  const rows = await db.employee.findMany({
+    where: { tenant_id: tenantId, userId: { in: wanted } },
+    select: { ...IDENTITY_SELECT, userId: true },
+  });
+  return new Map(rows.map((r) => [r.userId, toIdentity(r)]));
 }
