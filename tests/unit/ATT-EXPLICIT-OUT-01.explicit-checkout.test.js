@@ -73,13 +73,20 @@ describe('ATT-EXPLICIT-OUT-01 an explicit check-out closes its shift until the n
     expect(types(sessions[1])).toEqual(['OUT']);
   });
 
-  it('keeps the nine-hour window for a position-inferred punch', () => {
-    const sessions = sessioniseByRoster([
+  it('closes the evening shift until the next check-in window opens, even for a position-inferred punch', () => {
+    // The next 15:00 shift opens its check-in window at 10:00: 09:51 still belongs to Thursday.
+    const closed = sessioniseByRoster([
       at('2026-10-01', '15:00'),
       at('2026-10-02', '09:51', 1),
     ], EVENING, { legacyDirectionInference: true });
+    expect(closed.map(dayOf)).toEqual(['2026-10-01']);
 
-    expect(sessions.map(dayOf)).toEqual(['2026-10-01', '2026-10-02']);
+    // 10:30 is inside the next shift's check-in window, so it opens Friday's own session.
+    const reopened = sessioniseByRoster([
+      at('2026-10-01', '15:00'),
+      at('2026-10-02', '10:30', 1),
+    ], EVENING, { legacyDirectionInference: true });
+    expect(reopened.map(dayOf)).toEqual(['2026-10-01', '2026-10-02']);
   });
 
   it('still lets a mis-stamped morning arrival open the day shift (CLOSE-9H guard unchanged)', () => {
@@ -131,7 +138,7 @@ describe('ATT-EXPLICIT-OUT-01 the evaluator scores the late explicit departure i
     const verdict = evaluateShift({
       punches: [
         { timestamp: new Date('2026-10-01T15:00:00Z'), type: 'IN' },
-        { timestamp: new Date('2026-10-02T09:51:00Z'), type: 'OUT', inferred: true },
+        { timestamp: new Date('2026-10-02T10:30:00Z'), type: 'OUT', inferred: true },
       ],
       shift, policy, now,
     });

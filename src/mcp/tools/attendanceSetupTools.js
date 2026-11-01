@@ -69,7 +69,7 @@ export function registerAttendanceSetupTools(server) {
       earlyLeaveGraceMin: z.coerce.number().int().min(0).optional()
         .describe("Minutes before shift end a check-out is still not an early departure"),
       checkoutLeniencyMin: z.coerce.number().int().min(0).optional()
-        .describe("How long past shift end a check-out still counts, used when the next day is non-working"),
+        .describe("Minutes past shift end a check-out still counts when NO later shift is rostered. With a later shift the check-out stays open until that shift's check-in window opens (5 hours before it), never past a day after the shift ends"),
       overtimeAfterMinutes: z.coerce.number().int().min(0).optional()
         .describe("Minutes past shift end before overtime starts accruing"),
       overtimeNeedsApproval: z.boolean().optional()

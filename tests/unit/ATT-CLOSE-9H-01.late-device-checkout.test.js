@@ -52,14 +52,14 @@ describe('ATT-CLOSE-9H-01 a nine-hour-later device check-out closes its own shif
     expect(times(sessions[0])).toEqual(['14:57', '06:57']);
   });
 
-  it('still refuses a position-inferred punch beyond the nine-hour window', () => {
-    // 09:30 is 9.5h past a 00:00 end — past closeTol. With direction inferred
-    // from position (legacy policy, no verified key) it opens its own session
-    // exactly as before. An EXPLICIT check-out this late closes the shift
+  it('opens its own session once the next check-in window is open (position-inferred punch)', () => {
+    // The check-out window now runs until the next 15:00 shift's check-in window opens at 10:00 (5h
+    // before it). 10:30 is inside that window: with direction inferred from position (legacy policy,
+    // no verified key) it opens its own session. An EXPLICIT check-out this late closes the shift
     // instead: see ATT-EXPLICIT-OUT-01.
     const sessions = sessioniseByRoster([
       at('2026-09-30', '15:04'),
-      at('2026-10-01', '09:30', 1),
+      at('2026-10-01', '10:30', 1),
     ], EVENING, { legacyDirectionInference: true });
 
     expect(sessions.map(dayOf)).toEqual(['2026-09-30', '2026-10-01']);

@@ -188,11 +188,13 @@ describe("persisted evaluation and finalization", () => {
     expect(db.snapshot().attendance[0]).toMatchObject({
       processingState: "OPEN",
     });
+    // With a next shift the check-out stays open until its check-in window opens: 09:00 next day minus
+    // 5 hours is 04:00 Pakistan time, 23:00Z on the day itself.
     expect(
       db.snapshot().attendanceEvaluationJob[0].nextAttemptAt.toISOString(),
-    ).toBe(date + "T16:00:00.000Z");
+    ).toBe(date + "T23:00:00.000Z");
     await drainAttendanceFinalization(
-      { now: new Date(date + "T21:01:00+05:00") },
+      { now: new Date(new Date(date + "T04:01:00+05:00").getTime() + 86400000) },
       db,
     );
     expect(db.snapshot().attendance[0]).toMatchObject({
