@@ -101,7 +101,7 @@ describe("approval matrix rules", () => {
   });
 
   it("offers each level only the actions its settings allow", () => {
-    expect(levelActions({ action: "VERIFY", canReject: true, canReturn: true })).toEqual(["VERIFY", "REVERT"]);
+    expect(levelActions({ action: "VERIFY", canReject: true, canReturn: true })).toEqual(["VERIFY", "REJECT", "REVERT"]);
     expect(levelActions({ action: "APPROVE", canReject: false, canReturn: false })).toEqual(["APPROVE"]);
     expect(levelActions({ action: "RECOMMEND", canReject: false, canReturn: true })).toEqual(["RECOMMEND_APPROVAL", "REVERT"]);
     expect(levelActions({ action: "APPROVE", canReject: true, canReturn: true })).toEqual(["APPROVE", "REJECT", "REVERT"]);
