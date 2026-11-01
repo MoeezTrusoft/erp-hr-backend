@@ -35,6 +35,8 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
         attendanceAnomalyApproval: { findMany: jest.fn().mockResolvedValue([]) },
         employee: { count: employeeCount, findMany: employeeFindMany },
         employmentPeriod: { findMany: employmentPeriodFindMany },
+        // Visibility rules look up enrolments; none here, and no joining dates, so only today/weekly-off rules apply.
+        employeeDeviceEnrolment: { groupBy: jest.fn(async () => []) },
     },
 }));
 
