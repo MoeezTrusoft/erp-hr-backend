@@ -95,6 +95,12 @@ async function buildHeader(employee, org) {
     companyName: org?.companyName ?? null,
     departments: org?.departments ?? [],
     departmentName: org?.departments?.[0] ?? employee.businessUnit?.name ?? null,
+    // Ids the edit form needs to load the employee's own values (it used to receive names only).
+    companyUuid: employee.tenant_id ?? null,
+    departmentId: employee.businessUnitId ?? null,
+    positionId: employee.positionId ?? null,
+    managerId: employee.managerId ?? null,
+    employeeCategory: employee.employeeCategory ?? null,
     // Direct manager (name only; designation lives on Overview.reportingLine).
     manager: employee.manager ? employeeName(employee.manager) : null,
     // Primary work location.
@@ -854,7 +860,8 @@ export async function getEmployeeProfileTab(employeeId, tenantId, opts = {}) {
       email: true, work_email: true, personal_contact: true, work_phone: true,
       current_address: true, permenant_address: true, city: true, state: true, province: true,
       country: true, postal_code: true, hire_date: true, joining_date: true, probation_end_date: true,
-      managerId: true, gradeLevel: { select: { name: true } }, Position: { select: { title: true } },
+      managerId: true, businessUnitId: true, positionId: true, employeeCategory: true, tenant_id: true,
+      gradeLevel: { select: { name: true } }, Position: { select: { title: true } },
       businessUnit: { select: { name: true } }, region: { select: { name: true } },
       manager: {
         select: {
