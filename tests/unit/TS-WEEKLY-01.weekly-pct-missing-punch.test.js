@@ -20,6 +20,7 @@ const emp = (id) => ({ id, first_name: 'E', last_name: String(id), employee_code
 let employees;
 let periods;
 let monthlyRows;
+let firstSetup = null;
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
   default: {
@@ -29,6 +30,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
     employmentPeriod: {
       findMany: jest.fn(async () => periods),
     },
+    attendanceSetupRelease: { findFirst: jest.fn(async () => firstSetup) },
     attendance: {
       findMany: jest.fn(async () => monthlyRows),
     },
@@ -50,6 +52,7 @@ beforeEach(() => {
   ];
   periods = [];
   monthlyRows = [];
+  firstSetup = null;
 });
 
 describe('TS-WEEKLY-01 — weekly % agrees with the ABSENT-only tooltip', () => {
@@ -115,5 +118,19 @@ describe('TS-WEEKLY-01 — weekly % agrees with the ABSENT-only tooltip', () => 
     const { weeks } = await getAttendanceSummaryWeekly({ tenantId: TENANT, month: '2026-09' });
     const futureWeek = weeks[weeks.length - 1]; // Week 5 of Sept 2026 is future
     expect(futureWeek.attendancePct).toBeNull();
+  });
+});
+
+describe('issue 103: days before the first attendance setup are no data', () => {
+  it('reads null for a week that is entirely before the setup start', async () => {
+    firstSetup = { effectiveFrom: DAY('2026-09-08') };
+    monthlyRows = [
+      { date: DAY('2026-09-01'), status: 'PRESENT', employee: emp(1) },
+      { date: DAY('2026-09-02'), status: 'PRESENT', employee: emp(2) },
+      { date: DAY('2026-09-09'), status: 'PRESENT', employee: emp(1) },
+    ];
+    const { weeks } = await getAttendanceSummaryWeekly({ tenantId: TENANT, month: '2026-09' });
+    expect(weeks[0].attendancePct).toBeNull();
+    expect(weeks[1].attendancePct).toBe(100);
   });
 });

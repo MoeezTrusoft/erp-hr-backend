@@ -572,6 +572,15 @@ export async function getAttendanceSummaryWeekly({ tenantId, month, employeeId }
     (await eligibilityEmployeeIds(tenantId, start)).employmentEndByEmployee,
   );
 
+  // Days before the company's first published attendance setup were never scored by the rules: leave them out, so a
+  // week that is entirely before the setup reads "no data" instead of 100% on stray old-engine rows (issue 103).
+  const firstSetup = await prisma.attendanceSetupRelease.findFirst({
+    where: scopedWhere(tenantId, {}),
+    orderBy: { effectiveFrom: "asc" },
+    select: { effectiveFrom: true },
+  });
+  if (firstSetup?.effectiveFrom) rows = rows.filter((r) => r.date.getTime() >= firstSetup.effectiveFrom.getTime());
+
   const out = weeks.map((w) => {
     const inWeek = rows.filter(
       (r) => r.date.getTime() >= w.from.getTime() && r.date.getTime() <= w.to.getTime(),

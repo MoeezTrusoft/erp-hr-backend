@@ -30,6 +30,7 @@ const prismaMock = {
     // no Employee rows, so `in: []` flows through and the attendance rows below
     // still exercise the denominator logic unchanged.
     employeeFindMany: null,
+    attendanceSetupRelease: { findFirst: jest.fn(async () => null) },
     attendance: {
         findMany: jest.fn(async ({ where }) => {
             // Mirrors the real client: honour a status filter if one is given,

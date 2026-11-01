@@ -99,9 +99,21 @@ async function mappingData(tx, tenantId, patch) {
   return data;
 }
 
+export async function assignedPeopleByTemplate(db, tenantId, templateIds) {
+  const counts = new Map();
+  if (!templateIds.length) return counts;
+  const rows = await db.shiftAssignment.findMany({
+    where: scopedWhere(tenantId, { templateId: { in: templateIds } }),
+    distinct: ["templateId", "employeeId"],
+    select: { templateId: true, employeeId: true },
+  });
+  for (const r of rows) if (r.templateId != null) counts.set(r.templateId, (counts.get(r.templateId) ?? 0) + 1);
+  return counts;
+}
+
 /**
  * Paginated shift-template library with the assigned-employee count per
- * template (count of ShiftAssignment rows with templateId = template.id).
+ * template (distinct employees with a ShiftAssignment on template.id).
  */
 export const listShiftTemplates = async (query = {}, tenantId) => {
   const list = parseListQuery(query, { sort: "name", order: "asc" });
@@ -130,19 +142,9 @@ export const listShiftTemplates = async (query = {}, tenantId) => {
     prisma.shiftTemplate.count({ where }),
   ]);
 
-  // Assigned-employee count per template in a single grouped round-trip.
-  const templateIds = rows.map((r) => r.id);
-  const countByTemplate = new Map();
-  if (templateIds.length) {
-    const grouped = await prisma.shiftAssignment.groupBy({
-      by: ["templateId"],
-      where: scopedWhere(tenantId, { templateId: { in: templateIds } }),
-      _count: { _all: true },
-    });
-    for (const g of grouped) {
-      if (g.templateId != null) countByTemplate.set(g.templateId, g._count._all);
-    }
-  }
+  // People assigned per template. A ShiftAssignment is one employee on one day, so counting rows counted days (a
+  // 21-person company read "217 employees assigned"); count distinct employees.
+  const countByTemplate = await assignedPeopleByTemplate(prisma, tenantId, rows.map((r) => r.id));
 
   const items = rows.map((t) => shapeTemplate(t, countByTemplate.get(t.id) ?? 0));
 
@@ -284,9 +286,7 @@ export const updateShiftTemplate = async ({ id, ...patch } = {}, tenantId) => {
     where: scopedWhere(tenantId, { id: templateId }),
     include: templateInclude,
   });
-  const assigned = await tx.shiftAssignment.count({
-    where: scopedWhere(tenantId, { templateId }),
-  });
+  const assigned = (await assignedPeopleByTemplate(tx, tenantId, [templateId])).get(templateId) ?? 0;
   return shapeTemplate(updated, assigned);
   },{tenantId,txOptions:{isolationLevel:'Serializable'}});
 };
