@@ -120,7 +120,7 @@ export function registerClaimsTools(server) {
       description: z.string().optional().describe("Claim description"),
       category: z.string().optional().describe("Category, e.g. TRAVEL, MEALS, EQUIPMENT"),
       amount: z.coerce.number().optional().describe("Total amount; if omitted with items, computed from item sum"),
-      currency: z.string().optional().describe("ISO 4217 currency code (default USD)"),
+      currency: z.string().optional().describe("ISO 4217 currency code (default: the employee's pay currency)"),
       items: z.array(itemSchema).optional().describe("Line items {name, description?, amount, mediaId?}"),
     },
     withToolError(async (args) => {

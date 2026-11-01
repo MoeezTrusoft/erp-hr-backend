@@ -16,13 +16,16 @@ import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { toCSV } from "../lib/export.util.js";
 import logger from "../lib/logger.js";
+import { displayName } from "../lib/personIdentity.js";
+import { getCtx } from "../mcp/context.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
 const num = (v) => (v == null ? null : Number(v));
 
 // Employee display name from the snake_case columns.
-const employeeName = e => e?.employee_code || 'Employee code required';
+// People are shown by full name; the code is only the last fallback.
+const employeeName = (e) => displayName(e) || 'Unknown employee';
 
 // Shape an included Employee into the list/drawer employee sub-object.
 const shapeEmployee = (e) =>
@@ -32,7 +35,8 @@ const shapeEmployee = (e) =>
         employeeId: e.id,
         name: employeeName(e),
         employeeCode: e.employee_code || null,
-        role: e.job_title || null,
+        role: e.Position?.title || e.job_title || null,
+        position: e.Position?.title || e.job_title || null,
         avatar: e.photo_url || null,
         department: e.businessUnit?.name || null,
       }
@@ -41,6 +45,11 @@ const shapeEmployee = (e) =>
 const EMPLOYEE_SELECT = {
   id: true,
   employee_code: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  preferred_name: true,
+  Position: { select: { title: true } },
   photo_url: true,
   job_title: true,
   businessUnitId: true,
@@ -109,6 +118,9 @@ export async function listClaims({
       OR: [
         { title: { contains: q, mode: "insensitive" } },
         { employee: { employee_code: { contains: q, mode: "insensitive" } } },
+        { employee: { employee_name: { contains: q, mode: "insensitive" } } },
+        { employee: { first_name: { contains: q, mode: "insensitive" } } },
+        { employee: { last_name: { contains: q, mode: "insensitive" } } },
       ],
     });
   }
@@ -199,7 +211,16 @@ const DRAWER_INCLUDE = {
     orderBy: { level: "asc" },
     include: {
       approver: {
-        select: { id: true, employee_code: true, photo_url: true, job_title: true },
+        select: {
+          id: true,
+          employee_code: true,
+          employee_name: true,
+          first_name: true,
+          last_name: true,
+          preferred_name: true,
+          photo_url: true,
+          job_title: true,
+        },
       },
     },
   },
@@ -234,6 +255,19 @@ export async function createClaim({ tenantId, employeeId, title, description, ca
   const finalAmount = amount != null ? Number(amount) : lineItems.length ? itemsSum : 0;
 
   const result = await tenantTransaction(prisma, async (tx) => {
+    // Default to the currency the employee is paid in, then the latest payroll run's, never a hard-coded dollar.
+    let claimCurrency = currency;
+    if (!claimCurrency) {
+      const terms = await tx.employmentTerms.findFirst({
+        where: { employeeId: Number(employeeId) },
+        orderBy: { effectiveFrom: "desc" },
+        select: { currency: true },
+      });
+      const lastRun = terms?.currency
+        ? null
+        : await tx.payrollRun.findFirst({ orderBy: { id: "desc" }, select: { currencyCode: true } });
+      claimCurrency = terms?.currency || lastRun?.currencyCode || "USD";
+    }
     const claim = await tx.reimbursementClaim.create({
       data: {
         employeeId: Number(employeeId),
@@ -241,7 +275,7 @@ export async function createClaim({ tenantId, employeeId, title, description, ca
         description: description ?? null,
         category: category ?? null,
         amount: finalAmount,
-        currency: currency || "USD",
+        currency: claimCurrency,
         status: "DRAFT",
         tenantId: tenantId ?? null,
       },
@@ -318,7 +352,19 @@ export async function updateClaim({ tenantId, id, items, ...fields }) {
 // ── submit (create the ordered approval chain) ───────────────────────────────
 
 export async function submitClaim({ tenantId, id, approvalChain }) {
-  return legacySubmit('CLAIM',id);
+  // HR may submit a claim it raised for an employee; the approval engine then treats it as HR-filed.
+  const claim = await prisma.reimbursementClaim.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+    select: { employeeId: true },
+  });
+  if (!claim) throw Object.assign(new Error("Claim not found"), { status: 404 });
+  const onBehalf = Number(getCtx().user?.employeeId) !== claim.employeeId;
+  return legacySubmit(
+    "CLAIM",
+    id,
+    onBehalf ? "HR submitted the claim for the employee" : undefined,
+    { onBehalf },
+  );
 }
 
 // ── approval-chain decision (advance / finalize) ─────────────────────────────

@@ -1,6 +1,7 @@
-import { legacyDecision } from "./approval/legacy.js";
+import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 // src/services/loan.service.js — Loan & salary advance management
 import prisma from "../lib/prisma.js";
+import { identitiesById } from "../lib/personIdentity.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { lockAttendancePeriod } from "./attendancePeriod.service.js";
@@ -13,7 +14,7 @@ export const LOAN_KINDS = ["LOAN", "ADVANCE"];
  * Create a new loan for an employee.
  * Automatically calculates monthly installment from principal, interest, tenure.
  */
-export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId, kind = "LOAN" }) => {
+export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId, kind = "LOAN", submit = false }) => {
     if (!employeeId) throw Object.assign(new Error("employeeId is required"), { status: 400 });
     if (!principalMinor || principalMinor <= 0) throw Object.assign(new Error("principalMinor must be positive"), { status: 400 });
     if (!tenureMonths || tenureMonths <= 0) throw Object.assign(new Error("tenureMonths must be positive"), { status: 400 });
@@ -44,6 +45,12 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
         }),
     });
 
+    // HR raises the loan for the employee: open its approval request now, filed by HR on the employee's behalf,
+    // so a pending loan is never stranded outside the Approval Centre.
+    if (submit) {
+        await legacySubmit("LOAN", loan.id, "HR recorded the loan for the employee", { onBehalf: true });
+    }
+
     return loan;
 };
 
@@ -72,17 +79,24 @@ export const listLoans = async ({ employeeId, status, kind, page = 1, limit = 20
         prisma.loan.count({ where }),
     ]);
 
-    return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
+    // People are shown by name, position and department, never by the numeric id.
+    const people = await identitiesById(prisma, tenantId, items.map((l) => l.employeeId));
+    const named = items.map((l) => ({ ...l, employee: people.get(l.employeeId) ?? null }));
+
+    return { items: named, total, page, limit, totalPages: Math.ceil(total / limit) };
 };
 
 /**
  * Get a single loan with repayments.
  */
 export const getLoan = async (id, tenantId) => {
-    return prisma.loan.findFirst({
+    const loan = await prisma.loan.findFirst({
         where: scopedWhere(tenantId, { id: Number(id) }),
         include: { repayments: { orderBy: { deductedAt: "desc" } } },
     });
+    if (!loan) return loan;
+    const people = await identitiesById(prisma, tenantId, [loan.employeeId]);
+    return { ...loan, employee: people.get(loan.employeeId) ?? null };
 };
 
 /**

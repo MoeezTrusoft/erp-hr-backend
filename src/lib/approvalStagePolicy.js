@@ -59,6 +59,7 @@ export const skipsManagerWhenNone = (kind) => HR_WHEN_NO_MANAGER.includes(kind);
 // be HR approving its own filing. These kinds therefore enter the first stage
 // after HR verification (MANAGEMENT) with the verification recorded against the
 // filer. The employee's own submission is unaffected and still lands at HR.
-const VERIFIED_ON_BEHALF = Object.freeze(["ATTENDANCE"]);
+// 2026-11-01: the same rule for a claim or loan HR files for an employee (HR cannot verify its own filing).
+const VERIFIED_ON_BEHALF = Object.freeze(["ATTENDANCE", "CLAIM", "LOAN"]);
 
 export const isVerifiedOnBehalf = (kind) => VERIFIED_ON_BEHALF.includes(kind);

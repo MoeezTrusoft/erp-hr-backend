@@ -31,6 +31,18 @@ export const COMPANY_PAYROLL_BANKS = Object.freeze({
 const fail = (message, status = 409) => {
   throw Object.assign(new Error(message), { status });
 };
+// Whether the payroll setup this run was calculated with pays salaries in cash.
+async function runPaysInCash(db, tenantId, run) {
+  const snapshot = await db.payrollConfigSnapshot.findFirst({
+    where: {
+      tenantId,
+      ...(run?.calculationConfigVersion ? { version: run.calculationConfigVersion } : {}),
+    },
+    orderBy: { version: "desc" },
+  });
+  return snapshot?.config?.payRules?.cashDisbursement === true;
+}
+
 export async function payrollPaymentStatus({ tenantId, runId }) {
   const run = await prisma.payrollRun.findFirst({
     where: { tenantId, id: runId },
@@ -51,6 +63,7 @@ export async function payrollPaymentStatus({ tenantId, runId }) {
     status: run.status,
     currency: run.currencyCode,
     provider: COMPANY_PAYROLL_BANKS[tenantId] || null,
+    cashDisbursement: await runPaysInCash(prisma, tenantId, run),
     integration: "EVIDENCE_RECORDING",
     items: slips.map((s) => ({
       employeeCode: s.employee.employee_code,
@@ -58,6 +71,7 @@ export async function payrollPaymentStatus({ tenantId, runId }) {
       netAmount: s.netAmount,
       paidAt: s.paidAt,
       reference: s.paymentReference,
+      method: historyOf(s.paymentEvidence).at(-1)?.method ?? null,
       status: historyOf(s.paymentEvidence).at(-1)?.stage || "NOT_SUBMITTED",
       history: historyOf(s.paymentEvidence),
     })),
@@ -184,6 +198,115 @@ export async function recordPayrollPayment({
         },
       });
       return { employeeCode, status: stage };
+    },
+    { tenantId },
+  );
+}
+
+// Cash pay: HR records that whole payslips were handed over in cash. No bank is involved, so the
+// bank evidence sequence does not apply; one RECONCILED event with method CASH settles the payslip.
+export async function markPayslipsCashPaid({
+  tenantId,
+  runId,
+  employeeCodes,
+  actorCode,
+  paidOn,
+  receiptNumber,
+  requestKey,
+}) {
+  if (typeof actorCode !== "string" || !actorCode.trim())
+    fail("A verified employee code is required to record payment", 403);
+  if (!Array.isArray(employeeCodes) || !employeeCodes.length || new Set(employeeCodes).size !== employeeCodes.length)
+    fail("Choose at least one payslip, each only once", 400);
+  if (!requestKey) fail("A request key is required", 400);
+  const when = new Date(paidOn);
+  if (!Number.isFinite(+when) || +when > Date.now())
+    fail("The paid date must be valid and cannot be in the future", 400);
+  const receipt = receiptNumber?.trim() || null;
+  return tenantTransaction(
+    prisma,
+    async (tx) => {
+      const actor = await tx.employee.findFirst({
+        where: { tenant_id: tenantId, employee_code: actorCode },
+      });
+      if (!actor)
+        fail("A verified employee code is required to record payment", 403);
+      const run = await tx.payrollRun.findFirst({
+        where: { tenantId, id: runId },
+      });
+      if (!run) fail("Payroll run not found", 404);
+      if (run.status !== "FINALIZED")
+        fail("Finalize the approved payroll before recording payments");
+      if (!(await runPaysInCash(tx, tenantId, run)))
+        fail("This company pays by bank. Record bank evidence instead.");
+      const slips = await tx.payrollPayslip.findMany({
+        where: {
+          tenantId,
+          payrollRunId: runId,
+          employee: { employee_code: { in: employeeCodes } },
+        },
+        include: { employee: { select: { employee_code: true } } },
+        orderBy: { id: "asc" },
+      });
+      const missing = employeeCodes.filter(
+        (c) => !slips.some((x) => x.employee.employee_code === c),
+      );
+      if (missing.length)
+        fail(`Not in this payroll: ${missing.join(", ")}`, 404);
+      await tx.$queryRaw`SELECT id FROM payroll_payslips WHERE "tenantId"=${tenantId}::uuid AND id = ANY(${slips.map((x) => x.id)}::int[]) ORDER BY id FOR UPDATE`;
+      const fresh = await tx.payrollPayslip.findMany({
+        where: { tenantId, id: { in: slips.map((x) => x.id) } },
+        include: { employee: { select: { employee_code: true } } },
+        orderBy: { id: "asc" },
+      });
+      // A retry of the same request is a no-op.
+      if (fresh.every((x) => historyOf(x.paymentEvidence).some((e) => e.requestKey === requestKey)))
+        return { paid: fresh.length, alreadyRecorded: true };
+      const blocked = fresh.filter(
+        (x) =>
+          x.paidAt ||
+          !["FINALIZED", "DISTRIBUTED"].includes(x.status),
+      );
+      if (blocked.length)
+        fail(
+          `Already paid or not payable: ${blocked.map((x) => x.employee.employee_code).join(", ")}`,
+        );
+      for (const slip of fresh) {
+        const event = {
+          requestKey,
+          stage: "RECONCILED",
+          method: "CASH",
+          reference: receipt || `CASH-${when.toISOString().slice(0, 10)}`,
+          receiptNumber: receipt,
+          amount: String(slip.netAmount),
+          currency: run.currencyCode,
+          occurredAt: when.toISOString(),
+          actorCode,
+        };
+        await tx.payrollPayslip.update({
+          where: { id: slip.id },
+          data: {
+            paymentEvidence: {
+              encrypted: encryptString(
+                JSON.stringify([...historyOf(slip.paymentEvidence), event]),
+              ),
+            },
+            paidAt: when,
+            paymentReference: event.reference,
+          },
+        });
+        await tx.payrollAuditLog.create({
+          data: {
+            tenantId,
+            payrollRunId: runId,
+            payslipId: slip.id,
+            employeeId: actor.id,
+            action: "PAYMENT_CASH_PAID",
+            details: `${slip.employee.employee_code}: paid in cash on ${when.toISOString().slice(0, 10)}${receipt ? `; receipt ${receipt}` : ""}`,
+          },
+        });
+      }
+      return { paid: fresh.length, alreadyRecorded: false };
     },
     { tenantId },
   );

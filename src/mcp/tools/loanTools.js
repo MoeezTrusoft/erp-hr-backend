@@ -87,6 +87,7 @@ export function registerLoanTools(server) {
         ...args,
         createdById: user.employeeId,
         tenantId: user.tenantId,
+        submit: true,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_loan_create")

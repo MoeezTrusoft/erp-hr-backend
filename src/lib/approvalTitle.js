@@ -18,6 +18,7 @@ const day = (value) => {
   const d = date(value);
   return d ? `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}` : null;
 };
+const amount = (n) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
 const plural = (n, word) => `${n} ${word}${Number(n) === 1 ? "" : "s"}`;
 
 /** @returns {string|null} a title, or null when the kind has none (screens fall back to the kind's name). */
@@ -41,10 +42,18 @@ export function requestTitle(kind, snapshot) {
       if (!when) return null;
       return s.hours != null ? `Overtime, ${when}, ${plural(s.hours, "hour")}` : `Overtime, ${when}`;
     }
-    case "CLAIM":
-      return s.title ? `Claim: ${s.title}` : null;
-    case "LOAN":
-      return s.kind === "ADVANCE" ? "Salary advance" : "Loan";
+    case "CLAIM": {
+      if (!s.title) return null;
+      const sum = s.amount != null && Number(s.amount) > 0 ? `, ${s.currency ? `${s.currency} ` : ""}${amount(s.amount)}` : "";
+      return `Claim: ${s.title}${sum}`;
+    }
+    case "LOAN": {
+      // Loans carry no currency of their own (the company pays in one), so the figure stands without it.
+      const sum = Number(s.principalMinor) > 0 ? `, ${amount(Number(s.principalMinor) / 100)}` : "";
+      if (s.kind === "ADVANCE") return `Salary advance${sum}`;
+      const months = Number(s.tenureMonths) > 1 ? ` over ${plural(s.tenureMonths, "month")}` : "";
+      return `Loan${sum}${months}`;
+    }
     case "PAYROLL": {
       const d = date(s.periodStart);
       if (!d) return null;

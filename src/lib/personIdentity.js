@@ -51,6 +51,17 @@ export async function identitiesByCode(db, tenantId, codes) {
   return new Map(rows.map((r) => [r.employee_code, toIdentity(r)]));
 }
 
+/** Map of employee id to identity, for rows that store the numeric employee id (loans). */
+export async function identitiesById(db, tenantId, ids) {
+  const wanted = [...new Set((ids ?? []).map(Number).filter(Number.isInteger))];
+  if (!wanted.length) return new Map();
+  const rows = await db.employee.findMany({
+    where: { tenant_id: tenantId, id: { in: wanted } },
+    select: { ...IDENTITY_SELECT, id: true },
+  });
+  return new Map(rows.map((r) => [r.id, toIdentity(r)]));
+}
+
 /** Map of RBAC user id to identity, for rows that store the signed-in user rather than an employee code. */
 export async function identitiesByUserId(db, tenantId, userIds) {
   const wanted = [...new Set((userIds ?? []).map(Number).filter(Number.isInteger))];

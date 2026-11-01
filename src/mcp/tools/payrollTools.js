@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { payrollPaymentStatus, recordPayrollPayment } from '../../services/payrollPayments.service.js';
+import { payrollPaymentStatus, recordPayrollPayment, markPayslipsCashPaid } from '../../services/payrollPayments.service.js';
 import prisma from '../../lib/prisma.js';
 import {
   mcpCancelPayrollRun,
@@ -58,6 +58,15 @@ export function registerPayrollTools(server) {
     const actor=await prisma.employee.findFirst({where:{tenant_id:user.tenantId,userId:Number(user.userId)||-1}});
     return {content:[{type:'text',text:JSON.stringify(await recordPayrollPayment({...args,tenantId:user.tenantId,actorCode:actor?.employee_code}))}]};
   },'hr_payroll_payment_record'));
+  server.tool('hr_payroll_cash_mark_paid','Record that whole payslips of a finalized run were paid in cash (cash companies only)',{
+    runId:z.coerce.number().int().positive(),employeeCodes:z.array(z.string().trim().min(1)).min(1).max(500),
+    paidOn:z.string().datetime(),receiptNumber:z.string().trim().max(100).optional(),requestKey:z.string().uuid(),
+  },withToolError(async args=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,'PUT','hr:payroll',user.isAdmin);
+    const actor=await prisma.employee.findFirst({where:{tenant_id:user.tenantId,userId:Number(user.userId)||-1}});
+    return {content:[{type:'text',text:JSON.stringify(await markPayslipsCashPaid({...args,tenantId:user.tenantId,actorCode:actor?.employee_code}))}]};
+  },'hr_payroll_cash_mark_paid'));
   // ── RESOURCES ────────────────────────────────────────────────────────────
 
   server.resource(
