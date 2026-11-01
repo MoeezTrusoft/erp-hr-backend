@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import prisma from "../lib/prisma.js";
+import { displayName } from "../lib/personIdentity.js";
+import logger from "../lib/logger.js";
 import { mcpCtx } from "../mcp/context.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import {
@@ -487,11 +489,39 @@ export async function receiveCapture(
   });
 }
 
+// Terminals push to the capture intake, which registers them under its own tenant, not under any company. Each
+// terminal lists the companies it serves (`allowedTenantIds`): a company sees those terminals, read-only and marked
+// `shared`. Without this a company with working terminals read "No devices yet".
+async function sharedTerminals(tenantId, ownDevices) {
+  const intake = process.env.HR_ATTENDANCE_INTAKE_TENANT_ID;
+  if (!intake || intake === tenantId) return [];
+  try {
+    const own = new Set(ownDevices.map((d) => d.sn));
+    // One narrow cross-tenant read, in a system context on purpose: the registry rows belong to the intake tenant, and the
+    // filter keeps it to terminals that list THIS company. Read-only; secrets are stripped by devicePublic.
+    const rows = await mcpCtx.run({ system: true }, () =>
+      tenantTransaction(
+        prisma,
+        (tx) =>
+          tx.attendanceCaptureDevice.findMany({
+            where: { tenantId: intake, allowedTenantIds: { has: tenantId } },
+            orderBy: { name: "asc" },
+          }),
+        { system: true },
+      ),
+    );
+    return rows.filter((d) => !own.has(d.sn)).map((d) => ({ ...d, shared: true }));
+  } catch (err) {
+    logger.warn({ err: err?.message }, "shared terminal lookup failed");
+    return [];
+  }
+}
+
 export async function captureOverview(
   { tenantId, now = new Date() },
   db = prisma,
 ) {
-  const [devices, counts, oldest, recent] = await Promise.all([
+  const [ownDevices, counts, oldest, recent] = await Promise.all([
     db.attendanceCaptureDevice.findMany({
       where: { tenantId },
       orderBy: { name: "asc" },
@@ -519,6 +549,10 @@ export async function captureOverview(
   const latencies = recent
     .map((e) => +e.processedAt - +e.createdAt)
     .sort((a, b) => a - b);
+  const devices = [
+    ...ownDevices,
+    ...(await sharedTerminals(tenantId, ownDevices)),
+  ].sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return {
     devices: devices.map((d) => ({
       ...devicePublic(d),
@@ -564,10 +598,11 @@ export async function listCaptureEvents(
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: take + 1,
   });
-  const people = await db.employee.findMany({ where: { tenant_id: tenantId, id: { in: [...new Set(rows.map(row => row.employeeId).filter(Boolean))] } }, select: { id: true, employee_code: true } });
+  const people = await db.employee.findMany({ where: { tenant_id: tenantId, id: { in: [...new Set(rows.map(row => row.employeeId).filter(Boolean))] } }, select: { id: true, employee_code: true, first_name: true, middle_name: true, last_name: true } });
   const codes = new Map(people.map(person => [person.id, person.employee_code]));
+  const names = new Map(people.map(person => [person.id, displayName(person)]));
   return {
-    items: rows.slice(0, take).map(row => ({ ...row, employeeCode: codes.get(row.employeeId) || null })),
+    items: rows.slice(0, take).map(row => ({ ...row, employeeCode: codes.get(row.employeeId) || null, employeeName: names.get(row.employeeId) || null, eventAt: row.parsed?.punchedAt ?? null })),
     nextCursor: rows.length > take ? rows[take - 1].id : null,
   };
 }

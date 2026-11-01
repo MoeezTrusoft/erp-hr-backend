@@ -23,6 +23,7 @@ let employees;
 let extraCoverage;
 
 const prismaMock = {
+    attendanceSetupRelease: { findFirst: jest.fn(async () => null) },
     attendance: { findMany: jest.fn(async () => rows) },
     employee: { findMany: jest.fn(async () => employees) },
 };

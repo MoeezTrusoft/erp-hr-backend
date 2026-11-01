@@ -42,6 +42,7 @@ const row = (id, employeeId, date, status) => ({
 
 let attendanceRows = [];
 const prismaStub = {
+  attendanceSetupRelease: { findFirst: jest.fn(async () => null) },
   attendance: { findMany: jest.fn(async () => attendanceRows) },
   attendanceDevicePunch: { findMany: jest.fn(async () => []) },
   attendanceCallIn: { findMany: jest.fn(async () => []) },
