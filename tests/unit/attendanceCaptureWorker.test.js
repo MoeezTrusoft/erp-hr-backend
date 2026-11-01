@@ -180,3 +180,22 @@ it("reconciles an unassigned legacy punch across permitted companies while prese
       ),
   ).toBe(true);
 });
+
+it("gives a company its own punch when another company already adopted the shared legacy row", async () => {
+  // Two companies receive the same unattributed legacy punch and are processed in separate transactions; the loser must
+  // not overwrite the winner's attribution (Habib 588/589, 2026-11-02).
+  const db = captureDb({
+    employee: [{ id: 1, tenant_id: OTHER_TENANT }],
+    employeeDeviceEnrolment: [
+      { id: 10, tenantId: OTHER_TENANT, employeeId: 1, deviceUserId: "101", sn: "DEVICE-1", effectiveFrom: new Date("2026-01-01") },
+    ],
+    attendanceDevicePunch: [
+      { id: 99, tenantId: TENANT, employeeId: 7, sn: "DEVICE-1", deviceUserId: "101", punchedAt: new Date("2026-10-01T22:00:00Z"), status: 0, rawLine: "original" },
+    ],
+  });
+  await submit(db);
+  expect((await drainCapture({ limit: 1, now, evaluate }, db)).failed).toBe(0);
+  const punches = db.snapshot().attendanceDevicePunch;
+  expect(punches.find((p) => p.id === 99)).toMatchObject({ tenantId: TENANT, employeeId: 7 });
+  expect(punches.some((p) => p.tenantId === OTHER_TENANT && p.employeeId === 1)).toBe(true);
+});
