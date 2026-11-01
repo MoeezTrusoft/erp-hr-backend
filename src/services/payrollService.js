@@ -749,7 +749,10 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // N-13 — tax the TAXABLE base, not the full package.
     // N-21 — restore the contracted-package share of prorated fixed earnings
     // so withholding follows Section 149 (see taxPackageUplift above).
-    const taxBaseMinor = money.add(taxableMinor, isHeadendEmployee(employee) && prorationFactor === 0n ? 0n : taxPackageUplift);
+    // tax_exempt: the whole package is outside income tax (basic included, which no earning type can express).
+    const taxBaseMinor = employee?.tax_exempt === true
+        ? 0n
+        : money.add(taxableMinor, isHeadendEmployee(employee) && prorationFactor === 0n ? 0n : taxPackageUplift);
     let taxMinor = computeProgressiveTaxMinor(taxBaseMinor, sorted, currency);
     const nilEstimate = employee?.payrollNilTaxEstimate;
     if (nilEstimate) {
