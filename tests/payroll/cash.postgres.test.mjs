@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { setupPayroll, prisma, company, people, db, as, submit, act } from "./fixtures.mjs";
 import { processPayrollRun, finalizePayrollRun } from "../../src/services/payrollService.js";
 import { markPayslipsCashPaid, payrollPaymentStatus } from "../../src/services/payrollPayments.service.js";
-import { createClaim, listClaims } from "../../src/services/claims.service.js";
+import { createClaim, listClaims, submitClaim } from "../../src/services/claims.service.js";
 import { getMyPayslip } from "../../src/services/myPayslip.service.js";
 
 const finalized = async () => {
@@ -64,6 +64,14 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
     createClaim({ tenantId: company, employeeId: people.EMPLOYEE.id, title: "Taxi to client", amount: 1200 }),
   );
   assert.equal((claim.claim ?? claim).currency, "PKR");
+  // HR submits the claim it raised for the employee: it becomes an HR-filed request owned by the employee.
+  const claimId = (claim.claim ?? claim).id;
+  await as("HR", () => submitClaim({ tenantId: company, id: claimId }));
+  const request = await db((tx) =>
+    tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "CLAIM", sourceRef: String(claimId) } }),
+  );
+  assert.ok(request);
+  assert.equal(request.employeeCode, people.EMPLOYEE.employee_code);
   const listed = await as("HR", () => listClaims({ tenantId: company }));
   assert.ok(listed.items[0].employee.name && listed.items[0].employee.name !== listed.items[0].employee.employeeCode);
   const emp = await db((tx) => tx.employee.findFirst({ where: { id: people.EMPLOYEE.id } }));

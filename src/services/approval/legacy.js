@@ -3,7 +3,7 @@ import prisma from "../../lib/prisma.js";
 import { getCtx } from "../../mcp/context.js";
 import { tenantTransaction } from "../../lib/rlsTenant.js";
 import { actor } from "../separation/base.js";
-import { submitApproval, actApproval } from "./service.js";
+import { submitApproval, submitApprovalOnBehalf, actApproval } from "./service.js";
 import { fail, loadSource } from "./adapters.js";
 export async function legacyWithdraw(
   kind,
@@ -117,6 +117,7 @@ export async function legacySubmit(
   reason = "Employee submitted the request",
   options = {},
 ) {
+  const { onBehalf = false, ...submitOptions } = options;
   const ctx = getCtx();
   if (!ctx.actorVerified) fail("Verified employee identity required", 401);
   const input = await tenantTransaction(
@@ -132,10 +133,14 @@ export async function legacySubmit(
           },
         },
       });
+      // On behalf, the request belongs to the employee the source belongs to, not to the filer.
+      const owner = onBehalf
+        ? (await loadSource(tx, { tenantId: ctx.user.tenantId }, kind, String(sourceRef))).who
+        : who;
       return {
         kind,
         sourceRef: String(sourceRef),
-        employeeCode: who.employee_code,
+        employeeCode: owner.employee_code,
         expectedVersion: row?.version || 0,
         reason: String(reason || "Employee submitted the request"),
         requestKey: randomUUID(),
@@ -143,7 +148,7 @@ export async function legacySubmit(
     },
     { tenantId: ctx.user.tenantId },
   );
-  await submitApproval(input, options);
+  await (onBehalf ? submitApprovalOnBehalf(input) : submitApproval(input, submitOptions));
   return tenantTransaction(
     prisma,
     async (tx) =>

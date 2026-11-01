@@ -17,6 +17,7 @@ import { tenantTransaction } from "../lib/rlsTenant.js";
 import { toCSV } from "../lib/export.util.js";
 import logger from "../lib/logger.js";
 import { displayName } from "../lib/personIdentity.js";
+import { getCtx } from "../mcp/context.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -351,7 +352,19 @@ export async function updateClaim({ tenantId, id, items, ...fields }) {
 // ── submit (create the ordered approval chain) ───────────────────────────────
 
 export async function submitClaim({ tenantId, id, approvalChain }) {
-  return legacySubmit('CLAIM',id);
+  // HR may submit a claim it raised for an employee; the approval engine then treats it as HR-filed.
+  const claim = await prisma.reimbursementClaim.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
+    select: { employeeId: true },
+  });
+  if (!claim) throw Object.assign(new Error("Claim not found"), { status: 404 });
+  const onBehalf = Number(getCtx().user?.employeeId) !== claim.employeeId;
+  return legacySubmit(
+    "CLAIM",
+    id,
+    onBehalf ? "HR submitted the claim for the employee" : undefined,
+    { onBehalf },
+  );
 }
 
 // ── approval-chain decision (advance / finalize) ─────────────────────────────
