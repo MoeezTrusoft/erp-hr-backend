@@ -79,6 +79,8 @@ try {
     "20261026060000_appraisal_peer_feedback",
     // Employee.attendance_only: the current Prisma client selects it, the pinned baseline predates it.
     "20261029090000_employee_attendance_only",
+    // Employee.tax_exempt: same reason (the client selects it, the baseline predates it).
+    "20261102120000_employee_tax_exempt",
     "20261029120000_payroll_cash_disbursement",
     // HrApprovalRequest.route / level / pendingCodes and the approval matrix table.
     "20261030090000_approval_matrix",
