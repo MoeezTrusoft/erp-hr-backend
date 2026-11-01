@@ -13,6 +13,7 @@
 // level": an unresolvable level is stepped over, not left blocking.
 //
 // HR-ATT-POLICY-01.
+import { toIdentity } from "../lib/personIdentity.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
@@ -45,9 +46,13 @@ export async function listApproverCandidates({ tenantId, search, limit = 50 } = 
   const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const term = typeof search === "string" ? search.trim() : "";
 
-  const where = {tenant_id: tenantId};
+  const where = { tenant_id: tenantId };
   if (term) {
+    // People are found by name first; the code still works for someone who knows it.
     where.OR = [
+      { employee_name: { contains: term, mode: "insensitive" } },
+      { first_name: { contains: term, mode: "insensitive" } },
+      { last_name: { contains: term, mode: "insensitive" } },
       { employee_code: { contains: term, mode: "insensitive" } },
     ];
   }
@@ -57,19 +62,30 @@ export async function listApproverCandidates({ tenantId, search, limit = 50 } = 
     select: {
       id: true,
       employee_code: true,
+      employee_name: true,
+      first_name: true,
+      last_name: true,
+      preferred_name: true,
       job_title: true,
+      photo_url: true,
+      Position: { select: { title: true } },
+      businessUnit: { select: { name: true } },
     },
-    orderBy: { employee_code: "asc" },
+    orderBy: [{ first_name: "asc" }, { employee_code: "asc" }],
     take,
   });
 
-  return rows.map((e) => ({
-    id: e.id,
-    employee_code: e.employee_code,
-    // employee_name is not always populated; fall back to the name parts.
-    name: e.employee_code || "Employee code required",
-    job_title: e.job_title,
-  }));
+  return rows.map((e) => {
+    const who = toIdentity(e);
+    return {
+      id: e.id,
+      employee_code: e.employee_code,
+      name: who.name,
+      job_title: who.position,
+      department: who.department,
+      photoUrl: who.photoUrl,
+    };
+  });
 }
 
 export async function upsertApprovalLevel({ tenantId, level, ...input }) {
