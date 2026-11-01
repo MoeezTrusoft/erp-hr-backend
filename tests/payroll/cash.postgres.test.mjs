@@ -64,6 +64,8 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
     createClaim({ tenantId: company, employeeId: people.EMPLOYEE.id, title: "Taxi to client", amount: 1200 }),
   );
   assert.equal((claim.claim ?? claim).currency, "PKR");
+  const listed = await as("HR", () => listClaims({ tenantId: company }));
+  assert.ok(listed.items[0].employee.name && listed.items[0].employee.name !== listed.items[0].employee.employeeCode);
   const emp = await db((tx) => tx.employee.findFirst({ where: { id: people.EMPLOYEE.id } }));
   const found = await as("HR", () => listClaims({ tenantId: company, q: (emp.first_name || emp.employee_code).slice(0, 4) }));
   assert.ok(JSON.stringify(found).includes("Taxi to client"));

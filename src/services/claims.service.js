@@ -16,13 +16,15 @@ import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { toCSV } from "../lib/export.util.js";
 import logger from "../lib/logger.js";
+import { displayName } from "../lib/personIdentity.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
 const num = (v) => (v == null ? null : Number(v));
 
 // Employee display name from the snake_case columns.
-const employeeName = e => e?.employee_code || 'Employee code required';
+// People are shown by full name; the code is only the last fallback.
+const employeeName = (e) => displayName(e) || 'Unknown employee';
 
 // Shape an included Employee into the list/drawer employee sub-object.
 const shapeEmployee = (e) =>
@@ -32,7 +34,8 @@ const shapeEmployee = (e) =>
         employeeId: e.id,
         name: employeeName(e),
         employeeCode: e.employee_code || null,
-        role: e.job_title || null,
+        role: e.Position?.title || e.job_title || null,
+        position: e.Position?.title || e.job_title || null,
         avatar: e.photo_url || null,
         department: e.businessUnit?.name || null,
       }
@@ -41,6 +44,11 @@ const shapeEmployee = (e) =>
 const EMPLOYEE_SELECT = {
   id: true,
   employee_code: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  preferred_name: true,
+  Position: { select: { title: true } },
   photo_url: true,
   job_title: true,
   businessUnitId: true,
@@ -109,6 +117,7 @@ export async function listClaims({
       OR: [
         { title: { contains: q, mode: "insensitive" } },
         { employee: { employee_code: { contains: q, mode: "insensitive" } } },
+        { employee: { employee_name: { contains: q, mode: "insensitive" } } },
         { employee: { first_name: { contains: q, mode: "insensitive" } } },
         { employee: { last_name: { contains: q, mode: "insensitive" } } },
       ],
@@ -201,7 +210,16 @@ const DRAWER_INCLUDE = {
     orderBy: { level: "asc" },
     include: {
       approver: {
-        select: { id: true, employee_code: true, photo_url: true, job_title: true },
+        select: {
+          id: true,
+          employee_code: true,
+          employee_name: true,
+          first_name: true,
+          last_name: true,
+          preferred_name: true,
+          photo_url: true,
+          job_title: true,
+        },
       },
     },
   },
