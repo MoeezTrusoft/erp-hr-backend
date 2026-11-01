@@ -109,6 +109,8 @@ export async function listClaims({
       OR: [
         { title: { contains: q, mode: "insensitive" } },
         { employee: { employee_code: { contains: q, mode: "insensitive" } } },
+        { employee: { first_name: { contains: q, mode: "insensitive" } } },
+        { employee: { last_name: { contains: q, mode: "insensitive" } } },
       ],
     });
   }
@@ -234,6 +236,19 @@ export async function createClaim({ tenantId, employeeId, title, description, ca
   const finalAmount = amount != null ? Number(amount) : lineItems.length ? itemsSum : 0;
 
   const result = await tenantTransaction(prisma, async (tx) => {
+    // Default to the currency the employee is paid in, then the latest payroll run's, never a hard-coded dollar.
+    let claimCurrency = currency;
+    if (!claimCurrency) {
+      const terms = await tx.employmentTerms.findFirst({
+        where: { employeeId: Number(employeeId) },
+        orderBy: { effectiveFrom: "desc" },
+        select: { currency: true },
+      });
+      const lastRun = terms?.currency
+        ? null
+        : await tx.payrollRun.findFirst({ orderBy: { id: "desc" }, select: { currencyCode: true } });
+      claimCurrency = terms?.currency || lastRun?.currencyCode || "USD";
+    }
     const claim = await tx.reimbursementClaim.create({
       data: {
         employeeId: Number(employeeId),
@@ -241,7 +256,7 @@ export async function createClaim({ tenantId, employeeId, title, description, ca
         description: description ?? null,
         category: category ?? null,
         amount: finalAmount,
-        currency: currency || "USD",
+        currency: claimCurrency,
         status: "DRAFT",
         tenantId: tenantId ?? null,
       },
