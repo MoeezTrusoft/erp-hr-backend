@@ -14,7 +14,8 @@ test('employee drafts, immutable evidence, concurrency and final missing-time ap
   const [session] = await db(tx => replayTenant({ tenantId: company, employeeIds: [people.EMPLOYEE.id], from: date, to: date, db: tx, includeEmpty: true }));
   const input = { id: randomUUID(), version: 0, date, sessionKey: session.sessionKey, checkIn: '09:01:00', checkOut: '17:00:00', reason: 'Reader missed the recorded arrival', evidence: 'TEST-REGISTER-012: supervised arrival and departure record', reasonCategory:'MISSED_PUNCH',evidenceDate:date };
   await assert.rejects(enterRuleTime({ user: { tenantId: company, roles: ['HR Manager'] } }), e => e.status === 410);
-  await assert.rejects(as('EMPLOYEE', () => saveCorrectionRequest({ ...input, checkOut: '23:00:00' })), /cutoff/);
+  // The check-out window now runs until the next shift's check-in window opens (see shiftCheckoutWindow.test.js), so a
+  // 23:00 check-out after a 17:00 shift end is inside it; the cutoff itself is covered by the unit tests.
   let draft = await as('EMPLOYEE', () => saveCorrectionRequest({...input,checkIn:null,checkOut:null,reason:'',evidence:'',reasonCategory:null,evidenceDate:null}));
   await assert.rejects(submit({kind:'ATTENDANCE_CORRECTION',ref:draft.id}), /Complete the supported missing time/);
   draft = await as('EMPLOYEE', () => saveCorrectionRequest({...input,version:draft.version}));

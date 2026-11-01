@@ -42,13 +42,24 @@ export function validateCheckoutWindow(window, nextStart = null) {
     );
 }
 
+// How early before a shift starts its check-in is accepted (the replay's check-in window). A check-out for the
+// previous shift stays open until this window opens, so the two never overlap.
+export const CHECKIN_WINDOW_MIN = 5 * 60;
+
+// The latest moment a punch still belongs to this shift as its check-out.
+//  - A latest check-out HR set on the roster wins (never within an hour of the next shift).
+//  - Otherwise, with a later shift rostered: until that shift's check-in window opens, never before the
+//    shift ends and never more than a day after it (a weekend gap must not swallow off-day work).
+//  - With no later shift: the shift end plus the policy's leniency minutes.
 export function boundedCheckout(shift, policy = {}, nextStart = null) {
   if (!shift?.end) return null;
-  const configured = shift.checkoutCutoff
-    ? +new Date(shift.checkoutCutoff)
-    : +shift.end + (policy.checkoutLeniencyMin ?? 240) * MINUTE;
   const next = nextStart || shift.nextShiftStart;
-  return new Date(
-    next ? Math.min(configured, +new Date(next) - 60 * MINUTE) : configured,
-  );
+  const end = +shift.end;
+  if (shift.checkoutCutoff) {
+    const configured = +new Date(shift.checkoutCutoff);
+    return new Date(next ? Math.min(configured, +new Date(next) - 60 * MINUTE) : configured);
+  }
+  if (!next) return new Date(end + (policy.checkoutLeniencyMin ?? 240) * MINUTE);
+  const opens = +new Date(next) - (policy.checkinWindowMin ?? CHECKIN_WINDOW_MIN) * MINUTE;
+  return new Date(Math.min(Math.max(end, opens), end + DAY));
 }

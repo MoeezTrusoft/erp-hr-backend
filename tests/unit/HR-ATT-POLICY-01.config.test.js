@@ -209,7 +209,7 @@ describe('HR-ATT-POLICY-01 approval chain', () => {
         expect(row.approverId).toBe(42);
     });
 
-    it('returns picker candidates identified by employee code', async () => {
+    it('returns picker candidates by name, with the code kept for reference', async () => {
         prismaMock.employee.findMany.mockResolvedValue([
             { id: 1, employee_code: 'EMP001', employee_name: null, first_name: 'Asad', last_name: 'Ullah', job_title: 'Engineer' },
             { id: 2, employee_code: 'EMP002', employee_name: 'Full Name', first_name: null, last_name: null, job_title: null },
@@ -217,8 +217,9 @@ describe('HR-ATT-POLICY-01 approval chain', () => {
 
         const rows = await approvals.listApproverCandidates({ tenantId: TENANT, search: 'a' });
 
-        expect(rows[0].name).toBe('EMP001');
-        expect(rows[1].name).toBe('EMP002');
+        expect(rows[0].name).toBe('Asad Ullah');
+        expect(rows[0].employee_code).toBe('EMP001');
+        expect(rows[1].name).toBe('Full Name');
     });
 
     it('caps the candidate page size', async () => {
