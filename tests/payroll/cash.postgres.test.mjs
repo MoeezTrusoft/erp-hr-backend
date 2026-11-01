@@ -5,6 +5,7 @@ import { setupPayroll, prisma, company, people, db, as, submit, act } from "./fi
 import { processPayrollRun, finalizePayrollRun } from "../../src/services/payrollService.js";
 import { markPayslipsCashPaid, payrollPaymentStatus } from "../../src/services/payrollPayments.service.js";
 import { createClaim, listClaims, submitClaim } from "../../src/services/claims.service.js";
+import { createLoan } from "../../src/services/loan.service.js";
 import { getMyPayslip } from "../../src/services/myPayslip.service.js";
 
 const finalized = async () => {
@@ -72,6 +73,15 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
   );
   assert.ok(request);
   assert.equal(request.employeeCode, people.EMPLOYEE.employee_code);
+  // A loan HR records opens its own approval request, owned by the employee.
+  const advance = await as("HR", () =>
+    createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "ADVANCE", principalMinor: 1000000, tenureMonths: 1, submit: true }),
+  );
+  const loanRequest = await db((tx) =>
+    tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "LOAN", sourceRef: String(advance.id) } }),
+  );
+  assert.ok(loanRequest);
+  assert.equal(loanRequest.employeeCode, people.EMPLOYEE.employee_code);
   const listed = await as("HR", () => listClaims({ tenantId: company }));
   assert.ok(listed.items[0].employee.name && listed.items[0].employee.name !== listed.items[0].employee.employeeCode);
   const emp = await db((tx) => tx.employee.findFirst({ where: { id: people.EMPLOYEE.id } }));

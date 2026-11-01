@@ -1,4 +1,4 @@
-import { legacyDecision } from "./approval/legacy.js";
+import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 // src/services/loan.service.js — Loan & salary advance management
 import prisma from "../lib/prisma.js";
 import { identitiesById } from "../lib/personIdentity.js";
@@ -14,7 +14,7 @@ export const LOAN_KINDS = ["LOAN", "ADVANCE"];
  * Create a new loan for an employee.
  * Automatically calculates monthly installment from principal, interest, tenure.
  */
-export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId, kind = "LOAN" }) => {
+export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId, kind = "LOAN", submit = false }) => {
     if (!employeeId) throw Object.assign(new Error("employeeId is required"), { status: 400 });
     if (!principalMinor || principalMinor <= 0) throw Object.assign(new Error("principalMinor must be positive"), { status: 400 });
     if (!tenureMonths || tenureMonths <= 0) throw Object.assign(new Error("tenureMonths must be positive"), { status: 400 });
@@ -44,6 +44,12 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
             status: "PENDING",
         }),
     });
+
+    // HR raises the loan for the employee: open its approval request now, filed by HR on the employee's behalf,
+    // so a pending loan is never stranded outside the Approval Centre.
+    if (submit) {
+        await legacySubmit("LOAN", loan.id, "HR recorded the loan for the employee", { onBehalf: true });
+    }
 
     return loan;
 };
