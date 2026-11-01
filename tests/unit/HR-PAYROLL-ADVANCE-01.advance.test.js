@@ -74,6 +74,12 @@ const prismaMock = {
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
+// A loan HR records also opens its approval request; this suite checks the loan and the tool facade only.
+const legacySubmitMock = jest.fn(async () => ({}));
+jest.unstable_mockModule('../../src/services/approval/legacy.js', () => ({
+    legacySubmit: legacySubmitMock,
+    legacyDecision: jest.fn(async () => ({})),
+}));
 
 const loanService = await import('../../src/services/loan.service.js');
 
@@ -156,6 +162,7 @@ describe('HR-PAYROLL-ADVANCE-01 MCP facade', () => {
 
         await tool.handler({ employeeId: '5', principalMinor: 500000, tenureMonths: 1, kind: 'ADVANCE' });
         expect(created[0].kind).toBe('ADVANCE');
+        expect(legacySubmitMock).toHaveBeenCalledWith('LOAN', expect.anything(), expect.any(String), { onBehalf: true });
     });
 
     it('lets hr_loan_list filter to advances only', async () => {

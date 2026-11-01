@@ -29,9 +29,9 @@ describe('Level-1 manager recommendation is paused for attendance', () => {
 });
 
 describe('HR raising on behalf is HR-verified', () => {
-  it('applies to attendance resolution requests only', () => {
-    expect(isVerifiedOnBehalf('ATTENDANCE')).toBe(true);
-    for (const kind of ['LEAVE', 'OVERTIME', 'CLAIM', 'SHIFT_SWAP', 'ATTENDANCE_CORRECTION'])
+  it('applies to attendance resolution requests, claims and loans only', () => {
+    for (const kind of ['ATTENDANCE', 'CLAIM', 'LOAN']) expect(isVerifiedOnBehalf(kind)).toBe(true);
+    for (const kind of ['LEAVE', 'OVERTIME', 'SHIFT_SWAP', 'ATTENDANCE_CORRECTION'])
       expect(isVerifiedOnBehalf(kind)).toBe(false);
   });
 });

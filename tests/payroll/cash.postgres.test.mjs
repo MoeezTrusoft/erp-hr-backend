@@ -83,15 +83,26 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
   assert.ok(loanRequest);
   assert.equal(loanRequest.employeeCode, people.EMPLOYEE.employee_code);
   // HR verifies, Management approves: the loan becomes ACTIVE and payroll can recover it.
-  let loanReview = { approvalRef: loanRequest.id, version: loanRequest.version };
-  // An employee with a line manager is recommended by the manager first; one without goes straight to HR.
-  if (loanRequest.stage === "LINE_MANAGER") loanReview = await act("MANAGER", loanReview, "RECOMMEND_APPROVAL");
-  loanReview = await act("HR", loanReview, "VERIFY");
+  let loanReview = { approvalRef: loanRequest.id, version: loanRequest.version, stage: loanRequest.stage };
+  // An employee with a line manager is recommended by the manager first; one without goes straight on.
+  if (loanReview.stage === "LINE_MANAGER") loanReview = await act("MANAGER", loanReview, "RECOMMEND_APPROVAL");
+  // HR filed it, so HR verification is already recorded: only an engaged HR stage still needs a verifier.
+  if (loanReview.stage === "HR") loanReview = await act("HR", loanReview, "VERIFY");
   loanReview = await act("MANAGEMENT", loanReview, "APPROVE");
   assert.equal(loanReview.stage, "APPROVED");
   const active = await db((tx) => tx.loan.findFirst({ where: { tenantId: company, id: advance.id } }));
   assert.equal(active.status, "ACTIVE");
   assert.equal(active.outstandingMinor, 1000000);
+  // With no line manager the HR filing is also the HR verification: the request waits at Management.
+  await db((tx) => tx.employee.update({ where: { id: people.EMPLOYEE.id }, data: { managerId: null } }));
+  const second = await as("HR", () =>
+    createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "LOAN", principalMinor: 2000000, tenureMonths: 4, submit: true }),
+  );
+  const filed = await db((tx) =>
+    tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "LOAN", sourceRef: String(second.id) } }),
+  );
+  assert.equal(filed.stage, "MANAGEMENT");
+  assert.equal(filed.hrActorCode, people.HR.employee_code);
   const listed = await as("HR", () => listClaims({ tenantId: company }));
   assert.ok(listed.items[0].employee.name && listed.items[0].employee.name !== listed.items[0].employee.employeeCode);
   const emp = await db((tx) => tx.employee.findFirst({ where: { id: people.EMPLOYEE.id } }));

@@ -14,7 +14,10 @@ describe("requestTitle", () => {
   it("names overtime, claims, loans and payroll", () => {
     expect(requestTitle("OVERTIME", { date: "2026-10-20", hours: 2 })).toBe("Overtime, 20 Oct, 2 hours");
     expect(requestTitle("CLAIM", { title: "Taxi to client" })).toBe("Claim: Taxi to client");
+    expect(requestTitle("CLAIM", { title: "Taxi to client", amount: "1250", currency: "PKR" })).toBe("Claim: Taxi to client, PKR 1,250");
     expect(requestTitle("LOAN", { kind: "ADVANCE" })).toBe("Salary advance");
+    expect(requestTitle("LOAN", { kind: "ADVANCE", principalMinor: 800000, tenureMonths: 1 })).toBe("Salary advance, 8,000");
+    expect(requestTitle("LOAN", { kind: "LOAN", principalMinor: 2000000, tenureMonths: 4 })).toBe("Loan, 20,000 over 4 months");
     expect(requestTitle("PAYROLL", { periodStart: "2026-09-01", totalNet: 1355785, currencyCode: "PKR" })).toBe("Payroll for September 2026, net PKR 1,355,785");
   });
   it("has no title for unknown kinds or empty snapshots", () => {
