@@ -444,6 +444,13 @@ export function resolveEmployeeDay(
   };
 }
 
+// Day, night, off with one off day in three and two shifts: the cycle says which shift falls on which day, so the
+// roster needs no per-day assignment to be publishable (evaluation still identifies the shift from the punches).
+const fixedDayNightOff = (pattern) =>
+  pattern?.rotatingShifts?.length === 2 &&
+  pattern.cycle?.days === 3 &&
+  Number.isInteger(pattern.cycle.offIndex);
+
 export function readiness(config, from, to) {
   const windows=(employee,day,info)=>info.pattern?.shifts?.length
     ? shiftCandidates(info.pattern,dateOnly(day)).map(w=>resolveEmployeeDay(config,employee,day,{anchor:w.start}).shift)
@@ -502,7 +509,7 @@ export function readiness(config, from, to) {
         continue;
       }
       modeSet.add(info.profile.mode);
-      if (info.working && info.rotating)
+      if (info.working && info.rotating && !fixedDayNightOff(info.pattern))
         errors.set('ROTATION_ASSIGNMENT_REQUIRED', [
           ...(errors.get('ROTATION_ASSIGNMENT_REQUIRED') || []), day,
         ]);

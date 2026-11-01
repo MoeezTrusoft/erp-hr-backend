@@ -81,6 +81,14 @@ describe('attendance setup civil dates and eligibility', () => {
     c.schedules[0].schedule_pattern.cycle.sequence = [0, 1, null, null];
     expect(readiness(c, '2026-10-01', '2026-10-04').ready).toBe(true);
   });
+  it('does not ask for an assignment on a fixed day, night, off rotation', () => {
+    const c = config();
+    c.schedules[0].schedule_pattern = {
+      rotatingShifts: [{ from: '10:00', to: '22:00' }, { from: '22:00', to: '10:00' }],
+      cycle: { days: 3, anchor: '2026-08-01', offIndex: 2 },
+    };
+    expect(readiness(c, '2026-10-01', '2026-10-04').issues.some(i => i.code === 'ROTATION_ASSIGNMENT_REQUIRED')).toBe(false);
+  });
   it('rejects normalized invalid dates', () =>
     expect(() => dateKey('2026-02-30')).toThrow());
   it('keeps inclusive period boundaries and rejects backwards ranges', () => {

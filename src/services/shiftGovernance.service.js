@@ -171,7 +171,9 @@ export function validateEmployeeShiftSequence(schedules, assignments = []) {
         const a = override[0];
         if (a.status && a.status !== "on_shift") return [];
         // A work-mode-only override inherits the roster's hours.
-        if (a.fromTime || a.toTime) {
+        // Only a complete from/to pair overrides the roster (resolveEmployeeDay does the same); legacy rows with a start
+        // time but no end time inherit the roster's hours and must not block a roster write.
+        if (a.fromTime && a.toTime) {
           validateCheckoutWindow(a);
           return scheduledShifts(
             { shift: { ...a, from: a.fromTime, to: a.toTime } },
