@@ -182,6 +182,7 @@ export async function drainCapture(
             const days = valid.map(({ event }) => new Date(event.parsed.punchedAt));
             for (const { event, existing } of valid) {
               const p = event.parsed;
+              let adopted = false;
               if (existing.length) {
                 if (existing[0].tenantId !== event.tenantId && existing[0].tenantId)
                   await captureAudit(tx, {
@@ -195,8 +196,14 @@ export async function drainCapture(
                       destinationTenantId: event.tenantId,
                     },
                   });
-                await tx.attendanceDevicePunch.update({
-                  where: { id: existing[0].id },
+                // Adopt the unattributed legacy row only while it is still unattributed (or already ours). Two companies'
+                // events for the same punch run in separate transactions; the second must create its own copy instead of
+                // overwriting the first company's attribution.
+                const adopt = await tx.attendanceDevicePunch.updateMany({
+                  where: {
+                    id: existing[0].id,
+                    OR: [{ employeeId: null }, { tenantId: event.tenantId }],
+                  },
                   data: {
                     tenantId: event.tenantId,
                     employeeId: event.employeeId,
@@ -211,7 +218,9 @@ export async function drainCapture(
                       approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
                   },
                 });
-              } else {
+                adopted = adopt.count > 0;
+              }
+              if (!adopted) {
                 await tx.attendanceDevicePunch.create({
                   data: {
                     tenantId: event.tenantId,
