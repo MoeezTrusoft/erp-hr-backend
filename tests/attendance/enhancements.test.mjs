@@ -359,8 +359,21 @@ test("recorded punches, absence, holiday rows, worked hours and case counts agre
   assert.equal(byDate("2026-10-13").status, "on-time");
   assert.equal(byDate("2026-10-13").totalHours, 4);
   assert.equal(byDate("2026-10-14").status, "absent");
-  assert.equal(byDate("2026-10-18").status, "weekly-off");
-  assert.equal(byDate("2026-10-18").employee.code, "EMP-CAPTURE");
+  // Weekly offs are not listed (operator, 2026-11-01) unless that status is asked for.
+  assert.equal(byDate("2026-10-18"), undefined);
+  const weeklyOffs = await as(() =>
+    listCheckInOuts({
+      tenantId,
+      employeeId: employee.id,
+      from: "2026-10-12",
+      to: "2026-10-18",
+      status: "weekly-off",
+      pageSize: 100,
+    }),
+  );
+  const off = weeklyOffs.items.find((r) => String(r.date.toISOString()).startsWith("2026-10-18"));
+  assert.equal(off.status, "weekly-off");
+  assert.equal(off.employee.code, "EMP-CAPTURE");
   const cases = await as(() =>
     listRuleCases({
       user,

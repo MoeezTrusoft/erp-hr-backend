@@ -16,6 +16,8 @@
 //
 // PERIOD DEFAULT: when from/to (or month) are omitted we default to the CURRENT
 // calendar month, computed from new Date().
+import { todayInPakistan, visibleTimesheetRows } from "../lib/timesheetVisibility.js";
+import { applyTimesheetColumnFilters, shiftSortKey } from "../lib/timesheetFilters.js";
 import { levelStageLabel } from "../lib/approvalMatrix.js";
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
@@ -899,6 +901,7 @@ export async function listCheckInOuts({
   employeeIds,
   exportMode = false,
   exportLimit = 20000,
+  shiftFrom, shiftTo, checkInFrom, checkInTo, checkOutFrom, checkOutTo, workedMin, workedMax, requestStatus,
   sortBy = "date",
   sortDir = "desc",
   page = 1,
@@ -1027,7 +1030,22 @@ export async function listCheckInOuts({
   }
   // TS-AWAITING-OFF-01 — a shift with no verdict yet is not an attendance
   // record: neither the stored rows nor the calendar projection list it.
-  records=filterRowsByEmploymentSpan(records,spanEnds).filter(r=>
+  records=filterRowsByEmploymentSpan(records,spanEnds);
+  // Display rules: nothing for days to come, weekly offs, days before joining, or setup-required days before enrolment.
+  if (!exportMode) {
+    const ids=[...new Set(records.map(r=>r.employeeId))];
+    const [people,enrolments]=ids.length?await Promise.all([
+      prisma.employee.findMany({where:scopedEmployeeWhere(tenantId,{id:{in:ids}}),select:{id:true,joining_date:true,hire_date:true}}),
+      prisma.employeeDeviceEnrolment.groupBy({by:['employeeId'],where:{tenantId,employeeId:{in:ids}},_min:{effectiveFrom:true}}),
+    ]):[[],[]];
+    records=visibleTimesheetRows(records,{
+      today:todayInPakistan(),
+      joining:new Map(people.map(p=>[p.id,p.joining_date||p.hire_date||null])),
+      enrolledFrom:new Map(enrolments.map(e=>[e.employeeId,e._min.effectiveFrom])),
+      showWeeklyOff:enumStatus==='WEEKLY_OFF',
+    });
+  }
+  records=records.filter(r=>
     r.status!=='PENDING_ATTENDANCE' &&
     (!enumStatus || r.status===enumStatus) && !(where.status?.notIn||where.NOT?.status?.in||[]).includes(r.status));
   const anomalyByKey = new Map();
@@ -1234,6 +1252,9 @@ export async function listCheckInOuts({
     });
   }
 
+  // Column filters on the finished rows (shift window, punch times, worked hours, request state).
+  rows = applyTimesheetColumnFilters(rows, { shiftFrom, shiftTo, checkInFrom, checkInTo, checkOutFrom, checkOutTo, workedMin, workedMax, requestStatus });
+
   const total = rows.length;
 
   // ── Sort ──────────────────────────────────────────────────────────────────
@@ -1250,6 +1271,25 @@ export async function listCheckInOuts({
         av = a.status;
         bv = b.status;
         break;
+      case "shift": {
+        // By the shift's start time of day; days with no shift sort last.
+        const aKey = shiftSortKey(a), bKey = shiftSortKey(b);
+        if (aKey == null && bKey == null) return 0;
+        if (aKey == null) return 1;
+        if (bKey == null) return -1;
+        av = aKey;
+        bv = bKey;
+        break;
+      }
+      case "worked": {
+        const aKey = a.totalHours == null ? null : Number(a.totalHours), bKey = b.totalHours == null ? null : Number(b.totalHours);
+        if (aKey == null && bKey == null) return 0;
+        if (aKey == null) return 1;
+        if (bKey == null) return -1;
+        av = aKey;
+        bv = bKey;
+        break;
+      }
       case "checkIn":
       case "checkOut": {
         // nulls sort last regardless of direction. _checkOut added with

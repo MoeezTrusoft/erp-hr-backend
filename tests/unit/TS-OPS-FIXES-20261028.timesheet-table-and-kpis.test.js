@@ -54,6 +54,7 @@ const prismaStub = {
     findMany: jest.fn(async () => people),
   },
   employmentPeriod: { findMany: jest.fn(async () => []) },
+  employeeDeviceEnrolment: { groupBy: jest.fn(async () => []) },
 };
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaStub }));
 jest.unstable_mockModule('../../src/lib/attendanceRuntime.js', () => ({
