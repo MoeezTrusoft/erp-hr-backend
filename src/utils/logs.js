@@ -1,7 +1,11 @@
 import prisma from "../lib/prisma.js";
 import os from "os";
 import logger from "../lib/logger.js";
+import { mcpCtx } from "../lib/requestContext.js";
 
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const asTenant = (v) => (typeof v === "string" && UUID_RE.test(v.trim()) ? v.trim() : null);
 
 const toIntOrNull = (value) => {
     if (value === undefined || value === null || value === "") return null;
@@ -38,12 +42,14 @@ export const logAction = async ({
             validEmployeeId = exists?.id || null;
         }
 
+        let actorTenant = null;
         if (requestedActionById) {
             const exists = await prisma.employee.findUnique({
                 where: { id: requestedActionById },
-                select: { id: true },
+                select: { id: true, tenant_id: true },
             });
             validActionById = exists?.id || null;
+            actorTenant = exists?.tenant_id || null;
         }
 
         await prisma.log.create({
@@ -57,7 +63,9 @@ export const logAction = async ({
                 ip,
                 os: os_name,
                 notes,
-                tenantId: tenantId ?? null,
+                // The log table rejects a null company. Callers that omit it (111 sites) get the verified company of the
+                // current request or script context; only then the actor's own company. The caller's value always wins.
+                tenantId: asTenant(tenantId) ?? asTenant(mcpCtx.getStore()?.user?.tenantId) ?? asTenant(actorTenant) ?? null,
             },
         });
     } catch (err) {
