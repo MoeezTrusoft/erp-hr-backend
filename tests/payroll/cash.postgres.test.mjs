@@ -82,6 +82,16 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
   );
   assert.ok(loanRequest);
   assert.equal(loanRequest.employeeCode, people.EMPLOYEE.employee_code);
+  // HR verifies, Management approves: the loan becomes ACTIVE and payroll can recover it.
+  let loanReview = { approvalRef: loanRequest.id, version: loanRequest.version };
+  // An employee with a line manager is recommended by the manager first; one without goes straight to HR.
+  if (loanRequest.stage === "LINE_MANAGER") loanReview = await act("MANAGER", loanReview, "RECOMMEND_APPROVAL");
+  loanReview = await act("HR", loanReview, "VERIFY");
+  loanReview = await act("MANAGEMENT", loanReview, "APPROVE");
+  assert.equal(loanReview.stage, "APPROVED");
+  const active = await db((tx) => tx.loan.findFirst({ where: { tenantId: company, id: advance.id } }));
+  assert.equal(active.status, "ACTIVE");
+  assert.equal(active.outstandingMinor, 1000000);
   const listed = await as("HR", () => listClaims({ tenantId: company }));
   assert.ok(listed.items[0].employee.name && listed.items[0].employee.name !== listed.items[0].employee.employeeCode);
   const emp = await db((tx) => tx.employee.findFirst({ where: { id: people.EMPLOYEE.id } }));
