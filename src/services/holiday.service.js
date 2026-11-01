@@ -609,8 +609,16 @@ export const createHoliday = async (data,createdById) => {
     throw new Error('Start time and end time are required for partial day holidays');
   }
 
+  // The holiday belongs to its calendar's company; the table rejects a row without one (Mark Holiday failed for everyone).
+  const calendar = await prisma.holidayCalendar.findFirst({
+    where: { id: parseInt(holidayCalendarId) },
+    select: { tenantId: true },
+  });
+  if (!calendar) throw new Error('Holiday calendar not found');
+
   const create = await prisma.holiday.create({
     data: {
+      tenantId: calendar.tenantId,
       holidayCalendarId: parseInt(holidayCalendarId),
       name,
       date: holidayDate,
