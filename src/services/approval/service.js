@@ -210,6 +210,11 @@ const verifyComment = (tx, env, source, row, extra = {}) =>
     },
   });
 // Levels the initiator satisfies by raising the request (HR raising payroll or an attendance case).
+// An approver's note is optional (operator, 2026-11-02), but the attendance rule cases keep their invariant that a decision
+// carries a comment, so an empty note is stored as this plain sentence instead.
+export const NO_NOTE = "No note given";
+export const noteOf = (reason) => String(reason ?? "").trim() || NO_NOTE;
+
 async function settleAutoLevels(tx, env, row, source, reason) {
   let current = row;
   while (current.route.levels[current.level]?.auto) {
@@ -229,7 +234,7 @@ async function settleAutoLevels(tx, env, row, source, reason) {
     });
     if (verify && current.kind === "ATTENDANCE")
       await verifyComment(tx, env, source, current, {
-        comment: reason,
+        comment: noteOf(reason),
         verifiedOnBehalf: source.who.employee_code !== env.who.employee_code,
       });
     await audit(tx, env, current, updated, verify ? "VERIFY" : "RECOMMEND_APPROVAL", reason);
@@ -273,7 +278,7 @@ async function levelTransition(tx, env, row, source, input) {
   if (input.action.startsWith("RECOMMEND_"))
     return { ...base, ...advancePatch(route, row.level, acted), recommendation: input.action, managerActorCode: me, managerCode: me };
   if (input.action === "VERIFY") {
-    if (row.kind === "ATTENDANCE") await verifyComment(tx, env, source, row, { comment: input.reason });
+    if (row.kind === "ATTENDANCE") await verifyComment(tx, env, source, row, { comment: noteOf(input.reason) });
     return { ...base, ...advancePatch(route, row.level, acted), verification: input.reason, hrActorCode: me };
   }
   return { ...base, stage: input.action === "APPROVE" ? "APPROVED" : "REJECTED", pendingCodes: [] };
@@ -578,7 +583,7 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
             actorId: env.who.employee_code,
             data: {
               kind: "HR",
-              comment: input.reason,
+              comment: noteOf(input.reason),
               factHash: source.row.factHash,
               approvalRef: next.id,
               round: next.round,
@@ -706,7 +711,7 @@ export function actApproval(raw) {
               actorId: env.who.employee_code,
               data: {
                 kind: "HR",
-                comment: input.reason,
+                comment: noteOf(input.reason),
                 factHash: source.row.factHash,
                 approvalRef: row.id,
                 round: row.round,
