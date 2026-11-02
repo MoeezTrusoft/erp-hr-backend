@@ -783,7 +783,7 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
         anomalyId: row.id,
         version: row.workflowVersion,
         decision: status,
-        comment: reason,
+        comment: String(reason ?? '').trim() || 'No note given',
       },
       tx,
     );
