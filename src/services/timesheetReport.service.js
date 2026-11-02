@@ -25,6 +25,8 @@ import logger from "../lib/logger.js";
 import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
 import { completeTimesheetRows } from '../lib/timesheetRows.js';
 import { rowAnomalies } from '../lib/timesheetRowAnomalies.js';
+import { computeAnomalyDeadline } from './attendanceAnomalyRequest.service.js';
+import { RULE_TYPES } from '../lib/attendanceAnomalyRules.js';
 import { attendanceActorCodes } from '../lib/attendanceActorCodes.js';
 
 // Statuses that count as "showed up" for a working day.
@@ -1039,6 +1041,28 @@ export async function listCheckInOuts({
   }
   // TS-AWAITING-OFF-01 — a shift with no verdict yet is not an attendance
   // record: neither the stored rows nor the calendar projection list it.
+  // Issue 10: when does the employee's window to raise an unraised case close? Only cases from the last week can still be open, so
+  // the working-day walk (one roster read per case) is limited to those; older ones are shown as closed by the screen.
+  const raiseByByAnomaly = new Map();
+  {
+    const recent = new Date(Date.now() - 8 * 86_400_000);
+    const open = anomaliesForWindow.filter(
+      (an) =>
+        Number(an.rulesVersion) === 2 && an.status === "PENDING" && an.evidenceState === "ACTIVE" && an.raisedById == null &&
+        RULE_TYPES.includes(an.type) && new Date(an.date) >= recent,
+    );
+    if (open.length) {
+      try {
+        const rt = await loadAttendanceRuntime({ tenantId, from: new Date(Math.min(...open.map((a) => +new Date(a.date)))), to: new Date(Date.now() + 40 * 86_400_000) });
+        for (const an of open) {
+          const { deadline } = await computeAnomalyDeadline({ tenantId, employeeId: an.employeeId, anomalyDate: an.date, type: an.type, runtime: rt });
+          raiseByByAnomaly.set(an.id, deadline.toISOString());
+        }
+      } catch (err) {
+        logger.warn({ err: err?.message }, "timesheet: raise-by deadlines unavailable");
+      }
+    }
+  }
   records=filterRowsByEmploymentSpan(records,spanEnds);
   // Display rules: nothing for days to come, weekly offs, days before joining, or setup-required days before enrolment.
   if (!exportMode) {
@@ -1203,6 +1227,7 @@ export async function listCheckInOuts({
         status: "UNSUBMITTED",
         anomalyId: an?.id ?? null,
         type: an?.type ?? null,
+        raiseBy: an ? raiseByByAnomaly.get(an.id) ?? null : null,
       };
     }
     return {
@@ -1236,7 +1261,7 @@ export async function listCheckInOuts({
       workMode: a.work_mode ?? null,
       request,
       anomalies: key
-        ? rowAnomalies(casesByDay.get(key) ?? [], { approvalByAnomaly, decisionsByAnomaly })
+        ? rowAnomalies(casesByDay.get(key) ?? [], { approvalByAnomaly, decisionsByAnomaly, raiseByByAnomaly })
         : [],
       // internal sort keys (not serialized to the FE)
       _checkIn: a.check_in ? a.check_in.getTime() : null,

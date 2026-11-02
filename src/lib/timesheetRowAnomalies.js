@@ -12,7 +12,7 @@ const FORM_SOURCES = ["REGULARIZATION", "PAPER_FORM"];
 const ORDER = ["ABSENT", "MISSING_CHECKIN", "MISSING_CHECKOUT", "LATE_CHECKIN", "EARLY_CHECKOUT"];
 
 /** Active rules-v2 cases of one employee-day, as the row carries them. */
-export function rowAnomalies(dayAnomalies = [], { approvalByAnomaly, decisionsByAnomaly } = {}) {
+export function rowAnomalies(dayAnomalies = [], { approvalByAnomaly, decisionsByAnomaly, raiseByByAnomaly } = {}) {
   return dayAnomalies
     .filter(
       (an) =>
@@ -49,7 +49,7 @@ export function rowAnomalies(dayAnomalies = [], { approvalByAnomaly, decisionsBy
               actualTime: an.actualTime,
               decisions: decisionsByAnomaly?.get(an.id) ?? [],
             }
-          : { status: "UNSUBMITTED", anomalyId: an.id, type: an.type },
+          : { status: "UNSUBMITTED", anomalyId: an.id, type: an.type, raiseBy: raiseByByAnomaly?.get(an.id) ?? null },
       };
     });
 }
