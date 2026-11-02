@@ -6,7 +6,7 @@ import { repairDirection } from '../../src/lib/attendanceDirectionRepair.js';
 const at = (iso) => new Date(iso);
 const POLICY = { graceMinutes: 5, halfDayAfterPercentOfShift: 50, earlyLeaveGraceMin: 0, checkoutLeniencyMin: 240,
   fullDayMinPercent: 90, halfDayMinPercent: 50, duplicatePunchWindowMin: 5 };
-const NOW = at('2026-10-20T00:00:00Z');
+const NOW = at('2026-11-02T00:00:00Z');
 const DAY = { start: at('2026-10-07T11:00:00Z'), end: at('2026-10-07T21:00:00Z') };
 const P = (iso, type) => ({ timestamp: at(iso), type });
 const run = (punches, shift = DAY) => {
@@ -38,9 +38,42 @@ describe('repairDirection', () => {
     expect(repairDirection({ ...args, verdict })).toBeNull();
   });
 
-  it('leaves a single scan alone', () => {
+  it('leaves a lone departure at the end of the shift alone', () => {
     const { args, verdict } = run([P('2026-10-07T22:01:00Z', 'OUT')]);
     expect(repairDirection({ ...args, verdict })).toBeNull();
+  });
+
+  it('reads a lone OUT at the very start as the arrival: one charge, not two (Pervaiz 26 Oct)', () => {
+    const shift = { start: at('2026-10-26T10:00:00Z'), end: at('2026-10-26T18:00:00Z') };
+    const { args, verdict } = run([P('2026-10-26T09:51:48Z', 'OUT')], shift);
+    expect(verdict.anomalies.map((a) => a.type)).toEqual(expect.arrayContaining(['MISSING_CHECKIN', 'EARLY_CHECKOUT']));
+    const fixed = repairDirection({ ...args, verdict });
+    expect(fixed.verdict.status).toBe('MISSING_CHECKOUT');
+    expect(fixed.verdict.anomalies.map((a) => a.type)).toEqual(['MISSING_CHECKOUT']);
+    expect(fixed.corrections[0]).toMatchObject({ recordedAs: 'OUT', resolvedTo: 'IN' });
+  });
+
+  it('reads a late lone OUT 21 minutes into a night shift as the arrival (Syed Wajahat 2 Oct)', () => {
+    const shift = { start: at('2026-10-02T22:00:00Z'), end: at('2026-10-03T10:00:00Z') };
+    const { args, verdict } = run([P('2026-10-02T22:21:59Z', 'OUT')], shift);
+    const fixed = repairDirection({ ...args, verdict });
+    expect(fixed.verdict.anomalies.map((a) => a.type)).toEqual(expect.arrayContaining(['MISSING_CHECKOUT', 'LATE_CHECKIN']));
+    expect(fixed.verdict.anomalies.map((a) => a.type)).not.toContain('EARLY_CHECKOUT');
+  });
+
+  it('reads a lone IN after the shift end as the departure (Habib Zaidi 6 Oct)', () => {
+    const shift = { start: at('2026-10-06T10:00:00Z'), end: at('2026-10-06T18:00:00Z') };
+    const { args, verdict } = run([P('2026-10-06T18:46:00Z', 'IN')], shift);
+    expect(verdict.anomalies.map((a) => a.type)).toContain('LATE_CHECKIN');
+    const fixed = repairDirection({ ...args, verdict });
+    expect(fixed.verdict.anomalies.map((a) => a.type)).toEqual(['MISSING_CHECKIN']);
+  });
+
+  it('leaves a lone IN at the start and a lone OUT in the middle alone', () => {
+    const a = run([P('2026-10-07T11:00:00Z', 'IN')]);
+    expect(repairDirection({ ...a.args, verdict: a.verdict })).toBeNull();
+    const b = run([P('2026-10-07T15:00:00Z', 'OUT')]);
+    expect(repairDirection({ ...b.args, verdict: b.verdict })).toBeNull();
   });
 
   it('does not repair when the scans are not at opposite ends of the shift', () => {
