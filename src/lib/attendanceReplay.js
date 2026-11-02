@@ -1,4 +1,5 @@
 import {capDailyOvertime} from './attendanceOvertime.js';
+import { repairDirection } from './attendanceDirectionRepair.js';
 import { resolveGrace, shiftRuleKey, legacyGraceDefaults } from './attendanceAnomalyRules.js';
 // src/lib/attendanceReplay.js
 //
@@ -462,8 +463,11 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
           anomalies:[],workedMinutes:0,intervals:[],issues:[]};
       }
       else {
-        verdict=evaluateShift({punches:session.punches,shift:info.shift,policy:info.policy,
-          now:civilNow(now,info.timeZone),credits:ownCredits});
+        const evalArgs={punches:session.punches,shift:info.shift,policy:info.policy,
+          now:civilNow(now,info.timeZone),credits:ownCredits};
+        verdict=evaluateShift(evalArgs);
+        const fixed=repairDirection({...evalArgs,verdict});
+        if(fixed){verdict=fixed.verdict;session.punches=fixed.punches;session.corrections.push(...fixed.corrections);}
         if(info.reason==='PAID_NO_PUNCH')Object.assign(verdict,{status:'PRESENT',dayCredit:1,requiresRegularization:false,
           anomalies:[],processingState:'FINALIZED',issues:[]});
         // Work on a weekly off or holiday is extra work (operator, 2026-10-30): never late, never short,
