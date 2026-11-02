@@ -106,7 +106,7 @@ export function createStreamPublisher({ redis, stream = HR_EVENTS_STREAM } = {})
         const eid = payload?.id ?? '';
         const srcId = aggregateId != null ? String(aggregateId) : '';
         return redis.xadd(
-            stream,
+            eventName === 'hr.availability.changed.v1' ? 'pm:source-events' : stream,
             '*',
             'event', String(eventName),
             'envelope', rawEnvelope,
