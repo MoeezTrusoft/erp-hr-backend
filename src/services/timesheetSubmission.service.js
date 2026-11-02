@@ -1,3 +1,4 @@
+import { cycleInstantForMonth } from "./payrollCycleDates.js";
 import { attendanceTransaction,lockAttendancePeriod } from './attendancePeriod.service.js';
 import { assertAttendanceComplete,attendanceCompleteness } from './attendanceEvaluation.service.js';
 import { assertMonthlyInputsComplete } from './monthlyPayrollAttendance.service.js';
@@ -104,8 +105,9 @@ export async function getTimesheetSubmissionState(tenantId, month) {
     where: scopedWhere(tenantId, {}),
     select: { attendanceCutoff: true },
   });
-  const cutoff = calendar?.attendanceCutoff ?? null;
-  const attendanceLocked = cutoff != null && new Date(cutoff).getTime() <= Date.now();
+  // The stored instant is a rule (day + time); the cutoff of THIS month is that day in the month after it.
+  const cutoff = cycleInstantForMonth(calendar?.attendanceCutoff, month);
+  const attendanceLocked = cutoff != null && cutoff.getTime() <= Date.now();
   const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to });
 
   const completeness=await attendanceCompleteness({tenantId,from:from.toISOString().slice(0,10),to:to.toISOString().slice(0,10)});
@@ -216,8 +218,8 @@ async function submitTimesheetTransaction({
     where: scopedWhere(tenantId, {}),
     select: { attendanceCutoff: true },
   });
-  const cutoff = calendar?.attendanceCutoff ?? null;
-  const cutoffPassed = cutoff != null && new Date(cutoff).getTime() <= now.getTime();
+  const cutoff = cycleInstantForMonth(calendar?.attendanceCutoff, month);
+  const cutoffPassed = cutoff != null && cutoff.getTime() <= now.getTime();
   if (!cutoffPassed && !force) {
     throw new AppError(
       `HR-TP-01 the attendance cycle for ${month} is not locked yet `

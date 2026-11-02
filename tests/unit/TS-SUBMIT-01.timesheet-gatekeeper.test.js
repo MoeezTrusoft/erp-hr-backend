@@ -76,16 +76,30 @@ beforeEach(() => {
 });
 
 describe('TS-SUBMIT-01 — gate 1: attendance cycle locked (HR force override audited)', () => {
+  // The calendar stores one instant that is read as a RULE (day + time in the month after the payroll month): a month whose
+  // rule date is still ahead is not locked, however old the stored instant is.
+  const FUTURE_MONTH = '2099-01';
+
   it('refuses when the cutoff has not passed and no force', async () => {
-    state.calendar = { attendanceCutoff: new Date(Date.now() + 86400e3) };
+    state.calendar = { attendanceCutoff: new Date('2026-09-02T23:59:00.000Z') };
     await expect(
-      submitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 }),
+      submitTimesheet({ tenantId: TENANT, month: FUTURE_MONTH, actorEmployeeId: 558 }),
     ).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('HR-TP-01') });
   });
 
+  it('keeps a month open that ends after the calendar was saved (the September cutoff does not lock October)', async () => {
+    state.calendar = { attendanceCutoff: new Date('2026-09-02T23:59:00.000Z') };
+    const { getTimesheetSubmissionState } = await import('../../src/services/timesheetSubmission.service.js');
+    const open = await getTimesheetSubmissionState(TENANT, FUTURE_MONTH);
+    expect(open.attendanceLocked).toBe(false);
+    expect(open.attendanceCutoff).toBe('2099-02-02T23:59:00.000Z');
+    const closed = await getTimesheetSubmissionState(TENANT, MONTH);
+    expect(closed.attendanceLocked).toBe(true);
+  });
+
   it('allows HR early submission with force', async () => {
-    state.calendar = { attendanceCutoff: new Date(Date.now() + 86400e3) };
-    const res = await submitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558, force: true });
+    state.calendar = { attendanceCutoff: new Date('2026-09-02T23:59:00.000Z') };
+    const res = await submitTimesheet({ tenantId: TENANT, month: FUTURE_MONTH, actorEmployeeId: 558, force: true });
     expect(res.created).toBe(true);
     expect(res.forced).toBe(true);
     expect(state.auditRows[0].details).toContain('early-submission override');
