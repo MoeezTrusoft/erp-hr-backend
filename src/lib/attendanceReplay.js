@@ -214,6 +214,16 @@ export function sessioniseByRoster(
         // 2. Otherwise it opens a shift. Choose the window whose START it is
         //    nearest — an arrival is defined by its start, not by either edge.
         let best = null, knownRoster=false;
+        // ATT-OUT-NEXT-ARRIVAL-01 (2026-11-02) — a crew that keys OUT for every scan (Aurangzaib,
+        // 10:00-22:00) arrives at 09:38 with an OUT. By distance to the END it was claimed by the
+        // previous day as a second check-out (a 24-hour day) and the day it starts lost its arrival.
+        // An explicit OUT that lies within three hours before a rostered START, while the shift it
+        // would join already has its OUT, is that next shift's arrival.
+        const arrivalSoon = explicitOut(p) && [0, 1].some(offset => {
+          const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
+          return shiftCandidates(pattern, startOfDay(anchor)).some(({ start }) =>
+            start && +start > t && +start - t <= 3 * 60 * MIN_MS);
+        });
         for (const offset of [-1, 0, 1]) {
           const anchor = new Date(p.punchedAt.getTime() + offset * DAY_MS);
           // A rotating roster offers more than one window per day; the punch has
@@ -223,6 +233,7 @@ export function sessioniseByRoster(
             const { start, end } = candidate;
             if (!start || !end) continue;
             knownRoster=true;
+            if (arrivalSoon && +start < t && groups.get(dayKey(startOfDay(anchor)))?.some(isOut)) continue;
             const deadline = deadlineFor(candidate);
             // An explicit check-out is timed against the END it closes and is
             // accepted up to the shift's close bound, not the arrival deadline.
