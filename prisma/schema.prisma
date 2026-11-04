@@ -869,6 +869,18 @@ model AttendanceAnomaly {
   sourceKind String? // 'DEVICE' | 'LEAVE_REQUEST' | 'REGULARIZATION' | 'MANUAL'
   sourceRef  String? // e.g. "leaveRequest:123"
 
+  // MULTI-COMPANY-MIRROR-01 (B-B) — an employee in two companies raises the
+  // request once. A mirrored row points at the case that started the group;
+  // every row of one group (origin + mirrors, across companies) carries the
+  // same mirrorGroupId. No new tables: the anchor is Employee.personId.
+  originAnomalyId        Int?
+  originTenantId         String? @db.Uuid
+  mirrorGroupId          String? @db.Uuid
+  originRaisedByName     String?
+  // Payroll guard: the sibling was decided after its company's payroll already
+  // covered the day, so the payroll office must adjust deliberately.
+  decidedAfterPayrollLock Boolean @default(false)
+
   currentApprovalLevel Int @default(1)
   workflowVersion Int @default(0)
   workflowHistory Json @default("[]")
@@ -888,6 +900,9 @@ model AttendanceAnomaly {
   @@index([employeeId])
   @@index([status])
   @@index([tenantId, employeeId, date, type], map: "attendance_anomaly_employee_date_type_idx")
+  @@index([mirrorGroupId], map: "attendance_anomalies_mirror_group_idx")
+  // One mirror per origin case per company: a retried mirror cannot duplicate.
+  @@unique([originAnomalyId, tenantId], map: "attendance_anomalies_mirror_key")
   @@map("attendance_anomalies")
 }
 
