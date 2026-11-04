@@ -51,7 +51,7 @@ import {
   SALARY_SPLIT,
   LEGACY_ALLOWANCE_CODES,
   BASIC_PCT_OF_TOTAL,
-  componentPctOfBasic,
+  storedPctOfBasic,
 } from "../lib/employeeImportTaxonomy.js";
 
 const MAXROWS = 600;
@@ -578,7 +578,7 @@ async function ensureSalaryComponents(tenantId) {
   let sort = 10;
   for (const s of SALARY_SPLIT) {
     sort += 10;
-    const value = round2(componentPctOfBasic(s.pctOfTotal));
+    const value = storedPctOfBasic(s.pctOfTotal);
     if (have.has(s.code)) {
       // Correct a pre-existing component to the standard segregation config.
       await prisma.salaryComponent.updateMany({

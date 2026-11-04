@@ -2689,7 +2689,7 @@ model SalaryComponent {
   name         String
   type         PayElementType // EARNING | DEDUCTION
   computation  ComputationType @default(FIXED)
-  value        Decimal?        @db.Decimal(18, 4) // FIXED amount or PERCENTAGE percent (0-100)
+  value        Decimal?        @db.Decimal(18, 8) // FIXED amount or PERCENTAGE percent (0-100); 8 dp because the standard split is 400/9 … of basic
   formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
   taxable      Boolean         @default(true)
   active       Boolean         @default(true)
