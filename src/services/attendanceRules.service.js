@@ -142,13 +142,47 @@ export async function listRuleCases(
   // arrival, and a day carrying the same fact twice (an older legacy row beside
   // its rules-v2 successor) is one day, not two. `open` is the same set limited
   // to cases still awaiting a decision, for "anomalies per working day".
+  // §364 (operator, 2026-11-04) — the tile counts only cases that are OPEN under
+  // the CURRENT rules. Two things used to inflate it: a legacy (rules-v1) row
+  // still sitting at PENDING beside its rules-v2 successor, and a current-rule
+  // row for an employee-day that an earlier decision (approved or rejected)
+  // already settled. `decided` comes from the same helper payroll uses, so the
+  // pre-rules-v2 decisions that excuse (or charge) a day are applied here too.
+  // A case nobody raised is NOT settled by its deadline alone: HR may still raise
+  // it on the employee's behalf until payroll is submitted (operator ruling), so
+  // `lapsed` stays counted.
+  const openCandidates = all.filter(
+    (row) => row.rulesVersion === 2 && row.status === 'PENDING' && row.evidenceState === 'ACTIVE' && row.date,
+  );
+  const settledIds = new Set();
+  if (openCandidates.length) {
+    try {
+      const marked = await markLapsedCases(openCandidates, { tenantId: user.tenantId, db });
+      for (const row of marked) if (row.decided) settledIds.add(row.id);
+    } catch {
+      // Listing cases must not fail because a roster or decision lookup did; the
+      // decisions already in hand (below) still exclude settled days.
+    }
+  }
+  // Decisions recorded on these very rows, so a pending duplicate of a decided
+  // employee-day/type is never counted as open. An approved OTHER covers the day.
+  const decidedKeys = new Set();
+  for (const row of all) {
+    if (row.status !== 'APPROVED' && row.status !== 'REJECTED') continue;
+    const day = `${row.employeeId}|${dateKey(row.date)}`;
+    decidedKeys.add(`${day}|${row.type}`);
+    if (row.type === 'OTHER' && row.status === 'APPROVED') decidedKeys.add(`${day}|*`);
+  }
   const summary={absent:0,late:0,early:0,other:0,total:all.length,open:0};
   const counted=new Set(), openDays=new Set();
   for(const row of all) {
     if(row.evidenceState!=='ACTIVE') continue;
     const day=`${row.employeeId}|${dateKey(row.date)}`, category=categoryOf(row), key=`${day}|${category}`;
     if(!counted.has(key)) { counted.add(key); summary[category]++; }
-    if(row.status==='PENDING' && !openDays.has(key)) { openDays.add(key); summary.open++; }
+    const open = row.rulesVersion === 2 && row.status === 'PENDING' && row.date &&
+      !settledIds.has(row.id) &&
+      !decidedKeys.has(`${day}|${row.type}`) && !decidedKeys.has(`${day}|*`);
+    if(open && !openDays.has(key)) { openDays.add(key); summary.open++; }
   }
   const items=all.slice((page-1)*pageSize,page*pageSize);
   return {
