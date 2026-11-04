@@ -919,17 +919,18 @@ async function punchesForPageRows(pageRows, tenantId) {
 // A night shift's punches are stored on the attendance day with the same date
 // on both ends (HomeVision: check-in 23:01, check-out 13:35), so a check-out
 // earlier than the check-in is the shift crossing midnight, not bad data: wrap
-// it by 24 h. A missing punch, or identical punches, still shows blank rather
-// than inventing hours.
+// it by 24 h. A missing punch, identical punches, or a pair less than a minute
+// apart (a lone punch stored at both ends — HomeVision has 11-second ABSENT
+// rows) stays blank: "0.00 hours" states nothing and reads as a real zero.
 function workedHours(row) {
   const stored = row?.total_hours == null ? null : Number(row.total_hours);
   if (stored != null && Number.isFinite(stored)) return stored;
   if (!row?.check_in || !row?.check_out) return null;
   let minutes =
     (new Date(row.check_out).getTime() - new Date(row.check_in).getTime()) / 60000;
-  if (!Number.isFinite(minutes) || minutes === 0) return null;
+  if (!Number.isFinite(minutes)) return null;
   if (minutes < 0) minutes += 24 * 60;
-  return minutes / 60;
+  return minutes >= 1 ? minutes / 60 : null;
 }
 
 export async function listCheckInOuts({
