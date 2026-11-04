@@ -1,3 +1,4 @@
+import {resolveProvisioningIntent,resolveProvisioningContact,resolveProvisioningEligibility} from "./services/provisioning-reader-native.mjs";
 import attendanceAcceptanceRoutes from './routes/attendanceAcceptance.routes.js';
 import setupRoutes from './routes/company-setup.routes.js';
 import approvalRoutes from './routes/approval.routes.js';
@@ -180,6 +181,9 @@ export const createApp = () => {
     // extension auto-scopes every REST query (deny-by-default). Runs after the
     // guard has filled req.user.tenantId.
     app.use("/api", establishTenantContext);
+    app.post("/api/internal/system-account-provisioning/resolve", resolveProvisioningIntent);
+    app.post("/api/internal/system-account-provisioning/contact", resolveProvisioningContact);
+    app.post("/api/internal/system-account-provisioning/eligibility", resolveProvisioningEligibility);
     const authorizedRouters = [
         ["/api/hr/appraisals", appraisalsRoutes],
         ["/api/hr/attendance-acceptance", attendanceAcceptanceRoutes],
