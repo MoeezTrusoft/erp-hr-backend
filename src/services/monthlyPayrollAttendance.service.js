@@ -325,7 +325,6 @@ export async function assertMonthlyInputsComplete({ tenantId, month }) {
   const employees = await prisma.employee.findMany({
     where: {
       tenant_id: tenantId,
-      attendanceInputMode: 'MANUAL_MONTHLY',
       payroll_included: { not: false },
       OR: [
         { status: { equals: 'active', mode: 'insensitive' } },
@@ -339,16 +338,41 @@ export async function assertMonthlyInputsComplete({ tenantId, month }) {
         },
       ],
     },
-    select: { id: true },
+    select: { id: true, employee_code: true, first_name: true, last_name: true, attendanceInputMode: true },
   });
+  if (!employees.length) return;
+  // §362 — a manual-monthly employee must have entered their payable days before
+  // the month is submitted, so processing cannot silently pay a full month (and HR
+  // does not have to unsubmit the timesheet to enter them). The published setup is
+  // authoritative for the method; the employee's own field is the fallback.
+  let runtime = null;
+  try {
+    runtime = await loadAttendanceRuntime({ tenantId, from: start, to: end });
+  } catch {
+    runtime = null;
+  }
   const entries = await prisma.monthlyPayrollAttendance.findMany({
     where: { tenantId, month },
     select: { employeeId: true, payableDays: true },
   });
   const byId = new Map(entries.map((r) => [r.employeeId, r]));
   for (const employee of employees) {
+    let mode = employee.attendanceInputMode;
+    if (runtime) {
+      try {
+        mode = monthlyMode(runtime, employee.id, month);
+      } catch {
+        continue; // A setup gap blocks processing, not the timesheet.
+      }
+    }
+    if (mode !== 'MANUAL_MONTHLY') continue;
     const input = byId.get(employee.id);
-    if (input) validatePayableDays(month, input.payableDays);
+    if (!input)
+      fail(
+        409,
+        `Enter payable days for ${month} in Payroll Setup > Offices & monthly attendance before submitting the timesheet: ${employee.employee_code || [employee.first_name, employee.last_name].filter(Boolean).join(' ') || 'employee ' + employee.id}`,
+      );
+    // An explicit zero is a valid entry and stays allowed.
+    validatePayableDays(month, input.payableDays);
   }
-  // No entry uses the configured manual-monthly convention; an explicit zero is retained.
 }

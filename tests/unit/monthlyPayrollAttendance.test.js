@@ -12,7 +12,7 @@ describe('monthly payable days',()=>{
  expect(Number(r.grossAmount)).toBe(10000);expect(Number(r.totalDeductions)).toBe(1000);expect(Number(r.netAmount)).toBe(9000);
  });
  it('supports half days',()=>expect(Number(build(29.5).grossAmount)).toBe(29500));
- it('defaults Headend to 30 days if no entry exists',()=>{const r=build(30,{bridges:{}});expect(r.payableDays).toBe(30);expect(Number(r.grossAmount)).toBe(30000);});
+ it('never defaults a missing entry to a full month',()=>expect(()=>build(30,{bridges:{}})).toThrow('Monthly payable days are missing'));
  it.each([-1,31,1.25,null,'',Infinity])('rejects invalid September days %s',v=>expect(()=>validatePayableDays('2026-09',v)).toThrow());
  it('uses leap-year month length',()=>{expect(validatePayableDays('2028-02',29)).toBe(29);expect(()=>validatePayableDays('2027-02',29)).toThrow();});
  it('rejects paid days outside employment',()=>expect(()=>manualAttendanceFactor(employee,run,{month:'2026-09',payableDays:16},500000n)).toThrow('employment days'));

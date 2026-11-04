@@ -19,10 +19,16 @@ export function validatePayableDays(month, value) {
 export function manualAttendanceFactor(employee, run, input, employmentFactor) {
   if (!isHeadendEmployee(employee)) return employmentFactor;
   const month=run.periodStart.toISOString().slice(0,7), calendar=payrollMonth(month);
-  if (run.periodStart.getTime()!==calendar.start.getTime() || run.periodEnd.getTime()!==calendar.end.getTime()) fail('Manual monthly attendance requires a full calendar-month payroll');
-  if (input && input.month!==month) fail(`Monthly payable days are missing for employee ${employee.id} (${month})`);
-  // Default to 30 paid days, bounded by the month and the employment span.
-  const days=input ? validatePayableDays(month,input.payableDays) : Math.min(30,calendar.days,Math.round(Number(employmentFactor)*calendar.days/1000000*100)/100);
+  // Compare civil dates: runs created from the UI/MCP carry the dates at midnight
+  // (e.g. periodEnd 2026-09-30T00:00:00Z), and a full month must still qualify.
+  const civil = d => d.toISOString().slice(0,10);
+  if (civil(run.periodStart)!==civil(calendar.start) || civil(run.periodEnd)!==civil(calendar.end)) fail('Manual monthly attendance requires a full calendar-month payroll');
+  // §362 — the entered row IS the input. A missing row used to fall back to
+  // min(30, month days, employment span), i.e. a silent full month; the payroll
+  // readiness gate refuses the calculation first, this keeps the engine honest.
+  if (!input) throw Object.assign(new Error(`Monthly payable days are missing for employee ${employee.id} (${month})`), {status:409, code:'MONTHLY_ATTENDANCE_REQUIRED'});
+  if (input.month!==month) fail(`Monthly payable days are missing for employee ${employee.id} (${month})`);
+  const days=validatePayableDays(month,input.payableDays);
   // Allow the tiny rounding error of the engine's millionth-day proration.
   if (days > Number(employmentFactor)*calendar.days/1000000 + 0.0001) fail(`Payable days exceed employment days for employee ${employee.id}`);
   return BigInt(Math.round(days/calendar.days*1000000));

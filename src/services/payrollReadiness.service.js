@@ -1,6 +1,10 @@
 import prisma from "../lib/prisma.js";
 import { employeeCode } from "../lib/payrollConfiguration.js";
 import { dateRange } from "../lib/attendanceDates.js";
+import { monthlyMode } from "./monthlyPayrollAttendance.service.js";
+
+const monthLabel = (date) =>
+  date.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 
 // Loaded on demand, and only when a caller asks for the setup-coverage check.
 const defaultLoadRuntime = async (args) => (await import("./attendanceSetup.service.js")).loadAttendanceRuntime(args);
@@ -63,16 +67,53 @@ export async function payrollReadiness({
     add("NO_EMPLOYEES", "No eligible employees in this period");
   if (!snapshot)
     add("CONFIG_REQUIRED", "Publish Payroll Setup before calculation");
+  const month = run.periodStart.toISOString().slice(0, 7);
+  let runtime = null;
   if (checkAttendanceSetup) {
     let covered = false;
     try {
-      const runtime = await loadRuntime({ tenantId, from: run.periodStart, to: run.periodEnd });
+      runtime = await loadRuntime({ tenantId, from: run.periodStart, to: run.periodEnd });
       covered = dateRange(run.periodStart, run.periodEnd).every((day) => runtime.configOn(day));
     } catch {
+      runtime = null;
       covered = false;
     }
     if (!covered)
       add("ATTENDANCE_SETUP_REQUIRED", "Publish attendance setup covering this payroll period");
+  }
+  // §362 — a manual-monthly employee is paid from their entered payable-days row.
+  // Without one the engine used to pay a silent full month. Block the CALCULATE
+  // instead; an explicit zero stays legal because the row exists.
+  // The published setup is the authoritative method (lib/attendanceSetup.js
+  // effectiveProfile: profile mode, then the employee's own field). Processing
+  // hands over employees it has already resolved from the same runtime; the run
+  // screen has not, so resolve here when the runtime is loaded.
+  const modeOf = (employee) => {
+    if (!runtime) return employee.attendanceInputMode;
+    try {
+      return monthlyMode(runtime, employee.id, month);
+    } catch {
+      // A setup gap is reported by ATTENDANCE_SETUP_REQUIRED, not as a missing entry.
+      return employee.attendanceInputMode;
+    }
+  };
+  const manual = employees.filter((e) => modeOf(e) === "MANUAL_MONTHLY");
+  if (manual.length) {
+    const entered = new Set(
+      (
+        await db.monthlyPayrollAttendance.findMany({
+          where: { tenantId, month, employeeId: { in: manual.map((e) => e.id) } },
+          select: { employeeId: true },
+        })
+      ).map((r) => r.employeeId),
+    );
+    for (const e of manual)
+      if (!entered.has(e.id))
+        add(
+          "MONTHLY_ATTENDANCE_REQUIRED",
+          `Enter payable days for ${monthLabel(run.periodStart)} in Payroll Setup > Offices & monthly attendance`,
+          e,
+        );
   }
   const rates = snapshot?.config?.taxSlabs || [];
   const cashDisbursement = snapshot?.config?.payRules?.cashDisbursement === true;

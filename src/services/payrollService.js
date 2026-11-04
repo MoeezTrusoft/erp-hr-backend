@@ -1301,8 +1301,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         const nilTaxEstimates=await prisma.payrollAuditLog.findMany({where:withTenant(tenantId,{payrollRunId:id,action:'PAYROLL_NIL_TAX_ESTIMATE'}),orderBy:[{created_at:'desc'},{id:'desc'}],distinct:['employeeId']});
         for(const audit of nilTaxEstimates){const employee=employees.find(e=>e.id===audit.employeeId);if(employee)employee.payrollNilTaxEstimate=audit.newValues;}
 
-        const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
-        const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // N-15 / N-16 — salary dedup + employment-scoped attendance, applied to
         // every selected employee before the payslip build (helpers above).
         for (const employee of employees) {
@@ -1333,6 +1331,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         });
 
 
+        // Read the manual-monthly entries only after the published setup resolved
+        // every employee's mode: a manual profile on a DEVICE-stored employee must
+        // not slip through to the days default.
+        const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
+        const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
         // is the same as everything off.
