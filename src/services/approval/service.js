@@ -383,7 +383,7 @@ async function view(tx, env, row, summary = false, people = null) {
     source: summary ? {} : isAppraisalApproval(row)
       ? await appraisalApprovalSource(tx, env, row) : unseal(row.snapshot),
     leavePolicies,
-    actions: summary ? [] : await actionsFor(tx, env, row),
+    actions: summary ? [] : [...(await actionsFor(tx, env, row)), ...(await editActionsFor(tx, env, row))],
     history: history.map(
       ({
         actorCode,
@@ -748,6 +748,106 @@ export function actApproval(raw) {
       });
     }
     await audit(tx, env, row, next, input.action, input.reason);
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, next),
+    };
+  });
+}
+const EDIT_REASON_LIMIT = 4000;
+// Why the caller may not edit this on-behalf attendance request, or null when they may. One place for the rules, used by
+// the edit command and by the record's `actions` (so the screen offers Edit only when it will work).
+async function attendanceEditRefusal(tx, env, row, anomaly) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING")
+    return { status: 409, message: "This request has already been decided and can no longer be edited" };
+  if (anomaly.rulesVersion !== 2 || !anomaly.raisedByName || anomaly.raisedById === anomaly.employeeId)
+    return { status: 409, message: "Only a request raised on behalf of the employee can be edited" };
+  // Editable only while it waits for the level after HR's step.
+  let hrCodes = [], editable = false;
+  if (row.stage === "LEVEL" && row.route?.levels) {
+    const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
+    editable = Boolean(hr) && row.level > hr.index && (row.route.acted ?? []).every((a) => a.level <= hr.index);
+    hrCodes = hr?.approverCodes ?? [];
+  } else if (row.stage === "MANAGEMENT" && !row.route) {
+    editable = true;
+    hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
+  }
+  if (!editable) return { status: 409, message: "This request has moved past the step where it can be edited" };
+  const filer = await tx.employee.findFirst({
+    where: { tenant_id: env.tenantId, id: anomaly.raisedById },
+    select: { employee_code: true },
+  });
+  if (!(filer && ownsCode(env, filer.employee_code)) && !hrCodes.some((c) => ownsCode(env, c)))
+    return { status: 403, message: "Only the person who filed this request or the HR approver can edit it" };
+  if (env.who.id === anomaly.employeeId)
+    return { status: 403, message: "You cannot edit a request about your own day" };
+  return null;
+}
+async function editActionsFor(tx, env, row) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING") return [];
+  const id = Number(String(row.sourceRef).split("@")[0]);
+  if (!Number.isInteger(id)) return [];
+  const anomaly = await tx.attendanceAnomaly.findFirst({ where: { tenantId: env.tenantId, id, rulesVersion: 2 } });
+  return anomaly && !(await attendanceEditRefusal(tx, env, row, anomaly)) ? ["EDIT_REASON"] : [];
+}
+// The filer of an on-behalf attendance resolution request (and the HR approver
+// on the sealed route) may correct its reason until the level after HR has acted.
+// The reason is part of the source digest, so the digest and the snapshot are
+// sealed again in the same transaction; the stage and the approvers do not change.
+export async function editAttendanceRequestReason(raw) {
+  const input = {
+    approvalRef: String(raw?.approvalRef ?? ""),
+    expectedVersion: Number(raw?.expectedVersion),
+    reason: String(raw?.reason ?? "").trim(),
+  };
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.approvalRef) || !Number.isInteger(input.expectedVersion))
+    fail("A request reference and its version are required", 400);
+  if (!input.reason) fail("A reason is required", 400);
+  if (input.reason.length > EDIT_REASON_LIMIT)
+    fail(`The reason must be at most ${EDIT_REASON_LIMIT} characters`, 400);
+  return execute(input, "EDIT_REASON", async (tx, env) => {
+    await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
+    const row = await tx.hrApprovalRequest.findFirst({
+      where: { tenantId: env.tenantId, id: input.approvalRef },
+    });
+    if (!row || row.kind !== "ATTENDANCE" || !(await canRead(tx, env, row)))
+      fail("Request not found", 404);
+    assertVersion(row, input.expectedVersion);
+    if (row.execution !== "PENDING")
+      fail("This request has already been decided and can no longer be edited", 409);
+    const source = await loadSource(tx, env, row.kind, row.sourceRef, { lock: true });
+    const anomaly = source.row;
+    if (anomaly.rulesVersion !== 2 || !anomaly.raisedByName || anomaly.raisedById === anomaly.employeeId)
+      fail("Only a request raised on behalf of the employee can be edited", 409);
+    const refused = await attendanceEditRefusal(tx, env, row, anomaly);
+    if (refused) fail(refused.message, refused.status);
+    if (input.reason === String(anomaly.reason ?? "").trim())
+      fail("The reason is unchanged", 400);
+    const changed = await tx.attendanceAnomaly.updateMany({
+      where: { tenantId: env.tenantId, id: anomaly.id, workflowVersion: anomaly.workflowVersion },
+      data: { reason: input.reason, workflowVersion: { increment: 1 } },
+    });
+    if (changed.count !== 1) fail("The case changed; refresh and try again", 409);
+    await tx.attendanceRuleAudit.create({
+      data: {
+        tenantId: env.tenantId,
+        employeeId: anomaly.employeeId,
+        anomalyId: anomaly.id,
+        action: "REQUEST_EDITED",
+        actorId: env.who.employee_code,
+        data: json({ before: anomaly.reason, after: input.reason, approvalRef: row.id, round: row.round }),
+      },
+    });
+    const resealed = await loadSource(tx, env, row.kind, row.sourceRef);
+    const next = await tx.hrApprovalRequest.update({
+      where: { id: row.id },
+      data: {
+        version: { increment: 1 },
+        sourceHash: resealed.digest,
+        snapshot: seal(resealed.snapshot),
+      },
+    });
+    await audit(tx, env, row, next, "EDITED", input.reason);
     return {
       actorCode: env.who.employee_code,
       record: await view(tx, env, next),

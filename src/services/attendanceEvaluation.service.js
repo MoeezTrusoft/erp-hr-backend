@@ -24,12 +24,31 @@ import {
 import { captureAudit } from "./attendanceCapture.service.js";
 import { jsonValue } from "../lib/attendanceCapture.js";
 
+// §368 — an unresolved capture event can hold a month open only while it can
+// still belong to that month.
+const CAPTURE_OPEN_STATES = ["PENDING", "FAILED", "NEEDS_REVIEW"];
+
 export async function attendanceCompleteness(
   { tenantId, from, to, employeeIds, asOf = new Date() },
   db = prisma,
 ) {
   const days = dateRange(from, to, 370);
-  const [employees, runtime, rows, events, jobs, corrections, ruleCases] = await Promise.all(
+  // Punches for a month are received around it (a little before for late
+  // sweeps, a few days after for night shifts and device retries). Anything
+  // unresolved and older/newer than this band is stale for this month.
+  const captureScanFrom = new Date(+dateOnly(from) - 30 * 86400000);
+  const captureScanTo = new Date(+dateOnly(to) + 8 * 86400000);
+  const [
+    employees,
+    runtime,
+    rows,
+    events,
+    unresolvedCaptureTotal,
+    olderEvents,
+    jobs,
+    corrections,
+    ruleCases,
+  ] = await Promise.all(
     [
       db.employee.findMany({
         where: {
@@ -52,12 +71,35 @@ export async function attendanceCompleteness(
           date: { gte: dateOnly(from), lte: dateOnly(to) },
         },
       }),
+      // §368 (operator, 2026-11-04) — the gate only looks at the month, and the
+      // scan is bounded to it. It used to load every unresolved capture event in
+      // the tenant's history and count a dateless one as an issue, so a single
+      // stale device record kept ready=false for EVERY month, forever. Unresolved
+      // evidence outside the month (or with no punch date) is reported as
+      // `staleEvents` instead and can be dismissed.
       db.attendanceCaptureEvent.findMany({
         where: {
           tenantId,
-          state: { in: ["PENDING", "FAILED", "NEEDS_REVIEW"] },
+          state: { in: CAPTURE_OPEN_STATES },
+          createdAt: { gte: captureScanFrom, lte: captureScanTo },
         },
-        select: { id: true, employeeId: true, parsed: true, state: true },
+        select: { id: true, employeeId: true, parsed: true, state: true, createdAt: true },
+      }),
+      // The stale side needs the total, and a sample of the evidence old enough
+      // to predate the scan (the most common junk: a punch with no parseable
+      // date, or one whose employee never matched).
+      db.attendanceCaptureEvent.count({
+        where: { tenantId, state: { in: CAPTURE_OPEN_STATES } },
+      }),
+      db.attendanceCaptureEvent.findMany({
+        where: {
+          tenantId,
+          state: { in: CAPTURE_OPEN_STATES },
+          createdAt: { lt: captureScanFrom },
+        },
+        select: { id: true, employeeId: true, parsed: true, state: true, createdAt: true },
+        orderBy: { createdAt: "asc" },
+        take: 25,
       }),
       db.attendanceEvaluationJob.findMany({
         where: {
@@ -152,21 +194,48 @@ export async function attendanceCompleteness(
         issues.push({ ...entry, code: "ATTENDANCE_" + entry.state });
       } else if (info.working) totals.finalizedDays++;
     }
+  // §368 — only evidence that can still belong to THIS month holds it open. An
+  // event with no punch date, a punch date outside the window, or an employee
+  // who is not part of this period is stale: reported separately, never a
+  // blocker (a dateless record used to block every month forever).
+  const stale = [];
+  const staleOf = (e, reason) =>
+    stale.push({
+      id: e.id,
+      state: e.state,
+      employeeId: e.employeeId,
+      employeeCode: null,
+      date: e.parsed?.punchedAt?.slice(0, 10) ?? null,
+      reason,
+    });
   for (const e of events) {
     const day = e.parsed?.punchedAt?.slice(0, 10);
-    if (
-      (e.employeeId == null || relevantEmployees.has(e.employeeId)) &&
-      (!day ||
-        (+new Date(e.parsed.punchedAt) >= +dateOnly(from) &&
-          +new Date(e.parsed.punchedAt) < captureThrough))
-    )
+    const at = day ? +new Date(e.parsed.punchedAt) : NaN;
+    // An unattributed but DATED punch still blocks: it may belong to anyone in
+    // the period (UNKNOWN_IDENTITY evidence is recovered once an enrolment
+    // exists). Only an employee outside this period makes it stale.
+    const relevant = e.employeeId == null || relevantEmployees.has(e.employeeId);
+    if (day && Number.isFinite(at) && at >= +dateOnly(from) && at < captureThrough && relevant)
       issues.push({
         code: "CAPTURE_" + e.state,
         employeeId: e.employeeId,
         eventId: e.id,
         date: day,
       });
+    else
+      staleOf(
+        e,
+        !day || !Number.isFinite(at)
+          ? "NO_PUNCH_DATE"
+          : relevant
+            ? "OUTSIDE_PERIOD"
+            : "NOT_IN_PERIOD",
+      );
   }
+  for (const e of olderEvents)
+    if (!stale.some((s) => s.id === e.id)) staleOf(e, "OLDER_THAN_PERIOD");
+  // The total is exact even when the sample above is not exhaustive.
+  const staleCount = Math.max(0, unresolvedCaptureTotal - issues.filter((i) => i.eventId).length);
   for (const job of jobs)
     if (relevantEmployees.has(job.employeeId))
       issues.push({
@@ -185,7 +254,19 @@ export async function attendanceCompleteness(
       issues.push({code:"CORRECTION_AWAITING_"+approval.stage,employeeId:correction.employeeId,date:dateKey(correction.date),requestRef:correction.id,approvalRef:approval.id});
     }
   }
-  return { from, to, ready: issues.length === 0, totals, issues: issues.map(issue => ({ ...issue, employeeCode: codes.get(issue.employeeId) || null })), coverage };
+  const staleItems = stale.slice(0, 25).map((s) => ({
+    ...s,
+    employeeCode: codes.get(s.employeeId) || null,
+  }));
+  return {
+    from,
+    to,
+    ready: issues.length === 0,
+    totals,
+    issues: issues.map(issue => ({ ...issue, employeeCode: codes.get(issue.employeeId) || null })),
+    staleEvents: { count: staleCount, items: staleItems },
+    coverage,
+  };
 }
 export async function assertAttendanceComplete(args, db = prisma) {
   const result = await attendanceCompleteness(args, db);

@@ -978,6 +978,90 @@ export async function reviewCaptureEvents(
   );
 }
 
+// §368 (operator, 2026-11-04) — dismiss the evidence that cannot affect a month.
+// The completeness gate reports unresolved capture events with no punch date, a
+// date outside the period, or an employee outside it as `staleEvents`; they do
+// not block submission, but they sit in the queue forever, so HR needs a way to
+// clear them. Anything whose punch falls INSIDE the period is refused: that
+// evidence still blocks and must be resolved, not dismissed.
+//
+export async function dismissStaleCaptureEvents(
+  { tenantId, actorId, ids, from, to, reason },
+  db = prisma,
+) {
+  if (
+    !reason?.trim() ||
+    !Array.isArray(ids) ||
+    !ids.length ||
+    ids.length > 100 ||
+    !from ||
+    !to
+  )
+    throw captureError(
+      "Provide the period, a reason and 1–100 stale events",
+    );
+  const windowFrom = +new Date(`${from}T00:00:00.000Z`);
+  const windowTo = +new Date(`${to}T00:00:00.000Z`) + 86400000;
+  return tenantTransaction(
+    db,
+    async (tx) => {
+      const dismissed = [];
+      for (const id of ids) {
+        const event = await tx.attendanceCaptureEvent.findFirst({
+          where: { id, tenantId },
+        });
+        if (!event)
+          throw captureError("Event not found; reload the list", 404);
+        if (event.state === "DISMISSED") continue;
+        if (!["PENDING", "FAILED", "NEEDS_REVIEW"].includes(event.state))
+          throw captureError(
+            `Evidence ${id} is ${event.state} and cannot be dismissed`,
+            409,
+          );
+        const punchedAt = event.parsed?.punchedAt
+          ? +new Date(event.parsed.punchedAt)
+          : NaN;
+        if (
+          Number.isFinite(punchedAt) &&
+          punchedAt >= windowFrom &&
+          punchedAt < windowTo
+        )
+          throw captureError(
+            "That punch falls inside the period and still blocks submission; resolve it instead of dismissing",
+            409,
+          );
+        const changed = await tx.attendanceCaptureEvent.updateMany({
+          where: { id, tenantId, version: event.version },
+          data: {
+            state: "DISMISSED",
+            reason: null,
+            leaseToken: null,
+            leaseUntil: null,
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1)
+          throw captureError("Event changed; reload the list", 409);
+        await captureAudit(tx, {
+          tenantId,
+          eventId: id,
+          actorId,
+          action: "DISMISS",
+          reason,
+          detail: {
+            previousState: event.state,
+            stale: true,
+            period: { from, to },
+          },
+        });
+        dismissed.push(id);
+      }
+      return { dismissed: dismissed.length, ids: dismissed };
+    },
+    { tenantId },
+  );
+}
+
 // Operations-only: not exposed as a tenant MCP tool. Shared-device routing is
 // configured by a deployment operator from verified company IDs.
 export async function configureSharedCaptureDevice(
