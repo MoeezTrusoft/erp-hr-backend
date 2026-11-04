@@ -184,6 +184,35 @@ function filterRowsByEmploymentSpan(rows, employmentEndByEmployee) {
   });
 }
 
+// ── Anomaly-request pick ────────────────────────────────────────────────────
+
+const FORM_SOURCE_KINDS = ["REGULARIZATION", "PAPER_FORM"];
+const SETTLED_EVIDENCE_STATES = new Set(["RESOLVED", "SUPERSEDED"]);
+
+// TS-REQ-PICK-01 — which anomaly row of an employee-day carries the day's
+// request story. A raised case (`id@factHash` approval exists) outranks an
+// employee form, which outranks a grading row; a live case outranks a settled
+// one; ties keep the first entry, i.e. the newest (the fetch is createdAt desc).
+export function pickDayAnomaly(list = [], approvalByAnomaly) {
+  const rank = (an) => {
+    let score = 0;
+    if (approvalByAnomaly?.has(String(an.id))) score += 4;
+    if (FORM_SOURCE_KINDS.includes(String(an.sourceKind ?? "").toUpperCase())) score += 2;
+    if (!SETTLED_EVIDENCE_STATES.has(String(an.evidenceState ?? "").toUpperCase())) score += 1;
+    return score;
+  };
+  let best = null;
+  let bestRank = -1;
+  for (const an of list) {
+    const score = rank(an);
+    if (score > bestRank) {
+      best = an;
+      bestRank = score;
+    }
+  }
+  return best;
+}
+
 // ── Date helpers ────────────────────────────────────────────────────────────
 
 // Start of a UTC day.
@@ -1114,26 +1143,15 @@ export async function listCheckInOuts({
   records=records.filter(r=>
     r.status!=='PENDING_ATTENDANCE' &&
     (!enumStatus || r.status===enumStatus) && !(where.status?.notIn||where.NOT?.status?.in||[]).includes(r.status));
-  const anomalyByKey = new Map();
+  // TS-REQ-PICK-01 (2026-11-05) — every anomaly row of an employee-day, newest
+  // first (the query is ordered createdAt desc). The row's single `request` is
+  // chosen from this list AFTER the approvals are known (pickDayAnomaly).
+  const dayAnomalies = new Map();
   for (const an of anomaliesForWindow) {
     if (an.date == null) continue; // window-wide forms don't attach to a day
     const key = `${an.employeeId}:${dayKey(an.date)}`;
-    // TS-REQUEST-04 — an employee form (REGULARIZATION) outranks the
-    // evaluator's grading row of the same day; among equals the newest wins
-    // (the list is ordered newest-first). The row builder then only treats
-    // REGULARIZATION rows as "requests".
-    const existing = anomalyByKey.get(key);
-    if (!existing) {
-      anomalyByKey.set(key, an);
-      continue;
-    }
-    const existingIsForm = ["REGULARIZATION", "PAPER_FORM"].includes(
-      String(existing.sourceKind ?? "").toUpperCase(),
-    );
-    const isForm = ["REGULARIZATION", "PAPER_FORM"].includes(
-      String(an.sourceKind ?? "").toUpperCase(),
-    );
-    if (isForm && !existingIsForm) anomalyByKey.set(key, an);
+    if (!dayAnomalies.has(key)) dayAnomalies.set(key, []);
+    dayAnomalies.get(key).push(an);
   }
   // TS-REQUEST-HYBRID-01 (operator, 2026-10-27) — the employee or HR raises the
   // resolution request for a detected case into the HR Approval Centre
@@ -1157,7 +1175,7 @@ export async function listCheckInOuts({
     casesByDay.get(key).push(an);
   }
   const approvalCandidates = new Map(
-    [...anomalyByKey.values(), ...[...casesByDay.values()].flat()].map((an) => [an.id, an]),
+    [...[...dayAnomalies.values()].flat(), ...[...casesByDay.values()].flat()].map((an) => [an.id, an]),
   );
   const approvalRefs = [...approvalCandidates.values()]
     .filter((an) => an.factHash)
@@ -1174,6 +1192,18 @@ export async function listCheckInOuts({
     for (const request of requests)
       approvalByAnomaly.set(String(request.sourceRef).split("@")[0], request);
   }
+  // TS-REQ-PICK-01 — the day's request story. Before this the pick was "newest
+  // wins, a form outranks a grading row", so a SECOND case that settled later
+  // (a missing check-out resolved after the late check-in was raised) became
+  // the day's pick: the row then read "Not submitted" with the resolved case's
+  // id while the raised case was still PENDING at Management, and the Actions
+  // menu lost both "View anomaly request" (row.request.status was UNSUBMITTED)
+  // and "Raise anomaly request" (the day already had cases, none of them
+  // unraised). Ranking: a raised case (an id@factHash approval) outranks a form,
+  // which outranks a grading row, and a live case outranks a settled one; ties
+  // keep the newest.
+  const anomalyByKey = new Map();
+  for (const [key, list] of dayAnomalies) anomalyByKey.set(key, pickDayAnomaly(list, approvalByAnomaly));
   const approvalRows = approvalCandidates.size
     ? await prisma.attendanceAnomalyApproval.findMany({
         where: { anomalyId: { in: [...approvalCandidates.keys()] } },
