@@ -392,6 +392,99 @@ test(
       assert.deepEqual(priced.lines[0].anomalyIds, [decided.id]);
     });
 
+    await t.test("a decision is refused while a payroll covering the day is with its approvers", async () => {
+      const anomaly = await detectedCase();
+      const record = await as("EMPLOYEE", () =>
+        raiseRuleRequest({
+          user: {
+            tenantId: company,
+            userId: people.EMPLOYEE.userId,
+            employeeId: people.EMPLOYEE.id,
+          },
+          anomalyId: anomaly.id,
+          reason: "Reader failure; the site register confirms the times",
+          requestKey: randomUUID(),
+        }),
+      );
+      const verified = await act("HR", record, "VERIFY");
+
+      // A processed run for this employee, waiting at the approvers: its
+      // approval source digest covers every payslip line, so the decision may
+      // not move the numbers underneath it.
+      const run = await db((tx) =>
+        tx.payrollRun.create({
+          data: {
+            tenantId: company,
+            processedBy: people.HR.id,
+            periodStart: new Date(Date.UTC(2026, 9, 1)),
+            periodEnd: new Date(Date.UTC(2026, 9, 31)),
+            countryCode: "PK",
+            currencyCode: "PKR",
+            status: "COMPLETED",
+            totalGross: 100000,
+            totalNet: 100000,
+          },
+        }),
+      );
+      await db((tx) =>
+        tx.payrollPayslip.create({
+          data: {
+            tenantId: company,
+            payrollRunId: run.id,
+            employeeId: people.EMPLOYEE.id,
+            grossAmount: 100000,
+            totalDeductions: 0,
+            netAmount: 100000,
+          },
+        }),
+      );
+
+      // Cancelled in a finally block: a failed assertion here must not leave a
+      // protective payroll period behind for the tests that follow.
+      try {
+        await assert.rejects(
+          () => act("MANAGEMENT", verified, "APPROVE"),
+          (e) =>
+            e.status === 409 &&
+            /Payroll for October 2026 is with its approvers/.test(e.message),
+          "the numbers under review are not moved",
+        );
+        assert.equal(
+          (await readCase(anomaly.id)).status,
+          "PENDING",
+          "the refused decision rolled back",
+        );
+        const request = await readRequest(record.sourceRef);
+        assert.equal(request.stage, "MANAGEMENT", "the request keeps its place");
+
+        // The same decision goes through once the run is out of the approvers' hands.
+        await db((tx) =>
+          tx.payrollRun.update({
+            where: { id: run.id },
+            data: { status: "CANCELLED" },
+          }),
+        );
+        const approved = await act(
+          "MANAGEMENT",
+          { approvalRef: request.id, version: request.version },
+          "APPROVE",
+        );
+        assert.equal(approved.stage, "APPROVED");
+        assert.equal((await readCase(anomaly.id)).status, "APPROVED");
+      } finally {
+        await db((tx) =>
+          tx.payrollRun.updateMany({
+            where: { id: run.id, status: { not: "CANCELLED" } },
+            data: { status: "CANCELLED" },
+          }),
+        );
+      }
+    });
+
+    // The APPROVED-between-approval-and-finalize branch cannot be set up over
+    // raw SQL here: a database trigger refuses an APPROVED run that has no
+    // staged PAYROLL approval. It is covered in tests/unit/payroll-awaiting-approval.test.js.
+
     await t.test("the employee's own dialog raises by day, and picks the case when the day has two", async () => {
       const anomaly = await detectedCase();
       const day = anomaly.date.toISOString().slice(0, 10);

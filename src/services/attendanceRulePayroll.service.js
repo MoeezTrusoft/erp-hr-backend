@@ -28,6 +28,57 @@ export function priceRuleDays(days, basisMinor, periodDays, currency = "PKR") {
   const unit = 10n ** BigInt(money.CURRENCY_EXPONENT[currency] ?? 2);
   return ((minor + unit / 2n) / unit) * unit;
 }
+// A payroll that has been processed and is with its approvers is sealed: the
+// PAYROLL approval digest covers every payslip amount and line, so an
+// attendance decision that rewrites a payslip only makes the approver's click
+// fail with "the evidence changed". Refuse the decision instead of moving the
+// numbers under review; the case can be decided once the run is finalized, and
+// a finalized payslip carries the change through the existing adjustment path.
+export const PAYROLL_AWAITING_APPROVAL = ["COMPLETED", "APPROVED"];
+export function payrollMonthLabel(date) {
+  return new Date(date).toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+export async function payrollAwaitingApprovalFor(
+  db,
+  { tenantId, employeeId, date },
+) {
+  return db.payrollRun.findFirst({
+    where: {
+      tenantId,
+      periodStart: { lte: date },
+      periodEnd: { gte: date },
+      status: { in: PAYROLL_AWAITING_APPROVAL },
+      // Only an employee on the run can be affected by the decision.
+      payslips: { some: { employeeId } },
+    },
+    orderBy: { periodStart: "desc" },
+    select: { id: true, status: true, periodStart: true },
+  });
+}
+export async function assertPayrollNotAwaitingApproval(
+  db,
+  { tenantId, employeeId, date },
+) {
+  const run = await payrollAwaitingApprovalFor(db, {
+    tenantId,
+    employeeId,
+    date,
+  });
+  if (!run) return;
+  const month = payrollMonthLabel(run.periodStart);
+  throw Object.assign(
+    new Error(
+      run.status === "APPROVED"
+        ? `Payroll for ${month} is approved and awaiting finalization. Finalize it, then decide this case.`
+        : `Payroll for ${month} is with its approvers. Return the run to the initiator before deciding this case.`,
+    ),
+    { status: 409 },
+  );
+}
 export async function releaseFailedCarry(db, { tenantId, employeeId }) {
   const failed = await db.payrollRun.findMany({
     where: { tenantId, status: { in: ["CANCELLED", "FAILED"] } },

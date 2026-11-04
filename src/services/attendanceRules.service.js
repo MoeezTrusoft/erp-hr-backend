@@ -29,6 +29,7 @@ import { replayTenant } from "../lib/attendanceReplay.js";
 import { applyEvaluatedShifts } from "./attendanceWriter.service.js";
 import {
   reconcileRulePayroll,
+  assertPayrollNotAwaitingApproval,
   LEGACY_ATTENDANCE_CODES,
 } from "./attendanceRulePayroll.service.js";
 import * as money from "../lib/money.js";
@@ -650,6 +651,14 @@ export async function finalizeRuleCase(
           409,
           "HR must record verification of the current evidence before Management decides",
         );
+      // The decision prices this day into payroll; do not move the numbers of a
+      // payroll that is already with its approvers (its approval source digest
+      // would stop matching and the approver's click would fail).
+      await assertPayrollNotAwaitingApproval(tx, {
+        tenantId: user.tenantId,
+        employeeId: row.employeeId,
+        date: row.date,
+      });
       const changed = await tx.attendanceAnomaly.updateMany({
         where: {
           tenantId: user.tenantId,
