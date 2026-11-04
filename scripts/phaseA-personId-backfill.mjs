@@ -213,12 +213,23 @@ if (APPLY) {
   // integer Employee.id, computed here from the HR side (the mapping uuid is
   // one-way sha1, so SQL cannot invert it). The session builder reads this on
   // every login to resolve the access-token employeeId per tenant.
-  for (const u of updates) {
-    const uuid = sha1Uuid(`hr:employee:${u.emp.id}`);
+  // Repair covers EVERY anchored row, not only this run's writes: a mapping
+  // row can be missing its hrEmployeeId while its employee was anchored by an
+  // earlier run (that is exactly how user 17 / employee 645 stayed NULL).
+  const anchoredRows = (await hr.query(
+    `SELECT id, tenant_id FROM "Employee" WHERE "personId" IS NOT NULL ORDER BY id`
+  )).rows;
+  for (const row of anchoredRows) {
+    // Both historical derivations (see byUuid2 above): the bulk provisioning
+    // script used one, rbac_employee_create the tenant-scoped one.
+    const uuids = [
+      sha1Uuid(`hr:employee:${row.id}`),
+      sha1Uuid(`hr:employee:${row.tenant_id}:${row.id}`),
+    ];
     const r = await rbac.query(
       `UPDATE "HrEmployeeUserMapping" SET "hrEmployeeId"=$1, "updatedAt"=now()
-       WHERE "employeeId"=$2 AND "hrEmployeeId" IS NULL`,
-      [u.emp.id, uuid]
+       WHERE "employeeId" = ANY($2::uuid[]) AND "hrEmployeeId" IS NULL`,
+      [row.id, uuids]
     );
     rbacInt += r.rowCount;
   }
