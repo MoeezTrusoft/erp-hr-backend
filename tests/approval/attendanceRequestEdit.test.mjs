@@ -20,7 +20,7 @@ const { company, people, db, setup } = await import("./fixtures.mjs");
 const { mcpCtx } = await import("../../src/mcp/context.js");
 const { applyEvaluatedShifts } = await import("../../src/services/attendanceWriter.service.js");
 const { raiseRuleRequest, raiseRuleRequestOnBehalf } = await import("../../src/services/attendanceRules.service.js");
-const { actApproval, editAttendanceRequestReason } = await import("../../src/services/approval/service.js");
+const { actApproval, editAttendanceRequestReason, readApproval } = await import("../../src/services/approval/service.js");
 
 const ROLE_NAMES = { HR: ["hr"], MANAGEMENT: ["management"] };
 const GRANTS = { EMPLOYEE: ["self"], HR: ["self", "verify", "read"], MANAGEMENT: ["self", "approve", "read"] };
@@ -116,6 +116,17 @@ test("HR edits an on-behalf request before Management acts", { timeout: 180000 }
     const { record } = await raiseOnBehalf();
     await rejectsWith(edit("EMPLOYEE", record, "I want to change it"), 403, /filed this request or the HR approver/);
     await rejectsWith(edit("MANAGEMENT", record, "Management editing"), 403, /filed this request or the HR approver/);
+  });
+
+  await t.test("the record offers EDIT_REASON only to the people who may edit it, and only until the decision", async () => {
+    const { record } = await raiseOnBehalf();
+    const seen = (role, ref = record.approvalRef) => as(role, () => readApproval({ approvalRef: ref })).then((r) => r.record.actions);
+    assert.ok((await seen("HR")).includes("EDIT_REASON"), "the filer is offered it");
+    assert.ok(!(await seen("MANAGEMENT")).includes("EDIT_REASON"), "Management is not");
+    const approved = await as("MANAGEMENT", () =>
+      actApproval({ approvalRef: record.approvalRef, expectedVersion: record.version, action: "APPROVE", reason: "ok", requestKey: randomUUID() }),
+    );
+    assert.ok(!(await seen("HR", approved.record.approvalRef)).includes("EDIT_REASON"), "nobody once it is decided");
   });
 
   await t.test("refused after Management has decided", async () => {

@@ -383,7 +383,7 @@ async function view(tx, env, row, summary = false, people = null) {
     source: summary ? {} : isAppraisalApproval(row)
       ? await appraisalApprovalSource(tx, env, row) : unseal(row.snapshot),
     leavePolicies,
-    actions: summary ? [] : await actionsFor(tx, env, row),
+    actions: summary ? [] : [...(await actionsFor(tx, env, row)), ...(await editActionsFor(tx, env, row))],
     history: history.map(
       ({
         actorCode,
@@ -755,6 +755,41 @@ export function actApproval(raw) {
   });
 }
 const EDIT_REASON_LIMIT = 4000;
+// Why the caller may not edit this on-behalf attendance request, or null when they may. One place for the rules, used by
+// the edit command and by the record's `actions` (so the screen offers Edit only when it will work).
+async function attendanceEditRefusal(tx, env, row, anomaly) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING")
+    return { status: 409, message: "This request has already been decided and can no longer be edited" };
+  if (anomaly.rulesVersion !== 2 || !anomaly.raisedByName || anomaly.raisedById === anomaly.employeeId)
+    return { status: 409, message: "Only a request raised on behalf of the employee can be edited" };
+  // Editable only while it waits for the level after HR's step.
+  let hrCodes = [], editable = false;
+  if (row.stage === "LEVEL" && row.route?.levels) {
+    const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
+    editable = Boolean(hr) && row.level > hr.index && (row.route.acted ?? []).every((a) => a.level <= hr.index);
+    hrCodes = hr?.approverCodes ?? [];
+  } else if (row.stage === "MANAGEMENT" && !row.route) {
+    editable = true;
+    hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
+  }
+  if (!editable) return { status: 409, message: "This request has moved past the step where it can be edited" };
+  const filer = await tx.employee.findFirst({
+    where: { tenant_id: env.tenantId, id: anomaly.raisedById },
+    select: { employee_code: true },
+  });
+  if (!(filer && ownsCode(env, filer.employee_code)) && !hrCodes.some((c) => ownsCode(env, c)))
+    return { status: 403, message: "Only the person who filed this request or the HR approver can edit it" };
+  if (env.who.id === anomaly.employeeId)
+    return { status: 403, message: "You cannot edit a request about your own day" };
+  return null;
+}
+async function editActionsFor(tx, env, row) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING") return [];
+  const id = Number(String(row.sourceRef).split("@")[0]);
+  if (!Number.isInteger(id)) return [];
+  const anomaly = await tx.attendanceAnomaly.findFirst({ where: { tenantId: env.tenantId, id, rulesVersion: 2 } });
+  return anomaly && !(await attendanceEditRefusal(tx, env, row, anomaly)) ? ["EDIT_REASON"] : [];
+}
 // The filer of an on-behalf attendance resolution request (and the HR approver
 // on the sealed route) may correct its reason until the level after HR has acted.
 // The reason is part of the source digest, so the digest and the snapshot are
@@ -784,25 +819,8 @@ export async function editAttendanceRequestReason(raw) {
     const anomaly = source.row;
     if (anomaly.rulesVersion !== 2 || !anomaly.raisedByName || anomaly.raisedById === anomaly.employeeId)
       fail("Only a request raised on behalf of the employee can be edited", 409);
-    // Editable only while it waits for the level after HR's step.
-    let hrCodes = [], editable = false;
-    if (row.stage === "LEVEL" && row.route?.levels) {
-      const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
-      editable = Boolean(hr) && row.level > hr.index && (row.route.acted ?? []).every((a) => a.level <= hr.index);
-      hrCodes = hr?.approverCodes ?? [];
-    } else if (row.stage === "MANAGEMENT" && !row.route) {
-      editable = true;
-      hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
-    }
-    if (!editable) fail("This request has moved past the step where it can be edited", 409);
-    const filer = await tx.employee.findFirst({
-      where: { tenant_id: env.tenantId, id: anomaly.raisedById },
-      select: { employee_code: true },
-    });
-    if (!(filer && ownsCode(env, filer.employee_code)) && !hrCodes.some((c) => ownsCode(env, c)))
-      fail("Only the person who filed this request or the HR approver can edit it", 403);
-    if (env.who.id === anomaly.employeeId)
-      fail("You cannot edit a request about your own day", 403);
+    const refused = await attendanceEditRefusal(tx, env, row, anomaly);
+    if (refused) fail(refused.message, refused.status);
     if (input.reason === String(anomaly.reason ?? "").trim())
       fail("The reason is unchanged", 400);
     const changed = await tx.attendanceAnomaly.updateMany({
