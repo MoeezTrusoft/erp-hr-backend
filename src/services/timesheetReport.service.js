@@ -909,6 +909,23 @@ async function punchesForPageRows(pageRows, tenantId) {
   return byKey;
 }
 
+// §367 (operator, 2026-11-04) — a day can carry both punches and no stored
+// total: imported, corrected or legacy attendance rows, and rows the evaluator
+// never gave a verdict to, leave total_hours null and the Timesheet's worked
+// hours went BLANK even though the punches are right there. Fall back to the
+// punch-to-punch difference for DISPLAY only — the stored figure (the
+// evaluator's credited minutes, already net of unpaid breaks) always wins, and a
+// pair that cannot describe work (a missing punch, or a check-out not after the
+// check-in) stays blank instead of inventing hours.
+function workedHours(row) {
+  const stored = row?.total_hours == null ? null : Number(row.total_hours);
+  if (stored != null && Number.isFinite(stored)) return stored;
+  if (!row?.check_in || !row?.check_out) return null;
+  const minutes =
+    (new Date(row.check_out).getTime() - new Date(row.check_in).getTime()) / 60000;
+  return Number.isFinite(minutes) && minutes > 0 ? minutes / 60 : null;
+}
+
 export async function listCheckInOuts({
   tenantId,
   site, department, shift,
@@ -1259,7 +1276,7 @@ export async function listCheckInOuts({
       status: STATUS_DISPLAY[a.status] ?? a.status,
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
-      totalHours: a.total_hours ?? null,
+      totalHours: workedHours(a),
       calendarStatus:a.calendarStatus ?? null,
       plannedShift:a.plannedShift ?? null,
       assignedSites:a.assignedSites ?? [],
