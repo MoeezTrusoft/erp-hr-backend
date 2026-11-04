@@ -145,4 +145,29 @@ describe("MC-MIRROR-01 sibling comparison", () => {
       reason: "device differs",
     });
   });
+
+  it("mirrors when several enrolments are in force and the sets share one device (Shah Hasan BOC/JOC)", () => {
+    const both = [
+      enrolment({ sn: "A8LN181960262", deviceUserId: "9013" }),
+      enrolment({ sn: "EUF7243800353", deviceUserId: "9014" }),
+    ];
+    expect(
+      compare({ originEnrolment: both, targetEnrolment: [...both].reverse() }),
+    ).toMatchObject({ verdict: "mirror" });
+  });
+
+  it("stays independent when the device sets do not overlap", () => {
+    expect(
+      compare({
+        originEnrolment: [enrolment({ sn: "TTQ5261300360", deviceUserId: "200" })],
+        targetEnrolment: [enrolment({ sn: "A8LN181960262", deviceUserId: "9012" })],
+      }),
+    ).toMatchObject({ reason: "device differs" });
+  });
+
+  it("stays independent when the serial is shared but the device user id is not", () => {
+    expect(
+      compare({ targetEnrolment: [enrolment({ deviceUserId: "200" })] }),
+    ).toMatchObject({ reason: "device differs" });
+  });
 });

@@ -59,11 +59,17 @@ const samePattern = (a, b) =>
   a.offDays.length === b.offDays.length &&
   a.offDays.every((day, index) => day === b.offDays[index]);
 
-const sameEnrolment = (a, b) =>
-  Boolean(a) &&
-  Boolean(b) &&
-  (a.sn ?? null) === (b.sn ?? null) &&
-  a.deviceUserId === b.deviceUserId;
+// A person can be enrolled on several devices that are ALL in force in one
+// company — Shah Hasan has PECHS 9014 and Dalmia 9013 in both BOC and JOC — so
+// "the biometric device is common" means the two in-force sets share a
+// device, never that one arbitrary "latest" row matches. Comparing a single
+// enrolment made the verdict depend on row order (found by the October dry run).
+const enrolmentKey = (e) => `${e?.sn ?? ""}|${e?.deviceUserId ?? ""}`;
+const enrolmentList = (x) => (Array.isArray(x) ? x : x ? [x] : []);
+const sharedEnrolment = (a, b) => {
+  const keys = new Set(enrolmentList(a).map(enrolmentKey));
+  return enrolmentList(b).some((e) => keys.has(enrolmentKey(e)));
+};
 
 // Pure comparison of one sibling record against the origin. Exported so the
 // matrix can be unit-tested without a database (plan §5).
@@ -89,7 +95,7 @@ export function compareSibling({
   if (alreadyRaised) return { verdict: "skip", reason: "already raised there" };
   if (!routePublished)
     return { verdict: "skip", reason: "approval route not published" };
-  if (!sameEnrolment(originEnrolment, targetEnrolment))
+  if (!sharedEnrolment(originEnrolment, targetEnrolment))
     return { verdict: "skip", reason: "device differs" };
   if (!samePattern(originSchedule, targetSchedule))
     return { verdict: "skip", reason: "shift differs" };
@@ -168,9 +174,8 @@ async function collectSiblings({ tenantId, anomalyId }, db = prisma) {
           status: "PENDING",
         },
         orderBy: { id: "asc" },
-      }),
-      enrolmentInForce(db, tenantId, origin.employeeId, day),
-      enrolmentInForce(db, sibling.tenant_id, sibling.id, day),
+      }),        enrolmentsInForce(db, tenantId, origin.employeeId, day),
+        enrolmentsInForce(db, sibling.tenant_id, sibling.id, day),
       scheduleInForce(db, tenantId, origin.employeeId, day),
       scheduleInForce(db, sibling.tenant_id, sibling.id, day),
       db.approvalMatrix.findFirst({
@@ -223,16 +228,16 @@ async function collectSiblings({ tenantId, anomalyId }, db = prisma) {
   return { origin, originEmployee, targets };
 }
 
-async function enrolmentInForce(db, tenantId, employeeId, day) {
-  return db.employeeDeviceEnrolment.findFirst({
+async function enrolmentsInForce(db, tenantId, employeeId, day) {
+  return db.employeeDeviceEnrolment.findMany({
     where: {
       tenantId,
       employeeId,
       effectiveFrom: { lte: day },
       OR: [{ effectiveTo: null }, { effectiveTo: { gte: day } }],
     },
-    orderBy: { effectiveFrom: "desc" },
     select: { sn: true, deviceUserId: true, effectiveFrom: true },
+    take: 20,
   });
 }
 
