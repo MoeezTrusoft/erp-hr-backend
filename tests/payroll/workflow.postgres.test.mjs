@@ -101,6 +101,46 @@ test(
       0,
     );
     assert.equal((await debt()).outstandingMinor, 500000);
+    // TS-SUBMIT-GATE-02 / HR-TP-05 — a request raised AFTER the timesheet was
+    // submitted must still block calculation; the submit gate cannot see it.
+    const openCase = (kind) =>
+      db((tx) =>
+        tx.attendanceAnomaly.create({
+          data: {
+            tenantId: company,
+            employeeId: people.EMPLOYEE.id,
+            date: new Date(Date.UTC(2026, 8, 15)),
+            sourceKind: "RULES_V2",
+            sourceRef: `rules-v2:${people.EMPLOYEE.id}:gate:${kind}`,
+            rulesVersion: 2,
+            sessionKey: `gate-${kind}`,
+            type: "EARLY_CHECKOUT",
+            factHash: `gate-${kind}-fact`,
+            status: "PENDING",
+            evidenceState: "ACTIVE",
+            raisedById: people.EMPLOYEE.id,
+          },
+        }),
+      );
+    const decide = (row) =>
+      db((tx) =>
+        tx.attendanceAnomaly.update({
+          where: { id: row.id },
+          data: {
+            status: "RESOLVED",
+            evidenceState: "RESOLVED",
+            resolvedAt: new Date(),
+          },
+        }),
+      );
+    const raisedLate = await openCase("late-raise");
+    await assert.rejects(calculate(), /HR-TP-05 1 unresolved attendance request\(s\) for September 2026 .*before processing payroll/);
+    // A refused calculation leaves the run as it was (not FAILED).
+    assert.equal(
+      (await db((tx) => tx.payrollRun.findUnique({ where: { id: run.id } }))).status,
+      "PENDING",
+    );
+    await decide(raisedLate);
     let calculated = await calculate();
     assert.equal(
       Number(calculated.totalNet),
@@ -171,6 +211,13 @@ test(
       as("HR", () => cancelPayrollRun(run.id, people.HR.id, company)),
       /cannot|cancel/i,
     );
+    // A request raised after processing blocks the lock of the payslips too.
+    const raisedAfterApproval = await openCase("late-finalize");
+    await assert.rejects(
+      as("HR", () => finalizePayrollRun(run.id, people.HR.id, company)),
+      /HR-TP-05 1 unresolved attendance request\(s\) for September 2026 .*before finalizing payroll/,
+    );
+    await decide(raisedAfterApproval);
     await as("HR", () => finalizePayrollRun(run.id, people.HR.id, company));
     await as("HR", () => finalizePayrollRun(run.id, people.HR.id, company));
     assert.equal((await debt()).outstandingMinor, 0);
