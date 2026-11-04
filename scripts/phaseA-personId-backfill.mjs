@@ -16,8 +16,17 @@
 //     human's logins), so the two rows share one person identity. This is the
 //     cross-tenant link required by MULTI-TENANT-EMP-01.
 //   - No login → stays NULL (never mint a fake identity).
+//   - Login-less row that BELONGS TO a human whose anchor already exists on
+//     another row → adopts that anchor, but ONLY from LINK_LOGINLESS_ROWS
+//     below (operator/HR-confirmed, with the evidence recorded next to it).
+//     Name matching is never automatic.
 //
-// Idempotent and safe to re-run. --apply writes; default reports only.
+// Idempotent and safe to re-run. --apply writes; default reports only. The
+// script needs BOTH database URLs; in production the HR pod only has the HR
+// one, so run it in a pod that carries erp-platform-credentials (for example
+// deploy/prisma-studio) with:
+//   HR_DATABASE_URL="$DATABASE_URL_HR" RBAC_DATABASE_URL="$DATABASE_URL_RBAC" \
+//     node --input-type=module - < scripts/phaseA-personId-backfill.mjs
 import crypto from "node:crypto";
 import { Client } from "pg";
 
@@ -34,6 +43,34 @@ const DUAL_TENANT_HUMANS = [
   // device id 200 @ TTQ5261300360) and Dalmia afternoons (JOC row, 9012 @
   // A8LN181960262). One human, two tenant rows — same person anchor.
   { first: "Akash", last: "Nanu", hrIds: [160, 554] }, // HomeVision 160 + JOC 554
+];
+
+// Login-less rows that belong to a human whose anchor already exists on
+// another row. `anchorFrom` is an Employee row of the SAME human that has
+// (or, in this run, gets) a personId. Evidence was read from production on
+// 2026-11-05 and is kept here so the list can be re-audited later;
+// `confirmedBy` is whoever signed the link off.
+const LINK_LOGINLESS_ROWS = [
+  {
+    row: 577, // Homenet EMP-00577 "Muhammad Azeem"
+    anchorFrom: 166, // HomeVision EMP166 "Muhammad Azeem Shaikh" (login 36)
+    evidence: "same phone, email, date of birth and joining date",
+    confirmedBy: "operator 2026-11-05",
+  },
+  {
+    row: 594, // Homenet EMP-00505 "Shehroz Abdul Ghafoor" (Inactive)
+    anchorFrom: 551, // JOC EMP-00551, same human (login 45)
+    evidence: "same full name and email",
+    confirmedBy: "operator 2026-11-05",
+  },
+  {
+    row: 643, // JOC EMP-0556 "Shah Hasan Jafry"
+    anchorFrom: 555, // BOC EMP-00555, same human (login 10)
+    evidence: "same phone, email, device user id 9013 and joining date",
+    confirmedBy: "operator 2026-11-05",
+  },
+  // 645 (Trusoft Live Website EMP-0001, Moeez Ahmed) needs no entry: it
+  // carries its own mapping uuid -> rbac:user:17, the same login as 484.
 ];
 
 const hrUrl = process.env.HR_DATABASE_URL;
@@ -99,7 +136,9 @@ for (const e of emps) {
     ?? byUuid.get(sha1Uuid(`hr:employee:${e.id}`))
     ?? byEmpFromAlt.get(e.id);
   if (!m) { unresolved.push({ ...e, reason: "no RBAC login" }); continue; }
-  updates.push({ emp: e, userId: m.userId });
+  const via = byHrId.get(e.id) ? "mapping.hrEmployeeId"
+    : m.uuid === sha1Uuid(`hr:employee:${e.id}`) ? "mapping.uuid" : "mapping.uuid(tenant-scoped)";
+  updates.push({ emp: e, userId: m.userId, via });
 }
 
 // 5) Canonicalise ONLY the explicit dual-tenant humans: every confirmed row of
@@ -115,8 +154,41 @@ for (const human of DUAL_TENANT_HUMANS) {
   console.log(`[dual-tenant] ${human.first} ${human.last}: ${group.map(u => u.emp.id).join("+")} -> canonical rbac:user:${canonical}`);
 }
 
-// 6) Write
+// 5b) What the login path will write (the operator approves this list).
+for (const u of updates) {
+  console.log(`[anchor] ${u.emp.id} ${u.emp.employee_code} ${u.emp.first_name} ${u.emp.last_name} -> rbac:user:${u.userId} (${personAnchor(u.userId)}; ${u.via})`);
+}
+
+// 6) Login-less rows adopting an existing anchor (explicit list above).
+//    Resolved after canonicalisation so a row that gains its anchor in THIS
+//    run can be the source; otherwise the anchor already in the database.
+const sourceIds = [...new Set(LINK_LOGINLESS_ROWS.map(l => l.anchorFrom))];
+const sourceRows = (await hr.query(
+  `SELECT id, employee_code, "personId" FROM "Employee" WHERE id = ANY($1::int[])`,
+  [sourceIds]
+)).rows;
+const sourceById = new Map(sourceRows.map(r => [r.id, r]));
+const links = [];
+const linkSkipped = [];
+for (const l of LINK_LOGINLESS_ROWS) {
+  const target = emps.find(e => e.id === l.row);
+  if (!target) { linkSkipped.push({ ...l, reason: "row not in the NULL-anchor set (already anchored or missing)" }); continue; }
+  if (updates.some(u => u.emp.id === l.row)) { linkSkipped.push({ ...l, reason: "row already resolved by its own RBAC login" }); continue; }
+  const src = sourceById.get(l.anchorFrom);
+  if (!src) { linkSkipped.push({ ...l, reason: `source row ${l.anchorFrom} not found` }); continue; }
+  const srcUpdate = updates.find(u => u.emp.id === l.anchorFrom);
+  const anchor = srcUpdate ? personAnchor(srcUpdate.userId) : src.personId;
+  if (!anchor) { linkSkipped.push({ ...l, reason: `source row ${l.anchorFrom} has no anchor` }); continue; }
+  links.push({ emp: target, anchor, from: src.employee_code, reason: l.evidence });
+}
+for (const l of links) {
+  console.log(`[link] ${l.emp.id} ${l.emp.employee_code} ${l.emp.first_name} ${l.emp.last_name} -> ${l.anchor} (from ${l.from}; ${l.reason})`);
+}
+for (const l of linkSkipped) console.log(`[link] ${l.row}<${l.anchorFrom} skipped: ${l.reason}`);
+
+// 7) Write
 let wrote = 0;
+let linked = 0;
 let rbacInt = 0;
 if (APPLY) {
   await hr.query("BEGIN");
@@ -128,23 +200,43 @@ if (APPLY) {
     );
     wrote += r.rowCount;
   }
+  for (const l of links) {
+    const r = await hr.query(
+      `UPDATE "Employee" SET "personId"=$1, updated_at=now() WHERE id=$2 AND "personId" IS NULL`,
+      [l.anchor, l.emp.id]
+    );
+    linked += r.rowCount;
+  }
   await hr.query("COMMIT");
 
   // MULTI-TENANT-EMP-01 (RBAC side): each mapping row learns its tenant's
   // integer Employee.id, computed here from the HR side (the mapping uuid is
   // one-way sha1, so SQL cannot invert it). The session builder reads this on
   // every login to resolve the access-token employeeId per tenant.
-  for (const u of updates) {
-    const uuid = sha1Uuid(`hr:employee:${u.emp.id}`);
+  // Repair covers EVERY anchored row, not only this run's writes: a mapping
+  // row can be missing its hrEmployeeId while its employee was anchored by an
+  // earlier run (that is exactly how user 17 / employee 645 stayed NULL).
+  const anchoredRows = (await hr.query(
+    `SELECT id, tenant_id FROM "Employee" WHERE "personId" IS NOT NULL ORDER BY id`
+  )).rows;
+  for (const row of anchoredRows) {
+    // Both historical derivations (see byUuid2 above): the bulk provisioning
+    // script used one, rbac_employee_create the tenant-scoped one.
+    const uuids = [
+      sha1Uuid(`hr:employee:${row.id}`),
+      sha1Uuid(`hr:employee:${row.tenant_id}:${row.id}`),
+    ];
     const r = await rbac.query(
       `UPDATE "HrEmployeeUserMapping" SET "hrEmployeeId"=$1, "updatedAt"=now()
-       WHERE "employeeId"=$2 AND "hrEmployeeId" IS NULL`,
-      [u.emp.id, uuid]
+       WHERE "employeeId" = ANY($2::uuid[]) AND "hrEmployeeId" IS NULL`,
+      [row.id, uuids]
     );
     rbacInt += r.rowCount;
   }
 }
 
-console.log(`\n${APPLY ? "APPLIED" : "DRY-RUN"}: ${updates.length} anchored, ${wrote} personId written, ${rbacInt} rbac hrEmployeeId written, ${unresolved.length} unresolved`);
-for (const u of unresolved) console.log(`  unresolved: emp ${u.id} ${u.employee_code} ${u.first_name} ${u.last_name} — ${u.reason}`);
+const linkedIds = new Set(links.map(l => l.emp.id));
+const stillUnresolved = unresolved.filter(u => !linkedIds.has(u.id));
+console.log(`\n${APPLY ? "APPLIED" : "DRY-RUN"}: ${updates.length} anchored, ${links.length} login-less linked, ${wrote + linked} personId written, ${rbacInt} rbac hrEmployeeId written, ${stillUnresolved.length} unresolved`);
+for (const u of stillUnresolved) console.log(`  unresolved: emp ${u.id} ${u.employee_code} ${u.first_name} ${u.last_name} — ${u.reason}`);
 process.exit(0);

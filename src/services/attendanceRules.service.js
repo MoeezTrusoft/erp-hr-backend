@@ -1,4 +1,9 @@
 import { markLapsedCases } from "./attendanceLapse.service.js";
+import {
+  isMirroring,
+  mirrorRaise,
+  mirrorSafely,
+} from "./attendanceRequestMirror.service.js";
 import { levelStageLabel } from "../lib/approvalMatrix.js";
 import { randomUUID } from "node:crypto";
 import { legacyDecision } from './approval/legacy.js';
@@ -564,7 +569,21 @@ async function raiseRuleCase(
     reason: trimmed,
     requestKey: requestKey || randomUUID(),
   });
-  return { ...result.record, anomalyId: prepared.anomalyId };
+  const record = { ...result.record, anomalyId: prepared.anomalyId };
+  // MULTI-COMPANY-MIRROR-01 (B-B) — the same human in another company gets the
+  // same request, but only when person, device and shift agree. Best effort and
+  // after the origin committed: a failure here never fails this raise. A
+  // mirrored raise never mirrors again (no ping-pong).
+  if (!isMirroring()) {
+    const mirrored = await mirrorSafely("raise", () =>
+      mirrorRaise({ tenantId: user.tenantId, anomalyId: prepared.anomalyId }),
+    );
+    if (mirrored) {
+      record.mirrored = mirrored.mirrored;
+      record.notMirrored = mirrored.notMirrored;
+    }
+  }
+  return record;
 }
 
 // The employee's own raise: "this is my day, here is my explanation".
