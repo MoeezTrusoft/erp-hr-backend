@@ -11,9 +11,16 @@ export function payrollMonth(month) {
   const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth()+1, 1)-1);
   return {start, end, days:end.getUTCDate()};
 }
+// "October 2026" — used where a message has to say which month it is about, so
+// "0 to 30" can never be read as a claim about a different month's length.
+export const payrollMonthLabel = (month) =>
+  payrollMonth(month).start.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 export function validatePayableDays(month, value) {
   const {days}=payrollMonth(month);
-  if (value===null || value===undefined || value==='' || !Number.isFinite(Number(value)) || Number(value)<0 || Number(value)>days || !Number.isInteger(Number(value)*2)) fail(`Payable days must be 0 to ${days}, in half-day increments`);
+  // The limit is the month's own length (31 in October, 28/29 in February), and
+  // the message names the month: a bare "0 to 30" on a screen whose month
+  // selector is easy to miss read as if 31-day months were capped at 30.
+  if (value===null || value===undefined || value==='' || !Number.isFinite(Number(value)) || Number(value)<0 || Number(value)>days || !Number.isInteger(Number(value)*2)) fail(`Payable days for ${payrollMonthLabel(month)} must be between 0 and ${days} (the month has ${days} days), in half-day increments`);
   return Number(value);
 }
 export function manualAttendanceFactor(employee, run, input, employmentFactor) {

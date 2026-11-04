@@ -23,3 +23,12 @@ describe('monthly payable days',()=>{
  expect(r.offices).toHaveLength(3);expect(r.totals).toEqual({employees:3,gross:310,deductions:30,net:280});
  });
 });
+describe('payable days answer for the month it is about',()=>{
+ it('allows 31 days in a 31-day month',()=>expect(validatePayableDays('2026-10',31)).toBe(31));
+ it('names the month and its own limit when 31 is entered for a 30-day month',()=>
+  expect(()=>validatePayableDays('2026-11',31)).toThrow('Payable days for November 2026 must be between 0 and 30 (the month has 30 days), in half-day increments'));
+ it('names the limit for a 28-day February',()=>
+  expect(()=>validatePayableDays('2027-02',29)).toThrow('February 2027 must be between 0 and 28'));
+ it('still refuses quarter days',()=>
+  expect(()=>validatePayableDays('2026-10',30.25)).toThrow('half-day increments'));
+});

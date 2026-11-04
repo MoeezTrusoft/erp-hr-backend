@@ -4,7 +4,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js',()=>({default:db}));
 jest.unstable_mockModule('../../src/lib/rlsTenant.js',()=>({tenantTransaction:async(_,fn)=>fn(db)}));
 const resolver=jest.fn();
 jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({resolve:resolver})}));
-const {saveMonthlyAttendance,assignPayrollOffice,assertMonthlyInputsComplete}=await import('../../src/services/monthlyPayrollAttendance.service.js');
+const {saveMonthlyAttendance,assignPayrollOffice,assertMonthlyInputsComplete,listMonthlyAttendance}=await import('../../src/services/monthlyPayrollAttendance.service.js');
 const args={tenantId:'tenant-a',employeeId:7,month:'2026-09',payableDays:30,reason:'Signed register',version:0,actorId:11};
 beforeEach(()=>{jest.resetAllMocks();resolver.mockReturnValue({working:false,reason:'MANUAL_MONTHLY',profile:{mode:'MANUAL_MONTHLY'}});db.employee.findFirst.mockResolvedValue({id:7,attendanceInputMode:'MANUAL_MONTHLY',version:2});db.payrollRun.findMany.mockResolvedValue([]);db.payrollRun.findFirst.mockResolvedValue(null);db.payrollAuditLog.count.mockResolvedValue(0);db.monthlyPayrollAttendance.findFirst.mockResolvedValue(null);db.monthlyPayrollAttendance.create.mockResolvedValue({id:9,version:1});db.employee.updateMany.mockResolvedValue({count:1});});
 describe('monthly attendance writes',()=>{
@@ -36,6 +36,13 @@ describe('monthly attendance writes',()=>{
   db.employee.findMany.mockResolvedValue([{id:7,employee_code:'EMP-0007',attendanceInputMode:'DEVICE'}]);
   db.monthlyPayrollAttendance.findMany.mockResolvedValue([]);
   await expect(assertMonthlyInputsComplete({tenantId:'tenant-a',month:'2026-09'})).resolves.toBeUndefined();
+ });
+ it('lists each employee as a person, not a payroll code',async()=>{
+  db.employee.findMany.mockResolvedValue([{id:7,employee_code:'EMP-0007',employee_name:null,first_name:'Ayesha',last_name:'Khan',preferred_name:null,job_title:'Payroll Officer',photo_url:'https://files.test/a.jpg',Position:{title:null},businessUnit:{name:'Finance'},payrollOffice:'HQ',attendanceInputMode:'MANUAL_MONTHLY',version:2}]);
+  db.monthlyPayrollAttendance.findMany.mockResolvedValue([]);
+  const listed=await listMonthlyAttendance({tenantId:'tenant-a',month:'2026-09'});
+  expect(listed.days).toBe(30);
+  expect(listed.items[0]).toMatchObject({name:'Ayesha Khan',code:'EMP-0007',position:'Payroll Officer',department:'Finance',photoUrl:'https://files.test/a.jpg',mode:'MANUAL_MONTHLY'});
  });
  it('audits office changes and increments employee version',async()=>{const r=await assignPayrollOffice({...args,version:2,office:'HVC-Headend-Staff',mode:'MANUAL_MONTHLY'});expect(r.version).toBe(3);expect(db.employee.updateMany.mock.calls[0][0].where).toEqual({id:7,tenant_id:'tenant-a',version:2});});
 });

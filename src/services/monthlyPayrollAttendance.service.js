@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { tenantTransaction } from '../lib/rlsTenant.js';
+import { displayName, toIdentity } from '../lib/personIdentity.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
 import { dateRange } from '../lib/attendanceDates.js';
 import {
@@ -10,8 +11,6 @@ import {
 const fail = (status, message) => {
   throw Object.assign(new Error(message), { status });
 };
-const name = (e) =>
-  e?.employee_code || 'Employee code required';
 export function monthlyMode(runtime, employeeId, month) {
   const { start, end } = payrollMonth(month),
     modes = new Set();
@@ -71,6 +70,14 @@ export async function listMonthlyAttendance({ tenantId, month }) {
         employee_name: true,
         first_name: true,
         last_name: true,
+        preferred_name: true,
+        // The Employee cell reads as a person (avatar, name, position ·
+        // department) like the timesheet, so the payroll screen does not show
+        // a bare payroll code twice.
+        job_title: true,
+        photo_url: true,
+        Position: { select: { title: true } },
+        businessUnit: { select: { name: true } },
         payrollOffice: true,
         attendanceInputMode: true,
         version: true,
@@ -94,10 +101,14 @@ export async function listMonthlyAttendance({ tenantId, month }) {
         mode = 'SETUP_REQUIRED';
         setupIssue = error.message;
       }
+      const identity = toIdentity(e);
       return {
         id: e.id,
-        name: name(e),
+        name: identity.name || displayName(e) || e.employee_code || 'Employee code required',
         code: e.employee_code,
+        position: identity.position,
+        department: identity.department,
+        photoUrl: identity.photoUrl,
         office: e.payrollOffice,
         mode,
         draftMode: e.attendanceInputMode,
