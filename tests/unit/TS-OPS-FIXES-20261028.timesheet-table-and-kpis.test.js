@@ -164,12 +164,13 @@ describe('Worked hours on a day with punches but no stored total', () => {
     const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
     expect(items[0].totalHours).toBe(12.5);
   });
-  it('stays blank without both punches, or with identical punches', async () => {
+  it('stays blank without both punches, and for a lone punch stored at both ends', async () => {
     attendanceRows = [
       punched(13, 1, '2026-10-05', '2026-10-05T04:00:00.000', null, null),
       punched(14, 2, '2026-10-05', '2026-10-05T04:00:00.000', '2026-10-05T04:00:00.000', null),
+      punched(16, 3, '2026-10-05', '2026-10-05T04:00:00.000', '2026-10-05T04:00:11.000', null),
     ];
     const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
-    expect(items.map((r) => r.totalHours)).toEqual([null, null]);
+    expect(items.map((r) => r.totalHours)).toEqual([null, null, null]);
   });
 });
