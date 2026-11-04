@@ -754,6 +754,88 @@ export function actApproval(raw) {
     };
   });
 }
+const EDIT_REASON_LIMIT = 4000;
+// The filer of an on-behalf attendance resolution request (and the HR approver
+// on the sealed route) may correct its reason until the level after HR has acted.
+// The reason is part of the source digest, so the digest and the snapshot are
+// sealed again in the same transaction; the stage and the approvers do not change.
+export async function editAttendanceRequestReason(raw) {
+  const input = {
+    approvalRef: String(raw?.approvalRef ?? ""),
+    expectedVersion: Number(raw?.expectedVersion),
+    reason: String(raw?.reason ?? "").trim(),
+  };
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.approvalRef) || !Number.isInteger(input.expectedVersion))
+    fail("A request reference and its version are required", 400);
+  if (!input.reason) fail("A reason is required", 400);
+  if (input.reason.length > EDIT_REASON_LIMIT)
+    fail(`The reason must be at most ${EDIT_REASON_LIMIT} characters`, 400);
+  return execute(input, "EDIT_REASON", async (tx, env) => {
+    await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
+    const row = await tx.hrApprovalRequest.findFirst({
+      where: { tenantId: env.tenantId, id: input.approvalRef },
+    });
+    if (!row || row.kind !== "ATTENDANCE" || !(await canRead(tx, env, row)))
+      fail("Request not found", 404);
+    assertVersion(row, input.expectedVersion);
+    if (row.execution !== "PENDING")
+      fail("This request has already been decided and can no longer be edited", 409);
+    const source = await loadSource(tx, env, row.kind, row.sourceRef, { lock: true });
+    const anomaly = source.row;
+    if (anomaly.rulesVersion !== 2 || !anomaly.raisedByName || anomaly.raisedById === anomaly.employeeId)
+      fail("Only a request raised on behalf of the employee can be edited", 409);
+    // Editable only while it waits for the level after HR's step.
+    let hrCodes = [], editable = false;
+    if (row.stage === "LEVEL" && row.route?.levels) {
+      const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
+      editable = Boolean(hr) && row.level > hr.index && (row.route.acted ?? []).every((a) => a.level <= hr.index);
+      hrCodes = hr?.approverCodes ?? [];
+    } else if (row.stage === "MANAGEMENT" && !row.route) {
+      editable = true;
+      hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
+    }
+    if (!editable) fail("This request has moved past the step where it can be edited", 409);
+    const filer = await tx.employee.findFirst({
+      where: { tenant_id: env.tenantId, id: anomaly.raisedById },
+      select: { employee_code: true },
+    });
+    if (!(filer && ownsCode(env, filer.employee_code)) && !hrCodes.some((c) => ownsCode(env, c)))
+      fail("Only the person who filed this request or the HR approver can edit it", 403);
+    if (env.who.id === anomaly.employeeId)
+      fail("You cannot edit a request about your own day", 403);
+    if (input.reason === String(anomaly.reason ?? "").trim())
+      fail("The reason is unchanged", 400);
+    const changed = await tx.attendanceAnomaly.updateMany({
+      where: { tenantId: env.tenantId, id: anomaly.id, workflowVersion: anomaly.workflowVersion },
+      data: { reason: input.reason, workflowVersion: { increment: 1 } },
+    });
+    if (changed.count !== 1) fail("The case changed; refresh and try again", 409);
+    await tx.attendanceRuleAudit.create({
+      data: {
+        tenantId: env.tenantId,
+        employeeId: anomaly.employeeId,
+        anomalyId: anomaly.id,
+        action: "REQUEST_EDITED",
+        actorId: env.who.employee_code,
+        data: json({ before: anomaly.reason, after: input.reason, approvalRef: row.id, round: row.round }),
+      },
+    });
+    const resealed = await loadSource(tx, env, row.kind, row.sourceRef);
+    const next = await tx.hrApprovalRequest.update({
+      where: { id: row.id },
+      data: {
+        version: { increment: 1 },
+        sourceHash: resealed.digest,
+        snapshot: seal(resealed.snapshot),
+      },
+    });
+    await audit(tx, env, row, next, "EDITED", input.reason);
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, next),
+    };
+  });
+}
 export function readApproval(raw) {
   const input = ApprovalRead.parse(raw);
   return execute(input, "READ", async (tx, env) => {

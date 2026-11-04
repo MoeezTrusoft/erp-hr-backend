@@ -3,6 +3,7 @@ import { getCtx } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import * as service from "../../services/attendanceRules.service.js";
+import { editAttendanceRequestReason } from "../../services/approval/service.js";
 import { saveCorrectionRequest, myCorrectionRequests } from '../../services/attendanceCorrectionRequest.service.js';
 import * as workspace from '../../services/attendanceWorkspace.service.js';
 import { attendanceExportInput, attendanceViewInput } from '../../lib/attendanceWorkspaceSchemas.js';
@@ -80,6 +81,17 @@ export function registerAttendanceRulesTools(server) {
         requestKey: z.string().uuid().optional(),
       },
       service.raiseRuleRequestOnBehalf,
+    ],
+    // Correct the reason of a request HR raised on behalf, until the next level acts.
+    // The service limits it to the filer and the HR approver on the sealed route.
+    [
+      "edit_request",
+      {
+        approvalRef: z.string().uuid(),
+        expectedVersion: z.number().int().positive(),
+        reason,
+      },
+      editAttendanceRequestReason,
     ],
     [
       "comment",
@@ -162,7 +174,7 @@ export function registerAttendanceRulesTools(server) {
         //     grant the legacy ops raise used; the centre re-asserts the
         //     verification grant on submission.
         // Every other action stays behind the GET hr:attendance gate.
-        if (action === 'raise_on_behalf') {
+        if (action === 'raise_on_behalf' || action === 'edit_request') {
           assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
         } else if (action !== 'raise') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
