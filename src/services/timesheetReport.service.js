@@ -914,16 +914,22 @@ async function punchesForPageRows(pageRows, tenantId) {
 // never gave a verdict to, leave total_hours null and the Timesheet's worked
 // hours went BLANK even though the punches are right there. Fall back to the
 // punch-to-punch difference for DISPLAY only — the stored figure (the
-// evaluator's credited minutes, already net of unpaid breaks) always wins, and a
-// pair that cannot describe work (a missing punch, or a check-out not after the
-// check-in) stays blank instead of inventing hours.
+// evaluator's credited minutes, already net of unpaid breaks) always wins.
+//
+// A night shift's punches are stored on the attendance day with the same date
+// on both ends (HomeVision: check-in 23:01, check-out 13:35), so a check-out
+// earlier than the check-in is the shift crossing midnight, not bad data: wrap
+// it by 24 h. A missing punch, or identical punches, still shows blank rather
+// than inventing hours.
 function workedHours(row) {
   const stored = row?.total_hours == null ? null : Number(row.total_hours);
   if (stored != null && Number.isFinite(stored)) return stored;
   if (!row?.check_in || !row?.check_out) return null;
-  const minutes =
+  let minutes =
     (new Date(row.check_out).getTime() - new Date(row.check_in).getTime()) / 60000;
-  return Number.isFinite(minutes) && minutes > 0 ? minutes / 60 : null;
+  if (!Number.isFinite(minutes) || minutes === 0) return null;
+  if (minutes < 0) minutes += 24 * 60;
+  return minutes / 60;
 }
 
 export async function listCheckInOuts({

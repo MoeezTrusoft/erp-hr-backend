@@ -139,7 +139,8 @@ describe('Awaiting attendance is not a record', () => {
 
 // §367 (operator, 2026-11-04) — worked hours went blank on a day that HAS punches
 // but no stored evaluation. Show the punch-to-punch difference instead; the stored
-// figure always wins, and a pair that cannot describe work stays blank.
+// figure always wins; a night shift is read across midnight, and a missing or
+// identical punch stays blank.
 describe('Worked hours on a day with punches but no stored total', () => {
   const at = (d) => new Date(`${d}Z`);
   const punched = (id, employeeId, date, inAt, outAt, totalHours) => ({
@@ -158,10 +159,15 @@ describe('Worked hours on a day with punches but no stored total', () => {
     const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
     expect(items[0].totalHours).toBe(8);
   });
-  it('stays blank without both punches, or when the check-out is not after the check-in', async () => {
+  it('wraps a night shift stored on one date to the hours across midnight', async () => {
+    attendanceRows = [punched(15, 1, '2026-10-05', '2026-10-05T18:00:00.000', '2026-10-05T06:30:00.000', null)];
+    const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
+    expect(items[0].totalHours).toBe(12.5);
+  });
+  it('stays blank without both punches, or with identical punches', async () => {
     attendanceRows = [
       punched(13, 1, '2026-10-05', '2026-10-05T04:00:00.000', null, null),
-      punched(14, 2, '2026-10-05', '2026-10-05T12:00:00.000', '2026-10-05T04:00:00.000', null),
+      punched(14, 2, '2026-10-05', '2026-10-05T04:00:00.000', '2026-10-05T04:00:00.000', null),
     ];
     const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
     expect(items.map((r) => r.totalHours)).toEqual([null, null]);
