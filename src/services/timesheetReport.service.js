@@ -388,12 +388,21 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
   // structurally zero.
   // Guarded: some callers (unit tests) inject a Prisma stub without the
   // anomaly delegate; production always has it.
+  // §364 (operator, 2026-11-04) — the same tile on the employee profile must
+  // count what the Timesheet tile counts: cases that are open under the CURRENT
+  // rules. It used to count every case ever detected in the window, so a decided
+  // or a superseded rules-v1 row kept inflating it. (The Timesheet tile resolves
+  // a day settled by an older decision through attendanceRules' `decided` check;
+  // this per-employee KPI applies the status/version/evidence filters only.)
   const anomalies = prisma.attendanceAnomaly?.count
     ? await prisma.attendanceAnomaly.count({
         where: scopedWhere(tenantId, {
           ...eligibleFilter,
           date: { gte: period.from, lte: period.to },
           type: { notIn: ["ABSENT", "LATE_CHECKIN"] },
+          rulesVersion: 2,
+          status: "PENDING",
+          evidenceState: "ACTIVE",
         }),
       })
     : 0;
