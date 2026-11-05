@@ -16,19 +16,52 @@ import {
   mcpUpdateLeavePolicy,
 } from "../controllers/leaveMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import prisma from "../../lib/prisma.js";
 import { legacySubmit } from "../../services/approval/legacy.js";
 import { fileLeaveForApproval } from "../../lib/leaveSubmission.js";
+import {
+  mayRaiseLeaveFor,
+  RAISE_DENIED,
+  RAISE_DENIED_MESSAGE,
+  RAISE_SELF,
+} from "../../lib/leaveOnBehalf.js";
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
   if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
 }
+
+// Issue 395 — the target's line manager, read tenant-scoped. A missing employee
+// answers null (the caller is then refused, not told whether the id exists).
+async function resolveLineManagerId(tenantId, employeeId) {
+  const id = Number(employeeId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const row = await prisma.employee.findFirst({
+    where: { tenant_id: tenantId, id },
+    select: { managerId: true },
+  });
+  return row?.managerId ?? null;
+}
+
+// Issue 395 — a line manager follows the leave of their DIRECT reports on their
+// own leave screen (they hold no tenant-wide leave grant), so the list is
+// scoped to self + reports for a manager with hr:approvals:manager.
+async function directReportIds(tenantId, managerId) {
+  if (!Number.isInteger(Number(managerId))) return [];
+  const rows = await prisma.employee.findMany({
+    where: { tenant_id: tenantId, managerId: Number(managerId) },
+    select: { id: true },
+  });
+  return rows.map((row) => Number(row.id)).filter((id) => Number.isInteger(id));
+}
+
+const isLineManager = (permissions) =>
+  hasPermission(permissions, "hr:approvals:manager", "VIEW");
 
 export function registerLeaveTools(server) {
   // ── RESOURCES ────────────────────────────────────────────────────────────
@@ -140,7 +173,17 @@ export function registerLeaveTools(server) {
         canViewOthers,
         allowUnbound: true,
       });
-      const data = await mcpListLeaveRequests(user, toListQuery({ ...args, employeeId: pinnedEmployeeId ?? undefined }));
+      const query = toListQuery({ ...args, employeeId: pinnedEmployeeId ?? undefined });
+      // Issue 395 — a line manager has no write grant, so a request they raised
+      // for a report belongs to that report and would vanish from their screen.
+      // "Involving me" = my own rows + the ones I raised for someone else; the
+      // id always comes from the session, never from the call, and the controller
+      // re-derives it for an EMPLOYEE-role session.
+      if (!canViewOthers && isLineManager(permissions) && actingEmployeeId && args.employeeId == null) {
+        query.involvingEmployeeId = actingEmployeeId;
+        delete query.employeeId;
+      }
+      const data = await mcpListLeaveRequests(user, query);
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_leave_requests_list")
   );
@@ -159,7 +202,7 @@ export function registerLeaveTools(server) {
         .min(1)
         .optional()
         .describe("HR-LEAVE-TYPELESS-01 — OPTIONAL: employees file WITHOUT a type (HR assigns one at approval). HR/manager may still create a pre-typed request by passing the policy code."),
-      startDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be today or later and ≤ endDate"),
+      startDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be today or later and ≤ endDate (a raise ON BEHALF may start in the past)"),
       endDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be ≥ startDate"),
       reason: z.string().optional().describe("Optional free-text reason shown on the request"),
     },
@@ -170,6 +213,11 @@ export function registerLeaveTools(server) {
       // even without the hr:leave POST grant. The admin/HR write path is
       // unchanged (POST grant → may create for anyone, pre-typed or not). A
       // VIEW-only session naming someone else is refused, never remapped.
+      //
+      // Issue 395 — the LINE MANAGER is the second on-behalf door: a manager may
+      // raise leave for a DIRECT report with no write grant at all, because the
+      // reporting line is what authorises the request (it feeds their own queue).
+      // The decision itself lives in lib/leaveOnBehalf.js so it is testable.
       let canWriteOthers = false;
       try {
         assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
@@ -177,25 +225,49 @@ export function registerLeaveTools(server) {
       } catch {
         canWriteOthers = false;
       }
-      if (!canWriteOthers) {
-        const { actingEmployeeId } = resolveActorScope(user, permissions);
-        const requestedSelf =
-          args.employeeId == null || args.employeeId === "" || Number(args.employeeId) === actingEmployeeId;
-        if (actingEmployeeId == null || !requestedSelf) {
-          throw Object.assign(
-            new Error("Insufficient permissions: employees may only file their own leave requests"),
-            { status: 403, code: "HR-4030" },
-          );
-        }
-        args.employeeId = String(actingEmployeeId);
+      const { actingEmployeeId } = resolveActorScope(user, permissions);
+      const requestedId =
+        args.employeeId == null || args.employeeId === ""
+          ? actingEmployeeId
+          : Number(args.employeeId);
+      if (requestedId == null || !Number.isInteger(Number(requestedId))) {
+        throw Object.assign(
+          new Error("employeeId is required (pass one or authenticate as an employee)"),
+          { status: 400, code: "HR-4000" },
+        );
       }
+      // Only read the target's reporting line when the caller is not HR
+      // (HR needs no manager lookup, and a VIEW-only stranger gets no lookup).
+      const targetManagerId = canWriteOthers
+        ? null
+        : await resolveLineManagerId(user.tenantId, requestedId);
+      const basis = mayRaiseLeaveFor({
+        actingEmployeeId,
+        canWriteOthers,
+        targetEmployeeId: requestedId,
+        targetManagerId,
+      });
+      if (basis === RAISE_DENIED) {
+        throw Object.assign(new Error(RAISE_DENIED_MESSAGE), { status: 403, code: "HR-4030" });
+      }
+      const onBehalf = basis !== RAISE_SELF;
+      args.employeeId = String(requestedId);
+      // A raise on behalf is usually retrospective (the manager files for a day
+      // already taken), so the employee-only "no past dates" rule is lifted for
+      // it — and only for it.
+      if (onBehalf) args.allowPastDates = true;
       const data = await mcpCreateLeaveRequest(user, args);
       // A request nobody submitted never reaches the Approval Centre, so file it
-      // there now. Only for the employee's own request; on-behalf requests by HR
-      // stay PENDING. A submit failure keeps the request and says so.
+      // there now: the employee's own request as themselves, an on-behalf one as
+      // the employee but ON BEHALF, so the filer is on record and the route is
+      // the employee's (a manager who files for a report cannot also be the
+      // approving level — the submit marks that manager stage as the filer's).
+      // A submit failure keeps the request and says so.
       const body = await fileLeaveForApproval({
         response: data,
-        filedForSelf: !canWriteOthers || Number(args.employeeId) === Number(user.employeeId),
+        filedForSelf: !onBehalf,
+        onBehalf,
+        raisedBy: onBehalf ? basis : null,
         reason: args.reason,
         submit: legacySubmit,
       });

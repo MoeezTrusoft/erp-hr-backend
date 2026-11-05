@@ -148,7 +148,14 @@ export async function legacySubmit(
     },
     { tenantId: ctx.user.tenantId },
   );
-  await (onBehalf ? submitApprovalOnBehalf(input) : submitApproval(input, submitOptions));
+  await (onBehalf
+    ? submitApprovalOnBehalf(input, {
+        // Issue 395 — a line manager filing for a direct report holds none of
+        // the HR grants; the reporting line is the authorisation and the
+        // service re-checks it against the source owner.
+        allowManagerFiler: Boolean(submitOptions.managerMayFile),
+      })
+    : submitApproval(input, submitOptions));
   return tenantTransaction(
     prisma,
     async (tx) =>

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getCtx } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import * as service from "../../services/attendanceRules.service.js";
 import { editAttendanceRequestReason } from "../../services/approval/service.js";
@@ -186,6 +186,17 @@ export function registerAttendanceRulesTools(server) {
         //     already has.
         if (action === 'raise_on_behalf') {
           assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        } else if (action === 'employee_options') {
+          // Issue 395 — a line manager filing leave for a report needs the
+          // picker but holds no company-wide attendance read. The service
+          // already narrows a non-HR caller to self + direct reports
+          // (HR-ATT-SCOPE-02), so the approvals-manager grant is sufficient to
+          // search within their own team; HR keeps using the attendance grant.
+          if (
+            !hasPermission(permissions, "hr:approvals:manager", "VIEW") &&
+            !hasPermission(permissions, "hr:attendance", "GET")
+          )
+            assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         } else if (action !== 'raise' && action !== 'edit_request') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         }
