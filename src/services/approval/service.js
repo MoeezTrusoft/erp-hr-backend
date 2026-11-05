@@ -623,9 +623,9 @@ export function submitApprovalOnBehalf(raw) {
   );
 }
 
-export function actApproval(raw) {
+export async function actApproval(raw) {
   const input = ApprovalAction.parse(raw);
-  return execute(input, "ACTION", async (tx, env) => {
+  const result = await execute(input, "ACTION", async (tx, env) => {
     await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
     const row = await tx.hrApprovalRequest.findFirst({
       where: { tenantId: env.tenantId, id: input.approvalRef },
@@ -753,6 +753,12 @@ export function actApproval(raw) {
       record: await view(tx, env, next),
     };
   });
+  // MULTI-COMPANY-MIRROR-01 (B-B) — carry the outcome to the other companies'
+  // copies of the same request: a first decision decides the siblings still
+  // pending, a withdrawal withdraws only the pending mirrors. After the
+  // transaction on purpose: a mirror problem never rolls back this decision.
+  await mirrorApprovalOutcome(input, result);
+  return result;
 }
 const EDIT_REASON_LIMIT = 4000;
 // Why the caller may not edit this on-behalf attendance request, or null when they may. One place for the rules, used by
@@ -854,6 +860,41 @@ export async function editAttendanceRequestReason(raw) {
     };
   });
 }
+
+async function mirrorApprovalOutcome(input, result) {
+  try {
+    const { mcpCtx } = await import("../../lib/requestContext.js");
+    const row = await mcpCtx.run({ system: true }, () =>
+      prisma.hrApprovalRequest.findFirst({
+        where: { id: input.approvalRef },
+        select: { kind: true, sourceRef: true, tenantId: true, stage: true },
+      }),
+    );
+    if (!row || row.kind !== "ATTENDANCE") return;
+    const anomalyId = Number(String(row.sourceRef ?? "").split("@")[0]);
+    if (!Number.isInteger(anomalyId) || anomalyId < 1) return;
+    const { mirrorDecision, withdrawMirrors, mirrorSafely } = await import(
+      "../attendanceRequestMirror.service.js"
+    );
+    if (row.stage === "APPROVED" || row.stage === "REJECTED")
+      await mirrorSafely("decision", () =>
+        mirrorDecision({
+          tenantId: row.tenantId,
+          anomalyId,
+          decision: row.stage,
+          comment: input.reason ?? null,
+          deciderName: result?.actorCode ?? null,
+        }),
+      );
+    else if (row.stage === "WITHDRAWN")
+      await mirrorSafely("withdraw", () =>
+        withdrawMirrors({ tenantId: row.tenantId, anomalyId }),
+      );
+  } catch {
+    // never fail the caller's own decision on a mirror problem
+  }
+}
+
 export function readApproval(raw) {
   const input = ApprovalRead.parse(raw);
   return execute(input, "READ", async (tx, env) => {
