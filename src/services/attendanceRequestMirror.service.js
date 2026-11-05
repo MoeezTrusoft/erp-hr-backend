@@ -50,14 +50,29 @@ const patternOf = (schedule) => {
   };
 };
 
-const samePattern = (a, b) =>
-  Boolean(a) &&
-  Boolean(b) &&
-  a.from === b.from &&
-  a.to === b.to &&
-  a.crossesMidnight === b.crossesMidnight &&
-  a.offDays.length === b.offDays.length &&
-  a.offDays.every((day, index) => day === b.offDays[index]);
+// A schedule reaches this module in two shapes: the pattern itself (the unit
+// matrix below) and the WorkSchedule row that carries it in `schedule_pattern`
+// (the live path). Normalise both here; reading `offDays` off the row threw on
+// the first real raise (October 2026 backfill), after the dry run — which uses
+// its own SQL — had already reported the pair as mirrorable.
+const asPattern = (value) => {
+  if (!value || typeof value !== "object") return null;
+  return "schedule_pattern" in value ? patternOf(value) : value;
+};
+
+const samePattern = (a, b) => {
+  const one = asPattern(a);
+  const two = asPattern(b);
+  if (!one || !two) return false;
+  if (!Array.isArray(one.offDays) || !Array.isArray(two.offDays)) return false;
+  return (
+    one.from === two.from &&
+    one.to === two.to &&
+    one.crossesMidnight === two.crossesMidnight &&
+    one.offDays.length === two.offDays.length &&
+    one.offDays.every((day, index) => day === two.offDays[index])
+  );
+};
 
 // A person can be enrolled on several devices that are ALL in force in one
 // company — Shah Hasan has PECHS 9014 and Dalmia 9013 in both BOC and JOC — so
@@ -302,10 +317,15 @@ export async function mirrorRaise({ tenantId, anomalyId }, db = prisma) {
   const group = origin.mirrorGroupId ?? randomUUID();
   // Stamp the origin first: a later failure half-way still leaves both rows
   // joinable by group, and only the origin carries originAnomalyId (null there).
-  await db.attendanceAnomaly.updateMany({
-    where: { tenantId, id: anomalyId, mirrorGroupId: null },
-    data: { mirrorGroupId: group },
-  });
+  // Every write runs under an explicit tenant context: tenantScope.js appends
+  // the AMBIENT tenant to the WHERE clause, so on a live raise (origin company
+  // context) the target-company stamp below would silently match no row.
+  await mcpCtx.run({ user: { tenantId } }, () =>
+    db.attendanceAnomaly.updateMany({
+      where: { tenantId, id: anomalyId, mirrorGroupId: null },
+      data: { mirrorGroupId: group },
+    }),
+  );
 
   for (const target of targets) {
     if (target.verdict !== "mirror") {
@@ -334,16 +354,18 @@ export async function mirrorRaise({ tenantId, anomalyId }, db = prisma) {
           onBehalf: false,
         }),
       );
-      await db.attendanceAnomaly.updateMany({
-        where: { tenantId: target.tenantId, id: target.caseId },
-        data: {
-          originAnomalyId: origin.id,
-          originTenantId: tenantId,
-          mirrorGroupId: group,
-          originRaisedByName:
-            origin.raisedByName ?? originEmployee?.employee_name ?? null,
-        },
-      });
+      await mcpCtx.run({ user: { tenantId: target.tenantId } }, () =>
+        db.attendanceAnomaly.updateMany({
+          where: { tenantId: target.tenantId, id: target.caseId },
+          data: {
+            originAnomalyId: origin.id,
+            originTenantId: tenantId,
+            mirrorGroupId: group,
+            originRaisedByName:
+              origin.raisedByName ?? originEmployee?.employee_name ?? null,
+          },
+        }),
+      );
       mirrored.push({
         tenantId: target.tenantId,
         company: to,
