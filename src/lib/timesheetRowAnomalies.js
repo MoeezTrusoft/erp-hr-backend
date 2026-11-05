@@ -13,15 +13,28 @@ const ORDER = ["ABSENT", "MISSING_CHECKIN", "MISSING_CHECKOUT", "LATE_CHECKIN", 
 
 /** Active rules-v2 cases of one employee-day, as the row carries them. */
 export function rowAnomalies(dayAnomalies = [], { approvalByAnomaly, decisionsByAnomaly, raiseByByAnomaly } = {}) {
-  return dayAnomalies
-    .filter(
-      (an) =>
-        RULE_TYPES.includes(an.type) &&
-        Number(an.rulesVersion) === 2 &&
-        an.evidenceState !== "SUPERSEDED" &&
-        an.evidenceState !== "RESOLVED" &&
-        !FORM_SOURCES.includes(String(an.sourceKind ?? "").toUpperCase()),
-    )
+  // TS-REQ-PICK-01 — the same case can exist twice on a day: the raise path used
+  // to file a second row instead of updating the detected one, leaving an
+  // ACTIVE duplicate (22 such pairs in Trusoft October 2026). Two identical
+  // "Late Check-in: Not submitted" lines and two identical raise actions on one
+  // day read as two separate cases. Keep ONE row per type, preferring the one
+  // that carries a request (raised or decided) and otherwise the newest.
+  const eligible = dayAnomalies.filter(
+    (an) =>
+      RULE_TYPES.includes(an.type) &&
+      Number(an.rulesVersion) === 2 &&
+      an.evidenceState !== "SUPERSEDED" &&
+      an.evidenceState !== "RESOLVED" &&
+      !FORM_SOURCES.includes(String(an.sourceKind ?? "").toUpperCase()),
+  );
+  const byType = new Map();
+  for (const an of eligible) {
+    const kept = byType.get(an.type);
+    if (kept == null || (approvalByAnomaly?.has(String(an.id)) && !approvalByAnomaly?.has(String(kept.id)))) {
+      byType.set(an.type, an);
+    }
+  }
+  return [...byType.values()]
     .sort((a, b) => ORDER.indexOf(a.type) - ORDER.indexOf(b.type) || a.id - b.id)
     .map((an) => {
       const approval = approvalByAnomaly?.get(String(an.id)) ?? null;

@@ -577,6 +577,75 @@ describe("site evidence, review and recovery safeguards", () => {
     expect((await attendanceCompleteness({ ...open, asOf: new Date(0) }, db)).ready).toBe(false);
     expect((await attendanceCompleteness({ ...open, asOf: new Date("2100-01-01T00:00:00Z") }, db)).ready).toBe(true);
   });
+  // §368 (operator, 2026-11-04) — one stale device record must not block every
+  // month's timesheet forever. Only evidence that can still belong to THIS month
+  // holds it open; the rest is reported as staleEvents (and can be dismissed).
+  it("does not let a dateless capture event block the month (§368)", async () => {
+    const db = database([["09:00", 0], ["17:00", 1]]);
+    await apply(db);
+    await db.attendanceCaptureEvent.create({
+      data: {
+        tenantId: TENANT,
+        employeeId: 1,
+        state: "FAILED",
+        parsed: { raw: "unparseable" },
+        createdAt: at("10:00"),
+      },
+    });
+    const r = await attendanceCompleteness(
+      { tenantId: TENANT, from: date, to: date, asOf: new Date(0) },
+      db,
+    );
+    expect(r.ready).toBe(true);
+    expect(r.staleEvents.count).toBe(1);
+    expect(r.staleEvents.items[0]).toMatchObject({
+      state: "FAILED",
+      date: null,
+      reason: "NO_PUNCH_DATE",
+    });
+  });
+  it("reports a capture event from another month as stale instead of blocking (§368)", async () => {
+    const db = database([["09:00", 0], ["17:00", 1]]);
+    await apply(db);
+    await db.attendanceCaptureEvent.create({
+      data: {
+        tenantId: TENANT,
+        employeeId: 1,
+        state: "PENDING",
+        parsed: { punchedAt: "2026-08-31T09:00:00.000Z" },
+        createdAt: new Date("2026-08-31T09:05:00.000Z"),
+      },
+    });
+    const r = await attendanceCompleteness(
+      { tenantId: TENANT, from: date, to: date, asOf: new Date(0) },
+      db,
+    );
+    expect(r.ready).toBe(true);
+    expect(r.staleEvents).toMatchObject({
+      count: 1,
+      items: [{ date: "2026-08-31", reason: "OLDER_THAN_PERIOD" }],
+    });
+  });
+  it("reports unresolved evidence older than the scan as stale (§368)", async () => {
+    const db = database([["09:00", 0], ["17:00", 1]]);
+    await apply(db);
+    await db.attendanceCaptureEvent.create({
+      data: {
+        tenantId: TENANT,
+        employeeId: 1,
+        state: "NEEDS_REVIEW",
+        parsed: { punchedAt: "2025-12-01T09:00:00.000Z" },
+        createdAt: new Date("2025-12-01T09:00:00.000Z"),
+      },
+    });
+    const r = await attendanceCompleteness(
+      { tenantId: TENANT, from: date, to: date, asOf: new Date(0) },
+      db,
+    );
+    expect(r.ready).toBe(true);
+    expect(r.staleEvents.count).toBe(1);
+    expect(r.staleEvents.items[0].reason).toBe("OLDER_THAN_PERIOD");
+  });
   it("settles a day whose unraised case was already excused by an earlier approved appeal", async () => {
     const db = database([["09:00", 0]]);
     await apply(db);
@@ -620,6 +689,9 @@ describe("site evidence, review and recovery safeguards", () => {
         employeeId: 1,
         state: "NEEDS_REVIEW",
         parsed: { punchedAt: at("17:00").toISOString() },
+        // §368 — the gate now scans a band around the period, so seed the
+        // receipt date a real device push would have: the punch's own day.
+        createdAt: at("17:00"),
       },
     });
     expect(

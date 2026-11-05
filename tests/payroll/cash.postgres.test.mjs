@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setupPayroll, prisma, company, people, db, as, submit, act } from "./fixtures.mjs";
 import { processPayrollRun, finalizePayrollRun } from "../../src/services/payrollService.js";
-import { markPayslipsCashPaid, payrollPaymentStatus } from "../../src/services/payrollPayments.service.js";
+import { markPayslipsCashPaid, payrollPaymentStatus, recordPayrollPayment } from "../../src/services/payrollPayments.service.js";
 import { createClaim, listClaims, submitClaim } from "../../src/services/claims.service.js";
 import { createLoan } from "../../src/services/loan.service.js";
 import { getMyPayslip } from "../../src/services/myPayslip.service.js";
@@ -42,6 +42,30 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
   await setCash(false);
   await assert.rejects(as("HR", () => markPayslipsCashPaid(input)), /pays by bank/);
   await setCash(true);
+  // A cash company must not acquire a bank trail (§366): the bank path refuses.
+  const slipRow = await db((tx) => tx.payrollPayslip.findFirst({ where: { tenantId: company, payrollRunId: run.id } }));
+  await assert.rejects(
+    as("HR", () =>
+      recordPayrollPayment({
+        tenantId: company,
+        runId: run.id,
+        employeeCode: code,
+        actorCode: people.HR.employee_code,
+        stage: "SUBMITTED",
+        reference: "BANK-1",
+        evidenceRef: "evidence-1",
+        amount: slipRow.netAmount,
+        currency: slipRow.currencyCode || "PKR",
+        occurredAt: "2026-10-01T09:00:00Z",
+        requestKey: randomUUID(),
+      }),
+    ),
+    /pays salaries in cash/,
+  );
+  assert.equal(
+    await db((tx) => tx.payrollPayslip.count({ where: { tenantId: company, payrollRunId: run.id, paymentEvidence: { not: null } } })),
+    0,
+  );
   await assert.rejects(as("HR", () => markPayslipsCashPaid({ ...input, paidOn: "2999-01-01T00:00:00Z" })), /future/);
   await assert.rejects(as("HR", () => markPayslipsCashPaid({ ...input, employeeCodes: ["NOPE-1"] })), /Not in this payroll/);
   assert.deepEqual(await as("HR", () => markPayslipsCashPaid(input)), { paid: 1, alreadyRecorded: false });

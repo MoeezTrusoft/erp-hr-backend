@@ -123,6 +123,14 @@ export async function recordPayrollPayment({
       });
       if (run?.status !== "FINALIZED")
         fail("Finalize the approved payroll before recording bank activity");
+      // A cash company has no bank activity to record: its payslips are settled
+      // by markPayslipsCashPaid. Accepting bank evidence here would leave a
+      // reconciliation trail for a payment that never went through a bank
+      // (§366, operator 2026-11-04; all five companies pay in cash).
+      if (await runPaysInCash(tx, tenantId, run))
+        fail(
+          "This company pays salaries in cash: record the payment as cash paid instead of bank evidence",
+        );
       const slip = await tx.payrollPayslip.findFirst({
         where: {
           tenantId,

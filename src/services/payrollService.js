@@ -8,7 +8,8 @@ import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
 import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
-import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry } from './attendanceRulePayroll.service.js';
+import { priceRuleDays, RULE_DEDUCTION_CODE, ADJUSTMENT_CODE, releaseFailedCarry, payrollMonthLabel } from './attendanceRulePayroll.service.js';
+import { openRequestCount } from '../lib/openAnomalyRequests.js';
 import { lockAttendancePeriod } from './attendancePeriod.service.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
 import { markLapsedCases } from './attendanceLapse.service.js';
@@ -1175,6 +1176,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(updatedBy) ?? -1}});
         if(!actor?.employee_code) throw payrollError('A verified employee code is required to process payroll');
         if(approval && approval.employeeCode!==actor.employee_code) throw payrollError('The payroll initiator must perform the recalculation');
+        // The timesheet gate counted open requests at submission; one can be
+        // raised afterwards. Re-check here so a month is never calculated over
+        // an unanswered request (and so a later decision cannot land on an
+        // already-processed payroll). Same predicate as the submit gate.
+        const openRequests=await openRequestCount(tx,tenantId,{from:current.periodStart,to:current.periodEnd});
+        if(openRequests) throw payrollError(`HR-TP-05 ${openRequests} unresolved attendance request(s) for ${payrollMonthLabel(current.periodStart)} — decide them in the Approval Centre before processing payroll`);
         if(interrupted) await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_PROCESSING_INTERRUPTED',details:`Recalculating a run left in PROCESSING since ${new Date(current.updated_at).toISOString()}`,employeeId:actor.id}});
         previousRun = { status: current.status, processedBy: current.processedBy ?? null, approvedBy: current.approvedBy ?? null, approvedAt: current.approvedAt ?? null };
         await tx.payrollRun.update({where:{id},data:{status:'PROCESSING',processedBy:actor.id,approvedBy:null,approvedAt:null}});
@@ -1294,8 +1301,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         const nilTaxEstimates=await prisma.payrollAuditLog.findMany({where:withTenant(tenantId,{payrollRunId:id,action:'PAYROLL_NIL_TAX_ESTIMATE'}),orderBy:[{created_at:'desc'},{id:'desc'}],distinct:['employeeId']});
         for(const audit of nilTaxEstimates){const employee=employees.find(e=>e.id===audit.employeeId);if(employee)employee.payrollNilTaxEstimate=audit.newValues;}
 
-        const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
-        const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // N-15 / N-16 — salary dedup + employment-scoped attendance, applied to
         // every selected employee before the payslip build (helpers above).
         for (const employee of employees) {
@@ -1326,6 +1331,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         });
 
 
+        // Read the manual-monthly entries only after the published setup resolved
+        // every employee's mode: a manual profile on a DEVICE-stored employee must
+        // not slip through to the days default.
+        const monthlyInputs = employees.some(isHeadendEmployee) ? await prisma.monthlyPayrollAttendance.findMany({where:{tenantId,month:payrollRun.periodStart.toISOString().slice(0,7)}}) : [];
+        const monthlyByEmployee = new Map(monthlyInputs.map(row=>[row.employeeId,row]));
         // HR-PAYROLL-EOBI-01 — per-tenant statutory switches, read once for the
         // run. Absent row means the tenant never configured payroll rules, which
         // is the same as everything off.
@@ -1798,6 +1808,11 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
     assertReady((await payrollReadiness({tenantId,run:locked,employees,db:tx})).issues);
     const holds=await tx.payrollPayslip.count({where:{tenantId,payrollRunId:id,status:'HOLD'}});
     if(holds) throw payrollError('Resolve held payslips before finalization');
+    // Last gate before the payslips lock: a request raised after the timesheet
+    // was submitted (or after processing) must be decided first. Same
+    // predicate as the submit gate, re-run against the month being finalized.
+    const openRequests=await openRequestCount(tx,tenantId,{from:locked.periodStart,to:locked.periodEnd});
+    if(openRequests) throw payrollError(`HR-TP-05 ${openRequests} unresolved attendance request(s) for ${payrollMonthLabel(locked.periodStart)} — decide them in the Approval Centre before finalizing payroll`);
     await settlePayrollLoans(tx,{tenantId,runId:id});
     await tx.payrollPayslip.updateMany({
       where: withTenant(tenantId, { payrollRunId: id }),

@@ -70,7 +70,7 @@ export const IMPORT_COLUMNS = [
 // engine's base); the rest are EARNING SalaryComponents computed as a PERCENTAGE
 // of BASIC. The preview engine computes GROSS = BASIC + Σ(pct/100 · BASIC), so
 // each component's stored percent is (pctOfTotal / BASIC_PCT_OF_TOTAL · 100) and
-// GROSS reconstructs the entered total exactly.
+// GROSS reconstructs the entered total (to the paisa — see SPLIT_PCT_PRECISION).
 export const BASIC_PCT_OF_TOTAL = 45;
 export const SALARY_SPLIT = [
   { code: "HRA", name: "House Rent Allowance", pctOfTotal: 20 },
@@ -78,12 +78,27 @@ export const SALARY_SPLIT = [
   { code: "MEDICAL", name: "Medical Allowance", pctOfTotal: 12.5 },
   { code: "UTILITY", name: "Utility Allowance", pctOfTotal: 7.5 },
 ];
-// Percent-of-BASIC to store on each SalaryComponent (see note above).
+// Stored precision of those percent-of-basic values (§369). The exact values are
+// 400/9, 100/3, 250/9 and 50/3 — non-terminating decimals — so a coarse stored
+// number loses part of the package: at 4 dp the four add up to 122.2222 % of
+// basic instead of 122.2222… %, i.e. 55 % of the package becomes 54.99999 %, and a
+// 300,000 package paid 299,999.97 (a 150,000 one 149,999.99). 8 dp leaves less
+// than 1e-8 % (well under a paisa at any real salary) and salary_components.value
+// is numeric(18,8) (migration 20261104200000), so the database stores those digits
+// instead of rounding them back to 4.
+export const SPLIT_PCT_PRECISION = 8;
+export const componentPctOfBasic = (pctOfTotal) => (pctOfTotal / BASIC_PCT_OF_TOTAL) * 100;
+export const roundSplitPct = (pctOfBasic) => {
+  const f = 10 ** SPLIT_PCT_PRECISION;
+  return Math.round((Number(pctOfBasic) + Number.EPSILON) * f) / f;
+};
+// What ensureSalaryComponents stores on HRA / CONVEYANCE / MEDICAL / UTILITY.
+export const storedPctOfBasic = (pctOfTotal) => roundSplitPct(componentPctOfBasic(pctOfTotal));
+
 // Codes an earlier version of the importer created for the same allowances. They must not stay active next to the
 // standard ones: employees carry their own allowance assignments coded HRA / CONVEYANCE / MEDICAL / UTILITY, and a
 // salary component is skipped only on an identical code, so a CONV / MED / UTIL component pays the allowance twice.
 export const LEGACY_ALLOWANCE_CODES = ["CONV", "MED", "UTIL"];
-export const componentPctOfBasic = (pctOfTotal) => (pctOfTotal / BASIC_PCT_OF_TOTAL) * 100;
 
 // Parse a money cell: strip currency symbols / thousands separators / spaces.
 export function parseMoney(raw) {
