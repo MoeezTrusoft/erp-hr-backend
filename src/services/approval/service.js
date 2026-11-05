@@ -450,13 +450,22 @@ async function audit(tx, env, before, after, action, reason) {
 // The shared submission body. `submitApproval` is the employee initiator's own
 // door (owner-only); `submitApprovalOnBehalf` is the HR door used by specialist
 // services that file a request FOR an employee.
-async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) {
+async function submitWithin(
+  tx,
+  env,
+  input,
+  { onBehalf = false, allowManagerFiler = false, prepare } = {},
+) {
   if (onBehalf) {
     // TS-ONBEHALF-01 — HR filing on an employee's behalf. The specialist
     // service has already asserted that the caller may act for this employee;
     // here we re-assert the grant the HR stage itself requires, so no role
     // weaker than the verifier can open a request in someone else's name.
-    if (!permits(env, "verify"))
+    // Issue 395 — the one other door is the employee's own LINE MANAGER: the
+    // specialism has asserted the reporting line and the owner check below
+    // re-reads it from the source, so neither a stranger nor any other role can
+    // use this path.
+    if (!permits(env, "verify") && !allowManagerFiler)
       fail("Only HR may submit a request on an employee's behalf", 403);
   } else if (!permits(env, "self") || !ownsCode(env, input.employeeCode)) {
     fail("Only the employee initiator can submit", 403);
@@ -488,6 +497,10 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
       // on-behalf submission cannot attach a request to a third employee.
       if (source.who.employee_code !== input.employeeCode)
         fail("The request belongs to another employee", 403);
+      // A filer without the HR verification grant must BE the owner's line
+      // manager — read from the source, not from the request payload.
+      if (!permits(env, "verify") && Number(source.who.managerId) !== Number(env.who.id))
+        fail("Only the employee's line manager or HR may file this request for them", 403);
     } else if (!ownsCode(env, source.who.employee_code)) {
       fail("Only the employee initiator can submit", 403);
     }
@@ -616,10 +629,10 @@ export function submitApproval(raw, { prepare } = {}) {
 // The request's owner is the SUBJECT employee (input.employeeCode, checked
 // against the source), while HrApprovalAudit.actorCode records the FILER, so
 // the trail always distinguishes a self-filed request from an on-behalf one.
-export function submitApprovalOnBehalf(raw) {
+export function submitApprovalOnBehalf(raw, { allowManagerFiler = false } = {}) {
   const input = ApprovalSubmit.parse(raw);
   return execute(input, "SUBMIT", (tx, env) =>
-    submitWithin(tx, env, input, { onBehalf: true }),
+    submitWithin(tx, env, input, { onBehalf: true, allowManagerFiler }),
   );
 }
 

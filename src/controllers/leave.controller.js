@@ -71,10 +71,20 @@ export const deleteLeavePolicy = async (req, res) => {
 
 export const getLeaveRequests = async (req, res) => {
   try {
+    const filters = { ...req.query };
     // If user is not HR/Manager, only show their own requests
-    const filters = req.user.role === 'EMPLOYEE'
-      ? { ...req.query, employeeId: await requireEmployeeActor(req.user) }
-      : { ...req.query };
+    if (req.user.role === 'EMPLOYEE') {
+      const self = await requireEmployeeActor(req.user);
+      if (filters.involvingEmployeeId != null) {
+        // Issue 395 — "my rows + the ones I raised for someone else". The id is
+        // re-derived here, so a forged query cannot widen the scope, and the
+        // single-employee pin is dropped or it would undo the OR.
+        filters.involvingEmployeeId = self;
+        delete filters.employeeId;
+      } else {
+        filters.employeeId = self;
+      }
+    }
     filters.tenantId = tenantOf(req);
 
     const requests = await leaveService.getLeaveRequests(filters);
