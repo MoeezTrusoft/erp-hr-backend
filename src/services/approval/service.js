@@ -779,11 +779,14 @@ const EDIT_REASON_LIMIT = 4000;
 // record's `actions` (so a screen offers Edit only when it will work).
 //
 // Matrix (operator, 2026-11-05):
+//   • HR edits any open resolution request, at any stage, until it is decided:
+//     the permission that makes an HR approver (`hr.approvals.verify`), not the
+//     sealed route's list, decides, so an employee's own note is not stuck with
+//     wording HR cannot fix (operator, 2026-11-05: "Allow HR to edit any anomaly");
 //   • an employee edits the request they raised about their own day, until the
 //     first approver decides it;
-//   • on a request raised on behalf, the filer, the employee's line manager and
-//     the HR approvers on the sealed route edit it, until the level after HR's
-//     step acts;
+//   • on a request raised on behalf, the filer and the employee's line manager
+//     edit it, until the level after HR's step acts;
 //   • Management never edits a request: it decides.
 async function attendanceEditRefusal(tx, env, row, anomaly) {
   if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING")
@@ -802,6 +805,9 @@ async function attendanceEditRefusal(tx, env, row, anomaly) {
     )
   )
     return { status: 403, message: "Management decides this request and cannot edit it" };
+  // HR holds the verify permission in every company it serves; its wording may
+  // be corrected at any stage, whoever raised the request (operator, 2026-11-05).
+  if (permits(env, "verify")) return null;
   // The employee's own request: their note, until an approver has decided.
   if (anomaly.raisedById === anomaly.employeeId || !anomaly.raisedByName) {
     // A sealed route records acts in `route.acted`; a legacy request records the
@@ -816,15 +822,14 @@ async function attendanceEditRefusal(tx, env, row, anomaly) {
       return { status: 403, message: "Only the employee who raised this request can edit it" };
     return null;
   }
-  // Raised on behalf: editable only while it waits for the level after HR's step.
-  let hrCodes = [], editable = false;
+  // Raised on behalf: the filer and the line manager edit it only while it waits
+  // for the level after HR's step (HR itself is above, on the verify permission).
+  let editable = false;
   if (row.stage === "LEVEL" && row.route?.levels) {
     const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
     editable = Boolean(hr) && row.level > hr.index && acted.every((a) => a.level <= hr.index);
-    hrCodes = hr?.approverCodes ?? [];
   } else if (row.stage === "MANAGEMENT" && !row.route) {
     editable = true;
-    hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
   }
   if (!editable) return { status: 409, message: "This request has moved past the step where it can be edited" };
   const filer = await tx.employee.findFirst({
@@ -836,10 +841,9 @@ async function attendanceEditRefusal(tx, env, row, anomaly) {
     select: { id: true, managerId: true },
   });
   const isFiler = Boolean(filer && ownsCode(env, filer.employee_code));
-  const isHr = hrCodes.some((code) => ownsCode(env, code));
   const isLineManager = Boolean(subject?.managerId) && subject.managerId === env.who.id;
-  if (!isFiler && !isHr && !isLineManager)
-    return { status: 403, message: "Only the person who filed this request, the employee's line manager or the HR approver can edit it" };
+  if (!isFiler && !isLineManager)
+    return { status: 403, message: "Only HR, the person who filed this request or the employee's line manager can edit it" };
   if (env.who.id === anomaly.employeeId)
     return { status: 403, message: "You cannot edit a request about your own day" };
   return null;
