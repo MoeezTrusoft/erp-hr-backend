@@ -155,11 +155,33 @@ export async function listRuleCases(
     if(row.status==='PENDING' && !openDays.has(key)) { openDays.add(key); summary.open++; }
   }
   const items=all.slice((page-1)*pageSize,page*pageSize);
+  // The open approval request of each case, so a screen can open it for an edit
+  // (the message of a raised request stays editable until the next approver
+  // decides). Keyed by the source reference the request was sealed with.
+  const openRequests = items.length
+    ? await db.hrApprovalRequest.findMany({
+        where: {
+          tenantId: user.tenantId,
+          kind: "ATTENDANCE",
+          execution: "PENDING",
+          sourceRef: { in: items.map((a) => `${a.id}@${a.factHash ?? ""}`) },
+        },
+        select: { id: true, sourceRef: true, version: true, stage: true, level: true },
+      })
+    : [];
+  const openByRef = new Map(openRequests.map((r) => [r.sourceRef, r]));
   return {
-    items: items.map((a) => ({
-      ...a,
-      employee: employees.find((e) => e.id === a.employeeId),
-    })),
+    items: items.map((a) => {
+      const open = openByRef.get(`${a.id}@${a.factHash ?? ""}`);
+      return {
+        ...a,
+        employee: employees.find((e) => e.id === a.employeeId),
+        approvalRef: open?.id ?? null,
+        approvalVersion: open?.version ?? null,
+        approvalStage: open?.stage ?? null,
+        approvalLevel: open?.level ?? null,
+      };
+    }),
     total:all.length,
     summary,
     observedAt: new Date().toISOString(),

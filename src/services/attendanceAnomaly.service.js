@@ -313,18 +313,42 @@ export async function listAnomalies({
     });
   };
 
+  // The approval request the case was raised with, so a screen can open its
+  // message for an edit until the next approver decides (issue 353).
+  const openRequests = rows.length
+    ? await prisma.hrApprovalRequest.findMany({
+        where: {
+          tenantId,
+          kind: "ATTENDANCE",
+          execution: "PENDING",
+          sourceRef: {
+            in: rows
+              .filter((row) => row.rulesVersion === 2)
+              .map((row) => `${row.id}@${row.factHash ?? ""}`),
+          },
+        },
+        select: { id: true, sourceRef: true, version: true, stage: true, level: true },
+      })
+    : [];
+  const openBySource = new Map(openRequests.map((r) => [r.sourceRef, r]));
+
   return {
     items: rows.map((row) => {
       const punch =
         row.date instanceof Date
           ? punchByEmpDay.get(`${row.employeeId}:${row.date.getTime()}`)
           : null;
+      const open = openBySource.get(`${row.id}@${row.factHash ?? ""}`);
       return {
         ...rowDto(row),
         chain: matrixFor(row),
         // T&A-RULE-03 — the day's punches, when the row has a date.
         checkIn: punch?.check_in ?? null,
         checkOut: punch?.check_out ?? null,
+        // Issue 353 — the sealed approval request behind an EDIT_REASON action.
+        approvalRef: open?.id ?? null,
+        approvalVersion: open?.version ?? null,
+        approvalStage: open?.stage ?? null,
       };
     }),
     total,
