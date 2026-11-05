@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { getCtx } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import * as service from "../../services/attendanceRules.service.js";
+import { editAttendanceRequestReason } from "../../services/approval/service.js";
 import { saveCorrectionRequest, myCorrectionRequests } from '../../services/attendanceCorrectionRequest.service.js';
 import * as workspace from '../../services/attendanceWorkspace.service.js';
 import { attendanceExportInput, attendanceViewInput } from '../../lib/attendanceWorkspaceSchemas.js';
@@ -80,6 +81,20 @@ export function registerAttendanceRulesTools(server) {
         requestKey: z.string().uuid().optional(),
       },
       service.raiseRuleRequestOnBehalf,
+    ],
+    // Correct the message of a raised resolution request until the next approver
+    // decides: the employee on their own request, and the filer, the employee's
+    // line manager or the HR approver on a request raised on behalf. Management
+    // never edits; an edit follows a multi-company (mirrored) copy. The service
+    // holds the rules and the audit.
+    [
+      "edit_request",
+      {
+        approvalRef: z.string().uuid(),
+        expectedVersion: z.number().int().positive(),
+        reason,
+      },
+      editAttendanceRequestReason,
     ],
     [
       "comment",
@@ -162,9 +177,27 @@ export function registerAttendanceRulesTools(server) {
         //     grant the legacy ops raise used; the centre re-asserts the
         //     verification grant on submission.
         // Every other action stays behind the GET hr:attendance gate.
+        //
+        //   • `edit_request` is the employee's own correction of a request until
+        //     an approver decides, or a filer/line-manager/HR correction of an
+        //     on-behalf request. The service is authoritative on who may edit
+        //     (an ordinary employee holds no hr:attendance write), so it is not
+        //     gated here — only by the approval access every self-service user
+        //     already has.
         if (action === 'raise_on_behalf') {
           assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-        } else if (action !== 'raise') {
+        } else if (action === 'employee_options') {
+          // Issue 395 — a line manager filing leave for a report needs the
+          // picker but holds no company-wide attendance read. The service
+          // already narrows a non-HR caller to self + direct reports
+          // (HR-ATT-SCOPE-02), so the approvals-manager grant is sufficient to
+          // search within their own team; HR keeps using the attendance grant.
+          if (
+            !hasPermission(permissions, "hr:approvals:manager", "VIEW") &&
+            !hasPermission(permissions, "hr:attendance", "GET")
+          )
+            assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+        } else if (action !== 'raise' && action !== 'edit_request') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         }
         if (action === 'export_records') assertPermission(permissions,'EXPORT','hr:attendance',user.isAdmin);

@@ -153,6 +153,26 @@ export function sessioniseByRoster(
     return closeBounds.get(key);
   };
 
+  // HR-ATT-EARLY-ARRIVAL-01 (2026-11-05) — a crew arriving more than the five-hour
+  // check-in window early is an ARRIVAL, not the previous day's departure.
+  //
+  // Abdullah Hanif (Trusoft, 22:00-07:00) scanned IN at 16:17 on 3 Nov. The 2 Nov
+  // shift's close window runs until the next shift's check-in window opens (17:00),
+  // so the scan was claimed by 2 Nov, repaired to a check-out, and both his real
+  // 3 Nov arrival and his 4 Nov 08:22 departure were left without their pair.
+  // A punch that is nearer a rostered START than the END it would otherwise close
+  // belongs to that start. Explicit check-outs are untouched: a chosen departure is
+  // timed against the END it closes, never against a start.
+  const nearerStartThanPreviousEnd = (startAt, t) => {
+    let prevEnd = null;
+    for (const offset of [-2, -1, 0]) {
+      const anchor = new Date(startAt + offset * DAY_MS);
+      for (const c of shiftCandidates(pattern, startOfDay(anchor)))
+        if (c.end && +c.end < startAt) prevEnd = Math.max(prevEnd ?? -Infinity, +c.end);
+    }
+    return prevEnd != null && t > prevEnd && startAt - t < t - prevEnd;
+  };
+
   /** Distance from `t` to the nearest rostered START, across a day either side. */
   const toNearestStart = (at) => {
     let best = Infinity;
@@ -238,7 +258,12 @@ export function sessioniseByRoster(
             // An explicit check-out is timed against the END it closes and is
             // accepted up to the shift's close bound, not the arrival deadline.
             const bound = explicitOut(p) ? Math.max(deadline, closeBoundFor(candidate)) : deadline;
-            if (t < start.getTime() - tol || t > bound) continue;
+            const inWindow = t >= start.getTime() - tol;
+            // Only a scan the device stamped IN may be pulled forward: a punch
+            // keyed OUT closes the shift it belongs to (ATT-EXPLICIT-OUT-01), even
+            // when the tenant infers direction from position.
+            if (!inWindow && (isOut(p) || !nearerStartThanPreviousEnd(+start, t))) continue;
+            if (t > bound) continue;
             const distance = Math.abs(t - (explicitOut(p) ? end.getTime():start.getTime()));
             if (!best || distance < best.distance) {
               best = {

@@ -383,7 +383,7 @@ async function view(tx, env, row, summary = false, people = null) {
     source: summary ? {} : isAppraisalApproval(row)
       ? await appraisalApprovalSource(tx, env, row) : unseal(row.snapshot),
     leavePolicies,
-    actions: summary ? [] : await actionsFor(tx, env, row),
+    actions: summary ? [] : [...(await actionsFor(tx, env, row)), ...(await editActionsFor(tx, env, row))],
     history: history.map(
       ({
         actorCode,
@@ -450,13 +450,22 @@ async function audit(tx, env, before, after, action, reason) {
 // The shared submission body. `submitApproval` is the employee initiator's own
 // door (owner-only); `submitApprovalOnBehalf` is the HR door used by specialist
 // services that file a request FOR an employee.
-async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) {
+async function submitWithin(
+  tx,
+  env,
+  input,
+  { onBehalf = false, allowManagerFiler = false, prepare } = {},
+) {
   if (onBehalf) {
     // TS-ONBEHALF-01 — HR filing on an employee's behalf. The specialist
     // service has already asserted that the caller may act for this employee;
     // here we re-assert the grant the HR stage itself requires, so no role
     // weaker than the verifier can open a request in someone else's name.
-    if (!permits(env, "verify"))
+    // Issue 395 — the one other door is the employee's own LINE MANAGER: the
+    // specialism has asserted the reporting line and the owner check below
+    // re-reads it from the source, so neither a stranger nor any other role can
+    // use this path.
+    if (!permits(env, "verify") && !allowManagerFiler)
       fail("Only HR may submit a request on an employee's behalf", 403);
   } else if (!permits(env, "self") || !ownsCode(env, input.employeeCode)) {
     fail("Only the employee initiator can submit", 403);
@@ -488,6 +497,10 @@ async function submitWithin(tx, env, input, { onBehalf = false, prepare } = {}) 
       // on-behalf submission cannot attach a request to a third employee.
       if (source.who.employee_code !== input.employeeCode)
         fail("The request belongs to another employee", 403);
+      // A filer without the HR verification grant must BE the owner's line
+      // manager — read from the source, not from the request payload.
+      if (!permits(env, "verify") && Number(source.who.managerId) !== Number(env.who.id))
+        fail("Only the employee's line manager or HR may file this request for them", 403);
     } else if (!ownsCode(env, source.who.employee_code)) {
       fail("Only the employee initiator can submit", 403);
     }
@@ -616,10 +629,10 @@ export function submitApproval(raw, { prepare } = {}) {
 // The request's owner is the SUBJECT employee (input.employeeCode, checked
 // against the source), while HrApprovalAudit.actorCode records the FILER, so
 // the trail always distinguishes a self-filed request from an on-behalf one.
-export function submitApprovalOnBehalf(raw) {
+export function submitApprovalOnBehalf(raw, { allowManagerFiler = false } = {}) {
   const input = ApprovalSubmit.parse(raw);
   return execute(input, "SUBMIT", (tx, env) =>
-    submitWithin(tx, env, input, { onBehalf: true }),
+    submitWithin(tx, env, input, { onBehalf: true, allowManagerFiler }),
   );
 }
 
@@ -759,6 +772,176 @@ export async function actApproval(raw) {
   // transaction on purpose: a mirror problem never rolls back this decision.
   await mirrorApprovalOutcome(input, result);
   return result;
+}
+const EDIT_REASON_LIMIT = 4000;
+// Why the caller may not edit this resolution request's message, or null when
+// they may. One place for the rules, shared by the edit command and by the
+// record's `actions` (so a screen offers Edit only when it will work).
+//
+// Matrix (operator, 2026-11-05):
+//   • an employee edits the request they raised about their own day, until the
+//     first approver decides it;
+//   • on a request raised on behalf, the filer, the employee's line manager and
+//     the HR approvers on the sealed route edit it, until the level after HR's
+//     step acts;
+//   • Management never edits a request: it decides.
+async function attendanceEditRefusal(tx, env, row, anomaly) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING")
+    return { status: 409, message: "This request has already been decided and can no longer be edited" };
+  if (anomaly.rulesVersion !== 2)
+    return { status: 409, message: "Only a resolution request can be edited" };
+  const levels = row.route?.levels ?? [],
+    acted = row.route?.acted ?? [];
+  // The approver who takes the final decision is never the one writing the ask.
+  if (
+    levels.some(
+      (level) =>
+        level.action === "APPROVE" &&
+        level.engaged &&
+        (level.approverCodes ?? []).some((code) => ownsCode(env, code)),
+    )
+  )
+    return { status: 403, message: "Management decides this request and cannot edit it" };
+  // The employee's own request: their note, until an approver has decided.
+  if (anomaly.raisedById === anomaly.employeeId || !anomaly.raisedByName) {
+    // A sealed route records acts in `route.acted`; a legacy request records the
+    // line manager's and HR's acts in their own columns. Either one ends the edit.
+    if (acted.length || row.managerActorCode || row.hrActorCode)
+      return { status: 409, message: "An approver has already decided this request; it can no longer be edited" };
+    const subject = await tx.employee.findFirst({
+      where: { tenant_id: env.tenantId, id: anomaly.employeeId },
+      select: { employee_code: true },
+    });
+    if (!(subject && ownsCode(env, subject.employee_code)))
+      return { status: 403, message: "Only the employee who raised this request can edit it" };
+    return null;
+  }
+  // Raised on behalf: editable only while it waits for the level after HR's step.
+  let hrCodes = [], editable = false;
+  if (row.stage === "LEVEL" && row.route?.levels) {
+    const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
+    editable = Boolean(hr) && row.level > hr.index && acted.every((a) => a.level <= hr.index);
+    hrCodes = hr?.approverCodes ?? [];
+  } else if (row.stage === "MANAGEMENT" && !row.route) {
+    editable = true;
+    hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
+  }
+  if (!editable) return { status: 409, message: "This request has moved past the step where it can be edited" };
+  const filer = await tx.employee.findFirst({
+    where: { tenant_id: env.tenantId, id: anomaly.raisedById },
+    select: { employee_code: true },
+  });
+  const subject = await tx.employee.findFirst({
+    where: { tenant_id: env.tenantId, id: anomaly.employeeId },
+    select: { id: true, managerId: true },
+  });
+  const isFiler = Boolean(filer && ownsCode(env, filer.employee_code));
+  const isHr = hrCodes.some((code) => ownsCode(env, code));
+  const isLineManager = Boolean(subject?.managerId) && subject.managerId === env.who.id;
+  if (!isFiler && !isHr && !isLineManager)
+    return { status: 403, message: "Only the person who filed this request, the employee's line manager or the HR approver can edit it" };
+  if (env.who.id === anomaly.employeeId)
+    return { status: 403, message: "You cannot edit a request about your own day" };
+  return null;
+}
+async function editActionsFor(tx, env, row) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING") return [];
+  const id = Number(String(row.sourceRef).split("@")[0]);
+  if (!Number.isInteger(id)) return [];
+  const anomaly = await tx.attendanceAnomaly.findFirst({ where: { tenantId: env.tenantId, id, rulesVersion: 2 } });
+  return anomaly && !(await attendanceEditRefusal(tx, env, row, anomaly)) ? ["EDIT_REASON"] : [];
+}
+// The filer of an on-behalf attendance resolution request (and the HR approver
+// on the sealed route) may correct its reason until the level after HR has acted.
+// The reason is part of the source digest, so the digest and the snapshot are
+// sealed again in the same transaction; the stage and the approvers do not change.
+export async function editAttendanceRequestReason(raw) {
+  const input = {
+    approvalRef: String(raw?.approvalRef ?? ""),
+    expectedVersion: Number(raw?.expectedVersion),
+    reason: String(raw?.reason ?? "").trim(),
+  };
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.approvalRef) || !Number.isInteger(input.expectedVersion))
+    fail("A request reference and its version are required", 400);
+  if (!input.reason) fail("A reason is required", 400);
+  if (input.reason.length > EDIT_REASON_LIMIT)
+    fail(`The reason must be at most ${EDIT_REASON_LIMIT} characters`, 400);
+  // The case id is read inside the transaction; the mirror carries the edit to
+  // the employee's other companies after this one has committed (best effort).
+  let editedAnomalyId = null,
+    editedTenantId = null;
+  const result = await execute(input, "EDIT_REASON", async (tx, env) => {
+    await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
+    const row = await tx.hrApprovalRequest.findFirst({
+      where: { tenantId: env.tenantId, id: input.approvalRef },
+    });
+    if (!row || row.kind !== "ATTENDANCE" || !(await canRead(tx, env, row)))
+      fail("Request not found", 404);
+    assertVersion(row, input.expectedVersion);
+    if (row.execution !== "PENDING")
+      fail("This request has already been decided and can no longer be edited", 409);
+    const source = await loadSource(tx, env, row.kind, row.sourceRef, { lock: true });
+    const anomaly = source.row;
+    const refused = await attendanceEditRefusal(tx, env, row, anomaly);
+    if (refused) fail(refused.message, refused.status);
+    if (input.reason === String(anomaly.reason ?? "").trim())
+      fail("The reason is unchanged", 400);
+    const changed = await tx.attendanceAnomaly.updateMany({
+      where: { tenantId: env.tenantId, id: anomaly.id, workflowVersion: anomaly.workflowVersion },
+      data: { reason: input.reason, workflowVersion: { increment: 1 } },
+    });
+    if (changed.count !== 1) fail("The case changed; refresh and try again", 409);
+    await tx.attendanceRuleAudit.create({
+      data: {
+        tenantId: env.tenantId,
+        employeeId: anomaly.employeeId,
+        anomalyId: anomaly.id,
+        action: "REQUEST_EDITED",
+        actorId: env.who.employee_code,
+        data: json({ before: anomaly.reason, after: input.reason, approvalRef: row.id, round: row.round }),
+      },
+    });
+    const resealed = await loadSource(tx, env, row.kind, row.sourceRef);
+    const next = await tx.hrApprovalRequest.update({
+      where: { id: row.id },
+      data: {
+        version: { increment: 1 },
+        sourceHash: resealed.digest,
+        snapshot: seal(resealed.snapshot),
+      },
+    });
+    await audit(tx, env, row, next, "EDITED", input.reason);
+    editedAnomalyId = anomaly.id;
+    editedTenantId = env.tenantId;
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, next),
+    };
+  });
+  // MULTI-COMPANY-MIRROR-01 — the same employee's other companies hold their own
+  // copy of the case; their message follows the edit, still pending, and each
+  // copy's sealed digest is refreshed so its approver can decide it.
+  if (editedAnomalyId)
+    await mirrorEditOutcome({
+      tenantId: editedTenantId,
+      anomalyId: editedAnomalyId,
+      reason: input.reason,
+    });
+  return result;
+}
+
+async function mirrorEditOutcome({ tenantId, anomalyId, reason }) {
+  try {
+    const { mirrorEditReason, mirrorSafely } = await import(
+      "../attendanceRequestMirror.service.js"
+    );
+    const id = tenantId || getCtx()?.user?.tenantId;    if (!id) return;
+    await mirrorSafely("edit", () =>
+      mirrorEditReason({ tenantId: id, anomalyId, reason }),
+    );
+  } catch {
+    // A mirror problem never fails the caller's own edit.
+  }
 }
 
 async function mirrorApprovalOutcome(input, result) {

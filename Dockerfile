@@ -1,10 +1,10 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720
 
-FROM node:24-bookworm-slim AS base
+FROM node:24-alpine@sha256:4eefa1bfce4197942661ef9148247d779ddf1bb0ee006d3294a467609de60724 AS base
 # The CLI is retained for deployment scripts. Refresh its bundled security patches
 # independently, without resolving npm's unpublished development-only packages.
-RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates perl-base \
-  && rm -rf /var/lib/apt/lists/* \
+RUN apk upgrade --no-cache \
+  && apk add --no-cache openssl ca-certificates bash \
   && npm install --global npm@12.2.0 --ignore-scripts \
   && npm --prefix /tmp/npm-security install --no-save --package-lock=false --ignore-scripts brace-expansion@5.0.11 undici@6.29.1 \
   && rm -rf /usr/local/lib/node_modules/npm/node_modules/brace-expansion /usr/local/lib/node_modules/npm/node_modules/undici \
@@ -25,8 +25,8 @@ RUN npm ci --omit=dev --ignore-scripts \
 FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN groupadd --system --gid 10001 nodeapp \
-  && useradd --system --uid 10001 --gid nodeapp --home-dir /app --shell /usr/sbin/nologin nodeapp
+RUN addgroup -S -g 10001 nodeapp \
+  && adduser -S -D -H -u 10001 -G nodeapp -h /app -s /sbin/nologin nodeapp
 COPY --chown=nodeapp:nodeapp --from=deps /app/node_modules ./node_modules
 COPY --chown=nodeapp:nodeapp package.json package-lock.json .npmrc ./
 COPY --chown=nodeapp:nodeapp prisma ./prisma

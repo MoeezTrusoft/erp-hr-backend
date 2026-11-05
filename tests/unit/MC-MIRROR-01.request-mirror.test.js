@@ -3,7 +3,10 @@
 // HomeVision/JOC pair must stay independent; Afsha's Homenet/HomeVision pair
 // must mirror.
 import { describe, it, expect } from "@jest/globals";
-import { compareSibling } from "../../src/services/attendanceRequestMirror.service.js";
+import {
+  compareSibling,
+  editedSiblingReason,
+} from "../../src/services/attendanceRequestMirror.service.js";
 
 const ORIGIN = {
   employeeId: 159,
@@ -99,6 +102,33 @@ describe("MC-MIRROR-01 sibling comparison", () => {
     ).toMatchObject({ reason: "shift differs" });
   });
 
+  // The live path hands over the WorkSchedule rows, not the extracted pattern.
+  it("mirrors when both schedules are WorkSchedule rows carrying schedule_pattern", () => {
+    const row = (pattern) => ({
+      schedule_pattern: pattern,
+      schedule_name: "x",
+    });
+    const pattern = {
+      shift: { from: "10:00", to: "18:00", crossesMidnight: false },
+      offDays: [7, 6],
+    };
+    expect(
+      compare({
+        originSchedule: row(pattern),
+        targetSchedule: row({ ...pattern, offDays: [6, 7] }),
+      }),
+    ).toEqual({
+      verdict: "mirror",
+      reason: "same person, device, shift and case",
+    });
+  });
+
+  it("treats a WorkSchedule row with a missing pattern as a different shift", () => {
+    expect(
+      compare({ targetSchedule: { schedule_pattern: null } }),
+    ).toMatchObject({ reason: "shift differs" });
+  });
+
   it("skips when the sibling has no equivalent case (different grading or policy)", () => {
     expect(compare({ targetCase: null })).toMatchObject({
       reason: "no equivalent case",
@@ -159,8 +189,12 @@ describe("MC-MIRROR-01 sibling comparison", () => {
   it("stays independent when the device sets do not overlap", () => {
     expect(
       compare({
-        originEnrolment: [enrolment({ sn: "TTQ5261300360", deviceUserId: "200" })],
-        targetEnrolment: [enrolment({ sn: "A8LN181960262", deviceUserId: "9012" })],
+        originEnrolment: [
+          enrolment({ sn: "TTQ5261300360", deviceUserId: "200" }),
+        ],
+        targetEnrolment: [
+          enrolment({ sn: "A8LN181960262", deviceUserId: "9012" }),
+        ],
       }),
     ).toMatchObject({ reason: "device differs" });
   });
@@ -169,5 +203,22 @@ describe("MC-MIRROR-01 sibling comparison", () => {
     expect(
       compare({ targetEnrolment: [enrolment({ deviceUserId: "200" })] }),
     ).toMatchObject({ reason: "device differs" });
+  });
+});
+
+// Issue 353b (operator, 2026-11-05) — an edited message follows the group: the
+// sibling keeps the clause that says where the request came from, and takes the
+// editor's new text.
+describe("an edit follows a mirrored request", () => {
+  it("keeps the sibling's own mirror clause and replaces the message", () => {
+    const siblingReason =
+      "The reader was down at the gate.\n\nRaised in Homenet and mirrored to HomeVision automatically (same person, device and shift).";
+    expect(editedSiblingReason(siblingReason, "The reader was down 09:00-09:30.")).toBe(
+      "The reader was down 09:00-09:30.\n\nRaised in Homenet and mirrored to HomeVision automatically (same person, device and shift).",
+    );
+  });
+
+  it("trims the editor's text and never invents a clause", () => {
+    expect(editedSiblingReason("old text", "  new text  ")).toBe("new text");
   });
 });

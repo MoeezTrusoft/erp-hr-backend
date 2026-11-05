@@ -347,6 +347,10 @@ export const deleteLeavePolicy = async (id, deletedBy) => {
 export const getLeaveRequests = async (filters = {}) => {
   const {
     employeeId,
+    // Issue 395 — "rows that concern this employee": theirs, plus the ones they
+    // raised for someone else (a line manager's on-behalf filings). One integer,
+    // always derived from the session by the caller, never a client list.
+    involvingEmployeeId,
     status,
     leavePolicyId,
     startDate,
@@ -375,11 +379,26 @@ export const getLeaveRequests = async (filters = {}) => {
   }
 
   if (startDate && endDate) {
-    where.OR = [
+    // Kept as an AND group so it composes with the involvingEmployeeId OR below
+    // instead of overwriting it.
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
       {
-        startDate: { lte: new Date(endDate) },
-        endDate: { gte: new Date(startDate) }
+        OR: [
+          {
+            startDate: { lte: new Date(endDate) },
+            endDate: { gte: new Date(startDate) }
+          }
+        ]
       }
+    ];
+  }
+
+  const involvingId = parseInt(involvingEmployeeId);
+  if (Number.isInteger(involvingId)) {
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      { OR: [{ employeeId: involvingId }, { createdById: involvingId }] }
     ];
   }
 
@@ -508,6 +527,10 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     endDate,
     reason,
     notes,
+    // Issue 395 — set by hr_leave_request_create for an authorised ON-BEHALF
+    // raise only: a manager or HR filing for a day the employee has already
+    // taken. Never settable from a self-service call (the tool decides it).
+    allowPastDates = false,
   } = data;
 
   // Validate dates
@@ -519,7 +542,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     throw new Error('Start date cannot be after end date');
   }
 
-  if (start < today) {
+  if (start < today && !allowPastDates) {
     throw new Error('Cannot request leave for past dates');
   }
 
