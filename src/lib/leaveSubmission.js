@@ -27,7 +27,9 @@ export async function fileLeaveForApproval({
           (onBehalf
             ? "Raised on behalf of the employee"
             : "Employee submitted the leave request"),
-        onBehalf ? { onBehalf: true, managerMayFile: true } : {},
+        // The options argument is passed only for an on-behalf raise, so the
+        // self-service call keeps its original three-argument shape.
+        ...(onBehalf ? [{ onBehalf: true, managerMayFile: true }] : []),
       );
       submission = {
         submittedForApproval: true,

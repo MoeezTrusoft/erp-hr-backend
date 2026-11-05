@@ -3,16 +3,16 @@
 //   • the employee's LINE MANAGER for a direct report, with no write grant.
 // The decision is a pure function, the filing is a thin wrapper, so both are
 // tested here without the approval stack or a database.
-const {
+import { describe, expect, test } from "@jest/globals";
+
+import {
   mayRaiseLeaveFor,
-  RAISE_SELF,
+  RAISE_DENIED,
   RAISE_HR,
   RAISE_MANAGER,
-  RAISE_DENIED,
-} = require("../../src/lib/leaveOnBehalf.js");
-const {
-  fileLeaveForApproval,
-} = require("../../src/lib/leaveSubmission.js");
+  RAISE_SELF,
+} from "../../src/lib/leaveOnBehalf.js";
+import { fileLeaveForApproval } from "../../src/lib/leaveSubmission.js";
 
 describe("HR-LEAVE-ONBEHALF-01 who may raise leave for someone else", () => {
   test("your own request is self-service, with or without any grant", () => {
@@ -133,9 +133,9 @@ describe("HR-LEAVE-ONBEHALF-01 filing the request into the Approval Centre", () 
       reason: undefined,
       submit: async (...args) => calls.push(args),
     });
-    expect(calls).toEqual([
-      ["LEAVE", 5, "Employee submitted the leave request", {}],
-    ]);
+    // Three arguments: the self-service call keeps its original shape, so no
+    // empty options object is passed for an ordinary submit.
+    expect(calls).toEqual([["LEAVE", 5, "Employee submitted the leave request"]]);
   });
 
   test("a refused submission keeps the request and says why", async () => {
