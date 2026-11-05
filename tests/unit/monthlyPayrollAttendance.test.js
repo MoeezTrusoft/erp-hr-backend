@@ -12,7 +12,7 @@ describe('monthly payable days',()=>{
  expect(Number(r.grossAmount)).toBe(10000);expect(Number(r.totalDeductions)).toBe(1000);expect(Number(r.netAmount)).toBe(9000);
  });
  it('supports half days',()=>expect(Number(build(29.5).grossAmount)).toBe(29500));
- it('defaults Headend to 30 days if no entry exists',()=>{const r=build(30,{bridges:{}});expect(r.payableDays).toBe(30);expect(Number(r.grossAmount)).toBe(30000);});
+ it('never defaults a missing entry to a full month',()=>expect(()=>build(30,{bridges:{}})).toThrow('Monthly payable days are missing'));
  it.each([-1,31,1.25,null,'',Infinity])('rejects invalid September days %s',v=>expect(()=>validatePayableDays('2026-09',v)).toThrow());
  it('uses leap-year month length',()=>{expect(validatePayableDays('2028-02',29)).toBe(29);expect(()=>validatePayableDays('2027-02',29)).toThrow();});
  it('rejects paid days outside employment',()=>expect(()=>manualAttendanceFactor(employee,run,{month:'2026-09',payableDays:16},500000n)).toThrow('employment days'));
@@ -22,4 +22,13 @@ describe('monthly payable days',()=>{
  const r=groupOfficePayroll([{payrollOffice:'HVC-PECHS-Office',grossAmount:'100',totalDeductions:'10',netAmount:'90'},{payrollOffice:'HVC-Headend-Staff',grossAmount:'200',totalDeductions:'20',netAmount:'180'},{grossAmount:'10',totalDeductions:'0',netAmount:'10'}]);
  expect(r.offices).toHaveLength(3);expect(r.totals).toEqual({employees:3,gross:310,deductions:30,net:280});
  });
+});
+describe('payable days answer for the month it is about',()=>{
+ it('allows 31 days in a 31-day month',()=>expect(validatePayableDays('2026-10',31)).toBe(31));
+ it('names the month and its own limit when 31 is entered for a 30-day month',()=>
+  expect(()=>validatePayableDays('2026-11',31)).toThrow('Payable days for November 2026 must be between 0 and 30 (the month has 30 days), in half-day increments'));
+ it('names the limit for a 28-day February',()=>
+  expect(()=>validatePayableDays('2027-02',29)).toThrow('February 2027 must be between 0 and 28'));
+ it('still refuses quarter days',()=>
+  expect(()=>validatePayableDays('2026-10',30.25)).toThrow('half-day increments'));
 });

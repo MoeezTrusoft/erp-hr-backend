@@ -8,6 +8,7 @@ import {
 import {
   receiveCapture,
   reviewCaptureEvents,
+  dismissStaleCaptureEvents,
   authenticateCaptureDevice,
   registerCaptureDevice,
 } from "../../src/services/attendanceCapture.service.js";
@@ -262,5 +263,93 @@ describe("durable receipt and tenant attribution", () => {
         db,
       ),
     ).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+// §368 (operator, 2026-11-04) — stale evidence can be cleared, but evidence that
+// still belongs to the month cannot: that punch blocks submission and must be
+// resolved instead.
+describe("dismissing stale capture evidence", () => {
+  const staleEvent = async (db, data) =>
+    db.attendanceCaptureEvent.create({
+      data: {
+        tenantId: TENANT,
+        state: "FAILED",
+        raw: { row: "101" },
+        parsed: { raw: "unparseable" },
+        ...data,
+      },
+    });
+  it("dismisses a dateless record with an audit trail", async () => {
+    const db = captureDb({ attendanceCaptureEvent: [] });
+    const row = await staleEvent(db);
+    const out = await dismissStaleCaptureEvents(
+      {
+        tenantId: TENANT,
+        actorId: "hr",
+        ids: [row.id],
+        from: "2026-10-01",
+        to: "2026-10-31",
+        reason: "Device line with no timestamp, cleared",
+      },
+      db,
+    );
+    expect(out).toEqual({ dismissed: 1, ids: [row.id] });
+    const saved = db.snapshot().attendanceCaptureEvent[0];
+    expect(saved.state).toBe("DISMISSED");
+    expect(saved.version).toBe(row.version + 1);
+    expect(db.snapshot().attendanceCaptureAudit[0]).toMatchObject({
+      action: "DISMISS",
+      reason: "Device line with no timestamp, cleared",
+    });
+  });
+  it("refuses evidence whose punch falls inside the month", async () => {
+    const db = captureDb({ attendanceCaptureEvent: [] });
+    const row = await staleEvent(db, {
+      parsed: { punchedAt: "2026-10-05T09:00:00.000Z" },
+    });
+    await expect(
+      dismissStaleCaptureEvents(
+        {
+          tenantId: TENANT,
+          actorId: "hr",
+          ids: [row.id],
+          from: "2026-10-01",
+          to: "2026-10-31",
+          reason: "shortcut",
+        },
+        db,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(db.snapshot().attendanceCaptureEvent[0].state).toBe("FAILED");
+  });
+  it("accepts a punch from another month and skips one already dismissed", async () => {
+    const db = captureDb({ attendanceCaptureEvent: [] });
+    const aug = await staleEvent(db, {
+      parsed: { punchedAt: "2026-08-31T09:00:00.000Z" },
+    });
+    const gone = await staleEvent(db, { state: "DISMISSED" });
+    const out = await dismissStaleCaptureEvents(
+      {
+        tenantId: TENANT,
+        actorId: "hr",
+        ids: [aug.id, gone.id],
+        from: "2026-10-01",
+        to: "2026-10-31",
+        reason: "August evidence belongs to August",
+      },
+      db,
+    );
+    expect(out).toEqual({ dismissed: 1, ids: [aug.id] });
+  });
+  it("requires a reason and a period", async () => {
+    const db = captureDb({ attendanceCaptureEvent: [] });
+    const row = await staleEvent(db);
+    await expect(
+      dismissStaleCaptureEvents(
+        { tenantId: TENANT, actorId: "hr", ids: [row.id], reason: "  " },
+        db,
+      ),
+    ).rejects.toThrow(/period/);
   });
 });

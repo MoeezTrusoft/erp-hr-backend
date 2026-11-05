@@ -122,11 +122,11 @@ test("HR edits an on-behalf request before Management acts", { timeout: 180000 }
 
   await t.test("on an on-behalf request the employee concerned and Management are refused", async () => {
     const { record } = await raiseOnBehalf();
-    await rejectsWith(edit("EMPLOYEE", record, "I want to change it"), 403, /line manager or the HR approver/);
+    await rejectsWith(edit("EMPLOYEE", record, "I want to change it"), 403, /employee's line manager can edit it/);
     // These fixtures carry the legacy fixed stages (no sealed route), so the
     // final approver cannot be told apart by code; on a sealed route the refusal
     // names the rule ("Management decides this request").
-    await rejectsWith(edit("MANAGEMENT", record, "Management editing"), 403, /line manager or the HR approver/);
+    await rejectsWith(edit("MANAGEMENT", record, "Management editing"), 403, /employee's line manager can edit it/);
   });
 
   await t.test("the employee's line manager may edit the request HR raised on their behalf", async () => {
@@ -155,27 +155,41 @@ test("HR edits an on-behalf request before Management acts", { timeout: 180000 }
     await rejectsWith(edit("HR", approved.record, "too late"), 409);
   });
 
-  await t.test("the employee edits the request they raised, until the first approver decides", async () => {
+  await t.test("the employee edits their own request and HR may correct it too, until it is decided", async () => {
     const anomaly = await detectedCase();
     const record = await as("EMPLOYEE", () =>
       raiseRuleRequest({ user: userOf("EMPLOYEE"), anomalyId: anomaly.id, reason: "my own explanation", requestKey: randomUUID() }),
     );
     const seenByEmployee = await as("EMPLOYEE", () => readApproval({ approvalRef: record.approvalRef }));
     assert.ok(seenByEmployee.record.actions.includes("EDIT_REASON"), "the employee is offered Edit on their own request");
-    // HR does not rewrite an employee's own words.
-    await rejectsWith(edit("HR", record, "HR rewriting it"), 403, /Only the employee who raised this request/);
-    const out = await edit("EMPLOYEE", record, "my own explanation, corrected");
+    // Operator, 2026-11-05: HR corrects any open request, the employee's own note included.
+    const seenByHr = await as("HR", () => readApproval({ approvalRef: record.approvalRef }));
+    assert.ok(seenByHr.record.actions.includes("EDIT_REASON"), "HR is offered Edit on an employee's own request");
+    const byHr = await edit("HR", record, "my own explanation (HR added the gate name)");
+    assert.equal((await readCase(anomaly.id)).reason, "my own explanation (HR added the gate name)");
+    assert.equal(byHr.record.history.at(-1).action, "EDITED");
+    const out = await edit("EMPLOYEE", byHr.record, "my own explanation, corrected");
     assert.equal((await readCase(anomaly.id)).reason, "my own explanation, corrected");
-    assert.equal(out.record.history.at(-1).action, "EDITED");
     const audits = await db((tx) =>
       tx.attendanceRuleAudit.findMany({ where: { tenantId: company, anomalyId: anomaly.id, action: "REQUEST_EDITED" } }),
     );
     assert.equal(audits.at(-1).data.after, "my own explanation, corrected");
-    // The first approver's act ends the edit.
+    // The first approver's act ends the employee's edit.
     const approved = await as("HR", () =>
       actApproval({ approvalRef: out.record.approvalRef, expectedVersion: out.record.version, action: "VERIFY", reason: "verified", requestKey: randomUUID() }),
     );
     await rejectsWith(edit("EMPLOYEE", approved.record, "one more change", approved.record.version), 409, /already decided/);
+    // HR keeps correcting the wording while Management still has to decide.
+    const late = await edit("HR", approved.record, "HR's final wording");
+    assert.equal(late.record.stage, "MANAGEMENT");
+    assert.equal((await readCase(anomaly.id)).reason, "HR's final wording");
+    // Management still cannot edit (here told that the employee's own request is
+    // past editing), and a decided request is closed to everyone.
+    await rejectsWith(edit("MANAGEMENT", late.record, "Management wording"), 409);
+    const decided = await as("MANAGEMENT", () =>
+      actApproval({ approvalRef: late.record.approvalRef, expectedVersion: late.record.version, action: "APPROVE", reason: "ok", requestKey: randomUUID() }),
+    );
+    await rejectsWith(edit("HR", decided.record, "after the decision"), 409);
   });
 
   await t.test("an unchanged, empty or stale edit is refused", async () => {

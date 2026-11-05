@@ -447,4 +447,38 @@ describe("timesheet and anomaly projection", () => {
     expect(pending.total).toBe(3);
     expect(pending.items).toHaveLength(2);
   });
+
+  // §364 (operator, 2026-11-04) — the tile used to include cases that were
+  // already settled: a legacy rules-v1 row still at PENDING, and a current-rule
+  // row whose employee-day another decision had already closed. Only open,
+  // current-rule cases belong in it.
+  it("counts only open, current-rule cases in the anomalies tile", async () => {
+    const row = (id, date, type, status, rulesVersion) => ({
+      id,
+      tenantId: TENANT,
+      employeeId: 1,
+      date: new Date(date),
+      type,
+      status,
+      evidenceState: "ACTIVE",
+      rulesVersion,
+      raisedById: null,
+    });
+    const db = captureDb({
+      employee: [{ id: 1, tenant_id: TENANT, employee_code: "EMP-001" }],
+      attendanceAnomaly: [
+        row(1, "2026-10-05", "LATE_CHECKIN", "PENDING", 2), // open
+        row(2, "2026-10-06", "LATE_CHECKIN", "PENDING", 2), // settled by 3
+        row(3, "2026-10-06", "LATE_CHECKIN", "APPROVED", 2),
+        row(4, "2026-10-07", "ABSENT", "PENDING", 1), // legacy: never open
+        row(5, "2026-10-08", "ABSENT", "PENDING", 2), // settled by the v1 approval 6
+        row(6, "2026-10-08", "ABSENT", "APPROVED", 1),
+      ],
+    });
+    const result = await listRuleCases(
+      { user: { tenantId: TENANT, roles: ["HR Manager"] }, from: "2026-10-01", to: "2026-10-31" },
+      db,
+    );
+    expect(result.summary.open).toBe(1);
+  });
 });

@@ -31,8 +31,7 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { AppError } from "../utils/AppError.js";
 import { logAction } from "../utils/logs.js";
-
-const PENDING_ANOMALY_STATUSES = ["PENDING"];
+import { openRequestCount } from "../lib/openAnomalyRequests.js";
 
 /** The month window a submission covers (payroll period = calendar month). */
 function submissionWindow(month) {
@@ -120,25 +119,13 @@ export async function getTimesheetSubmissionState(tenantId, month) {
   };
 }
 
-/** Count unresolved anomaly requests inside the month window. */
+/**
+ * Count unresolved anomaly requests inside the month window. The predicate is
+ * shared with the payroll process/finalize gates (`lib/openAnomalyRequests.js`)
+ * so a month cannot pass one gate and fail another for different reasons.
+ */
 async function pendingAnomalyCount(tenantId, { from, to }, db = prisma) {
-  // TS-SUBMIT-GATE-02 (2026-09-22) — only EMPLOYEE-SUBMITTED requests block
-  // the submission. The evaluator stamps machine-raised anomalies with its own
-  // sourceKind; those are grading records an employee hasn't answered yet —
-  // per the operator's ruling they simply become payroll deductions, they are
-  // not open requests HR must resolve. Without the filter a month with 46
-  // un-answered evaluator rows showed "46 anomaly requests still awaiting
-  // resolution" although no employee had submitted anything.
-  return db.attendanceAnomaly.count({
-    where: scopedWhere(tenantId, {
-      date: { gte: from, lte: to },
-      status: { in: PENDING_ANOMALY_STATUSES },
-      // A rules-v2 case blocks only once someone raised it: an unraised one is charged at payroll
-      // (operator, 2026-10-30), so it is not an open request.
-      OR: [{ sourceKind: "PAPER_FORM" }, { sourceKind: "RULES_V2", raisedById: { not: null } }],
-      evidenceState: 'ACTIVE',
-    }),
-  });
+  return openRequestCount(db, tenantId, { from, to });
 }
 
 /**

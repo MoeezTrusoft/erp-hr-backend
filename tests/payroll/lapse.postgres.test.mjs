@@ -76,6 +76,19 @@ test("payroll charges unraised cases past their window, and only those", { timeo
     await admin.end();
   }
   assert.equal(await net(run.id), charged2);
+  // HR-TP-05: payroll refuses to process over an open raised request. Close the
+  // one still held at 2026-09-02 (it was never priced) and pay the rest.
+  await db((tx) =>
+    tx.attendanceAnomaly.updateMany({
+      where: { tenantId: company, status: "PENDING", raisedById: { not: null } },
+      data: {
+        status: "RESOLVED",
+        evidenceState: "RESOLVED",
+        resolvedAt: new Date(),
+      },
+    }),
+  );
+  assert.equal(await net(run.id), charged2, "closing a held case changes nothing");
   const calculated = await as("EMPLOYEE", () => processPayrollRun(run.id, people.EMPLOYEE.id, company));
   assert.equal(Number(calculated.totalNet), charged2);
 });

@@ -2704,7 +2704,7 @@ model SalaryComponent {
   name         String
   type         PayElementType // EARNING | DEDUCTION
   computation  ComputationType @default(FIXED)
-  value        Decimal?        @db.Decimal(18, 4) // FIXED amount or PERCENTAGE percent (0-100)
+  value        Decimal?        @db.Decimal(18, 8) // FIXED amount or PERCENTAGE percent (0-100); 8 dp because the standard split is 400/9 … of basic
   formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
   taxable      Boolean         @default(true)
   active       Boolean         @default(true)
@@ -5762,4 +5762,12 @@ model PerfPeerResponse {
   @@unique([tenantId,id])
   @@unique([tenantId,nominationId])
   @@unique([tenantId,roundId,authorId])
+}
+
+model HrPmAvailabilityVersion {
+ tenantId String @db.Uuid
+ employeeId Int
+ version BigInt @default(1)
+ @@id([tenantId,employeeId])
+ @@map("hr_pm_availability_versions")
 }

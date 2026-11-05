@@ -184,6 +184,35 @@ function filterRowsByEmploymentSpan(rows, employmentEndByEmployee) {
   });
 }
 
+// ── Anomaly-request pick ────────────────────────────────────────────────────
+
+const FORM_SOURCE_KINDS = ["REGULARIZATION", "PAPER_FORM"];
+const SETTLED_EVIDENCE_STATES = new Set(["RESOLVED", "SUPERSEDED"]);
+
+// TS-REQ-PICK-01 — which anomaly row of an employee-day carries the day's
+// request story. A raised case (`id@factHash` approval exists) outranks an
+// employee form, which outranks a grading row; a live case outranks a settled
+// one; ties keep the first entry, i.e. the newest (the fetch is createdAt desc).
+export function pickDayAnomaly(list = [], approvalByAnomaly) {
+  const rank = (an) => {
+    let score = 0;
+    if (approvalByAnomaly?.has(String(an.id))) score += 4;
+    if (FORM_SOURCE_KINDS.includes(String(an.sourceKind ?? "").toUpperCase())) score += 2;
+    if (!SETTLED_EVIDENCE_STATES.has(String(an.evidenceState ?? "").toUpperCase())) score += 1;
+    return score;
+  };
+  let best = null;
+  let bestRank = -1;
+  for (const an of list) {
+    const score = rank(an);
+    if (score > bestRank) {
+      best = an;
+      bestRank = score;
+    }
+  }
+  return best;
+}
+
 // ── Date helpers ────────────────────────────────────────────────────────────
 
 // Start of a UTC day.
@@ -388,12 +417,21 @@ export async function getTimesheetKpis({ tenantId, from, to, employeeId, _withDe
   // structurally zero.
   // Guarded: some callers (unit tests) inject a Prisma stub without the
   // anomaly delegate; production always has it.
+  // §364 (operator, 2026-11-04) — the same tile on the employee profile must
+  // count what the Timesheet tile counts: cases that are open under the CURRENT
+  // rules. It used to count every case ever detected in the window, so a decided
+  // or a superseded rules-v1 row kept inflating it. (The Timesheet tile resolves
+  // a day settled by an older decision through attendanceRules' `decided` check;
+  // this per-employee KPI applies the status/version/evidence filters only.)
   const anomalies = prisma.attendanceAnomaly?.count
     ? await prisma.attendanceAnomaly.count({
         where: scopedWhere(tenantId, {
           ...eligibleFilter,
           date: { gte: period.from, lte: period.to },
           type: { notIn: ["ABSENT", "LATE_CHECKIN"] },
+          rulesVersion: 2,
+          status: "PENDING",
+          evidenceState: "ACTIVE",
         }),
       })
     : 0;
@@ -900,6 +938,30 @@ async function punchesForPageRows(pageRows, tenantId) {
   return byKey;
 }
 
+// §367 (operator, 2026-11-04) — a day can carry both punches and no stored
+// total: imported, corrected or legacy attendance rows, and rows the evaluator
+// never gave a verdict to, leave total_hours null and the Timesheet's worked
+// hours went BLANK even though the punches are right there. Fall back to the
+// punch-to-punch difference for DISPLAY only — the stored figure (the
+// evaluator's credited minutes, already net of unpaid breaks) always wins.
+//
+// A night shift's punches are stored on the attendance day with the same date
+// on both ends (HomeVision: check-in 23:01, check-out 13:35), so a check-out
+// earlier than the check-in is the shift crossing midnight, not bad data: wrap
+// it by 24 h. A missing punch, identical punches, or a pair less than a minute
+// apart (a lone punch stored at both ends — HomeVision has 11-second ABSENT
+// rows) stays blank: "0.00 hours" states nothing and reads as a real zero.
+function workedHours(row) {
+  const stored = row?.total_hours == null ? null : Number(row.total_hours);
+  if (stored != null && Number.isFinite(stored)) return stored;
+  if (!row?.check_in || !row?.check_out) return null;
+  let minutes =
+    (new Date(row.check_out).getTime() - new Date(row.check_in).getTime()) / 60000;
+  if (!Number.isFinite(minutes)) return null;
+  if (minutes < 0) minutes += 24 * 60;
+  return minutes >= 1 ? minutes / 60 : null;
+}
+
 export async function listCheckInOuts({
   tenantId,
   site, department, shift,
@@ -1081,26 +1143,15 @@ export async function listCheckInOuts({
   records=records.filter(r=>
     r.status!=='PENDING_ATTENDANCE' &&
     (!enumStatus || r.status===enumStatus) && !(where.status?.notIn||where.NOT?.status?.in||[]).includes(r.status));
-  const anomalyByKey = new Map();
+  // TS-REQ-PICK-01 (2026-11-05) — every anomaly row of an employee-day, newest
+  // first (the query is ordered createdAt desc). The row's single `request` is
+  // chosen from this list AFTER the approvals are known (pickDayAnomaly).
+  const dayAnomalies = new Map();
   for (const an of anomaliesForWindow) {
     if (an.date == null) continue; // window-wide forms don't attach to a day
     const key = `${an.employeeId}:${dayKey(an.date)}`;
-    // TS-REQUEST-04 — an employee form (REGULARIZATION) outranks the
-    // evaluator's grading row of the same day; among equals the newest wins
-    // (the list is ordered newest-first). The row builder then only treats
-    // REGULARIZATION rows as "requests".
-    const existing = anomalyByKey.get(key);
-    if (!existing) {
-      anomalyByKey.set(key, an);
-      continue;
-    }
-    const existingIsForm = ["REGULARIZATION", "PAPER_FORM"].includes(
-      String(existing.sourceKind ?? "").toUpperCase(),
-    );
-    const isForm = ["REGULARIZATION", "PAPER_FORM"].includes(
-      String(an.sourceKind ?? "").toUpperCase(),
-    );
-    if (isForm && !existingIsForm) anomalyByKey.set(key, an);
+    if (!dayAnomalies.has(key)) dayAnomalies.set(key, []);
+    dayAnomalies.get(key).push(an);
   }
   // TS-REQUEST-HYBRID-01 (operator, 2026-10-27) — the employee or HR raises the
   // resolution request for a detected case into the HR Approval Centre
@@ -1124,7 +1175,7 @@ export async function listCheckInOuts({
     casesByDay.get(key).push(an);
   }
   const approvalCandidates = new Map(
-    [...anomalyByKey.values(), ...[...casesByDay.values()].flat()].map((an) => [an.id, an]),
+    [...[...dayAnomalies.values()].flat(), ...[...casesByDay.values()].flat()].map((an) => [an.id, an]),
   );
   const approvalRefs = [...approvalCandidates.values()]
     .filter((an) => an.factHash)
@@ -1141,6 +1192,18 @@ export async function listCheckInOuts({
     for (const request of requests)
       approvalByAnomaly.set(String(request.sourceRef).split("@")[0], request);
   }
+  // TS-REQ-PICK-01 — the day's request story. Before this the pick was "newest
+  // wins, a form outranks a grading row", so a SECOND case that settled later
+  // (a missing check-out resolved after the late check-in was raised) became
+  // the day's pick: the row then read "Not submitted" with the resolved case's
+  // id while the raised case was still PENDING at Management, and the Actions
+  // menu lost both "View anomaly request" (row.request.status was UNSUBMITTED)
+  // and "Raise anomaly request" (the day already had cases, none of them
+  // unraised). Ranking: a raised case (an id@factHash approval) outranks a form,
+  // which outranks a grading row, and a live case outranks a settled one; ties
+  // keep the newest.
+  const anomalyByKey = new Map();
+  for (const [key, list] of dayAnomalies) anomalyByKey.set(key, pickDayAnomaly(list, approvalByAnomaly));
   const approvalRows = approvalCandidates.size
     ? await prisma.attendanceAnomalyApproval.findMany({
         where: { anomalyId: { in: [...approvalCandidates.keys()] } },
@@ -1250,7 +1313,7 @@ export async function listCheckInOuts({
       status: STATUS_DISPLAY[a.status] ?? a.status,
       checkIn: a.check_in ?? null,
       checkOut: a.check_out ?? null,
-      totalHours: a.total_hours ?? null,
+      totalHours: workedHours(a),
       calendarStatus:a.calendarStatus ?? null,
       plannedShift:a.plannedShift ?? null,
       assignedSites:a.assignedSites ?? [],

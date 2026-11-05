@@ -57,6 +57,9 @@ const prismaMock = {
     leave: mk(),
     attendancePayrollAdjustment: mk(),
     attendanceRuleAudit: mk(),
+    // HR-TP-05: processPayrollRun re-counts open attendance requests before it
+    // leaves PENDING (lib/openAnomalyRequests.js). No request is open here.
+    attendanceAnomaly: { ...mk(), count: jest.fn().mockResolvedValue(0) },
 };
 
 prismaMock.$transaction=async fn=>fn(prismaMock);
