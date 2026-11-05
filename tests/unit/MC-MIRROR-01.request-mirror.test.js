@@ -3,7 +3,10 @@
 // HomeVision/JOC pair must stay independent; Afsha's Homenet/HomeVision pair
 // must mirror.
 import { describe, it, expect } from "@jest/globals";
-import { compareSibling } from "../../src/services/attendanceRequestMirror.service.js";
+import {
+  compareSibling,
+  editedSiblingReason,
+} from "../../src/services/attendanceRequestMirror.service.js";
 
 const ORIGIN = {
   employeeId: 159,
@@ -200,5 +203,22 @@ describe("MC-MIRROR-01 sibling comparison", () => {
     expect(
       compare({ targetEnrolment: [enrolment({ deviceUserId: "200" })] }),
     ).toMatchObject({ reason: "device differs" });
+  });
+});
+
+// Issue 353b (operator, 2026-11-05) — an edited message follows the group: the
+// sibling keeps the clause that says where the request came from, and takes the
+// editor's new text.
+describe("an edit follows a mirrored request", () => {
+  it("keeps the sibling's own mirror clause and replaces the message", () => {
+    const siblingReason =
+      "The reader was down at the gate.\n\nRaised in Homenet and mirrored to HomeVision automatically (same person, device and shift).";
+    expect(editedSiblingReason(siblingReason, "The reader was down 09:00-09:30.")).toBe(
+      "The reader was down 09:00-09:30.\n\nRaised in Homenet and mirrored to HomeVision automatically (same person, device and shift).",
+    );
+  });
+
+  it("trims the editor's text and never invents a clause", () => {
+    expect(editedSiblingReason("old text", "  new text  ")).toBe("new text");
   });
 });

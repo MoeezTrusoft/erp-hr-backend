@@ -585,3 +585,107 @@ export async function mirrorSafely(label, fn) {
     return null;
   }
 }
+
+// Issue 353b (operator, 2026-11-05) — an edited message follows the group. The
+// sibling keeps its own "Raised in <A> and mirrored to <B> automatically …"
+// clause and takes the origin's new text; its sealed request is re-sealed with
+// the new digest so the sibling's approver can still decide it. Best effort per
+// sibling: a failure there never fails the edit the employee made.
+export function editedSiblingReason(currentReason, newReason) {
+  const text = String(currentReason ?? "").trim();
+  const at = text.indexOf("\n\nRaised in ");
+  const clause = at >= 0 ? text.slice(at) : "";
+  return `${String(newReason ?? "").trim()}${clause}`;
+}
+
+export async function mirrorEditReason(
+  { tenantId, anomalyId, reason },
+  db = prisma,
+) {
+  const origin = await db.attendanceAnomaly.findFirst({
+    where: { tenantId, id: anomalyId },
+    select: { id: true, mirrorGroupId: true },
+  });
+  if (!origin?.mirrorGroupId) return { edited: [], failed: [] };
+  const siblings = await db.attendanceAnomaly.findMany({
+    where: {
+      mirrorGroupId: origin.mirrorGroupId,
+      tenantId: { not: tenantId },
+      status: "PENDING",
+    },
+    select: { id: true, tenantId: true, employeeId: true, factHash: true, reason: true },
+  });
+  const edited = [];
+  const failed = [];
+  const { loadSource } = await import("./approval/adapters.js");
+  const { json } = await import("./approval/adapters.js");
+  const { encryptString } = await import("../lib/crypto.js");
+  const seal = (value) => ({
+    sealed: encryptString(JSON.stringify(json(value))),
+  });
+  for (const sibling of siblings) {
+    const nextReason = editedSiblingReason(sibling.reason, reason);
+    if (nextReason.trim() === String(sibling.reason ?? "").trim()) continue;
+    const ref = `${sibling.id}@${sibling.factHash ?? ""}`;
+    try {
+      await attendanceTransaction(db, sibling.tenantId, async (tx) => {
+        const request = await tx.hrApprovalRequest.findFirst({
+          where: {
+            tenantId: sibling.tenantId,
+            kind: KIND,
+            sourceRef: ref,
+            execution: "PENDING",
+          },
+          select: { id: true, round: true },
+        });
+        await tx.attendanceAnomaly.updateMany({
+          where: { tenantId: sibling.tenantId, id: sibling.id, status: "PENDING" },
+          data: { reason: nextReason, workflowVersion: { increment: 1 } },
+        });
+        if (request) {
+          const resealed = await loadSource(
+            tx,
+            { tenantId: sibling.tenantId },
+            KIND,
+            ref,
+          );
+          await tx.hrApprovalRequest.update({
+            where: { id: request.id },
+            data: {
+              version: { increment: 1 },
+              sourceHash: resealed.digest,
+              snapshot: seal(resealed.snapshot),
+            },
+          });
+        }
+        await tx.attendanceRuleAudit.create({
+          data: {
+            tenantId: sibling.tenantId,
+            employeeId: sibling.employeeId,
+            anomalyId: sibling.id,
+            action: "REQUEST_EDITED",
+            actorId: "system:mirror",
+            data: json({
+              before: sibling.reason,
+              after: nextReason,
+              approvalRef: request?.id ?? null,
+              mirroredFrom: tenantId,
+            }),
+          },
+        });
+      });
+      edited.push({
+        tenantId: sibling.tenantId,
+        anomalyId: sibling.id,
+        requestId: null,
+      });
+    } catch (err) {
+      failed.push({
+        tenantId: sibling.tenantId,
+        anomalyId: sibling.id,
+        reason: err?.message ?? "mirror edit failed",
+      });
+    }
+  }
+  return { edited, failed };
+}
