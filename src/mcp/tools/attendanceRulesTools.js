@@ -82,8 +82,11 @@ export function registerAttendanceRulesTools(server) {
       },
       service.raiseRuleRequestOnBehalf,
     ],
-    // Correct the reason of a request HR raised on behalf, until the next level acts.
-    // The service limits it to the filer and the HR approver on the sealed route.
+    // Correct the message of a raised resolution request until the next approver
+    // decides: the employee on their own request, and the filer, the employee's
+    // line manager or the HR approver on a request raised on behalf. Management
+    // never edits; an edit follows a multi-company (mirrored) copy. The service
+    // holds the rules and the audit.
     [
       "edit_request",
       {
@@ -174,9 +177,16 @@ export function registerAttendanceRulesTools(server) {
         //     grant the legacy ops raise used; the centre re-asserts the
         //     verification grant on submission.
         // Every other action stays behind the GET hr:attendance gate.
-        if (action === 'raise_on_behalf' || action === 'edit_request') {
+        //
+        //   • `edit_request` is the employee's own correction of a request until
+        //     an approver decides, or a filer/line-manager/HR correction of an
+        //     on-behalf request. The service is authoritative on who may edit
+        //     (an ordinary employee holds no hr:attendance write), so it is not
+        //     gated here — only by the approval access every self-service user
+        //     already has.
+        if (action === 'raise_on_behalf') {
           assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-        } else if (action !== 'raise') {
+        } else if (action !== 'raise' && action !== 'edit_request') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         }
         if (action === 'export_records') assertPermission(permissions,'EXPORT','hr:attendance',user.isAdmin);

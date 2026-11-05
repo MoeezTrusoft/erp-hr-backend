@@ -21,9 +21,17 @@ const { mcpCtx } = await import("../../src/mcp/context.js");
 const { applyEvaluatedShifts } = await import("../../src/services/attendanceWriter.service.js");
 const { raiseRuleRequest, raiseRuleRequestOnBehalf } = await import("../../src/services/attendanceRules.service.js");
 const { actApproval, editAttendanceRequestReason, readApproval } = await import("../../src/services/approval/service.js");
+const { mirrorEditReason } = await import("../../src/services/attendanceRequestMirror.service.js");
+const { default: prisma } = await import("../../src/lib/prisma.js");
+const OTHER = randomUUID();
 
-const ROLE_NAMES = { HR: ["hr"], MANAGEMENT: ["management"] };
-const GRANTS = { EMPLOYEE: ["self"], HR: ["self", "verify", "read"], MANAGEMENT: ["self", "approve", "read"] };
+const ROLE_NAMES = { HR: ["hr"], MANAGEMENT: ["management"], MANAGER: ["manager"] };
+const GRANTS = {
+  EMPLOYEE: ["self"],
+  MANAGER: ["self", "manager", "read"],
+  HR: ["self", "verify", "read"],
+  MANAGEMENT: ["self", "approve", "read"],
+};
 const as = (role, fn) =>
   mcpCtx.run(
     {
@@ -112,10 +120,20 @@ test("HR edits an on-behalf request before Management acts", { timeout: 180000 }
     assert.equal(approved.record.stage, "APPROVED");
   });
 
-  await t.test("nobody else may edit: the employee concerned and Management are refused", async () => {
+  await t.test("on an on-behalf request the employee concerned and Management are refused", async () => {
     const { record } = await raiseOnBehalf();
-    await rejectsWith(edit("EMPLOYEE", record, "I want to change it"), 403, /filed this request or the HR approver/);
-    await rejectsWith(edit("MANAGEMENT", record, "Management editing"), 403, /filed this request or the HR approver/);
+    await rejectsWith(edit("EMPLOYEE", record, "I want to change it"), 403, /line manager or the HR approver/);
+    // These fixtures carry the legacy fixed stages (no sealed route), so the
+    // final approver cannot be told apart by code; on a sealed route the refusal
+    // names the rule ("Management decides this request").
+    await rejectsWith(edit("MANAGEMENT", record, "Management editing"), 403, /line manager or the HR approver/);
+  });
+
+  await t.test("the employee's line manager may edit the request HR raised on their behalf", async () => {
+    const { anomaly, record } = await raiseOnBehalf("filed for a colleague");
+    const out = await edit("MANAGER", record, "the manager's wording");
+    assert.equal(out.record.stage, "MANAGEMENT");
+    assert.equal((await readCase(anomaly.id)).reason, "the manager's wording");
   });
 
   await t.test("the record offers EDIT_REASON only to the people who may edit it, and only until the decision", async () => {
@@ -137,12 +155,27 @@ test("HR edits an on-behalf request before Management acts", { timeout: 180000 }
     await rejectsWith(edit("HR", approved.record, "too late"), 409);
   });
 
-  await t.test("refused on a request the employee raised themselves", async () => {
+  await t.test("the employee edits the request they raised, until the first approver decides", async () => {
     const anomaly = await detectedCase();
     const record = await as("EMPLOYEE", () =>
       raiseRuleRequest({ user: userOf("EMPLOYEE"), anomalyId: anomaly.id, reason: "my own explanation", requestKey: randomUUID() }),
     );
-    await rejectsWith(edit("HR", record, "HR rewriting it"), 409, /raised on behalf/);
+    const seenByEmployee = await as("EMPLOYEE", () => readApproval({ approvalRef: record.approvalRef }));
+    assert.ok(seenByEmployee.record.actions.includes("EDIT_REASON"), "the employee is offered Edit on their own request");
+    // HR does not rewrite an employee's own words.
+    await rejectsWith(edit("HR", record, "HR rewriting it"), 403, /Only the employee who raised this request/);
+    const out = await edit("EMPLOYEE", record, "my own explanation, corrected");
+    assert.equal((await readCase(anomaly.id)).reason, "my own explanation, corrected");
+    assert.equal(out.record.history.at(-1).action, "EDITED");
+    const audits = await db((tx) =>
+      tx.attendanceRuleAudit.findMany({ where: { tenantId: company, anomalyId: anomaly.id, action: "REQUEST_EDITED" } }),
+    );
+    assert.equal(audits.at(-1).data.after, "my own explanation, corrected");
+    // The first approver's act ends the edit.
+    const approved = await as("HR", () =>
+      actApproval({ approvalRef: out.record.approvalRef, expectedVersion: out.record.version, action: "VERIFY", reason: "verified", requestKey: randomUUID() }),
+    );
+    await rejectsWith(edit("EMPLOYEE", approved.record, "one more change", approved.record.version), 409, /already decided/);
   });
 
   await t.test("an unchanged, empty or stale edit is refused", async () => {
@@ -153,5 +186,51 @@ test("HR edits an on-behalf request before Management acts", { timeout: 180000 }
     const ok = await edit("HR", record, "new text");
     await rejectsWith(edit("HR", record, "another", record.version), 412); // version moved by the first edit
     assert.equal(ok.record.version, record.version + 1);
+  });
+
+  await t.test("an edit follows the case into the employee's other company", async () => {
+    const anomaly = await detectedCase();
+    const record = await as("EMPLOYEE", () =>
+      raiseRuleRequest({ user: userOf("EMPLOYEE"), anomalyId: anomaly.id, reason: "reader down at the gate", requestKey: randomUUID() }),
+    );
+    // The twin the mirror would have raised in the employee's other company.
+    const origin = await readCase(anomaly.id);
+    const group = randomUUID();
+    let twin;
+    await db((tx) =>
+      tx.attendanceAnomaly.update({ where: { id: origin.id }, data: { mirrorGroupId: group } }),
+    );
+    await mcpCtx.run({ system: true }, async () => {
+      const { id, ...copy } = origin;
+      twin = await prisma.attendanceAnomaly.create({
+        data: {
+          ...copy,
+          tenantId: OTHER,
+          mirrorGroupId: group,
+          originAnomalyId: origin.id,
+          originTenantId: company,
+          originRaisedByName: "Claude",
+          reason:
+            "reader down at the gate\n\nRaised in TruSoft and mirrored to Hometest automatically (same person, device and shift).",
+        },
+      });
+    });
+    const out = await edit("EMPLOYEE", record, "reader down 09:00-09:30");
+    assert.equal((await readCase(anomaly.id)).reason, "reader down 09:00-09:30");
+    const mirrored = await mcpCtx.run({ system: true }, async () =>
+      prisma.attendanceAnomaly.findUnique({ where: { id: twin.id } }),
+    );
+    assert.equal(
+      mirrored.reason,
+      "reader down 09:00-09:30\n\nRaised in TruSoft and mirrored to Hometest automatically (same person, device and shift).",
+      "the twin keeps its clause and takes the new text",
+    );
+    const audits = await mcpCtx.run({ system: true }, async () =>
+      prisma.attendanceRuleAudit.findMany({ where: { tenantId: OTHER, anomalyId: twin.id, action: "REQUEST_EDITED" } }),
+    );
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].data.mirroredFrom, company);
+    assert.equal(out.record.version, record.version + 1);
+    void mirrorEditReason;
   });
 });
