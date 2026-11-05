@@ -636,6 +636,21 @@ export function submitApprovalOnBehalf(raw, { allowManagerFiler = false } = {}) 
   );
 }
 
+// Management's decision level: the sealed route's APPROVE level, or the legacy
+// MANAGEMENT stage. A salary deduction is a Management decision, never the
+// initiator's or HR's verification note.
+function atManagementDecisionLevel(row) {
+  if (row.stage === "MANAGEMENT") return true;
+  if (row.stage !== "LEVEL" || !row.route?.levels) return false;
+  const level = row.route.levels[row.level];
+  // The route's final APPROVE level is Management's decision; its display name
+  // is configurable, so the action is the reliable marker.
+  return Boolean(
+    level &&
+      (level.action === "APPROVE" || /management|mgmt/i.test(level.name || "")),
+  );
+}
+
 export async function actApproval(raw) {
   const input = ApprovalAction.parse(raw);
   const result = await execute(input, "ACTION", async (tx, env) => {
@@ -652,6 +667,15 @@ export async function actApproval(raw) {
     assertVersion(row, input.expectedVersion);
     if (!(await actionsFor(tx, env, row)).includes(input.action))
       fail("You cannot perform this action at the current stage", 403);
+    if (input.deductionDays !== undefined) {
+      if (row.kind !== "ATTENDANCE" || input.action !== "REJECT")
+        fail(
+          "Only the rejection of an attendance request can carry a salary deduction",
+          422,
+        );
+      if (!atManagementDecisionLevel(row))
+        fail("Only Management may set the salary deduction", 403);
+    }
     let source = await loadSource(tx, env, row.kind, row.sourceRef, {
       lock: true,
     });
@@ -754,6 +778,7 @@ export async function actApproval(raw) {
         source,
         input.action === "APPROVE",
         input.reason,
+        { deductionDays: input.deductionDays },
       );
       next = await tx.hrApprovalRequest.update({
         where: { id: row.id },
@@ -971,6 +996,7 @@ async function mirrorApprovalOutcome(input, result) {
           decision: row.stage,
           comment: input.reason ?? null,
           deciderName: result?.actorCode ?? null,
+          deductionDays: input.deductionDays,
         }),
       );
     else if (row.stage === "WITHDRAWN")

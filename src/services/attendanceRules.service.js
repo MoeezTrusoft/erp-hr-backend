@@ -23,6 +23,7 @@ import { civilNow } from "../lib/attendanceClock.js";
 import {
   isManagement,
   isAttendanceHr,
+  manualDeductionDays,
   ruleDeductions,
 } from "../lib/attendanceAnomalyRules.js";
 import {
@@ -655,8 +656,11 @@ export async function raiseRuleRequestOnBehalf(args, db = prisma) {
   return raiseRuleCase({ ...args, onBehalf: true }, db);
 }
 
+// `deductionDays` is Management's explicit salary deduction on a rejection
+// (0.5, 1 or 2 days). It is stored on the case and overrides the attendance
+// policy's normal pricing for that work date in payroll (lib/attendanceAnomalyRules.js).
 export async function finalizeRuleCase(
-  { user, anomalyId, version, decision, comment },
+  { user, anomalyId, version, decision, comment, deductionDays },
   db = prisma,
 ) {
   const current=await db.attendanceAnomaly.findFirst({where:{tenantId:user.tenantId,id:anomalyId}});
@@ -664,6 +668,15 @@ export async function finalizeRuleCase(
   await requireApproval(db,user.tenantId,'ATTENDANCE',`${anomalyId}@${current.factHash}`,decision==='APPROVED');
   if (!["APPROVED", "REJECTED"].includes(decision) || !comment?.trim())
     fail(400, "A decision and reason are required");
+  if (deductionDays != null) {
+    if (decision !== "REJECTED")
+      fail(400, "A salary deduction can only be set when rejecting the request");
+    try {
+      manualDeductionDays(deductionDays);
+    } catch {
+      fail(422, "The salary deduction must be half a day, one day or two days");
+    }
+  }
   return command(
     user,
     async (tx) => {
@@ -748,6 +761,11 @@ export async function finalizeRuleCase(
           decidedAt: new Date(),
           reviewerId: Number(user.employeeId) || null,
           reviewNote: comment.trim(),
+          // Only a rejection carries a marking; approval clears any old one.
+          manualDeductionDays:
+            decision === "REJECTED" && deductionDays != null
+              ? deductionDays
+              : null,
           workflowVersion: { increment: 1 },
         },
       });
@@ -757,7 +775,13 @@ export async function finalizeRuleCase(
         tx,
         user,
         "MANAGEMENT_DECISION",
-        { decision, comment: comment.trim(), factHash: row.factHash, version },
+        {
+          decision,
+          comment: comment.trim(),
+          factHash: row.factHash,
+          version,
+          ...(deductionDays != null ? { deductionDays } : {}),
+        },
         row.employeeId,
         row.id,
       );

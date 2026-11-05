@@ -62,7 +62,7 @@ const as = (role, fn) =>
     fn,
   );
 
-const act = (role, record, action, reason) =>
+const act = (role, record, action, reason, extra = {}) =>
   as(role, () =>
     actApproval({
       approvalRef: record.approvalRef,
@@ -70,6 +70,7 @@ const act = (role, record, action, reason) =>
       action,
       reason: reason ?? `${role} ${action}: evidence reviewed`,
       requestKey: randomUUID(),
+      ...extra,
     }),
   ).then((r) => r.record);
 
@@ -390,6 +391,64 @@ test(
       const priced = ruleDeductions([decided], { from: decided.date, to: decided.date });
       assert.equal(priced.days, 0.5, "a rejected late arrival is half a day");
       assert.deepEqual(priced.lines[0].anomalyIds, [decided.id]);
+    });
+
+    await t.test("Management may reject with an explicit two-day deduction", async () => {
+      const anomaly = await detectedCase();
+      const record = await as("HR", () =>
+        raiseRuleRequestOnBehalf({
+          user: {
+            tenantId: company,
+            userId: people.HR.userId,
+            employeeId: people.HR.id,
+            roles: ["hr"],
+          },
+          anomalyId: anomaly.id,
+          reason: "Repeated lateness with no supporting evidence",
+          requestKey: randomUUID(),
+        }),
+      );
+      const row = await act("MANAGEMENT", record, "REJECT", "Charged two days", {
+        deductionDays: 2,
+      });
+      assert.equal(row.stage, "REJECTED");
+      const decided = await readCase(anomaly.id);
+      assert.equal(decided.manualDeductionDays, 2);
+      const priced = ruleDeductions([decided], {
+        from: decided.date,
+        to: decided.date,
+      });
+      assert.equal(priced.days, 2, "the marking replaces the half-day policy price");
+      assert.equal(priced.lines[0].manual, true);
+    });
+
+    await t.test("only a rejection carries a deduction; HR verification cannot", async () => {
+      const anomaly = await detectedCase();
+      const record = await as("EMPLOYEE", () =>
+        raiseRuleRequest({
+          user: {
+            tenantId: company,
+            userId: people.EMPLOYEE.userId,
+            employeeId: people.EMPLOYEE.id,
+          },
+          anomalyId: anomaly.id,
+          reason: "Reader failure; the site register confirms the times",
+          requestKey: randomUUID(),
+        }),
+      );
+      await assert.rejects(
+        as("HR", () =>
+          actApproval({
+            approvalRef: record.approvalRef,
+            expectedVersion: record.version,
+            action: "VERIFY",
+            reason: "Verified, with a deduction",
+            requestKey: randomUUID(),
+            deductionDays: 1,
+          }),
+        ),
+        (e) => e.status === 422,
+      );
     });
 
     await t.test("a decision is refused while a payroll covering the day is with its approvers", async () => {

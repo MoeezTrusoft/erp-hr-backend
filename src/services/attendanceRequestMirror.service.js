@@ -388,7 +388,7 @@ export async function mirrorRaise({ tenantId, anomalyId }, db = prisma) {
 // does not re-route it (D5), it records the same outcome with its own audit row
 // per company and flags a decision that lands after that company's payroll lock.
 export async function mirrorDecision(
-  { tenantId, anomalyId, decision, comment, deciderName },
+  { tenantId, anomalyId, decision, comment, deciderName, deductionDays },
   db = prisma,
 ) {
   const origin = await db.attendanceAnomaly.findFirst({
@@ -443,6 +443,11 @@ export async function mirrorDecision(
           decidedAt: new Date(),
           reviewNote: note.trim(),
           decidedAfterPayrollLock: locked,
+          // Management's explicit deduction follows the decision to the same
+          // person's copy of the case in the other companies.
+          ...(deductionDays != null
+            ? { manualDeductionDays: deductionDays }
+            : {}),
           workflowVersion: { increment: 1 },
         },
       });
