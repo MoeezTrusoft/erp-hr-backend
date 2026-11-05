@@ -254,7 +254,7 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
         anomalyIds: new Set(a.id == null ? [] : [a.id]),
       });
   }
-  for (const [key, mark] of manualMarks)
+  for (const mark of manualMarks.values())
     lines.push({
       anomalyIds: [...mark.anomalyIds],
       days: mark.days,
