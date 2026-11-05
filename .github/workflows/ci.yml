@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 15e23ee7eb4f8b1c6977e27b2661d372ae6f75e3 # contracts: PR #25 (approver note optional) on top of #24
+          ref: ef466684da70c9354fe69c04b4508cb2fa7b78ea # contracts: PR #27 (Management deductionDays) on top of #26
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 15e23ee7eb4f8b1c6977e27b2661d372ae6f75e3
+          ref: ef466684da70c9354fe69c04b4508cb2fa7b78ea
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
