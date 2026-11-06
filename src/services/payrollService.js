@@ -1104,17 +1104,54 @@ export const dedupeBaseSalaryAssignments = (employee) => {
 // earnings remain governed by computeProrationFactor. Employees with no period
 // history (the steady-state majority) are untouched — scoping them to an empty
 // spell list would zero their attendance.
-export const scopeAttendanceToEmployment = (employee, periodEnd) => {
-    const spells = (employee?.employmentPeriods || []).map((p) => ({
+// N-16c — EMPLOYMENT SPELLS WITH THE HIRE DATE AS A FALLBACK: most employees have
+// no employment_periods rows, so the scoping below only ever fired for leavers and
+// re-hires. A mid-month joiner's roster covers the whole month and the evaluator
+// writes ABSENT/MISSING_* cases for the days BEFORE the hire date; payroll priced
+// them (Aurangzaib, Homenet 640, hired 2026-10-19: his 15 and 18 Oct cases took
+// 1.5 of his 13 employed days, so his payslip read 11.5 days). When no periods
+// exist, the employee's own hire date opens one spell that runs to the period end.
+// No hire date and no periods still means "untouched".
+export const employmentSpells = (employee, periodEnd) => {
+    const periods = (employee?.employmentPeriods || []).map((p) => ({
         start: p.startDate,
         end: p.endDate ?? null,
     }));
+    if (periods.length) return periods;
+    const start = employee?.hire_date || employee?.joining_date || employee?.hireDate;
+    if (!start) return [];
+    return [{ start, end: null }];
+};
+
+export const scopeAttendanceToEmployment = (employee, periodEnd) => {
+    const spells = employmentSpells(employee, periodEnd);
     if (!spells.length || !employee?.attendance?.length) return 0;
     const before = employee.attendance.length;
     employee.attendance = employee.attendance.filter((row) =>
         spells.some((s) => row.date >= s.start && row.date <= (s.end ?? periodEnd)),
     );
     return before - employee.attendance.length;
+};
+
+// N-16b — EMPLOYMENT-SCOPED ANOMALY CASES (Amjad Ali, BOC 556, 2026-11-06): the
+// absence bridge prices every anomaly row in the period, and only the ATTENDANCE
+// rows were scoped to the employment spell. A leaver therefore still carried the
+// post-termination ABSENT cases the evaluator had written: Amjad (out 2026-10-10)
+// was prorated to 10/31 of his package and then charged the 15 absence days of
+// Oct 11-27, which made his net negative and failed the BOC October run with
+// "Negative net pay for EMP-00556". A day outside every employment spell is not
+// a chargeable day. Same spell semantics and the same no-period-history guard as
+// scopeAttendanceToEmployment (scoping the steady-state majority to an empty
+// spell list would drop every charge).
+export const scopeAnomaliesToEmployment = (employee, periodEnd) => {
+    const spells = employmentSpells(employee, periodEnd);
+    const cases = employee?.attendanceAnomalies;
+    if (!spells.length || !cases?.length) return 0;
+    const before = cases.length;
+    employee.attendanceAnomalies = cases.filter((row) =>
+        spells.some((s) => row.date >= s.start && row.date <= (s.end ?? periodEnd)),
+    );
+    return before - employee.attendanceAnomalies.length;
 };
 
 export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) => {
@@ -1307,6 +1344,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             employee.attendanceInputMode = isHeadendEmployee(employee) ? 'MANUAL_MONTHLY' : 'DEVICE';
             dedupeBaseSalaryAssignments(employee);
             scopeAttendanceToEmployment(employee, payrollRun.periodEnd);
+            // N-16b — the priced cases, not just the attendance rows, must stop at
+            // the end of employment (a leaver's post-termination ABSENT cases made
+            // the net negative and failed the run).
+            scopeAnomaliesToEmployment(employee, payrollRun.periodEnd);
         }
 
         // Published setup supplies employee calendars and shift coverage;
