@@ -64,6 +64,17 @@ export async function syncRuleCases(
     }
   let changed = false;
   for (const row of old) {
+    // HR-ATT-APPEAL-01 — an appeal is a frozen copy of the rejected evidence and
+    // the case it appeals is kept as history. Re-evaluation must not close,
+    // re-open or duplicate either one: without this guard the appeal (whose
+    // sourceRef is not a live detection) would be closed as "no longer
+    // detected", and a new live row would collide with the superseded original
+    // on (tenantId, sourceKind, sourceRef). The desired entry is dropped so the
+    // day's live facts are represented by the appeal alone.
+    if (row.appealOfAnomalyId != null || row.evidenceState === "SUPERSEDED") {
+      desired.delete(row.sourceRef);
+      continue;
+    }
     // Incomplete or conflicting evidence cannot reverse an already decided case.
     if (
       held.has(row.sessionKey) ||
