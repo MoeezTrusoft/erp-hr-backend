@@ -18,7 +18,7 @@
 // calendar month, computed from new Date().
 import { todayInPakistan, visibleTimesheetRows } from "../lib/timesheetVisibility.js";
 import { applyTimesheetColumnFilters, shiftSortKey } from "../lib/timesheetFilters.js";
-import { levelStageLabel } from "../lib/approvalMatrix.js";
+import { waitStageLabel } from "../lib/approvalMatrix.js";
 import prisma from "../lib/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import logger from "../lib/logger.js";
@@ -1258,7 +1258,7 @@ export async function listCheckInOuts({
         // renders from `decisions`.
         stage: approval?.stage ?? null,
         // A request on a configured route waits at stage LEVEL: say which level.
-        stageLabel: levelStageLabel(approval?.route, approval?.level),
+        stageLabel: waitStageLabel(approval?.route, approval?.level, an.status),
         approvalRef: approval?.id ?? null,
         type: an.type,
         submittedAt: an.createdAt,
