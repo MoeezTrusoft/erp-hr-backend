@@ -283,6 +283,20 @@ async function levelTransition(tx, env, row, source, input) {
   }
   return { ...base, stage: input.action === "APPROVE" ? "APPROVED" : "REJECTED", pendingCodes: [] };
 }
+// Who may take the final decision. The line-manager recommender never decides; a requester never decides their own
+// case (handled above); and the HR verifier is excluded too, so one person cannot verify and then approve.
+//
+// Exception (2026-11-06): a legacy ATTENDANCE request — raised before the company published an approval route, so the row
+// carries no sealed route and no named approvers — left nobody able to decide once Management itself had verified it:
+// the verifier was the only holder of the approve grant, and both this gate and the queue hid the request from them. The
+// request sat at MANAGEMENT forever (production: EMP-00484 Trusoft and EMP159 HomeVision, 2026-11-06). Attendance already
+// allows self-verification on the routed path (matrix `allowSelf`), so on these route-less rows the verifier may decide;
+// the trail still records the same actor on VERIFY and APPROVE. Routed requests keep the two-people rule unchanged.
+const verifierMayDecide = (row) => row.kind === "ATTENDANCE" && !row.route;
+function mayDecide(env, row) {
+  if (ownsCode(env, row.managerActorCode)) return false;
+  return verifierMayDecide(row) || !ownsCode(env, row.hrActorCode);
+}
 async function actionsFor(tx, env, row) {
   if (isAppraisalApproval(row)) return appraisalApprovalActions(tx, env, row);
   if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
@@ -310,8 +324,7 @@ async function actionsFor(tx, env, row) {
       ? [...HR_APPROVAL_ACTIONS.HR, ...(row.kind === "ATTENDANCE" ? [] : ["REJECT"])]
       : [];
   if (row.stage === "MANAGEMENT")
-    return permits(env, "approve") &&
-      ![row.managerActorCode, row.hrActorCode].some((c) => ownsCode(env, c))
+    return permits(env, "approve") && mayDecide(env, row)
       ? HR_APPROVAL_ACTIONS.MANAGEMENT
       : [];
   return [];
@@ -1155,7 +1168,15 @@ export function listApprovals(raw) {
                 employeeCode: { notIn: env.identityCodes },
                 AND: [
                   { OR: [{ managerActorCode: null }, { managerActorCode: { notIn: env.identityCodes } }] },
-                  { OR: [{ hrActorCode: null }, { hrActorCode: { notIn: env.identityCodes } }] },
+                  {
+                    OR: [
+                      { hrActorCode: null },
+                      { hrActorCode: { notIn: env.identityCodes } },
+                      // A route-less attendance request verified by this very approver is still theirs to decide
+                      // (see verifierMayDecide): excluding it hid the request from its only approver.
+                      { kind: "ATTENDANCE", route: { equals: Prisma.DbNull } },
+                    ],
+                  },
                 ],
               },
             ]
