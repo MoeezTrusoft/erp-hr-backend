@@ -13,7 +13,10 @@
 // Earnings stay governed by computeProrationFactor; this only scopes the
 // attendance evidence.
 import { describe, it, expect } from '@jest/globals';
-import { scopeAttendanceToEmployment } from '../../src/services/payrollService.js';
+import {
+    scopeAttendanceToEmployment,
+    scopeAnomaliesToEmployment,
+} from '../../src/services/payrollService.js';
 
 const SEPT = new Date('2026-09-30T23:59:59.999Z');
 const D = (s) => new Date(`${s}T00:00:00.000Z`);
@@ -74,5 +77,66 @@ describe('N-16 attendance scoped to employment spells', () => {
         expect(
             scopeAttendanceToEmployment({ employmentPeriods: [{ startDate: D('2026-01-01'), endDate: null }] }, SEPT),
         ).toBe(0);
+    });
+});
+
+// N-16b — EMPLOYMENT-SCOPED ANOMALY CASES: the priced cases (not only the
+// attendance rows) must stop at the end of employment. Operator case: Amjad Ali
+// (BOC 556) left 2026-10-10; his Oct 11-27 ABSENT cases were priced on a 10/31
+// prorated package, the net went negative and the BOC October run failed.
+const CASE = (date, type = 'ABSENT') => ({
+    id: Number(date.replaceAll('-', '')),
+    employeeId: 556,
+    date: D(date),
+    type,
+    status: 'PENDING',
+    rulesVersion: 2,
+    evidenceState: 'ACTIVE',
+});
+
+describe('N-16b anomaly cases scoped to employment spells', () => {
+    it('drops cases after termination (Amjad: out 2026-10-10)', () => {
+        const employee = {
+            employmentPeriods: [{ startDate: D('2025-08-08'), endDate: D('2026-10-10') }],
+            attendanceAnomalies: [CASE('2026-10-09', 'MISSING_CHECKOUT'), CASE('2026-10-10'), CASE('2026-10-11'), CASE('2026-10-27')],
+        };
+        expect(scopeAnomaliesToEmployment(employee, SEPT)).toBe(2);
+        expect(employee.attendanceAnomalies.map((a) => a.date.getUTCDate())).toEqual([9, 10]);
+    });
+
+    it('drops cases in the gap between spells', () => {
+        const employee = {
+            employmentPeriods: [
+                { startDate: D('2026-01-01'), endDate: D('2026-08-20') },
+                { startDate: D('2026-09-04'), endDate: null },
+            ],
+            attendanceAnomalies: [CASE('2026-08-25'), CASE('2026-09-05')],
+        };
+        expect(scopeAnomaliesToEmployment(employee, SEPT)).toBe(1);
+        expect(employee.attendanceAnomalies).toHaveLength(1);
+    });
+
+    it('an open spell runs to the period end', () => {
+        const employee = {
+            employmentPeriods: [{ startDate: D('2026-01-01'), endDate: null }],
+            attendanceAnomalies: [CASE('2026-09-30')],
+        };
+        expect(scopeAnomaliesToEmployment(employee, SEPT)).toBe(0);
+        expect(employee.attendanceAnomalies).toHaveLength(1);
+    });
+
+    it('employees with NO period history are untouched (steady-state majority)', () => {
+        const employee = {
+            employmentPeriods: [],
+            attendanceAnomalies: [CASE('2026-09-01'), CASE('2026-09-15')],
+        };
+        expect(scopeAnomaliesToEmployment(employee, SEPT)).toBe(0);
+        expect(employee.attendanceAnomalies).toHaveLength(2);
+    });
+
+    it('is safe on missing/empty shapes', () => {
+        expect(scopeAnomaliesToEmployment(null, SEPT)).toBe(0);
+        expect(scopeAnomaliesToEmployment({ employmentPeriods: [] }, SEPT)).toBe(0);
+        expect(scopeAnomaliesToEmployment({ employmentPeriods: [{ startDate: D('2026-01-01'), endDate: null }] }, SEPT)).toBe(0);
     });
 });

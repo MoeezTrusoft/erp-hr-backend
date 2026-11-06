@@ -1117,6 +1117,30 @@ export const scopeAttendanceToEmployment = (employee, periodEnd) => {
     return before - employee.attendance.length;
 };
 
+// N-16b — EMPLOYMENT-SCOPED ANOMALY CASES (Amjad Ali, BOC 556, 2026-11-06): the
+// absence bridge prices every anomaly row in the period, and only the ATTENDANCE
+// rows were scoped to the employment spell. A leaver therefore still carried the
+// post-termination ABSENT cases the evaluator had written: Amjad (out 2026-10-10)
+// was prorated to 10/31 of his package and then charged the 15 absence days of
+// Oct 11-27, which made his net negative and failed the BOC October run with
+// "Negative net pay for EMP-00556". A day outside every employment spell is not
+// a chargeable day. Same spell semantics and the same no-period-history guard as
+// scopeAttendanceToEmployment (scoping the steady-state majority to an empty
+// spell list would drop every charge).
+export const scopeAnomaliesToEmployment = (employee, periodEnd) => {
+    const spells = (employee?.employmentPeriods || []).map((p) => ({
+        start: p.startDate,
+        end: p.endDate ?? null,
+    }));
+    const cases = employee?.attendanceAnomalies;
+    if (!spells.length || !cases?.length) return 0;
+    const before = cases.length;
+    employee.attendanceAnomalies = cases.filter((row) =>
+        spells.some((s) => row.date >= s.start && row.date <= (s.end ?? periodEnd)),
+    );
+    return before - employee.attendanceAnomalies.length;
+};
+
 export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) => {
     const preview = options.preview === true;
     const payrollRun = await prisma.payrollRun.findFirst({
@@ -1307,6 +1331,10 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             employee.attendanceInputMode = isHeadendEmployee(employee) ? 'MANUAL_MONTHLY' : 'DEVICE';
             dedupeBaseSalaryAssignments(employee);
             scopeAttendanceToEmployment(employee, payrollRun.periodEnd);
+            // N-16b — the priced cases, not just the attendance rows, must stop at
+            // the end of employment (a leaver's post-termination ABSENT cases made
+            // the net negative and failed the run).
+            scopeAnomaliesToEmployment(employee, payrollRun.periodEnd);
         }
 
         // Published setup supplies employee calendars and shift coverage;
