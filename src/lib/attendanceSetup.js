@@ -439,7 +439,12 @@ export function resolveEmployeeDay(
     holidayName: holiday?.name,
     calendarStatus: holiday || assignment?.status==='holiday' ? 'HOLIDAY' : (off || assignment?.status==='off') ? 'WEEKLY_OFF' : null,
     calendarIds: ids,
-    rotating: Boolean(pattern.rotatingShifts?.length>1 && !cycle?.sequence),
+    // A day/night/off cycle says which days are worked, so its days are graded like a fixed
+    // roster: a no-show on a working day is chargeable and the shift inside the day is read
+    // from the punches. This is the same exemption publishing makes (fixedDayNightOff);
+    // without it a roster HR can publish produces days nothing can ever evaluate. Only a
+    // rotation with no phase at all stays ambiguous.
+    rotating: Boolean(pattern.rotatingShifts?.length>1 && !cycle?.sequence && !fixedDayNightOff(pattern)),
     rosterId: rosters[0].id,
   };
 }

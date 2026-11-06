@@ -114,6 +114,15 @@ describe('HR-ATT-ROTATING-03 rotation phase', () => {
         expect(map.get('2026-08-02').rotating).toBeFalsy();
     });
 
+    it('treats a day, night, off cycle as phased without a shift sequence', async () => {
+        // offIndex alone already says which days are worked and which are rest,
+        // and publishing accepts the roster without per-day assignments. Holding
+        // those days for an assignment made them impossible to grade at all.
+        const map = await resolve(ROTATING(2));
+        expect(map.get('2026-08-02')).toMatchObject({ working: true, rotating: false });
+        expect(map.get('2026-08-03')).toMatchObject({ working: false, reason: 'ROTATION_OFF' });
+    });
+
     it('still flags `rotating` when no phase is on file', async () => {
         const map = await resolve(NO_PHASE);
         expect(map.get('2026-08-02')).toMatchObject({ working: true, rotating: true });
