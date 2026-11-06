@@ -72,6 +72,25 @@ describe('per-shift anomaly review',()=>{
   expect(ruleDeductions(current(db)).days).toBe(.5);expect(db.snapshot().attendance[0].processingState).toBe('FINALIZED');
   expect(db.snapshot().attendanceRuleAudit.some(e=>e.action==='MANAGEMENT_DECISION')).toBe(true);
  });
+ it('stores Management explicit deduction on rejection and prices it',async()=>{
+  const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);let row=current(db)[0];
+  await commentRuleCase({user:hr,anomalyId:row.id,version:0,kind:'HR',comment:'CCTV reviewed'},db);row=current(db)[0];
+  await prove(db,row);
+  await finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Unexcused, two days',deductionDays:2},db);
+  expect(current(db)[0].manualDeductionDays).toBe(2);
+  expect(ruleDeductions(current(db)).days).toBe(2);
+  expect(db.snapshot().attendanceRuleAudit.find(e=>e.action==='MANAGEMENT_DECISION').data.deductionDays).toBe(2);
+ });
+ it('refuses a deduction on approval or an unsupported number of days',async()=>{
+  const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);let row=current(db)[0];
+  await commentRuleCase({user:hr,anomalyId:row.id,version:0,kind:'HR',comment:'CCTV reviewed'},db);row=current(db)[0];
+  await prove(db,row);
+  await expect(finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'REJECTED',comment:'Charged',deductionDays:1.5},db)).rejects.toThrow('half a day, one day or two days');
+  // The approval must be sealed as APPROVED before the approve path is reached.
+  await db.hrApprovalRequest.updateMany({where:{tenantId:TENANT,kind:'ATTENDANCE'},data:{stage:'APPROVED'}});
+  await expect(finalizeRuleCase({user:management,anomalyId:row.id,version:row.workflowVersion,decision:'APPROVED',comment:'Excused',deductionDays:1},db)).rejects.toThrow('only be set when rejecting');
+  expect(current(db)[0].manualDeductionDays ?? null).toBeNull();
+ });
  it('does not let an employee impersonate HR or comment on another tenant',async()=>{
   const db=fixture([['09:45',0],['17:00',1]]);await evaluate(db);const row=current(db)[0];
   await expect(commentRuleCase({user:{tenantId:TENANT,employeeId:1,userId:'self',roles:['Employee']},anomalyId:row.id,version:0,kind:'HR',comment:'Verified'},db)).rejects.toThrow('cannot comment');

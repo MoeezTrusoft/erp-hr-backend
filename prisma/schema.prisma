@@ -885,6 +885,8 @@ model AttendanceAnomaly {
   workflowVersion Int @default(0)
   workflowHistory Json @default("[]")
   attachments Json @default("[]")
+  // Management's explicit deduction on a rejection: 0.5, 1 or 2 days; null = the
+  // attendance policy prices the case. See lib/attendanceAnomalyRules.js.
   manualDeductionDays Float?
 
 

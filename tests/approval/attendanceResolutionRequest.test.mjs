@@ -62,7 +62,7 @@ const as = (role, fn) =>
     fn,
   );
 
-const act = (role, record, action, reason) =>
+const act = (role, record, action, reason, extra = {}) =>
   as(role, () =>
     actApproval({
       approvalRef: record.approvalRef,
@@ -70,6 +70,7 @@ const act = (role, record, action, reason) =>
       action,
       reason: reason ?? `${role} ${action}: evidence reviewed`,
       requestKey: randomUUID(),
+      ...extra,
     }),
   ).then((r) => r.record);
 
@@ -392,6 +393,64 @@ test(
       assert.deepEqual(priced.lines[0].anomalyIds, [decided.id]);
     });
 
+    await t.test("Management may reject with an explicit two-day deduction", async () => {
+      const anomaly = await detectedCase();
+      const record = await as("HR", () =>
+        raiseRuleRequestOnBehalf({
+          user: {
+            tenantId: company,
+            userId: people.HR.userId,
+            employeeId: people.HR.id,
+            roles: ["hr"],
+          },
+          anomalyId: anomaly.id,
+          reason: "Repeated lateness with no supporting evidence",
+          requestKey: randomUUID(),
+        }),
+      );
+      const row = await act("MANAGEMENT", record, "REJECT", "Charged two days", {
+        deductionDays: 2,
+      });
+      assert.equal(row.stage, "REJECTED");
+      const decided = await readCase(anomaly.id);
+      assert.equal(decided.manualDeductionDays, 2);
+      const priced = ruleDeductions([decided], {
+        from: decided.date,
+        to: decided.date,
+      });
+      assert.equal(priced.days, 2, "the marking replaces the half-day policy price");
+      assert.equal(priced.lines[0].manual, true);
+    });
+
+    await t.test("only a rejection carries a deduction; HR verification cannot", async () => {
+      const anomaly = await detectedCase();
+      const record = await as("EMPLOYEE", () =>
+        raiseRuleRequest({
+          user: {
+            tenantId: company,
+            userId: people.EMPLOYEE.userId,
+            employeeId: people.EMPLOYEE.id,
+          },
+          anomalyId: anomaly.id,
+          reason: "Reader failure; the site register confirms the times",
+          requestKey: randomUUID(),
+        }),
+      );
+      await assert.rejects(
+        as("HR", () =>
+          actApproval({
+            approvalRef: record.approvalRef,
+            expectedVersion: record.version,
+            action: "VERIFY",
+            reason: "Verified, with a deduction",
+            requestKey: randomUUID(),
+            deductionDays: 1,
+          }),
+        ),
+        (e) => e.status === 422,
+      );
+    });
+
     await t.test("a decision is refused while a payroll covering the day is with its approvers", async () => {
       const anomaly = await detectedCase();
       const record = await as("EMPLOYEE", () =>
@@ -669,6 +728,179 @@ test(
         ),
         (e) => e.status === 403,
       );
+    });
+  },
+);
+
+// HR-4200 "The source is not ready for approval" (production, 2026-11-06): the
+// attendance re-evaluation closes or restates a case while its approval request
+// is still open, and every later click on that card failed. A request must never
+// outlive the case it was raised for, and a stale one must be closed, not
+// refused, when an approver reaches it.
+test(
+  "a re-evaluation never leaves a request pointing at a case that moved on",
+  { timeout: 180000 },
+  async (t) => {
+    // The first block created this run's company fixtures (one tenant per file).
+    const { syncRuleCases } = await import(
+      "../../src/services/attendanceRuleCases.service.js"
+    );
+    const { listApprovals } = await import(
+      "../../src/services/approval/service.js"
+    );
+    const raiseAsHr = (anomaly, reason) =>
+      as("HR", () =>
+        raiseRuleRequestOnBehalf({
+          user: {
+            tenantId: company,
+            userId: people.HR.userId,
+            employeeId: people.HR.id,
+            roles: ["hr"],
+          },
+          anomalyId: anomaly.id,
+          reason,
+          requestKey: randomUUID(),
+        }),
+      );
+    const queue = () =>
+      as("MANAGEMENT", () =>
+        listApprovals({ kind: "ATTENDANCE", scope: "QUEUE", limit: 100 }),
+      );
+
+    await t.test("closing the case withdraws the request waiting under it", async () => {
+      const anomaly = await detectedCase();
+      const record = await raiseAsHr(anomaly, "Attested from the gate register");
+      assert.equal((await readRequest(raiseRef(anomaly))).execution, "PENDING");
+      await db((tx) =>
+        syncRuleCases(tx, {
+          tenantId: company,
+          employeeId: people.EMPLOYEE.id,
+          day: anomaly.date,
+          sessions: [],
+        }),
+      );
+      const closed = await readCase(anomaly.id);
+      assert.equal(closed.status, "RESOLVED", "the evaluator no longer detects it");
+      const request = await db((tx) =>
+        tx.hrApprovalRequest.findFirst({
+          where: { tenantId: company, id: record.approvalRef },
+        }),
+      );
+      assert.equal(request.stage, "WITHDRAWN", "the request went with the case");
+      assert.equal(request.execution, "APPLIED");
+      const trail = await db((tx) =>
+        tx.attendanceRuleAudit.findFirst({
+          where: {
+            tenantId: company,
+            anomalyId: anomaly.id,
+            action: "REQUEST_WITHDRAWN",
+          },
+        }),
+      );
+      assert.ok(trail, "and the withdrawal is on the attendance trail");
+      assert.equal((await queue()).items.filter((i) => i.approvalRef === record.approvalRef).length, 0);
+    });
+
+    await t.test("a request already stranded is closed when an approver reaches it", async () => {
+      const anomaly = await detectedCase();
+      const record = await raiseAsHr(anomaly, "Attested from the site register");
+      // The state production is in: the case closed underneath a live request,
+      // written before this fix, so no withdrawal happened at the time.
+      await db((tx) =>
+        tx.attendanceAnomaly.update({
+          where: { id: anomaly.id },
+          data: {
+            status: "RESOLVED",
+            evidenceState: "RESOLVED",
+            resolvedAt: new Date(),
+            workflowVersion: { increment: 1 },
+          },
+        }),
+      );
+      await assert.rejects(
+        as("MANAGEMENT", () =>
+          actApproval({
+            approvalRef: record.approvalRef,
+            expectedVersion: record.version,
+            action: "APPROVE",
+            reason: "Approved",
+            requestKey: randomUUID(),
+          }),
+        ),
+        (e) =>
+          e.status === 409 &&
+          /already resolved by a re-evaluation/i.test(e.message),
+        "the approver is told the case is closed, not handed HR-4200",
+      );
+      const request = await db((tx) =>
+        tx.hrApprovalRequest.findFirst({
+          where: { tenantId: company, id: record.approvalRef },
+        }),
+      );
+      assert.equal(request.stage, "WITHDRAWN", "and the dead request is gone");
+      assert.equal(request.execution, "APPLIED");
+    });
+
+    await t.test("a stale request is not offered in the queue at all", async () => {
+      const live = await detectedCase();
+      const liveRecord = await raiseAsHr(live, "Attested from the register");
+      const stale = await detectedCase();
+      const staleRecord = await raiseAsHr(stale, "Attested from the register too");
+      await db((tx) =>
+        tx.attendanceAnomaly.update({
+          where: { id: stale.id },
+          data: {
+            status: "RESOLVED",
+            evidenceState: "RESOLVED",
+            resolvedAt: new Date(),
+            workflowVersion: { increment: 1 },
+          },
+        }),
+      );
+      const listed = await queue();
+      const refs = listed.items.map((i) => i.approvalRef);
+      assert.ok(refs.includes(liveRecord.approvalRef), "the live case is shown");
+      assert.equal(refs.includes(staleRecord.approvalRef), false, "the dead one is not");
+    });
+
+    await t.test("restated evidence withdraws the request and reopens the case for a fresh raise", async () => {
+      const anomaly = await detectedCase();
+      const record = await raiseAsHr(anomaly, "Attested from the register");
+      assert.equal((await readRequest(raiseRef(anomaly))).execution, "PENDING");
+      const session = {
+        sessionKey: anomaly.sessionKey,
+        verdict: {
+          status: "OK",
+          anomalies: [
+            {
+              type: "LATE_CHECKIN",
+              minutes: 95,
+              expectedTime: new Date(+anomaly.date + 9 * 3600000),
+              actualTime: new Date(+anomaly.date + 10 * 3600000 + 35 * 60000),
+            },
+          ],
+        },
+      };
+      await db((tx) =>
+        syncRuleCases(tx, {
+          tenantId: company,
+          employeeId: people.EMPLOYEE.id,
+          day: anomaly.date,
+          sessions: [session],
+        }),
+      );
+      const revised = await readCase(anomaly.id);
+      assert.equal(revised.status, "PENDING");
+      assert.notEqual(revised.factHash, anomaly.factHash, "the facts changed");
+      assert.equal(revised.raisedById, null, "the case is unraised again");
+      assert.equal(revised.reason, null);
+      const request = await db((tx) =>
+        tx.hrApprovalRequest.findFirst({
+          where: { tenantId: company, id: record.approvalRef },
+        }),
+      );
+      assert.equal(request.stage, "WITHDRAWN", "the request on the old facts is closed");
+      assert.equal(request.execution, "APPLIED");
     });
   },
 );

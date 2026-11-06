@@ -4,6 +4,7 @@ import {
   manualDeductionsByShift,
 } from "../../src/lib/anomalyPayroll.js";
 import { countViolationDays } from "../../src/lib/attendanceDeduction.js";
+import { ruleDeductions } from "../../src/lib/attendanceAnomalyRules.js";
 import { buildPayslipFromInputs } from "../../src/services/payrollService.js";
 const date = "2026-10-05T00:00:00Z";
 const marked = (id, days, extra = {}) => ({
@@ -149,6 +150,103 @@ it("restores automatic attendance deductions when all manual markings are cleare
       config: { absenceRecoveryEnabled: true },
     })[0].days,
   ).toBe(1);
+});
+
+// Management's explicit deduction on a rejection (operator, 2026-11-05): half,
+// one or two days, replacing the attendance policy's pricing for that work date.
+const ruleCase = (id, extra = {}) => ({
+  id,
+  employeeId: 1,
+  date: "2026-10-05T00:00:00Z",
+  sessionKey: "s1",
+  type: "ABSENT",
+  rulesVersion: 2,
+  status: "REJECTED",
+  decisionRole: "Management",
+  evidenceState: "ACTIVE",
+  ...extra,
+});
+describe("management explicit deduction in the rules payroll", () => {
+  it("prices the marked day at the chosen days instead of the policy", () => {
+    expect(ruleDeductions([ruleCase(1, { manualDeductionDays: 2 })])).toMatchObject({
+      days: 2,
+    });
+    expect(ruleDeductions([ruleCase(1)])).toMatchObject({ days: 1 });
+  });
+
+  it("takes the highest marking once for the employee's work date", () => {
+    const result = ruleDeductions([
+      ruleCase(1, { manualDeductionDays: 0.5 }),
+      ruleCase(2, {
+        type: "MISSING_CHECKOUT",
+        sessionKey: "s2",
+        manualDeductionDays: 1,
+      }),
+    ]);
+    expect(result.days).toBe(1);
+    expect(result.lines).toEqual([
+      { anomalyIds: [1, 2], days: 1, date: "2026-10-05", manual: true },
+    ]);
+  });
+
+  it("removes a marked day from the automatic missing-punch pool", () => {
+    const result = ruleDeductions([
+      ruleCase(1, { type: "MISSING_CHECKOUT", date: "2026-10-01T00:00:00Z", sessionKey: "s1" }),
+      ruleCase(2, { type: "MISSING_CHECKOUT", date: "2026-10-02T00:00:00Z", sessionKey: "s2" }),
+      ruleCase(3, {
+        type: "MISSING_CHECKOUT",
+        date: "2026-10-03T00:00:00Z",
+        sessionKey: "s3",
+        manualDeductionDays: 2,
+      }),
+    ]);
+    // The two unmarked misses no longer complete the pool of three.
+    expect(result).toMatchObject({ days: 2, missingCount: 2 });
+  });
+
+  it("ignores a marking on a case Management did not reject", () => {
+    expect(
+      ruleDeductions([ruleCase(1, { status: "APPROVED", manualDeductionDays: 1 })])
+        .days,
+    ).toBe(0);
+    expect(
+      ruleDeductions([
+        { ...ruleCase(1), status: "PENDING", decisionRole: null, lapsed: true, manualDeductionDays: 2 },
+      ]).days,
+    ).toBe(1);
+  });
+
+  it("refuses a marking outside half, one or two days", () => {
+    expect(() =>
+      ruleDeductions([ruleCase(1, { manualDeductionDays: 1.5 })]),
+    ).toThrow("Invalid manual attendance deduction");
+  });
+
+  it("prices a two-day marking into the payslip at two daily rates", () => {
+    const slip = buildPayslipFromInputs({
+      employee: { id: 1 },
+      employmentTerm: {
+        baseSalary: 31000,
+        payFrequency: "MONTHLY",
+        currency: "PKR",
+      },
+      assignments: [],
+      payrollRun: {
+        periodStart: new Date("2026-10-01"),
+        periodEnd: new Date("2026-10-31"),
+        countryCode: "PK",
+        currencyCode: "PKR",
+      },
+      taxRateRows: [],
+      asOf: new Date("2026-10-31"),
+      bridges: { anomalyRows: [ruleCase(1, { manualDeductionDays: 2 })] },
+      ruleConfig: { absenceRecoveryEnabled: true },
+    });
+    const line = slip.deductions.find((d) => d.code === "ATTENDANCE_RULES_V2");
+    // 31,000 over 31 calendar days = 1,000 a day; two days = 2,000.
+    expect(line.amount).toBe("2000.0000");
+    expect(line.description).toBe("Management-disapproved attendance: 2 day(s)");
+  });
 });
 
 it("two half-day markings still deduct only half a day", () => {

@@ -17,7 +17,7 @@ export function manualDeductionsByShift(anomalies = []) {
     seen = new Set();
   for (const a of anomalies) {
     if (a.manualDeductionDays == null || !a.date) continue;
-    if (![0.5, 1].includes(Number(a.manualDeductionDays)))
+    if (![0.5, 1, 2].includes(Number(a.manualDeductionDays)))
       throw new Error("Invalid stored manual deduction");
     if (a.id != null && seen.has(a.id)) continue;
     if (a.id != null) seen.add(a.id);

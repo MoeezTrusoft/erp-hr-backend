@@ -636,9 +636,30 @@ export function submitApprovalOnBehalf(raw, { allowManagerFiler = false } = {}) 
   );
 }
 
+// Management's decision level: the sealed route's APPROVE level, or the legacy
+// MANAGEMENT stage. A salary deduction is a Management decision, never the
+// initiator's or HR's verification note.
+function atManagementDecisionLevel(row) {
+  if (row.stage === "MANAGEMENT") return true;
+  if (row.stage !== "LEVEL" || !row.route?.levels) return false;
+  const level = row.route.levels[row.level];
+  // The route's final APPROVE level is Management's decision; its display name
+  // is configurable, so the action is the reliable marker.
+  return Boolean(
+    level &&
+      (level.action === "APPROVE" || /management|mgmt/i.test(level.name || "")),
+  );
+}
+
 export async function actApproval(raw) {
   const input = ApprovalAction.parse(raw);
-  const result = await execute(input, "ACTION", async (tx, env) => {
+  // Set inside the transaction when the case behind the request is already
+  // closed; the request is withdrawn in a second transaction because the first
+  // one rolls back on the refusal (see the check below).
+  let staleCase = null;
+  let result;
+  try {
+  result = await execute(input, "ACTION", async (tx, env) => {
     await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
     const row = await tx.hrApprovalRequest.findFirst({
       where: { tenantId: env.tenantId, id: input.approvalRef },
@@ -650,8 +671,44 @@ export async function actApproval(raw) {
     }
     if (!(await canRead(tx, env, row))) fail("Request not found", 404);
     assertVersion(row, input.expectedVersion);
-    if (!(await actionsFor(tx, env, row)).includes(input.action))
+        if (!(await actionsFor(tx, env, row)).includes(input.action))
       fail("You cannot perform this action at the current stage", 403);
+
+    if (input.deductionDays !== undefined) {
+      if (row.kind !== "ATTENDANCE" || input.action !== "REJECT")
+        fail(
+          "Only the rejection of an attendance request can carry a salary deduction",
+          422,
+        );
+      if (!atManagementDecisionLevel(row))
+        fail("Only Management may set the salary deduction", 403);
+    }
+
+    // HR-4200 "The source is not ready for approval" was the whole error an
+    // approver saw when the attendance re-evaluation had already closed the case
+    // under a PENDING request (production: Trusoft 2632/2637/2204/2304,
+    // HomeVision 2408). Close such a request in place and say what happened,
+    // instead of a raw refusal that leaves the card on the screen.
+    if (row.kind === "ATTENDANCE" && input.action !== "WITHDRAW") {
+      const anomalyId = Number(String(row.sourceRef).split("@")[0]);
+      const anomaly = Number.isInteger(anomalyId)
+        ? await tx.attendanceAnomaly.findFirst({
+            where: { tenantId: env.tenantId, id: anomalyId },
+          })
+        : null;
+      if (anomaly && anomaly.status !== "PENDING") {
+        staleCase = {
+          tenantId: env.tenantId,
+          approvalId: row.id,
+          anomalyId: anomaly.id,
+          employeeId: anomaly.employeeId,
+          actorCode: env.who.employee_code,
+          status: anomaly.status,
+          action: input.action,
+        };
+        throw Object.assign(new Error("STALE_ATTENDANCE_CASE"), { stale: true });
+      }
+    }
     let source = await loadSource(tx, env, row.kind, row.sourceRef, {
       lock: true,
     });
@@ -754,6 +811,7 @@ export async function actApproval(raw) {
         source,
         input.action === "APPROVE",
         input.reason,
+        { deductionDays: input.deductionDays },
       );
       next = await tx.hrApprovalRequest.update({
         where: { id: row.id },
@@ -766,6 +824,39 @@ export async function actApproval(raw) {
       record: await view(tx, env, next),
     };
   });
+  } catch (err) {
+    if (!err?.stale || !staleCase) throw err;
+    // The case closed under the request, so no approver can ever decide it.
+    // Close the request for good and answer with what happened instead of the
+    // raw HR-4200 "The source is not ready for approval".
+    await tenantTransaction(
+      prisma,
+      async (tx) => {
+        await tx.hrApprovalRequest.update({
+          where: { id: staleCase.approvalId },
+          data: { stage: "WITHDRAWN", execution: "APPLIED", version: { increment: 1 } },
+        });
+        await tx.attendanceRuleAudit.create({
+          data: {
+            tenantId: staleCase.tenantId,
+            employeeId: staleCase.employeeId,
+            anomalyId: staleCase.anomalyId,
+            action: "REQUEST_WITHDRAWN",
+            actorId: staleCase.actorCode,
+            data: json({
+              reason: `Case is ${staleCase.status}; the request was closed on ${staleCase.action}`,
+              approvalRef: staleCase.approvalId,
+            }),
+          },
+        });
+      },
+      { tenantId: staleCase.tenantId },
+    );
+    fail(
+      `This request is closed: the attendance case was already ${staleCase.status.toLowerCase()} by a re-evaluation, so there is nothing left to decide. Refresh and the card is gone.`,
+      409,
+    );
+  }
   // MULTI-COMPANY-MIRROR-01 (B-B) — carry the outcome to the other companies'
   // copies of the same request: a first decision decides the siblings still
   // pending, a withdrawal withdraws only the pending mirrors. After the
@@ -971,6 +1062,7 @@ async function mirrorApprovalOutcome(input, result) {
           decision: row.stage,
           comment: input.reason ?? null,
           deciderName: result?.actorCode ?? null,
+          deductionDays: input.deductionDays,
         }),
       );
     else if (row.stage === "WITHDRAWN")
@@ -1136,9 +1228,36 @@ export function listApprovals(raw) {
         take: input.limit + 1,
       }),
       page = rows.slice(0, input.limit);
+    // A pending request whose attendance case is already closed (resolved or
+    // superseded by a re-evaluation) cannot be decided: it only produced the
+    // HR-4200 error when someone clicked it. Keep it out of the list and out of
+    // the counts; the action itself closes the row if it is reached another way.
+    const closedCases = new Set();
+    const attendanceIds = page
+      .filter((r) => r.kind === "ATTENDANCE")
+      .map((r) => Number(String(r.sourceRef).split("@")[0]))
+      .filter((id) => Number.isInteger(id));
+    if (attendanceIds.length)
+      for (const anomaly of await tx.attendanceAnomaly.findMany({
+        where: {
+          tenantId: env.tenantId,
+          id: { in: attendanceIds },
+          status: { not: "PENDING" },
+        },
+        select: { id: true },
+      }))
+        closedCases.add(anomaly.id);
+    const stale = (row) =>
+      row.kind === "ATTENDANCE" &&
+      closedCases.has(Number(String(row.sourceRef).split("@")[0]));
     const items = [];
     const people = await identitiesByCode(tx, env.tenantId, page.map((r) => r.employeeCode));
-    for (const row of page) items.push(await view(tx, env, row, true, people));
+    for (const row of page)
+      if (!stale(row)) items.push(await view(tx, env, row, true, people));
+    const staleCount = page.filter(stale).length;
+    if (staleCount && counts.byKind.ATTENDANCE)
+      counts.byKind.ATTENDANCE = Math.max(0, counts.byKind.ATTENDANCE - staleCount);
+    if (staleCount) counts.total = Math.max(0, counts.total - staleCount);
     const candidates =
       input.scope === "MINE" && permits(env, "self")
         ? await sourceCandidates(tx, env, input.kind)
