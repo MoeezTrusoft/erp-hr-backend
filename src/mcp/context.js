@@ -1,3 +1,4 @@
+import { recoveryPrincipal } from "../services/employee-provisioning-reissue.mjs";
 import { mcpCtx } from "../lib/requestContext.js";
 export { mcpCtx };
 
@@ -65,6 +66,7 @@ export function buildContextFromHeaders(req) {
     permissions,
     correlationId,
     actorVerified: true,
+    recoveryPrincipal: () => recoveryPrincipal(verified),
     servicePrincipal: claims.sub ?? claims.actor?.id ?? claims.iss,
   };
 }

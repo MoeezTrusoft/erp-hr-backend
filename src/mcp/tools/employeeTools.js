@@ -1,3 +1,7 @@
+import prisma from "../../lib/prisma.js";
+import { tenantTransaction } from "../../lib/rlsTenant.js";
+import { publicProvisioningState } from "../../jobs/system-account-provisioning.js";
+import { reissueForEmployee } from "../../services/employee-provisioning-reissue.mjs";
 import { EmploymentCategory, EmploymentCode } from "@trusoft/contracts/employment";
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
@@ -96,6 +100,19 @@ const mediaPayloadShape = {
 };
 
 export function registerEmployeeTools(server) {
+  server.tool(
+    "hr_employee_login_reissue",
+    "Reissue a previously denied employee login request with a freshly authorized role",
+    {
+      employeeId: z.number().int().positive(), employeeCode: z.string().min(1),
+      email: z.string().email(), roleId: z.number().int().positive(),
+    },
+    withToolError(async ({ employeeId, ...input }) => {
+      const actor = getCtx().recoveryPrincipal();
+      const row = await tenantTransaction(prisma, tx => reissueForEmployee(tx, actor, employeeId, input), { tenantId: actor.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data: publicProvisioningState(row) }) }] };
+    }, "hr_employee_login_reissue")
+  );
   server.resource(
     "hr_employees_resource",
     "hr://employees",
