@@ -148,19 +148,3 @@ export function resolvePayDate({ tenantId, year, month, calendar } = {}) {
 
     return date.toISOString().slice(0, 10);
 }
-
-/**
- * isAttendanceLocked — is attendance editing locked for this tenant right now?
- *
- * Returns true when the calendar's attendanceCutoff is set AND the given
- * instant `at` (default: now) is at or past the cutoff. The FE / shift & OT
- * edit paths call this to block changes once the cutoff has passed. When no
- * cutoff is configured the window is never locked (returns false).
- */
-export async function isAttendanceLocked({ tenantId, at } = {}) {
-    const row = await prisma.payrollCalendar.findUnique({ where: { tenantId } });
-    if (!row || !row.attendanceCutoff) return false;
-    const now = at ? new Date(at) : new Date();
-    if (Number.isNaN(now.getTime())) return false;
-    return now.getTime() >= new Date(row.attendanceCutoff).getTime();
-}

@@ -27,7 +27,9 @@ const db = {
   leaveBalance: { findMany: async () => [] },
   overtimeRequest: { findMany: async () => [] },
   payrollConfigSnapshot: { findFirst: async () => ({ config: { taxSlabs: [], payRules: { cashDisbursement: true } } }) },
+  monthlyPayrollAttendance: { findMany: async () => [] },
 };
+const withEntries = (rows) => ({ ...db, monthlyPayrollAttendance: { findMany: async () => rows } });
 const run = { countryCode: "PK", periodStart: new Date("2026-09-01T00:00:00Z"), periodEnd: new Date("2026-09-30T23:59:59Z") };
 const base = { tenantId: "t", run, employees: [{ id: 1, employee_code: "E1", employmentTerms: [{ currency: "PKR" }] }], db };
 
@@ -53,5 +55,46 @@ describe("readiness: attendance setup coverage", () => {
     };
     const { issues } = await payrollReadiness({ ...base, checkAttendanceSetup: true, loadRuntime });
     expect(issues.some((i) => i.code === "ATTENDANCE_SETUP_REQUIRED")).toBe(true);
+  });
+});
+
+describe("readiness: manual-monthly payable days (§362)", () => {
+  const manual = {
+    ...base.employees[0],
+    attendanceInputMode: "MANUAL_MONTHLY",
+  };
+  it("blocks the calculation for a manual employee with no entry", async () => {
+    const { issues } = await payrollReadiness({ ...base, employees: [manual] });
+    const issue = issues.find((i) => i.code === "MONTHLY_ATTENDANCE_REQUIRED");
+    expect(issue).toMatchObject({ phase: "CALCULATE", employeeCode: "E1" });
+    expect(issue.message).toContain("September 2026");
+  });
+  it("accepts an explicit zero entry", async () => {
+    const { issues } = await payrollReadiness({
+      ...base,
+      employees: [manual],
+      db: withEntries([{ employeeId: 1 }]),
+    });
+    expect(issues.some((i) => i.code === "MONTHLY_ATTENDANCE_REQUIRED")).toBe(false);
+  });
+  it("leaves device employees alone", async () => {
+    const { issues } = await payrollReadiness(base);
+    expect(issues.some((i) => i.code === "MONTHLY_ATTENDANCE_REQUIRED")).toBe(false);
+  });
+  it("uses the published setup's mode on the run screen", async () => {
+    const loadRuntime = async () => ({
+      configOn: () => true,
+      resolve: () => ({ working: true, reason: "MANUAL_MONTHLY", profile: { mode: "MANUAL_MONTHLY" } }),
+    });
+    const { issues } = await payrollReadiness({ ...base, checkAttendanceSetup: true, loadRuntime });
+    expect(issues.some((i) => i.code === "MONTHLY_ATTENDANCE_REQUIRED")).toBe(true);
+  });
+  it("does not turn a setup gap into a missing entry", async () => {
+    const loadRuntime = async () => ({
+      configOn: () => true,
+      resolve: () => ({ working: null, reason: "NO_PROFILE" }),
+    });
+    const { issues } = await payrollReadiness({ ...base, checkAttendanceSetup: true, loadRuntime });
+    expect(issues.some((i) => i.code === "MONTHLY_ATTENDANCE_REQUIRED")).toBe(false);
   });
 });

@@ -885,6 +885,8 @@ model AttendanceAnomaly {
   workflowVersion Int @default(0)
   workflowHistory Json @default("[]")
   attachments Json @default("[]")
+  // Management's explicit deduction on a rejection: 0.5, 1 or 2 days; null = the
+  // attendance policy prices the case. See lib/attendanceAnomalyRules.js.
   manualDeductionDays Float?
 
 
@@ -2704,7 +2706,7 @@ model SalaryComponent {
   name         String
   type         PayElementType // EARNING | DEDUCTION
   computation  ComputationType @default(FIXED)
-  value        Decimal?        @db.Decimal(18, 4) // FIXED amount or PERCENTAGE percent (0-100)
+  value        Decimal?        @db.Decimal(18, 8) // FIXED amount or PERCENTAGE percent (0-100); 8 dp because the standard split is 400/9 … of basic
   formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
   taxable      Boolean         @default(true)
   active       Boolean         @default(true)
@@ -5762,4 +5764,12 @@ model PerfPeerResponse {
   @@unique([tenantId,id])
   @@unique([tenantId,nominationId])
   @@unique([tenantId,roundId,authorId])
+}
+
+model HrPmAvailabilityVersion {
+ tenantId String @db.Uuid
+ employeeId Int
+ version BigInt @default(1)
+ @@id([tenantId,employeeId])
+ @@map("hr_pm_availability_versions")
 }

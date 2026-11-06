@@ -636,6 +636,21 @@ export function submitApprovalOnBehalf(raw, { allowManagerFiler = false } = {}) 
   );
 }
 
+// Management's decision level: the sealed route's APPROVE level, or the legacy
+// MANAGEMENT stage. A salary deduction is a Management decision, never the
+// initiator's or HR's verification note.
+function atManagementDecisionLevel(row) {
+  if (row.stage === "MANAGEMENT") return true;
+  if (row.stage !== "LEVEL" || !row.route?.levels) return false;
+  const level = row.route.levels[row.level];
+  // The route's final APPROVE level is Management's decision; its display name
+  // is configurable, so the action is the reliable marker.
+  return Boolean(
+    level &&
+      (level.action === "APPROVE" || /management|mgmt/i.test(level.name || "")),
+  );
+}
+
 export async function actApproval(raw) {
   const input = ApprovalAction.parse(raw);
   // Set inside the transaction when the case behind the request is already
@@ -656,8 +671,19 @@ export async function actApproval(raw) {
     }
     if (!(await canRead(tx, env, row))) fail("Request not found", 404);
     assertVersion(row, input.expectedVersion);
-    if (!(await actionsFor(tx, env, row)).includes(input.action))
+        if (!(await actionsFor(tx, env, row)).includes(input.action))
       fail("You cannot perform this action at the current stage", 403);
+
+    if (input.deductionDays !== undefined) {
+      if (row.kind !== "ATTENDANCE" || input.action !== "REJECT")
+        fail(
+          "Only the rejection of an attendance request can carry a salary deduction",
+          422,
+        );
+      if (!atManagementDecisionLevel(row))
+        fail("Only Management may set the salary deduction", 403);
+    }
+
     // HR-4200 "The source is not ready for approval" was the whole error an
     // approver saw when the attendance re-evaluation had already closed the case
     // under a PENDING request (production: Trusoft 2632/2637/2204/2304,
@@ -785,6 +811,7 @@ export async function actApproval(raw) {
         source,
         input.action === "APPROVE",
         input.reason,
+        { deductionDays: input.deductionDays },
       );
       next = await tx.hrApprovalRequest.update({
         where: { id: row.id },
@@ -843,11 +870,14 @@ const EDIT_REASON_LIMIT = 4000;
 // record's `actions` (so a screen offers Edit only when it will work).
 //
 // Matrix (operator, 2026-11-05):
+//   • HR edits any open resolution request, at any stage, until it is decided:
+//     the permission that makes an HR approver (`hr.approvals.verify`), not the
+//     sealed route's list, decides, so an employee's own note is not stuck with
+//     wording HR cannot fix (operator, 2026-11-05: "Allow HR to edit any anomaly");
 //   • an employee edits the request they raised about their own day, until the
 //     first approver decides it;
-//   • on a request raised on behalf, the filer, the employee's line manager and
-//     the HR approvers on the sealed route edit it, until the level after HR's
-//     step acts;
+//   • on a request raised on behalf, the filer and the employee's line manager
+//     edit it, until the level after HR's step acts;
 //   • Management never edits a request: it decides.
 async function attendanceEditRefusal(tx, env, row, anomaly) {
   if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING")
@@ -866,6 +896,9 @@ async function attendanceEditRefusal(tx, env, row, anomaly) {
     )
   )
     return { status: 403, message: "Management decides this request and cannot edit it" };
+  // HR holds the verify permission in every company it serves; its wording may
+  // be corrected at any stage, whoever raised the request (operator, 2026-11-05).
+  if (permits(env, "verify")) return null;
   // The employee's own request: their note, until an approver has decided.
   if (anomaly.raisedById === anomaly.employeeId || !anomaly.raisedByName) {
     // A sealed route records acts in `route.acted`; a legacy request records the
@@ -880,15 +913,14 @@ async function attendanceEditRefusal(tx, env, row, anomaly) {
       return { status: 403, message: "Only the employee who raised this request can edit it" };
     return null;
   }
-  // Raised on behalf: editable only while it waits for the level after HR's step.
-  let hrCodes = [], editable = false;
+  // Raised on behalf: the filer and the line manager edit it only while it waits
+  // for the level after HR's step (HR itself is above, on the verify permission).
+  let editable = false;
   if (row.stage === "LEVEL" && row.route?.levels) {
     const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
     editable = Boolean(hr) && row.level > hr.index && acted.every((a) => a.level <= hr.index);
-    hrCodes = hr?.approverCodes ?? [];
   } else if (row.stage === "MANAGEMENT" && !row.route) {
     editable = true;
-    hrCodes = row.hrActorCode ? [row.hrActorCode] : [];
   }
   if (!editable) return { status: 409, message: "This request has moved past the step where it can be edited" };
   const filer = await tx.employee.findFirst({
@@ -900,10 +932,9 @@ async function attendanceEditRefusal(tx, env, row, anomaly) {
     select: { id: true, managerId: true },
   });
   const isFiler = Boolean(filer && ownsCode(env, filer.employee_code));
-  const isHr = hrCodes.some((code) => ownsCode(env, code));
   const isLineManager = Boolean(subject?.managerId) && subject.managerId === env.who.id;
-  if (!isFiler && !isHr && !isLineManager)
-    return { status: 403, message: "Only the person who filed this request, the employee's line manager or the HR approver can edit it" };
+  if (!isFiler && !isLineManager)
+    return { status: 403, message: "Only HR, the person who filed this request or the employee's line manager can edit it" };
   if (env.who.id === anomaly.employeeId)
     return { status: 403, message: "You cannot edit a request about your own day" };
   return null;
@@ -1031,6 +1062,7 @@ async function mirrorApprovalOutcome(input, result) {
           decision: row.stage,
           comment: input.reason ?? null,
           deciderName: result?.actorCode ?? null,
+          deductionDays: input.deductionDays,
         }),
       );
     else if (row.stage === "WITHDRAWN")

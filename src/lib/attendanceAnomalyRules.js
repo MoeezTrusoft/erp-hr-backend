@@ -201,12 +201,66 @@ export function deductionRulesFromPolicy(policy = {}) {
   }
   return rules;
 }
+// Management may attach a fixed deduction to the rejection of one attendance
+// case (half, one or two days of salary). It REPLACES the policy's normal
+// pricing for that employee's work date: the shift is priced once, at the
+// highest marking given to any case on it, and takes no part in the automatic
+// credit-loss or occurrence counters. This is the "explicit deduction" the
+// operator asked for; without a marking the policy prices the case as before.
+export const MANUAL_DEDUCTION_DAYS = Object.freeze([0.5, 1, 2]);
+export function manualDeductionDays(value) {
+  if (value == null) return null;
+  const days = Number(value);
+  if (!MANUAL_DEDUCTION_DAYS.includes(days))
+    throw new Error("Invalid manual attendance deduction");
+  return days;
+}
 export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
   const r = { ...DEFAULT_DEDUCTION_RULES, ...(rules || {}) };
   const seen = new Set(),
     lines = [],
     minors = [],
     missing = [];
+  const inPeriod = (a) =>
+    !(
+      (from && keyDate(a.date) < keyDate(from)) ||
+      (to && keyDate(a.date) > keyDate(to))
+    );
+  const shiftKey = (a) => `${a.employeeId}|${keyDate(a.date)}`;
+  // One marking per employee work date: the highest of its cases wins, so a
+  // late check-in and a missing check-out on the same day cannot charge twice.
+  const manualMarks = new Map();
+  for (const a of anomalies) {
+    if (
+      a.rulesVersion !== 2 ||
+      a.status !== "REJECTED" ||
+      a.decisionRole !== "Management" ||
+      a.evidenceState !== "ACTIVE" ||
+      !a.date ||
+      !inPeriod(a)
+    )
+      continue;
+    const days = manualDeductionDays(a.manualDeductionDays);
+    if (days == null) continue;
+    const key = shiftKey(a);
+    const mark = manualMarks.get(key);
+    if (mark) {
+      mark.days = Math.max(mark.days, days);
+      if (a.id != null) mark.anomalyIds.add(a.id);
+    } else
+      manualMarks.set(key, {
+        days,
+        date: keyDate(a.date),
+        anomalyIds: new Set(a.id == null ? [] : [a.id]),
+      });
+  }
+  for (const mark of manualMarks.values())
+    lines.push({
+      anomalyIds: [...mark.anomalyIds],
+      days: mark.days,
+      date: mark.date,
+      manual: true,
+    });
   for (const a of [...anomalies].sort(
     (a, b) => +new Date(a.date) - +new Date(b.date) || a.id - b.id,
   )) {
@@ -221,11 +275,10 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
       a.evidenceState !== "ACTIVE"
     )
       continue;
-    if (
-      (from && keyDate(a.date) < keyDate(from)) ||
-      (to && keyDate(a.date) > keyDate(to))
-    )
-      continue;
+    if (!inPeriod(a)) continue;
+    // A manually marked shift is priced by its marking above; its cases do not
+    // also feed the automatic lines or their pools.
+    if (manualMarks.has(shiftKey(a))) continue;
     const key = `${a.employeeId}|${keyDate(a.date)}|${a.sessionKey}|${a.type}`;
     if (seen.has(key)) continue;
     seen.add(key);

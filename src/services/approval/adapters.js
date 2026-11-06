@@ -559,7 +559,7 @@ export async function onReturn(tx, kind, source, target) {
       data: changes,
     });
 }
-export async function applyDecision(tx, env, request, s, approved, reason) {
+export async function applyDecision(tx, env, request, s, approved, reason, options = {}) {
   const { kind } = request,
     row = s.row,
     status = approved ? "APPROVED" : "REJECTED";
@@ -784,6 +784,7 @@ export async function applyDecision(tx, env, request, s, approved, reason) {
         version: row.workflowVersion,
         decision: status,
         comment: String(reason ?? '').trim() || 'No note given',
+        deductionDays: options.deductionDays,
       },
       tx,
     );

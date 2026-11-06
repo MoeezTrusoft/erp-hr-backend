@@ -9,6 +9,7 @@ import {
   listCaptureEvents,
   captureTrace,
   reviewCaptureEvents,
+  dismissStaleCaptureEvents,
   registerCaptureDevice,
   updateCaptureDevice,
 } from "../../services/attendanceCapture.service.js";
@@ -139,6 +140,33 @@ export function registerAttendanceCaptureTools(server) {
     },
     "PUT",
     reviewCaptureEvents,
+    "capture",
+  );
+  // §368 (operator, 2026-11-04) — stale evidence (no punch date, a date outside
+  // the month, or an employee outside the period) does not block a timesheet, but
+  // it queues forever. This dismisses those records, audited, and refuses any
+  // that still falls inside the period.
+  tool(
+    "hr_attendance_capture_dismiss_stale",
+    "Dismiss unresolved device evidence that cannot affect a month (no punch date or a date outside it)",
+    {
+      month: z.string().regex(/^\d{4}-\d{2}$/),
+      ids: z.array(z.string().uuid()).min(1).max(100),
+      reason: z.string().trim().min(1).max(2000),
+    },
+    "PUT",
+    ({ month, ids, reason, tenantId, actorId }) => {
+      const [y, m] = month.split("-").map(Number);
+      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      return dismissStaleCaptureEvents({
+        tenantId,
+        actorId,
+        ids,
+        from: `${month}-01`,
+        to: `${month}-${String(lastDay).padStart(2, "0")}`,
+        reason,
+      });
+    },
     "capture",
   );
   tool(
