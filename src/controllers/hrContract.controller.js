@@ -1,3 +1,7 @@
+import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { publicProvisioningState } from "../jobs/system-account-provisioning.js";
+import { recoveryPrincipal, reissueForEmployee } from "../services/employee-provisioning-reissue.mjs";
 import * as hrContract from "../services/hrContract.service.js";
 import { sendContractError, sendContractSuccess } from "../utils/apiContract.js";
 import {
@@ -223,3 +227,16 @@ export const reopenRequisition = handle(
   (req) => hrContract.reopenRequisition(req.params.id, actorId(req), req.body.comments),
   "Requisition reopened"
 );
+
+export async function reissueEmployeeLogin(req, res) {
+  try {
+    const actor = recoveryPrincipal(req.internalService);
+    const row = await tenantTransaction(prisma, tx => reissueForEmployee(
+      tx, actor, Number(req.params.id), req.body
+    ), { tenantId: actor.tenantId });
+    return sendContractSuccess(res, publicProvisioningState(row), "Employee login provisioning status");
+  } catch (error) {
+    const status = [400, 403, 404, 409].includes(error.status) ? error.status : 500;
+    return sendContractError(res, error, status, "EMPLOYEE_LOGIN_REISSUE");
+  }
+}
