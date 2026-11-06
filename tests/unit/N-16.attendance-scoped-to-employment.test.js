@@ -14,6 +14,7 @@
 // attendance evidence.
 import { describe, it, expect } from '@jest/globals';
 import {
+    employmentSpells,
     scopeAttendanceToEmployment,
     scopeAnomaliesToEmployment,
 } from '../../src/services/payrollService.js';
@@ -138,5 +139,52 @@ describe('N-16b anomaly cases scoped to employment spells', () => {
         expect(scopeAnomaliesToEmployment(null, SEPT)).toBe(0);
         expect(scopeAnomaliesToEmployment({ employmentPeriods: [] }, SEPT)).toBe(0);
         expect(scopeAnomaliesToEmployment({ employmentPeriods: [{ startDate: D('2026-01-01'), endDate: null }] }, SEPT)).toBe(0);
+    });
+});
+
+// N-16c — the hire date is the spell when the employee has no period rows. Every
+// ordinary joiner is in this shape: Aurangzaib (Homenet 640) was hired 2026-10-19
+// and the evaluator had already written 15 and 18 Oct cases under his roster.
+describe('N-16c employment spells fall back to the hire date', () => {
+    const OCT = new Date('2026-10-31T23:59:59.999Z');
+    it('opens one spell at the hire date with no periods', () => {
+        const spells = employmentSpells({ hire_date: D('2026-10-19') }, OCT);
+        expect(spells).toHaveLength(1);
+        expect(spells[0].start.getUTCDate()).toBe(19);
+        expect(spells[0].end).toBeNull();
+    });
+
+    it('drops cases dated before the hire date (Aurangzaib: hired 19 Oct)', () => {
+        const employee = {
+            hire_date: D('2026-10-19'),
+            employmentPeriods: [],
+            attendanceAnomalies: [CASE('2026-10-15', 'LATE_CHECKIN'), CASE('2026-10-18'), CASE('2026-10-19'), CASE('2026-10-28', 'LATE_CHECKIN')],
+        };
+        expect(scopeAnomaliesToEmployment(employee, OCT)).toBe(2);
+        expect(employee.attendanceAnomalies.map((a) => a.date.getUTCDate())).toEqual([19, 28]);
+    });
+
+    it('drops attendance rows before the hire date', () => {
+        const employee = {
+            hire_date: D('2026-10-19'),
+            employmentPeriods: [],
+            attendance: [row('2026-10-15'), row('2026-10-18'), row('2026-10-19')],
+        };
+        expect(scopeAttendanceToEmployment(employee, OCT)).toBe(2);
+        expect(employee.attendance.map((r) => r.date.getUTCDate())).toEqual([19]);
+    });
+
+    it('employment periods win over the hire date when both exist', () => {
+        const spells = employmentSpells(
+            { hire_date: D('2026-01-01'), employmentPeriods: [{ startDate: D('2026-09-04'), endDate: null }] },
+            OCT,
+        );
+        expect(spells).toHaveLength(1);
+        expect(spells[0].start.getUTCDate()).toBe(4);
+    });
+
+    it('no hire date and no periods leaves the employee untouched', () => {
+        expect(employmentSpells({}, OCT)).toEqual([]);
+        expect(employmentSpells(null, OCT)).toEqual([]);
     });
 });

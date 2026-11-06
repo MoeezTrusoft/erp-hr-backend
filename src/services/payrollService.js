@@ -1104,11 +1104,27 @@ export const dedupeBaseSalaryAssignments = (employee) => {
 // earnings remain governed by computeProrationFactor. Employees with no period
 // history (the steady-state majority) are untouched — scoping them to an empty
 // spell list would zero their attendance.
-export const scopeAttendanceToEmployment = (employee, periodEnd) => {
-    const spells = (employee?.employmentPeriods || []).map((p) => ({
+// N-16c — EMPLOYMENT SPELLS WITH THE HIRE DATE AS A FALLBACK: most employees have
+// no employment_periods rows, so the scoping below only ever fired for leavers and
+// re-hires. A mid-month joiner's roster covers the whole month and the evaluator
+// writes ABSENT/MISSING_* cases for the days BEFORE the hire date; payroll priced
+// them (Aurangzaib, Homenet 640, hired 2026-10-19: his 15 and 18 Oct cases took
+// 1.5 of his 13 employed days, so his payslip read 11.5 days). When no periods
+// exist, the employee's own hire date opens one spell that runs to the period end.
+// No hire date and no periods still means "untouched".
+export const employmentSpells = (employee, periodEnd) => {
+    const periods = (employee?.employmentPeriods || []).map((p) => ({
         start: p.startDate,
         end: p.endDate ?? null,
     }));
+    if (periods.length) return periods;
+    const start = employee?.hire_date || employee?.joining_date || employee?.hireDate;
+    if (!start) return [];
+    return [{ start, end: null }];
+};
+
+export const scopeAttendanceToEmployment = (employee, periodEnd) => {
+    const spells = employmentSpells(employee, periodEnd);
     if (!spells.length || !employee?.attendance?.length) return 0;
     const before = employee.attendance.length;
     employee.attendance = employee.attendance.filter((row) =>
@@ -1128,10 +1144,7 @@ export const scopeAttendanceToEmployment = (employee, periodEnd) => {
 // scopeAttendanceToEmployment (scoping the steady-state majority to an empty
 // spell list would drop every charge).
 export const scopeAnomaliesToEmployment = (employee, periodEnd) => {
-    const spells = (employee?.employmentPeriods || []).map((p) => ({
-        start: p.startDate,
-        end: p.endDate ?? null,
-    }));
+    const spells = employmentSpells(employee, periodEnd);
     const cases = employee?.attendanceAnomalies;
     if (!spells.length || !cases?.length) return 0;
     const before = cases.length;
