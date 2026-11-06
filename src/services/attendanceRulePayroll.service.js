@@ -34,7 +34,17 @@ export function priceRuleDays(days, basisMinor, periodDays, currency = "PKR") {
 // fail with "the evidence changed". Refuse the decision instead of moving the
 // numbers under review; the case can be decided once the run is finalized, and
 // a finalized payslip carries the change through the existing adjustment path.
+//
+// A COMPLETED run that was never submitted has no digest and nobody reviewing
+// it, so it is NOT sealed: refusing there deadlocked October 2026 (a case
+// raised after the run was processed could not be decided while the run was
+// COMPLETED, and the run could not be recalculated while that case was open).
+// The decision reprices the payslip; the run must then be recalculated before
+// it is submitted for approval.
 export const PAYROLL_AWAITING_APPROVAL = ["COMPLETED", "APPROVED"];
+// Stages in which the PAYROLL approval digest is not being reviewed: the run
+// was returned to its initiator, refused, or the request was withdrawn.
+export const UNSEALED_PAYROLL_STAGES = ["INITIATOR", "REJECTED", "WITHDRAWN"];
 export function payrollMonthLabel(date) {
   return new Date(date).toLocaleDateString("en-US", {
     month: "long",
@@ -59,6 +69,26 @@ export async function payrollAwaitingApprovalFor(
     select: { id: true, status: true, periodStart: true },
   });
 }
+// True when the run carries a submitted PAYROLL approval request whose digest
+// is still under review. A missing request (processed, never submitted) is not
+// under review.
+export async function payrollAwaitingSubmitApproval(
+  db,
+  { tenantId, payrollRunId },
+) {
+  const approval = await db.hrApprovalRequest.findUnique({
+    where: {
+      tenantId_kind_sourceRef: {
+        tenantId,
+        kind: "PAYROLL",
+        sourceRef: String(payrollRunId),
+      },
+    },
+    select: { stage: true },
+  });
+  if (!approval) return false;
+  return !UNSEALED_PAYROLL_STAGES.includes(approval.stage);
+}
 export async function assertPayrollNotAwaitingApproval(
   db,
   { tenantId, employeeId, date },
@@ -69,6 +99,11 @@ export async function assertPayrollNotAwaitingApproval(
     date,
   });
   if (!run) return;
+  if (
+    run.status === "COMPLETED" &&
+    !(await payrollAwaitingSubmitApproval(db, { tenantId, payrollRunId: run.id }))
+  )
+    return;
   const month = payrollMonthLabel(run.periodStart);
   throw Object.assign(
     new Error(
