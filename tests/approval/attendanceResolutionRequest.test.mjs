@@ -467,9 +467,11 @@ test(
       );
       const verified = await act("HR", record, "VERIFY");
 
-      // A processed run for this employee, waiting at the approvers: its
-      // approval source digest covers every payslip line, so the decision may
-      // not move the numbers underneath it.
+      // A processed run for this employee, submitted and waiting at the
+      // approvers: its approval source digest covers every payslip line, so the
+      // decision may not move the numbers underneath it. The live PAYROLL
+      // request is what makes the run sealed; a COMPLETED run nobody submitted
+      // is not sealed (that case is covered below).
       const run = await db((tx) =>
         tx.payrollRun.create({
           data: {
@@ -497,6 +499,19 @@ test(
           },
         }),
       );
+      await db((tx) =>
+        tx.hrApprovalRequest.create({
+          data: {
+            tenantId: company,
+            kind: "PAYROLL",
+            sourceRef: String(run.id),
+            employeeCode: "EMP-TEST-HR",
+            stage: "MANAGEMENT",
+            sourceHash: "test-payroll-digest",
+            snapshot: {},
+          },
+        }),
+      );
 
       // Cancelled in a finally block: a failed assertion here must not leave a
       // protective payroll period behind for the tests that follow.
@@ -517,12 +532,15 @@ test(
         assert.equal(request.stage, "MANAGEMENT", "the request keeps its place");
 
         // The same decision goes through once the run is out of the approvers' hands.
-        await db((tx) =>
-          tx.payrollRun.update({
+        await db(async (tx) => {
+          await tx.hrApprovalRequest.deleteMany({
+            where: { tenantId: company, kind: "PAYROLL", sourceRef: String(run.id) },
+          });
+          await tx.payrollRun.update({
             where: { id: run.id },
             data: { status: "CANCELLED" },
-          }),
-        );
+          });
+        });
         const approved = await act(
           "MANAGEMENT",
           { approvalRef: request.id, version: request.version },
@@ -531,12 +549,15 @@ test(
         assert.equal(approved.stage, "APPROVED");
         assert.equal((await readCase(anomaly.id)).status, "APPROVED");
       } finally {
-        await db((tx) =>
-          tx.payrollRun.updateMany({
+        await db(async (tx) => {
+          await tx.hrApprovalRequest.deleteMany({
+            where: { tenantId: company, kind: "PAYROLL", sourceRef: String(run.id) },
+          });
+          await tx.payrollRun.updateMany({
             where: { id: run.id, status: { not: "CANCELLED" } },
             data: { status: "CANCELLED" },
-          }),
-        );
+          });
+        });
       }
     });
 
