@@ -7,6 +7,11 @@
 //   "add deductionBasis setting to Payroll Setup with BASIC | GROSS,
 //    defaulting to GROSS"
 //
+// OPERATOR RULE 2026-11-06 — "deductions must be on complete salary not basic",
+// for every employee in every company. BASIC is no longer a settable basis and
+// the engine ignores a legacy BASIC row: a deducted day is always the complete
+// monthly salary over the period's calendar days.
+//
 // This replaces the previous rule, which divided BASE salary by a fixed 26
 // working days for PK. Two things change and both move money:
 //
@@ -70,16 +75,18 @@ describe('HR-PAYROLL-DEDUCTION-BASIS-01 one day costs salary / calendar days', (
         expect(lwpAmount(build({ payrollRun: FEBRUARY }))).toBe(3571);
     });
 
-    it('BASIC charges against base salary alone', () => {
-        // 45,000 / 31 = 1451.61 → 1452 whole rupees (N-22)
-        expect(lwpAmount(build({ ruleConfig: { deductionBasis: 'BASIC' } }))).toBe(1452);
+    it('a legacy BASIC setting cannot shrink the basis any more', () => {
+        // Operator rule 2026-11-06: complete salary, never basic. A row left
+        // over from the old setting must price exactly like GROSS.
+        expect(lwpAmount(build({ ruleConfig: { deductionBasis: 'BASIC' } }))).toBe(3226);
     });
 
-    it('GROSS is more than twice BASIC under a 45% basic structure', () => {
-        // The whole point of the setting: getting it wrong halves every penalty.
-        const gross = lwpAmount(build({ ruleConfig: { deductionBasis: 'GROSS' } }));
-        const basic = lwpAmount(build({ ruleConfig: { deductionBasis: 'BASIC' } }));
-        expect(gross / basic).toBeCloseTo(100 / 45, 2);
+    it('the basis is the contracted package (basic + allowances), not basic alone', () => {
+        // 45,000 basic + 55,000 allowances = 100,000 / 31 = 3225.81 → 3226.
+        // Charging basic alone would have been 1452 — less than half.
+        const slip = build();
+        expect(lwpAmount(slip)).toBe(3226);
+        expect(Number(slip.attendanceBasisMinor) / 100).toBe(100000);
     });
 
     it('an unknown basis falls back to GROSS rather than silently under-deducting', () => {

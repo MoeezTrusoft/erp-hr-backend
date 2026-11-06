@@ -698,12 +698,14 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             Math.round((dayOf(payrollRun.periodEnd) - dayOf(payrollRun.periodStart)) / 86_400_000) + 1,
         );
 
-        // GROSS (the default) charges against base + fixed allowances. Salaries
-        // here are structured basic 45% + allowances 55%, so BASIC would
-        // under-deduct by more than half. An unrecognised value falls back to
-        // GROSS deliberately: under-deducting silently is the worse failure.
-        const basisMinor =
-            ruleConfig.deductionBasis === 'BASIC' ? baseMinor : contractualMinor || baseMinor;
+        // OPERATOR RULE 2026-11-06 — a deducted day is ALWAYS charged against the
+        // COMPLETE monthly salary (basic + allowances), for every employee in
+        // every company. Salaries here are structured basic 45% + allowances
+        // 55%, so a basic-only basis under-deducts by more than half. The old
+        // `deductionBasis: BASIC` switch is gone (see payrollRuleConfig.service)
+        // and is ignored here if an old row still carries it: a single formula
+        // for one concept is the only way the numbers can be trusted.
+        const basisMinor = contractualMinor || baseMinor;
 
         const daysToMinor = (days) =>
             (basisMinor * BigInt(Math.round(days * 100))) / (100n * BigInt(periodDays));
