@@ -26,6 +26,7 @@ import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
 import { completeTimesheetRows } from '../lib/timesheetRows.js';
 import { rowAnomalies } from '../lib/timesheetRowAnomalies.js';
 import { appealInfo, appealsByOriginal } from '../lib/attendanceCaseAppeal.js';
+import { isSystemClosedRequest } from '../lib/attendanceRequestState.js';
 import { computeAnomalyDeadline } from './attendanceAnomalyRequest.service.js';
 import { RULE_TYPES } from '../lib/attendanceAnomalyRules.js';
 import { attendanceActorCodes } from '../lib/attendanceActorCodes.js';
@@ -1289,6 +1290,12 @@ export async function listCheckInOuts({
         department: an.departmentSnapshot,
         reviewNote: an.reviewNote,
         decisions: decisionsByAnomaly.get(an.id) ?? [],
+        // TS-REQUEST-CLOSED-01 (2026-11-06) — a form the SYSTEM closed has no
+        // approver decision behind it: an auto-rejection, e.g. Rustam Khan's
+        // 5 Oct case, restated ON_LEAVE because his leave covered the day. The
+        // row must not read that as "Management disapproved the employee": an
+        // REJECTED case with no decision rows was closed automatically.
+        systemClosed: isSystemClosedRequest(an.status, decisionsByAnomaly.get(an.id)),
         // HR-ATT-APPEAL-01 — a case Management rejected may be appealed once.
         // `canAppeal` mirrors the server's own test (rules v2, a Management
         // rejection on live evidence, no appeal yet); `appealId` is the appeal
