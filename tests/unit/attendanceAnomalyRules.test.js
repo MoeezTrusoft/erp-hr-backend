@@ -46,8 +46,17 @@ describe('attached attendance rules',()=>{
   expect(isManagement({isAdmin:true,roles:['HR','Line Management']})).toBe(false);
   expect(isManagement({roles:[{name:'Management'}]})).toBe(true);
  });
- it('cannot excuse another anomaly by approving one on the same shift',()=>{
-  expect(ruleDeductions([rejected(1,'LATE_CHECKIN',45,{status:'APPROVED'}),rejected(2,'EARLY_CHECKOUT',45)]).days).toBe(.5);
+ it('an approved case excuses every other case on the same day (HR-ATT-EXCUSE-01)',()=>{
+  expect(ruleDeductions([rejected(1,'LATE_CHECKIN',45,{status:'APPROVED'}),rejected(2,'EARLY_CHECKOUT',45)]).days).toBe(0);
+ });
+ it('an approved day does not count toward the minor late/early pool',()=>{
+  // Wajahat Ali, HomeVision October 2026: three over-threshold lates (0.5 each) and two short
+  // lates must stay at 1.5 days; the short late on a day whose missing check-out was approved
+  // used to complete the pool of three and add a whole day (2.5 charged, 1.5 expected).
+  const cases=[rejected(1,'LATE_CHECKIN',90,{date:'2026-10-18'}),rejected(2,'LATE_CHECKIN',60,{date:'2026-10-23'}),rejected(3,'LATE_CHECKIN',267,{date:'2026-10-26'}),
+   rejected(4,'LATE_CHECKIN',7,{date:'2026-10-20'}),rejected(5,'LATE_CHECKIN',8,{date:'2026-10-29'}),
+   rejected(6,'LATE_CHECKIN',22,{date:'2026-10-02'}),rejected(7,'MISSING_CHECKOUT',0,{date:'2026-10-02',status:'APPROVED'})];
+  expect(ruleDeductions(cases,{from:'2026-10-01',to:'2026-10-31'}).days).toBe(1.5);
  });
  it('new payroll does not charge undecided automatic attendance or legacy manual markings',()=>{
   const result=buildPayslipFromInputs({employee:{id:1},employmentTerm:{baseSalary:'31000',currency:'PKR'},assignments:[],payrollRun:{periodStart:new Date('2026-10-01'),periodEnd:new Date('2026-10-31'),currencyCode:'PKR',countryCode:'PK'},taxRateRows:[],ruleConfig:{absenceRecoveryEnabled:true},bridges:{attendanceRows:[{date:'2026-10-01',status:'ABSENT',day_credit:0}],anomalyRows:[rejected(1,'ABSENT',0,{status:'PENDING',manualDeductionDays:1})]}});
