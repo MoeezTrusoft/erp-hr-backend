@@ -21,7 +21,7 @@ export async function loadPayrollRegister({tenantId,runId,companyName}){
  const codes=[approval?.employeeCode,approval?.managerActorCode,approval?.hrActorCode,approved?.actorCode].filter(Boolean);
  const people=codes.length ? await prisma.employee.findMany({where:{tenant_id:tenantId,employee_code:{in:codes}},select:{employee_code:true,employee_name:true}}) : [];
  const fullName=code=>code ? (people.find(p=>p.employee_code===code)?.employee_name||code) : '';
- const defaults=[{label:'INITIATOR',name:fullName(approval?.employeeCode)},{label:'LINE MANAGER',name:fullName(approval?.managerActorCode)},{label:'HR VERIFICATION',name:fullName(approval?.hrActorCode)},{label:'MANAGEMENT',name:fullName(approved?.actorCode)}];
+ const defaults=[{label:'PREPARED BY',name:fullName(approval?.employeeCode)},{label:'AUTHORIZED BY',name:fullName(approval?.hrActorCode)},{label:'APPROVED BY',name:fullName(approved?.actorCode)}];
  return buildPayrollRegister({run,payslips,companyName:profile?.companyName||companyName,signatories:defaults});
 }
 export function renderPayrollRegister(model){
@@ -64,8 +64,9 @@ export function renderPayrollRegister(model){
  });
  ensure(190);band('Consolidated office summary');
  total('Payroll Totals - All offices',model.totals,'#cde7e5');y+=17;
- const labels=model.signatories.map((s,i)=>s.label||['PREPARED BY','VERIFIED BY','AUTHORIZED BY','APPROVED BY'][i]),gap=9,sw=(W-(labels.length-1)*gap)/labels.length;
- labels.forEach((label,i)=>{const xx=M+i*(sw+gap),s=model.signatories[i]||{};box(xx,y,sw,96,'#ffffff');box(xx,y,sw,24,pale);text(label,xx,y+3,sw,22,{bold:true,align:'center',color:teal});text(s.name||'',xx+5,y+32,sw-10,20,{bold:true,size:8});text(s.title||'',xx+5,y+52,sw-10,16,{size:7});doc.moveTo(xx+9,y+79).lineTo(xx+sw/2-6,y+79).stroke().moveTo(xx+sw/2+6,y+79).lineTo(xx+sw-9,y+79).stroke();text('SIGNATURE',xx+5,y+80,sw/2,14,{size:5});text('DATE',xx+sw/2+2,y+80,sw/2-5,14,{size:5});});y+=105;
+ const signatories=(model.signatories||[]).slice(0,3),fallbackLabels=['PREPARED BY','AUTHORIZED BY','APPROVED BY'];
+ const labels=fallbackLabels.map((label,i)=>signatories[i]?.label||label),gap=9,sw=(W-(labels.length-1)*gap)/labels.length;
+ labels.forEach((label,i)=>{const xx=M+i*(sw+gap),s=signatories[i]||{};box(xx,y,sw,96,'#ffffff');box(xx,y,sw,24,pale);text(label,xx,y+3,sw,22,{bold:true,align:'center',color:teal});text(s.name||'',xx+5,y+32,sw-10,20,{bold:true,size:8});text(s.title||'',xx+5,y+52,sw-10,16,{size:7});doc.moveTo(xx+9,y+79).lineTo(xx+sw/2-6,y+79).stroke().moveTo(xx+sw/2+6,y+79).lineTo(xx+sw-9,y+79).stroke();text('SIGNATURE',xx+5,y+80,sw/2,14,{size:5});text('DATE',xx+sw/2+2,y+80,sw/2-5,14,{size:5});});y+=105;
  text('Paid days reflect payroll proration and recorded attendance/leave deductions; "-" means insufficient payroll evidence. Department and position use employee records.',M,y,W,25,{size:6.5});
  const pages=doc.bufferedPageRange();for(let p=0;p<pages.count;p++){doc.switchToPage(p);const oldBottom=doc.page.margins.bottom;doc.page.margins.bottom=0;doc.font('Helvetica').fontSize(7).fillColor('#536b6b').text(`Page ${p+1} of ${pages.count}`,M,doc.page.height-22,{width:W,align:'right',lineBreak:false});doc.page.margins.bottom=oldBottom;}
  doc.end();
