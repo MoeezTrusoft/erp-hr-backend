@@ -4,6 +4,38 @@ import { reconcileRulePayroll } from "./attendanceRulePayroll.service.js";
 const json = (value) => JSON.parse(JSON.stringify(value));
 const hash = (value) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// The Approval Centre request that was submitted for this case. A re-evaluation
+// can close or re-state the evidence under it; leaving the request PENDING made
+// every later click fail with HR-4200 "The source is not ready for approval"
+// (seen in production on Trusoft 2632/2637/2204/2304 and HomeVision 2408).
+async function closeRaisedRequest(db, tenantId, row, reason) {
+  if (!row.factHash) return 0;
+  const closed = await db.hrApprovalRequest.updateMany({
+    where: {
+      tenantId,
+      kind: "ATTENDANCE",
+      sourceRef: `${row.id}@${row.factHash}`,
+      execution: "PENDING",
+    },
+    data: {
+      stage: "WITHDRAWN",
+      execution: "APPLIED",
+      version: { increment: 1 },
+    },
+  });
+  if (!closed.count) return 0;
+  await db.attendanceRuleAudit.create({
+    data: {
+      tenantId,
+      employeeId: row.employeeId,
+      anomalyId: row.id,
+      action: "REQUEST_WITHDRAWN",
+      actorId: "attendance-rules",
+      data: json({ reason }),
+    },
+  });
+  return closed.count;
+}
 export async function syncRuleCases(
   db,
   { tenantId, employeeId, day, sessions, now = new Date() },
@@ -53,7 +85,7 @@ export async function syncRuleCases(
         await db.attendanceRuleAudit.create({
           data: {
             tenantId,
-            employeeId,
+            employeeId: row.employeeId,
             anomalyId: row.id,
             action:
               row.status === "REJECTED" ? "OUTCOME_REVERSED" : "ANOMALY_CLOSED",
@@ -64,6 +96,13 @@ export async function syncRuleCases(
             }),
           },
         });
+        // The case is gone, so a request waiting under it can never be decided.
+        await closeRaisedRequest(
+          db,
+          tenantId,
+          row,
+          "Re-evaluation closed the case; the request no longer had a source",
+        );
         changed = true;
       }
       continue;
@@ -96,6 +135,25 @@ export async function syncRuleCases(
           data: json({ before: row, after: fact }),
         },
       });
+      // The evidence changed, so the submitted request's sealed revision is
+      // stale. Withdraw it and hand the case back as unraised against the new
+      // facts instead of leaving a request every approver click refuses.
+      const withdrawn = await closeRaisedRequest(
+        db,
+        tenantId,
+        row,
+        "Re-evaluation restated the evidence; the request must be raised again",
+      );
+      if (withdrawn)
+        await db.attendanceAnomaly.update({
+          where: { id: row.id, tenantId },
+          data: {
+            reason: null,
+            raisedById: null,
+            raisedByName: null,
+            workflowVersion: { increment: 1 },
+          },
+        });
       changed = true;
     }
     desired.delete(row.sourceRef);
