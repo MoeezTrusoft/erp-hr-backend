@@ -271,6 +271,7 @@ export async function retrySystemAccountProvisioning(id, tenantId, {
 } = {}) {
   const row = await prisma.systemAccountProvisioning.findFirst({ where: { id, tenantId } });
   if (!row) throw new Error("HR-0303: system-account provisioning not found");
+  if (row.lastHttpStatus === 403) throw new Error("A fresh authorized provisioning request is required");
   if (row.status !== "TERMINAL_FAILED") {
     throw new Error("HR-0304: only terminal failed provisioning can be retried manually");
   }

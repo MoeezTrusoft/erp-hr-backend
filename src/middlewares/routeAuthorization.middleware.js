@@ -97,6 +97,7 @@ const resourceFor = (path) => RESOURCE_PREFIXES.find(([prefix]) =>
 )?.[1] || null;
 
 const actionFor = (method, path) => {
+  if (method === "POST" && /^\/api\/hr\/employees\/[^/]+\/system-account\/reissue$/.test(path)) return "update";
   if (method === "POST" && path === "/api/payroll/runs") return "run";
   if (path.includes("/payroll/runs/") && path.endsWith("/approve")) return "approve";
   if (path.includes("/payroll/runs/") && path.endsWith("/finalize")) return "post";
