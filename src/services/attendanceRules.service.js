@@ -174,6 +174,9 @@ export async function listRuleCases(
   // employee-day/type is never counted as open. An approved OTHER covers the day.
   const decidedKeys = new Set();
   for (const row of all) {
+    // A superseded row is history: its rejection was replaced by an appeal, so it
+    // must not settle the live appeal's day/type again (HR-ATT-APPEAL-01).
+    if (row.evidenceState !== 'ACTIVE') continue;
     if (row.status !== 'APPROVED' && row.status !== 'REJECTED') continue;
     const day = `${row.employeeId}|${dateKey(row.date)}`;
     decidedKeys.add(`${day}|${row.type}`);
@@ -371,6 +374,21 @@ export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
     legacy: row.rulesVersion !== 2,
     canDecide: row.rulesVersion===2 && isManagement(user) && row.employeeId !== Number(user.employeeId),
     canEnter: row.rulesVersion===2 && isAttendanceHr(user),
+    // HR-ATT-APPEAL-01 — the case this one appeals (with the decision it
+    // contests) and the appeal raised against this one, so the review screen can
+    // show the history instead of hiding it.
+    appealOf: row.appealOfAnomalyId
+      ? await db.attendanceAnomaly.findFirst({
+          where: { tenantId: user.tenantId, id: row.appealOfAnomalyId },
+          select: { id: true, type: true, date: true, status: true, evidenceState: true, decidedAt: true, reviewNote: true, decisionRole: true, manualDeductionDays: true, factHash: true },
+        })
+      : null,
+    appeal: await db.attendanceAnomaly.findFirst({
+      where: { tenantId: user.tenantId, appealOfAnomalyId: row.id },
+      orderBy: { id: "desc" },
+      select: { id: true, status: true, evidenceState: true, decidedAt: true, reviewNote: true, raisedById: true, factHash: true },
+    }),
+    canAppeal: row.rulesVersion===2 && row.status==='REJECTED' && row.decisionRole==='Management' && row.evidenceState==='ACTIVE',
     commentKinds: row.rulesVersion!==2 ? [] : [
       ...(row.employeeId === Number(user.employeeId) ? ["EMPLOYEE"] : []),
       ...(employee.managerId === Number(user.employeeId) ? ["MANAGER"] : []),
@@ -521,7 +539,7 @@ async function assertRaiseable(tx, user, anomalyId, { onBehalf }) {
 }
 
 async function raiseRuleCase(
-  { user, anomalyId, date, type, employeeId, reason, requestKey, onBehalf = false },
+  { user, anomalyId, date, type, employeeId, reason, requestKey, onBehalf = false, mirror = true },
   db = prisma,
 ) {
   if (!user?.tenantId) fail(401, "Authentication required");
@@ -632,7 +650,7 @@ async function raiseRuleCase(
   // same request, but only when person, device and shift agree. Best effort and
   // after the origin committed: a failure here never fails this raise. A
   // mirrored raise never mirrors again (no ping-pong).
-  if (!isMirroring()) {
+  if (mirror && !isMirroring()) {
     const mirrored = await mirrorSafely("raise", () =>
       mirrorRaise({ tenantId: user.tenantId, anomalyId: prepared.anomalyId }),
     );
@@ -654,6 +672,162 @@ export async function raiseRuleRequest(args, db = prisma) {
 // differs, and the filer is recorded on both the case and the approval trail.
 export async function raiseRuleRequestOnBehalf(args, db = prisma) {
   return raiseRuleCase({ ...args, onBehalf: true }, db);
+}
+
+// HR-ATT-APPEAL-01 (operator, 2026-11-06) — a case Management rejected is
+// terminal for its own request, so a second chance needs a second case rather
+// than a reset decision. The rejected row stays exactly as it was decided
+// (status, reviewer, note, deduction, every audit row) and is marked
+// SUPERSEDED; a NEW case for the same day, type and evidence takes the ordinary
+// route. Payroll prices only a case whose evidence is ACTIVE, so at most one of
+// the pair can ever charge the day.
+//
+// Company-local on purpose: the employee's copy of the same day in another
+// company has its own decision to appeal from, and mirroring here would open a
+// second request nobody rejected there.
+export async function openAppealCase(
+  { user, anomalyId, reason, onBehalf = false },
+  db = prisma,
+) {
+  if (!user?.tenantId) fail(401, "Authentication required");
+  const trimmed = String(reason ?? "").trim();
+  if (!trimmed) fail(400, "A reason is required to appeal the decision");
+  if (trimmed.length > REASON_LIMIT)
+    fail(400, `The reason must be at most ${REASON_LIMIT} characters`);
+  return command(
+    user,
+    async (tx) => {
+      const original = await tx.attendanceAnomaly.findFirst({
+        where: { tenantId: user.tenantId, id: anomalyId },
+      });
+      if (!original) fail(404, "Anomaly not found");
+      await employeeScope(tx, user, original.employeeId);
+      if (onBehalf) {
+        requireHr(user);
+        if (Number(user.employeeId) === original.employeeId)
+          fail(403, "Raise your own case from your own account");
+      } else if (original.employeeId !== Number(user.employeeId)) {
+        fail(403, "Only the employee concerned may appeal this case");
+      }
+      if (original.rulesVersion !== 2)
+        fail(409, "Only a case detected under the current rules can be appealed");
+      // Checked before the eligibility test: once a case is superseded by a live
+      // appeal, "this case already has an appeal" is the useful answer, not a
+      // restatement of the rejection rules.
+      const open = await tx.attendanceAnomaly.findFirst({
+        where: {
+          tenantId: user.tenantId,
+          appealOfAnomalyId: original.id,
+          evidenceState: "ACTIVE",
+        },
+      });
+      if (open)
+        fail(409, "This case already has an appeal; only one appeal can be open");
+      if (
+        original.status !== "REJECTED" ||
+        original.decisionRole !== "Management" ||
+        original.evidenceState !== "ACTIVE"
+      )
+        fail(
+          409,
+          "Only a case Management rejected, whose evidence is still live, can be appealed",
+        );
+      if (!original.date || !original.factHash)
+        fail(409, "The case has no evidence to appeal");
+      await assertPayrollNotAwaitingApproval(tx, {
+        tenantId: user.tenantId,
+        employeeId: original.employeeId,
+        date: original.date,
+      });
+      const originalDecision = {
+        decidedAt: original.decidedAt,
+        reviewNote: original.reviewNote,
+        decisionRole: original.decisionRole,
+        manualDeductionDays: original.manualDeductionDays,
+      };
+      const superseded = await tx.attendanceAnomaly.updateMany({
+        where: {
+          tenantId: user.tenantId,
+          id: original.id,
+          workflowVersion: original.workflowVersion,
+          status: "REJECTED",
+          evidenceState: "ACTIVE",
+        },
+        data: {
+          evidenceState: "SUPERSEDED",
+          workflowVersion: { increment: 1 },
+        },
+      });
+      if (superseded.count !== 1)
+        fail(409, "The case changed; refresh before appealing");
+      const appeal = await tx.attendanceAnomaly.create({
+        data: {
+          tenantId: user.tenantId,
+          employeeId: original.employeeId,
+          date: original.date,
+          type: original.type,
+          sessionKey: original.sessionKey,
+          expectedTime: original.expectedTime,
+          actualTime: original.actualTime,
+          measuredMinutes: original.measuredMinutes,
+          factHash: original.factHash,
+          detail: original.detail,
+          sourceKind: "APPEAL",
+          sourceRef: `appeal:${original.id}`,
+          rulesVersion: 2,
+          status: "PENDING",
+          evidenceState: "ACTIVE",
+          positionSnapshot: original.positionSnapshot,
+          departmentSnapshot: original.departmentSnapshot,
+          approvalPolicy: original.approvalPolicy,
+          appealOfAnomalyId: original.id,
+        },
+      });
+      await audit(
+        tx,
+        user,
+        "APPEAL_OPENED",
+        { originalAnomalyId: original.id, originalDecision, reason: trimmed },
+        original.employeeId,
+        appeal.id,
+      );
+      await audit(
+        tx,
+        user,
+        "CASE_SUPERSEDED_BY_APPEAL",
+        { appealId: appeal.id, reason: trimmed, originalDecision },
+        original.employeeId,
+        original.id,
+      );
+      return appeal.id;
+    },
+    db,
+  );
+}
+
+async function appealRuleCase(
+  { user, anomalyId, reason, requestKey, onBehalf = false },
+  db = prisma,
+) {
+  const appealId = await openAppealCase({ user, anomalyId, reason, onBehalf }, db);
+  // The appeal is an ordinary unraised case now: raising it is the same audited
+  // submission the Timesheet uses, so it keeps the normal HR verification →
+  // Management decision route and gets its own approval reference and audit.
+  return raiseRuleCase(
+    { user, anomalyId: appealId, reason, requestKey, onBehalf, mirror: false },
+    db,
+  );
+}
+
+// The employee's own appeal of a case Management rejected about their day.
+export async function appealRuleRequest(args, db = prisma) {
+  return appealRuleCase({ ...args, onBehalf: false }, db);
+}
+
+// HR's appeal for an employee whose rejected case they want to put back to
+// Management. Same case, same route; only the filer differs.
+export async function appealRuleRequestOnBehalf(args, db = prisma) {
+  return appealRuleCase({ ...args, onBehalf: true }, db);
 }
 
 // `deductionDays` is Management's explicit salary deduction on a rejection

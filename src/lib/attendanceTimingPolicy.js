@@ -15,7 +15,10 @@ export function timingViolationDays({attendance=[],anomalies=[],rules=[]}) {
  for(const row of attendance) {
   if(row.manually_corrected || nonworking.has(row.status)) continue;
   const key=day(row.date);
-  if(anomalies.some(a=>day(a.date)===key && a.manualDeductionDays!=null)) continue;
+  // A superseded case (HR-ATT-APPEAL-01) is history: its rejection — and any
+  // deduction marking on it — was replaced by the appeal, so it must not
+  // suppress this day's timing rules.
+  if(anomalies.some(a=>day(a.date)===key && a.manualDeductionDays!=null && a.evidenceState!=='SUPERSEDED')) continue;
   for(const rule of rules.filter(isTimingRule)) {
    const type=types[rule.ruleKey];
    if(anomalies.some(a=>day(a.date)===key && a.status==='APPROVED')) continue;

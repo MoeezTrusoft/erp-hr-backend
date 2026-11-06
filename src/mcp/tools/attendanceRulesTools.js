@@ -82,6 +82,30 @@ export function registerAttendanceRulesTools(server) {
       },
       service.raiseRuleRequestOnBehalf,
     ],
+    // HR-ATT-APPEAL-01 (operator, 2026-11-06) — a case Management rejected keeps
+    // its decision and audit for good, so a second chance is a NEW linked case
+    // with the same day, type and evidence, raised through the normal route.
+    // `appeal` is the employee's own act (their rejected request is why they
+    // need it); `appeal_on_behalf` is HR's, for an employee who asked HR to put
+    // the day back. Payroll can price only one of the pair.
+    [
+      "appeal",
+      {
+        anomalyId: id,
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.appealRuleRequest,
+    ],
+    [
+      "appeal_on_behalf",
+      {
+        anomalyId: id,
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.appealRuleRequestOnBehalf,
+    ],
     // Correct the message of a raised resolution request until the next approver
     // decides: the employee on their own request, and the filer, the employee's
     // line manager or the HR approver on a request raised on behalf. Management
@@ -184,7 +208,7 @@ export function registerAttendanceRulesTools(server) {
         //     (an ordinary employee holds no hr:attendance write), so it is not
         //     gated here — only by the approval access every self-service user
         //     already has.
-        if (action === 'raise_on_behalf') {
+        if (action === 'raise_on_behalf' || action === 'appeal_on_behalf') {
           assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
         } else if (action === 'employee_options') {
           // Issue 395 — a line manager filing leave for a report needs the
@@ -197,7 +221,7 @@ export function registerAttendanceRulesTools(server) {
             !hasPermission(permissions, "hr:attendance", "GET")
           )
             assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-        } else if (action !== 'raise' && action !== 'edit_request') {
+        } else if (action !== 'raise' && action !== 'appeal' && action !== 'edit_request') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         }
         if (action === 'export_records') assertPermission(permissions,'EXPORT','hr:attendance',user.isAdmin);
