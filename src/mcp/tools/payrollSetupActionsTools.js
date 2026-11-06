@@ -68,10 +68,11 @@ export function registerPayrollSetupActionsTools(server) {
         .optional()
         .describe("Pay salaries in cash (banking paused): employee bank details are not required to finalize (PayrollRuleConfig.cashDisbursement)"),
       // HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
+      // Operator rule 2026-11-06: always the complete salary; BASIC removed.
       deductionBasis: z
-        .enum(["BASIC", "GROSS"])
+        .enum(["GROSS"])
         .optional()
-        .describe("Basis for deducted-day pricing (LWP + ABSENCE_RECOVERY): BASIC or GROSS (PayrollRuleConfig.deductionBasis)"),
+        .describe("Basis for deducted-day pricing (LWP + ABSENCE_RECOVERY). Only GROSS: a deducted day is the complete monthly salary (basic + allowances) divided by the period's calendar days (PayrollRuleConfig.deductionBasis)"),
       // HR-PAYROLL-EOBI-01 — statutory switches (off until deliberately enabled).
       eobiEnabled: z
         .boolean()

@@ -31,7 +31,10 @@ const BOOL_KEYS = [
 ];
 
 // HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
-const DEDUCTION_BASES = ["BASIC", "GROSS"];
+// OPERATOR RULE 2026-11-06 — a deducted day is always charged on the complete
+// monthly salary (basic + allowances). BASIC is no longer an option: keeping it
+// in the API would let a company halve every attendance penalty by accident.
+const DEDUCTION_BASES = ["GROSS"];
 
 // A DRAFT default row (id:null) when the tenant has no PayrollRuleConfig yet.
 function defaultRules() {
@@ -98,7 +101,11 @@ export async function updatePayrollRules({ tenantId, ...toggles }) {
   if (toggles.deductionBasis !== undefined) {
     const basis = String(toggles.deductionBasis).trim().toUpperCase();
     if (!DEDUCTION_BASES.includes(basis)) {
-      throw badRequest(`deductionBasis must be one of: ${DEDUCTION_BASES.join(", ")}`);
+      throw badRequest(
+        basis === "BASIC"
+          ? "deductionBasis BASIC is no longer supported: attendance deductions are always priced on the complete salary (basic + allowances)"
+          : `deductionBasis must be one of: ${DEDUCTION_BASES.join(", ")}`,
+      );
     }
     data.deductionBasis = basis;
   }
