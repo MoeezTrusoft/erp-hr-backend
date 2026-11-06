@@ -133,13 +133,12 @@ export function creditForStatus(status) {
   if (status === "PRESENT" || status === "LATE") return 1;
   // T&A-RULE-06 — both early-checkout bands cost half a day.
   if (status === "HALF_DAY" || status === "EARLY_CHECKOUT") return 0.5;
-  if (
-    status === "ABSENT" ||
-    status === "WEEKLY_OFF" ||
-    status === "HOLIDAY" ||
-    status === "ON_LEAVE"
-  )
-    return 0;
+  // LEAVE-CREDIT-01 (operator, 2026-11-06): an imported ON_LEAVE day is
+  // approved leave, which is paid — credit 1, matching leave.service and the
+  // replay. Credit 0 here made every imported leave day a deduction, because
+  // lib/attendanceDeduction prices Σ(1 − credit).
+  if (status === "ON_LEAVE") return 1;
+  if (status === "ABSENT" || status === "WEEKLY_OFF" || status === "HOLIDAY") return 0;
   return null; // MISSING_* and anything unresolved stays held
 }
 

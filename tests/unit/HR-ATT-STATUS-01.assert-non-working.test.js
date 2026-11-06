@@ -7,7 +7,9 @@ describe('explicit non-working attendance',()=>{
     configure:c=>{if(kind==='HOLIDAY')c.holidays=[{holidayCalendarId:1,date:DATE,name:'Holiday',fullDay:true}];},
     extra:kind==='LEAVE'?{leave:[{tenantId:TENANT,employeeId:1,status:'APPROVED',start_date:day(),end_date:day()}]}:{}});
   await evaluate(db);
-  expect(db.snapshot().attendance[0]).toMatchObject({status:kind==='HOLIDAY'?'HOLIDAY':kind==='LEAVE'?'ON_LEAVE':'WEEKLY_OFF',day_credit:0,requires_regularization:false,processingState:'FINALIZED'});
+  // LEAVE-CREDIT-01 (operator, 2026-11-06) — approved leave is a PAID day: it is
+  // still a non-working day, but it credits 1, like leave.approve writes it.
+  expect(db.snapshot().attendance[0]).toMatchObject({status:kind==='HOLIDAY'?'HOLIDAY':kind==='LEAVE'?'ON_LEAVE':'WEEKLY_OFF',day_credit:kind==='LEAVE'?1:0,requires_regularization:false,processingState:'FINALIZED'});
  });
  it('restates stale off-day rows without deleting their identity',async()=>{
   const db=evaluationDb({pattern:{...fixed,offDays:[7]},rows:[{id:8,status:'ABSENT'}]});await evaluate(db);

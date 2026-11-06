@@ -29,6 +29,17 @@ const MIN_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MIN_MS;
 
 export const startOfDay = (v) => { const d = new Date(v); d.setUTCHours(0, 0, 0, 0); return d; };
+
+/**
+ * Day credit for a day the roster does not expect work on.
+ * LEAVE-CREDIT-01 (operator, 2026-11-06): approved leave is PAID, so it carries
+ * credit 1 — the same value leave.service.createLeaveAttendanceRecords writes
+ * when it marks the day ON_LEAVE. It used to land 0, and lib/attendanceDeduction
+ * prices Σ(1 − credit), so every approved leave day was deducted as if lost
+ * (Rustam Khan, HomeVision 171, 16 Sep–16 Oct). Weekly offs and holidays stay 0:
+ * payroll skips them by status, they are not credited.
+ */
+export const nonWorkingDayCredit = (reason) => (reason === 'APPROVED_LEAVE' ? 1 : 0);
 export const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
 
 /** "HH:MM" anchored to a day; a night shift rolls its end into the next one. */
@@ -491,11 +502,12 @@ export async function replayTenant({ tenantId, from, to, policy, now = new Date(
       else if(!info.working && session.punches.length<2) {
         // Preserve the existing non-working-day credit rule while retaining a
         // lone observation for the timesheet. Calendar labels are a read projection.
+        // An approved leave day is paid — see nonWorkingDayCredit above.
         verdict={
           status:info.reason==='HOLIDAY'?'HOLIDAY':info.reason==='APPROVED_LEAVE'?'ON_LEAVE':'WEEKLY_OFF',
           checkIn:session.punches.find(p=>p.type==='IN')?.timestamp || null,
           checkOut:session.punches.find(p=>p.type==='OUT')?.timestamp || null,
-          dayCredit:0,processingState:'FINALIZED',requiresRegularization:false,
+          dayCredit:nonWorkingDayCredit(info.reason),processingState:'FINALIZED',requiresRegularization:false,
           anomalies:[],workedMinutes:0,intervals:[],issues:[]};
       }
       else {
