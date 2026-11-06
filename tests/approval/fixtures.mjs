@@ -38,6 +38,8 @@ const grants = {
   MANAGER: ["self", "manager"],
   HR: ["self", "verify", "read"],
   MANAGEMENT: ["self", "approve", "read"],
+  // One person holding the HR level and the decision, as production Management does in all five companies.
+  BOTH: ["self", "verify", "approve", "read"],
   OTHER: ["self"],
   ADMIN: [],
 };

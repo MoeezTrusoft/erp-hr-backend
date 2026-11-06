@@ -297,6 +297,27 @@ function mayDecide(env, row) {
   if (ownsCode(env, row.managerActorCode)) return false;
   return verifierMayDecide(row) || !ownsCode(env, row.hrActorCode);
 }
+// Who will take the final decision on a sealed route (the last engaged APPROVE level).
+const decidingLevelIndex = (row) => {
+  const levels = row.route?.levels ?? [];
+  for (let i = levels.length - 1; i >= 0; i -= 1)
+    if (levels[i].engaged && !levels[i].auto && levels[i].action === "APPROVE")
+      return i;
+  return -1;
+};
+// A level never asks the same person twice: whoever acts at an earlier level is dropped from the
+// later ones (`nextActionable` filters the actors out). So a Management approver who also holds the
+// HR level consumed the decision by verifying and then met "everyone assigned to this level has
+// already acted" (issue 409 follow-up, 2026-11-06). Keep that person in reserve for the decision,
+// unless nobody else can take the step that is waiting now — hiding it would block the request.
+function reservedForDecision(env, row) {
+  if (row.stage !== "LEVEL" || !row.route?.levels) return false;
+  const deciding = decidingLevelIndex(row);
+  if (deciding <= row.level) return false;
+  if (!(row.route.levels[deciding].approverCodes ?? []).some((c) => ownsCode(env, c)))
+    return false;
+  return (row.pendingCodes ?? []).some((c) => !ownsCode(env, c));
+}
 async function actionsFor(tx, env, row) {
   if (isAppraisalApproval(row)) return appraisalApprovalActions(tx, env, row);
   if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
@@ -314,7 +335,8 @@ async function actionsFor(tx, env, row) {
             : []),
         ]
       : [];
-  if (row.stage === "LEVEL") return levelActionsFor(env, row);
+  if (row.stage === "LEVEL")
+    return reservedForDecision(env, row) ? [] : levelActionsFor(env, row);
   if (row.stage === "LINE_MANAGER")
     return subject.managerId === env.who.id && permits(env, "manager")
       ? HR_APPROVAL_ACTIONS.LINE_MANAGER
