@@ -227,21 +227,15 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
       (to && keyDate(a.date) > keyDate(to))
     );
   const shiftKey = (a) => `${a.employeeId}|${keyDate(a.date)}`;
-  // HR-ATT-EXCUSE-01 (operator policy, same rule as lib/attendanceDeduction.js and
-  // lib/anomalyPayroll.js): an APPROVED case is HR agreeing the DAY was not the
-  // employee's fault, so it excuses every other case of that employee and day —
-  // including occurrences that would otherwise complete a minor-late or missing-
-  // punch pool. Without this, a day whose missing check-out was approved still
-  // counted toward the late pool: Wajahat Ali (HomeVision, October 2026) was
-  // charged 2.5 days (3 over-threshold half-days + 1 pooled day completed by an
-  // approved day's 21-minute late arrival) where HR states 1.5.
-  // A Management manual marking is a decision in its own right and keeps its
-  // own day priced; it is not overridden here.
-  const excusedDays = new Set();
-  for (const a of anomalies) {
-    if (a.status !== "APPROVED" || !a.date) continue;
-    excusedDays.add(shiftKey(a));
-  }
+  // An APPROVED case excuses only itself: it is not priced (only disapproved or
+  // lapsed cases are), but it does NOT excuse the other cases of that day, and the
+  // other cases still count toward the minor-late and missing-punch pools.
+  // Operator ruling 2026-11-06 (register row 356, replaces HR-ATT-EXCUSE-01 of
+  // PR #122): Wajahat Ali, HomeVision, October 2026, had a 22-minute late on the
+  // same day as an approved missing check-out; the late is a minor that completes
+  // his pool of three (7, 8 and 22 minutes) and costs 1 day, so 3 majors (1.5) plus
+  // the pool (1) = 2.5 days. A day is restated by resolving its cases (evidenceState
+  // leaves ACTIVE), not by an approval of one of them.
   // One marking per employee work date: the highest of its cases wins, so a
   // late check-in and a missing check-out on the same day cannot charge twice.
   const manualMarks = new Map();
@@ -294,8 +288,6 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
     // A manually marked shift is priced by its marking above; its cases do not
     // also feed the automatic lines or their pools.
     if (manualMarks.has(shiftKey(a))) continue;
-    // An approved case on the day excuses the whole day (HR-ATT-EXCUSE-01).
-    if (excusedDays.has(shiftKey(a))) continue;
     const key = `${a.employeeId}|${keyDate(a.date)}|${a.sessionKey}|${a.type}`;
     if (seen.has(key)) continue;
     seen.add(key);
