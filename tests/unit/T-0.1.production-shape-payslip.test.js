@@ -159,12 +159,13 @@ describe('T-0.1 production-shaped payslip (absence pricing N-01)', () => {
         expect(line).toBeUndefined();
     });
 
-    it('BASIC still freezes historical base salary without automatic attendance deductions', () => {
+    it('a legacy BASIC row cannot charge a day on basic salary alone', () => {
+        // Operator rule 2026-11-06: complete salary (basic + allowances). The
+        // stored basis is the 25,000 package, never the 11,250 basic.
         const slip = build({ absenceRecoveryEnabled: true, deductionBasis: 'BASIC' });
         const line = slip.deductions.find((d) => d.code === 'ABSENCE_RECOVERY');
-        const expected = roundToWholeMajorHalfUp(BigInt(Math.round((11250 * EXPECTED_ABSENCE_DAYS * 100) / 30)));
         expect(line).toBeUndefined();
-        expect(slip.attendanceBasisMinor).toBe('1125000');
+        expect(slip.attendanceBasisMinor).toBe('2500000');
     });
 
     it('FLAG ON: net reconciles and the absence line lands in totalDeductions', () => {

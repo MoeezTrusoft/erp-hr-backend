@@ -11,8 +11,17 @@
 // the same day; the mirror never invents evidence.
 //
 // Identity is `Employee.personId` (the Phase A anchor), never a login: Afsha has
-// two RBAC logins on one employee record, and a login-less row (Habib 588/589)
-// can still be linked by the backfill.
+// two RBAC logins on one employee record. Issue 420 — Habib 588 (Homenet) and
+// 589 (HomeVision) had never been backfilled, so the pair was invisible to the
+// mirror even though both records carry the same name and the same enrolment
+// (`TTQ5261300360/309`). Two null-anchored records are now paired on that
+// shared in-force enrolment plus an identical name, which is the strongest
+// evidence available without the anchor.
+//
+// A login is still needed to FILE a request: the approval service resolves its
+// actor through `Employee.userId`. A login-less sibling is therefore filed on
+// the employee's behalf by that company's own HR (the named VERIFY approver of
+// its published route), exactly as HR files for anyone without a login.
 import { randomUUID } from "node:crypto";
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
@@ -104,8 +113,14 @@ export function compareSibling({
     return { verdict: "skip", reason: "same employee record" };
   if (sibling.inactive)
     return { verdict: "skip", reason: "not active that day" };
-  if (!sibling.hasAccount)
-    return { verdict: "skip", reason: "no account in that company" };
+  // Issue 420 — a record with no login is still mirrorable: that company's HR
+  // files it on the employee's behalf. Only when no HR account exists there
+  // either is there nobody who could sign the request.
+  if (!sibling.hasAccount && !sibling.hrActor)
+    return {
+      verdict: "skip",
+      reason: "no login and no HR to raise it for them in that company",
+    };
   if (!targetCase) return { verdict: "skip", reason: "no equivalent case" };
   if (alreadyRaised) return { verdict: "skip", reason: "already raised there" };
   if (!routePublished)
@@ -119,7 +134,106 @@ export function compareSibling({
     minute(origin.actualTime) !== minute(targetCase.actualTime)
   )
     return { verdict: "skip", reason: "evidence differs" };
-  return { verdict: "mirror", reason: "same person, device, shift and case" };
+  return {
+    verdict: "mirror",
+    reason: "same person, device, shift and case",
+    onBehalf: !sibling.hasAccount,
+    hrActor: sibling.hasAccount ? null : sibling.hrActor,
+  };
+}
+
+// "Syed  Habib Hussain Zaidi" and "syed habib hussain zaidi" are one person.
+const normalizeName = (value) =>
+  String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+
+// Issue 420 — sibling records to consider when the origin has no personId.
+// Deliberately narrow: the pair must share an in-force enrolment (same device
+// serial AND the same device user id, which is one biometric on that machine),
+// carry the same name, and NEITHER may already be linked to a person. A record
+// that is linked to someone else is never adopted.
+// The pairing rule itself, exported for the matrix test: same name, neither
+// record linked to a person, and the shared enrolment is in force for the day.
+export function isUnlinkedTwin({ originEmployee, sibling, keys, enrolment }) {
+  if (!sibling || sibling.id === originEmployee.id) return false;
+  if (!sibling.tenant_id || sibling.tenant_id === originEmployee.tenant_id)
+    return false;
+  if (sibling.personId) return false;
+  if (!keys.has(enrolmentKey(enrolment))) return false;
+  const name = normalizeName(originEmployee.employee_name);
+  return Boolean(name) && normalizeName(sibling.employee_name) === name;
+}
+
+async function siblingsByEnrolment(db, tenantId, originEmployee, day) {
+  const mine = await enrolmentsInForce(db, tenantId, originEmployee.id, day);
+  const keys = new Set(mine.map(enrolmentKey).filter((key) => !key.startsWith("|")));
+  if (!keys.size) return [];
+  const sns = [...new Set(mine.map((e) => e.sn).filter(Boolean))];
+  const deviceUserIds = [
+    ...new Set(mine.map((e) => e.deviceUserId).filter(Boolean)),
+  ];
+  if (!sns.length || !deviceUserIds.length) return [];
+  const rows = await db.employeeDeviceEnrolment.findMany({
+    where: {
+      tenantId: { not: tenantId },
+      sn: { in: sns },
+      deviceUserId: { in: deviceUserIds },
+      effectiveFrom: { lte: day },
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: day } }],
+    },
+    select: {
+      sn: true,
+      deviceUserId: true,
+      employee: {
+        select: {
+          id: true,
+          tenant_id: true,
+          userId: true,
+          personId: true,
+          status: true,
+          employement_status: true,
+          employee_name: true,
+        },
+      },
+    },
+    take: 100,
+  });
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const sibling = row.employee;
+    if (!sibling || seen.has(sibling.id)) continue;
+    if (!isUnlinkedTwin({ originEmployee, sibling, keys, enrolment: row }))
+      continue;
+    seen.add(sibling.id);
+    out.push(sibling);
+  }
+  return out;
+}
+
+// The actor who files a login-less employee's request: the named VERIFY
+// approver of that company's published attendance route, when that person has a
+// login. Nothing is invented — this is the same HR who verifies such requests.
+async function resolveHrActor(db, tenantId, levels) {
+  const list = Array.isArray(levels) ? levels : [];
+  const verify =
+    list.find((l) => l?.action === "VERIFY" && !l?.paused && l?.required) ??
+    list.find((l) => l?.action === "VERIFY" && !l?.paused) ??
+    null;
+  const ids = (verify?.approverIds ?? []).map(Number).filter((id) => id > 0);
+  if (!ids.length) return null;
+  const hr = await db.employee.findFirst({
+    where: {
+      tenant_id: tenantId,
+      id: { in: ids },
+      userId: { not: null },
+    },
+    select: { id: true, userId: true },
+  });
+  return hr?.userId ? { employeeId: hr.id, userId: hr.userId } : null;
 }
 
 // Every sibling record of the same human, with the evidence the comparison
@@ -142,7 +256,28 @@ async function collectSiblings({ tenantId, anomalyId }, db = prisma) {
     },
   });
   if (!originEmployee) return { origin, targets: [] };
-  if (!originEmployee.personId)
+
+  const day = dateOnly(origin.date);
+  const rows = originEmployee.personId
+    ? await db.employee.findMany({
+        where: {
+          personId: originEmployee.personId,
+          id: { not: origin.employeeId },
+        },
+        select: {
+          id: true,
+          tenant_id: true,
+          userId: true,
+          status: true,
+          employement_status: true,
+          employee_name: true,
+        },
+        orderBy: { id: "asc" },
+      })
+    : await siblingsByEnrolment(db, tenantId, originEmployee, day);
+  // No anchor and no shared enrolment: the records are simply not known to be
+  // one person, and the caller is told so rather than mirroring blind.
+  if (!originEmployee.personId && !rows.length)
     return {
       origin,
       originEmployee,
@@ -150,23 +285,6 @@ async function collectSiblings({ tenantId, anomalyId }, db = prisma) {
       skipped: [{ reason: "not linked as the same person" }],
     };
 
-  const rows = await db.employee.findMany({
-    where: {
-      personId: originEmployee.personId,
-      id: { not: origin.employeeId },
-    },
-    select: {
-      id: true,
-      tenant_id: true,
-      userId: true,
-      status: true,
-      employement_status: true,
-      employee_name: true,
-    },
-    orderBy: { id: "asc" },
-  });
-
-  const day = dateOnly(origin.date);
   const targets = [];
   for (const sibling of rows) {
     if (!sibling.tenant_id || sibling.tenant_id === tenantId) continue;
@@ -195,7 +313,7 @@ async function collectSiblings({ tenantId, anomalyId }, db = prisma) {
       scheduleInForce(db, sibling.tenant_id, sibling.id, day),
       db.approvalMatrix.findFirst({
         where: { tenantId: sibling.tenant_id, kind: KIND, status: "PUBLISHED" },
-        select: { id: true },
+        select: { id: true, levels: true },
       }),
     ]);
     // Edge case 9: the §384 defect left duplicate ACTIVE cases of one type on
@@ -218,6 +336,11 @@ async function collectSiblings({ tenantId, anomalyId }, db = prisma) {
       sibling: {
         id: sibling.id,
         hasAccount: sibling.userId != null,
+        // Only looked up for a record that cannot file for itself.
+        hrActor:
+          sibling.userId == null
+            ? await resolveHrActor(db, sibling.tenant_id, route?.levels)
+            : null,
         inactive: INACTIVE.test(
           `${sibling.status ?? ""} ${sibling.employement_status ?? ""}`,
         ),
@@ -293,6 +416,23 @@ const targetCtx = ({ tenantId, userId, employeeId }) => ({
   },
 });
 
+// Issue 420 — the employee has no login in the target company, so that
+// company's HR files the request on their behalf. The context names the real HR
+// user (the approval service resolves its actor through `userId`), and carries
+// the verifier grant the on-behalf door re-asserts.
+const onBehalfCtx = ({ tenantId, hrActor }) => ({
+  system: true,
+  actorVerified: true,
+  permissions: ["hr.approvals.verify", "hr.approvals.self"],
+  user: {
+    userId: hrActor.userId,
+    employeeId: hrActor.employeeId,
+    tenantId,
+    isAdmin: false,
+    roles: ["HR"],
+  },
+});
+
 export function isMirroring() {
   return Boolean(mcpCtx.getStore()?.mirroring);
 }
@@ -337,7 +477,9 @@ export async function mirrorRaise({ tenantId, anomalyId }, db = prisma) {
       continue;
     }
     try {
-      const { raiseRuleRequest } = await import("./attendanceRules.service.js");
+      const { raiseRuleRequest, raiseRuleRequestOnBehalf } = await import(
+        "./attendanceRules.service.js"
+      );
       const to = companyName(target.tenantId) ?? "another company";
       const reason = [
         String(origin.reason ?? "").trim(),
@@ -345,14 +487,21 @@ export async function mirrorRaise({ tenantId, anomalyId }, db = prisma) {
       ]
         .filter(Boolean)
         .join("\n\n");
-      const ctx = targetCtx(target);
+      const ctx = target.onBehalf ? onBehalfCtx(target) : targetCtx(target);
       const record = await mcpCtx.run({ ...ctx, mirroring: true }, () =>
-        raiseRuleRequest({
-          user: ctx.user,
-          anomalyId: target.caseId,
-          reason,
-          onBehalf: false,
-        }),
+        target.onBehalf
+          ? raiseRuleRequestOnBehalf({
+              user: ctx.user,
+              anomalyId: target.caseId,
+              employeeId: target.employeeId,
+              reason,
+            })
+          : raiseRuleRequest({
+              user: ctx.user,
+              anomalyId: target.caseId,
+              reason,
+              onBehalf: false,
+            }),
       );
       await mcpCtx.run({ user: { tenantId: target.tenantId } }, () =>
         db.attendanceAnomaly.updateMany({

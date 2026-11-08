@@ -227,6 +227,15 @@ export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
       (to && keyDate(a.date) > keyDate(to))
     );
   const shiftKey = (a) => `${a.employeeId}|${keyDate(a.date)}`;
+  // An APPROVED case excuses only itself: it is not priced (only disapproved or
+  // lapsed cases are), but it does NOT excuse the other cases of that day, and the
+  // other cases still count toward the minor-late and missing-punch pools.
+  // Operator ruling 2026-11-06 (register row 356, replaces HR-ATT-EXCUSE-01 of
+  // PR #122): Wajahat Ali, HomeVision, October 2026, had a 22-minute late on the
+  // same day as an approved missing check-out; the late is a minor that completes
+  // his pool of three (7, 8 and 22 minutes) and costs 1 day, so 3 majors (1.5) plus
+  // the pool (1) = 2.5 days. A day is restated by resolving its cases (evidenceState
+  // leaves ACTIVE), not by an approval of one of them.
   // One marking per employee work date: the highest of its cases wins, so a
   // late check-in and a missing check-out on the same day cannot charge twice.
   const manualMarks = new Map();
