@@ -196,3 +196,14 @@ export function levelActions(level) {
 // How a waiting request reads on screens that only show a stage ("Awaiting HR verification").
 export const levelStageLabel = (route, level) =>
   route?.levels?.[level] ? `Awaiting ${route.levels[level].name}` : null;
+
+// A settled request is not waiting for anyone. The label above is computed from
+// the request's LEVEL, and a decided request keeps its last level, so an approved
+// case (Pervaiz, HomeVision 9 Oct: stage APPROVED, level 2) still read "Awaiting
+// Management approval" beside its own Approved status. Only a request that is
+// still in flight gets a waiting label.
+const SETTLED_STAGES = new Set(["APPROVED", "REJECTED", "WITHDRAWN"]);
+export const waitStageLabel = (route, level, stage) =>
+  SETTLED_STAGES.has(String(stage ?? "").toUpperCase())
+    ? null
+    : levelStageLabel(route, level);

@@ -6,6 +6,7 @@ import { describe, it, expect } from "@jest/globals";
 import {
   compareSibling,
   editedSiblingReason,
+  isUnlinkedTwin,
 } from "../../src/services/attendanceRequestMirror.service.js";
 
 const ORIGIN = {
@@ -59,9 +60,10 @@ const compare = (over = {}) =>
 
 describe("MC-MIRROR-01 sibling comparison", () => {
   it("mirrors when person, device, shift, case and route all agree (Afsha Homenet→HomeVision)", () => {
-    expect(compare()).toEqual({
+    expect(compare()).toMatchObject({
       verdict: "mirror",
       reason: "same person, device, shift and case",
+      onBehalf: false,
     });
   });
 
@@ -117,7 +119,7 @@ describe("MC-MIRROR-01 sibling comparison", () => {
         originSchedule: row(pattern),
         targetSchedule: row({ ...pattern, offDays: [6, 7] }),
       }),
-    ).toEqual({
+    ).toMatchObject({
       verdict: "mirror",
       reason: "same person, device, shift and case",
     });
@@ -161,10 +163,27 @@ describe("MC-MIRROR-01 sibling comparison", () => {
     });
   });
 
-  it("skips a sibling that has no account in that company", () => {
-    expect(compare({ sibling: { hasAccount: false } })).toMatchObject({
-      reason: "no account in that company",
+  // Issue 420 — Habib 588/589 and Shah Hasan 649/643 have no login in either
+  // company; the request is filed there by that company's HR instead of the
+  // pair silently staying independent.
+  it("mirrors a sibling with no account when that company's HR can file it", () => {
+    expect(
+      compare({
+        sibling: { hasAccount: false, hrActor: { employeeId: 12, userId: 34 } },
+      }),
+    ).toMatchObject({ verdict: "mirror", onBehalf: true });
+  });
+
+  it("skips a sibling with no account and no HR to file it", () => {
+    expect(compare({ sibling: { hasAccount: false, hrActor: null } })).toMatchObject({
+      reason: "no login and no HR to raise it for them in that company",
     });
+  });
+
+  it("never files on behalf when the sibling has its own account", () => {
+    expect(
+      compare({ sibling: { hasAccount: true, hrActor: { employeeId: 12, userId: 34 } } }),
+    ).toMatchObject({ verdict: "mirror", onBehalf: false });
   });
 
   it("is not confused by the no-enrolment case on either side", () => {
@@ -209,6 +228,56 @@ describe("MC-MIRROR-01 sibling comparison", () => {
 // Issue 353b (operator, 2026-11-05) — an edited message follows the group: the
 // sibling keeps the clause that says where the request came from, and takes the
 // editor's new text.
+// Issue 420 — Habib 588 (Homenet) and 589 (HomeVision) had no personId, so the
+// mirror could not see they were one person. Pairing now falls back to the
+// shared in-force enrolment plus an identical name, and never adopts a record
+// that is already linked to somebody else.
+describe("MC-MIRROR-01 unlinked twin pairing", () => {
+  const originEmployee = {
+    id: 588,
+    tenant_id: "homenet",
+    employee_name: "Syed Habib Hussain Zaidi",
+    personId: null,
+  };
+  const twin = (over = {}) => ({
+    id: 589,
+    tenant_id: "homevision",
+    employee_name: "Syed Habib Hussain Zaidi",
+    personId: null,
+    ...over,
+  });
+  const keys = new Set(["TTQ5261300360|309"]);
+  const enrolment = { sn: "TTQ5261300360", deviceUserId: "309" };
+  const pair = (over = {}) =>
+    isUnlinkedTwin({
+      originEmployee,
+      sibling: twin(over.sibling),
+      keys,
+      enrolment: over.enrolment ?? enrolment,
+    });
+
+  it("pairs two unlinked records sharing one enrolment and one name", () => {
+    expect(pair()).toBe(true);
+  });
+  it("ignores case, spacing and punctuation in the name", () => {
+    expect(pair({ sibling: { employee_name: "  syed   habib hussain ZAIDI " } })).toBe(true);
+  });
+  it("never adopts a record already linked to a person", () => {
+    expect(pair({ sibling: { personId: "20cc8a00-077c-5a77-926f-0701d6e591e4" } })).toBe(false);
+  });
+  it("does not pair on a different name (a shared machine used by two people)", () => {
+    expect(pair({ sibling: { employee_name: "Muhammad Azeem" } })).toBe(false);
+  });
+  it("does not pair on a different device user id on the same machine", () => {
+    expect(pair({ enrolment: { sn: "TTQ5261300360", deviceUserId: "310" } })).toBe(false);
+  });
+  it("does not pair with the origin record, another company in the same tenant, or nobody", () => {
+    expect(pair({ sibling: { id: 588 } })).toBe(false);
+    expect(pair({ sibling: { tenant_id: "homenet" } })).toBe(false);
+    expect(isUnlinkedTwin({ originEmployee, sibling: null, keys, enrolment })).toBe(false);
+  });
+});
+
 describe("an edit follows a mirrored request", () => {
   it("keeps the sibling's own mirror clause and replaces the message", () => {
     const siblingReason =

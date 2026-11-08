@@ -3,7 +3,7 @@
 // The Timesheet row used to carry only ONE of them; this lists every active
 // rules-v2 case of the employee-day, each with its own request state, so the
 // table can show them all and the raise action can address one.
-import { levelStageLabel } from "./approvalMatrix.js";
+import { waitStageLabel } from "./approvalMatrix.js";
 import { RULE_TYPES } from "./attendanceAnomalyRules.js";
 
 const FORM_SOURCES = ["REGULARIZATION", "PAPER_FORM"];
@@ -49,7 +49,7 @@ export function rowAnomalies(dayAnomalies = [], { approvalByAnomaly, decisionsBy
               anomalyId: an.id,
               status: an.status,
               stage: approval.stage ?? null,
-              stageLabel: levelStageLabel(approval.route, approval.level),
+              stageLabel: waitStageLabel(approval.route, approval.level, approval.stage),
               approvalRef: approval.id ?? null,
               type: an.type,
               submittedAt: an.createdAt,
