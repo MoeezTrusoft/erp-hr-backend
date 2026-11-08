@@ -3,6 +3,7 @@ import { employee } from "../separation/base.js";
 import { assertAttendancePeriodOpen, lockAttendancePeriod } from "../attendancePeriod.service.js";
 import { assertNoPayrollLoanReservation } from "../payrollLoans.service.js";
 import { enqueueHrDomainEvent } from "../hrDomainEvent.service.js";
+import { unexplainedVariances, varianceMessage } from "../../lib/payslipVariance.js";
 
 export const fail = (message, status = 409) => {
   throw Object.assign(new Error(`HR-4200: ${message}`), {
@@ -416,6 +417,11 @@ export async function loadSource(
       },
     });
   if (kind === 'PAYROLL' && pending && await tx.payrollPayslip.count({where:{tenantId:env.tenantId,payrollRunId:id,status:'HOLD'}})) fail('Resolve held payslips before submitting payroll for approval');
+  // F-01: a payslip that swung more than 10% from last month must be explained first.
+  if (kind === 'PAYROLL' && pending) {
+    const unexplained = await unexplainedVariances(tx, { tenantId: env.tenantId, run: row });
+    if (unexplained.length) fail(varianceMessage(unexplained));
+  }
   // Keep already-reviewed legacy runs verifiable after this additive upgrade.
   // Recalculation pins a configuration version and opts into the stronger
   // line-item snapshot; new calculations always use that snapshot.
