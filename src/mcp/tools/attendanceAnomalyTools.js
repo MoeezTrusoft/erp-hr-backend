@@ -1,3 +1,4 @@
+import { opsHealth } from '../../services/opsHealth.service.js';
 // src/mcp/tools/attendanceAnomalyTools.js
 //
 // Attendance regularization: raise a request, see the queue, decide it.
@@ -84,6 +85,12 @@ export function registerAttendanceAnomalyTools(server) {
     assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
     const data=await listLongAbsences({tenantId:user.tenantId,minDays,...(asOf?{asOf:new Date(`${asOf}T00:00:00Z`)}:{})});
     return {content:[{type:'text',text:JSON.stringify(data)}]};
+  }));
+  // O-05 — on-demand T&A and payroll health check (EDIT: it spans devices, cases and payroll runs).
+  server.tool('hr_ops_health_check','Health check for Time & Attendance and Payroll: stale capture devices, raised requests undecided for over 5 days, payroll runs not finalized 7 days after the period ended, held payslips',{},withToolError(async()=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
+    return {content:[{type:'text',text:JSON.stringify(await opsHealth({tenantId:user.tenantId}))}]};
   }));
   const common={anomalyId:z.number().int().positive(),version:z.number().int().nonnegative()};
   for (const [name,schema,handler,verb] of [
