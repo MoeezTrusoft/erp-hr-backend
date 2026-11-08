@@ -4,7 +4,7 @@ import {assertPermission} from '../../src/lib/assertPermission.js';
 describe('assertPermission fails closed',()=>{
   it('rejects an action name or unknown verb even for a fully granted actor',()=>{
     const all=['hr.payroll.read','hr.payroll.create','hr.payroll.update','hr.payroll.delete','hr.payroll.export'];
-    for (const verb of ['CREATE','APPROVE','EDIT','',undefined,null]) {
+    for (const verb of ['CREATE','APPROVE','EDIT','',' GET','GET ',42,{},undefined,null]) {
       expect(()=>assertPermission(all,verb,'hr:payroll')).toThrow(/Insufficient permissions/);
       try { assertPermission(all,verb,'hr:payroll'); } catch (e) { expect(e.status).toBe(403); }
     }

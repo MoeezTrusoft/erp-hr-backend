@@ -77,7 +77,9 @@ export async function resolveCurrentRun({ tenantId, runId } = {}) {
   // Fall back to the latest run of any kind if none have payslips yet.
   // Register row 363: a cancelled or future-dated run (e.g. a 2099 test run)
   // must never be "current". An explicit runId above still opens any run.
-  const live = { status: { not: "CANCELLED" }, periodStart: { lte: new Date() } };
+  // Periods start at 00:00 UTC; allow +14 h (the widest UTC offset) so a month
+  // that has begun locally (PKT is UTC+5) is not "future" until 05:00.
+  const live = { status: { not: "CANCELLED" }, periodStart: { lte: new Date(Date.now() + 14 * 3600 * 1000) } };
   const withPayslips = await prisma.payrollRun.findFirst({
     where: scopedWhere(tenantId, { ...live, payslips: { some: {} } }),
     orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
