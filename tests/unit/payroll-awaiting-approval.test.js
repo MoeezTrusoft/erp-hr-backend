@@ -3,21 +3,27 @@
 // amount and line, so rewriting one only makes the next approver's click fail
 // with "The request or evidence changed".
 //
-// The end-to-end refusal on a COMPLETED run is asserted in
-// tests/approval/attendanceResolutionRequest.test.mjs. The APPROVED branch
-// cannot be staged over raw SQL (a trigger requires a real staged PAYROLL
-// approval), so its message is asserted here.
+// A COMPLETED run that was never submitted is not with anybody: no digest
+// exists, so the decision is allowed and the run must be recalculated before it
+// is submitted. Refusing there deadlocked October 2026 (a case raised after the
+// run was processed blocked the recalculation, and the run blocked the case).
+//
+// The end-to-end refusal on a COMPLETED run with a live PAYROLL request is
+// asserted in tests/approval/attendanceResolutionRequest.test.mjs. The APPROVED
+// branch cannot be staged over raw SQL (a trigger requires a real staged
+// PAYROLL approval), so its message is asserted here.
 import { describe, expect, it } from '@jest/globals';
 import {
   assertPayrollNotAwaitingApproval,
   payrollAwaitingApprovalFor,
+  payrollAwaitingSubmitApproval,
   payrollMonthLabel,
 } from '../../src/services/attendanceRulePayroll.service.js';
 
 const october = new Date(Date.UTC(2026, 9, 1));
 const day = new Date(Date.UTC(2026, 9, 26));
 
-const fakeDb = (row) => {
+const fakeDb = (row, approval = null) => {
   const calls = [];
   return {
     calls,
@@ -26,6 +32,12 @@ const fakeDb = (row) => {
         findFirst: async (args) => {
           calls.push(args);
           return row;
+        },
+      },
+      hrApprovalRequest: {
+        findUnique: async (args) => {
+          calls.push(args);
+          return approval;
         },
       },
     },
@@ -52,8 +64,8 @@ describe('attendance decisions vs a payroll with its approvers', () => {
     await expect(assertPayrollNotAwaitingApproval(db, args)).resolves.toBeUndefined();
   });
 
-  it('refuses while the run waits at its approvers, naming the month', async () => {
-    const { db } = fakeDb({ id: 7, status: 'COMPLETED', periodStart: october });
+  it('refuses a COMPLETED run whose PAYROLL request is with its approvers', async () => {
+    const { db } = fakeDb({ id: 7, status: 'COMPLETED', periodStart: october }, { stage: 'HR' });
     await expect(assertPayrollNotAwaitingApproval(db, args)).rejects.toMatchObject({
       status: 409,
       message:
@@ -61,13 +73,44 @@ describe('attendance decisions vs a payroll with its approvers', () => {
     });
   });
 
+  it('refuses a run whose PAYROLL request sits at Management', async () => {
+    const { db } = fakeDb({ id: 7, status: 'COMPLETED', periodStart: october }, { stage: 'MANAGEMENT' });
+    await expect(assertPayrollNotAwaitingApproval(db, args)).rejects.toMatchObject({ status: 409 });
+  });
+
   it('refuses an approved run that is waiting to be finalized', async () => {
-    const { db } = fakeDb({ id: 8, status: 'APPROVED', periodStart: october });
+    const { db } = fakeDb({ id: 8, status: 'APPROVED', periodStart: october }, { stage: 'APPROVED' });
     await expect(assertPayrollNotAwaitingApproval(db, args)).rejects.toMatchObject({
       status: 409,
       message:
         'Payroll for October 2026 is approved and awaiting finalization. Finalize it, then decide this case.',
     });
+  });
+
+  it('allows the decision on a COMPLETED run that was never submitted', async () => {
+    const { db } = fakeDb({ id: 32, status: 'COMPLETED', periodStart: october }, null);
+    await expect(assertPayrollNotAwaitingApproval(db, args)).resolves.toBeUndefined();
+  });
+
+  it('allows the decision on a run returned to its initiator or withdrawn', async () => {
+    for (const stage of ['INITIATOR', 'REJECTED', 'WITHDRAWN']) {
+      const { db } = fakeDb({ id: 33, status: 'COMPLETED', periodStart: october }, { stage });
+      await expect(assertPayrollNotAwaitingApproval(db, args)).resolves.toBeUndefined();
+    }
+  });
+
+  it('counts only a live stage as awaiting submission', async () => {
+    const asked = [];
+    const db = {
+      hrApprovalRequest: {
+        findUnique: async (where) => {
+          asked.push(where.where.tenantId_kind_sourceRef);
+          return { stage: 'MANAGEMENT' };
+        },
+      },
+    };
+    expect(await payrollAwaitingSubmitApproval(db, { tenantId: 't-1', payrollRunId: 32 })).toBe(true);
+    expect(asked[0]).toEqual({ tenantId: 't-1', kind: 'PAYROLL', sourceRef: '32' });
   });
 
   it('labels the payroll month in UTC', () => {

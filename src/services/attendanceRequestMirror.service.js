@@ -653,12 +653,40 @@ export async function mirrorDecision(
             trigger: "MIRRORED_DECISION",
           });
         } catch (err) {
-          if (err?.status !== 409) throw err;
-          locked = true;
-          await tx.attendanceAnomaly.updateMany({
-            where: { tenantId: sibling.tenantId, id: sibling.id },
-            data: { decidedAfterPayrollLock: true },
-          });
+          if (err?.status !== 409) {
+            // MULTI-COMPANY-MIRROR-01 (2026-11-06) — the DECISION is the point of
+            // this call; re-pricing and re-evaluating the sibling's day is the
+            // follow-through. Letting a failure there roll the transaction back
+            // left the other company's copy PENDING after the first company had
+            // decided, so its approver was shown the same request again and could
+            // answer it differently (Afsha Khan, 5 Oct: approved in HomeVision at
+            // 00:33Z, then rejected in HomeNet at 00:47Z). Keep the decision,
+            // skip the follow-through, and leave a trail to finish it by hand.
+            logger.error(
+              { err, tenantId: sibling.tenantId, anomalyId: sibling.id, decision },
+              "attendance mirror: decision applied, re-evaluation failed",
+            );
+            await tx.attendanceRuleAudit.create({
+              data: {
+                tenantId: sibling.tenantId,
+                employeeId: sibling.employeeId,
+                anomalyId: sibling.id,
+                action: "MIRROR_REPRICE_FAILED",
+                actorId: "system:mirror",
+                data: {
+                  decision,
+                  from: tenantId,
+                  error: String(err?.message ?? err),
+                },
+              },
+            });
+          } else {
+            locked = true;
+            await tx.attendanceAnomaly.updateMany({
+              where: { tenantId: sibling.tenantId, id: sibling.id },
+              data: { decidedAfterPayrollLock: true },
+            });
+          }
         }
       }
     });

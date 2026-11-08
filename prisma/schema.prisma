@@ -889,6 +889,13 @@ model AttendanceAnomaly {
   // attendance policy prices the case. See lib/attendanceAnomalyRules.js.
   manualDeductionDays Float?
 
+  // HR-ATT-APPEAL-01 — a case Management rejected may be appealed once. The
+  // appeal is a NEW case for the same day, type and evidence (sourceKind
+  // APPEAL); this column points at the rejected original, which stays as
+  // history with evidenceState SUPERSEDED so payroll prices at most one of the
+  // two. NULL on ordinary cases.
+  appealOfAnomalyId Int?
+
 
   employee  Employee                    @relation(fields: [employeeId], references: [id])
   approvals AttendanceAnomalyApproval[]
@@ -903,6 +910,7 @@ model AttendanceAnomaly {
   @@index([status])
   @@index([tenantId, employeeId, date, type], map: "attendance_anomaly_employee_date_type_idx")
   @@index([mirrorGroupId], map: "attendance_anomalies_mirror_group_idx")
+  @@index([tenantId, appealOfAnomalyId], map: "attendance_anomalies_appeal_idx")
   // One mirror per origin case per company: a retried mirror cannot duplicate.
   @@unique([originAnomalyId, tenantId], map: "attendance_anomalies_mirror_key")
   @@map("attendance_anomalies")

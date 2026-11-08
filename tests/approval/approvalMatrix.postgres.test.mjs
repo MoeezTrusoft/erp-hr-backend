@@ -18,7 +18,7 @@ process.env.HR_C4_ENCRYPTION_KEY = Buffer.alloc(32, 17).toString("base64");
 
 const { prisma, company, other, people, db, as, fixture, submit, act, setup } = await import("./fixtures.mjs");
 const { mcpCtx } = await import("../../src/mcp/context.js");
-const { submitApproval, listApprovals } = await import("../../src/services/approval/service.js");
+const { submitApproval, listApprovals, readApproval } = await import("../../src/services/approval/service.js");
 const matrix = await import("../../src/services/approvalMatrix.service.js");
 
 const tenant = (tenantId, fn) => mcpCtx.run({ user: { tenantId } }, fn);
@@ -310,4 +310,39 @@ test("ATTENDANCE: the verifier's own case is verified by her raising it, and Man
   // Without the option nobody may verify their own case: the submission is refused with a clear message.
   await publish("ATTENDANCE", [level("HR verification", "VERIFY", "HR"), level("Management approval", "APPROVE", "MANAGEMENT")]);
   await assert.rejects(raise(await ownCase()), /no active approver other than the initiator/);
+});
+
+// Issue 409 follow-up (2026-11-06): a Management approver who also holds the HR level was offered the
+// verification on a sealed route; acting on it dropped them from the decision level, so the request then
+// answered "everyone assigned to this level has already acted" and nobody could decide it.
+test("ATTENDANCE: the person who will decide is kept out of the earlier level", async (t) => {
+  const actions = (who, row) =>
+    as(who, () => readApproval({ approvalRef: row.approvalRef })).then((r) => r.record.actions);
+  await publish("ATTENDANCE", [
+    { name: "HR verification", action: "VERIFY", approverMode: "NAMED", approverIds: [people.HR.id, people.BOTH.id] },
+    level("Management", "APPROVE", "BOTH"),
+  ]);
+  const row = await submit(await fixture("ATTENDANCE"));
+  assert.equal(row.stage, "LEVEL");
+  assert.equal(row.level, 0);
+  await t.test("the deciding approver is not offered the verification, the other verifier is", async () => {
+    assert.ok((await actions("HR", row)).includes("VERIFY"));
+    assert.deepEqual(await actions("BOTH", row), []);
+    await assert.rejects(act("BOTH", row, "VERIFY"), /cannot perform this action/);
+  });
+  await t.test("after the other verifier acts the same person decides", async () => {
+    const verified = await act("HR", row, "VERIFY");
+    assert.equal(verified.level, 1);
+    assert.ok((await actions("BOTH", verified)).includes("APPROVE"));
+    assert.equal((await act("BOTH", verified, "APPROVE")).stage, "APPROVED");
+  });
+  await t.test("a step nobody else can take is still offered", async () => {
+    await publish("ATTENDANCE", [
+      level("HR verification", "VERIFY", "BOTH"),
+      level("Management", "APPROVE", "BOTH"),
+    ]);
+    const alone = await submit(await fixture("ATTENDANCE"));
+    assert.equal(alone.level, 0);
+    assert.ok((await actions("BOTH", alone)).includes("VERIFY"));
+  });
 });

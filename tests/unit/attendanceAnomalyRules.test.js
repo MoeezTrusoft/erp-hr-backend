@@ -46,8 +46,18 @@ describe('attached attendance rules',()=>{
   expect(isManagement({isAdmin:true,roles:['HR','Line Management']})).toBe(false);
   expect(isManagement({roles:[{name:'Management'}]})).toBe(true);
  });
- it('cannot excuse another anomaly by approving one on the same shift',()=>{
-  expect(ruleDeductions([rejected(1,'LATE_CHECKIN',45,{status:'APPROVED'}),rejected(2,'EARLY_CHECKOUT',45)]).days).toBe(.5);
+ it('an approved case excuses only itself, not the other cases of that day (row 356)',()=>{
+  expect(ruleDeductions([rejected(1,'LATE_CHECKIN',45,{status:'APPROVED'}),rejected(2,'EARLY_CHECKOUT',45)]).days).toBe(0.5);
+  expect(ruleDeductions([rejected(1,'LATE_CHECKIN',45,{status:'APPROVED'})]).days).toBe(0);
+ });
+ it('an approved case on the same day does not remove a minor late from the pool (Wajahat, row 356)',()=>{
+  // Wajahat Ali, HomeVision October 2026: three over-threshold lates (0.5 each) plus three short
+  // lates (7, 8, 22 minutes) which form one pool of three (1 day) = 2.5 days. The 22-minute late
+  // shares its day with an approved missing check-out; that approval excuses only itself.
+  const cases=[rejected(1,'LATE_CHECKIN',90,{date:'2026-10-18'}),rejected(2,'LATE_CHECKIN',60,{date:'2026-10-23'}),rejected(3,'LATE_CHECKIN',267,{date:'2026-10-26'}),
+   rejected(4,'LATE_CHECKIN',7,{date:'2026-10-20'}),rejected(5,'LATE_CHECKIN',8,{date:'2026-10-29'}),
+   rejected(6,'LATE_CHECKIN',22,{date:'2026-10-02'}),rejected(7,'MISSING_CHECKOUT',0,{date:'2026-10-02',status:'APPROVED'})];
+  expect(ruleDeductions(cases,{from:'2026-10-01',to:'2026-10-31'}).days).toBe(2.5);
  });
  it('new payroll does not charge undecided automatic attendance or legacy manual markings',()=>{
   const result=buildPayslipFromInputs({employee:{id:1},employmentTerm:{baseSalary:'31000',currency:'PKR'},assignments:[],payrollRun:{periodStart:new Date('2026-10-01'),periodEnd:new Date('2026-10-31'),currencyCode:'PKR',countryCode:'PK'},taxRateRows:[],ruleConfig:{absenceRecoveryEnabled:true},bridges:{attendanceRows:[{date:'2026-10-01',status:'ABSENT',day_credit:0}],anomalyRows:[rejected(1,'ABSENT',0,{status:'PENDING',manualDeductionDays:1})]}});

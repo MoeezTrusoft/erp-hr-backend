@@ -25,6 +25,8 @@ import logger from "../lib/logger.js";
 import { loadAttendanceRuntime } from '../lib/attendanceRuntime.js';
 import { completeTimesheetRows } from '../lib/timesheetRows.js';
 import { rowAnomalies } from '../lib/timesheetRowAnomalies.js';
+import { appealInfo, appealsByOriginal } from '../lib/attendanceCaseAppeal.js';
+import { isSystemClosedRequest } from '../lib/attendanceRequestState.js';
 import { computeAnomalyDeadline } from './attendanceAnomalyRequest.service.js';
 import { RULE_TYPES } from '../lib/attendanceAnomalyRules.js';
 import { attendanceActorCodes } from '../lib/attendanceActorCodes.js';
@@ -1084,6 +1086,10 @@ export async function listCheckInOuts({
       evidenceState: true,
       rulesVersion: true,
       sourceKind: true,
+      // HR-ATT-APPEAL-01 — a Management rejection can be appealed (as a new
+      // linked case); these two tell the row whether it may be, and which.
+      decisionRole: true,
+      appealOfAnomalyId: true,
       // TS-REQUEST-HYBRID-01 — a raise binds its approval to `id@factHash`, so
       // the hash is what lets this read model show the request for the exact
       // evidence revision it was raised against (and hide a stale one).
@@ -1174,6 +1180,10 @@ export async function listCheckInOuts({
     if (!casesByDay.has(key)) casesByDay.set(key, []);
     casesByDay.get(key).push(an);
   }
+  // HR-ATT-APPEAL-01 — the appeals already raised against these cases. An
+  // appeal is itself a case row (linked by `appealOfAnomalyId`), so the row
+  // detail can say "appealed" and stop offering a second one.
+  const appeals = appealsByOriginal(anomaliesForWindow);
   const approvalCandidates = new Map(
     [...[...dayAnomalies.values()].flat(), ...[...casesByDay.values()].flat()].map((an) => [an.id, an]),
   );
@@ -1280,6 +1290,18 @@ export async function listCheckInOuts({
         department: an.departmentSnapshot,
         reviewNote: an.reviewNote,
         decisions: decisionsByAnomaly.get(an.id) ?? [],
+        // TS-REQUEST-CLOSED-01 (2026-11-06) — a form the SYSTEM closed has no
+        // approver decision behind it: an auto-rejection, e.g. Rustam Khan's
+        // 5 Oct case, restated ON_LEAVE because his leave covered the day. The
+        // row must not read that as "Management disapproved the employee": an
+        // REJECTED case with no decision rows was closed automatically.
+        systemClosed: isSystemClosedRequest(an.status, decisionsByAnomaly.get(an.id)),
+        // HR-ATT-APPEAL-01 — a case Management rejected may be appealed once.
+        // `canAppeal` mirrors the server's own test (rules v2, a Management
+        // rejection on live evidence, no appeal yet); `appealId` is the appeal
+        // raised against this case, whatever its state; `appealOf` marks a row
+        // that IS the appeal of an earlier decision.
+        ...appealInfo(an, appeals),
       };
     } else if (ANOMALY_DAY_STATUSES.has(a.status)) {
       // TS-REQUEST-HYBRID-01 — carry the detected case with the state: the
@@ -1291,6 +1313,7 @@ export async function listCheckInOuts({
         anomalyId: an?.id ?? null,
         type: an?.type ?? null,
         raiseBy: an ? raiseByByAnomaly.get(an.id) ?? null : null,
+        ...appealInfo(an, appeals),
       };
     }
     return {
