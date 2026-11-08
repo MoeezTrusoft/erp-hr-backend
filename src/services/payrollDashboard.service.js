@@ -75,13 +75,16 @@ export async function resolveCurrentRun({ tenantId, runId } = {}) {
   // Prefer the latest run that actually HAS payslips — a stray empty/PROCESSING
   // run (created but never processed) shouldn't shadow the real current payroll.
   // Fall back to the latest run of any kind if none have payslips yet.
+  // Register row 363: a cancelled or future-dated run (e.g. a 2099 test run)
+  // must never be "current". An explicit runId above still opens any run.
+  const live = { status: { not: "CANCELLED" }, periodStart: { lte: new Date() } };
   const withPayslips = await prisma.payrollRun.findFirst({
-    where: scopedWhere(tenantId, { payslips: { some: {} } }),
+    where: scopedWhere(tenantId, { ...live, payslips: { some: {} } }),
     orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
   });
   if (withPayslips) return withPayslips;
   return prisma.payrollRun.findFirst({
-    where: scopedWhere(tenantId, {}),
+    where: scopedWhere(tenantId, live),
     orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
   });
 }
@@ -90,7 +93,7 @@ export async function resolveCurrentRun({ tenantId, runId } = {}) {
 async function resolvePreviousRun({ tenantId, run }) {
   if (!run) return null;
   return prisma.payrollRun.findFirst({
-    where: scopedWhere(tenantId, { periodEnd: { lt: run.periodEnd } }),
+    where: scopedWhere(tenantId, { status: { not: "CANCELLED" }, periodEnd: { lt: run.periodEnd } }),
     orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
   });
 }

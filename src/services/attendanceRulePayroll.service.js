@@ -394,7 +394,7 @@ export async function reconcileRulePayroll(
         data: {
           tenantId,
           code: RULE_DEDUCTION_CODE,
-          name: "Management-disapproved attendance",
+          name: "Attendance rule deductions",
         },
       });
     await db.payrollDeduction.deleteMany({
@@ -413,7 +413,7 @@ export async function reconcileRulePayroll(
         payslipId: slip.id,
         deductionTypeId: type.id,
         amount: money.minorToDecimal(desired, run.currencyCode),
-        description: `Management-disapproved attendance: ${assessment.days} day(s)`,
+        description: `Attendance rule deductions: ${assessment.days} day(s)`,
       },
     });
     const total = money.minorToDecimal(

@@ -45,7 +45,8 @@ import { displayName } from "../lib/personIdentity.js";
 // The map is the whole registry: a line whose code is not in here cannot be
 // persisted, and that is on purpose (see resolveDeductionTypeId below).
 const DEDUCTION_TYPE_NAMES = {
-    ATTENDANCE_RULES_V2: 'Management-disapproved attendance',
+    // Row 434: priced cases include Management rejections, lapsed unraised cases and HR marks.
+    ATTENDANCE_RULES_V2: 'Attendance rule deductions',
     ATTENDANCE_RULES_ADJUSTMENT: 'Prior-period attendance adjustment',
     ATTENDANCE_DEDUCTION: 'Attendance Deduction',
     EMPLOYMENT_PRORATION: 'Joining/leaving date deduction',
@@ -728,7 +729,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         // The frozen basis above makes later revisions reproducible. Emit a line
         // only for disapproved day quantities (even if the salary basis is zero).
         if(assessment.days>0)deductions.push({deductionTypeId:null,code:RULE_DEDUCTION_CODE,
-            amount:money.minorToDecimal(ruleAmount,currency),description:`Management-disapproved attendance: ${assessment.days} day(s)`});
+            amount:money.minorToDecimal(ruleAmount,currency),description:`Attendance rule deductions: ${assessment.days} day(s)`});
     }
     for(const adjustment of bridges.attendanceAdjustments || []) {
         deductions.push({deductionTypeId:null,code:ADJUSTMENT_CODE,
