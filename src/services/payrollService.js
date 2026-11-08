@@ -45,7 +45,8 @@ import { displayName } from "../lib/personIdentity.js";
 // The map is the whole registry: a line whose code is not in here cannot be
 // persisted, and that is on purpose (see resolveDeductionTypeId below).
 const DEDUCTION_TYPE_NAMES = {
-    ATTENDANCE_RULES_V2: 'Management-disapproved attendance',
+    // Row 434: priced cases include Management rejections, lapsed unraised cases and HR marks.
+    ATTENDANCE_RULES_V2: 'Attendance rule deductions',
     ATTENDANCE_RULES_ADJUSTMENT: 'Prior-period attendance adjustment',
     ATTENDANCE_DEDUCTION: 'Attendance Deduction',
     EMPLOYMENT_PRORATION: 'Joining/leaving date deduction',
@@ -728,7 +729,7 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
         // The frozen basis above makes later revisions reproducible. Emit a line
         // only for disapproved day quantities (even if the salary basis is zero).
         if(assessment.days>0)deductions.push({deductionTypeId:null,code:RULE_DEDUCTION_CODE,
-            amount:money.minorToDecimal(ruleAmount,currency),description:`Management-disapproved attendance: ${assessment.days} day(s)`});
+            amount:money.minorToDecimal(ruleAmount,currency),description:`Attendance rule deductions: ${assessment.days} day(s)`});
     }
     for(const adjustment of bridges.attendanceAdjustments || []) {
         deductions.push({deductionTypeId:null,code:ADJUSTMENT_CODE,
@@ -1573,6 +1574,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             });
 
             if (existing) {
+                // F-08: the lines are replaced below, so keep the old ones in the audit row.
+                const priorLines = {
+                    earnings: await prisma.payrollEarning.findMany({ where: { payslipId: existing.id }, orderBy: { id: 'asc' }, select: { description: true, amount: true } }),
+                    deductions: await prisma.payrollDeduction.findMany({ where: { payslipId: existing.id }, orderBy: { id: 'asc' }, select: { description: true, amount: true } })
+                };
                 await prisma.payrollEarning.deleteMany({ where: { payslipId: existing.id } });
                 await prisma.payrollDeduction.deleteMany({ where: { payslipId: existing.id } });
                 const updated = await prisma.payrollPayslip.update({
@@ -1604,8 +1610,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                         payrollRunId: id,
                         payslipId: updated.id,
                         employeeId: employee.id,
-                        oldValues: { grossAmount: existing.grossAmount, totalDeductions: existing.totalDeductions, netAmount: existing.netAmount },
-                        newValues: { grossAmount: built.grossAmount, totalDeductions: built.totalDeductions, netAmount: built.netAmount, prorationFactor: built.prorationFactor },
+                        oldValues: { grossAmount: existing.grossAmount, totalDeductions: existing.totalDeductions, netAmount: existing.netAmount, payableDays: existing.payableDays, ...auditLines(priorLines) },
+                        newValues: { grossAmount: built.grossAmount, totalDeductions: built.totalDeductions, netAmount: built.netAmount, prorationFactor: built.prorationFactor, payableDays: built.payableDays, ...auditLines({ earnings, deductions }) },
                     },
                 });
                 await prisma.attendancePayrollAdjustment.updateMany({where:{tenantId,id:{in:attendanceAdjustments.map(a=>a.id)}},data:{appliedPayslipId:updated.id}});
@@ -1768,6 +1774,14 @@ const getBaseSalaryEarningTypeId = async (tenantId) => {
     }
 
     return earningType.id;
+};
+
+// F-08: line-level before/after for the payslip audit rows: description and amount only.
+export const auditLines = ({ earnings = [], deductions = [] }) => {
+    // Stored lines read back as "100000" and freshly built ones as "100000.0000": one format, so an unchanged line compares equal.
+    const money = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(4) : String(v));
+    const slim = (rows) => rows.map((r) => ({ description: r.description ?? null, amount: money(r.amount) }));
+    return { earnings: slim(earnings), deductions: slim(deductions) };
 };
 
 const getOrCreateDeductionType = async (code, name, tenantId) => {

@@ -287,7 +287,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
         // 260,000 over a 31-day August ⇒ 8387.09/day → WHOLE RUPEES (N-22,
         // ruling 2026-09-17). Previously 260,000/26.
         expect(line.amount).toBe('8387.0000');
-        expect(line.description).toBe('Management-disapproved attendance: 1 day(s)');
+        expect(line.description).toBe('Attendance rule deductions: 1 day(s)');
     });
 
     it('handles fractional deduction days', () => {
@@ -297,7 +297,7 @@ describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
         const line = slip.deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
         // half of 8387.09 → 4193.54 → 4194 whole rupees (N-22)
         expect(line.amount).toBe('4194.0000');
-        expect(line.description).toBe('Management-disapproved attendance: 0.5 day(s)');
+        expect(line.description).toBe('Attendance rule deductions: 0.5 day(s)');
     });
 
     it('uses the SAME daily rate as LWP — one day of LWP costs one day of attendance deduction', () => {

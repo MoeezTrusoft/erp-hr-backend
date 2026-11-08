@@ -222,7 +222,7 @@ describe('HR-PAYROLL-DEDUCTION-TYPE-01 — persisted rows carry their OWN deduct
             'Benefit: Health': 'BENEFIT_CONTRIBUTION',
             'Loan repayment': 'LOAN_REPAYMENT',
             'LWP Recovery (2 days)': 'LWP_RECOVERY',
-            'Management-disapproved attendance: 1 day(s)': 'ATTENDANCE_RULES_V2',
+            'Attendance rule deductions: 1 day(s)': 'ATTENDANCE_RULES_V2',
             'Social Security (FICA)': 'FICA_SOCIAL_SECURITY',
             'Medicare (FICA)': 'FICA_MEDICARE',
             'Income Tax': 'INCOME_TAX',

@@ -1,3 +1,4 @@
+import { listPayslipVariances, acknowledgePayslipVariance } from "../../services/payslipVariance.service.js";
 import { z } from "zod";
 import { payrollPaymentStatus, recordPayrollPayment, markPayslipsCashPaid } from '../../services/payrollPayments.service.js';
 import prisma from '../../lib/prisma.js';
@@ -247,6 +248,35 @@ export function registerPayrollTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
       const data = await mcpFinalizePayrollRun(user, id, ifMatch);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  // F-01 — month-on-month swings must be explained before approval.
+  server.tool(
+    "hr_payroll_variance_list",
+    "List payslips whose gross moved more than 10% from last month and have no written explanation yet (these block submission for approval)",
+    { id: z.string().min(1).describe("Payroll run id (numeric string)") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:payroll", user.isAdmin);
+      const data = await listPayslipVariances({ tenantId: user.tenantId, runId: id });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_payroll_variance_acknowledge",
+    "Record the written explanation for one payslip's month-on-month change above 10%. Bound to the current gross: a recalculation to a different gross needs a new explanation",
+    {
+      id: z.string().min(1).describe("Payroll run id (numeric string); the run must be COMPLETED"),
+      employeeId: z.coerce.number().int().positive().describe("Employee id of the payslip being explained"),
+      reason: z.string().min(10).max(500).describe("Why gross changed, e.g. approved raise, bonus, back pay, corrected salary"),
+    },
+    withToolError(async ({ id, employeeId, reason }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
+      const data = await acknowledgePayslipVariance({ tenantId: user.tenantId, runId: id, employeeId, reason, actorEmployeeId: user.employeeId ?? null });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

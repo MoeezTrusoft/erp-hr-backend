@@ -245,7 +245,7 @@ describe("management explicit deduction in the rules payroll", () => {
     const line = slip.deductions.find((d) => d.code === "ATTENDANCE_RULES_V2");
     // 31,000 over 31 calendar days = 1,000 a day; two days = 2,000.
     expect(line.amount).toBe("2000.0000");
-    expect(line.description).toBe("Management-disapproved attendance: 2 day(s)");
+    expect(line.description).toBe("Attendance rule deductions: 2 day(s)");
   });
 });
 
