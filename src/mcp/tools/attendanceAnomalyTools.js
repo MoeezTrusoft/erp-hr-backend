@@ -80,8 +80,8 @@ export function registerAttendanceAnomalyTools(server) {
   const common={anomalyId:z.number().int().positive(),version:z.number().int().nonnegative()};
   for (const [name,schema,handler,verb] of [
     ['hr_attendance_anomaly_deduction', {...common,days:z.union([z.literal(0.5),z.literal(1),z.null()]),comment:z.string().trim().min(1).max(2000)},markAnomalyDeduction,'PUT'],
-    ['hr_attendance_anomaly_return', {...common,targetLevel:z.number().int().nonnegative(),comment:z.string().trim().min(1).max(2000)},returnAnomalyRequest,'GET'],
-    ['hr_attendance_anomaly_resubmit', {...common,reason:z.string().trim().min(1).max(2000),attachments:anomalyAttachmentsSchema},resubmitAnomalyRequest,'GET'],
+    ['hr_attendance_anomaly_return', {...common,targetLevel:z.number().int().nonnegative(),comment:z.string().trim().min(1).max(2000)},returnAnomalyRequest,'PUT'],
+    ['hr_attendance_anomaly_resubmit', {...common,reason:z.string().trim().min(1).max(2000),attachments:anomalyAttachmentsSchema},resubmitAnomalyRequest,'PUT'],
     ['hr_attendance_anomaly_attachment_url', {anomalyId:z.number().int().positive(),mediaId:z.coerce.number().int().positive()},anomalyAttachmentUrl,'GET'],
   ]) server.tool(name,'Manage an attendance anomaly with participant authorization and an audit trail',schema,withToolError(async args=>{
     const {user,permissions}=getCtx();

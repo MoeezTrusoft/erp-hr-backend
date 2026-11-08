@@ -51,8 +51,14 @@ export function assertPermission(permissions, method, resourceKey, _isAdmin) {
   // header granted full access. Authorization is now purely permission-based
   // (deny-by-default); a real admin carries the resource permissions in their
   // entitlement blob. The param is kept for call-site compatibility, unused.
-  const action = METHOD_ACTION[method.toUpperCase()];
-  if (!action) return;
+  const action = METHOD_ACTION[String(method ?? "").toUpperCase()];
+  // Fail closed: an unmapped verb used to return here and skip the check.
+  if (!action) {
+    throw Object.assign(
+      new Error(`Insufficient permissions: unknown action "${method}" for ${resourceKey}`),
+      { status: 403 }
+    );
+  }
   if (!hasPermission(permissions, resourceKey, action)) {
     throw Object.assign(
       new Error(`Insufficient permissions: ${resourceKey}:${action}`),
