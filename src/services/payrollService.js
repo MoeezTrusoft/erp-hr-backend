@@ -1533,6 +1533,11 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             });
 
             if (existing) {
+                // F-08: the lines are replaced below, so keep the old ones in the audit row.
+                const priorLines = {
+                    earnings: await prisma.payrollEarning.findMany({ where: { payslipId: existing.id }, orderBy: { id: 'asc' }, select: { description: true, amount: true } }),
+                    deductions: await prisma.payrollDeduction.findMany({ where: { payslipId: existing.id }, orderBy: { id: 'asc' }, select: { description: true, amount: true } })
+                };
                 await prisma.payrollEarning.deleteMany({ where: { payslipId: existing.id } });
                 await prisma.payrollDeduction.deleteMany({ where: { payslipId: existing.id } });
                 const updated = await prisma.payrollPayslip.update({
@@ -1564,8 +1569,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                         payrollRunId: id,
                         payslipId: updated.id,
                         employeeId: employee.id,
-                        oldValues: { grossAmount: existing.grossAmount, totalDeductions: existing.totalDeductions, netAmount: existing.netAmount },
-                        newValues: { grossAmount: built.grossAmount, totalDeductions: built.totalDeductions, netAmount: built.netAmount, prorationFactor: built.prorationFactor },
+                        oldValues: { grossAmount: existing.grossAmount, totalDeductions: existing.totalDeductions, netAmount: existing.netAmount, payableDays: existing.payableDays, ...auditLines(priorLines) },
+                        newValues: { grossAmount: built.grossAmount, totalDeductions: built.totalDeductions, netAmount: built.netAmount, prorationFactor: built.prorationFactor, payableDays: built.payableDays, ...auditLines({ earnings, deductions }) },
                     },
                 });
                 await prisma.attendancePayrollAdjustment.updateMany({where:{tenantId,id:{in:attendanceAdjustments.map(a=>a.id)}},data:{appliedPayslipId:updated.id}});
@@ -1728,6 +1733,14 @@ const getBaseSalaryEarningTypeId = async (tenantId) => {
     }
 
     return earningType.id;
+};
+
+// F-08: line-level before/after for the payslip audit rows: description and amount only.
+export const auditLines = ({ earnings = [], deductions = [] }) => {
+    // Stored lines read back as "100000" and freshly built ones as "100000.0000": one format, so an unchanged line compares equal.
+    const money = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(4) : String(v));
+    const slim = (rows) => rows.map((r) => ({ description: r.description ?? null, amount: money(r.amount) }));
+    return { earnings: slim(earnings), deductions: slim(deductions) };
 };
 
 const getOrCreateDeductionType = async (code, name, tenantId) => {

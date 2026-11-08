@@ -11,6 +11,7 @@
 // held day while rejection triggers a deduction.
 //
 // HR-ATT-POLICY-01.
+import { listLongAbsences } from '../../services/longAbsence.service.js';
 import { markAnomalyDeduction, returnAnomalyRequest, resubmitAnomalyRequest, anomalyAttachmentUrl } from '../../services/anomalyManagement.service.js';
 import { anomalyAttachmentsSchema } from './anomalyAttachmentSchema.js';
 import { z } from "zod";
@@ -77,6 +78,13 @@ function actingEmployeeId(user) {
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 
 export function registerAttendanceAnomalyTools(server) {
+  // F-05 — HR operations: employees on a long ABSENT streak (EDIT, not VIEW: it lists other employees' absences).
+  server.tool('hr_attendance_long_absence_list','List active employees with a long run of consecutive ABSENT days (weekly offs and holidays do not break the run), so HR can raise a leave or separation case before payroll prices the days',{minDays:z.coerce.number().int().min(1).max(31).optional().describe('Shortest streak to list (default 5)'),asOf:z.string().optional().describe('YYYY-MM-DD, default today')},withToolError(async({minDays,asOf})=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
+    const data=await listLongAbsences({tenantId:user.tenantId,minDays,...(asOf?{asOf:new Date(`${asOf}T00:00:00Z`)}:{})});
+    return {content:[{type:'text',text:JSON.stringify(data)}]};
+  }));
   const common={anomalyId:z.number().int().positive(),version:z.number().int().nonnegative()};
   for (const [name,schema,handler,verb] of [
     ['hr_attendance_anomaly_deduction', {...common,days:z.union([z.literal(0.5),z.literal(1),z.null()]),comment:z.string().trim().min(1).max(2000)},markAnomalyDeduction,'PUT'],
