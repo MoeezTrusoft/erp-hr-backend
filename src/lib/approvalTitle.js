@@ -11,6 +11,8 @@ const ATTENDANCE_TYPES = {
 };
 
 const date = (value) => {
+  // new Date(null) is 1 Jan 1970: a missing date must give no day at all, not "1 Jan".
+  if (value === null || value === undefined || value === "") return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 };
