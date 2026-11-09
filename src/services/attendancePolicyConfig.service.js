@@ -11,6 +11,7 @@ import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
 import { validatePolicy } from '../lib/attendanceSetup.js';
+import { auditSetupChange, changedKeys } from "../lib/setupAudit.js";
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -83,6 +84,8 @@ export async function getAttendancePolicy({ tenantId }) {
   const row = await prisma.attendancePolicyConfig.findUnique({ where: { tenantId } });
   return row ?? defaultAttendancePolicy();
 }
+
+export const changedPolicyKeys = changedKeys; // kept for the existing test and callers
 
 export async function updateAttendancePolicy({ tenantId, ...input }) {
   const data = {};
@@ -167,11 +170,20 @@ export async function updateAttendancePolicy({ tenantId, ...input }) {
     if (input.expectedVersion !== undefined && input.expectedVersion !== (latest?.version ?? 0)) throw Object.assign(new Error('Attendance policy changed; refresh before saving'), {status:409});
     const currentErrors = validatePolicy({ ...(latest ?? defaultAttendancePolicy()), ...data });
     if (currentErrors.length) throw badRequest(currentErrors.join('; '));
-    return tx.attendancePolicyConfig.upsert({
+    const before = latest ?? defaultAttendancePolicy();
+    const changed = changedKeys(before, data);
+    if (latest && !changed.length) return latest; // nothing to change: stay as published, no version bump
+    const saved = await tx.attendancePolicyConfig.upsert({
       where: { tenantId },
       create: { tenantId, ...data, status: "DRAFT", version: 1 },
       update: { ...data, status: "DRAFT", version: { increment: 1 } },
     });
+    await auditSetupChange(tx, {
+      tenantId, action: "ATTENDANCE_POLICY_UPDATED", label: `Attendance policy v${saved.version} saved`,
+      before: latest ? before : null, defaults: before, after: data, keys: latest ? changed : Object.keys(data),
+      extraOld: { version: latest?.version ?? null }, extraNew: { version: saved.version },
+    });
+    return saved;
   });
 
   logger.info({ id: row.id }, "attendance policy updated");

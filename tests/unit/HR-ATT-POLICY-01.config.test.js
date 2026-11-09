@@ -11,6 +11,7 @@ const prismaMock = {
     attendanceDeductionRule: { findMany: jest.fn(async () => []), upsert: jest.fn(async ({ create }) => ({ id: 1, ...create })) },
     attendanceApprovalLevel: { findMany: jest.fn(async () => []), findUnique: jest.fn(async () => null), upsert: jest.fn(async ({ create }) => ({ id: 1, ...create })), delete: jest.fn() },
     employee: { findUnique: jest.fn(async () => null), findMany: jest.fn(async () => []) },
+    payrollAuditLog: { create: jest.fn(async ({ data }) => ({ id: 1, ...data })) },
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
@@ -80,6 +81,26 @@ describe('HR-ATT-POLICY-01 attendance policy config', () => {
         expect(call.create.status).toBe('DRAFT');
         expect(call.update.status).toBe('DRAFT');
         expect(call.update.version).toEqual({ increment: 1 });
+    });
+
+    it('audits the change in the same transaction (who is stamped by the audit extension)', async () => {
+        await policy.updateAttendancePolicy({ tenantId: TENANT, graceMinutes: 15 });
+
+        const audit = prismaMock.payrollAuditLog.create.mock.calls[0][0].data;
+        expect(audit.action).toBe('ATTENDANCE_POLICY_UPDATED');
+        expect(audit.newValues.graceMinutes).toBe(15);
+        expect(audit.tenantId).toBe(TENANT);
+    });
+
+    it('an unchanged save writes nothing: no upsert, no audit row', async () => {
+        const stored = { ...policy.defaultAttendancePolicy(), id: 7, version: 3, status: 'PUBLISHED' };
+        prismaMock.attendancePolicyConfig.findUnique.mockResolvedValue(stored);
+
+        const row = await policy.updateAttendancePolicy({ tenantId: TENANT, graceMinutes: stored.graceMinutes });
+
+        expect(row).toBe(stored);
+        expect(prismaMock.attendancePolicyConfig.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.payrollAuditLog.create).not.toHaveBeenCalled();
     });
 });
 
