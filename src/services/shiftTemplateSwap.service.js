@@ -1,4 +1,7 @@
-import { legacyWithdraw, legacyDecision } from "./approval/legacy.js";
+import { legacyWithdraw, legacyDecision, legacySubmit } from "./approval/legacy.js";
+import { loadAttendanceRuntime } from "../lib/attendanceRuntime.js";
+import { planSwap } from "../lib/shiftSwapPlan.js";
+import { todayInZone } from "../lib/holidayDates.js";
 // src/services/shiftTemplateSwap.service.js — Shift Templates, Shift Swap
 // requests, and Overtime withdraw.
 //
@@ -335,8 +338,9 @@ const buildNameMap = async (rows, tenantId) => {
   return new Map(employees.map((e) => [e.id, employeeName(e)]));
 };
 
-const shapeSwap = (r, nameMap) => ({
+const shapeSwap = (r, nameMap, actingEmployeeId = null) => ({
   id: r.id,
+  isMine: actingEmployeeId != null && r.requesterId === actingEmployeeId,
   requester: r.requesterId != null ? nameMap.get(r.requesterId) ?? null : null,
   target: r.targetId != null ? nameMap.get(r.targetId) ?? null : null,
   fromDate: r.fromDate,
@@ -350,14 +354,17 @@ const shapeSwap = (r, nameMap) => ({
 /**
  * Paginated shift-swap requests, tenant-scoped, filterable by status.
  */
-export const listShiftSwaps = async (query = {}, tenantId) => {
+export const listShiftSwaps = async (query = {}, tenantId, { employeeIds = null, actingEmployeeId = null } = {}) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const status = query.status ? String(query.status).toUpperCase() : null;
   if (status && !SWAP_STATUSES.includes(status)) {
     throw badRequest(`status must be one of ${SWAP_STATUSES.join(", ")}`);
   }
 
-  const where = scopedWhere(tenantId, status ? { status } : {});
+  const where = scopedWhere(tenantId, {
+    ...(status ? { status } : {}),
+    ...(employeeIds ? { OR: [{ requesterId: { in: employeeIds } }, { targetId: { in: employeeIds } }] } : {}),
+  });
   const sort = SWAP_SORTS.includes(list.sort) ? list.sort : "createdAt";
   const orderBy = { [sort]: list.order };
 
@@ -372,126 +379,153 @@ export const listShiftSwaps = async (query = {}, tenantId) => {
   ]);
 
   const nameMap = await buildNameMap(rows, tenantId);
-  const items = rows.map((r) => shapeSwap(r, nameMap));
+  const items = rows.map((r) => shapeSwap(r, nameMap, actingEmployeeId));
 
   return buildListPayload({ ...list, sort, total, filters: { status }, items });
 };
 
+const SWAP_MAX_SPAN_DAYS = 31;
+
+// What the swap would do right now, from the same day resolver attendance uses. Used to refuse an impossible swap
+// when it is filed and again when it is finally approved (rosters can change in between).
+async function planSwapFor(tx, tenantId, swap) {
+  const people = await tx.employee.findMany({
+    where: { tenant_id: tenantId, id: { in: [swap.requesterId, swap.targetId] } },
+    select: { id: true, employee_code: true },
+  });
+  const person = (id) => {
+    const e = people.find((x) => x.id === id);
+    if (!e) throw badRequest("Both employees must belong to this company");
+    return { id, label: e.employee_code };
+  };
+  const from = dateKey(swap.fromDate);
+  const to = dateKey(swap.toDate ?? swap.fromDate);
+  const [lo, hi] = [from, to].sort();
+  const runtime = await loadAttendanceRuntime({ tenantId, from: lo, to: hi, db: tx });
+  return planSwap({
+    resolve: (id, day) => runtime.resolve(id, day),
+    requester: person(swap.requesterId),
+    target: person(swap.targetId),
+    fromDate: from,
+    toDate: to,
+  });
+}
+
 /**
- * Create a shift-swap request (status PENDING). Tenant stamped fail-closed.
+ * File a shift swap and send it to the company's attendance approval route. The requester is the caller; only HR
+ * (onBehalf) may name someone else. Nothing changes on the roster until the route's final approval.
  */
 export const createShiftSwap = async (
-  { requesterId, targetId, fromDate, toDate, shiftType, reason } = {},
-  tenantId
+  { requesterId, targetId, targetCode, fromDate, toDate, reason } = {},
+  tenantId,
+  { onBehalf = false, today = todayInZone() } = {}
 ) => {
   const reqId = toId(requesterId);
   if (reqId == null) throw badRequest("requesterId is required");
-
-  let tgtId = null;
-  if (targetId !== undefined && targetId !== null && targetId !== "") {
-    tgtId = toId(targetId);
-    if (tgtId == null) throw badRequest("targetId must be a valid id");
+  let tgtId = toId(targetId);
+  // An employee has no directory access, so a colleague is named by employee code and resolved here, in their company.
+  if (tgtId == null && targetCode) {
+    const colleague = await prisma.employee.findFirst({
+      where: { tenant_id: tenantId, employee_code: String(targetCode).trim(), status: "Active" },
+      select: { id: true },
+    });
+    if (!colleague) throw badRequest("No active employee with that code in this company");
+    tgtId = colleague.id;
   }
-
+  if (tgtId == null) throw badRequest("Choose the colleague to swap with");
+  if (tgtId === reqId) throw badRequest("You cannot swap a shift with yourself");
   const from = parseDate(fromDate);
   if (!from) throw badRequest("Valid fromDate is required");
-  const to = parseDate(toDate); // optional
+  const to = toDate ? parseDate(toDate) : from;
+  if (!to) throw badRequest("toDate must be a valid date");
+  const day = (d) => dateKey(d);
+  if (!onBehalf && day(from) < day(today))
+    throw badRequest("A swap cannot start in the past. Ask HR to file it for you.");
+  const span = (Date.parse(day(to)) - Date.parse(day(from))) / 86400000;
+  if (Math.abs(span) > SWAP_MAX_SPAN_DAYS)
+    throw badRequest(`The two swap dates must be within ${SWAP_MAX_SPAN_DAYS} days of each other`);
+  const text = reason == null ? null : String(reason).trim().slice(0, 500) || null;
 
-  let type = null;
-  if (shiftType != null && shiftType !== "") {
-    type = String(shiftType).toLowerCase();
-    if (!SHIFT_TYPES.includes(type)) {
-      throw badRequest(`shiftType must be one of ${SHIFT_TYPES.join(", ")}`);
-    }
-  }
-
-  const created = await prisma.shiftSwapRequest.create({
-    data: {
-      requesterId: reqId,
-      targetId: tgtId,
-      fromDate: from,
-      toDate: to,
-      shiftType: type,
-      reason: reason ?? null,
-      status: "PENDING",
-      tenantId: tenantId ?? null,
+  const created = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ":shift-swap:" + [reqId, tgtId].sort().join("-")},0))`;
+      const ids = [reqId, tgtId];
+      const dates = [from, to];
+      const clash = await tx.shiftSwapRequest.findFirst({
+        where: {
+          tenantId,
+          status: "PENDING",
+          OR: [{ requesterId: { in: ids } }, { targetId: { in: ids } }],
+          AND: [{ OR: [{ fromDate: { in: dates } }, { toDate: { in: dates } }] }],
+        },
+        select: { id: true },
+      });
+      if (clash)
+        throw Object.assign(new Error("One of these employees already has a pending swap on those dates"), { status: 409 });
+      await planSwapFor(tx, tenantId, { requesterId: reqId, targetId: tgtId, fromDate: from, toDate: to });
+      return tx.shiftSwapRequest.create({
+        data: { requesterId: reqId, targetId: tgtId, fromDate: from, toDate: day(to) === day(from) ? null : to,
+          reason: text, status: "PENDING", tenantId },
+      });
     },
-  });
+    { tenantId }
+  );
 
-  const nameMap = await buildNameMap([created], tenantId);
-  return shapeSwap(created, nameMap);
+  try {
+    await legacySubmit("SHIFT_SWAP", created.id, text || "Shift swap requested", { onBehalf });
+  } catch (error) {
+    // A request that never reached the approval route is not a request: remove it so nothing is stranded.
+    await prisma.shiftSwapRequest.deleteMany({ where: { id: created.id, tenantId, status: "PENDING" } });
+    throw error;
+  }
+  const row = await prisma.shiftSwapRequest.findFirst({ where: scopedWhere(tenantId, { id: created.id }) });
+  const nameMap = await buildNameMap([row], tenantId);
+  return shapeSwap(row, nameMap);
 };
 
 /**
- * Update editable fields of a shift-swap request — only while PENDING.
- * Tenant-scoped; 404 out of scope, 409 when not PENDING.
+ * Final approval of a swap: re-check it against today's rosters, write the per-day shift overrides, and re-queue the
+ * affected days for attendance evaluation (past and present days now; future days are picked up by the planner).
+ * Runs inside the approval engine's transaction, so a refusal leaves the request undecided.
  */
-export const updateShiftSwap = async ({ id, ...patch } = {}, tenantId) => {
-  const swapId = toId(id);
-  if (swapId == null) throw badRequest("Valid swap id is required");
-
-  const existing = await prisma.shiftSwapRequest.findFirst({
-    where: scopedWhere(tenantId, { id: swapId }),
-  });
-  if (!existing) throw notFound("Shift swap request not found");
-  if (existing.status !== "PENDING") {
-    throw Object.assign(
-      new Error("Only PENDING shift swap requests can be edited"),
-      { status: 409 }
-    );
-  }
-
-  const data = {};
-  if (patch.targetId !== undefined) {
-    if (patch.targetId === null || patch.targetId === "") {
-      data.targetId = null;
-    } else {
-      const tgtId = toId(patch.targetId);
-      if (tgtId == null) throw badRequest("targetId must be a valid id");
-      data.targetId = tgtId;
+export async function finalizeShiftSwap(tx, env, row, approved) {
+  const tenantId = env.tenantId;
+  if (approved) {
+    const from = dateKey(row.fromDate);
+    const to = dateKey(row.toDate ?? row.fromDate);
+    await assertRosterPeriodEditable(tx, tenantId, [from, to].sort()[0], [from, to].sort()[1]);
+    const writes = await planSwapFor(tx, tenantId, row);
+    const today = dateKey(civilNow(new Date(), "Asia/Karachi"));
+    for (const w of writes) {
+      const date = new Date(`${w.date}T00:00:00Z`);
+      await tx.shiftAssignment.deleteMany({ where: { tenantId, employeeId: w.employeeId, date } });
+      await tx.shiftAssignment.create({
+        data: { tenantId, employeeId: w.employeeId, date, shiftType: "morning", status: w.status,
+          fromTime: w.fromTime, toTime: w.toTime, templateId: w.templateId,
+          checkoutCutoffTime: w.checkoutCutoffTime, checkoutCutoffDayOffset: w.checkoutCutoffDayOffset },
+      });
+      await queueChangedShift(tx, tenantId, w.employeeId, date, today);
     }
+    await tx.payrollAuditLog.create({
+      data: {
+        tenantId,
+        action: "SHIFT_SWAP_APPLIED",
+        details: `Shift swap #${row.id} applied to ${writes.length} day(s)`,
+        oldValues: null,
+        newValues: { swapId: row.id, writes },
+      },
+    });
   }
-  if (patch.fromDate !== undefined) {
-    const from = parseDate(patch.fromDate);
-    if (!from) throw badRequest("fromDate must be a valid date");
-    data.fromDate = from;
-  }
-  if (patch.toDate !== undefined) {
-    if (patch.toDate === null || patch.toDate === "") {
-      data.toDate = null;
-    } else {
-      const to = parseDate(patch.toDate);
-      if (!to) throw badRequest("toDate must be a valid date");
-      data.toDate = to;
-    }
-  }
-  if (patch.shiftType !== undefined) {
-    if (patch.shiftType === null || patch.shiftType === "") {
-      data.shiftType = null;
-    } else {
-      const type = String(patch.shiftType).toLowerCase();
-      if (!SHIFT_TYPES.includes(type)) {
-        throw badRequest(`shiftType must be one of ${SHIFT_TYPES.join(", ")}`);
-      }
-      data.shiftType = type;
-    }
-  }
-  if (patch.reason !== undefined) {
-    data.reason = patch.reason === "" ? null : patch.reason ?? null;
-  }
-
-  if (Object.keys(data).length === 0) throw badRequest("No editable fields provided");
-
-  await prisma.shiftSwapRequest.updateMany({
-    where: scopedWhere(tenantId, { id: swapId, status: "PENDING" }),
-    data,
+  await tx.shiftSwapRequest.update({
+    where: { id: row.id },
+    data: { status: approved ? "APPROVED" : "REJECTED", approverId: env.who.id, decidedAt: env.now },
   });
+}
 
-  const updated = await prisma.shiftSwapRequest.findFirst({
-    where: scopedWhere(tenantId, { id: swapId }),
-  });
-  const nameMap = await buildNameMap([updated], tenantId);
-  return shapeSwap(updated, nameMap);
+/** A filed swap is sealed into its approval route; editing it afterwards would silently void the approval. */
+export const updateShiftSwap = async () => {
+  throw Object.assign(new Error("A filed swap cannot be edited. Withdraw it and file a new one."), { status: 409 });
 };
 
 /**

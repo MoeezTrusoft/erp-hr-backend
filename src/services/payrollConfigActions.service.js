@@ -89,6 +89,7 @@ export async function getConfigStatus({ tenantId }) {
   ]);
 
   const hasUnpublished =
+    meta?.hasUnpublished === true || // set by deletes, which leave no DRAFT row; cleared by publish
     publishedSnapshots === 0 ||
     draftComponent > 0 ||
     draftCalendar > 0 ||
@@ -183,10 +184,12 @@ export async function publishConfig({ tenantId, publishedById }) {
     throw Object.assign(new Error('Invalid payroll publisher identity'), { status: 400 });
   }
   const result = await tenantTransaction(prisma, async (tx) => {
+    // 0. Serialize publishes BEFORE reading: a second publisher waits here, then sees the first one's result.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':payroll-config'},0))`;
+
     // 1. Assemble the full current config (reads run under the tx tenant GUC).
     const config = await buildConfigObjectTx(tx, tenantId);
     validatePayrollConfiguration(config);
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':payroll-config'},0))`;
 
     // 2. Next version = current publishedVersion + 1.
     const meta = await tx.payrollConfigMeta.findUnique({ where: { tenantId } });

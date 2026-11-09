@@ -18,6 +18,10 @@ const { registry, requireApproval } =
 const { actApproval, listApprovals, readApproval } =
   await import("../../src/services/approval/service.js");
 const { HR_APPROVAL_KINDS } = await import("@trusoft/contracts/hr-approval");
+// These kinds follow the published ATTENDANCE route (no fixed-stage fallback) and are covered by
+// tests/attendance/{shift-swap,roster-change,holiday-change}.postgres.test.mjs.
+const ROUTED_KINDS = ["SHIFT_SWAP", "ROSTER_CHANGE", "HOLIDAY_CHANGE", "HOLIDAY_EXEMPTION"];
+const FIXED_STAGE_KINDS = [...HR_APPROVAL_KINDS].filter((k) => !ROUTED_KINDS.includes(k));
 const { isStagePaused } = await import("../../src/lib/approvalStagePolicy.js");
 test(
   "all HR request approval stages through non-owner PostgreSQL, including returns and final effects",
@@ -28,7 +32,7 @@ test(
       Object.keys(registry).sort(),
       [...HR_APPROVAL_KINDS].sort(),
     );
-    for (const kind of HR_APPROVAL_KINDS)
+    for (const kind of FIXED_STAGE_KINDS)
       await t.test(
         kind +
           " complete approval, Management return to HR, HR resolution, and audit",
@@ -142,7 +146,7 @@ test(
           );
         },
       );
-    for (const kind of HR_APPROVAL_KINDS)
+    for (const kind of FIXED_STAGE_KINDS)
       await t.test(
         kind + " manager/HR returns restart review; Management rejects after HR verifies",
         async () => {
@@ -187,7 +191,7 @@ test(
       async () => {
         const { legacyWithdraw } =
           await import("../../src/services/approval/legacy.js");
-        for (const kind of ["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP"])
+        for (const kind of ["LEAVE", "OVERTIME", "CLAIM"])
           for (const stage of [
             "LINE_MANAGER",
             "HR",

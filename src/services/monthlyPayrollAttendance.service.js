@@ -323,7 +323,7 @@ export async function getOfficePayroll({ tenantId, runId }) {
       rows.map((r) => ({
         ...r,
         name:
-          name(r.employee) || `Employee #${r.employeeId} (record unavailable)`,
+          displayName(r.employee) || `Employee #${r.employeeId} (record unavailable)`,
         code: r.employee?.employee_code ?? null,
         employee: undefined,
       })),

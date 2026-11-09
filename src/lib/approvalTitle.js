@@ -54,6 +54,34 @@ export function requestTitle(kind, snapshot) {
       const months = Number(s.tenureMonths) > 1 ? ` over ${plural(s.tenureMonths, "month")}` : "";
       return `Loan${sum}${months}`;
     }
+    case "SHIFT_SWAP": {
+      const when = day(s.fromDate);
+      if (!when) return null;
+      const other = day(s.toDate);
+      return `Shift swap, ${when}${other && other !== when ? ` for ${other}` : ""}`;
+    }
+    case "ROSTER_CHANGE": {
+      if (s.action === "DELETE") return "Roster removal";
+      const from = day(s.payload?.effective_start_date);
+      const name = s.payload?.schedule_name ? `: ${s.payload.schedule_name}` : "";
+      return from ? `Roster change from ${from}${name}` : "Roster change";
+    }
+    case "HOLIDAY_CHANGE": {
+      if (s.action === "CREATE") {
+        const list = Array.isArray(s.payload?.holidays) ? s.payload.holidays : [];
+        if (list.length > 1) return `Holidays added: ${plural(list.length, "day")}`;
+        const one = list[0];
+        return one?.name ? `Holiday added: ${one.name}${day(one.date) ? `, ${day(one.date)}` : ""}` : "Holiday added";
+      }
+      const verb = s.action === "DELETE" ? "removed" : "changed";
+      const when = day(s.payload?.date);
+      return s.payload?.name ? `Holiday ${verb}: ${s.payload.name}${when ? `, ${when}` : ""}` : `Holiday ${verb}`;
+    }
+    case "HOLIDAY_EXEMPTION": {
+      const n = Array.isArray(s.employeeIds) ? s.employeeIds.length : 0;
+      const holiday = s.summary?.holiday?.name ? `: ${s.summary.holiday.name}` : "";
+      return `${s.mode === "RESTORE" ? "Holiday restored" : "Holiday exemption"}${holiday} for ${plural(n, "employee")}`;
+    }
     case "PAYROLL": {
       const d = date(s.periodStart);
       if (!d) return null;

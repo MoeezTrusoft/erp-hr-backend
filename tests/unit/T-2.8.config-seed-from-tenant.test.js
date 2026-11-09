@@ -18,10 +18,11 @@ const store = {
   ],
 };
 
-const created = { ruleConfig: [], rules: [], earnings: [], deductions: [] };
+const created = { ruleConfig: [], rules: [], earnings: [], deductions: [], audit: [] };
 
-jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
-  default: {
+const client = {
+    $executeRaw: jest.fn(async () => 1),
+    payrollAuditLog: { create: jest.fn(async ({ data }) => { created.audit.push(data); return data; }) },
     payrollRuleConfig: {
       findUnique: jest.fn(async ({ where }) => store.ruleConfigs[where.tenantId] || null),
       upsert: jest.fn(async ({ where, update, create }) => { created.ruleConfig.push({ where, update, create }); return create; }),
@@ -40,8 +41,13 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
       findMany: jest.fn(async () => store.deductionTypes),
       createMany: jest.fn(async ({ data }) => { created.deductions.push(...data); return { count: data.length }; }),
     },
-  },
+};
+jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: client }));
+jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
+  // Runs the callback against the same mock client the service would see.
+  tenantTransaction: jest.fn(async (_c, fn) => fn(client)),
 }));
+
 
 let seedConfigFromTenant;
 beforeAll(async () => {
@@ -52,6 +58,20 @@ describe('[A-06] seedConfigFromTenant', () => {
   it('refuses non-admin actors (403)', async () => {
     await expect(seedConfigFromTenant({ actorTenantId: 'src-uuid', actorIsAdmin: false, sourceTenantId: 'src-uuid', targetTenantId: 'tgt-uuid' }))
       .rejects.toMatchObject({ status: 403 });
+  });
+
+  it('refuses an admin who is not in the source tenant (403), even with a valid empty target', async () => {
+    await expect(seedConfigFromTenant({ actorTenantId: 'other-uuid', actorIsAdmin: true, sourceTenantId: 'src-uuid', targetTenantId: 'tgt-uuid' }))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(seedConfigFromTenant({ actorTenantId: undefined, actorIsAdmin: true, sourceTenantId: 'src-uuid', targetTenantId: 'tgt-uuid' }))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(seedConfigFromTenant({ actorTenantId: 'tgt-uuid', actorIsAdmin: true, sourceTenantId: 'src-uuid', targetTenantId: 'tgt-uuid' }))
+      .rejects.toMatchObject({ status: 403 });
+  });
+
+  it('an ops script can opt in to a foreign source explicitly', async () => {
+    const summary = await seedConfigFromTenant({ actorTenantId: 'ops', actorIsAdmin: true, allowForeignSource: true, sourceTenantId: 'src-uuid', targetTenantId: 'tgt-uuid' });
+    expect(summary.ruleConfig).toBe(true);
   });
 
   it('refuses a target with payslip-bearing history (409)', async () => {
@@ -78,5 +98,9 @@ describe('[A-06] seedConfigFromTenant', () => {
     // types landed under the target tenant
     expect(created.earnings.every((t) => t.tenantId === 'tgt-uuid')).toBe(true);
     expect(created.deductions.every((t) => t.tenantId === 'tgt-uuid')).toBe(true);
+    // the seed is audited on the TARGET company, with what was copied
+    const audit = created.audit.at(-1);
+    expect(audit).toMatchObject({ tenantId: 'tgt-uuid', action: 'PAYROLL_CONFIG_SEEDED' });
+    expect(audit.newValues.sourceTenantId).toBe('src-uuid');
   });
 });

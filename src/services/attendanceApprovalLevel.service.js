@@ -17,6 +17,7 @@ import { toIdentity } from "../lib/personIdentity.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { auditSetupChange, changedKeys, markUnpublished, pickPlain } from "../lib/setupAudit.js";
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -155,11 +156,20 @@ export async function upsertApprovalLevel({ tenantId, level, ...input }) {
   if (!existing && data.role === undefined) throw badRequest("role is required");
 
   const row = await tenantTransaction(prisma, async (tx) => {
-    return tx.attendanceApprovalLevel.upsert({
+    const current = await tx.attendanceApprovalLevel.findUnique({ where: { tenantId_level: { tenantId, level: lvl } } });
+    const changed = changedKeys(current, data);
+    if (current && !changed.length) return current; // unchanged: no version bump, no flip to DRAFT
+    const saved = await tx.attendanceApprovalLevel.upsert({
       where: { tenantId_level: { tenantId, level: lvl } },
       create: { tenantId, level: lvl, role: data.role, ...data, status: "DRAFT", version: 1 },
       update: { ...data, status: "DRAFT", version: { increment: 1 } },
     });
+    await auditSetupChange(tx, {
+      tenantId, action: "ATTENDANCE_APPROVAL_LEVEL_UPDATED", label: `Attendance approval level ${lvl} saved`,
+      before: current, after: data, keys: changed.length ? changed : Object.keys(data),
+      extraOld: { level: lvl, version: current?.version ?? null }, extraNew: { level: lvl, version: saved.version },
+    });
+    return saved;
   });
 
   logger.info({ id: row.id, level: lvl, role: row.role }, "attendance approval level updated");
@@ -176,6 +186,17 @@ export async function deleteApprovalLevel({ tenantId, level }) {
     });
     if (!existing) throw notFound(`Approval level ${lvl} not found`);
     await tx.attendanceApprovalLevel.delete({ where: { id: existing.id } });
+    const keys = ["role", "approverId", "useEmployeeManager", "skipIfUnresolved", "autoEscalateAfterHours", "rowStatus"];
+    await tx.payrollAuditLog.create({
+      data: {
+        tenantId,
+        action: "ATTENDANCE_APPROVAL_LEVEL_DELETED",
+        details: `Attendance approval level ${lvl} deleted`,
+        oldValues: { level: lvl, version: existing.version, ...pickPlain(existing, keys) },
+        newValues: null,
+      },
+    });
+    await markUnpublished(tx, tenantId);
     logger.info({ id: existing.id, level: lvl }, "attendance approval level deleted");
     return { deleted: true, level: lvl };
   });

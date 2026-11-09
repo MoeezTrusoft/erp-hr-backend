@@ -45,7 +45,8 @@ import {
 import { Prisma } from "@prisma/client";
 import { identitiesByCode } from "../../lib/personIdentity.js";
 import {
-  MATRIX_KINDS,
+  matrixKindFor,
+  matrixRequired,
   PERMISSION_BY_ACTION,
   amountOf,
   buildRoute,
@@ -541,9 +542,10 @@ async function submitWithin(
     }
     // A paused manager stage needs no manager configured — the request enters
     // the HR verification stage instead (see lib/approvalStagePolicy.js).
-    const matrix = MATRIX_KINDS.includes(input.kind)
-      ? await loadPublishedMatrix(tx, env.tenantId, input.kind)
-      : null;
+    const matrixKind = matrixKindFor(input.kind);
+    const matrix = matrixKind ? await loadPublishedMatrix(tx, env.tenantId, matrixKind) : null;
+    if (!matrix && matrixRequired(input.kind))
+      fail("Publish the attendance approval route in Payroll Setup before submitting this request", 409);
     const needsManager = !matrix && requiresLineManager(input.kind);
     const manager = needsManager
       ? await tx.employee.findFirst({

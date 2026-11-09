@@ -37,12 +37,14 @@ const createWorkSchedule = asyncHandler(async (req, res) => {
     const scheduleData = {
         ...req.body,
         employeeId,
-        tenantId: req.user?.tenantId
+        tenantId: req.user?.tenantId,
+        // The signed-in HR user files the change; it takes effect when the approval route approves it.
+        requestedById: await requireEmployeeActor(req.user).catch(() => null)
     };
 
     const schedule = await workScheduleService.createWorkSchedule(scheduleData);
 
-    res.status(201).json({
+    res.status(scheduleData.dryRun === true ? 201 : 202).json({
         success: true,
         data: schedule
     });
@@ -75,11 +77,12 @@ const deleteWorkSchedule = asyncHandler(async (req, res) => {
     // T-FIX: best-effort actor (see update) + verified tenant threading — this
     // path was tenant fail-open and locked out admins without Employee rows.
     const deletedBy = await requireEmployeeActor(req.user).catch(() => null);
-    await workScheduleService.deleteWorkSchedule(req.params.id, deletedBy, req.user?.tenantId);
+    const result = await workScheduleService.deleteWorkSchedule(req.params.id, deletedBy, req.user?.tenantId, req.body?.reason ?? req.query?.reason);
 
-    res.json({
+    res.status(202).json({
         success: true,
-        message: 'Work schedule deleted successfully'
+        data: result,
+        message: result.message
     });
 });
 

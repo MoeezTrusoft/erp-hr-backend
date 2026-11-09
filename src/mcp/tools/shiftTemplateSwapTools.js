@@ -9,7 +9,9 @@
 import { z } from "zod";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
+import prisma from "../../lib/prisma.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   listShiftTemplates,
@@ -134,29 +136,67 @@ export function registerShiftTemplateSwapTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listShiftSwaps(args, user.tenantId);
+      // Everyone may open their own swaps. HR and Management (read-all) see the company; a line manager sees their
+      // own and their direct reports'; anyone else sees only swaps they are part of.
+      try {
+        assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      } catch (error) {
+        // Management reads through the read-all grant alone.
+        if (!hasPermission(permissions, "hr:attendance_all", "VIEW")) throw error;
+      }
+      const scope = resolveAttendanceReadScope(user, permissions);
+      let employeeIds = null;
+      if (!scope.canViewOthers) {
+        if (!scope.employeeId) throw Object.assign(new Error("No employee record is linked to this login"), { status: 403 });
+        employeeIds = [scope.employeeId];
+        if (hasPermission(permissions, "hr:approvals:manager", "VIEW")) {
+          const reports = await prisma.employee.findMany({
+            where: { tenant_id: user.tenantId, managerId: scope.employeeId },
+            select: { id: true },
+          });
+          employeeIds.push(...reports.map((r) => r.id));
+        }
+      }
+      const data = await listShiftSwaps(args, user.tenantId, { employeeIds, actingEmployeeId: scope.employeeId ?? (Number(user.employeeId) || null) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_shift_swap_list")
   );
 
+  const swapFields = {
+    targetId: id.optional().describe("Employee id to swap with (references Employee.id)"),
+    targetCode: z.string().optional().describe("Employee code to swap with, when the id is not known (employees)"),
+    fromDate: z.string().describe("ISO 8601 date YYYY-MM-DD — the requester's shift date"),
+    toDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — the colleague's shift date; omit for a same-day exchange"),
+    reason: z.string().optional().describe("Optional reason for the swap"),
+  };
+  // HR files a swap for any employee. The request goes to the attendance approval route like any other.
   server.tool(
     "hr_shift_swap_create",
-    "Create a shift swap request (status PENDING)",
-    {
-      requesterId: id.describe("Employee id requesting the swap (references Employee.id)"),
-      targetId: id.optional().describe("Employee id to swap with (references Employee.id)"),
-      fromDate: z.string().describe("ISO 8601 date YYYY-MM-DD — the requester's shift date"),
-      toDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — the target's shift date"),
-      shiftType: shiftTypeEnum.optional(),
-      reason: z.string().optional().describe("Optional reason for the swap"),
-    },
+    "HR: request a shift swap for an employee (goes to the attendance approval route)",
+    { requesterId: id.describe("Employee id the swap is for (references Employee.id)"), ...swapFields },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      const data = await createShiftSwap(args, user.tenantId);
+      const acting = Number(user.employeeId);
+      const onBehalf = Number(args.requesterId) !== acting;
+      const data = await createShiftSwap(args, user.tenantId, { onBehalf });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_shift_swap_create")
+  );
+  // Employee self-service (hr_self_* tools carry no gateway grant check, so the rule lives here): the requester is
+  // always the verified caller; there is no way to name someone else.
+  server.tool(
+    "hr_self_shift_swap_request",
+    "Request a shift swap for yourself with a colleague (goes to the attendance approval route)",
+    swapFields,
+    withToolError(async (args) => {
+      const { user } = getCtx();
+      const requesterId = Number(user.employeeId);
+      if (!Number.isInteger(requesterId) || requesterId < 1)
+        throw Object.assign(new Error("No employee record is linked to this login"), { status: 403, code: "HR-4030" });
+      const data = await createShiftSwap({ ...args, requesterId }, user.tenantId, { onBehalf: false });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_self_shift_swap_request")
   );
 
   server.tool(

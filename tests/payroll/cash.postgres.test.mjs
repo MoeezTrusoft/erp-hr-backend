@@ -18,13 +18,15 @@ const finalized = async () => {
   await as("HR", () => finalizePayrollRun(run.id, people.HR.id, company));
   return run;
 };
+// Snapshots are append-only: changing the cash setting means publishing a NEW version and pointing the run at it.
 const setCash = (on) =>
   db(async (tx) => {
-    await tx.payrollConfigSnapshot.deleteMany({ where: { tenantId: company } });
+    const latest = await tx.payrollConfigSnapshot.findFirst({ where: { tenantId: company }, orderBy: { version: "desc" } });
+    const version = (latest?.version ?? 0) + 1;
     await tx.payrollConfigSnapshot.create({
-      data: { tenantId: company, version: 1, config: { payRules: { cashDisbursement: on } } },
+      data: { tenantId: company, version, config: { payRules: { cashDisbursement: on } } },
     });
-    await tx.payrollRun.updateMany({ where: { tenantId: company }, data: { calculationConfigVersion: 1 } });
+    await tx.payrollRun.updateMany({ where: { tenantId: company }, data: { calculationConfigVersion: version } });
   });
 
 test("cash companies: HR marks whole payslips paid once, with an audit row and the payslip showing the date", { timeout: 180000 }, async () => {

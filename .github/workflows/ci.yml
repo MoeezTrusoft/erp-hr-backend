@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: ef466684da70c9354fe69c04b4508cb2fa7b78ea # contracts: PR #27 (Management deductionDays) on top of #26
+          ref: a8701f7649f84dafb4bde1b5a43afa247451a891 # contracts: PR #28 (roster and holiday approval kinds) on top of #27
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: ef466684da70c9354fe69c04b4508cb2fa7b78ea
+          ref: a8701f7649f84dafb4bde1b5a43afa247451a891
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false

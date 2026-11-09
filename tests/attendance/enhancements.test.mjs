@@ -18,8 +18,10 @@ const { mcpCtx } = await import("../../src/mcp/context.js");
 const { tenantTransaction } = await import("../../src/lib/rlsTenant.js");
 const { createShiftTemplate, updateShiftTemplate, listShiftTemplates } =
   await import("../../src/services/shiftTemplateSwap.service.js");
-const { createWorkSchedule } =
-  await import("../../src/services/workScheduleService.js");
+const { writeRoster } = await import("../../src/services/workScheduleService.js");
+// This file tests the roster writer itself (shift master, supervisor impact, cutoff rollback); the public create now
+// files an approval request (tests/attendance/roster-change.postgres.test.mjs), so it drives the writer directly.
+const createWorkSchedule = (d) => writeRoster({ tenantId: d.tenantId, employeeId: d.employeeId, data: d, dryRun: d.dryRun === true });
 const { bulkAssignShifts } =
   await import("../../src/services/overtimeManager.service.js");
 const { applyEvaluatedShifts } =

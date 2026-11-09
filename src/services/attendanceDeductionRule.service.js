@@ -13,6 +13,7 @@ import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
 import { validateDeductionGroups } from "../lib/attendanceSetup.js";
+import { auditSetupChange, changedKeys } from "../lib/setupAudit.js";
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -135,11 +136,20 @@ export async function upsertDeductionRule({ tenantId, ruleKey, ...input }) {
     const current=rows.find(r=>r.ruleKey===ruleKey)||defaultRule(ruleKey);
     const errors=validateDeductionGroups([...rows.filter(r=>r.ruleKey!==ruleKey),{...current,...data}]);
     if(errors.length)throw badRequest(errors.join("; "));
-    return tx.attendanceDeductionRule.upsert({
+    const existing = rows.find((r) => r.ruleKey === ruleKey) ?? null;
+    const changed = changedKeys(existing ?? current, data);
+    if (existing && !changed.length) return existing; // unchanged: no version bump, no flip to DRAFT
+    const saved = await tx.attendanceDeductionRule.upsert({
       where: { tenantId_ruleKey: { tenantId, ruleKey } },
       create: { tenantId, ruleKey, ...data, status: "DRAFT", version: 1 },
       update: { ...data, status: "DRAFT", version: { increment: 1 } },
     });
+    await auditSetupChange(tx, {
+      tenantId, action: "ATTENDANCE_DEDUCTION_RULE_UPDATED", label: `Deduction rule ${ruleKey} v${saved.version} saved`,
+      before: existing, defaults: current, after: data, keys: existing ? changed : Object.keys(data),
+      extraOld: { ruleKey, version: existing?.version ?? null }, extraNew: { ruleKey, version: saved.version },
+    });
+    return saved;
   });
 
   logger.info({ id: row.id, ruleKey, enabled: row.enabled }, "attendance deduction rule updated");
