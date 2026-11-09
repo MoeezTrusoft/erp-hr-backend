@@ -333,22 +333,30 @@ const buildNameMap = async (rows, tenantId) => {
   if (!ids.length) return new Map();
   const employees = await prisma.employee.findMany({
     where: scopedEmployeeWhere(tenantId, { id: { in: ids } }),
-    select: { id: true, employee_code: true },
+    select: { id: true, employee_code: true, employee_name: true, first_name: true, last_name: true },
   });
-  return new Map(employees.map((e) => [e.id, employeeName(e)]));
+  // Screens show the person's name with the code as the small second line.
+  return new Map(
+    employees.map((e) => [
+      e.id,
+      { code: employeeName(e), name: e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(" ") || null },
+    ])
+  );
 };
 
 const shapeSwap = (r, nameMap, actingEmployeeId = null) => ({
   id: r.id,
   isMine: actingEmployeeId != null && r.requesterId === actingEmployeeId,
-  requester: r.requesterId != null ? nameMap.get(r.requesterId) ?? null : null,
-  target: r.targetId != null ? nameMap.get(r.targetId) ?? null : null,
+  requester: r.requesterId != null ? nameMap.get(r.requesterId)?.code ?? null : null,
+  requesterName: r.requesterId != null ? nameMap.get(r.requesterId)?.name ?? null : null,
+  target: r.targetId != null ? nameMap.get(r.targetId)?.code ?? null : null,
+  targetName: r.targetId != null ? nameMap.get(r.targetId)?.name ?? null : null,
   fromDate: r.fromDate,
   toDate: r.toDate ?? null,
   shiftType: r.shiftType ?? null,
   reason: r.reason ?? null,
   status: r.status,
-  approver: r.approverId != null ? nameMap.get(r.approverId) ?? null : null,
+  approver: r.approverId != null ? nameMap.get(r.approverId)?.code ?? null : null,
 });
 
 /**
