@@ -28,7 +28,7 @@ import {
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { HR_ERRORS } from "../../constants/errorCodes.js";
-import { assertPayrollAdminSurface, resolveActorScope } from "../utils/actorScope.js";
+import { assertPayrollAdminSurface, assertPayrollOverviewAccess, resolveActorScope } from "../utils/actorScope.js";
 import { EMPLOYEE_VISIBLE_STATUSES } from "../../services/myPayslip.service.js";
 import { withToolError } from "../utils/toolError.js";
 import { runMcpIdempotent } from "../../middlewares/idempotency.middleware.js";
@@ -164,8 +164,8 @@ export function registerPayrollTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      // HR-RBAC-01 T1.7 — run register exposes company-wide totals.
-      assertPayrollAdminSurface(permissions);
+      // HR-RBAC-01 T1.7 — run register exposes company-wide totals (admin surface or hr:payroll_all VIEW).
+      assertPayrollOverviewAccess(permissions);
       const data = await mcpListPayrollRuns(user, toListQuery(args));
       return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
     }, "hr_payroll_run_list")

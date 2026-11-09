@@ -182,6 +182,17 @@ export function resolveHrRoutePolicy(req) {
   const resource = resourceFor(path);
   const action = actionFor(method, path);
   if (!resource || !action) return null;
+  // X3: the read-only, tenant-wide grants (Management) add ONE alternative to plain reads of
+  // attendance and to the payroll run register; handlers still scope the rows, and nothing else
+  // under /api/payroll (employees, payslips, bank file, audit) accepts them.
+  const readAllKey =
+    method === "GET" && action === "read"
+      ? resource === "hr.attendance"
+        ? "hr.attendance_all.read"
+        : path === "/api/payroll/runs"
+          ? "hr.payroll_all.read"
+          : null
+      : null;
 
   const key = `${method} ${path}`;
   const servicePrincipals = SERVICE_PRINCIPAL_POLICIES[key] || [];
@@ -198,6 +209,7 @@ export function resolveHrRoutePolicy(req) {
   const self = inlineOwnership || controllerOwnership;
   return {
     permission,
+    ...(readAllKey ? { anyOf: [permission, readAllKey] } : {}),
     resource,
     action,
     self,
