@@ -31,6 +31,20 @@ describe("resolveAccessScope", () => {
   it("legacy blob permissions work too", () => expect(scope({ employeeId: 7 }, { [R]: ["EDIT"] }).scope).toBe(SCOPE.ALL));
 });
 
+describe("read-all (Management)", () => {
+  it("is ALL but read-only, even with no employee identity", () => {
+    expect(scope({ employeeId: 7 }, ["hr.attendance_all.read"])).toEqual({ scope: SCOPE.ALL, actingEmployeeId: 7, readOnly: true });
+    expect(scope({}, ["hr.attendance_all.read"]).scope).toBe(SCOPE.ALL);
+  });
+  it("a read-only scope may read any employee but never write one", () => {
+    expect(mayAccessEmployee({ scope: SCOPE.ALL, readOnly: true, actingEmployeeId: 7, targetEmployeeId: 99 })).toBe(true);
+    expect(mayAccessEmployee({ scope: SCOPE.ALL, readOnly: true, write: true, actingEmployeeId: 7, targetEmployeeId: 99 })).toBe(false);
+    expect(mayAccessEmployee({ scope: SCOPE.ALL, readOnly: false, write: true, actingEmployeeId: 7, targetEmployeeId: 99 })).toBe(true);
+  });
+  it("a write-class grant wins and is not read-only", () => expect(scope({ employeeId: 7 }, [...hr, "hr.attendance_all.read"]).readOnly).toBe(false));
+  it("another resource's read-all gives nothing here", () => expect(scope({ employeeId: 7 }, ["hr.payroll_all.read"]).scope).toBe(SCOPE.SELF));
+});
+
 describe("mayAccessEmployee", () => {
   const base = { actingEmployeeId: 7 };
   it("ALL: any valid target, never an invalid one", () => {

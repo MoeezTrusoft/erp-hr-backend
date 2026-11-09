@@ -16,7 +16,7 @@ import {
 } from "../../services/payrollDashboard.service.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
-import { assertPayrollAdminSurface } from "../utils/actorScope.js";
+import { assertPayrollAdminSurface, assertPayrollOverviewAccess } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 
 const RESOURCE = "hr:payroll";
@@ -44,8 +44,8 @@ export function registerPayrollDashboardTools(server) {
     { runId: runIdArg },
     withToolError(async ({ runId }) => {
       const { user, permissions } = getCtx();
-      // HR-RBAC-01 T1.7 — company-wide money KPI.
-      assertPayrollAdminSurface(permissions);
+      // HR-RBAC-01 T1.7 — company-wide money KPI (totals only: admin surface or hr:payroll_all VIEW).
+      assertPayrollOverviewAccess(permissions);
       const data = await getPayrollThisMonth({ tenantId: user.tenantId, runId });
       return jsonResult(data);
     }, "hr_payroll_this_month")

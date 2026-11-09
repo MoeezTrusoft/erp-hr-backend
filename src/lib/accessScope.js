@@ -21,26 +21,30 @@ const positiveInt = (v) => {
 };
 
 /**
- * @returns {{ scope: string, actingEmployeeId: number|null }}
+ * `<resource>_all` VIEW is the read-only, tenant-wide grant (Management): scope ALL with
+ * readOnly true. Callers must still assertPermission(...) for any write; ALL here never implies one.
+ * @returns {{ scope: string, actingEmployeeId: number|null, readOnly: boolean }}
  * `isManager` is true when the caller has at least one direct report; the caller
  * (a service) looks that up once and passes it in.
  */
 export function resolveAccessScope({ user, permissions, resource, isManager = false }) {
   const actingEmployeeId = positiveInt(user?.employeeId);
   if (user?.isAdmin === true || WRITE_CLASS.some((a) => hasPermission(permissions, resource, a))) {
-    return { scope: SCOPE.ALL, actingEmployeeId };
+    return { scope: SCOPE.ALL, actingEmployeeId, readOnly: false };
   }
-  if (actingEmployeeId === null) return { scope: SCOPE.NONE, actingEmployeeId };
+  if (hasPermission(permissions, `${resource}_all`, "VIEW")) return { scope: SCOPE.ALL, actingEmployeeId, readOnly: true };
+  if (actingEmployeeId === null) return { scope: SCOPE.NONE, actingEmployeeId, readOnly: false };
   if (isManager && hasPermission(permissions, resource, "VIEW")) {
-    return { scope: SCOPE.TEAM, actingEmployeeId };
+    return { scope: SCOPE.TEAM, actingEmployeeId, readOnly: false };
   }
-  return { scope: SCOPE.SELF, actingEmployeeId };
+  return { scope: SCOPE.SELF, actingEmployeeId, readOnly: false };
 }
 
-/** May the caller act on this one employee's record? */
-export function mayAccessEmployee({ scope, actingEmployeeId, targetEmployeeId, targetManagerId }) {
+/** May the caller act on this one employee's record? Pass `write: true` for any change: a read-only scope never passes it. */
+export function mayAccessEmployee({ scope, readOnly = false, write = false, actingEmployeeId, targetEmployeeId, targetManagerId }) {
   const target = positiveInt(targetEmployeeId);
   if (target === null || scope === SCOPE.NONE) return false;
+  if (write && readOnly) return false;
   if (scope === SCOPE.ALL) return true;
   const acting = positiveInt(actingEmployeeId);
   if (acting === null) return false;

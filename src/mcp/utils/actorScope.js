@@ -62,9 +62,20 @@ export function assertPayrollAdminSurface(permissions) {
   }
 }
 
+// X3 — company-wide payroll TOTALS (this-month KPI card, run register) for Management:
+// the payroll admin surface, or the read-only hr:payroll_all VIEW grant. It never opens
+// per-employee salary, payslip, bank or audit data; those stay on assertPayrollAdminSurface.
+export function assertPayrollOverviewAccess(permissions) {
+  if (hasPermission(permissions, "hr:payroll_all", "VIEW")) return;
+  assertPayrollAdminSurface(permissions);
+}
+
 export function resolveAttendanceReadScope(user, permissions) {
+  // X3: hr:attendance_all VIEW is the read-only, tenant-wide grant (Management). It widens READS only;
+  // every write tool still asserts the write-class action on hr:attendance itself.
   const canViewOthers =
     user?.isAdmin === true ||
+    hasPermission(permissions, "hr:attendance_all", "VIEW") ||
     ATTENDANCE_ADMIN_ACTIONS.some((action) => hasPermission(permissions, "hr:attendance", action));
   if (canViewOthers) return { canViewOthers, employeeId: null };
   const n = Number(user?.employeeId);
