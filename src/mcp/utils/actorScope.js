@@ -73,11 +73,11 @@ export function assertPayrollOverviewAccess(permissions) {
 // X1 — publishing or withdrawing an approval route changes who may approve payroll and attendance, so it is
 // a Management decision (hr.setup.approve, the same grant that approves company setup). HR drafts; it does not
 // publish. Deliberately NOT satisfied by payroll write grants or the admin claim.
+export const canPublishRoute = (permissions) =>
+  Array.isArray(permissions) ? permissions.includes("hr.setup.approve") : hasPermission(permissions, "hr:setup:approve", "VIEW");
+
 export function assertRoutePublisher(permissions) {
-  const ok = Array.isArray(permissions)
-    ? permissions.includes("hr.setup.approve")
-    : hasPermission(permissions, "hr:setup:approve", "VIEW");
-  if (!ok) {
+  if (!canPublishRoute(permissions)) {
     throw Object.assign(
       new Error("Insufficient permissions: publishing or withdrawing an approval route needs Management approval (hr.setup.approve)"),
       { statusCode: 403, status: 403, code: "HR-4030" },

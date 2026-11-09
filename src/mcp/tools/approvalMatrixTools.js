@@ -12,7 +12,7 @@ import {
 import { MATRIX_KINDS } from "../../lib/approvalMatrix.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
-import { assertRoutePublisher } from "../utils/actorScope.js";
+import { assertRoutePublisher, canPublishRoute } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 
 const RESOURCE = "hr:payroll";
@@ -40,11 +40,18 @@ const level = z
   .strict();
 
 export function registerApprovalMatrixTools(server) {
-  const run = (method, fn, name, { publisher = false } = {}) =>
+  const run = (method, fn, name, { publisher = false, readByPublisher = false } = {}) =>
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       if (publisher) assertRoutePublisher(permissions);
-      else assertPermission(permissions, method, RESOURCE, user.isAdmin);
+      else {
+        try {
+          assertPermission(permissions, method, RESOURCE, user.isAdmin);
+        } catch (e) {
+          // Whoever must approve a route has to be able to read the draft they are approving (read only).
+          if (!(readByPublisher && canPublishRoute(permissions))) throw e;
+        }
+      }
       return jsonResult(await fn({ ...args, tenantId: user.tenantId, actorId: user.userId ?? user.id ?? "unknown" }));
     }, name);
 
@@ -52,7 +59,7 @@ export function registerApprovalMatrixTools(server) {
     "hr_approval_route_get",
     "Read the approval matrix of a kind: the published route, the draft and the earlier versions. usingFixedStages is true until a route is published",
     { kind },
-    run("GET", getApprovalMatrix, "hr_approval_route_get"),
+    run("GET", getApprovalMatrix, "hr_approval_route_get", { readByPublisher: true }),
   );
   server.tool(
     "hr_approval_route_save_draft",
