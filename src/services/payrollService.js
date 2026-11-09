@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
+import { auditTermsCreated } from "../lib/termsAudit.js";
 import { redactC4 } from "../lib/c4Redaction.js";
 import * as money from "../lib/money.js";
 import { withTenant } from "../lib/tenancy.js";
@@ -2089,12 +2090,19 @@ export const getEmployeePayrollData = async (employeeId, tenantId) => {
 };
 
 
+const withTenantTx = (tenantId, fn) => (tenantId ? tenantTransaction(prisma, fn, { tenantId }) : fn(prisma));
+
 export const createEmploymentTerms = async (data, createdBy, tenantId) => {
   // strip the non-column `createdBy` the controller folds into the payload
   // (legacy shape) so the scoped create only persists real columns + tenantId.
   const { createdBy: _ignored, ...termsData } = data;
-  const create = await prisma.employmentTerms.create({
-    data: { ...termsData, tenantId: tenantId ?? null }
+  // X4: the salary record and its audit row commit together, so a salary change can never exist without
+  // an audit trail. The row carries old and new amounts (same restricted payroll-audit read surface as
+  // BASE_SALARY_CORRECTED); the actor is stamped from the request context by auditActorExtension.
+  const create = await withTenantTx(tenantId, async (tx) => {
+    const created = await tx.employmentTerms.create({ data: { ...termsData, tenantId: tenantId ?? null } });
+    await auditTermsCreated(tx, { tenantId, created, salary: termsData.baseSalary });
+    return created;
   });
 
   await logAction({

@@ -45,7 +45,6 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
         select: { id: true },
     });
     for (const r of stale) {
-        await prisma.payrollAuditLog.deleteMany({ where: { payrollRunId: r.id } });
         const slips = await prisma.payrollPayslip.findMany({ where: { payrollRunId: r.id }, select: { id: true } });
         for (const s of slips) {
             await prisma.payrollEarning.deleteMany({ where: { payslipId: s.id } });
@@ -99,7 +98,6 @@ beforeAll(async () => mcpCtx.run({ system: true }, async () => {
 afterAll(async () => mcpCtx.run({ system: true }, async () => {
     if (!dbAvailable) return;
     for (const id of created.runs) {
-        await prisma.payrollAuditLog.deleteMany({ where: { payrollRunId: id } });
         await prisma.payrollPayslip.deleteMany({ where: { payrollRunId: id } });
     }
     if (created.runs.length) await prisma.payrollRun.deleteMany({ where: { id: { in: created.runs } } });
