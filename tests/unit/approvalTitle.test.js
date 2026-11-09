@@ -24,4 +24,13 @@ describe("requestTitle", () => {
     expect(requestTitle("TIMESHEET", {})).toBeNull();
     expect(requestTitle("LEAVE", null)).toBeNull();
   });
+  it("names a shift swap, and shows no second day when the swap is on one day", () => {
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08", toDate: null })).toBe("Shift swap, 8 Oct");
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08" })).toBe("Shift swap, 8 Oct");
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08", toDate: "" })).toBe("Shift swap, 8 Oct");
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08", toDate: "2026-10-10" })).toBe("Shift swap, 8 Oct for 10 Oct");
+  });
+  it("does not turn a missing end date into 1 Jan", () => {
+    expect(requestTitle("LEAVE", { startDate: "2026-11-03", endDate: null, totalDays: 1 })).toBe("Leave, 3 Nov (1 day)");
+  });
 });
