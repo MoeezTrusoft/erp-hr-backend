@@ -1,6 +1,6 @@
 // src/mcp/tools/approvalMatrixTools.js — configurable approval matrices (ATTENDANCE and PAYROLL
-// kept separate). Reading is allowed for anyone who may see the setup; changing, publishing and
-// retiring need the same hr:payroll write grant as the other setup screens.
+// kept separate). Reading is allowed for anyone who may see the setup; drafting needs the same hr:payroll
+// write grant as the other setup screens; PUBLISHING and WITHDRAWING need Management approval (hr.setup.approve).
 import { z } from "zod";
 import {
   getApprovalMatrix,
@@ -12,6 +12,7 @@ import {
 import { MATRIX_KINDS } from "../../lib/approvalMatrix.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertRoutePublisher } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 
 const RESOURCE = "hr:payroll";
@@ -39,10 +40,11 @@ const level = z
   .strict();
 
 export function registerApprovalMatrixTools(server) {
-  const run = (method, fn, name) =>
+  const run = (method, fn, name, { publisher = false } = {}) =>
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, method, RESOURCE, user.isAdmin);
+      if (publisher) assertRoutePublisher(permissions);
+      else assertPermission(permissions, method, RESOURCE, user.isAdmin);
       return jsonResult(await fn({ ...args, tenantId: user.tenantId, actorId: user.userId ?? user.id ?? "unknown" }));
     }, name);
 
@@ -66,14 +68,14 @@ export function registerApprovalMatrixTools(server) {
   );
   server.tool(
     "hr_approval_route_publish",
-    "Publish the draft approval matrix of a kind. New submissions follow it; requests already submitted keep their route",
+    "Publish the draft approval matrix of a kind (Management approval permission required). New submissions follow it; requests already submitted keep their route",
     { kind, reason: z.string().min(1).max(500).describe("Why the route changes (audited)") },
-    run("PUT", publishApprovalMatrix, "hr_approval_route_publish"),
+    run("PUT", publishApprovalMatrix, "hr_approval_route_publish", { publisher: true }),
   );
   server.tool(
     "hr_approval_route_retire",
-    "Withdraw the published approval matrix of a kind so new submissions use the four fixed stages again",
+    "Withdraw the published approval matrix of a kind so new submissions use the four fixed stages again (Management approval permission required)",
     { kind, reason: z.string().min(1).max(500) },
-    run("PUT", retireApprovalMatrix, "hr_approval_route_retire"),
+    run("PUT", retireApprovalMatrix, "hr_approval_route_retire", { publisher: true }),
   );
 }
