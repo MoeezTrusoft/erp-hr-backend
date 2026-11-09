@@ -265,6 +265,11 @@ const codes = async (tenantId, ids) => {
   const people = await prisma.employee.findMany({ where: { tenant_id: tenantId, id: { in: [...new Set(ids)] } }, select: { id: true, employee_code: true } });
   return new Map(people.map((p) => [p.id, p.employee_code]));
 };
+// Screens show a person's name; the code stays beside it for compatibility.
+const personNames = async (tenantId, ids) => {
+  const people = await prisma.employee.findMany({ where: { tenant_id: tenantId, id: { in: [...new Set(ids)] } }, select: { id: true, employee_name: true, first_name: true, last_name: true } });
+  return new Map(people.map((p) => [p.id, p.employee_name || [p.first_name, p.last_name].filter(Boolean).join(" ") || null]));
+};
 
 /** Holiday changes and exemptions still waiting for the route, so the calendar screen can show them. */
 export async function listPendingHolidayRequests({ tenantId, holidayCalendarId }) {
@@ -272,11 +277,13 @@ export async function listPendingHolidayRequests({ tenantId, holidayCalendarId }
     prisma.holidayChangeRequest.findMany({ where: { tenantId, status: 'PENDING', ...(holidayCalendarId ? { holidayCalendarId: Number(holidayCalendarId) } : {}) }, orderBy: { createdAt: 'asc' } }),
     prisma.holidayExemptionRequest.findMany({ where: { tenantId, status: 'PENDING' }, orderBy: { createdAt: 'asc' } }),
   ]);
-  const who = await codes(tenantId, [...changes, ...exemptions].map((r) => r.requestedById));
+  const askers = [...changes, ...exemptions].map((r) => r.requestedById);
+  const who = await codes(tenantId, askers);
+  const whoName = await personNames(tenantId, askers);
   return [
     ...changes.map((r) => ({ kind: 'HOLIDAY_CHANGE', id: r.id, action: r.action, summary: r.payload, reason: r.reason,
-      requestedBy: who.get(r.requestedById) ?? null, createdAt: r.createdAt })),
+      requestedBy: who.get(r.requestedById) ?? null, requestedByName: whoName.get(r.requestedById) ?? null, createdAt: r.createdAt })),
     ...exemptions.map((r) => ({ kind: 'HOLIDAY_EXEMPTION', id: r.id, mode: r.mode, holidayId: r.holidayId, employees: r.employeeIds.length,
-      reason: r.reason, requestedBy: who.get(r.requestedById) ?? null, createdAt: r.createdAt })),
+      reason: r.reason, requestedBy: who.get(r.requestedById) ?? null, requestedByName: whoName.get(r.requestedById) ?? null, createdAt: r.createdAt })),
   ];
 }

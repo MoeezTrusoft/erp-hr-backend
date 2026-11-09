@@ -107,12 +107,13 @@ export async function listPendingRosterChanges({ tenantId, employeeId }) {
   });
   const people = await prisma.employee.findMany({
     where: { tenant_id: tenantId, id: { in: [...new Set(rows.flatMap((r) => [r.employeeId, r.requestedById]))] } },
-    select: { id: true, employee_code: true },
+    select: { id: true, employee_code: true, employee_name: true, first_name: true, last_name: true },
   });
   const code = new Map(people.map((p) => [p.id, p.employee_code]));
+  const name = new Map(people.map((p) => [p.id, p.employee_name || [p.first_name, p.last_name].filter(Boolean).join(' ') || null]));
   return rows.map((r) => ({
-    id: r.id, employeeId: r.employeeId, employee: code.get(r.employeeId) ?? null, action: r.action, scheduleId: r.scheduleId,
+    id: r.id, employeeId: r.employeeId, employee: code.get(r.employeeId) ?? null, employeeName: name.get(r.employeeId) ?? null, action: r.action, scheduleId: r.scheduleId,
     effectiveFrom: r.payload?.effective_start_date ?? null, scheduleName: r.payload?.schedule_name ?? null,
-    reason: r.reason, requestedBy: code.get(r.requestedById) ?? null, createdAt: r.createdAt,
+    reason: r.reason, requestedBy: code.get(r.requestedById) ?? null, requestedByName: name.get(r.requestedById) ?? null, createdAt: r.createdAt,
   }));
 }

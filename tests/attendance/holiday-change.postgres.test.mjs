@@ -45,6 +45,9 @@ test("an approved holiday applies to a past day, re-queues evaluation, audits, a
   const result = await file({ name: "Test day", date: PAST });
   assert.equal(result.status, "PENDING");
   assert.equal((await rows()).length, 0, "nothing written while the request waits");
+  const { listPendingHolidayRequests } = await import("../../src/services/holidayChangeRequest.service.js");
+  const waiting = await hr(() => listPendingHolidayRequests({ tenantId: company }));
+  assert.ok(waiting.length >= 1 && waiting.every((w) => w.requestedBy && w.requestedByName), "the asker shows by name as well as code");
   assert.equal((await dayInfo(people.EMPLOYEE.id, PAST)).working, true);
   await assert.rejects(file({ name: "Same day again", date: PAST }), /already a pending holiday request for 2026-10-21/);
 
