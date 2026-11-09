@@ -35,6 +35,11 @@ test("the roster changes only on the final approval, then the past days are re-q
   await prepareRoster();
   const result = await hr(() => createWorkSchedule(base()));
   assert.equal(result.pendingApproval, true);
+  const { listPendingRosterChanges } = await import("../../src/services/rosterChangeRequest.service.js");
+  const waiting = await hr(() => listPendingRosterChanges({ tenantId: company }));
+  assert.equal(waiting.length, 1);
+  assert.ok(waiting[0].employee && waiting[0].requestedBy, "the codes stay for compatibility");
+  assert.ok(waiting[0].employeeName && waiting[0].requestedByName, "and the people's names are there for the screen");
   assert.equal((await schedules()).length, 1, "the roster is untouched while the request waits");
   assert.equal((await dayInfo(people.EMPLOYEE.id, "2026-10-20")).shift.start.toISOString().slice(11, 16), "09:00");
   await assert.rejects(hr(() => createWorkSchedule(base({ effective_start_date: "2026-11-20" }))), /already has a roster change waiting/);
