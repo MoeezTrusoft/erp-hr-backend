@@ -11,7 +11,22 @@ const iso = (d) => new Date(d).toISOString().slice(0, 10);
 const check = (code, title, items, detail) => ({ code, title, status: items.length ? "ATTENTION" : "OK", count: items.length, detail, items: items.slice(0, 10) });
 
 /** devices: [{sn,name,active,lastSeenAt,staleAfterMinutes}], anomalies: [{id,createdAt,date}], runs: [{id,periodStart,periodEnd,status}] */
-export function evaluateHealth({ now = new Date(), devices = [], anomalies = [], runs = [], heldPayslips = 0, thresholds = THRESHOLDS }) {
+// X1: published approval routes. A level that can act but has no active approver stalls every request that
+// reaches it (the engine refuses to seal such a route), so it is surfaced before someone submits.
+// routes: [{kind, version, levels:[{name, approverMode, approverIds, paused, required}]}]; people: Map id -> {active}
+export function brokenRouteLevels(routes = [], people = new Map()) {
+  const out = [];
+  for (const r of routes)
+    for (const [i, l] of (r.levels || []).entries()) {
+      if (l.paused || l.approverMode !== "NAMED") continue; // manager-routed levels resolve per employee
+      const ids = l.approverIds || [];
+      const active = ids.filter((id) => people.get(id)?.active);
+      if (!active.length) out.push({ kind: r.kind, version: r.version, level: i + 1, name: l.name, reason: ids.length ? "every named approver is inactive or missing" : "no approver assigned" });
+    }
+  return out;
+}
+
+export function evaluateHealth({ now = new Date(), devices = [], anomalies = [], runs = [], heldPayslips = 0, routes = [], people = new Map(), thresholds = THRESHOLDS }) {
   const t = +new Date(now);
   const staleDevices = devices
     .filter((d) => d.active)
@@ -30,6 +45,7 @@ export function evaluateHealth({ now = new Date(), devices = [], anomalies = [],
     check("DEVICE_STALE", "Active capture devices not heard from within their window", staleDevices, "Punches from these devices may be missing"),
     check("CASES_AGED", `Raised attendance requests undecided for more than ${thresholds.anomalyDays} days`, agedCases, "They block payroll processing"),
     check("RUNS_NOT_CLOSED", `Payroll runs not finalized ${thresholds.runDays} days after the period ended`, openRuns, "Closed months should not stay open"),
+    check("APPROVAL_ROUTE_BROKEN", "Published approval routes with a level nobody active can act on", brokenRouteLevels(routes, people), "Requests reaching that level cannot be decided; republish the route with active approvers"),
     { code: "PAYSLIPS_HELD", title: "Held payslips", status: heldPayslips > 0 ? "ATTENTION" : "OK", count: heldPayslips, detail: "Held payslips block approval", items: [] },
   ];
   return { asOf: new Date(t).toISOString(), overall: checks.some((c) => c.status === "ATTENTION") ? "ATTENTION" : "OK", checks };

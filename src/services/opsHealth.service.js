@@ -9,7 +9,7 @@ export async function opsHealth({ tenantId, now = new Date() }) {
   const t = +new Date(now);
   if (Number.isNaN(t)) throw Object.assign(new Error("now is not a valid date"), { status: 400 });
   const since = new Date(t - LOOKBACK_DAYS * 86400000);
-  const [devices, anomalies, runs, heldPayslips] = await Promise.all([
+  const [devices, anomalies, runs, heldPayslips, routes] = await Promise.all([
     prisma.attendanceCaptureDevice.findMany({
       where: { OR: [{ tenantId }, { allowedTenantIds: { has: tenantId } }], active: true },
       select: { sn: true, name: true, active: true, lastSeenAt: true, staleAfterMinutes: true },
@@ -23,6 +23,10 @@ export async function opsHealth({ tenantId, now = new Date() }) {
       select: { id: true, periodStart: true, periodEnd: true, status: true },
     }),
     prisma.payrollPayslip.count({ where: { tenantId, status: "HOLD", payrollRun: { status: { notIn: ["FINALIZED", "CANCELLED"] } } } }),
+    prisma.approvalMatrix.findMany({ where: { tenantId, status: "PUBLISHED" }, select: { kind: true, version: true, levels: true } }),
   ]);
-  return evaluateHealth({ now: new Date(t), devices, anomalies, runs, heldPayslips });
+  const ids = [...new Set(routes.flatMap((r) => (r.levels || []).flatMap((l) => l.approverIds || [])))];
+  const rows = ids.length ? await prisma.employee.findMany({ where: { tenant_id: tenantId, id: { in: ids } }, select: { id: true, status: true, employement_status: true } }) : [];
+  const people = new Map(rows.map((e) => [e.id, { active: !/inactive|terminated|exited|separated/i.test(`${e.status} ${e.employement_status}`) }]));
+  return evaluateHealth({ now: new Date(t), devices, anomalies, runs, heldPayslips, routes, people });
 }

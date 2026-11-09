@@ -68,3 +68,28 @@ describe("evaluateHealth", () => {
     expect(get(r, "CASES_AGED").count).toBe(1);
   });
 });
+
+describe("approval route health (X1)", () => {
+  const active = new Map([[1, { active: true }], [2, { active: false }]]);
+  const lv = (over) => ({ name: "L", approverMode: "NAMED", approverIds: [1], paused: false, ...over });
+  const run = (levels, people = active) => evaluateHealth({ routes: [{ kind: "PAYROLL", version: 3, levels }], people }).checks.find((c) => c.code === "APPROVAL_ROUTE_BROKEN");
+
+  it("is OK with an active approver, no routes, or empty input", () => {
+    expect(run([lv()]).status).toBe("OK");
+    expect(evaluateHealth({}).checks.find((c) => c.code === "APPROVAL_ROUTE_BROKEN").status).toBe("OK");
+  });
+  it("flags a level whose only approver is inactive, missing, or unassigned", () => {
+    for (const ids of [[2], [99], []]) expect(run([lv({ approverIds: ids })]).count).toBe(1);
+  });
+  it("one active approver among inactive ones is enough", () => expect(run([lv({ approverIds: [2, 1] })]).status).toBe("OK"));
+  it("ignores paused levels and manager-routed levels", () => {
+    expect(run([lv({ paused: true, approverIds: [2] }), lv({ approverMode: "EMPLOYEE_MANAGER", approverIds: [] })]).status).toBe("OK");
+  });
+  it("reports the level number and a reason, and makes the overall status ATTENTION", () => {
+    const r = evaluateHealth({ routes: [{ kind: "ATTENDANCE", version: 1, levels: [lv(), lv({ name: "HR", approverIds: [2] })] }], people: active });
+    const c = r.checks.find((x) => x.code === "APPROVAL_ROUTE_BROKEN");
+    expect(c.items[0]).toMatchObject({ kind: "ATTENDANCE", level: 2, name: "HR" });
+    expect(c.items[0].reason).toMatch(/inactive or missing/);
+    expect(r.overall).toBe("ATTENTION");
+  });
+});
