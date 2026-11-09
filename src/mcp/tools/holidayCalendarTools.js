@@ -174,6 +174,7 @@ export function registerHolidayCalendarTools(server) {
     {
       calendarId: z.union([z.number(), z.string()]).describe("Holiday calendar ID"),
       date: z.string().describe("ISO 8601 date of the existing holiday"),
+      newDate: z.string().optional().describe("ISO 8601 date to move the holiday to"),
       name: z.string().optional().describe("New holiday name"),
       description: z.string().optional().describe("New description"),
       fullDay: z.boolean().optional().describe("Full-day flag"),
@@ -181,10 +182,10 @@ export function registerHolidayCalendarTools(server) {
       endTime: z.string().nullable().optional().describe('Partial holiday end HH:MM'),
       reason: z.string().min(3).describe("Why the holiday is changed; shown to the approvers"),
     },
-    withToolError(async ({ calendarId, date, ...data }) => {
+    withToolError(async ({ calendarId, date, newDate, ...data }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:holiday", user.isAdmin);
-      const result = await updateHoliday(calendarId, date, data, user.employeeId);
+      const result = await updateHoliday(calendarId, date, newDate ? { ...data, date: newDate } : data, user.employeeId);
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }, "hr_holiday_update")
   );

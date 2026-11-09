@@ -8,12 +8,13 @@ jest.unstable_mockModule('../../../src/services/shiftTemplateSwap.service.js', (
   listShiftSwaps: jest.fn(), createShiftSwap, updateShiftSwap: jest.fn(), decideShiftSwap: jest.fn(), withdrawOvertimeRequest: jest.fn(),
 }));
 const requestHolidayExemption = jest.fn(async () => ({ status: 'PENDING' }));
+const updateHoliday = jest.fn(async () => ({ status: 'PENDING' }));
 jest.unstable_mockModule('../../../src/services/holidayChangeRequest.service.js', () => ({
   requestHolidayExemption, listHolidayExemptions: jest.fn(async () => []), listPendingHolidayRequests: jest.fn(async () => []),
 }));
 jest.unstable_mockModule('../../../src/services/holiday.service.js', () => ({
   getHolidayCalendars: jest.fn(), getHolidayCalendarById: jest.fn(), createHolidayCalendar: jest.fn(), updateHolidayCalendar: jest.fn(),
-  deleteHolidayCalendar: jest.fn(), getHolidaysByCalendar: jest.fn(), createHoliday: jest.fn(), updateHoliday: jest.fn(), deleteHoliday: jest.fn(),
+  deleteHolidayCalendar: jest.fn(), getHolidaysByCalendar: jest.fn(), createHoliday: jest.fn(), updateHoliday, deleteHoliday: jest.fn(),
   getUpcomingHolidays: jest.fn(), getEmployeeHolidays: jest.fn(), assignEmployeeToCalendar: jest.fn(), getEmployeeCalendarAssignments: jest.fn(),
 }));
 jest.unstable_mockModule('../../../src/services/rosterChangeRequest.service.js', () => ({ listPendingRosterChanges: jest.fn(async () => []) }));
@@ -70,5 +71,15 @@ describe('holiday exemption', () => {
     const res = await call('hr_holiday_exemption_request', args, { permissions: { 'hr:holiday_exempt': ['CREATE'] } });
     expect(status(res)).toBe('PENDING');
     expect(requestHolidayExemption).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-A', requestedById: '7', holidayId: 1 }));
+  });
+});
+
+describe('moving a holiday', () => {
+  it('carries newDate to the request as the new date, and leaves it out when not moving', async () => {
+    const grant = { permissions: { 'hr:holiday': ['EDIT'] } };
+    await call('hr_holiday_update', { calendarId: 1, date: '2026-11-03', newDate: '2026-11-04', reason: 'Moved' }, grant);
+    expect(updateHoliday).toHaveBeenLastCalledWith(1, '2026-11-03', { reason: 'Moved', date: '2026-11-04' }, '7');
+    await call('hr_holiday_update', { calendarId: 1, date: '2026-11-03', name: 'Renamed', reason: 'Typo' }, grant);
+    expect(updateHoliday).toHaveBeenLastCalledWith(1, '2026-11-03', { name: 'Renamed', reason: 'Typo' }, '7');
   });
 });

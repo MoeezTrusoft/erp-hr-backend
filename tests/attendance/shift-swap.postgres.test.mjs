@@ -79,6 +79,8 @@ test("a swap changes the roster only at final approval, then re-evaluates the da
   await ensure();
   const swap = await file("EMPLOYEE", { requesterId: people.EMPLOYEE.id, fromDate: PAST, reason: "Family event" });
   assert.equal(swap.status, "PENDING");
+  assert.equal(swap.requester, "EMP-EMPLOYEE", "the code stays for compatibility");
+  assert.equal(swap.requesterName, "Fictional", "and the person's name is there for the screen");
   assert.equal((await assignments()).length, 0, "nothing on the roster while the request is pending");
   await assert.rejects(file("EMPLOYEE", { requesterId: people.EMPLOYEE.id, fromDate: PAST }), /already has a pending swap/);
 
