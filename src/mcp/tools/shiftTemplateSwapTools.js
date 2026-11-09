@@ -157,13 +157,14 @@ export function registerShiftTemplateSwapTools(server) {
           employeeIds.push(...reports.map((r) => r.id));
         }
       }
-      const data = await listShiftSwaps(args, user.tenantId, { employeeIds });
+      const data = await listShiftSwaps(args, user.tenantId, { employeeIds, actingEmployeeId: scope.employeeId ?? (Number(user.employeeId) || null) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_shift_swap_list")
   );
 
   const swapFields = {
-    targetId: id.describe("Employee id to swap with (references Employee.id)"),
+    targetId: id.optional().describe("Employee id to swap with (references Employee.id)"),
+    targetCode: z.string().optional().describe("Employee code to swap with, when the id is not known (employees)"),
     fromDate: z.string().describe("ISO 8601 date YYYY-MM-DD — the requester's shift date"),
     toDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD — the colleague's shift date; omit for a same-day exchange"),
     reason: z.string().optional().describe("Optional reason for the swap"),

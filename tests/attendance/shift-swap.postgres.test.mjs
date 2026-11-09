@@ -62,6 +62,7 @@ test("filing rules: self, colleague, dates, duplicates, other companies", async 
   const base = { requesterId: people.EMPLOYEE.id, fromDate: PAST };
   await assert.rejects(file("EMPLOYEE", { ...base, targetId: people.EMPLOYEE.id }), /yourself/);
   await assert.rejects(file("EMPLOYEE", { ...base, targetId: "" }), /Choose the colleague/);
+  await assert.rejects(file("EMPLOYEE", { ...base, targetId: "", targetCode: "EMP-NOBODY" }), /No active employee with that code/);
   await assert.rejects(file("EMPLOYEE", { ...base, fromDate: "nope" }), /Valid fromDate/);
   await assert.rejects(file("EMPLOYEE", { ...base, toDate: "2026-12-30" }), /within 31 days/);
   await assert.rejects(file("EMPLOYEE", { ...base, fromDate: "2026-09-01" }, { today: new Date("2026-10-01") }), /cannot start in the past/);

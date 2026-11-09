@@ -338,8 +338,9 @@ const buildNameMap = async (rows, tenantId) => {
   return new Map(employees.map((e) => [e.id, employeeName(e)]));
 };
 
-const shapeSwap = (r, nameMap) => ({
+const shapeSwap = (r, nameMap, actingEmployeeId = null) => ({
   id: r.id,
+  isMine: actingEmployeeId != null && r.requesterId === actingEmployeeId,
   requester: r.requesterId != null ? nameMap.get(r.requesterId) ?? null : null,
   target: r.targetId != null ? nameMap.get(r.targetId) ?? null : null,
   fromDate: r.fromDate,
@@ -353,7 +354,7 @@ const shapeSwap = (r, nameMap) => ({
 /**
  * Paginated shift-swap requests, tenant-scoped, filterable by status.
  */
-export const listShiftSwaps = async (query = {}, tenantId, { employeeIds = null } = {}) => {
+export const listShiftSwaps = async (query = {}, tenantId, { employeeIds = null, actingEmployeeId = null } = {}) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const status = query.status ? String(query.status).toUpperCase() : null;
   if (status && !SWAP_STATUSES.includes(status)) {
@@ -378,7 +379,7 @@ export const listShiftSwaps = async (query = {}, tenantId, { employeeIds = null 
   ]);
 
   const nameMap = await buildNameMap(rows, tenantId);
-  const items = rows.map((r) => shapeSwap(r, nameMap));
+  const items = rows.map((r) => shapeSwap(r, nameMap, actingEmployeeId));
 
   return buildListPayload({ ...list, sort, total, filters: { status }, items });
 };
@@ -415,13 +416,22 @@ async function planSwapFor(tx, tenantId, swap) {
  * (onBehalf) may name someone else. Nothing changes on the roster until the route's final approval.
  */
 export const createShiftSwap = async (
-  { requesterId, targetId, fromDate, toDate, reason } = {},
+  { requesterId, targetId, targetCode, fromDate, toDate, reason } = {},
   tenantId,
   { onBehalf = false, today = todayInZone() } = {}
 ) => {
   const reqId = toId(requesterId);
   if (reqId == null) throw badRequest("requesterId is required");
-  const tgtId = toId(targetId);
+  let tgtId = toId(targetId);
+  // An employee has no directory access, so a colleague is named by employee code and resolved here, in their company.
+  if (tgtId == null && targetCode) {
+    const colleague = await prisma.employee.findFirst({
+      where: { tenant_id: tenantId, employee_code: String(targetCode).trim(), status: "Active" },
+      select: { id: true },
+    });
+    if (!colleague) throw badRequest("No active employee with that code in this company");
+    tgtId = colleague.id;
+  }
   if (tgtId == null) throw badRequest("Choose the colleague to swap with");
   if (tgtId === reqId) throw badRequest("You cannot swap a shift with yourself");
   const from = parseDate(fromDate);
