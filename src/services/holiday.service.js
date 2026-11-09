@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
 import { dateOnly } from '../lib/attendanceDates.js';
+import { todayInZone } from '../lib/holidayDates.js';
 import { validateHolidayWindow } from '../lib/attendanceSetup.js';
 
 
@@ -189,7 +190,7 @@ export const updateRegion = async (id, updatedById, data) => {
     }
   });
 await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(updatedById),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Holiday Region",
     result: "SUCCESS",
@@ -410,7 +411,7 @@ export const updateHolidayCalendar = async (id, data, updatedById) => {
   });
 
 await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(updatedById),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Holiday Calender",
     result: "SUCCESS",
@@ -585,10 +586,8 @@ export const createHoliday = async (data,createdById) => {
 
   const holidayDate = dateOnly(date);
 
-  // Validate date is not in the past
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (holidayDate < today) {
+  // Validate date is not in the past (company day, not server day)
+  if (holidayDate < todayInZone()) {
     throw new Error('Cannot create holiday for past dates');
   }
 
@@ -670,6 +669,14 @@ export const updateHoliday = async (calendarId, date, data,updatedById) => {
   if (!existingHoliday) {
     throw new Error('Holiday not found');
   }
+  // A past holiday is history (it already decided how those days were judged); a holiday cannot be moved into it either.
+  const today = todayInZone();
+  if (existingHoliday.date < today) {
+    throw new Error('Cannot update past holidays');
+  }
+  if (data.date && dateOnly(data.date) < today) {
+    throw new Error('Cannot move a holiday into the past');
+  }
   validateHolidayWindow({...existingHoliday,...data});
   if(data.fullDay===true)data={...data,startTime:null,endTime:null};
 
@@ -722,7 +729,7 @@ export const updateHoliday = async (calendarId, date, data,updatedById) => {
   });
 
   await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(updatedById),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Holiday",
     result: "SUCCESS",
@@ -733,7 +740,7 @@ export const updateHoliday = async (calendarId, date, data,updatedById) => {
 };
 
 export const deleteHoliday = async (calendarId, date, deletedBy) => {
-  const holidayDate = new Date(date);
+  const holidayDate = dateOnly(date);
 
   const existingHoliday = await prisma.holiday.findUnique({
     where: {
@@ -748,10 +755,8 @@ export const deleteHoliday = async (calendarId, date, deletedBy) => {
     throw new Error('Holiday not found');
   }
 
-  // Check if holiday is in the past
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (holidayDate < today) {
+  // Check if holiday is in the past (company day, not server day)
+  if (holidayDate < todayInZone()) {
     throw new Error('Cannot delete past holidays');
   }
 
@@ -764,7 +769,7 @@ export const deleteHoliday = async (calendarId, date, deletedBy) => {
     }
   });
 await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(deletedBy),
     type: "Delete", // 👈 changed from CREATE to UPDATE
     module: "Holiday",
     result: "SUCCESS",
