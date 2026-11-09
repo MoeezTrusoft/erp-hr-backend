@@ -7,6 +7,32 @@ import { assertKind, parseLevels } from "../lib/approvalMatrix.js";
 import { logAction } from "../utils/logs.js";
 
 const fail = (message, status = 422) => Object.assign(new Error(message), { status });
+// X1: a route change is a control change (who may approve payroll/attendance). Publishing and retiring are
+// recorded in the structured, append-only payroll audit in the SAME transaction, so no change goes unrecorded.
+export const routeSummary = (row) =>
+  row && {
+    kind: row.kind,
+    version: row.version,
+    levels: (row.levels || []).map((l) => ({
+      name: l.name,
+      action: l.action,
+      mode: l.approverMode,
+      approverIds: l.approverIds || [],
+      required: l.required !== false,
+      paused: Boolean(l.paused),
+    })),
+  };
+const auditRoute = (tx, { tenantId, action, kind, reason, actorId, oldRow, newRow }) =>
+  tx.payrollAuditLog.create({
+    data: {
+      tenantId,
+      action,
+      details: `${kind} approval route ${action === "APPROVAL_ROUTE_PUBLISHED" ? `v${newRow.version} published` : `v${oldRow.version} retired`} by ${actorId}: ${reason}`,
+      oldValues: routeSummary(oldRow) ?? null,
+      newValues: routeSummary(newRow) ?? null,
+    },
+  });
+const isConflict = (e) => ["P2002", "P2034", "23505", "40001", "40P01"].includes(e?.code) || /unique constraint|HR-4205|deadlock detected|could not serialize/i.test(String(e?.message)); // HR-4205: the immutability trigger refusing a second publish of the same draft
 const INACTIVE = /inactive|terminated|exited|separated/i;
 const person = (e) => ({
   id: e.id,
@@ -107,13 +133,19 @@ export async function publishApprovalMatrix({ tenantId, kind, reason, actorId })
     if (!draft) throw fail("Save a draft before publishing", 409);
     const levels = parseLevels(kind, draft.levels);
     await assertApprovers(tx, tenantId, levels);
+    const prior = await tx.approvalMatrix.findFirst({ where: { tenantId, kind, status: "PUBLISHED" } });
     await tx.approvalMatrix.updateMany({ where: { tenantId, kind, status: "PUBLISHED" }, data: { status: "SUPERSEDED" } });
-    await tx.approvalMatrix.update({
+    const published = await tx.approvalMatrix.update({
       where: { id: draft.id },
       data: { status: "PUBLISHED", publishedAt: new Date(), publishedById: String(actorId), note: reason.trim() },
     });
+    await auditRoute(tx, { tenantId, action: "APPROVAL_ROUTE_PUBLISHED", kind, reason: reason.trim(), actorId, oldRow: prior, newRow: published });
     return draft.version;
-  }, { tenantId });
+  }, { tenantId }).catch((e) => {
+    // Two admins publishing at once: the database allows one PUBLISHED route; the loser gets a clean conflict, not a 500.
+    if (isConflict(e)) throw fail("Another publish just happened for this route. Reload and try again", 409);
+    throw e;
+  });
   await logAction({ type: "UPDATE", module: "ApprovalMatrix", result: "SUCCESS", tenantId, notes: `${kind} approval matrix v${version} published by ${actorId}: ${reason.trim()}` }).catch(() => {});
   return getApprovalMatrix({ tenantId, kind });
 }
@@ -123,8 +155,10 @@ export async function retireApprovalMatrix({ tenantId, kind, reason, actorId }) 
   assertKind(kind);
   if (!reason?.trim()) throw fail("A reason is required");
   await tenantTransaction(prisma, async (tx) => {
+    const prior = await tx.approvalMatrix.findFirst({ where: { tenantId, kind, status: "PUBLISHED" } });
     const done = await tx.approvalMatrix.updateMany({ where: { tenantId, kind, status: "PUBLISHED" }, data: { status: "SUPERSEDED" } });
-    if (!done.count) throw fail("No approval matrix is published", 409);
+    if (!done.count || !prior) throw fail("No approval matrix is published", 409);
+    await auditRoute(tx, { tenantId, action: "APPROVAL_ROUTE_RETIRED", kind, reason: reason.trim(), actorId, oldRow: prior, newRow: null });
   }, { tenantId });
   await logAction({ type: "UPDATE", module: "ApprovalMatrix", result: "SUCCESS", tenantId, notes: `${kind} approval matrix retired by ${actorId}: ${reason.trim()}` }).catch(() => {});
   return getApprovalMatrix({ tenantId, kind });
