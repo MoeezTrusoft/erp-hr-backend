@@ -101,6 +101,7 @@ try {
   await db.query(correction.slice(correction.indexOf('CREATE UNIQUE INDEX attendance_correction_active')));
   const finance=await readFile('prisma/migrations/20261017020000_payroll_finance_summary/migration.sql','utf8');
   await db.query(finance.slice(finance.indexOf('-- PAYROLL_FINANCE_SECURITY')));
+  await db.query(await readFile('prisma/migrations/20261109120000_audit_tables_append_only/migration.sql','utf8'));
   await db.query(
     "DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='assessment_test_user') THEN CREATE ROLE assessment_test_user LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE; END IF; END $$; ALTER ROLE assessment_test_user PASSWORD 'assessment-local-test'; GRANT USAGE ON SCHEMA public TO assessment_test_user; GRANT ALL ON ALL TABLES IN SCHEMA public TO assessment_test_user; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO assessment_test_user;",
   );

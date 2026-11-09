@@ -67,7 +67,6 @@ export const createTestDeductionType = async (deductionTypeData = {}) => {
 
 export const cleanupTestData = async () => {
     try {
-        await prisma.payrollAuditLog.deleteMany({});
         await prisma.payrollPayslip.deleteMany({});
         await prisma.payrollRun.deleteMany({});
         await prisma.payrollAssignment.deleteMany({});

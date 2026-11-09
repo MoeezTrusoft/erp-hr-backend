@@ -6,6 +6,7 @@ import { uploadFileToDAM } from "./dam.media.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
 import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { auditTermsCreated } from "../lib/termsAudit.js";
 import { offerSentEvent } from "./hrEvents.js";
 
 // C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args / trailing
@@ -150,6 +151,7 @@ export const respondOffer = async (id, accepted, tenantId, employeeCategory) => 
                     effectiveFrom: offer.startDate || new Date(),
                 },
             });
+            await auditTermsCreated(tx, { tenantId, created: employmentTerm, salary: salaryStr });
 
             // 3) Resolve or create BASE_SALARY earning type
             let earningType = await tx.payrollEarningType.findFirst({
