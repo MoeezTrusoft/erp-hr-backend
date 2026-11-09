@@ -1,3 +1,4 @@
+import { listPendingRosterChanges } from "../../services/rosterChangeRequest.service.js";
 import { z } from "zod";
 import {
   mcpApproveTimesheet,
@@ -40,7 +41,6 @@ import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
-import { emitWorkScheduleChanged } from "../../services/hrConfigEvents.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 // Build the `user` handed to an owner-gated write (time-entry update/delete).
@@ -493,14 +493,7 @@ export function registerAttendanceTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateWorkSchedule(user, args);
-      if (!args.dryRun) {
-        await emitWorkScheduleChanged({
-          tenantId: user.tenantId,
-          actorId: user.userId,
-          scheduleId: data?.id,
-          action: "created",
-        });
-      }
+      // A roster change is an approval request now; the changed event fires when it is finally approved.
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -524,32 +517,30 @@ export function registerAttendanceTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateWorkSchedule(user, id, rest);
-      if (!rest.dryRun) {
-        await emitWorkScheduleChanged({
-          tenantId: user.tenantId,
-          actorId: user.userId,
-          scheduleId: id,
-          action: "updated",
-        });
-      }
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_work_schedule_pending_list",
+    "List roster changes still waiting for approval (optionally for one employee)",
+    { employeeId: z.string().optional() },
+    withToolError(async ({ employeeId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await listPendingRosterChanges({ tenantId: user.tenantId, employeeId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_work_schedule_delete",
-    "Delete a work schedule",
-    { id: z.string().min(1) },
-    withToolError(async ({ id }) => {
+    "Request removal of a future work schedule version (goes to the attendance approval route)",
+    { id: z.string().min(1), reason: z.string().min(3).describe("Why; shown to the approvers") },
+    withToolError(async ({ id, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
-      const data = await mcpDeleteWorkSchedule(user, id);
-      await emitWorkScheduleChanged({
-        tenantId: user.tenantId,
-        actorId: user.userId,
-        scheduleId: id,
-        action: "deleted",
-      });
+      const data = await mcpDeleteWorkSchedule(user, id, reason);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

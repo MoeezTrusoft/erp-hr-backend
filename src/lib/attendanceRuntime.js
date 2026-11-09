@@ -13,6 +13,11 @@ const liveRostersEnabled = (override) =>
     ? override
     : process.env.ATTENDANCE_LIVE_ROSTERS !== 'false';
 
+// Holidays are read live, like rosters: a holiday added, changed or removed by an approved HOLIDAY_CHANGE (and an
+// employee's approved exemption) applies to past, present and future days without a new setup release.
+// Set ATTENDANCE_LIVE_HOLIDAYS=false to restore snapshot-only holidays without a redeploy.
+const liveHolidaysEnabled = () => process.env.ATTENDANCE_LIVE_HOLIDAYS !== 'false';
+
 export async function loadAttendanceRuntime({
   tenantId,
   from,
@@ -24,7 +29,7 @@ export async function loadAttendanceRuntime({
   if (!tenantId) throw badSetup('Tenant is required', 403);
   const first = dateOnly(from),
     last = dateOnly(to);
-  const [releases, assignments, leaves, requests, callIns, liveRosterRows] = await Promise.all([
+  const [releases, assignments, leaves, requests, callIns, liveRosterRows, liveCalendars, liveHolidays, exemptions] = await Promise.all([
     db.attendanceSetupRelease.findMany({
       where: { tenantId, effectiveFrom: { lte: last } },
       orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
@@ -68,7 +73,18 @@ export async function loadAttendanceRuntime({
           },
         })
       : Promise.resolve([]),
+    liveHolidaysEnabled() && db.holidayCalendar
+      ? db.holidayCalendar.findMany({ where: { tenantId } })
+      : Promise.resolve(null),
+    liveHolidaysEnabled() && db.holiday
+      ? db.holiday.findMany({ where: { tenantId, date: { gte: first, lte: last } } })
+      : Promise.resolve(null),
+    liveHolidaysEnabled() && db.holidayExemption
+      ? db.holidayExemption.findMany({ where: { tenantId } })
+      : Promise.resolve([]),
   ]);
+  const liveCalendarIds = new Set((liveCalendars || []).map((c) => c.id));
+  const exemptKeys = new Set((exemptions || []).map((e) => `${e.employeeId}:${e.holidayId}`));
   const liveRostersByEmployee = new Map();
   for (const row of liveRosterRows || []) {
     if (!liveRostersByEmployee.has(row.employeeId))
@@ -154,6 +170,22 @@ export async function loadAttendanceRuntime({
           calendarAssignments: config.calendarAssignments.filter(
             (r) => r.employeeId === employeeId,
           ),
+          // Live holidays are authoritative for every calendar that still exists; a calendar deleted after the
+          // release keeps its snapshot holidays so history still evaluates. The employee's own exemptions remove a
+          // holiday for them only.
+          ...(liveHolidays && liveCalendars
+            ? {
+                calendars: [
+                  ...config.calendars.filter((c) => !liveCalendarIds.has(c.id)),
+                  ...liveCalendars,
+                ],
+                holidays: [
+                  ...config.holidays.filter((h) => !liveCalendarIds.has(h.holidayCalendarId)),
+                  ...liveHolidays,
+                ].filter((h) => !exemptKeys.has(`${employeeId}:${h.id}`)),
+                holidaySource: 'live',
+              }
+            : {}),
         });
       }
       const employeeConfig = configByEmployee.get(cacheKey);

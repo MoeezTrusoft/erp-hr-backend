@@ -1,5 +1,8 @@
 import { beforeEach, describe, it, expect, jest } from '@jest/globals';
 
+// These tests exercise roster overlay against the snapshot's calendars; live holidays are covered by
+// tests/attendance/holiday-change.postgres.test.mjs.
+process.env.ATTENDANCE_LIVE_HOLIDAYS = 'false';
 const models = [
   'attendanceSetupDraft',
   'attendanceSetupRelease',

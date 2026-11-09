@@ -18,8 +18,10 @@ const { registry, requireApproval } =
 const { actApproval, listApprovals, readApproval } =
   await import("../../src/services/approval/service.js");
 const { HR_APPROVAL_KINDS } = await import("@trusoft/contracts/hr-approval");
-// Shift swaps follow the published ATTENDANCE route (no fixed-stage fallback): tests/attendance/shift-swap.postgres.test.mjs.
-const FIXED_STAGE_KINDS = [...HR_APPROVAL_KINDS].filter((k) => k !== "SHIFT_SWAP");
+// These kinds follow the published ATTENDANCE route (no fixed-stage fallback) and are covered by
+// tests/attendance/{shift-swap,roster-change,holiday-change}.postgres.test.mjs.
+const ROUTED_KINDS = ["SHIFT_SWAP", "ROSTER_CHANGE", "HOLIDAY_CHANGE", "HOLIDAY_EXEMPTION"];
+const FIXED_STAGE_KINDS = [...HR_APPROVAL_KINDS].filter((k) => !ROUTED_KINDS.includes(k));
 const { isStagePaused } = await import("../../src/lib/approvalStagePolicy.js");
 test(
   "all HR request approval stages through non-owner PostgreSQL, including returns and final effects",

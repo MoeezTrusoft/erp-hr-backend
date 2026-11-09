@@ -130,11 +130,8 @@ export const getHolidaysByCalendar = async (req, res) => {
 export const createHoliday = async (req, res) => {
   try {
     const employeeId = req.headers['employee-id'];
-    const holiday = await holidayService.createHoliday({
-      ...req.body,
-      createdById: employeeId
-    });
-    res.status(201).json({ success: true, data: holiday });
+    const holiday = await holidayService.createHoliday(req.body, employeeId);
+    res.status(202).json({ success: true, data: holiday });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -149,7 +146,7 @@ export const updateHoliday = async (req, res) => {
       req.body,
       updatedById
     );
-    res.json({ success: true, data: holiday });
+    res.status(202).json({ success: true, data: holiday });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -158,8 +155,8 @@ export const updateHoliday = async (req, res) => {
 export const deleteHoliday = async (req, res) => {
   try {
     const deletedBy = req.headers['employee-id'];
-    await holidayService.deleteHoliday(parseInt(req.params.calendarId), req.params.date,deletedBy);
-    res.json({ success: true, message: 'Holiday deleted successfully' });
+    const result = await holidayService.deleteHoliday(parseInt(req.params.calendarId), req.params.date, deletedBy, req.body?.reason ?? req.query?.reason);
+    res.status(202).json({ success: true, data: result, message: result.message });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }

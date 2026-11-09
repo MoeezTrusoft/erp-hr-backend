@@ -1,6 +1,8 @@
 import prisma from '../lib/prisma.js';
 import { tenantTransaction } from '../lib/rlsTenant.js';
 import { writeRoster } from './workScheduleService.js';
+import { requestHolidayChange } from './holidayChangeRequest.service.js';
+import { requestRosterChange } from './rosterChangeRequest.service.js';
 import {
   badSetup,
   covers,
@@ -25,6 +27,7 @@ export async function bulkAssignRosters({
   employeeIds,
   data,
   dryRun = true,
+  actorId,
 }) {
   const ids = [...new Set(employeeIds)];
   const results = [];
@@ -32,10 +35,13 @@ export async function bulkAssignRosters({
   // successful assignments; the response makes every outcome explicit.
   for (const employeeId of ids) {
     try {
+      // A preview is immediate; saving files one roster change per employee for approval.
       results.push({
         employeeId,
         success: true,
-        result: await writeRoster({ tenantId, employeeId, data, dryRun }),
+        result: dryRun
+          ? await writeRoster({ tenantId, employeeId, data, dryRun })
+          : await requestRosterChange({ tenantId, requestedById: actorId, action: 'CREATE', employeeId, data }),
       });
     } catch (e) {
       results.push({ employeeId, success: false, error: e.message });
@@ -210,18 +216,15 @@ export async function importSetupHolidays({
         throw badSetup(
           'A linked employee identity is required to import holidays',
         );
-      await tx.holiday.createMany({
-        data: rows.map((h) => ({
-          ...h,
-          date: dateOnly(h.date),
-          tenantId,
-          holidayCalendarId: calendarId,
-          createdById: actorId,
-        })),
-      });
-      return { created: rows.length };
+      return { rows };
     },
     { tenantId, txOptions: { isolationLevel: 'Serializable' } },
+  ).then((checked) =>
+    dryRun
+      ? checked
+      : // The import is one approval request; the holidays are written when the route finally approves it.
+        requestHolidayChange({ tenantId, requestedById: actorId, action: 'CREATE', holidayCalendarId: calendarId,
+          holidays: checked.rows, reason: 'Holiday import' }),
   );
 }
 

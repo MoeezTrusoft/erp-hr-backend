@@ -161,6 +161,27 @@ const definitions = {
     ["PENDING"],
     ["targetId", "fromDate", "toDate", "shiftType", "reason"],
   ],
+  ROSTER_CHANGE: [
+    "rosterChangeRequest",
+    "roster_change_requests",
+    "employeeId",
+    ["PENDING"],
+    ["employeeId", "action", "scheduleId", "payload", "reason"],
+  ],
+  HOLIDAY_CHANGE: [
+    "holidayChangeRequest",
+    "holiday_change_requests",
+    "requestedById",
+    ["PENDING"],
+    ["action", "holidayId", "holidayCalendarId", "payload", "reason"],
+  ],
+  HOLIDAY_EXEMPTION: [
+    "holidayExemptionRequest",
+    "holiday_exemption_requests",
+    "requestedById",
+    ["PENDING"],
+    ["mode", "holidayId", "employeeIds", "summary", "reason"],
+  ],
   GOAL: [
     "goal",
     "Goal",
@@ -291,6 +312,9 @@ export const registry = Object.fromEntries(
         fields,
         numeric: ![
           "ATTENDANCE_CORRECTION",
+          "ROSTER_CHANGE",
+          "HOLIDAY_CHANGE",
+          "HOLIDAY_EXEMPTION",
           "TIME_CREDIT",
           "TIME_CREDIT_REVOCATION",
           "ASSESSMENT_RELEASE",
@@ -728,7 +752,16 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
     const { finalizeShiftSwap } = await import("../shiftTemplateSwap.service.js");
     await finalizeShiftSwap(tx, env, row, approved);
   }
-  else if (kind === "GOAL")
+  else if (kind === "ROSTER_CHANGE") {
+    const { finalizeRosterChange } = await import("../rosterChangeRequest.service.js");
+    await finalizeRosterChange(tx, env, row, approved);
+  } else if (kind === "HOLIDAY_CHANGE") {
+    const { finalizeHolidayChange } = await import("../holidayChangeRequest.service.js");
+    await finalizeHolidayChange(tx, env, row, approved);
+  } else if (kind === "HOLIDAY_EXEMPTION") {
+    const { finalizeHolidayExemption } = await import("../holidayChangeRequest.service.js");
+    await finalizeHolidayExemption(tx, env, row, approved);
+  } else if (kind === "GOAL")
     await tx.goal.update({
       where: { id: row.id },
       data: { status, approvedById: env.who.id },

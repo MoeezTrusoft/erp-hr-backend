@@ -66,7 +66,7 @@ describe('workScheduleController — verified tenant threading', () => {
       resMock(),
     );
 
-    expect(service.deleteWorkSchedule).toHaveBeenCalledWith('1', 7, 'tenant-A');
+    expect(service.deleteWorkSchedule).toHaveBeenCalledWith('1', 7, 'tenant-A', undefined);
   });
 
   it('create: verified tenant wins over a spoofed body tenantId', async () => {

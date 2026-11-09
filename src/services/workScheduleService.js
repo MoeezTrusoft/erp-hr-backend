@@ -4,6 +4,7 @@ import { tenantTransaction } from '../lib/rlsTenant.js';
 import { assertSchedulePattern } from '../lib/schedulePattern.js';
 import { bindRosterShifts, validateEmployeeShiftSequence, syncCurrentShiftSupervisors, previewShiftSupervisor } from './shiftGovernance.service.js';
 import { civilNow } from '../lib/attendanceClock.js';
+import { requestRosterChange } from './rosterChangeRequest.service.js';
 import {
   addDays,
   badSetup,
@@ -132,11 +133,11 @@ export async function writeRoster({
   data,
   action = 'create',
   dryRun = false,
+  tx: outer = null,
 }) {
   scope(tenantId);
-  return tenantTransaction(
-    prisma,
-    async (tx) => {
+  // `tx` lets the approval engine apply an approved roster change inside its own transaction.
+  const run = async (tx) => {
       const previous = id
         ? await tx.workSchedule.findFirst({
             where: { id: Number(id), tenantId },
@@ -284,17 +285,26 @@ export async function writeRoster({
       }
       await syncCurrentShiftSupervisors(tx,tenantId,today,{employeeIds:[eid]});
       return reevaluation ? { ...saved, reevaluation } : saved;
-    },
-    { tenantId, txOptions: { isolationLevel: 'Serializable' } },
-  );
+  };
+  return outer
+    ? run(outer)
+    : tenantTransaction(prisma, run, { tenantId, txOptions: { isolationLevel: 'Serializable' } });
 }
 
+// A roster is changed only through an approval request (ROSTER_CHANGE): HR files it, the company's attendance route
+// approves it, and the change is written and re-evaluated on the final approval. Previews (dryRun) stay immediate.
+const viaApproval = (tenantId, requestedById, action, employeeId, scheduleId, data) =>
+  requestRosterChange({ tenantId, requestedById, action, employeeId, scheduleId, data });
 export const createWorkSchedule = (data) =>
-  writeRoster({ tenantId: data.tenantId, employeeId: data.employeeId, data, dryRun: data.dryRun === true });
+  data.dryRun === true
+    ? writeRoster({ tenantId: data.tenantId, employeeId: data.employeeId, data, dryRun: true })
+    : viaApproval(data.tenantId, data.requestedById, 'CREATE', data.employeeId, null, data);
 export const updateWorkSchedule = (id, data, updatedBy, tenantId) =>
-  writeRoster({ tenantId, id, data, action: 'update', dryRun: data.dryRun === true });
-export const deleteWorkSchedule = (id, deletedBy, tenantId) =>
-  writeRoster({ tenantId, id, data: {}, action: 'delete' });
+  data.dryRun === true
+    ? writeRoster({ tenantId, id, data, action: 'update', dryRun: true })
+    : viaApproval(tenantId, updatedBy, 'UPDATE', null, id, data);
+export const deleteWorkSchedule = (id, deletedBy, tenantId, reason) =>
+  viaApproval(tenantId, deletedBy, 'DELETE', null, id, { changeReason: reason });
 
 export async function getRosterCoverage({
   tenantId,

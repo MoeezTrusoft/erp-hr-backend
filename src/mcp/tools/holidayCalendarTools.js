@@ -5,9 +5,9 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { requestHolidayExemption, listHolidayExemptions, listPendingHolidayRequests } from "../../services/holidayChangeRequest.service.js";
 import {
   emitHolidayCalendarChanged,
-  emitHolidayChanged,
 } from "../../services/hrConfigEvents.js";
 import {
   getHolidayCalendars,
@@ -148,7 +148,7 @@ export function registerHolidayCalendarTools(server) {
 
   server.tool(
     "hr_holiday_create",
-    "Create a holiday in a calendar (future dates only — parity with REST rule)",
+    "Request a holiday in a calendar (any date); it goes to the attendance approval route and takes effect on the final approval",
     {
       holidayCalendarId: z.union([z.number(), z.string()]).describe("Holiday calendar ID"),
       name: z.string().min(1).describe("Holiday name, e.g. Independence Day"),
@@ -157,25 +157,20 @@ export function registerHolidayCalendarTools(server) {
       fullDay: z.boolean().optional().describe("Full-day holiday (default true)"),
       startTime: z.string().nullable().optional().describe('Partial holiday start HH:MM'),
       endTime: z.string().nullable().optional().describe('Partial holiday end HH:MM'),
+      reason: z.string().min(3).describe("Why this day is a holiday; shown to the approvers"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:holiday", user.isAdmin);
-      const data = await createHoliday(args, user.employeeId || user.userId);
-      await emitHolidayChanged({
-        tenantId: user.tenantId,
-        actorId: user.userId,
-        calendarId: args.holidayCalendarId,
-        date: args.date,
-        action: "created",
-      });
+      // Filed for approval; the calendar changes (and the changed event fires) on the final approval.
+      const data = await createHoliday(args, user.employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_create")
   );
 
   server.tool(
     "hr_holiday_update",
-    "Update a holiday identified by calendar + date",
+    "Request a change to a holiday identified by calendar + date (goes to the attendance approval route)",
     {
       calendarId: z.union([z.number(), z.string()]).describe("Holiday calendar ID"),
       date: z.string().describe("ISO 8601 date of the existing holiday"),
@@ -184,42 +179,73 @@ export function registerHolidayCalendarTools(server) {
       fullDay: z.boolean().optional().describe("Full-day flag"),
       startTime: z.string().nullable().optional().describe('Partial holiday start HH:MM'),
       endTime: z.string().nullable().optional().describe('Partial holiday end HH:MM'),
+      reason: z.string().min(3).describe("Why the holiday is changed; shown to the approvers"),
     },
     withToolError(async ({ calendarId, date, ...data }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:holiday", user.isAdmin);
-      const result = await updateHoliday(calendarId, date, data, user.employeeId || user.userId);
-      await emitHolidayChanged({
-        tenantId: user.tenantId,
-        actorId: user.userId,
-        calendarId,
-        date,
-        action: "updated",
-      });
+      const result = await updateHoliday(calendarId, date, data, user.employeeId);
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }, "hr_holiday_update")
   );
 
   server.tool(
     "hr_holiday_delete",
-    "Delete a holiday identified by calendar + date",
+    "Request removal of a holiday identified by calendar + date (goes to the attendance approval route)",
     {
       calendarId: z.union([z.number(), z.string()]).describe("Holiday calendar ID"),
       date: z.string().describe("ISO 8601 date of the holiday to remove"),
+      reason: z.string().min(3).describe("Why the holiday is removed; shown to the approvers"),
     },
-    withToolError(async ({ calendarId, date }) => {
+    withToolError(async ({ calendarId, date, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:holiday", user.isAdmin);
-      const data = await deleteHoliday(calendarId, date, user.employeeId || user.userId);
-      await emitHolidayChanged({
-        tenantId: user.tenantId,
-        actorId: user.userId,
-        calendarId,
-        date,
-        action: "deleted",
-      });
+      const data = await deleteHoliday(calendarId, date, user.employeeId, reason);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_holiday_delete")
+  );
+
+  // ── Holiday exemptions (specific HR only; the approval route still decides) ──
+
+  server.tool(
+    "hr_holiday_exemption_request",
+    "Request that employees are exempt from a holiday (they work it as a normal day), or restored to it. Only HR users holding the exemption grant may file; the attendance approval route decides and their days are re-evaluated on the final approval",
+    {
+      holidayId: z.union([z.number(), z.string()]).describe("Holiday id"),
+      employeeIds: z.array(z.union([z.number(), z.string()])).min(1).max(500).describe("Employees to exempt (or restore)"),
+      mode: z.enum(["EXEMPT", "RESTORE"]).optional().describe("EXEMPT (default) or RESTORE"),
+      reason: z.string().min(3).describe("Why; shown to the approvers"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:holiday_exempt", user.isAdmin);
+      const data = await requestHolidayExemption({ tenantId: user.tenantId, requestedById: user.employeeId, ...args });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_holiday_exemption_request")
+  );
+
+  server.tool(
+    "hr_holiday_pending_list",
+    "List holiday changes and exemptions still waiting for approval",
+    { holidayCalendarId: z.union([z.number(), z.string()]).optional().describe("Limit holiday changes to one calendar") },
+    withToolError(async ({ holidayCalendarId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:holiday", user.isAdmin);
+      const data = await listPendingHolidayRequests({ tenantId: user.tenantId, holidayCalendarId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_holiday_pending_list")
+  );
+
+  server.tool(
+    "hr_holiday_exemption_list",
+    "List the employees exempt from one holiday",
+    { holidayId: z.union([z.number(), z.string()]).describe("Holiday id") },
+    withToolError(async ({ holidayId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:holiday", user.isAdmin);
+      const data = await listHolidayExemptions({ tenantId: user.tenantId, holidayId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_holiday_exemption_list")
   );
 
   server.tool(

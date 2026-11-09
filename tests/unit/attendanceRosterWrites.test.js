@@ -54,8 +54,16 @@ jest.unstable_mockModule(
   '../../src/services/attendanceFinalization.service.js',
   () => ({ enqueueEvaluationRange }),
 );
-const { createWorkSchedule, updateWorkSchedule, deleteWorkSchedule } =
-  await import('../../src/services/workScheduleService.js');
+// The write semantics under test are the roster writer's; the public create/update/delete now file an approval
+// request (tests/attendance/roster-change.postgres.test.mjs), so these tests drive the writer directly.
+const direct = (m) => ({
+  createWorkSchedule: (d) => m.writeRoster({ tenantId: d.tenantId, employeeId: d.employeeId, data: d, dryRun: d.dryRun === true }),
+  updateWorkSchedule: (id, d, _by, tenantId) => m.writeRoster({ tenantId, id, data: d, action: 'update', dryRun: d.dryRun === true }),
+  deleteWorkSchedule: (id, _by, tenantId) => m.writeRoster({ tenantId, id, data: {}, action: 'delete' }),
+});
+const { createWorkSchedule, updateWorkSchedule, deleteWorkSchedule } = direct(
+  await import('../../src/services/workScheduleService.js'),
+);
 const tenantId = 'tenant-a',
   pattern = { shift: { from: '09:00', to: '17:00' }, offDays: [7] };
 beforeEach(() => {
