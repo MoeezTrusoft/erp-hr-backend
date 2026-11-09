@@ -57,6 +57,13 @@ describe("approval route tools", () => {
     expect(service.retireApprovalMatrix).not.toHaveBeenCalled();
   });
 
+  it("Management can read the route they approve, but only read: Employee and others still cannot", async () => {
+    expect((await call("hr_approval_route_get", { kind: "PAYROLL" }, { permissions: MANAGEMENT })).isError).toBeUndefined();
+    expect((await call("hr_approval_route_get", { kind: "PAYROLL" }, { permissions: EMPLOYEE })).isError).toBe(true);
+    expect((await call("hr_approval_route_get", { kind: "PAYROLL" }, { permissions: ["hr.setup.prepare", "hr.setup.read"] })).isError).toBe(true);
+    expect((await call("hr_approval_route_discard_draft", { kind: "PAYROLL" }, { permissions: MANAGEMENT })).isError).toBe(true);
+  });
+
   it("Management can publish and withdraw, but cannot draft (no payroll write)", async () => {
     expect((await call("hr_approval_route_publish", { kind: "PAYROLL", reason: "x" }, { permissions: MANAGEMENT })).isError).toBeUndefined();
     expect((await call("hr_approval_route_retire", { kind: "PAYROLL", reason: "x" }, { permissions: MANAGEMENT })).isError).toBeUndefined();
