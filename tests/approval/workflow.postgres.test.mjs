@@ -18,6 +18,8 @@ const { registry, requireApproval } =
 const { actApproval, listApprovals, readApproval } =
   await import("../../src/services/approval/service.js");
 const { HR_APPROVAL_KINDS } = await import("@trusoft/contracts/hr-approval");
+// Shift swaps follow the published ATTENDANCE route (no fixed-stage fallback): tests/attendance/shift-swap.postgres.test.mjs.
+const FIXED_STAGE_KINDS = [...HR_APPROVAL_KINDS].filter((k) => k !== "SHIFT_SWAP");
 const { isStagePaused } = await import("../../src/lib/approvalStagePolicy.js");
 test(
   "all HR request approval stages through non-owner PostgreSQL, including returns and final effects",
@@ -28,7 +30,7 @@ test(
       Object.keys(registry).sort(),
       [...HR_APPROVAL_KINDS].sort(),
     );
-    for (const kind of HR_APPROVAL_KINDS)
+    for (const kind of FIXED_STAGE_KINDS)
       await t.test(
         kind +
           " complete approval, Management return to HR, HR resolution, and audit",
@@ -142,7 +144,7 @@ test(
           );
         },
       );
-    for (const kind of HR_APPROVAL_KINDS)
+    for (const kind of FIXED_STAGE_KINDS)
       await t.test(
         kind + " manager/HR returns restart review; Management rejects after HR verifies",
         async () => {
@@ -187,7 +189,7 @@ test(
       async () => {
         const { legacyWithdraw } =
           await import("../../src/services/approval/legacy.js");
-        for (const kind of ["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP"])
+        for (const kind of ["LEAVE", "OVERTIME", "CLAIM"])
           for (const stage of [
             "LINE_MANAGER",
             "HR",

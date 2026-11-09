@@ -724,11 +724,10 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
       where: { id: row.id },
       data: { status, approved_at: approved ? env.now : null },
     });
-  } else if (kind === "SHIFT_SWAP")
-    await tx.shiftSwapRequest.update({
-      where: { id: row.id },
-      data: { status, approverId: env.who.id, decidedAt: env.now },
-    });
+  } else if (kind === "SHIFT_SWAP") {
+    const { finalizeShiftSwap } = await import("../shiftTemplateSwap.service.js");
+    await finalizeShiftSwap(tx, env, row, approved);
+  }
   else if (kind === "GOAL")
     await tx.goal.update({
       where: { id: row.id },
