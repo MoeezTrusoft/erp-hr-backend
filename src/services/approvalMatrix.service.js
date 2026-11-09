@@ -135,10 +135,14 @@ export async function publishApprovalMatrix({ tenantId, kind, reason, actorId })
     await assertApprovers(tx, tenantId, levels);
     const prior = await tx.approvalMatrix.findFirst({ where: { tenantId, kind, status: "PUBLISHED" } });
     await tx.approvalMatrix.updateMany({ where: { tenantId, kind, status: "PUBLISHED" }, data: { status: "SUPERSEDED" } });
-    const published = await tx.approvalMatrix.update({
-      where: { id: draft.id },
+    // Claim the draft only while it is still a draft: a second publisher that read it before the first one committed
+    // matches nothing here and gets the conflict, instead of publishing the same draft twice with two audit rows.
+    const claimed = await tx.approvalMatrix.updateMany({
+      where: { id: draft.id, status: "DRAFT" },
       data: { status: "PUBLISHED", publishedAt: new Date(), publishedById: String(actorId), note: reason.trim() },
     });
+    if (!claimed.count) throw fail("Another publish just happened for this route. Reload and try again", 409);
+    const published = await tx.approvalMatrix.findUnique({ where: { id: draft.id } });
     await auditRoute(tx, { tenantId, action: "APPROVAL_ROUTE_PUBLISHED", kind, reason: reason.trim(), actorId, oldRow: prior, newRow: published });
     return draft.version;
   }, { tenantId }).catch((e) => {

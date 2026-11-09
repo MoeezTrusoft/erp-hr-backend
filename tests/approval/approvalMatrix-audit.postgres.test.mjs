@@ -81,18 +81,47 @@ test("publish and retire write audit rows with old and new routes; failures writ
 test("two simultaneous publishes of the same draft: one wins, the other gets a clean 409, one audit row", { timeout: 120000 }, async () => {
   await ensure();
   await call(matrix.saveApprovalMatrixDraft, { kind: "ATTENDANCE", levels: route() });
-  const results = await Promise.allSettled([
-    call(matrix.publishApprovalMatrix, { kind: "ATTENDANCE", reason: "racer A" }),
-    call(matrix.publishApprovalMatrix, { kind: "ATTENDANCE", reason: "racer B" }),
-  ]);
+  // Several racers, not two: the double-publish needs both to read the draft before either commits, which two racers
+  // only hit now and then (it passed locally and failed once in CI before the draft was claimed with a guarded update).
+  const results = await Promise.allSettled(
+    ["A", "B", "C", "D", "E"].map((who) => call(matrix.publishApprovalMatrix, { kind: "ATTENDANCE", reason: `racer ${who}` }))
+  );
   const won = results.filter((r) => r.status === "fulfilled");
   const lost = results.filter((r) => r.status === "rejected");
   assert.equal(won.length, 1, JSON.stringify(results.map((r) => r.reason?.message ?? "ok")));
-  assert.equal(lost.length, 1);
-  assert.equal(lost[0].reason.status, 409);
+  assert.equal(lost.length, 4);
+  assert.ok(lost.every((r) => r.reason.status === 409));
   const published = await db((tx) => tx.approvalMatrix.findMany({ where: { tenantId: company, kind: "ATTENDANCE", status: "PUBLISHED" } }));
   assert.equal(published.length, 1);
   assert.equal((await audits("APPROVAL_ROUTE_PUBLISHED")).filter((r) => r.newValues.kind === "ATTENDANCE").length, 1);
+});
+
+test("publishing races are forced to overlap: both read the draft before either commits, still one winner", { timeout: 120000 }, async () => {
+  await ensure();
+  // A published route exists; a held lock on it makes every publisher stop after reading the draft, so the overlap is certain.
+  await call(matrix.saveApprovalMatrixDraft, { kind: "ATTENDANCE", levels: route() });
+  await call(matrix.publishApprovalMatrix, { kind: "ATTENDANCE", reason: "first" });
+  await call(matrix.saveApprovalMatrixDraft, { kind: "ATTENDANCE", levels: route() });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let locked;
+  const lockTaken = new Promise((resolve) => { locked = resolve; });
+  const holder = db(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM approval_matrices WHERE "tenantId" = ${company} AND kind = 'ATTENDANCE' AND status = 'PUBLISHED' FOR UPDATE`;
+    locked();
+    await gate;
+  });
+  await lockTaken;
+  const racers = ["A", "B", "C"].map((who) => call(matrix.publishApprovalMatrix, { kind: "ATTENDANCE", reason: `overlap ${who}` }));
+  await new Promise((resolve) => setTimeout(resolve, 800)); // every racer has read the draft and is waiting on the lock
+  release();
+  await holder;
+  const results = await Promise.allSettled(racers);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1, JSON.stringify(results.map((r) => r.reason?.message ?? "ok")));
+  assert.ok(results.filter((r) => r.status === "rejected").every((r) => r.reason.status === 409));
+  const published = await db((tx) => tx.approvalMatrix.findMany({ where: { tenantId: company, kind: "ATTENDANCE", status: "PUBLISHED" } }));
+  assert.equal(published.length, 1);
+  assert.equal((await audits("APPROVAL_ROUTE_PUBLISHED")).filter((r) => r.newValues.kind === "ATTENDANCE" && /overlap/.test(r.details)).length, 1);
 });
 
 test("ops health flags a published level nobody active can act on; ignores paused and manager-routed levels", { timeout: 120000 }, async () => {
