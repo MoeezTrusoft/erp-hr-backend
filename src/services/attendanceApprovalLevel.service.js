@@ -17,7 +17,7 @@ import { toIdentity } from "../lib/personIdentity.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
-import { auditSetupChange, changedKeys, pickPlain } from "../lib/setupAudit.js";
+import { auditSetupChange, changedKeys, markUnpublished, pickPlain } from "../lib/setupAudit.js";
 
 function badRequest(message) {
   return Object.assign(new Error(message), { status: 400 });
@@ -196,6 +196,7 @@ export async function deleteApprovalLevel({ tenantId, level }) {
         newValues: null,
       },
     });
+    await markUnpublished(tx, tenantId);
     logger.info({ id: existing.id, level: lvl }, "attendance approval level deleted");
     return { deleted: true, level: lvl };
   });

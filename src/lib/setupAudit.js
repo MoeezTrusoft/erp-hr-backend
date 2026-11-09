@@ -28,3 +28,14 @@ export function auditSetupChange(tx, { tenantId, action, label, before, defaults
     },
   });
 }
+
+/**
+ * A DELETE leaves no DRAFT row behind, so the screen's "unpublished changes" (derived from DRAFT rows) cannot see
+ * it, yet payroll keeps using the last published snapshot. Flag it on the config meta; publishing clears it.
+ */
+export const markUnpublished = (tx, tenantId) =>
+  tx.payrollConfigMeta.upsert({
+    where: { tenantId },
+    update: { hasUnpublished: true },
+    create: { tenantId, hasUnpublished: true },
+  });

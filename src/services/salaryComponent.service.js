@@ -16,6 +16,11 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { validateFormula } from "../lib/payrollFormula.js";
 import logger from "../lib/logger.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { auditSetupChange, changedKeys, markUnpublished, pickPlain } from "../lib/setupAudit.js";
+
+// T-P2: the fields of a component that a change can touch (what the audit row records).
+const COMPONENT_KEYS = ["code", "name", "type", "computation", "value", "formula", "taxable", "active", "sortOrder", "gradeLevelId"];
 
 const PAY_ELEMENT_TYPES = new Set(["EARNING", "DEDUCTION"]);
 const COMPUTATION_TYPES = new Set(["FIXED", "PERCENTAGE", "FORMULA"]);
@@ -127,22 +132,29 @@ export async function createSalaryComponent({
   });
   if (dup) throw badRequest(`A salary component with code "${code}" already exists`);
 
-  const created = await prisma.salaryComponent.create({
-    data: {
-      code: String(code),
-      name: String(name),
-      type,
-      computation: comp,
-      value: normValue,
-      formula: normFormula,
-      taxable: taxable == null ? true : Boolean(taxable),
-      active: active == null ? true : Boolean(active),
-      sortOrder: toIntOrNull(sortOrder) ?? 0,
-      gradeLevelId: toIntOrNull(gradeLevelId),
-      // status defaults DRAFT (DB default); version defaults 1.
-    },
-    include: { gradeLevel: { select: GRADE_SELECT } },
-  });
+  const created = await tenantTransaction(prisma, async (tx) => {
+    const row = await tx.salaryComponent.create({
+      data: {
+        code: String(code),
+        name: String(name),
+        type,
+        computation: comp,
+        value: normValue,
+        formula: normFormula,
+        taxable: taxable == null ? true : Boolean(taxable),
+        active: active == null ? true : Boolean(active),
+        sortOrder: toIntOrNull(sortOrder) ?? 0,
+        gradeLevelId: toIntOrNull(gradeLevelId),
+        // status defaults DRAFT (DB default); version defaults 1.
+      },
+      include: { gradeLevel: { select: GRADE_SELECT } },
+    });
+    await auditSetupChange(tx, {
+      tenantId, action: "SALARY_COMPONENT_CREATED", label: `Salary component ${row.code} created`,
+      before: null, after: row, keys: COMPONENT_KEYS, extraNew: { id: row.id },
+    });
+    return row;
+  }, { tenantId });
   logger.info({ id: created.id, code: created.code }, "salary component created");
   return created;
 }
@@ -204,16 +216,30 @@ export async function updateSalaryComponent({ tenantId, id, ...fields }) {
     data.formula = normFormula;
   }
 
-  // Any edit bumps version and reverts the row to DRAFT (edits are draft until
-  // re-published).
-  data.version = (existing.version ?? 1) + 1;
-  data.status = "DRAFT";
+  // An edit that changes nothing is a no-op: no version bump, no flip of a published row back to DRAFT.
+  const changed = changedKeys(existing, data);
+  if (!changed.length) {
+    return prisma.salaryComponent.findFirst({
+      where: scopedWhere(tenantId, { id: compId }),
+      include: { gradeLevel: { select: GRADE_SELECT } },
+    });
+  }
 
-  const updated = await prisma.salaryComponent.update({
-    where: { id: compId },
-    data,
-    include: { gradeLevel: { select: GRADE_SELECT } },
-  });
+  // Any real edit bumps version and reverts the row to DRAFT (edits are draft until re-published), and is audited.
+  const nextData = { ...data, version: (existing.version ?? 1) + 1, status: "DRAFT" };
+  const updated = await tenantTransaction(prisma, async (tx) => {
+    const row = await tx.salaryComponent.update({
+      where: { id: compId },
+      data: nextData,
+      include: { gradeLevel: { select: GRADE_SELECT } },
+    });
+    await auditSetupChange(tx, {
+      tenantId, action: "SALARY_COMPONENT_UPDATED", label: `Salary component ${row.code} v${row.version} saved`,
+      before: existing, after: data, keys: changed,
+      extraOld: { id: compId, version: existing.version ?? 1 }, extraNew: { id: compId, version: row.version },
+    });
+    return row;
+  }, { tenantId });
   logger.info({ id: updated.id, version: updated.version }, "salary component updated");
   return updated;
 }
@@ -224,11 +250,23 @@ export async function deleteSalaryComponent({ tenantId, id }) {
 
   const existing = await prisma.salaryComponent.findFirst({
     where: scopedWhere(tenantId, { id: compId }),
-    select: { id: true },
   });
   if (!existing) throw notFound(`Salary component ${id} not found`);
 
-  await prisma.salaryComponent.delete({ where: { id: compId } });
+  await tenantTransaction(prisma, async (tx) => {
+    await tx.salaryComponent.delete({ where: { id: compId } });
+    await tx.payrollAuditLog.create({
+      data: {
+        tenantId,
+        action: "SALARY_COMPONENT_DELETED",
+        details: `Salary component ${existing.code} deleted`,
+        oldValues: { id: compId, version: existing.version ?? 1, status: existing.status, ...pickPlain(existing, COMPONENT_KEYS) },
+        newValues: null,
+      },
+    });
+    // Payroll prices from the last published snapshot: say so on the screen until the deletion is published.
+    await markUnpublished(tx, tenantId);
+  }, { tenantId });
   logger.info({ id: compId }, "salary component deleted");
   return { success: true, id: compId };
 }

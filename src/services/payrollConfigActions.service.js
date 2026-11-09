@@ -89,6 +89,7 @@ export async function getConfigStatus({ tenantId }) {
   ]);
 
   const hasUnpublished =
+    meta?.hasUnpublished === true || // set by deletes, which leave no DRAFT row; cleared by publish
     publishedSnapshots === 0 ||
     draftComponent > 0 ||
     draftCalendar > 0 ||
