@@ -13,6 +13,9 @@ import { opsHealth } from '../../services/opsHealth.service.js';
 //
 // HR-ATT-POLICY-01.
 import { listLongAbsences } from '../../services/longAbsence.service.js';
+import { getMonthCloseOverview } from '../../services/monthClose.service.js';
+import { resolveActingEmployeeId } from '../../lib/actingEmployee.js';
+import prisma from '../../lib/prisma.js';
 import { markAnomalyDeduction, returnAnomalyRequest, resubmitAnomalyRequest, anomalyAttachmentUrl } from '../../services/anomalyManagement.service.js';
 import { anomalyAttachmentsSchema } from './anomalyAttachmentSchema.js';
 import { z } from "zod";
@@ -76,15 +79,28 @@ function actingEmployeeId(user) {
   return id;
 }
 
+const hasAttendanceAdmin = (permissions, user) =>
+  user?.isAdmin === true || ['EDIT', 'EXPORT', 'CREATE', 'DELETE'].some((a) => hasPermission(permissions, 'hr:attendance', a));
+
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 
 export function registerAttendanceAnomalyTools(server) {
-  // F-05 — HR operations: employees on a long ABSENT streak (EDIT, not VIEW: it lists other employees' absences).
-  server.tool('hr_attendance_long_absence_list','List active employees with a long run of consecutive ABSENT days (weekly offs and holidays do not break the run), so HR can raise a leave or separation case before payroll prices the days',{minDays:z.coerce.number().int().min(1).max(31).optional().describe('Shortest streak to list (default 5)'),asOf:z.string().optional().describe('YYYY-MM-DD, default today')},withToolError(async({minDays,asOf})=>{
+  // F-05 — employees on a long ABSENT streak. HR and Management (attendance write grant) see everyone; a line manager sees
+  // only their direct reports; anyone else is refused.
+  server.tool('hr_attendance_long_absence_list','List active employees with a long run of consecutive ABSENT days (weekly offs and holidays do not break the run), so HR can raise a leave or separation case before payroll prices the days. HR and Management see everyone, a line manager sees their own team.',{minDays:z.coerce.number().int().min(1).max(31).optional().describe('Shortest streak to list (default 5)'),asOf:z.string().optional().describe('YYYY-MM-DD, default today')},withToolError(async({minDays,asOf})=>{
+    const {user,permissions}=getCtx();
+    const asOfDate=asOf?{asOf:new Date(`${asOf}T00:00:00Z`)}:{};
+    if(hasAttendanceAdmin(permissions,user)) return ok(await listLongAbsences({tenantId:user.tenantId,minDays,...asOfDate}));
+    if(!hasPermission(permissions,'hr:approvals:manager','VIEW')) throw Object.assign(new Error('Insufficient permissions: only HR, Management and line managers can see long absences'),{status:403,statusCode:403,code:'HR-4030'});
+    const manager=await resolveActingEmployeeId({user,tenantId:user.tenantId});
+    const team=await prisma.employee.findMany({where:{tenant_id:user.tenantId,managerId:Number(manager)},select:{id:true}});
+    return ok(await listLongAbsences({tenantId:user.tenantId,minDays,employeeIds:team.map(t=>t.id),...asOfDate}));
+  }));
+  // Month close: one read of what blocks or warns before a month goes to payroll (HR and Management only).
+  server.tool('hr_month_close_overview','Month-close checklist for one month: submitted or not, each gate with a plain reason, whether it can be submitted or reopened, and the long-absence list.',{month:z.string().regex(/^\d{4}-\d{2}$/).describe('Month as YYYY-MM'),minDays:z.coerce.number().int().min(1).max(31).optional()},withToolError(async({month,minDays})=>{
     const {user,permissions}=getCtx();
     assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
-    const data=await listLongAbsences({tenantId:user.tenantId,minDays,...(asOf?{asOf:new Date(`${asOf}T00:00:00Z`)}:{})});
-    return {content:[{type:'text',text:JSON.stringify(data)}]};
+    return ok(await getMonthCloseOverview({tenantId:user.tenantId,month,minDays}));
   }));
   // O-05 — on-demand T&A and payroll health check (EDIT: it spans devices, cases and payroll runs).
   server.tool('hr_ops_health_check','Health check for Time & Attendance and Payroll: stale capture devices, raised requests undecided for over 5 days, payroll runs not finalized 7 days after the period ended, held payslips',{},withToolError(async()=>{

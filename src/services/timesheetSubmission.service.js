@@ -140,10 +140,12 @@ async function pendingAnomalyCount(tenantId, { from, to }, db = prisma) {
  * finalized payroll is immutable. The cancelled run and audit row remain as
  * evidence, while isTimesheetSubmitted() becomes false for the month.
  */
-export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = null, actorNote = null }) {
+export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = null, actorNote = null, reason }) {
   if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
     throw new AppError("month must be YYYY-MM", 400);
   }
+  const why = String(reason ?? "").trim();
+  if (why.length < 3) throw new AppError("Give a reason for reopening the month (at least 3 characters)", 400);
   const { from, to } = submissionWindow(month);
   return attendanceTransaction(prisma,tenantId,async db=>{
     await lockAttendancePeriod(db,tenantId,true);
@@ -162,7 +164,7 @@ export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = nul
       tenantId: tenantId ?? null,
       action: "TIMESHEET_UNSUBMITTED",
       payrollRunId: run.id,
-      details: `Timesheet for ${month} unsubmitted by ${actorEmployeeId != null ? `employee ${actorEmployeeId}` : actorNote ?? "unknown actor"}; pending vault run #${run.id} cancelled`,
+      details: `Timesheet for ${month} unsubmitted by ${actorEmployeeId != null ? `employee ${actorEmployeeId}` : actorNote ?? "unknown actor"}; pending vault run #${run.id} cancelled. Reason: ${why}`,
     },
   });
   await db.attendanceEvaluationJob.updateMany({where:{tenantId,date:{gte:from,lte:to},state:"PROTECTED"},
@@ -183,6 +185,7 @@ async function submitTimesheetTransaction({
   actorEmployeeId = null,
   actorNote = null,
   force = false,
+  reason,
 }, db) {
   if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
     throw new AppError("month must be YYYY-MM", 400);
@@ -207,6 +210,12 @@ async function submitTimesheetTransaction({
   });
   const cutoff = cycleInstantForMonth(calendar?.attendanceCutoff, month);
   const cutoffPassed = cutoff != null && cutoff.getTime() <= now.getTime();
+  const why = String(reason ?? "").trim();
+  if (!cutoffPassed && force) {
+    // An early submit is for a month that has ended but whose cutoff has not passed; a month still running can change.
+    if (to.getTime() >= now.getTime()) throw new AppError(`The month ${month} has not ended yet, so it cannot be submitted early`, 400);
+    if (why.length < 3) throw new AppError("Give a reason for submitting before the attendance cutoff (at least 3 characters)", 400);
+  }
   if (!cutoffPassed && !force) {
     throw new AppError(
       `HR-TP-01 the attendance cycle for ${month} is not locked yet `
@@ -291,7 +300,7 @@ async function submitTimesheetTransaction({
       action: "TIMESHEET_SUBMITTED",
       payrollRunId: run.id,
       details:
-        `Timesheet for ${month} submitted${force ? " (HR early-submission override)" : ""}`
+        `Timesheet for ${month} submitted${force && !cutoffPassed ? ` (HR early-submission override. Reason: ${why})` : ""}`
         + ` by ${who.actorEmployeeId != null ? `employee ${who.actorEmployeeId}` : who.actorNote}`
         + `; vault run #${run.id} activated as PENDING`
         + `${cutoffPassed ? "" : `; cutoff was ${cutoff ? new Date(cutoff).toISOString() : "not configured"}`}`,

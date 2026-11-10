@@ -21,6 +21,12 @@ test("long absence list: streaks, exclusions, validation, isolation", { timeout:
 
   assert.equal((await as("HR", () => listLongAbsences({ tenantId: company, minDays: 6, asOf }))).employees.length, 0);
 
+  // A line manager's list is limited to the people asked for (their direct reports); an empty team is an empty list.
+  const team = (employeeIds) => as("HR", () => listLongAbsences({ tenantId: company, minDays: 5, asOf, employeeIds }));
+  assert.deepEqual((await team([emp])).employees.map((e) => e.employeeId), [emp]);
+  assert.equal((await team([hr])).employees.length, 0, "someone outside the streak is not listed");
+  assert.equal((await team([])).employees.length, 0, "a manager with no reports sees nothing");
+
   // Exclusions: inactive employees and those outside payroll are not listed.
   await db((tx) => tx.employee.update({ where: { id: emp }, data: { employement_status: "Inactive" } }));
   assert.equal((await as("HR", () => listLongAbsences({ tenantId: company, minDays: 5, asOf }))).employees.length, 0);

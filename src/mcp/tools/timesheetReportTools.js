@@ -23,7 +23,7 @@ import { buildMonthlyReconciliation } from "../../services/attendanceReconciliat
 import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { resolveAttendanceReadScope } from "../utils/actorScope.js";
-import { assertPermission } from "../utils/assertPermission.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import prisma from '../../lib/prisma.js';
 
@@ -192,21 +192,28 @@ export function registerTimesheetReportTools(server) {
       // TS-GATE-UI-01 — full gating state so the UI can disable the Submit
       // button WITH a reason (lock state, cutoff, unresolved anomalies).
       const state = await getTimesheetSubmissionState(user.tenantId, month);
-      return { content: [{ type: "text", text: JSON.stringify(state) }] };
+      // Company-wide counts and issue lists are for the attendance admin surface; everyone else sees only whether the month is closed.
+      const admin = user.isAdmin === true || ["EDIT", "EXPORT", "CREATE", "DELETE"].some((a) => hasPermission(permissions, "hr:attendance", a));
+      const view = admin ? state : { submitted: Boolean(state.submitted), month };
+      return { content: [{ type: "text", text: JSON.stringify(view) }] };
     }, "hr_timesheet_submission_status")
   );
 
   server.tool(
     "hr_timesheet_unsubmit",
     "Unsubmit a timesheet whose vault run is still PENDING; processed or approved payroll cannot be reversed.",
-    { month: z.string().regex(/^\d{4}-\d{2}$/).describe("Month as YYYY-MM.") },
-    withToolError(async ({ month }) => {
+    {
+      month: z.string().regex(/^\d{4}-\d{2}$/).describe("Month as YYYY-MM."),
+      reason: z.string().trim().min(3).max(2000).describe("Why the month is being reopened. Kept in the audit trail."),
+    },
+    withToolError(async ({ month, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const actorEmployeeId = await resolveActingEmployeeId({ user, tenantId: user.tenantId });
       const data = await unsubmitTimesheet({
         tenantId: user.tenantId,
         month,
+        reason,
         actorEmployeeId,
         actorNote: user.email ?? `rbac-user-${user.id ?? "unknown"}`,
       });
@@ -222,9 +229,10 @@ export function registerTimesheetReportTools(server) {
       force: z
         .boolean()
         .optional()
-        .describe("HR early-submission override for the attendance-lock gate only. Recorded in the audit trail. Never bypasses the unresolved-anomalies gate."),
+        .describe("HR early-submission override for the attendance-lock gate only. Needs a reason and a month that has ended. Recorded in the audit trail. Never bypasses the unresolved-anomalies gate."),
+      reason: z.string().trim().max(2000).optional().describe("Required with force: why the month is submitted before its cutoff."),
     },
-    withToolError(async ({ month, force = false }) => {
+    withToolError(async ({ month, force = false, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       // HR/admin logins with no Employee row still submit (audit attributes by
@@ -234,6 +242,7 @@ export function registerTimesheetReportTools(server) {
         tenantId: user.tenantId,
         month,
         force: Boolean(force),
+        reason,
         actorEmployeeId,
         actorNote: user.email ?? `rbac-user-${user.id ?? "unknown"}`,
       });
