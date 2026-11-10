@@ -199,16 +199,11 @@ describe("durable receipt and tenant attribution", () => {
     ).rejects.toMatchObject({ status: 409 }));
   it("device credentials are hashed and returned only when issued", async () => {
     const db = captureDb();
-    const registered = await registerCaptureDevice(
-      {
-        tenantId: TENANT,
-        actorId: "hr",
-        sn: "NEW",
-        name: "Gate",
-        timeZone: "Asia/Karachi",
-      },
-      db,
-    );
+    const form = { tenantId: TENANT, actorId: "hr", sn: "NEW", name: "Gate", timeZone: "Asia/Karachi" };
+    // A registration without a reason is refused, blank or missing.
+    await expect(registerCaptureDevice(form, db)).rejects.toMatchObject({ status: 400 });
+    await expect(registerCaptureDevice({ ...form, reason: "   " }, db)).rejects.toMatchObject({ status: 400 });
+    const registered = await registerCaptureDevice({ ...form, reason: "New gate reader installed" }, db);
     expect(registered.device.credentialHash).toBeUndefined();
     expect(
       db.snapshot().attendanceCaptureDevice.at(-1).credentialHash,

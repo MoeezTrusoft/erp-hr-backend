@@ -96,9 +96,11 @@ export async function captureAudit(
   });
 }
 export async function registerCaptureDevice(
-  { tenantId, actorId, sn, name, timeZone, staleAfterMinutes = 30 },
+  { tenantId, actorId, sn, name, timeZone, staleAfterMinutes = 30, reason },
   db = prisma,
 ) {
+  const why = String(reason ?? "").trim();
+  if (!why) throw captureError("Say why this device is being registered");
   if (
     !tenantId ||
     !/^[\w.-]{1,64}$/.test(sn || "") ||
@@ -132,7 +134,7 @@ export async function registerCaptureDevice(
         tenantId,
         actorId,
         action: "DEVICE_REGISTERED",
-        reason: "Registered attendance device",
+        reason: why,
         detail: { sn, timeZone },
       });
       return { device: devicePublic(device), credential };
