@@ -6,46 +6,14 @@ import { scopedWhere } from "../lib/tenancy.js";
 // check-in create, fail-closed so tenant B can never read/mutate tenant A's
 // attendance records. Employee carries snake_case `tenant_id` (REQ-007).
 
-// Direct/manual punches are evidence, evaluated by the same published policy
-// as device punches. HR day corrections remain the separate audited workflow.
-export const createAttendanceService = async (data) => {
-  const { receiveCapture } = await import("./attendanceCapture.service.js");
-  const timestamp =
-    data.timestamp ??
-    (data.date && data.check_in
-      ? `${data.date}T${data.check_in.length === 5 ? data.check_in + ":00" : data.check_in}`
-      : new Date().toISOString());
-  return receiveCapture({
-    source: "MANUAL",
-    notes: data.notes,
-    tenantId: data.tenantId,
-    actorId: data.actorId,
-    manualEmployeeId: Number(data.employeeId),
-    requestKey: data.requestKey,
-    rows: [`${data.employeeId}\t${timestamp}\t0\t0\t0`],
-  });
+// A manual punch is a request that the attendance approval route approves (captureChangeRequest.service.js);
+// these direct writers are closed so nothing can record one without it.
+const refuseDirectPunch = () => {
+  throw Object.assign(new Error('A manual punch is sent for approval first; it is recorded once approved'), { status: 409 });
 };
-export const checkOutService = (employeeId, tenantId) =>
-  checkOutServiceWithTimestamp(employeeId, undefined, tenantId);
-export const checkOutServiceWithTimestamp = async (
-  employeeId,
-  timestamp,
-  tenantId,
-  actorId,
-  requestKey,
-  notes,
-) => {
-  const { receiveCapture } = await import("./attendanceCapture.service.js");
-  return receiveCapture({
-    source: "MANUAL",
-    tenantId,
-    actorId,
-    requestKey,
-    notes,
-    manualEmployeeId: Number(employeeId),
-    rows: [`${employeeId}\t${timestamp ?? new Date().toISOString()}\t1\t0\t0`],
-  });
-};
+export const createAttendanceService = async () => refuseDirectPunch();
+export const checkOutService = async () => refuseDirectPunch();
+export const checkOutServiceWithTimestamp = async () => refuseDirectPunch();
 
 export const getAttendanceByEmployee = async (employeeId, tenantId) => {
   return prisma.attendance.findMany({

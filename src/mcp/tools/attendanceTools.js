@@ -2,8 +2,6 @@ import { listPendingRosterChanges } from "../../services/rosterChangeRequest.ser
 import { z } from "zod";
 import {
   mcpApproveTimesheet,
-  mcpCheckIn,
-  mcpCheckOut,
   mcpAttendanceDailySummary,
   mcpCreateOvertimeRule,
   mcpCreateTimeEntry,
@@ -42,6 +40,7 @@ import { withToolError, withResourceError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { requestManualPunch, listPendingCaptureChanges } from "../../services/captureChangeRequest.service.js";
 
 // Build the `user` handed to an owner-gated write (time-entry update/delete).
 // MCP context hard-forces isAdmin=false (SEC-5), so the service's owner gate
@@ -102,36 +101,37 @@ export function registerAttendanceTools(server) {
 
   // ── TOOLS ────────────────────────────────────────────────────────────────
 
-  server.tool(
-    "hr_attendance_checkin",
-    "Store a durable manual check-in receipt for asynchronous evaluation against published configuration. Notes remain with original evidence.",
-    {
-      employeeId: z.string().min(1).describe("Employee id (numeric string); must resolve to an existing tenant-scoped Employee"),
-      timestamp: z.string().optional().describe("ISO datetime including seconds; defaults to now"),
-      requestKey: z.string().max(128).optional(),
-      notes: z.string().optional().describe("Free-text note retained with original capture evidence"),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      const data = await mcpCheckIn(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
+  const manualPunch = (name, direction, description) =>
+    server.tool(
+      name,
+      description,
+      {
+        employeeId: z.string().min(1).describe("Employee id (numeric string); must resolve to an existing tenant-scoped Employee"),
+        timestamp: z.string().optional().describe("Company time, YYYY-MM-DD HH:mm:ss; defaults to now. A future time is refused"),
+        reason: z.string().trim().min(3).max(4000).describe("Why the punch is being added; shown to the approvers and kept with the punch"),
+      },
+      withToolError(async ({ employeeId, timestamp, reason }) => {
+        const { user, permissions } = getCtx();
+        assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        const data = await requestManualPunch({
+          tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)),
+          employeeId, direction, reason,
+          timestamp,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      })
+    );
+  manualPunch("hr_attendance_checkin", "IN", "Request a manual check-in for an employee. It is sent for approval through the attendance approval route and recorded once approved");
+  manualPunch("hr_attendance_checkout", "OUT", "Request a manual check-out for an employee. It is sent for approval and recorded once approved");
 
   server.tool(
-    "hr_attendance_checkout",
-    "Record employee check-out",
-    {
-      employeeId: z.string().min(1),
-      timestamp: z.string().optional().describe("ISO datetime including seconds; defaults to now"),
-      requestKey: z.string().max(128).optional(),
-      notes: z.string().optional(),
-    },
-    withToolError(async (args) => {
+    "hr_attendance_capture_changes_pending",
+    "Manual punches waiting for approval",
+    {},
+    withToolError(async () => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
-      const data = await mcpCheckOut(user, args);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await listPendingCaptureChanges({ tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

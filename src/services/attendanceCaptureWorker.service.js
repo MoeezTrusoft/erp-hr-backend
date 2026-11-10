@@ -215,7 +215,9 @@ export async function drainCapture(
                     directionVerified: VERIFIED_DIRECTION_SOURCES.has(event.source),
                     assurance: jsonValue({source:event.source,modality:event.raw?.biometric?.modality,
                       pad:event.raw?.biometric?.pad,matched:event.raw?.biometric?.matched,
-                      approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
+                      approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt,
+                      // The machine's own reading and the server-aligned time both stay on the punch.
+                      ...(p.machine?{clock:{machineTime:p.machine.localTime,serverTime:p.localTime,offsetSeconds:p.clockOffsetSeconds,receivedAt:event.raw?.receivedAt}}:{})}),
                   },
                 });
                 adopted = adopt.count > 0;
@@ -240,7 +242,9 @@ export async function drainCapture(
                     directionVerified: VERIFIED_DIRECTION_SOURCES.has(event.source),
                     assurance: jsonValue({source:event.source,modality:event.raw?.biometric?.modality,
                       pad:event.raw?.biometric?.pad,matched:event.raw?.biometric?.matched,
-                      approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt}),
+                      approvedBy:event.biometricApprovedBy,approvedAt:event.biometricApprovedAt,
+                      // The machine's own reading and the server-aligned time both stay on the punch.
+                      ...(p.machine?{clock:{machineTime:p.machine.localTime,serverTime:p.localTime,offsetSeconds:p.clockOffsetSeconds,receivedAt:event.raw?.receivedAt}}:{})}),
                   },
                 });
               }

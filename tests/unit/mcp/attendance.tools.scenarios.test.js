@@ -6,8 +6,6 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 jest.unstable_mockModule('../../../src/mcp/controllers/attendanceMcpController.js', () => ({
   mcpApproveTimesheet: jest.fn(async () => ({ success: true })),
-  mcpCheckIn: jest.fn(async () => ({ success: true })),
-  mcpCheckOut: jest.fn(async () => ({ success: true })),
   mcpAttendanceDailySummary: jest.fn(async () => ({ success: true })),
   mcpCreateOvertimeRule: jest.fn(async () => ({ success: true })),
   mcpCreateTimeEntry: jest.fn(async () => ({ success: true })),
@@ -29,6 +27,11 @@ jest.unstable_mockModule('../../../src/mcp/controllers/attendanceMcpController.j
   mcpListAttendanceRecords: jest.fn(async () => ({ success: true, data: [{ id: 'att-1' }] })),
 }));
 
+jest.unstable_mockModule('../../../src/services/captureChangeRequest.service.js', () => ({
+  requestManualPunch: jest.fn(async () => ({ pendingApproval: true })),
+  listPendingCaptureChanges: jest.fn(async () => []),
+}));
+const captureChange = await import('../../../src/services/captureChangeRequest.service.js');
 const attendanceCtl = await import('../../../src/mcp/controllers/attendanceMcpController.js');
 const { registerAttendanceTools } = await import('../../../src/mcp/tools/attendanceTools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
@@ -51,8 +54,8 @@ function call(name, args, { user = USER, permissions } = {}) {
 const parse = (res) => JSON.parse(res.content[0].text);
 
 const TOOLS = [
-  { name: 'hr_attendance_checkin', ctrl: () => attendanceCtl.mcpCheckIn, gate: 'hr:attendance', action: 'CREATE', args: { employeeId: 7 } },
-  { name: 'hr_attendance_checkout', ctrl: () => attendanceCtl.mcpCheckOut, gate: 'hr:attendance', action: 'CREATE', args: { employeeId: 7 } },
+  { name: 'hr_attendance_checkin', ctrl: () => captureChange.requestManualPunch, gate: 'hr:attendance', action: 'CREATE', args: { employeeId: '7', reason: 'Forgot to punch' } },
+  { name: 'hr_attendance_checkout', ctrl: () => captureChange.requestManualPunch, gate: 'hr:attendance', action: 'CREATE', args: { employeeId: '7', reason: 'Forgot to punch' } },
   { name: 'hr_attendance_device_connectivity', ctrl: () => attendanceCtl.mcpDeviceConnectivity, gate: 'hr:attendance', action: 'CREATE', args: {}, skipTenantCheck: true },
   { name: 'hr_attendance_device_sync', ctrl: () => attendanceCtl.mcpDeviceSyncAttendance, gate: 'hr:attendance', action: 'CREATE', args: {} },
   { name: 'hr_attendance_daily_summary', ctrl: () => attendanceCtl.mcpAttendanceDailySummary, gate: 'hr:attendance', action: 'VIEW', args: { employeeId: 7 } },

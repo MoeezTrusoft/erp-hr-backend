@@ -14,7 +14,7 @@ export function validTimeZone(zone) {
     return false;
   }
 }
-function wallAt(instant, timeZone) {
+export function wallAt(instant, timeZone) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-GB", {
       timeZone,

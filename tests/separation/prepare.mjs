@@ -110,6 +110,8 @@ try {
   await db.query(ruleChange.slice(ruleChange.indexOf('-- ATTENDANCE_RULE_SECURITY')));
   const leaveChange=await readFile('prisma/migrations/20261111090000_leave_changes_and_ledger/migration.sql','utf8');
   await db.query(leaveChange.slice(leaveChange.indexOf('-- LEAVE_CHANGE_SECURITY')));
+  const captureChange=await readFile('prisma/migrations/20261112090000_capture_changes_and_clock/migration.sql','utf8');
+  await db.query(captureChange.slice(captureChange.indexOf('-- CAPTURE_CHANGE_SECURITY')));
   await db.query(
     "DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='assessment_test_user') THEN CREATE ROLE assessment_test_user LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE; END IF; END $$; ALTER ROLE assessment_test_user PASSWORD 'assessment-local-test'; GRANT USAGE ON SCHEMA public TO assessment_test_user; GRANT ALL ON ALL TABLES IN SCHEMA public TO assessment_test_user; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO assessment_test_user;",
   );
