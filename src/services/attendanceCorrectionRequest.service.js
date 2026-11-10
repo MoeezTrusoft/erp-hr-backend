@@ -11,13 +11,24 @@ const fail = (message, status = 409) => { throw Object.assign(new Error(message)
 const fields = ['date', 'sessionKey', 'checkIn', 'checkOut', 'reason', 'evidence', 'reasonCategory', 'evidenceDate'];
 const payload = row => Object.fromEntries(fields.map(k => [k, k === 'date' ? String(row.date instanceof Date ? row.date.toISOString() : row.date).slice(0, 10) : row[k] ?? null]));
 
-// Drafts belong to the verified employee. Saving never changes attendance.
+// Whose request is this? The caller's own, or (for HR and the line manager) an employee's they file for.
+async function subjectOf(tx, ctx, who, tenantId, employeeId) {
+  if (employeeId == null || Number(employeeId) === who.id) return who;
+  const subject = await tx.employee.findFirst({ where: { id: Number(employeeId), tenant_id: tenantId } });
+  if (!subject) fail('Employee not found', 404);
+  const hr = ctx.permissions?.includes('hr.approvals.verify') === true;
+  if (!hr && Number(subject.managerId) !== Number(who.id)) fail("Only the employee's line manager or HR may file a correction for them", 403);
+  return subject;
+}
+
+// Drafts belong to the employee they are about (the caller, or someone HR/their manager files for). Saving never changes attendance.
 export async function saveCorrectionRequest(input, db = prisma) {
   const ctx = getCtx();
   if (!ctx.actorVerified || !ctx.user?.tenantId || !ctx.permissions?.includes('hr.approvals.self')) fail('A verified employee account and request permission are required', 403);
   const tenantId = ctx.user.tenantId;
   return tenantTransaction(db, async tx => {
-    const who = await actor(tx, ctx);
+    const filer = await actor(tx, ctx);
+    const who = await subjectOf(tx, ctx, filer, tenantId, input.employeeId);
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':attendance-correction:' + who.id + ':' + input.date},0))`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':approval-source:ATTENDANCE_CORRECTION:' + input.id},0))`;
     await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${tenantId}::uuid AND kind='ATTENDANCE_CORRECTION' AND "sourceRef"=${input.id} FOR UPDATE`;
@@ -43,21 +54,21 @@ export async function saveCorrectionRequest(input, db = prisma) {
     const attendance = await tx.attendance.findFirst({ where: { tenantId, employeeId: who.id, date: dateOnly(input.date) } });
     const data = { ...payload(input), date: dateOnly(input.date), evaluationVersion: attendance?.evaluationVersion || 0 };
     const { applyMissingTime } = await import('./attendanceRules.service.js');
-    if (input.checkIn || input.checkOut) await applyMissingTime({ ...data, reason:input.reason?.trim() || 'Incomplete draft validation', date: input.date, employeeId: who.id, version: data.evaluationVersion, validateOnly: true, user: { tenantId, employeeId: who.id, userId: who.employee_code, roles: ['HR Manager'] } }, tx);
+    if (input.checkIn || input.checkOut) await applyMissingTime({ ...data, reason:input.reason?.trim() || 'Incomplete draft validation', date: input.date, employeeId: who.id, version: data.evaluationVersion, validateOnly: true, user: { tenantId, employeeId: filer.id, userId: filer.employee_code, roles: ['HR Manager'] } }, tx);
     const saved = prior
       ? await tx.attendanceCorrectionRequest.update({ where: { id: prior.id }, data: { ...data, version: { increment: 1 } } })
-      : await tx.attendanceCorrectionRequest.create({ data: { ...data, id: input.id, tenantId, employeeId: who.id, version: 1 } });
-    await tx.attendanceRuleAudit.create({ data: { tenantId, employeeId: who.id, action: 'CORRECTION_DRAFT_SAVED', actorId: who.employee_code, data: { requestRef: saved.id, version: saved.version, before: prior ? payload(prior) : null, after: payload(saved) } } });
+      : await tx.attendanceCorrectionRequest.create({ data: { ...data, id: input.id, tenantId, employeeId: who.id, filedById: filer.id !== who.id ? filer.id : null, version: 1 } });
+    await tx.attendanceRuleAudit.create({ data: { tenantId, employeeId: who.id, action: 'CORRECTION_DRAFT_SAVED', actorId: filer.employee_code, data: { requestRef: saved.id, version: saved.version, before: prior ? payload(prior) : null, after: payload(saved), ...(filer.id !== who.id ? { filedBy: filer.employee_code } : {}) } } });
     return { ...saved, employeeCode: who.employee_code, approvalVersion: approval?.version || 0 };
   }, { tenantId, txOptions: { timeout: 60000 } });
 }
 
-export async function myCorrectionRequests({ date }, db = prisma) {
+export async function myCorrectionRequests({ date, employeeId }, db = prisma) {
   const ctx = getCtx();
   if (!ctx.actorVerified || !ctx.user?.tenantId || !ctx.permissions?.includes('hr.approvals.self')) fail('A verified employee account is required', 403);
   const tenantId = ctx.user.tenantId;
   return tenantTransaction(db, async tx => {
-    const who = await actor(tx, ctx);
+    const who = await subjectOf(tx, ctx, await actor(tx, ctx), tenantId, employeeId);
     const items = await tx.attendanceCorrectionRequest.findMany({ where: { tenantId, employeeId: who.id, date: dateOnly(date), status: 'PENDING' }, orderBy: { createdAt: 'desc' } });
     for (const item of items) {
       const approval = await tx.hrApprovalRequest.findFirst({ where: { tenantId, kind: 'ATTENDANCE_CORRECTION', sourceRef: item.id } });

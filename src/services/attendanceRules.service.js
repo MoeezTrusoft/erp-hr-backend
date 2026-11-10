@@ -102,7 +102,7 @@ async function command(user, fn, db = prisma) {
   });
 }
 export async function listRuleCases(
-  { user, from, to, status, employeeId, q, category, site, department, shift, page = 1, pageSize = 30 },
+  { user, from, to, status, employeeId, q, category, site, department, shift, window: windowFilter, page = 1, pageSize = 30 },
   db = prisma,
 ) {
   dateRange(from,to,370);
@@ -161,11 +161,14 @@ export async function listRuleCases(
   const openCandidates = all.filter(
     (row) => row.rulesVersion === 2 && row.status === 'PENDING' && row.evidenceState === 'ACTIVE' && row.date,
   );
-  const settledIds = new Set();
+  const settledIds = new Set(), lapsedIds = new Set();
   if (openCandidates.length) {
     try {
       const marked = await markLapsedCases(openCandidates, { tenantId: user.tenantId, db });
-      for (const row of marked) if (row.decided) settledIds.add(row.id);
+      for (const row of marked) {
+        if (row.decided) settledIds.add(row.id);
+        else if (row.lapsed) lapsedIds.add(row.id);
+      }
     } catch {
       // Listing cases must not fail because a roster or decision lookup did; the
       // decisions already in hand (below) still exclude settled days.
@@ -194,7 +197,35 @@ export async function listRuleCases(
       !decidedKeys.has(`${day}|${row.type}`) && !decidedKeys.has(`${day}|*`);
     if(open && !openDays.has(key)) { openDays.add(key); summary.open++; }
   }
-  const items=all.slice((page-1)*pageSize,page*pageSize);
+  // Where a detected case stands, in plain terms. The employee has two working days to raise it; after that HR can still
+  // raise it for them until payroll covers the day, and from then on payroll has decided it. Nothing is stored for this.
+  const lapsedRows = all.filter((row) => lapsedIds.has(row.id));
+  const covering = lapsedRows.length
+    ? await db.payrollRun.findMany({
+        where: {
+          tenantId: user.tenantId,
+          status: { notIn: ["CANCELLED", "FAILED"] },
+          periodStart: { lte: new Date(Math.max(...lapsedRows.map((r) => +new Date(r.date)))) },
+          periodEnd: { gte: new Date(Math.min(...lapsedRows.map((r) => +new Date(r.date)))) },
+        },
+        select: { periodStart: true, periodEnd: true },
+      })
+    : [];
+  const paidDay = (date) => covering.some((r) => +r.periodStart <= +new Date(date) && +new Date(date) <= +r.periodEnd);
+  const windowOf = (row) => {
+    if (row.rulesVersion !== 2 || row.evidenceState !== "ACTIVE") return null;
+    if (row.status !== "PENDING" || settledIds.has(row.id)) return "DECIDED";
+    if (row.raisedById != null) return "RAISED";
+    if (lapsedIds.has(row.id)) return paidDay(row.date) ? "CHARGED" : "HR_ONLY";
+    return "OPEN";
+  };
+  const windowCounts = {};
+  for (const row of all) {
+    const w = windowOf(row);
+    if (w) windowCounts[w] = (windowCounts[w] ?? 0) + 1;
+  }
+  const shown = windowFilter ? all.filter((row) => windowOf(row) === windowFilter) : all;
+  const items=shown.slice((page-1)*pageSize,page*pageSize);
   // The open approval request of each case, so a screen can open it for an edit
   // (the message of a raised request stays editable until the next approver
   // decides). Keyed by the source reference the request was sealed with.
@@ -220,10 +251,11 @@ export async function listRuleCases(
         approvalVersion: open?.version ?? null,
         approvalStage: open?.stage ?? null,
         approvalLevel: open?.level ?? null,
+        window: windowOf(a),
       };
     }),
-    total:all.length,
-    summary,
+    total:shown.length,
+    summary: { ...summary, windowCounts },
     observedAt: new Date().toISOString(),
     page,
     pageSize,

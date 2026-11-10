@@ -5,6 +5,7 @@ import { withToolError } from "../utils/toolError.js";
 import * as service from "../../services/attendanceRules.service.js";
 import { requestGraceRule, requestGraceMembership, listPendingRuleChanges } from "../../services/attendanceRuleChangeRequest.service.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { legacySubmit } from "../../services/approval/legacy.js";
 import { editAttendanceRequestReason } from "../../services/approval/service.js";
 import { saveCorrectionRequest, myCorrectionRequests } from '../../services/attendanceCorrectionRequest.service.js';
 import * as workspace from '../../services/attendanceWorkspace.service.js';
@@ -28,9 +29,11 @@ export function registerAttendanceRulesTools(server) {
     ['export_records',{from:date,to:date,...filters,q:z.string().max(50).optional(),status:z.string().max(50).optional(),sortBy:z.enum(['date','employee','status','checkIn','checkOut']).optional(),sortDir:z.enum(['asc','desc']).optional()},service.exportAttendanceRecords],
     ['filter_options',{from:date,to:date},service.attendanceFilterOptions],
     ['employee_options', { q: z.string().trim().max(50).default(''), page: z.number().int().min(1).default(1), pageSize: z.number().int().min(1).max(100).default(50) }, service.employeeCodeOptions],
-    ['correction_mine', { date }, myCorrectionRequests],
+    ['correction_mine', { date, employeeId: id.optional() }, myCorrectionRequests],
+    // HR or the line manager files a correction for an employee: save the draft with their employeeId, then submit it here.
+    ['correction_submit_on_behalf', { id: z.string().uuid(), reason: z.string().trim().min(3).max(4000) }, (a) => legacySubmit('ATTENDANCE_CORRECTION', a.id, a.reason, { onBehalf: true, managerMayFile: true })],
     ["correction_save", {
-      id: z.string().uuid(), version, date, sessionKey: z.string().min(1).max(160),
+      id: z.string().uuid(), version, date, employeeId: id.optional(), sessionKey: z.string().min(1).max(160),
       checkIn: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/).nullable(),
       checkOut: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/).nullable(),
       reason: z.string().trim().max(4000), evidence: z.string().trim().max(4000),
@@ -49,6 +52,7 @@ export function registerAttendanceRulesTools(server) {
         employeeId: id.optional(),
         q: z.string().trim().max(50).optional(),
         category: z.enum(['absent','late','early','other']).optional(),
+        window: z.enum(['OPEN','HR_ONLY','CHARGED','RAISED','DECIDED']).optional(),
         page: z.number().int().min(1).default(1),
         pageSize: z.number().int().min(1).max(100).default(30),
       },
@@ -229,6 +233,8 @@ export function registerAttendanceRulesTools(server) {
           assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
         } else if (action === 'mine') {
           // every signed-in employee may read the limits that apply to them; the service scopes the answer
+        } else if (action === 'correction_submit_on_behalf') {
+          // the approval service decides who may file for whom (HR, or the employee's line manager)
         } else if (action !== 'raise' && action !== 'appeal' && action !== 'edit_request') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         }
