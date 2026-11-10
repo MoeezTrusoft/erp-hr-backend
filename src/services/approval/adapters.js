@@ -189,6 +189,13 @@ const definitions = {
     ["PENDING"],
     ["action", "payload", "reason"],
   ],
+  LEAVE_CHANGE: [
+    "leaveChangeRequest",
+    "leave_change_requests",
+    "requestedById",
+    ["PENDING"],
+    ["action", "payload", "reason"],
+  ],
   GOAL: [
     "goal",
     "Goal",
@@ -323,6 +330,7 @@ export const registry = Object.fromEntries(
           "HOLIDAY_CHANGE",
           "HOLIDAY_EXEMPTION",
           "ATTENDANCE_RULE_CHANGE",
+          "LEAVE_CHANGE",
           "TIME_CREDIT",
           "TIME_CREDIT_REVOCATION",
           "ASSESSMENT_RELEASE",
@@ -648,21 +656,8 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
         row.startDate,
         row.endDate,
       );
-      await tx.leaveBalance.upsert({
-        where: {
-          employeeId_leavePolicyId: {
-            employeeId: row.employeeId,
-            leavePolicyId: row.leavePolicyId,
-          },
-        },
-        create: {
-          tenantId: env.tenantId,
-          employeeId: row.employeeId,
-          leavePolicyId: row.leavePolicyId,
-          balance: -row.totalDays,
-        },
-        update: { balance: { decrement: row.totalDays }, lastUpdated: env.now },
-      });
+      const { deductApprovedLeave } = await import("../leaveChangeRequest.service.js");
+      await deductApprovedLeave(tx, env, row, reason);
       const { createLeaveAttendanceRecords, upsertLegacyLeaveMirror } =
         await import("../leave.service.js");
       await createLeaveAttendanceRecords(row, tx);
@@ -772,6 +767,9 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
   } else if (kind === "ATTENDANCE_RULE_CHANGE") {
     const { finalizeAttendanceRuleChange } = await import("../attendanceRuleChangeRequest.service.js");
     await finalizeAttendanceRuleChange(tx, env, row, approved);
+  } else if (kind === "LEAVE_CHANGE") {
+    const { finalizeLeaveChange } = await import("../leaveChangeRequest.service.js");
+    await finalizeLeaveChange(tx, env, row, approved);
   } else if (kind === "GOAL")
     await tx.goal.update({
       where: { id: row.id },

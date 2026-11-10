@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 84f842e0c6e4f3bc2788e79a9911578e0ac01b35 # contracts: PR #29 (attendance rule change kind) on top of #28
+          ref: 6871670cd45ab1ff5ee5edc7379117ee9f439e98 # contracts: PR #30 (leave change kind) on top of #29
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 84f842e0c6e4f3bc2788e79a9911578e0ac01b35
+          ref: 6871670cd45ab1ff5ee5edc7379117ee9f439e98
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false

@@ -19,7 +19,7 @@ import { getHolidays, createHoliday } from "../../controllers/holiday.controller
 import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 
 export const mcpListLeaveRequests = (user, query = {}) => runController(getLeaveRequests, { user, query });
-export const mcpListLeavePolicies = (user) => runController(getLeavePolicies, { user });
+export const mcpListLeavePolicies = (user, query = {}) => runController(getLeavePolicies, { user, query });
 export const mcpListLeaveBalances = (user) => runController(getLeaveBalances, { user });
 export const mcpListPendingLeaveApprovals = (user) => runController(getPendingApprovals, { user });
 export const mcpListHolidays = (user) => runController(getHolidays, { user });
