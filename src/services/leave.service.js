@@ -7,6 +7,7 @@ import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 import { leaveApprovedEvent, leaveRejectedEvent } from "./hrEvents.js";
 import { assertIfMatch, normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
 import { resolveWorkingDays } from "./workingDay.service.js";
+import { dateKey } from "../lib/attendanceDates.js";
 
 // C.2 / T-P2.2 / T-P2.6 — leave is a representative newly-scoped HR family. The
 // verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the controller
@@ -24,6 +25,13 @@ const calculateWorkingDays = async (employeeId, startDate, endDate, tenantId) =>
   const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true});
   if([...days.values()].some(d=>d.working==null))throw Object.assign(new Error('Complete attendance setup before calculating leave'),{status:409});
   return [...days.values()].reduce((count,d)=>count+(d.working?1:0),0);
+};
+
+
+// Leave types and balances are changed by approved requests (leaveChangeRequest.service.js) and the ledger
+// (leaveLedger.service.js); these older direct writers are closed so nothing can bypass the approval route.
+const refuseDirect = () => {
+  throw Object.assign(new Error('Leave types, balances and accruals are changed through an approval request or the leave ledger, not directly'), { status: 409 });
 };
 
 const calculateAccrualAmount = async (policy, employee, date) => {
@@ -175,6 +183,7 @@ export const getLeavePolicyById = async (id) => {
 };
 
 export const createLeavePolicy = async (data,createdById) => {
+  refuseDirect();
   const {
     name,
     description,
@@ -250,6 +259,7 @@ export const createLeavePolicy = async (data,createdById) => {
 };
 
 export const updateLeavePolicy = async (id, data,updatedById) => {
+  refuseDirect();
   // API-2 — pull the optional optimistic-concurrency guard out of the payload so
   // it is NOT spread into the Prisma `data` (it is not a column). Absent ⇒ no reject.
   const { expectedVersion: rawExpectedVersion, ...policyData } = data ?? {};
@@ -310,6 +320,7 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
 };
 
 export const deleteLeavePolicy = async (id, deletedBy) => {
+  refuseDirect();
   // Check if policy is being used by any leave requests
   const existingRequests = await prisma.leaveRequest.count({
     where: { leavePolicyId: id }
@@ -542,7 +553,8 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     throw new Error('Start date cannot be after end date');
   }
 
-  if (start < today && !allowPastDates) {
+  // A leave that starts today is not in the past: compare calendar days in company time, not the clock.
+  if (dateKey(start) < today.toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' }) && !allowPastDates) {
     throw new Error('Cannot request leave for past dates');
   }
 
@@ -807,6 +819,7 @@ export const getEmployeeLeaveBalances = async (employeeId) => {
 };
 
 export const updateLeaveBalance = async (employeeId, data) => {
+  refuseDirect();
   const { leavePolicyId, balance, carryOverBalance, updatedById, notes } = data;
 
   const existingBalance = await prisma.leaveBalance.findUnique({
@@ -873,6 +886,7 @@ export const updateLeaveBalance = async (employeeId, data) => {
 
 // Accrual Services
 export const runLeaveAccruals = async (data) => {
+  refuseDirect();
   const { accrualDate = new Date(), policyIds = [] } = data;
   const date = new Date(accrualDate);
 
@@ -1278,6 +1292,7 @@ export const upsertLegacyLeaveMirror = async (leaveRequest, db = prisma) => {
 
 // Carry Over Processing
 export const processCarryOver = async (data) => {
+  refuseDirect();
   const { effectiveDate = new Date(), policyIds = [] } = data;
   const date = new Date(effectiveDate);
 

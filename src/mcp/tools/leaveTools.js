@@ -2,18 +2,13 @@ import { z } from "zod";
 import {
   mcpApproveLeaveRequest,
   mcpCancelLeaveRequest,
-  mcpCreateLeavePolicy,
   mcpCreateLeaveRequest,
-  mcpDeleteLeavePolicy,
   mcpListHolidays,
   mcpListLeaveBalances,
   mcpListLeavePolicies,
   mcpListLeaveRequests,
   mcpListPendingLeaveApprovals,
   mcpRejectLeaveRequest,
-  mcpRunLeaveAccruals,
-  mcpUpdateLeaveBalance,
-  mcpUpdateLeavePolicy,
 } from "../controllers/leaveMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
@@ -21,6 +16,9 @@ import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
 import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
 import prisma from "../../lib/prisma.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { requestPolicyCreate, requestPolicyUpdate, requestPolicyDelete, requestBalanceSet, requestCancelLeave, listPendingLeaveChanges } from "../../services/leaveChangeRequest.service.js";
+import { runAccruals, runCarryOver, balanceHistory } from "../../services/leaveLedger.service.js";
 import { legacySubmit } from "../../services/approval/legacy.js";
 import { fileLeaveForApproval } from "../../lib/leaveSubmission.js";
 import {
@@ -94,12 +92,12 @@ export function registerLeaveTools(server) {
   // hr:leave:VIEW; the catalog is global (LeavePolicy has no tenant column).
   server.tool(
     "hr_leave_policies_list",
-    "List active leave policies (the leave TYPES HR assigns at approval)",
-    {},
-    withToolError(async () => {
+    "List active leave policies (the leave TYPES HR assigns at approval). includeInactive adds the ones no longer in use",
+    { includeInactive: z.boolean().optional() },
+    withToolError(async ({ includeInactive } = {}) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
-      const data = await mcpListLeavePolicies(user);
+      const data = await mcpListLeavePolicies(user, includeInactive ? { includeInactive: "true" } : {});
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_leave_policies_list")
   );
@@ -330,7 +328,7 @@ export function registerLeaveTools(server) {
 
   server.tool(
     "hr_leave_policy_create",
-    "Create a new leave policy",
+    "Request a new leave type. It is sent for approval through the attendance approval route and exists only once approved",
     {
       name: z.string().min(1).describe("Policy name (unique); e.g. 'Annual Leave Policy'"),
       leaveTypeCode: z
@@ -348,19 +346,19 @@ export function registerLeaveTools(server) {
       maxCarryForward: z.number().nonnegative().optional().describe("Max days that carry forward; see carryForwardAllowed rule"),
       minServiceMonths: z.number().int().nonnegative().optional().describe("Minimum months of service before accrual begins; defaults to 0"),
       active: z.boolean().optional().describe("Whether the policy is active; defaults to true"),
-      approvalWorkflowId: z.number().int().optional().describe("FK to an ApprovalWorkflow that gates requests under this policy"),
+      reason: z.string().trim().min(3).max(4000).describe("Why this leave type is being added; shown to the approvers"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
-      const data = await mcpCreateLeavePolicy(user, args);
+      const data = await requestPolicyCreate({ ...args, tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_leave_policy_update",
-    "Update a leave policy",
+    "Request a change to a leave type. Sent for approval; applies once approved",
     {
       id: z.string().min(1).describe("Leave policy ID (LeavePolicy.id); numeric"),
       name: z.string().optional().describe("New policy name"),
@@ -374,31 +372,33 @@ export function registerLeaveTools(server) {
       carryForwardAllowed: z.boolean().optional().describe("Whether unused balance carries forward"),
       maxCarryForward: z.number().nonnegative().optional().describe("Max days that carry forward"),
       active: z.boolean().optional().describe("Whether the policy is active"),
-      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read — a stale value returns -32009"),
+      minServiceMonths: z.number().int().nonnegative().optional().describe("Minimum months of service before accrual begins"),
+      expectedVersion: z.number().int().optional().describe("optimistic-concurrency guard; the version you last read"),
+      reason: z.string().trim().min(3).max(4000).describe("Why the leave type is being changed; shown to the approvers"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
-      const data = await mcpUpdateLeavePolicy(user, id, rest);
+      const data = await requestPolicyUpdate({ ...rest, id, tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_leave_policy_delete",
-    "Delete a leave policy",
-    { id: z.string().min(1) },
-    withToolError(async ({ id }) => {
+    "Request removal of an unused leave type. Sent for approval",
+    { id: z.string().min(1), reason: z.string().trim().min(3).max(4000) },
+    withToolError(async ({ id, reason }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:leave", user.isAdmin);
-      const data = await mcpDeleteLeavePolicy(user, id);
+      const data = await requestPolicyDelete({ id, reason, tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_leave_balance_update",
-    "Update leave balance for an employee",
+    "Request a new leave balance for an employee. Sent for approval; recorded as a ledger entry once approved",
     {
       employeeId: z.string().min(1).describe("Employee id (Employee.id); numeric"),
       leavePolicyId: z
@@ -406,57 +406,99 @@ export function registerLeaveTools(server) {
         .describe("Leave policy id (LeavePolicy.id); half of the LeaveBalance composite key employeeId+leavePolicyId"),
       balance: z.number().describe("Absolute new balance in days (replaces, not increments)"),
       carryOverBalance: z.number().optional().describe("Absolute carry-over balance in days; defaults to 0"),
-      notes: z.string().optional().describe("Optional audit note for the adjustment"),
+      reason: z.string().trim().min(3).max(4000).describe("Why the balance is being set; shown to the approvers and kept in the ledger"),
     },
     withToolError(async ({ employeeId, ...rest }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
-      const data = await mcpUpdateLeaveBalance(user, employeeId, rest);
+      const data = await requestBalanceSet({ ...rest, employeeId, tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_leave_balance_delete",
-    "Delete a leave balance record for an employee",
+    "Not available: balances are never deleted. Request a balance of 0 instead",
     {
       employeeId: z.string().min(1).describe("Employee id (Employee.id)"),
       leavePolicyId: z
         .union([z.string(), z.number()])
         .describe("Leave policy id (LeavePolicy.id)"),
     },
-    withToolError(async ({ employeeId, leavePolicyId }) => {
+    withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:leave", user.isAdmin);
-      await prisma.leaveBalance.delete({
-        where: {
-          employeeId_leavePolicyId: {
-            employeeId: Number(employeeId),
-            leavePolicyId: Number(leavePolicyId),
-          },
-        },
-      });
-      return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
+      throw Object.assign(new Error("A balance is never deleted, because its history would be lost. Request a balance of 0 instead."), { status: 409 });
     })
   );
 
   server.tool(
     "hr_leave_accruals_run",
-    "Trigger a leave accrual run for all employees",
+    "Credit leave for the period that contains accrualDate. Each person is credited once per leave type and period, however often it is run. Defaults to a dry run that lists who would be credited and writes nothing",
     {
-      accrualDate: z
-        .string()
-        .optional()
-        .describe("ISO 8601 date YYYY-MM-DD to accrue as-of; defaults to today"),
-      policyIds: z
-        .array(z.union([z.string(), z.number()]))
-        .optional()
-        .describe("Optional list of LeavePolicy ids to scope the run to; omit → all active accruing policies"),
+      accrualDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD inside the period to credit; defaults to today"),
+      policyIds: z.array(z.union([z.string(), z.number()])).optional().describe("Leave type ids to include; omit for all that accrue"),
+      dryRun: z.boolean().default(true).describe("true lists only; false credits"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
-      const data = await mcpRunLeaveAccruals(user, args);
+      const data = await runAccruals({ ...args, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_leave_carryover_run",
+    "Year-end carry-over: keep up to each leave type's limit and expire the rest, once per person, type and year. Defaults to a dry run",
+    {
+      effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD in the year to close; defaults to today"),
+      policyIds: z.array(z.union([z.string(), z.number()])).optional(),
+      dryRun: z.boolean().default(true),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:leave", user.isAdmin);
+      const data = await runCarryOver({ ...args, tenantId: user.tenantId, actorId: user.employeeId ?? null });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_leave_cancel_approved",
+    "Request cancelling approved leave. Sent for approval; once approved the days go back to the balance and attendance is re-checked",
+    { leaveRequestId: z.number().int().positive(), reason: z.string().trim().min(3).max(4000) },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
+      const data = await requestCancelLeave({ ...args, tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)) });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_leave_changes_pending",
+    "Leave changes (types, balances, cancellations) waiting for approval",
+    {},
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await listPendingLeaveChanges({ tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_leave_balance_history",
+    "The movements behind a leave balance, newest first. HR sees anyone; an employee sees only their own",
+    { employeeId: z.number().int().positive().optional(), leavePolicyId: z.number().int().positive().optional() },
+    withToolError(async ({ employeeId, leavePolicyId }) => {
+      const { user, permissions } = getCtx();
+      const own = Number(user.employeeId) || null;
+      const target = employeeId ?? own;
+      if (!target) throw Object.assign(new Error("Choose an employee"), { status: 400 });
+      if (target !== own) assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await balanceHistory({ tenantId: user.tenantId, employeeId: target, leavePolicyId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );

@@ -22,7 +22,23 @@ jest.unstable_mockModule('../../../src/mcp/controllers/leaveMcpController.js', (
   mcpUpdateLeavePolicy: jest.fn(async () => ({ success: true })),
 }));
 
+jest.unstable_mockModule('../../../src/services/leaveChangeRequest.service.js', () => ({
+  requestPolicyCreate: jest.fn(async () => ({ pendingApproval: true })),
+  requestPolicyUpdate: jest.fn(async () => ({ pendingApproval: true })),
+  requestPolicyDelete: jest.fn(async () => ({ pendingApproval: true })),
+  requestBalanceSet: jest.fn(async () => ({ pendingApproval: true })),
+  requestCancelLeave: jest.fn(async () => ({ pendingApproval: true })),
+  listPendingLeaveChanges: jest.fn(async () => []),
+}));
+jest.unstable_mockModule('../../../src/services/leaveLedger.service.js', () => ({
+  runAccruals: jest.fn(async () => ({ dryRun: true })),
+  runCarryOver: jest.fn(async () => ({ dryRun: true })),
+  balanceHistory: jest.fn(async () => []),
+}));
+
 const leaveCtl = await import('../../../src/mcp/controllers/leaveMcpController.js');
+const changes = await import('../../../src/services/leaveChangeRequest.service.js');
+const ledger = await import('../../../src/services/leaveLedger.service.js');
 const { registerLeaveTools } = await import('../../../src/mcp/tools/leaveTools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
@@ -49,11 +65,14 @@ const TOOLS = [
   { name: 'hr_leave_request_approve', ctrl: () => leaveCtl.mcpApproveLeaveRequest, gate: 'hr:leave', action: 'CREATE', args: { id: '1' } },
   { name: 'hr_leave_request_reject', ctrl: () => leaveCtl.mcpRejectLeaveRequest, gate: 'hr:leave', action: 'CREATE', args: { id: '1', reason: 'Not enough coverage' } },
   { name: 'hr_leave_request_cancel', ctrl: () => leaveCtl.mcpCancelLeaveRequest, gate: 'hr:leave', action: 'EDIT', args: { id: 1 } },
-  { name: 'hr_leave_policy_create', ctrl: () => leaveCtl.mcpCreateLeavePolicy, gate: 'hr:leave', action: 'CREATE', args: { name: 'Annual Leave' } },
-  { name: 'hr_leave_policy_update', ctrl: () => leaveCtl.mcpUpdateLeavePolicy, gate: 'hr:leave', action: 'EDIT', args: { id: 1 } },
-  { name: 'hr_leave_policy_delete', ctrl: () => leaveCtl.mcpDeleteLeavePolicy, gate: 'hr:leave', action: 'DELETE', args: { id: 1 } },
-  { name: 'hr_leave_balance_update', ctrl: () => leaveCtl.mcpUpdateLeaveBalance, gate: 'hr:leave', action: 'EDIT', args: { employeeId: 7 } },
-  { name: 'hr_leave_accruals_run', ctrl: () => leaveCtl.mcpRunLeaveAccruals, gate: 'hr:leave', action: 'CREATE', args: {} },
+  { name: 'hr_leave_policy_create', ctrl: () => changes.requestPolicyCreate, gate: 'hr:leave', action: 'CREATE', args: { name: 'Annual Leave', accrualPeriod: 'ANNUAL', reason: 'New type for the company' } },
+  { name: 'hr_leave_policy_update', ctrl: () => changes.requestPolicyUpdate, gate: 'hr:leave', action: 'EDIT', args: { id: 1, reason: 'Raise the yearly credit' } },
+  { name: 'hr_leave_policy_delete', ctrl: () => changes.requestPolicyDelete, gate: 'hr:leave', action: 'DELETE', args: { id: 1, reason: 'Type no longer used' } },
+  { name: 'hr_leave_balance_update', ctrl: () => changes.requestBalanceSet, gate: 'hr:leave', action: 'EDIT', args: { employeeId: '7', leavePolicyId: 1, balance: 5, reason: 'Opening balance' } },
+  { name: 'hr_leave_cancel_approved', ctrl: () => changes.requestCancelLeave, gate: 'hr:leave', action: 'EDIT', args: { leaveRequestId: 3, reason: 'Employee came back early' } },
+  { name: 'hr_leave_changes_pending', ctrl: () => changes.listPendingLeaveChanges, gate: 'hr:leave', action: 'VIEW', args: {} },
+  { name: 'hr_leave_carryover_run', ctrl: () => ledger.runCarryOver, gate: 'hr:leave', action: 'CREATE', args: {} },
+  { name: 'hr_leave_accruals_run', ctrl: () => ledger.runAccruals, gate: 'hr:leave', action: 'CREATE', args: {} },
   // hr_holiday_create was REMOVED from leaveTools — it was a second
   // registration of the name holidayCalendarTools.js owns, and the duplicate
   // made the MCP SDK throw at registration (killing ALL HR tool calls).

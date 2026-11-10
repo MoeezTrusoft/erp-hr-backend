@@ -5855,3 +5855,35 @@ model AttendanceRuleChangeRequest {
   @@index([tenantId, action, status], map: "attendance_rule_change_requests_scope")
   @@map("attendance_rule_change_requests")
 }
+
+model LeaveBalanceLedger {
+  id             BigInt   @id @default(autoincrement())
+  tenantId       String   @db.Uuid
+  employeeId     Int
+  leavePolicyId  Int
+  kind           String
+  days           Float
+  balanceAfter   Float
+  idempotencyKey String?
+  sourceRef      String?
+  reason         String?
+  createdById    Int?
+  createdAt      DateTime @default(now())
+  @@unique([tenantId, idempotencyKey], map: "leave_balance_ledger_key")
+  @@index([tenantId, employeeId, leavePolicyId, createdAt], map: "leave_balance_ledger_employee")
+  @@map("leave_balance_ledger")
+}
+
+model LeaveChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "leave_change_requests_scope")
+  @@map("leave_change_requests")
+}

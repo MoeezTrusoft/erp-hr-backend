@@ -71,6 +71,18 @@ export function requestTitle(kind, snapshot) {
       const what = s.action === "GRACE_MEMBERSHIP" ? "Team or department assignment" : "Grace period change";
       return from ? `${what} from ${from}` : what;
     }
+    case "LEAVE_CHANGE": {
+      const p = s.payload ?? {};
+      if (s.action === "POLICY_CREATE") return p.policy?.name ? `Leave type added: ${p.policy.name}` : "Leave type added";
+      if (s.action === "POLICY_UPDATE") return p.policyName ? `Leave type changed: ${p.policyName}` : "Leave type changed";
+      if (s.action === "POLICY_DELETE") return p.policyName ? `Leave type removed: ${p.policyName}` : "Leave type removed";
+      if (s.action === "BALANCE_SET") return p.employeeName ? `Leave balance change: ${p.employeeName}` : "Leave balance change";
+      if (s.action === "CANCEL_LEAVE") {
+        const from = day(p.from);
+        return p.employeeName ? `Leave cancelled: ${p.employeeName}${from ? `, ${from}` : ""}` : "Leave cancelled";
+      }
+      return null;
+    }
     case "ROSTER_CHANGE": {
       if (s.action === "DELETE") return "Roster removal";
       const from = day(s.payload?.effective_start_date);

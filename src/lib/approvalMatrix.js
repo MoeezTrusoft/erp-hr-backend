@@ -15,7 +15,7 @@ import { z } from "zod";
 export const MATRIX_KINDS = Object.freeze(["ATTENDANCE", "PAYROLL"]);
 // Request kinds that follow the company's published ATTENDANCE route. A kind in MATRIX_REQUIRED has no
 // fixed-stage fallback: without a published route it cannot be submitted (operator, 2026-11-09).
-const ROUTED_BY_ATTENDANCE = Object.freeze(["SHIFT_SWAP", "ROSTER_CHANGE", "HOLIDAY_CHANGE", "HOLIDAY_EXEMPTION", "ATTENDANCE_RULE_CHANGE"]);
+const ROUTED_BY_ATTENDANCE = Object.freeze(["SHIFT_SWAP", "ROSTER_CHANGE", "HOLIDAY_CHANGE", "HOLIDAY_EXEMPTION", "ATTENDANCE_RULE_CHANGE", "LEAVE_CHANGE"]);
 export const matrixKindFor = (kind) =>
   MATRIX_KINDS.includes(kind) ? kind : ROUTED_BY_ATTENDANCE.includes(kind) ? "ATTENDANCE" : null;
 export const matrixRequired = (kind) => ROUTED_BY_ATTENDANCE.includes(kind);

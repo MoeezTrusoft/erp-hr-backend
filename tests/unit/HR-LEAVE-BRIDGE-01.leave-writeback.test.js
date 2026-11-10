@@ -31,7 +31,9 @@ let updatedLegacyLeave;
 const prismaMock = {
     $executeRaw: jest.fn(),
     payrollRun: { findFirst: jest.fn(async () => null) },
-    leavePolicy: { findUnique: jest.fn(async () => leavePolicyRow) },
+    leavePolicy: { findUnique: jest.fn(async () => leavePolicyRow), findFirst: jest.fn(async () => leavePolicyRow) },
+    // The balance moves through the ledger: one append-only row per movement.
+    leaveBalanceLedger: { findFirst: jest.fn(async () => null), create: jest.fn(async ({ data }) => data) },
     // The approval path re-fetches the request; the C5 suite swaps this stub.
     // `update` runs inside the tenant transaction (status flip).
     leaveRequest: {
