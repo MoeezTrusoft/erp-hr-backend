@@ -1026,10 +1026,12 @@ export const createPayrollRun = async (data, createdBy, tenantId) => {
 // repayment for THIS run stays selected — planLoanRepayment then re-prices the
 // line without re-booking the ledger. Loans repaid by a DIFFERENT run (or
 // manually) do not resurface.
-export const loanBridgeWhere = (employeeId, payrollRunId) => ({
+// A loan is recovered from the first run whose period ends on or after its disbursement date (the whole last day counts).
+const endOfDay = (d) => new Date(+new Date(d) + 86399999);
+export const loanBridgeWhere = (employeeId, payrollRunId, periodEnd) => ({
     employeeId,
     OR: [
-        { status:'ACTIVE', outstandingMinor: { gt: 0 } },
+        { status:'ACTIVE', outstandingMinor: { gt: 0 }, ...(periodEnd ? { disbursementDate: { lte: endOfDay(periodEnd) } } : {}) },
         { repayments: { some: { payrollRunId } } },
     ],
 });
@@ -1503,7 +1505,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                 // already repaid (N-14): re-processing must keep their
                 // deduction line, never silently re-pay the installment.
                 prisma.loan.findMany({
-                    where: withTenant(tenantId, loanBridgeWhere(employee.id, payrollRun.id)),
+                    where: withTenant(tenantId, loanBridgeWhere(employee.id, payrollRun.id, payrollRun.periodEnd)),
                     select: { id: true, kind:true, monthlyInstallmentMinor: true, outstandingMinor: true, repayments:{where:{OR:[{payrollRunId:id},{settledAt:null,payrollRunId:{in:reservingRuns.map(r=>r.id)}}]}} },
                 }),
             ]);

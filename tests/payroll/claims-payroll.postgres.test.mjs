@@ -49,6 +49,35 @@ const calc = (runId) => as("EMPLOYEE", () => processPayrollRun(runId, people.EMP
 const tax = (s) => Number(s.deductions.find((d) => /Income Tax/.test(d.description))?.amount ?? 0);
 const lines = (s) => s.earnings.filter((e) => /^Reimbursement/.test(e.description));
 
+test("a run reserves a loan's installment only from the period that reaches its disbursement date", { timeout: 240000 }, async () => {
+  const { run } = await once();
+  const fresh = await db((tx) => tx.payrollRun.findFirst({ where: { id: run.id } }));
+  const after = new Date(+fresh.periodEnd + 40 * 86400000);
+  const admin = async (sql, args = []) => {
+    const c = new pg.Client({ connectionString: process.env.ASSESSMENT_TEST_ADMIN_URL });
+    await c.connect();
+    try {
+      await c.query("SET session_replication_role = replica");
+      return (await c.query(sql, args)).rows;
+    } finally {
+      await c.end();
+    }
+  };
+  const [{ id: loanId }] = await admin(`INSERT INTO loans ("tenantId", "employeeId", status, "principalMinor", "outstandingMinor", "monthlyInstallmentMinor", "tenureMonths", "disbursementDate", reason, kind, updated_at) VALUES ($1, $2, 'ACTIVE', 300000, 300000, 100000, 3, $3, 'process test', 'LOAN', now()) RETURNING id`, [company, people.EMPLOYEE.id, after]);
+  const reserved = () => db((tx) => tx.loanRepayment.count({ where: { loanId, payrollRunId: run.id } }));
+  try {
+    await calc(run.id);
+    assert.equal(await reserved(), 0, "disbursed after the period: nothing is taken yet");
+    await admin('UPDATE loans SET "disbursementDate" = $1 WHERE id = $2', [fresh.periodStart, loanId]);
+    await calc(run.id);
+    assert.equal(await reserved(), 1, "disbursed within the period: the installment is reserved");
+  } finally {
+    await admin('DELETE FROM loan_repayments WHERE "loanId" = $1', [loanId]);
+    await admin("DELETE FROM loans WHERE id = $1", [loanId]);
+    await calc(run.id);
+  }
+});
+
 test("an approved claim is paid on the next payslip as a non-taxable line, once, and PAID when the run is finalised", { timeout: 240000 }, async () => {
   const { run } = await once();
   await calc(run.id);
@@ -190,4 +219,42 @@ test("HR claiming her own expense: her filing is the HR check and Management alo
   assert.equal(ar.stage, "MANAGEMENT", "no second HR is needed");
   assert.equal(ar.hrActorCode, people.HR.employee_code);
   assert.equal((await act("MANAGEMENT", { approvalRef: ar.id, version: ar.version }, "APPROVE")).stage, "APPROVED");
+});
+
+test("Management claiming her own expense is approved at once and then paid through payroll like any approved claim", async () => {
+  await once();
+  const made = await as("MANAGEMENT", () => createClaim({ tenantId: company, employeeId: people.MANAGEMENT.id, title: "Management travel", amount: 700 }));
+  const id = idOf(made);
+  await as("MANAGEMENT", () => submitMyClaim({ tenantId: company, employeeId: people.MANAGEMENT.id, id }));
+  const ar = await db((tx) => tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "CLAIM", sourceRef: String(id) } }));
+  assert.equal(ar.stage, "APPROVED");
+  assert.equal((await db((tx) => tx.reimbursementClaim.findFirst({ where: { id, tenantId: company } }))).status, "APPROVED");
+});
+
+test("a loan is recovered from the first run whose period ends on or after its disbursement date", async () => {
+  const { loanBridgeWhere } = await import("../../src/services/payrollService.js");
+  await once();
+  const periodEnd = new Date("2031-03-31T00:00:00Z");
+  const mk = async (disbursementDate) => {
+    const admin = new pg.Client({ connectionString: process.env.ASSESSMENT_TEST_ADMIN_URL });
+    await admin.connect();
+    try {
+      await admin.query("SET session_replication_role = replica");
+      const { rows } = await admin.query(`INSERT INTO loans ("tenantId", "employeeId", status, "principalMinor", "outstandingMinor", "monthlyInstallmentMinor", "tenureMonths", "disbursementDate", reason, kind, updated_at) VALUES ($1, $2, 'ACTIVE', 100000, 100000, 100000, 1, $3, 'bridge test', 'ADVANCE', now()) RETURNING id`, [company, people.EMPLOYEE.id, disbursementDate]);
+      return rows[0];
+    } finally {
+      await admin.end();
+    }
+  };
+  const before = await mk("2031-03-10T09:00:00Z");
+  const lastDay = await mk("2031-03-31T15:30:00Z");
+  const after = await mk("2031-04-01T00:00:00Z");
+  try {
+    const picked = (await db((tx) => tx.loan.findMany({ where: { tenantId: company, ...loanBridgeWhere(people.EMPLOYEE.id, 1, periodEnd) }, select: { id: true } }))).map((l) => l.id);
+    assert.ok(picked.includes(before.id), "disbursed earlier in the month");
+    assert.ok(picked.includes(lastDay.id), "disbursed during the last day of the period still counts");
+    assert.ok(!picked.includes(after.id), "disbursed after the period waits for the next run");
+  } finally {
+    await db((tx) => tx.loan.deleteMany({ where: { id: { in: [before.id, lastDay.id, after.id] } } }));
+  }
 });

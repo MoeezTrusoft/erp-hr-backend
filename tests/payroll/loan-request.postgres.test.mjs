@@ -149,3 +149,14 @@ test("HR asking for her own advance: her filing is the HR check and Management a
   assert.notEqual((await approvalOf(emp.loanId)).stage, "MANAGEMENT", "an ordinary employee's request still goes through the earlier stages");
   await clear();
 });
+
+test("Management asking for her own advance is approved at once, with the reason on the trail", async () => {
+  await once();
+  await clear();
+  const own = await as("MANAGEMENT", () => loans.requestMyLoan({ tenantId: company, employeeId: people.MANAGEMENT.id, kind: "ADVANCE", principalMinor: 1500000, tenureMonths: 1, reason: "Own advance, Management" }));
+  const ar = await approvalOf(own.loanId);
+  assert.equal(ar.stage, "APPROVED");
+  assert.equal((await loan(own.loanId)).status, "ACTIVE");
+  const trail = await db((tx) => tx.hrApprovalAudit.findMany({ where: { approvalRef: ar.id } }));
+  assert.ok(trail.some((t) => /no further approval needed/.test(t.reason)), "the trail says why");
+});
