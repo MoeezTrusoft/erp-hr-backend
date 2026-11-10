@@ -3872,6 +3872,10 @@ model ReimbursementClaim {
   rejectedReason String?
   paidAt         DateTime?
   notes          String?
+  // An approved claim is paid through payroll: the run that has reserved it (and its payslip), and, once that run is
+  // finalised, the claim is PAID with paidAt. A reservation by a cancelled or failed run no longer holds the claim.
+  payrollRunId   Int?
+  payslipId      Int?
   created_at     DateTime            @default(now())
   updated_at     DateTime            @updatedAt
 
@@ -3885,6 +3889,7 @@ model ReimbursementClaim {
 
   @@index([tenantId])
   @@index([employeeId])
+  @@index([tenantId, status, payrollRunId], map: "reimbursement_claims_pay_idx")
   @@map("reimbursement_claims")
 }
 
@@ -5901,6 +5906,21 @@ model CaptureChangeRequest {
   updatedAt     DateTime @updatedAt
   @@index([tenantId, action, status], map: "capture_change_requests_scope")
   @@map("capture_change_requests")
+}
+
+// Income-tax slab changes by approval (TAX_SLAB_CHANGE): one request replaces a country's whole slab set from a date.
+model TaxSlabChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "tax_slab_change_requests_scope")
+  @@map("tax_slab_change_requests")
 }
 
 model AttendanceDeviceCommand {

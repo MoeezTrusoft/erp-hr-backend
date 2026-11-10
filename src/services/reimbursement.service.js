@@ -2,6 +2,8 @@ import { legacyDecision, legacySubmit } from "./approval/legacy.js";
 import prisma from "../config/prisma.js";
 import { uploadFileToDAM } from "./dam.media.service.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { checkClaim, defaultClaimCurrency } from "./claims.service.js";
 
 // C.2-completion — verified tenant (T-P2.1) threaded via `tenantId` (in the
 // create payload, or a trailing read/update param); folded into claim reads +
@@ -9,17 +11,23 @@ import { scopedWhere, scopedData } from "../lib/tenancy.js";
 // reimbursement claims. (Does not touch the payroll engine / C4 surface.)
 
 export const createClaim = async ({ employeeId, title, description, amount, currency, category, notes, tenantId }) => {
-  return prisma.reimbursementClaim.create({
-    data: scopedData(tenantId, {
-      employeeId: Number(employeeId),
-      // The tool sends `description`; ReimbursementClaim.title is the NOT NULL column.
-      title: title || description,
-      amount: Number(amount),
-      currency: currency || "USD",
-      category,
-      notes,
-    }),
-  });
+  // The same checks and the same currency default as the claims screen: whole amounts, an active employee of this
+  // company, and the currency the employee is paid in, never a hard-coded dollar.
+  return tenantTransaction(prisma, async (tx) => {
+    const claimCurrency = currency ? String(currency).toUpperCase() : await defaultClaimCurrency(tx, employeeId);
+    await checkClaim(tx, { tenantId, employeeId, title: title || description, amount, currency: claimCurrency });
+    return tx.reimbursementClaim.create({
+      data: scopedData(tenantId, {
+        employeeId: Number(employeeId),
+        // The tool sends `description`; ReimbursementClaim.title is the NOT NULL column.
+        title: String(title || description).trim(),
+        amount: Number(amount),
+        currency: claimCurrency,
+        category,
+        notes,
+      }),
+    });
+  }, { tenantId });
 };
 
 export const listClaims = async ({ employeeId, status, tenantId } = {}) => {

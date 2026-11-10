@@ -67,6 +67,40 @@ export function registerLoanTools(server) {
     }, "hr_loan_get")
   );
 
+  // ── SELF SERVICE ──────────────────────────────────────────────────────────
+  // An employee asks for a loan or advance for themselves, and sees their own; no loan grant is needed, because
+  // what they can reach is pinned to the signed-in employee.
+  server.tool(
+    "hr_loan_request_mine",
+    "Ask for a salary advance (repaid next payroll) or a loan (repaid monthly) for yourself. It goes for approval; HR and Management decide",
+    {
+      kind: z.enum(["LOAN", "ADVANCE"]).optional().describe("LOAN (default) or ADVANCE"),
+      principalMinor: z.number().int().positive().describe("Amount in minor units (paisa). E.g. 5000000 = 50,000.00"),
+      tenureMonths: z.number().int().positive().optional().describe("Months to repay a loan; an advance is repaid in one"),
+      disbursementDate: z.string().optional().describe("When you need the money, YYYY-MM-DD (default today)"),
+      reason: z.string().trim().min(3).max(1000).describe("Why you need it"),
+    },
+    withToolError(async (args) => {
+      const { user } = getCtx();
+      const kind = args.kind ?? "LOAN";
+      if (kind === "LOAN" && !args.tenureMonths) throw Object.assign(new Error("Say how many months you will repay the loan over"), { status: 400 });
+      const data = await loanService.requestMyLoan({ ...args, kind, tenantId: user.tenantId, employeeId: user.employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_loan_request_mine")
+  );
+
+  server.tool(
+    "hr_loan_mine",
+    "Your own loans and salary advances, with the balance still owed and what payroll has taken",
+    {},
+    withToolError(async () => {
+      const { user } = getCtx();
+      if (!user.employeeId) throw Object.assign(new Error("Sign in with an employee account"), { status: 403 });
+      const data = await loanService.listMyLoans({ tenantId: user.tenantId, employeeId: user.employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_loan_mine")
+  );
+
   // ── CREATE ────────────────────────────────────────────────────────────────
   server.tool(
     "hr_loan_create",
@@ -78,7 +112,7 @@ export function registerLoanTools(server) {
       tenureMonths: z.number().int().positive().describe("Number of monthly installments. A salary advance uses 1"),
       kind: z.enum(["LOAN", "ADVANCE"]).optional().describe("LOAN (default) or ADVANCE for a salary advance — recovered next payroll, interest-free"),
       disbursementDate: z.string().optional().describe("Disbursement date (ISO 8601). Defaults to today"),
-      reason: z.string().optional().describe("Reason for the loan"),
+      reason: z.string().trim().min(3).max(1000).describe("Why the loan or advance is being given"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

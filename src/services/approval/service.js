@@ -545,7 +545,7 @@ async function submitWithin(
     const matrixKind = matrixKindFor(input.kind);
     const matrix = matrixKind ? await loadPublishedMatrix(tx, env.tenantId, matrixKind) : null;
     if (!matrix && matrixRequired(input.kind))
-      fail("Publish the attendance approval route in Payroll Setup before submitting this request", 409);
+      fail(`Publish the ${matrixKind.toLowerCase()} approval route in Payroll Setup before submitting this request`, 409);
     const needsManager = !matrix && requiresLineManager(input.kind);
     const manager = needsManager
       ? await tx.employee.findFirst({

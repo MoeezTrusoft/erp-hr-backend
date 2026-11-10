@@ -10,19 +10,53 @@ import { assertNoPayrollLoanReservation } from "./payrollLoans.service.js";
 /** HR-PAYROLL-ADVANCE-01 — mirrors the Prisma `LoanKind` enum. */
 export const LOAN_KINDS = ["LOAN", "ADVANCE"];
 
+const MAX_TENURE_MONTHS = 120;
+const MAX_PRINCIPAL_MINOR = 100_000_000_000; // 1 billion in major units: a typo guard, not a policy
+const MAX_DAYS_AHEAD = 366;
+const bad = (message, status = 400) => Object.assign(new Error(message), { status });
+
+/**
+ * The basic checks every loan or advance must pass, however it is raised: real amounts and tenure, an advance that is
+ * one interest-free instalment, a disbursement date that is a date and not years away, and an active employee of this
+ * company. Limits on size and number are the approvers' call, not the system's.
+ */
+async function checkLoanInput(db, { tenantId, employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, kind = "LOAN", reason }) {
+    if (!LOAN_KINDS.includes(kind)) throw bad(`kind must be one of ${LOAN_KINDS.join(", ")}`);
+    if (!Number.isSafeInteger(principalMinor) || principalMinor <= 0) throw bad("Enter the amount as a positive whole number in minor currency units");
+    if (principalMinor > MAX_PRINCIPAL_MINOR) throw bad("That amount is too large");
+    if (!Number.isInteger(tenureMonths) || tenureMonths <= 0 || tenureMonths > MAX_TENURE_MONTHS) throw bad(`Repayment months must be a whole number from 1 to ${MAX_TENURE_MONTHS}`);
+    const interest = Number(interestRatePct ?? 0);
+    if (!Number.isFinite(interest) || interest < 0 || interest > 100) throw bad("Interest must be between 0 and 100 percent");
+    if (kind === "ADVANCE") {
+        if (interest > 0) throw bad("A salary advance cannot carry interest");
+        if (tenureMonths !== 1) throw bad("A salary advance is repaid in one month");
+    }
+    let disbursed = new Date();
+    if (disbursementDate) {
+        disbursed = new Date(disbursementDate);
+        if (Number.isNaN(disbursed.getTime())) throw bad("Choose a valid disbursement date");
+        if (disbursed.getTime() - Date.now() > MAX_DAYS_AHEAD * 86400000) throw bad("The disbursement date cannot be more than a year ahead");
+        if (disbursed.getUTCFullYear() < 2000) throw bad("Choose a valid disbursement date");
+    }
+    const why = String(reason ?? "").trim();
+    if (why.length < 3) throw bad("Give a reason (at least 3 characters)");
+    const person = await db.employee.findFirst({ where: { id: Number(employeeId), tenant_id: tenantId }, select: { id: true, status: true } });
+    if (!person) throw bad("Employee not found", 404);
+    if (String(person.status ?? "").toLowerCase() !== "active") throw bad("Only an active employee can be given a loan or advance", 409);
+    const waiting = await db.loan.findFirst({ where: { tenantId, employeeId: person.id, kind, status: "PENDING" }, select: { id: true } });
+    if (waiting) throw bad(`This employee already has a ${kind === "ADVANCE" ? "salary advance" : "loan"} request waiting for approval`, 409);
+    return { disbursed, reason: why };
+}
+
 /**
  * Create a new loan for an employee.
  * Automatically calculates monthly installment from principal, interest, tenure.
  */
 export const createLoan = async ({ employeeId, principalMinor, interestRatePct = 0, tenureMonths, disbursementDate, reason, createdById, tenantId, kind = "LOAN", submit = false }) => {
-    if (!employeeId) throw Object.assign(new Error("employeeId is required"), { status: 400 });
-    if (!principalMinor || principalMinor <= 0) throw Object.assign(new Error("principalMinor must be positive"), { status: 400 });
-    if (!tenureMonths || tenureMonths <= 0) throw Object.assign(new Error("tenureMonths must be positive"), { status: 400 });
-    // HR-PAYROLL-ADVANCE-01 — the discriminator is a money-path input; a typo'd
-    // value must not reach the column, and an "interest-bearing advance" is a
-    // loan mislabelled.
-    if (!LOAN_KINDS.includes(kind)) throw Object.assign(new Error(`kind must be one of ${LOAN_KINDS.join(", ")}`), { status: 400 });
-    if (kind === "ADVANCE" && Number(interestRatePct) > 0) throw Object.assign(new Error("A salary advance cannot carry interest"), { status: 400 });
+    if (!employeeId) throw bad("employeeId is required");
+    const checked = await tenantTransaction(prisma, (tx) => checkLoanInput(tx, { tenantId, employeeId, principalMinor, interestRatePct, tenureMonths, disbursementDate, kind, reason }), { tenantId });
+    reason = checked.reason;
+    disbursementDate = checked.disbursed;
 
     // Calculate monthly installment (simple amortization)
     const totalInterest = Math.round(principalMinor * (interestRatePct / 100) * (tenureMonths / 12));
@@ -35,10 +69,10 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
             principalMinor,
             interestRatePct: interestRatePct || 0,
             tenureMonths,
-            disbursementDate: disbursementDate ? new Date(disbursementDate) : new Date(),
+            disbursementDate,
             outstandingMinor: totalRepayable,
             monthlyInstallmentMinor,
-            reason: reason || null,
+            reason,
             createdById: createdById ? Number(createdById) : null,
             kind,
             status: "PENDING",
@@ -47,11 +81,43 @@ export const createLoan = async ({ employeeId, principalMinor, interestRatePct =
 
     // HR raises the loan for the employee: open its approval request now, filed by HR on the employee's behalf,
     // so a pending loan is never stranded outside the Approval Centre.
-    if (submit) {
-        await legacySubmit("LOAN", loan.id, "HR recorded the loan for the employee", { onBehalf: true });
-    }
+    if (submit) await submitOrRemove(loan, tenantId, reason, { onBehalf: true });
 
     return loan;
+};
+
+/** Open the approval request; if it cannot be opened, the request is removed so no orphan stays pending. */
+async function submitOrRemove(loan, tenantId, reason, options) {
+    try {
+        await legacySubmit("LOAN", loan.id, reason, options);
+    } catch (error) {
+        await prisma.loan.deleteMany({ where: scopedWhere(tenantId, { id: loan.id, status: "PENDING" }) });
+        throw error;
+    }
+}
+
+/**
+ * An employee asks for a loan or salary advance for themselves. Interest is for HR to set when raising a loan on
+ * someone's behalf; a request from the employee is interest-free. It goes through the same approval route as a loan HR
+ * raises, from the employee's own submission.
+ */
+export const requestMyLoan = async ({ tenantId, employeeId, kind = "LOAN", principalMinor, tenureMonths, disbursementDate, reason }) => {
+    if (!tenantId) throw bad("Tenant is required", 403);
+    if (!Number.isInteger(Number(employeeId)) || Number(employeeId) < 1) throw bad("Sign in with an employee account to ask for a loan or advance", 403);
+    const loan = await createLoan({ tenantId, employeeId, kind, principalMinor, tenureMonths: kind === "ADVANCE" ? 1 : tenureMonths, disbursementDate, reason, createdById: employeeId, interestRatePct: 0, submit: false });
+    await submitOrRemove(loan, tenantId, loan.reason, {});
+    return { requested: true, loanId: loan.id, kind: loan.kind, status: "PENDING", monthlyInstallmentMinor: loan.monthlyInstallmentMinor, message: "Sent for approval. You will be told when it is decided." };
+};
+
+/** The employee's own loans and advances, with what they still owe and what has been taken from pay. */
+export const listMyLoans = async ({ tenantId, employeeId }) => {
+    const items = await prisma.loan.findMany({
+        where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
+        include: { repayments: { where: { settledAt: { not: null } }, orderBy: { deductedAt: "desc" }, take: 24 } },
+        orderBy: { created_at: "desc" },
+        take: 100,
+    });
+    return { items };
 };
 
 /**

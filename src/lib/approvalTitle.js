@@ -78,6 +78,10 @@ export function requestTitle(kind, snapshot) {
       const kind = p.direction === "OUT" ? "check-out" : "check-in";
       return p.employeeName ? `Manual ${kind}: ${p.employeeName}${when ? `, ${when}` : ""}` : `Manual ${kind}`;
     }
+    case "TAX_SLAB_CHANGE": {
+      const p = s.payload ?? {};
+      return p.effectiveFrom ? `Tax slabs${p.countryCode ? ` (${p.countryCode})` : ""} from ${day(p.effectiveFrom)}` : "Tax slab change";
+    }
     case "LEAVE_CHANGE": {
       const p = s.payload ?? {};
       if (s.action === "POLICY_CREATE") return p.policy?.name ? `Leave type added: ${p.policy.name}` : "Leave type added";

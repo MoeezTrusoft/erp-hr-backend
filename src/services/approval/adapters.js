@@ -203,6 +203,13 @@ const definitions = {
     ["PENDING"],
     ["action", "payload", "reason"],
   ],
+  TAX_SLAB_CHANGE: [
+    "taxSlabChangeRequest",
+    "tax_slab_change_requests",
+    "requestedById",
+    ["PENDING"],
+    ["action", "payload", "reason"],
+  ],
   GOAL: [
     "goal",
     "Goal",
@@ -339,6 +346,7 @@ export const registry = Object.fromEntries(
           "ATTENDANCE_RULE_CHANGE",
           "LEAVE_CHANGE",
           "CAPTURE_CHANGE",
+          "TAX_SLAB_CHANGE",
           "TIME_CREDIT",
           "TIME_CREDIT_REVOCATION",
           "ASSESSMENT_RELEASE",
@@ -781,6 +789,9 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
   } else if (kind === "CAPTURE_CHANGE") {
     const { finalizeCaptureChange } = await import("../captureChangeRequest.service.js");
     await finalizeCaptureChange(tx, env, row, approved);
+  } else if (kind === "TAX_SLAB_CHANGE") {
+    const { finalizeTaxSlabChange } = await import("../taxSlabChangeRequest.service.js");
+    await finalizeTaxSlabChange(tx, env, row, approved);
   } else if (kind === "GOAL")
     await tx.goal.update({
       where: { id: row.id },

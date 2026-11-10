@@ -12,12 +12,9 @@ import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
-import {
-    createTaxSlab,
-    updateTaxSlab,
-    deleteTaxSlab,
-    listTaxSlabs,
-} from "../../services/payrollTaxSlab.service.js";
+import { listTaxSlabs } from "../../services/payrollTaxSlab.service.js";
+import { requestTaxSlabSet, listPendingTaxSlabChanges } from "../../services/taxSlabChangeRequest.service.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import {
     getCalendar,
     upsertCalendar,
@@ -37,6 +34,10 @@ function getCtx() {
 
 const RESOURCE = "hr:payroll";
 
+// Tax slabs change by an approval request (hr_tax_slab_set_request), never one row at a time.
+const closed = () =>
+    Object.assign(new Error("Tax slabs are changed by sending the whole slab set for approval, not one slab at a time"), { status: 409 });
+
 export function registerPayrollConfigTools(server) {
     // ── TAX SLABS ─────────────────────────────────────────────────────────────
     server.tool(
@@ -54,8 +55,7 @@ export function registerPayrollConfigTools(server) {
         withToolError(async (args) => {
             const { user, permissions } = getCtx();
             assertPermission(permissions, "POST", RESOURCE, user.isAdmin);
-            const data = await createTaxSlab({ tenantId: user.tenantId, ...args });
-            return { content: [{ type: "text", text: JSON.stringify(data) }] };
+            throw closed();
         }, "hr_tax_slab_create")
     );
 
@@ -76,8 +76,7 @@ export function registerPayrollConfigTools(server) {
         withToolError(async ({ id, ...fields }) => {
             const { user, permissions } = getCtx();
             assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
-            const data = await updateTaxSlab({ tenantId: user.tenantId, id, ...fields });
-            return { content: [{ type: "text", text: JSON.stringify(data) }] };
+            throw closed();
         }, "hr_tax_slab_update")
     );
 
@@ -90,9 +89,37 @@ export function registerPayrollConfigTools(server) {
         withToolError(async ({ id }) => {
             const { user, permissions } = getCtx();
             assertPermission(permissions, "DELETE", RESOURCE, user.isAdmin);
-            const data = await deleteTaxSlab({ tenantId: user.tenantId, id });
-            return { content: [{ type: "text", text: JSON.stringify(data) }] };
+            throw closed();
         }, "hr_tax_slab_delete")
+    );
+
+    server.tool(
+        "hr_tax_slab_set_request",
+        "Send a country's whole income-tax slab set for approval, from a chosen date. Give each slab's upper limit (empty for the last) and its rate in percent; base tax is worked out. The company's payroll approval route decides, and nothing changes until it approves",
+        {
+            countryCode: z.string().length(2).optional().describe("ISO country code (default PK)"),
+            effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Date the new slabs start, YYYY-MM-DD; a date a payroll run already covers is refused"),
+            slabs: z.array(z.object({ upto: z.number().nullable().optional(), ratePct: z.number() })).min(1).max(12).describe("Slabs from the lowest up; the last has no upper limit"),
+            reason: z.string().trim().min(3).max(2000),
+        },
+        withToolError(async (args) => {
+            const { user, permissions } = getCtx();
+            assertPermission(permissions, "PUT", RESOURCE, user.isAdmin);
+            const data = await requestTaxSlabSet({ ...args, tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)) });
+            return { content: [{ type: "text", text: JSON.stringify(data) }] };
+        }, "hr_tax_slab_set_request")
+    );
+
+    server.tool(
+        "hr_tax_slab_changes_pending",
+        "Tax slab changes waiting for approval",
+        {},
+        withToolError(async () => {
+            const { user, permissions } = getCtx();
+            assertPermission(permissions, "GET", RESOURCE, user.isAdmin);
+            const data = await listPendingTaxSlabChanges({ tenantId: user.tenantId });
+            return { content: [{ type: "text", text: JSON.stringify(data) }] };
+        }, "hr_tax_slab_changes_pending")
     );
 
     server.tool(
