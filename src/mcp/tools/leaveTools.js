@@ -164,14 +164,18 @@ export function registerLeaveTools(server) {
       // hr:leave) must see ONLY its own requests. Pin to the acting employee;
       // a foreign employeeId is refused, not remapped (D1=A).
       const { actingEmployeeId, canViewOthers } = resolveActorScope(user, permissions);
-      const pinnedEmployeeId = assertEmployeeScope({
-        user,
-        permissions,
-        explicit: args.employeeId,
-        actingEmployeeId,
-        canViewOthers,
-        allowUnbound: true,
-      });
+      // HR and Management read everyone's leave: with no employee named the list is the company's, not their own.
+      const wholeCompany = canViewOthers && (args.employeeId == null || args.employeeId === "");
+      const pinnedEmployeeId = wholeCompany
+        ? null
+        : assertEmployeeScope({
+            user,
+            permissions,
+            explicit: args.employeeId,
+            actingEmployeeId,
+            canViewOthers,
+            allowUnbound: true,
+          });
       const query = toListQuery({ ...args, employeeId: pinnedEmployeeId ?? undefined });
       // Issue 395 — a line manager has no write grant, so a request they raised
       // for a report belongs to that report and would vanish from their screen.

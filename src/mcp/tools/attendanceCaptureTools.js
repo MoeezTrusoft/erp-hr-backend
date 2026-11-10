@@ -178,6 +178,7 @@ export function registerAttendanceCaptureTools(server) {
       name: z.string().min(1).max(120),
       timeZone: z.string().min(1),
       staleAfterMinutes: z.number().int().min(1).max(10080).optional(),
+      reason: z.string().trim().min(1).max(2000),
     },
     "PUT",
     registerCaptureDevice,

@@ -35,7 +35,7 @@ async function main() {
     const response = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(15000) });
     check(response.status === 200, `${path} returns 200`);
   }
-  const registered = await registerCaptureDevice({ tenantId: TENANT, actorId: ACTOR, sn: serial, name: "Deployment smoke (temporary, no employee)", timeZone: "Asia/Karachi" });
+  const registered = await registerCaptureDevice({ tenantId: TENANT, actorId: ACTOR, sn: serial, name: "Deployment smoke (temporary, no employee)", timeZone: "Asia/Karachi", reason: "Deployment smoke check, removed afterwards" });
   device = registered.device;
   check((await post()).status === 403, "missing device credential rejected");
   check((await post("invalid-smoke-key")).status === 403, "incorrect device credential rejected");

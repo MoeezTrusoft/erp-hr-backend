@@ -76,7 +76,7 @@ class AdmsTests(unittest.TestCase):
             def do_POST(self):
                 self.forwarded = True
         beats = []
-        instance = wrap_handler(Legacy, {"REGISTERED"}, beats.append)()
+        instance = wrap_handler(Legacy, {"REGISTERED"}, lambda sn, device_time=None: beats.append(sn))()
         instance.path = "/iclock/getrequest?SN=" + serial
         return instance, beats
 

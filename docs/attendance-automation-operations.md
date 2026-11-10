@@ -48,6 +48,15 @@ after the HR endpoint confirms durable storage. Unknown serials and oversized
 uploads are rejected. This preserves the existing native-device trust boundary;
 serial checks are not liveness detection or cryptographic hardware identity.
 
+The adapter also measures each machine's clock. The machines never report their time, so it uses single punches
+pushed live: two such punches that agree on how far the machine is from this host's clock are sent to HR as the
+machine's time with the next heartbeat (one punch, or a batch re-sent after an outage, is never trusted). HR's
+"Fix clock" request reaches the adapter on that heartbeat. It is queued for the machine only when
+`ICLOCK_SET_TIME_COMMAND` holds the ADMS text that sets the clock (use `{localTime}` for the wall-clock time).
+Leave it empty until the text has been proven on one real machine: HR then sees the request as failed instead of
+waiting forever. Proving it: set the variable, restart the receiver, press "Fix clock" for that machine and watch the
+machine's own clock and the request state in the Devices tab.
+
 Before switching destinations, back up the database, service environment, unit
 overrides, legacy receiver and bridge checkpoints. Verify credentials with an
 empty intake batch (expected 400 after authentication; no punch is inserted).

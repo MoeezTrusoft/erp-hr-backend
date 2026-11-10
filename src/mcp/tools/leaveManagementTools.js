@@ -152,14 +152,18 @@ export function registerLeaveManagementTools(server) {
       // sees its own rows only; an explicit foreign employeeId is refused, not
       // remapped, so misuse is observable.
       const { actingEmployeeId, canViewOthers } = resolveActorScope(user, permissions);
-      const effectiveEmployeeId = assertEmployeeScope({
-        user,
-        permissions,
-        explicit: args.employeeId,
-        actingEmployeeId,
-        canViewOthers,
-        allowUnbound: true,
-      });
+      // HR and Management see the whole company's month; an employee sees their own.
+      const effectiveEmployeeId =
+        canViewOthers && (args.employeeId == null || args.employeeId === "")
+          ? null
+          : assertEmployeeScope({
+              user,
+              permissions,
+              explicit: args.employeeId,
+              actingEmployeeId,
+              canViewOthers,
+              allowUnbound: true,
+            });
       const data = await getLeaveMonthOverview(
         { month: args.month, employeeId: effectiveEmployeeId },
         user.tenantId,

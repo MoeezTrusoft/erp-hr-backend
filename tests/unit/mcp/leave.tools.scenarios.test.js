@@ -130,3 +130,27 @@ describe('hr_leave_balances_get — own balances for anyone, others only for HR'
     expect(leaveSvc.getEmployeeLeaveBalances).toHaveBeenCalledWith(8);
   });
 });
+
+describe('hr_leave_requests_list — HR sees the company, an employee sees their own', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const queryOf = () => leaveCtl.mcpListLeaveRequests.mock.calls[0][1];
+
+  it('HR with no employee named gets the whole company, not their own rows', async () => {
+    await call('hr_leave_requests_list', { page: 1, pageSize: 50 }, { permissions: { 'hr:leave': ['VIEW'], 'hr:employee': ['EDIT'] } });
+    expect(queryOf().employeeId).toBeUndefined();
+  });
+  it('HR can still ask for one employee', async () => {
+    await call('hr_leave_requests_list', { employeeId: 12 }, { permissions: { 'hr:leave': ['VIEW'], 'hr:employee': ['EDIT'] } });
+    expect(Number(queryOf().employeeId)).toBe(12);
+  });
+  it('an employee with only the view grant is pinned to their own rows', async () => {
+    await call('hr_leave_requests_list', {}, { permissions: { 'hr:leave': ['VIEW'] } });
+    expect(Number(queryOf().employeeId)).toBe(7);
+  });
+  it('an employee asking for someone else is refused', async () => {
+    const res = await call('hr_leave_requests_list', { employeeId: 12 }, { permissions: { 'hr:leave': ['VIEW'] } });
+    expect(res.isError).toBe(true);
+    expect(parse(res).status).toBe(403);
+    expect(leaveCtl.mcpListLeaveRequests).not.toHaveBeenCalled();
+  });
+});
