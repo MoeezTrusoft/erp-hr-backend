@@ -3,6 +3,8 @@ import { getCtx } from "../context.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import * as service from "../../services/attendanceRules.service.js";
+import { requestGraceRule, requestGraceMembership, listPendingRuleChanges } from "../../services/attendanceRuleChangeRequest.service.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { editAttendanceRequestReason } from "../../services/approval/service.js";
 import { saveCorrectionRequest, myCorrectionRequests } from '../../services/attendanceCorrectionRequest.service.js';
 import * as workspace from '../../services/attendanceWorkspace.service.js';
@@ -169,7 +171,7 @@ export function registerAttendanceRulesTools(server) {
         version: z.number().int().min(-1),
         reason,
       },
-      service.saveGraceRule,
+      async (a) => requestGraceRule({ ...a, tenantId: a.user.tenantId, requestedById: a.user.employeeId ?? (await requireEmployeeActor(a.user)) }),
     ],
     [
       "membership_save",
@@ -181,8 +183,10 @@ export function registerAttendanceRulesTools(server) {
         version: z.number().int().min(-1),
         reason,
       },
-      service.saveGraceMembership,
+      async (a) => requestGraceMembership({ ...a, tenantId: a.user.tenantId, requestedById: a.user.employeeId ?? (await requireEmployeeActor(a.user)) }),
     ],
+    ['rule_changes_pending', {}, (a) => listPendingRuleChanges({ tenantId: a.user.tenantId })],
+    ['mine', {}, service.myAttendanceRules],
   ];
   for (const [action, schema, fn] of defs)
     server.tool(
@@ -221,6 +225,10 @@ export function registerAttendanceRulesTools(server) {
             !hasPermission(permissions, "hr:attendance", "GET")
           )
             assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+        } else if (action === 'grace_save' || action === 'membership_save') {
+          assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        } else if (action === 'mine') {
+          // every signed-in employee may read the limits that apply to them; the service scopes the answer
         } else if (action !== 'raise' && action !== 'appeal' && action !== 'edit_request') {
           assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
         }

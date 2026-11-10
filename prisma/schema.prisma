@@ -5841,3 +5841,17 @@ model HolidayExemption {
   @@index([tenantId, employeeId], map: "holiday_exemptions_scope")
   @@map("holiday_exemptions")
 }
+
+model AttendanceRuleChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "attendance_rule_change_requests_scope")
+  @@map("attendance_rule_change_requests")
+}

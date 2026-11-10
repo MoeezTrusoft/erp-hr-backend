@@ -131,7 +131,7 @@ const RLS_MODELS = new Set([
     // Attendance anomaly/correction requests — new in 20260724_hr_attendance_anomaly.
     'AttendanceAnomaly',
     // Roster/holiday approval requests and applied holiday exemptions — 20261109150000_roster_holiday_approvals.
-    'RosterChangeRequest', 'HolidayChangeRequest', 'HolidayExemptionRequest', 'HolidayExemption',
+    'RosterChangeRequest', 'HolidayChangeRequest', 'HolidayExemptionRequest', 'HolidayExemption', 'AttendanceRuleChangeRequest',
     // Payroll Setup config tables — new in 20260724_hr_payroll_setup.
     'SalaryComponent', 'PayrollCalendar', 'PayrollApprovalMatrix', 'PayrollRuleConfig',
     'PayrollConfigMeta', 'PayrollConfigSnapshot',

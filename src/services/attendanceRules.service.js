@@ -32,6 +32,7 @@ import {
   assertAttendancePeriodOpen,
 } from "./attendancePeriod.service.js";
 import { replayTenant } from "../lib/attendanceReplay.js";
+import { resolveGrace, shiftRuleKey, legacyGraceDefaults } from "../lib/attendanceAnomalyRules.js";
 import { applyEvaluatedShifts } from "./attendanceWriter.service.js";
 import {
   reconcileRulePayroll,
@@ -1091,6 +1092,35 @@ export async function applyMissingTime(
     db,
   );
 }
+/** The grace limits that apply today to the caller, and to their direct reports when they manage people. */
+export async function myAttendanceRules({ user }, db = prisma) {
+  if (!user.employeeId) return { linked: false };
+  const me = Number(user.employeeId), tenantId = user.tenantId, day = dateKey(new Date());
+  const runtime = await loadAttendanceRuntime({ tenantId, from: day, to: day, db });
+  const [rules, members, reports] = await Promise.all([
+    db.attendanceGraceRule.findMany({ where: { tenantId } }),
+    db.attendanceGraceMembership.findMany({ where: { tenantId }, orderBy: { effectiveFrom: "desc" } }),
+    db.employee.findMany({ where: { tenant_id: tenantId, managerId: me, status: "Active" }, select: { id: true, employee_name: true, employee_code: true }, orderBy: { employee_name: "asc" } }),
+  ]);
+  const memberOf = (id) => members.find((m) => m.employeeId === id && dateKey(m.effectiveFrom) <= day);
+  const limits = (id) => {
+    const info = runtime.resolve(id, day), m = memberOf(id);
+    const g = resolveGrace([...legacyGraceDefaults(runtime.configOn?.(day), info, id), ...rules], { employeeId: id, date: day, shiftKey: shiftRuleKey(info), teamKey: m?.teamKey, departmentKey: m?.departmentKey });
+    return { checkInMinutes: g.checkInMinutes, checkOutMinutes: g.checkOutMinutes };
+  };
+  const mine = memberOf(me);
+  const mineKeys = [["COMPANY", "*"], ["EMPLOYEE", String(me)], ["TEAM", mine?.teamKey], ["DEPARTMENT", mine?.departmentKey]];
+  const upcoming = rules
+    .filter((r) => dateKey(r.effectiveFrom) > day && mineKeys.some(([sc, k]) => k && r.scope === sc && r.scopeKey === k))
+    .sort((a, b) => +a.effectiveFrom - +b.effectiveFrom)
+    .map((r) => ({ scope: r.scope, effectiveFrom: dateKey(r.effectiveFrom), checkInMinutes: r.checkInMinutes, checkOutMinutes: r.checkOutMinutes }));
+  return {
+    linked: true, date: day, mine: limits(me), upcoming,
+    team: reports.map((r) => ({ employeeId: r.id, name: r.employee_name, code: r.employee_code, ...limits(r.id) })),
+    seesEverything: isAttendanceHr(user) || isManagement(user),
+  };
+}
+
 export async function rulesConfiguration({ user }, db = prisma) {
   requireHr(user);
   const [rules, memberships, employees, jobs, legacyPayslips, failures] =
@@ -1280,14 +1310,32 @@ export async function saveGraceRule(
       );
   return command(
     user,
-    async (tx) => {
+    (tx) => applyGraceRule(tx, user, { scope, scopeKey, effectiveFrom, checkInMinutes, checkOutMinutes, reason, version }),
+    db,
+  );
+}
+/** Rule changes reach back to their effective date, so a payroll run that overlaps it must be recalled first. */
+export async function assertRulesPeriodEditable(tx, tenantId, from) {
+  const run = await tx.payrollRun.findFirst({
+    where: { tenantId, periodEnd: { gte: dateOnly(from) }, status: { notIn: ["CANCELLED", "FAILED"] } },
+    select: { id: true },
+  });
+  if (run) fail(409, "Recall or cancel the payroll run that covers these dates before changing attendance rules, or choose a later start date");
+}
+/** The write itself, inside a transaction: used directly and by the final approval of a grace change request. */
+export async function applyGraceRule(
+  tx,
+  user,
+  { scope, scopeKey, effectiveFrom, checkInMinutes, checkOutMinutes, reason, version },
+) {
       const key = {
         tenantId: user.tenantId,
         scope,
         scopeKey: scope === "COMPANY" ? "*" : scopeKey.trim(),
         effectiveFrom: dateOnly(effectiveFrom),
       };
-      if (scope === "EMPLOYEE") await employeeScope(tx, user, Number(scopeKey));
+      await assertRulesPeriodEditable(tx, user.tenantId, effectiveFrom);
+      if (scope === "EMPLOYEE" && !(await tx.employee.findFirst({ where: { id: Number(scopeKey), tenant_id: user.tenantId }, select: { id: true } }))) fail(404, "Employee not found");
       const old = await tx.attendanceGraceRule.findFirst({ where: key });
       if ((old?.version ?? -1) !== version)
         fail(409, "Grace settings changed; refresh before saving");
@@ -1318,9 +1366,6 @@ export async function saveGraceRule(
         employees.map((e) => e.id),
       );
       return { saved, queued: true };
-    },
-    db,
-  );
 }
 export async function saveGraceMembership(
   { user, employeeId, effectiveFrom, teamKey, departmentKey, version, reason },
@@ -1330,8 +1375,19 @@ export async function saveGraceMembership(
   if (!reason?.trim()) fail(400, "A reason is required");
   return command(
     user,
-    async (tx) => {
-      await employeeScope(tx, user, employeeId);
+    (tx) => applyGraceMembership(tx, user, { employeeId, effectiveFrom, teamKey, departmentKey, version, reason }),
+    db,
+  );
+}
+/** The write itself, inside a transaction: used directly and by the final approval of a grace change request. */
+export async function applyGraceMembership(
+  tx,
+  user,
+  { employeeId, effectiveFrom, teamKey, departmentKey, version, reason },
+) {
+      await assertRulesPeriodEditable(tx, user.tenantId, effectiveFrom);
+      // The caller already proved HR authority (direct save) or the route approved it, so only the person must exist.
+      if (!(await tx.employee.findFirst({ where: { id: employeeId, tenant_id: user.tenantId }, select: { id: true } }))) fail(404, "Employee not found");
       const key = {
         tenantId: user.tenantId,
         employeeId,
@@ -1361,9 +1417,6 @@ export async function saveGraceMembership(
       );
       await enqueueRetroactive(tx, user, effectiveFrom, [employeeId]);
       return { saved, queued: true };
-    },
-    db,
-  );
 }
 
 export async function decideRuleCase({anomalyId}) { return legacyDecision("ATTENDANCE",anomalyId); }

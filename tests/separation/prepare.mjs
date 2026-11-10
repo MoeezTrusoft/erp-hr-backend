@@ -106,6 +106,8 @@ try {
   await db.query(await readFile('prisma/migrations/20261109140000_payroll_config_snapshots_append_only/migration.sql','utf8'));
   const rosterHoliday=await readFile('prisma/migrations/20261109150000_roster_holiday_approvals/migration.sql','utf8');
   await db.query(rosterHoliday.slice(rosterHoliday.indexOf('-- ROSTER_HOLIDAY_SECURITY')));
+  const ruleChange=await readFile('prisma/migrations/20261110090000_attendance_rule_change_requests/migration.sql','utf8');
+  await db.query(ruleChange.slice(ruleChange.indexOf('-- ATTENDANCE_RULE_SECURITY')));
   await db.query(
     "DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='assessment_test_user') THEN CREATE ROLE assessment_test_user LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE; END IF; END $$; ALTER ROLE assessment_test_user PASSWORD 'assessment-local-test'; GRANT USAGE ON SCHEMA public TO assessment_test_user; GRANT ALL ON ALL TABLES IN SCHEMA public TO assessment_test_user; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO assessment_test_user;",
   );

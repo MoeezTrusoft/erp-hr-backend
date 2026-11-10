@@ -182,6 +182,13 @@ const definitions = {
     ["PENDING"],
     ["mode", "holidayId", "employeeIds", "summary", "reason"],
   ],
+  ATTENDANCE_RULE_CHANGE: [
+    "attendanceRuleChangeRequest",
+    "attendance_rule_change_requests",
+    "requestedById",
+    ["PENDING"],
+    ["action", "payload", "reason"],
+  ],
   GOAL: [
     "goal",
     "Goal",
@@ -315,6 +322,7 @@ export const registry = Object.fromEntries(
           "ROSTER_CHANGE",
           "HOLIDAY_CHANGE",
           "HOLIDAY_EXEMPTION",
+          "ATTENDANCE_RULE_CHANGE",
           "TIME_CREDIT",
           "TIME_CREDIT_REVOCATION",
           "ASSESSMENT_RELEASE",
@@ -761,6 +769,9 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
   } else if (kind === "HOLIDAY_EXEMPTION") {
     const { finalizeHolidayExemption } = await import("../holidayChangeRequest.service.js");
     await finalizeHolidayExemption(tx, env, row, approved);
+  } else if (kind === "ATTENDANCE_RULE_CHANGE") {
+    const { finalizeAttendanceRuleChange } = await import("../attendanceRuleChangeRequest.service.js");
+    await finalizeAttendanceRuleChange(tx, env, row, approved);
   } else if (kind === "GOAL")
     await tx.goal.update({
       where: { id: row.id },
