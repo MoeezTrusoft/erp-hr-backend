@@ -65,15 +65,19 @@ const prismaMock = {
     loan: {
         create: jest.fn(async ({ data }) => { created.push(data); return { id: created.length, ...data }; }),
         findMany: jest.fn(async ({ where }) => { findManyCalls.push(where); return []; }),
-        findFirst: jest.fn(async ({ where }) => ({ id: 7, kind: 'ADVANCE', ...where })),
+        // No request is waiting (the duplicate check asks for PENDING); anything else finds a loan.
+        findFirst: jest.fn(async ({ where }) => (where?.status === 'PENDING' ? null : { id: 7, kind: 'ADVANCE', ...where })),
+        deleteMany: jest.fn(async () => ({ count: 1 })),
         count: jest.fn(async ({ where }) => { countCalls.push(where); return 0; }),
         aggregate: jest.fn(async ({ where }) => { aggregateCalls.push(where); return { _sum: {} }; }),
     },
     loanRepayment: { create: jest.fn() },
+    employee: { findFirst: jest.fn(async () => ({ id: 5, status: 'Active' })) },
     $transaction: jest.fn(async (ops) => Promise.all(ops)),
 };
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
+jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({ tenantTransaction: async (db, fn) => fn(db) }));
 // A loan HR records also opens its approval request; this suite checks the loan and the tool facade only.
 const legacySubmitMock = jest.fn(async () => ({}));
 jest.unstable_mockModule('../../src/services/approval/legacy.js', () => ({
@@ -84,7 +88,7 @@ jest.unstable_mockModule('../../src/services/approval/legacy.js', () => ({
 const loanService = await import('../../src/services/loan.service.js');
 
 const TENANT = 'a3f1c2d4-0000-4000-8000-000000000001';
-const base = { employeeId: 5, principalMinor: 500000, tenureMonths: 1, tenantId: TENANT };
+const base = { employeeId: 5, principalMinor: 500000, tenureMonths: 1, tenantId: TENANT, reason: 'School fees' };
 
 beforeEach(() => {
     jest.clearAllMocks();
@@ -160,7 +164,7 @@ describe('HR-PAYROLL-ADVANCE-01 MCP facade', () => {
         expect(tool.schema.kind.safeParse('NOPE').success).toBe(false);
         expect(tool.schema.kind.safeParse(undefined).success).toBe(true); // optional
 
-        await tool.handler({ employeeId: '5', principalMinor: 500000, tenureMonths: 1, kind: 'ADVANCE' });
+        await tool.handler({ employeeId: '5', principalMinor: 500000, tenureMonths: 1, kind: 'ADVANCE', reason: 'Advance on pay' });
         expect(created[0].kind).toBe('ADVANCE');
         expect(legacySubmitMock).toHaveBeenCalledWith('LOAN', expect.anything(), expect.any(String), { onBehalf: true });
     });
@@ -176,7 +180,7 @@ describe('HR-PAYROLL-ADVANCE-01 MCP facade', () => {
 
     it('gates every tool on HTTP methods, never action names', async () => {
         await server.tools.get('hr_loan_list').handler({});
-        await server.tools.get('hr_loan_create').handler({ employeeId: '5', principalMinor: 100, tenureMonths: 1 });
+        await server.tools.get('hr_loan_create').handler({ employeeId: '5', principalMinor: 100, tenureMonths: 1, reason: 'Advance on pay' });
         for (const [, method] of assertPermissionMock.mock.calls.map((c) => [c[0], c[1]])) {
             expect(['GET', 'POST', 'PUT', 'DELETE']).toContain(method);
         }

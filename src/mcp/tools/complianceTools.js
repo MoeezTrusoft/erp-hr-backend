@@ -150,7 +150,7 @@ export function registerComplianceTools(server) {
     {
       employeeId: z.string().min(1).describe("Employee submitting the claim (references Employee.id)"),
       amount: z.number().positive().describe("Claim amount (ReimbursementClaim.amount, > 0)"),
-      currency: z.string().default("USD").describe("ISO 4217 currency code (default USD)"),
+      currency: z.string().length(3).optional().describe("ISO 4217 currency code; defaults to the currency the employee is paid in"),
       description: z.string().min(1).describe("Claim description (persisted to ReimbursementClaim.title, NOT NULL)"),
       category: z.string().optional().describe("Free-text category, e.g. TRAVEL, MEALS, EQUIPMENT"),
       notes: z.string().optional().describe("Optional notes (ReimbursementClaim.notes)"),

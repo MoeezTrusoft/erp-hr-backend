@@ -52,6 +52,7 @@ const prismaMock = {
     employeeBenefit: mk(),
     loan: mk(),
     loanRepayment: mk(),
+    reimbursementClaim: mk(),
     taxRate: mk(),
     employee: mk(),
     leave: mk(),
@@ -129,6 +130,9 @@ const setup = ({
     prismaMock.leaveBalance.findMany.mockResolvedValue([]);
     prismaMock.loanRepayment.findMany.mockResolvedValue([]);
     prismaMock.loanRepayment.deleteMany.mockResolvedValue({count:0});
+    // Approved reimbursement claims: none for this employee.
+    prismaMock.reimbursementClaim.updateMany.mockResolvedValue({count:0});
+    prismaMock.reimbursementClaim.findMany.mockResolvedValue([]);
     prismaMock.payrollRun.findFirst.mockResolvedValue(payrollRun);
     prismaMock.payrollRun.findMany.mockResolvedValue([]);
     prismaMock.payrollPayslip.findMany.mockResolvedValue([]);

@@ -21,6 +21,8 @@ import {
   requestClaimInfo,
   respondClaimInfo,
   exportClaimsCsv,
+  listMyClaims,
+  submitMyClaim,
 } from "../../services/claims.service.js";
 
 function getCtx() {
@@ -57,6 +59,47 @@ const approvalStepSchema = z.object({
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 
 export function registerClaimsTools(server) {
+  // ── employee self-service: no claims grant needed, everything is pinned to the signed-in employee ──
+  const self = () => {
+    const { user } = getCtx();
+    if (!user.employeeId) throw Object.assign(new Error("Sign in with an employee account"), { status: 403 });
+    return user;
+  };
+  server.tool(
+    "hr_claims_mine",
+    "Your own reimbursement claims, with their status",
+    {},
+    withToolError(async () => {
+      const user = self();
+      return ok(await listMyClaims({ tenantId: user.tenantId, employeeId: user.employeeId }));
+    }, "hr_claims_mine")
+  );
+  server.tool(
+    "hr_claim_create_mine",
+    "Start a reimbursement claim for yourself (a draft). The amount is a whole amount in your pay currency; with lines it must equal their total",
+    {
+      title: z.string().trim().min(3).max(200),
+      description: z.string().max(2000).optional(),
+      category: z.string().max(60).optional(),
+      amount: z.coerce.number().optional().describe("Total; omitted with lines, it is their sum"),
+      items: z.array(itemSchema).optional(),
+    },
+    withToolError(async (args) => {
+      const user = self();
+      const { employeeId: _ignored, currency: _alsoIgnored, ...own } = args;
+      return ok(await createClaim({ ...own, tenantId: user.tenantId, employeeId: user.employeeId }));
+    }, "hr_claim_create_mine")
+  );
+  server.tool(
+    "hr_claim_submit_mine",
+    "Send one of your own claims for approval",
+    { id: z.coerce.number().int().describe("Your claim id") },
+    withToolError(async ({ id }) => {
+      const user = self();
+      return ok(await submitMyClaim({ tenantId: user.tenantId, employeeId: user.employeeId, id }));
+    }, "hr_claim_submit_mine")
+  );
+
   // ── KPIs ──────────────────────────────────────────────────────────────────
   server.tool(
     "hr_claim_kpis",

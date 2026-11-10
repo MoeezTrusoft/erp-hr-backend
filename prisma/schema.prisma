@@ -3872,6 +3872,10 @@ model ReimbursementClaim {
   rejectedReason String?
   paidAt         DateTime?
   notes          String?
+  // An approved claim is paid through payroll: the run that has reserved it (and its payslip), and, once that run is
+  // finalised, the claim is PAID with paidAt. A reservation by a cancelled or failed run no longer holds the claim.
+  payrollRunId   Int?
+  payslipId      Int?
   created_at     DateTime            @default(now())
   updated_at     DateTime            @updatedAt
 
@@ -3885,6 +3889,7 @@ model ReimbursementClaim {
 
   @@index([tenantId])
   @@index([employeeId])
+  @@index([tenantId, status, payrollRunId], map: "reimbursement_claims_pay_idx")
   @@map("reimbursement_claims")
 }
 

@@ -112,7 +112,7 @@ export function registerLoanTools(server) {
       tenureMonths: z.number().int().positive().describe("Number of monthly installments. A salary advance uses 1"),
       kind: z.enum(["LOAN", "ADVANCE"]).optional().describe("LOAN (default) or ADVANCE for a salary advance — recovered next payroll, interest-free"),
       disbursementDate: z.string().optional().describe("Disbursement date (ISO 8601). Defaults to today"),
-      reason: z.string().optional().describe("Reason for the loan"),
+      reason: z.string().trim().min(3).max(1000).describe("Why the loan or advance is being given"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();

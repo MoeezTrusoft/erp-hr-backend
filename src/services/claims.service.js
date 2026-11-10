@@ -247,6 +247,41 @@ async function readDrawer(tx, tenantId, id) {
   return shapeDrawer(claim);
 }
 
+const claimError = (message, status = 400) => Object.assign(new Error(message), { status });
+const MAX_CLAIM = 1e9;
+
+/** The currency an employee is paid in, then the latest payroll run's; never a hard-coded dollar. */
+export async function defaultClaimCurrency(tx, employeeId) {
+  const terms = await tx.employmentTerms.findFirst({ where: { employeeId: Number(employeeId) }, orderBy: { effectiveFrom: "desc" }, select: { currency: true } });
+  if (terms?.currency) return terms.currency;
+  const lastRun = await tx.payrollRun.findFirst({ orderBy: { id: "desc" }, select: { currencyCode: true } });
+  return lastRun?.currencyCode || "USD";
+}
+
+/**
+ * What every claim must satisfy: a real active employee of this company, a title, a currency, and an amount that is a
+ * positive whole number of the currency's main unit (payslips pay whole units), not above a sanity limit, and equal to
+ * its line items when it has any.
+ */
+export async function checkClaim(tx, { tenantId, employeeId, title, amount, currency, items }) {
+  const person = await tx.employee.findFirst({ where: scopedEmployeeWhere(tenantId, { id: Number(employeeId) }), select: { id: true, status: true } });
+  if (!person) throw claimError("Employee not found", 404);
+  if (String(person.status ?? "").toLowerCase() !== "active") throw claimError("Only an active employee can make a claim", 409);
+  if (String(title ?? "").trim().length < 3) throw claimError("Give the claim a title (at least 3 characters)");
+  if (!/^[A-Z]{3}$/.test(String(currency ?? ""))) throw claimError("Use a three-letter currency code, for example PKR");
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) throw claimError("Enter the claim amount, above zero");
+  if (!Number.isInteger(value)) throw claimError("Enter the claim as a whole amount; payslips pay whole units");
+  if (value > MAX_CLAIM) throw claimError("That amount is too large");
+  const lines = Array.isArray(items) ? items : [];
+  if (lines.length) {
+    const bad = lines.find((it) => !String(it?.name ?? "").trim() || !(Number(it?.amount) > 0));
+    if (bad) throw claimError("Each line needs a name and an amount above zero");
+    const sum = lines.reduce((total, it) => total + Number(it.amount), 0);
+    if (Math.abs(sum - value) > 0.0001) throw claimError(`The lines add up to ${sum}, but the claim is ${value}`);
+  }
+}
+
 // ── create ───────────────────────────────────────────────────────────────────
 
 export async function createClaim({ tenantId, employeeId, title, description, category, amount, currency, items }) {
@@ -255,23 +290,12 @@ export async function createClaim({ tenantId, employeeId, title, description, ca
   const finalAmount = amount != null ? Number(amount) : lineItems.length ? itemsSum : 0;
 
   const result = await tenantTransaction(prisma, async (tx) => {
-    // Default to the currency the employee is paid in, then the latest payroll run's, never a hard-coded dollar.
-    let claimCurrency = currency;
-    if (!claimCurrency) {
-      const terms = await tx.employmentTerms.findFirst({
-        where: { employeeId: Number(employeeId) },
-        orderBy: { effectiveFrom: "desc" },
-        select: { currency: true },
-      });
-      const lastRun = terms?.currency
-        ? null
-        : await tx.payrollRun.findFirst({ orderBy: { id: "desc" }, select: { currencyCode: true } });
-      claimCurrency = terms?.currency || lastRun?.currencyCode || "USD";
-    }
+    const claimCurrency = currency ? String(currency).toUpperCase() : await defaultClaimCurrency(tx, employeeId);
+    await checkClaim(tx, { tenantId, employeeId, title, amount: finalAmount, currency: claimCurrency, items: lineItems });
     const claim = await tx.reimbursementClaim.create({
       data: {
         employeeId: Number(employeeId),
-        title,
+        title: String(title).trim(),
         description: description ?? null,
         category: category ?? null,
         amount: finalAmount,
@@ -319,6 +343,16 @@ export async function updateClaim({ tenantId, id, items, ...fields }) {
     for (const key of EDITABLE_FIELDS) {
       if (fields[key] !== undefined) data[key] = key === "amount" ? Number(fields[key]) : fields[key];
     }
+
+    // The claim as it will stand after this edit must pass the same checks as a new one.
+    const keptItems = Array.isArray(items) ? items : await tx.claimItem.findMany({ where: scopedWhere(tenantId, { claimId: Number(id) }), select: { name: true, amount: true } });
+    const nextAmount = data.amount !== undefined ? data.amount : Array.isArray(items) ? items.reduce((acc, it) => acc + (Number(it.amount) || 0), 0) : Number(existing.amount);
+    await checkClaim(tx, {
+      tenantId, employeeId: existing.employeeId, title: data.title ?? existing.title, amount: nextAmount,
+      currency: data.currency ? String(data.currency).toUpperCase() : existing.currency, items: keptItems.map((it) => ({ name: it.name, amount: Number(it.amount) })),
+    });
+    if (data.currency) data.currency = String(data.currency).toUpperCase();
+    if (data.title) data.title = String(data.title).trim();
 
     if (Array.isArray(items)) {
       await tx.claimItem.deleteMany({ where: scopedWhere(tenantId, { claimId: Number(id) }) });
@@ -383,18 +417,9 @@ export async function withdrawClaim({ tenantId, id }) {
   return legacyWithdraw('CLAIM',id);
 }
 
-export async function markPaid({ tenantId, id }) {
-  return tenantTransaction(prisma, async (tx) => {
-    const existing = await tx.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
-    if (!existing) throw Object.assign(new Error("Claim not found"), { status: 404 });
-    if (existing.status !== "APPROVED") {
-      throw Object.assign(new Error(`Claim can only be marked PAID from APPROVED (is ${existing.status})`), {
-        status: 409,
-      });
-    }
-    await tx.reimbursementClaim.update({ where: { id: Number(id) }, data: { status: "PAID", paidAt: new Date() } });
-    return readDrawer(tx, tenantId, id);
-  });
+// An approved claim is paid through payroll (payrollClaims.service.js) and becomes PAID when that run is finalised.
+export async function markPaid() {
+  throw claimError("Approved claims are paid through payroll and become paid when that payroll run is finalised", 409);
 }
 
 // ── request-info Q&A ─────────────────────────────────────────────────────────
@@ -428,3 +453,23 @@ export async function exportClaimsCsv({ tenantId, ...filters }) {
 }
 
 export { CLAIM_STATUSES };
+
+// ── employee self-service ────────────────────────────────────────────────────
+
+/** An employee's own claims, newest first, with what each is waiting for. */
+export async function listMyClaims({ tenantId, employeeId }) {
+  const rows = await prisma.reimbursementClaim.findMany({
+    where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
+    orderBy: { created_at: "desc" },
+    take: 100,
+    include: { items: { select: { id: true, name: true, amount: true } } },
+  });
+  return { items: rows.map((c) => ({ id: c.id, title: c.title, category: c.category, amount: num(c.amount), currency: c.currency, status: c.status, submittedAt: c.submittedAt, paidAt: c.paidAt, rejectedReason: c.rejectedReason, items: c.items.map((i) => ({ ...i, amount: num(i.amount) })) })) };
+}
+
+/** Submit one of the employee's own claims. Another person's claim is not found, not refused, so ids are not probed. */
+export async function submitMyClaim({ tenantId, employeeId, id }) {
+  const claim = await prisma.reimbursementClaim.findFirst({ where: scopedWhere(tenantId, { id: Number(id), employeeId: Number(employeeId) }), select: { id: true } });
+  if (!claim) throw claimError("Claim not found", 404);
+  return legacySubmit("CLAIM", claim.id, undefined, { onBehalf: false });
+}

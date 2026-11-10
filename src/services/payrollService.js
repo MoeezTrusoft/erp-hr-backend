@@ -5,6 +5,7 @@ import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/pa
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
 import { loadSource } from './approval/adapters.js';
 import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.js';
+import { reserveClaimsForPayslip, previewClaimsForPayslip, attachClaimsToPayslip, settlePayrollClaims, payslipHoldsClaims } from './payrollClaims.service.js';
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
 import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
@@ -835,6 +836,15 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
             deductions.push({deductionTypeId:null,code:'EMPLOYMENT_PRORATION',amount:money.minorToDecimal(adjustment,currency),description:`Joining/leaving date deduction (${excludedDays} days outside employment)`});
         }
     }
+    // Approved reimbursement claims are paid here, as NON-TAXABLE lines added last: nothing worked out from the
+    // package above (tax, statutory deductions, loan caps, proration) sees them, and they are paid exactly as approved.
+    for (const claim of bridges.reimbursementLines || []) {
+        earnings.push({
+            earningTypeId: null, code: 'REIMBURSEMENT', typeName: 'Reimbursement', taxable: false, claimId: claim.claimId,
+            amount: money.minorToDecimal(money.decimalToMinor(claim.amount, currency), currency),
+            description: `Reimbursement: ${claim.title}`,
+        });
+    }
     const grossMinorRounded = money.sum(earnings.map((e) => money.decimalToMinor(e.amount, currency)));
     const totalDeductionsMinorRounded = money.sum(deductions.map((d) => money.decimalToMinor(d.amount, currency)));
     const netMinorRounded = money.sub(grossMinorRounded, totalDeductionsMinorRounded);
@@ -1395,7 +1405,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
         if (!preview) await tenantTransaction(prisma, async tx => {
             const stale=await tx.payrollPayslip.findMany({where:withTenant(tenantId,{payrollRunId:id,employeeId:{notIn:employees.map(e=>e.id)}}),include:{earnings:true,deductions:true}});
             for(const slip of stale) {
-                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})) throw payrollError('An ineligible employee has a protected or nonzero payslip; review employee setup before recalculation');
+                if(slip.status!=='DRAFT'||slip.distributedAt||[slip.grossAmount,slip.totalDeductions,slip.netAmount].some(n=>Number(n)!==0)||await tx.loanRepayment.count({where:{payslipId:slip.id}})||await payslipHoldsClaims(tx,tenantId,slip.id)) throw payrollError('An ineligible employee has a protected or nonzero payslip; review employee setup before recalculation');
                 await tx.payrollAuditLog.create({data:{tenantId,action:'INELIGIBLE_ZERO_PAYSLIP_REMOVED',payrollRunId:id,employeeId:slip.employeeId,details:'Employee was not employed in this payroll period. Removed only an undistributed DRAFT payslip with all totals zero.',oldValues:JSON.parse(JSON.stringify(slip))}});
                 await tx.payrollPayslip.delete({where:{id:slip.id}});
             }
@@ -1502,7 +1512,13 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             const previousSlip=await prisma.payrollPayslip.findFirst({where:{tenantId,payrollRunId:id,employeeId:employee.id}});
             if (!preview) await releaseFailedCarry(prisma,{tenantId,employeeId:employee.id});
             const attendanceAdjustments=await prisma.attendancePayrollAdjustment.findMany({where:{tenantId,employeeId:employee.id,currencyCode:currency,sourcePeriodEnd:{lt:payrollRun.periodStart},OR:[{appliedPayslipId:null},...(previousSlip?[{appliedPayslipId:previousSlip.id}]:[])]}});
+            // Approved reimbursement claims this payslip pays. A real calculation reserves them for this run (undone if
+            // the payslip fails to save); a preview only lists them.
+            const reimbursementLines = preview
+                ? await previewClaimsForPayslip(prisma, { tenantId, runId: id, employeeId: employee.id, currency })
+                : await reserveClaimsForPayslip(prisma, { tenantId, runId: id, employeeId: employee.id, currency });
             const bridges = {
+                reimbursementLines,
                 deductionRules,
                 attendanceAdjustments,
                 manualAttendance: monthlyByEmployee.get(employee.id),
@@ -1553,7 +1569,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             if (preview) return {...built,employeeCode:employeeCode(employee)};
             const earnings = await Promise.all(built.earnings.map(async (e) => ({
                 tenantId: tenantId ?? null,
-                earningTypeId: e.earningTypeId ?? (e.code ? await getOrCreateEarningType(e.code,e.description,e.taxable,tenantId) : baseSalaryEarningTypeId),
+                earningTypeId: e.earningTypeId ?? (e.code ? await getOrCreateEarningType(e.code,e.typeName ?? e.description,e.taxable,tenantId) : baseSalaryEarningTypeId),
                 amount: e.amount,
                 description: e.description
             })));
@@ -1603,6 +1619,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                 // a repayment already recorded for [loan, run] is never
                 // re-created or re-decremented on re-process).
                 await reservePayrollLoans(prisma,{tenantId,runId:id,payslipId:updated.id,deductions:built.deductions,currency});
+                await attachClaimsToPayslip(prisma,{tenantId,runId:id,employeeId:employee.id,payslipId:updated.id});
                 await prisma.payrollAuditLog.create({
                     data: {
                         tenantId: tenantId ?? null,
@@ -1644,6 +1661,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             // Record loan repayments for this payslip (T-1.2 — idempotent by
             // [loan, run]; see the re-process branch above for the contract).
             await reservePayrollLoans(prisma,{tenantId,runId:id,payslipId:created.id,deductions:built.deductions,currency});
+            await attachClaimsToPayslip(prisma,{tenantId,runId:id,employeeId:employee.id,payslipId:created.id});
             await prisma.payrollAuditLog.create({
                 data: {
                     tenantId: tenantId ?? null,
@@ -1872,6 +1890,7 @@ export const finalizePayrollRun = async (id, updatedBy, tenantId, ctx = {}) => {
     const openRequests=await openRequestCount(tx,tenantId,{from:locked.periodStart,to:locked.periodEnd});
     if(openRequests) throw payrollError(`HR-TP-05 ${openRequests} unresolved attendance request(s) for ${payrollMonthLabel(locked.periodStart)} — decide them in the Approval Centre before finalizing payroll`);
     await settlePayrollLoans(tx,{tenantId,runId:id});
+    await settlePayrollClaims(tx,{tenantId,runId:id});
     await tx.payrollPayslip.updateMany({
       where: withTenant(tenantId, { payrollRunId: id }),
       data: { status: 'FINALIZED' }

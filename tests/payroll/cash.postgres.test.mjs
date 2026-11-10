@@ -101,7 +101,7 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
   assert.equal(request.employeeCode, people.EMPLOYEE.employee_code);
   // A loan HR records opens its own approval request, owned by the employee.
   const advance = await as("HR", () =>
-    createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "ADVANCE", principalMinor: 1000000, tenureMonths: 1, submit: true }),
+    createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "ADVANCE", principalMinor: 1000000, tenureMonths: 1, reason: "Advance on pay", submit: true }),
   );
   const loanRequest = await db((tx) =>
     tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "LOAN", sourceRef: String(advance.id) } }),
@@ -122,7 +122,7 @@ test("cash companies: HR marks whole payslips paid once, with an audit row and t
   // With no line manager the HR filing is also the HR verification: the request waits at Management.
   await db((tx) => tx.employee.update({ where: { id: people.EMPLOYEE.id }, data: { managerId: null } }));
   const second = await as("HR", () =>
-    createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "LOAN", principalMinor: 2000000, tenureMonths: 4, submit: true }),
+    createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "LOAN", principalMinor: 2000000, tenureMonths: 4, reason: "Loan for a family event", submit: true }),
   );
   const filed = await db((tx) =>
     tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "LOAN", sourceRef: String(second.id) } }),
