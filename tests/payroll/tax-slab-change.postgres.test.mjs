@@ -166,3 +166,51 @@ test("a set that starts on or before slabs already scheduled replaces them", asy
   const at = (d) => selectEffectiveTaxRates(all, { countryCode: "PK", asOf: new Date(d) }).map((r) => Number(r.rate));
   assert.deepEqual(at("2034-08-01"), [0.01, 0.06, 0.26], "the newest set is the one in force");
 });
+
+const askAs = (who, over = {}) => as(who, () => svc.requestTaxSlabSet({ tenantId: company, requestedById: people[who].id, countryCode: "PK", effectiveFrom: "2035-07-01", slabs: SET_A, reason: "New fiscal year slabs", ...over }));
+
+test("when HR files, HR verification is done by the filing and Management is the only approver", async () => {
+  await ensure();
+  await route();
+  await seedCurrent();
+  const filed = await askAs("HR");
+  const ar = await approvalOf("TAX_SLAB_CHANGE", filed.requestId);
+  assert.equal(ar.stage, "LEVEL");
+  assert.deepEqual(ar.pendingCodes, [people.MANAGEMENT.employee_code], "only Management is asked");
+  assert.equal((await rows()).filter((r) => r.status === "ACTIVE").length, 3, "nothing changes while Management decides");
+  await assert.rejects(act("HR", { approvalRef: ar.id, version: ar.version }, "APPROVE"), /./, "HR cannot approve its own change");
+  assert.equal((await act("MANAGEMENT", { approvalRef: ar.id, version: ar.version }, "APPROVE")).stage, "APPROVED");
+  assert.equal((await rows()).filter((r) => +new Date(r.effectiveFrom) === +new Date("2035-07-01")).length, 4);
+});
+
+test("when Management files, the change is approved at once with no other approval, and the trail says so", async () => {
+  await ensure();
+  await route();
+  await seedCurrent();
+  const filed = await askAs("MANAGEMENT", { effectiveFrom: "2036-07-01" });
+  const ar = await approvalOf("TAX_SLAB_CHANGE", filed.requestId);
+  assert.equal(ar.stage, "APPROVED");
+  assert.deepEqual(ar.pendingCodes, []);
+  const fresh = (await rows()).filter((r) => +new Date(r.effectiveFrom) === +new Date("2036-07-01"));
+  assert.equal(fresh.length, 4, "the new set is in place");
+  assert.equal(await db((tx) => tx.taxSlabChangeRequest.count({ where: { id: filed.requestId, status: "APPROVED" } })), 1);
+  assert.equal(await db((tx) => tx.payrollAuditLog.count({ where: { tenantId: company, action: "TAX_SLAB_CHANGE_APPLIED" } })) > 0, true);
+  const trail = await db((tx) => tx.hrApprovalAudit.findMany({ where: { approvalRef: ar.id } }));
+  assert.ok(trail.some((t) => /no further approval needed/.test(t.reason)), "the trail records why");
+  await assert.rejects(askAs("MANAGEMENT", { effectiveFrom: "2036-07-01", slabs: SET_A }), /already in force|already has/i, "filing the same set again is refused");
+});
+
+test("a Management filing still obeys the date and payroll-run rules, and leaves nothing behind when refused", async () => {
+  await ensure();
+  await route();
+  await seedCurrent();
+  const run = await db((tx) => tx.payrollRun.create({ data: { tenantId: company, processedBy: people.HR.id, periodStart: new Date("2037-06-01T00:00:00Z"), periodEnd: new Date("2037-06-30T00:00:00Z"), countryCode: "PK", currencyCode: "PKR", status: "COMPLETED", totalGross: 1, totalNet: 1 } }));
+  try {
+    const before = await rows();
+    await assert.rejects(askAs("MANAGEMENT", { effectiveFrom: "2037-06-15" }), /payroll run already covers/);
+    assert.deepEqual((await rows()).map((r) => r.id), before.map((r) => r.id));
+    assert.equal(await db((tx) => tx.taxSlabChangeRequest.count({ where: { tenantId: company, status: "PENDING" } })), 0);
+  } finally {
+    await db((tx) => tx.payrollRun.delete({ where: { id: run.id } }));
+  }
+});
