@@ -170,18 +170,17 @@ describe('HR-04 payroll write scoping — tenantId stamped on create', () => {
         expect(prismaMock.payrollRun.create.mock.calls[0][0].data.tenantId).toBe(TENANT_A);
     });
 
-    it('createEarningType / createDeductionType / createTaxRate stamp tenantId', async () => {
+    it('createEarningType / createDeductionType stamp tenantId; a tax slab is never written directly', async () => {
         prismaMock.payrollEarningType.create.mockResolvedValue({ id: 1, name: 'x' });
         prismaMock.payrollDeductionType.create.mockResolvedValue({ id: 1, name: 'x' });
-        prismaMock.taxRate.create.mockResolvedValue({ id: 1, countryCode: 'US', bracketMin: 0, bracketMax: 1 });
 
         await payroll.createEarningType({ code: 'A', name: 'x' }, 99, TENANT_A);
         await payroll.createDeductionType({ code: 'B', name: 'y' }, 99, TENANT_A);
-        await payroll.createTaxRate({ countryCode: 'US', bracketMin: 0, bracketMax: 1, rate: 0.1, effectiveFrom: new Date() }, 99, TENANT_A);
+        await expect(payroll.createTaxRate({ countryCode: 'US', bracketMin: 0, bracketMax: 1, rate: 0.1, effectiveFrom: new Date() }, 99, TENANT_A)).rejects.toMatchObject({ status: 409 });
 
         expect(prismaMock.payrollEarningType.create.mock.calls[0][0].data.tenantId).toBe(TENANT_A);
         expect(prismaMock.payrollDeductionType.create.mock.calls[0][0].data.tenantId).toBe(TENANT_A);
-        expect(prismaMock.taxRate.create.mock.calls[0][0].data.tenantId).toBe(TENANT_A);
+        expect(prismaMock.taxRate.create).not.toHaveBeenCalled();
     });
 
     it('createEmploymentTerms / createPayrollAssignment stamp tenantId', async () => {

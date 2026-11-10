@@ -2300,25 +2300,9 @@ export const getTaxRates = async (countryCode, tenantId) => {
     });
 };
 
-export const createTaxRate = async (data, createdBy, tenantId) => {
-  const exactData = { ...data };
-  for (const field of ['bracketMin', 'bracketMax', 'baseTax']) {
-    if (exactData[field] != null) exactData[field] = money.decimalToPersistence(exactData[field]);
-  }
-  const create = await prisma.taxRate.create({
-    data: { ...exactData, tenantId: tenantId ?? null }
-  });
-
-  await logAction({
-    employeeId: Number(createdBy),
-    type: "Create",
-    module: "Tax Rate",
-    result: "SUCCESS",
-    notes: `Tax rate for country "${create.countryCode}" and bracket "${create.bracketMin} - ${create.bracketMax}" created successfully`,
-    tenantId: tenantId ?? null,
-  });
-
-  return create;
+export const createTaxRate = async () => {
+  // Tax slabs change by an approval request (taxSlabChangeRequest.service.js), never one row at a time.
+  throw Object.assign(new Error('Tax slabs are changed by sending the whole slab set for approval, not one slab at a time'), { status: 409 });
 };
 // Audit Log Operations
 export const getAuditLogs = async ({ page, limit, payrollRunId, payslipId, tenantId }) => {

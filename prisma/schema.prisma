@@ -5903,6 +5903,21 @@ model CaptureChangeRequest {
   @@map("capture_change_requests")
 }
 
+// Income-tax slab changes by approval (TAX_SLAB_CHANGE): one request replaces a country's whole slab set from a date.
+model TaxSlabChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "tax_slab_change_requests_scope")
+  @@map("tax_slab_change_requests")
+}
+
 model AttendanceDeviceCommand {
   id          String    @id @db.Uuid
   tenantId    String    @db.Uuid
