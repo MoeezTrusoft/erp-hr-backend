@@ -30,6 +30,9 @@ jest.unstable_mockModule('../../../src/services/leaveChangeRequest.service.js', 
   requestCancelLeave: jest.fn(async () => ({ pendingApproval: true })),
   listPendingLeaveChanges: jest.fn(async () => []),
 }));
+jest.unstable_mockModule('../../../src/services/leave.service.js', () => ({
+  getEmployeeLeaveBalances: jest.fn(async () => []),
+}));
 jest.unstable_mockModule('../../../src/services/leaveLedger.service.js', () => ({
   runAccruals: jest.fn(async () => ({ dryRun: true })),
   runCarryOver: jest.fn(async () => ({ dryRun: true })),
@@ -38,6 +41,7 @@ jest.unstable_mockModule('../../../src/services/leaveLedger.service.js', () => (
 
 const leaveCtl = await import('../../../src/mcp/controllers/leaveMcpController.js');
 const changes = await import('../../../src/services/leaveChangeRequest.service.js');
+const leaveSvc = await import('../../../src/services/leave.service.js');
 const ledger = await import('../../../src/services/leaveLedger.service.js');
 const { registerLeaveTools } = await import('../../../src/mcp/tools/leaveTools.js');
 const { mcpCtx } = await import('../../../src/mcp/context.js');
@@ -108,5 +112,21 @@ describe.each(TOOLS)('$name scenarios', ({ name, ctrl: ctrlOf, gate, action, arg
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
     expect(ctrlOf()).not.toHaveBeenCalled();
+  });
+});
+
+describe('hr_leave_balances_get — own balances for anyone, others only for HR', () => {
+  beforeEach(() => jest.clearAllMocks());
+  it('an employee reads their own without any leave grant', async () => {
+    await call('hr_leave_balances_get', {}, { permissions: {} });
+    expect(leaveSvc.getEmployeeLeaveBalances).toHaveBeenCalledWith(7);
+  });
+  it('reading someone else needs the leave read grant', async () => {
+    const res = await call('hr_leave_balances_get', { employeeId: 8 }, { permissions: {} });
+    expect(res.isError).toBe(true);
+    expect(parse(res).status).toBe(403);
+    expect(leaveSvc.getEmployeeLeaveBalances).not.toHaveBeenCalled();
+    await call('hr_leave_balances_get', { employeeId: 8 }, { permissions: { 'hr:leave': ['VIEW'] } });
+    expect(leaveSvc.getEmployeeLeaveBalances).toHaveBeenCalledWith(8);
   });
 });

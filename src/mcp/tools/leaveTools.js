@@ -19,6 +19,7 @@ import prisma from "../../lib/prisma.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { requestPolicyCreate, requestPolicyUpdate, requestPolicyDelete, requestBalanceSet, requestCancelLeave, listPendingLeaveChanges } from "../../services/leaveChangeRequest.service.js";
 import { runAccruals, runCarryOver, balanceHistory } from "../../services/leaveLedger.service.js";
+import { getEmployeeLeaveBalances } from "../../services/leave.service.js";
 import { legacySubmit } from "../../services/approval/legacy.js";
 import { fileLeaveForApproval } from "../../lib/leaveSubmission.js";
 import {
@@ -484,6 +485,21 @@ export function registerLeaveTools(server) {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
       const data = await listPendingLeaveChanges({ tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_leave_balances_get",
+    "One person's leave balances by leave type. HR sees anyone; an employee sees only their own",
+    { employeeId: z.number().int().positive().optional() },
+    withToolError(async ({ employeeId }) => {
+      const { user, permissions } = getCtx();
+      const own = Number(user.employeeId) || null;
+      const target = employeeId ?? own;
+      if (!target) throw Object.assign(new Error("Choose an employee"), { status: 400 });
+      if (target !== own) assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await getEmployeeLeaveBalances(target);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
