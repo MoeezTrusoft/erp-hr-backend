@@ -106,7 +106,13 @@ export const requestMyLoan = async ({ tenantId, employeeId, kind = "LOAN", princ
     if (!Number.isInteger(Number(employeeId)) || Number(employeeId) < 1) throw bad("Sign in with an employee account to ask for a loan or advance", 403);
     const loan = await createLoan({ tenantId, employeeId, kind, principalMinor, tenureMonths: kind === "ADVANCE" ? 1 : tenureMonths, disbursementDate, reason, createdById: employeeId, interestRatePct: 0, submit: false });
     await submitOrRemove(loan, tenantId, loan.reason, {});
-    return { requested: true, loanId: loan.id, kind: loan.kind, status: "PENDING", monthlyInstallmentMinor: loan.monthlyInstallmentMinor, message: "Sent for approval. You will be told when it is decided." };
+    // A person who holds the final approval (Management) is approved at once, so say what actually happened.
+    const after = await prisma.loan.findFirst({ where: scopedWhere(tenantId, { id: loan.id }), select: { status: true } });
+    const status = after?.status ?? "PENDING";
+    return {
+        requested: true, loanId: loan.id, kind: loan.kind, status, monthlyInstallmentMinor: loan.monthlyInstallmentMinor,
+        message: status === "ACTIVE" ? "Approved at once. It will be taken from your next payslip." : "Sent for approval. You will be told when it is decided.",
+    };
 };
 
 /** The employee's own loans and advances, with what they still owe and what has been taken from pay. */

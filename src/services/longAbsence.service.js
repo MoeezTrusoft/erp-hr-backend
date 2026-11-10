@@ -6,7 +6,7 @@ import { longAbsences } from "../lib/absenceStreak.js";
 export const DEFAULT_MIN_DAYS = 5;
 const LOOKBACK_DAYS = 62;
 
-export async function listLongAbsences({ tenantId, minDays = DEFAULT_MIN_DAYS, asOf = new Date() }) {
+export async function listLongAbsences({ tenantId, minDays = DEFAULT_MIN_DAYS, asOf = new Date(), employeeIds }) {
   const min = Number(minDays);
   if (!Number.isInteger(min) || min < 1 || min > 31) throw Object.assign(new Error("minDays must be a whole number from 1 to 31"), { status: 400 });
   const end = new Date(asOf);
@@ -16,6 +16,7 @@ export async function listLongAbsences({ tenantId, minDays = DEFAULT_MIN_DAYS, a
     where: {
       tenantId,
       date: { gte: from, lte: end },
+      ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
       employee: { OR: [{ employement_status: null }, { employement_status: { not: "Inactive" } }], payroll_included: true },
     },
     select: { employeeId: true, date: true, status: true },

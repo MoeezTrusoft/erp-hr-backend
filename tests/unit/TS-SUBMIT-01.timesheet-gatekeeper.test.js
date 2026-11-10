@@ -97,12 +97,32 @@ describe('TS-SUBMIT-01 — gate 1: attendance cycle locked (HR force override au
     expect(closed.attendanceLocked).toBe(true);
   });
 
-  it('allows HR early submission with force', async () => {
+  const at = (iso) => jest.useFakeTimers({ now: new Date(iso), doNotFake: ['nextTick', 'setImmediate', 'setTimeout', 'setInterval', 'queueMicrotask', 'clearTimeout', 'clearInterval', 'clearImmediate', 'performance'] });
+  it('allows HR early submission with force, a reason and a month that has ended', async () => {
     state.calendar = { attendanceCutoff: new Date('2026-09-02T23:59:00.000Z') };
-    const res = await submitTimesheet({ tenantId: TENANT, month: FUTURE_MONTH, actorEmployeeId: 558, force: true });
-    expect(res.created).toBe(true);
-    expect(res.forced).toBe(true);
-    expect(state.auditRows[0].details).toContain('early-submission override');
+    at('2026-10-01T00:00:00Z'); // September has ended; its cutoff is 2 Oct 23:59
+    try {
+      const res = await submitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558, force: true, reason: 'Payroll cut-off moved up' });
+      expect(res.created).toBe(true);
+      expect(res.forced).toBe(true);
+      expect(state.auditRows[0].details).toContain('early-submission override');
+      expect(state.auditRows[0].details).toContain('Payroll cut-off moved up');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('refuses an early submit without a reason, and for a month that has not ended', async () => {
+    state.calendar = { attendanceCutoff: new Date('2026-09-02T23:59:00.000Z') };
+    at('2026-10-01T00:00:00Z');
+    try {
+      await expect(submitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558, force: true })).rejects.toThrow('Give a reason');
+      await expect(submitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558, force: true, reason: ' x ' })).rejects.toThrow('Give a reason');
+      await expect(submitTimesheet({ tenantId: TENANT, month: FUTURE_MONTH, actorEmployeeId: 558, force: true, reason: 'Too early' })).rejects.toThrow('has not ended yet');
+      expect(state.createdRuns).toHaveLength(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('passes without force once the cutoff has passed', async () => {
@@ -186,7 +206,8 @@ describe('TS-SUBMIT-01 — unsubmit state transition', () => {
   it('cancels only a pending submitted run and preserves an audit trail', async () => {
     state.runs = [{ id: 779, status: 'PENDING', createdAt: new Date() }];
     state.auditRows = [{ id: 11, action: 'TIMESHEET_SUBMITTED', payrollRunId: 779 }];
-    const result = await unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 });
+    await expect(unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 })).rejects.toThrow('Give a reason');
+    const result = await unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558, reason: 'Late corrections' });
     expect(result.unsubmitted).toBe(true);
     expect(state.runs[0].status).toBe('CANCELLED');
     expect(state.auditRows.at(-1).action).toBe('TIMESHEET_UNSUBMITTED');
@@ -195,7 +216,7 @@ describe('TS-SUBMIT-01 — unsubmit state transition', () => {
   it('refuses to unsubmit a processed run', async () => {
     state.runs = [{ id: 780, status: 'COMPLETED', createdAt: new Date() }];
     await expect(
-      unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558 }),
+      unsubmitTimesheet({ tenantId: TENANT, month: MONTH, actorEmployeeId: 558, reason: 'Late corrections' }),
     ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('HR-TP-04') });
   });
 });
@@ -210,6 +231,6 @@ describe('TS-SUBMIT-01 — HR-TP-03: payroll cannot run an unsubmitted month', (
 
 it('blocks an incomplete employee/date even with a timing override and no pending forms',async()=>{
   state.complete=false;
-  await expect(submitTimesheet({tenantId:TENANT,month:MONTH,actorEmployeeId:558,force:true})).rejects.toThrow('Attendance is incomplete');
+  await expect(submitTimesheet({tenantId:TENANT,month:MONTH,actorEmployeeId:558,force:true,reason:'Timing override'})).rejects.toThrow('Attendance is incomplete');
   expect(state.createdRuns).toHaveLength(0);
 });

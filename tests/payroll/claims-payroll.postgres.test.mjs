@@ -225,7 +225,8 @@ test("Management claiming her own expense is approved at once and then paid thro
   await once();
   const made = await as("MANAGEMENT", () => createClaim({ tenantId: company, employeeId: people.MANAGEMENT.id, title: "Management travel", amount: 700 }));
   const id = idOf(made);
-  await as("MANAGEMENT", () => submitMyClaim({ tenantId: company, employeeId: people.MANAGEMENT.id, id }));
+  const sent = await as("MANAGEMENT", () => submitMyClaim({ tenantId: company, employeeId: people.MANAGEMENT.id, id }));
+  assert.equal(sent.status, "APPROVED", "the answer says it was approved at once");
   const ar = await db((tx) => tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "CLAIM", sourceRef: String(id) } }));
   assert.equal(ar.stage, "APPROVED");
   assert.equal((await db((tx) => tx.reimbursementClaim.findFirst({ where: { id, tenantId: company } }))).status, "APPROVED");
