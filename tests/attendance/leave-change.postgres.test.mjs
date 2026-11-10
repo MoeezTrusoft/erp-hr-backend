@@ -303,6 +303,7 @@ test("the database refuses to cancel approved leave any other way", async () => 
   row = await act("MANAGER", row, "RECOMMEND_APPROVAL");
   row = await act("HR", row, "VERIFY");
   await act("MANAGEMENT", row, "APPROVE", { reason: "Approved, with a note in case the balance is short" });
+  await assert.rejects(db((tx) => tx.leaveRequest.update({ where: { id: source.row.id }, data: { status: "PENDING" } })), /cannot be reopened/, "an approved leave cannot be sent back to pending");
   await assert.rejects(db((tx) => tx.leaveRequest.update({ where: { id: source.row.id }, data: { status: "CANCELLED" } })), /approved leave change/i);
   await assert.rejects(db((tx) => tx.$executeRaw`SELECT set_config('app.hr_leave_cancel', ${`LEAVE_CANCEL:${source.row.id}`}, true)`.then(() => tx.leaveRequest.update({ where: { id: source.row.id }, data: { status: "CANCELLED" } }))), /approved leave change/i, "the setting alone is not enough");
 });

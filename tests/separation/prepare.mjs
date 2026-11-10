@@ -110,6 +110,8 @@ try {
   await db.query(ruleChange.slice(ruleChange.indexOf('-- ATTENDANCE_RULE_SECURITY')));
   const leaveChange=await readFile('prisma/migrations/20261111090000_leave_changes_and_ledger/migration.sql','utf8');
   await db.query(leaveChange.slice(leaveChange.indexOf('-- LEAVE_CHANGE_SECURITY')));
+  const noReopen=await readFile('prisma/migrations/20261114090000_leave_status_no_reopen/migration.sql','utf8');
+  await db.query(noReopen);
   const captureChange=await readFile('prisma/migrations/20261112090000_capture_changes_and_clock/migration.sql','utf8');
   await db.query(captureChange.slice(captureChange.indexOf('-- CAPTURE_CHANGE_SECURITY')));
   await db.query(

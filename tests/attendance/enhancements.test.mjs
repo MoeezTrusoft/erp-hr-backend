@@ -389,8 +389,8 @@ test("recorded punches, absence, holiday rows, worked hours and case counts agre
   assert.equal(
     Object.entries(cases.summary)
       // `total` is the record count and `open` is a subset of the categories
-      // (cases still awaiting a decision), so neither is a category.
-      .filter(([key]) => !["total", "open"].includes(key))
+      // (cases still awaiting a decision), and `windowCounts` is a second breakdown, so none is a category.
+      .filter(([key]) => !["total", "open", "windowCounts"].includes(key))
       .reduce((n, [, value]) => n + value, 0),
     cases.total,
   );

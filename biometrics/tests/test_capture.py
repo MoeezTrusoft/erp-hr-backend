@@ -149,3 +149,31 @@ class CaptureTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class ClockCommandTests(unittest.TestCase):
+    def test_sets_the_clock_and_reports_success(self):
+        run = Mock(return_value=Mock(returncode=0))
+        ok, error = kiosk.set_system_time(dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"), run=run, system=lambda: "Linux")
+        self.assertEqual((ok, error), (True, None))
+        self.assertEqual(run.call_args[0][0][:3], ["date", "-u", "-s"])
+
+    def test_windows_uses_set_date(self):
+        run = Mock(return_value=Mock(returncode=0))
+        kiosk.set_system_time(dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"), run=run, system=lambda: "Windows")
+        self.assertEqual(run.call_args[0][0][0], "powershell")
+
+    def test_refuses_nonsense_and_far_off_times_without_touching_the_clock(self):
+        run = Mock()
+        self.assertFalse(kiosk.set_system_time("not a time", run=run, system=lambda: "Linux")[0])
+        far = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z")
+        ok, error = kiosk.set_system_time(far, run=run, system=lambda: "Linux")
+        self.assertFalse(ok)
+        self.assertIn("more than a week", error)
+        run.assert_not_called()
+
+    def test_reports_failure_when_the_machine_refuses(self):
+        run = Mock(return_value=Mock(returncode=1))
+        ok, error = kiosk.set_system_time(dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"), run=run, system=lambda: "Linux")
+        self.assertFalse(ok)
+        self.assertIn("administrator", error)

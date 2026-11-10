@@ -439,6 +439,8 @@ describe("timesheet and anomaly projection", () => {
       other: 1,
       total: 6,
       open: 2,
+      // where each case stands (employee window closed, decided): derived, nothing stored
+      windowCounts: { DECIDED: 1, HR_ONLY: 2 },
     });
     expect([...a.items, ...b.items, ...c.items]).toHaveLength(a.summary.total);
     const pending = await listRuleCases({ ...query, status: "PENDING" }, db);

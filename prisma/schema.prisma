@@ -998,6 +998,7 @@ model AttendanceCorrectionRequest {
   status String @default("PENDING")
   version Int @default(1)
   evaluationVersion Int
+  filedById Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@index([tenantId, employeeId, date], map: "attendance_correction_scope")
