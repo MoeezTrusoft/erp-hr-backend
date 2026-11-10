@@ -13,7 +13,6 @@ import { opsHealth } from '../../services/opsHealth.service.js';
 //
 // HR-ATT-POLICY-01.
 import { listLongAbsences } from '../../services/longAbsence.service.js';
-import { getMonthCloseOverview } from '../../services/monthClose.service.js';
 import { resolveActingEmployeeId } from '../../lib/actingEmployee.js';
 import prisma from '../../lib/prisma.js';
 import { markAnomalyDeduction, returnAnomalyRequest, resubmitAnomalyRequest, anomalyAttachmentUrl } from '../../services/anomalyManagement.service.js';
@@ -100,6 +99,7 @@ export function registerAttendanceAnomalyTools(server) {
   server.tool('hr_month_close_overview','Month-close checklist for one month: submitted or not, each gate with a plain reason, whether it can be submitted or reopened, and the long-absence list.',{month:z.string().regex(/^\d{4}-\d{2}$/).describe('Month as YYYY-MM'),minDays:z.coerce.number().int().min(1).max(31).optional()},withToolError(async({month,minDays})=>{
     const {user,permissions}=getCtx();
     assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
+    const {getMonthCloseOverview}=await import('../../services/monthClose.service.js'); // loaded on use: it pulls in the payroll submit services
     return ok(await getMonthCloseOverview({tenantId:user.tenantId,month,minDays}));
   }));
   // O-05 — on-demand T&A and payroll health check (EDIT: it spans devices, cases and payroll runs).
