@@ -98,11 +98,13 @@ export async function requestTaxSlabSet({ tenantId, requestedById, countryCode =
     { tenantId },
   );
   try {
-    await legacySubmit('TAX_SLAB_CHANGE', row.id, why, { onBehalf: true });
+    await legacySubmit('TAX_SLAB_CHANGE', row.id, why);
   } catch (error) {
     await prisma.taxSlabChangeRequest.deleteMany({ where: { id: row.id, tenantId, status: 'PENDING' } });
     throw error;
   }
+  const decided = await prisma.taxSlabChangeRequest.findFirst({ where: { id: row.id, tenantId, status: 'APPROVED' }, select: { id: true } });
+  if (decided) return { pendingApproval: false, requestId: row.id, action: 'REPLACE_SET', status: 'APPROVED', message: `Done. Filed by Management, so no further approval is needed. The new slabs apply from ${effectiveFrom}.` };
   return { pendingApproval: true, requestId: row.id, action: 'REPLACE_SET', status: 'PENDING', message: 'Sent for approval. The new slabs apply from the chosen date when the approval route approves them.' };
 }
 

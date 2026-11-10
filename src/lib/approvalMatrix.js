@@ -20,6 +20,9 @@ const ROUTED_BY_ATTENDANCE = Object.freeze(["SHIFT_SWAP", "ROSTER_CHANGE", "HOLI
 const ROUTED_BY_PAYROLL = Object.freeze(["TAX_SLAB_CHANGE"]);
 export const matrixKindFor = (kind) =>
   MATRIX_KINDS.includes(kind) ? kind : ROUTED_BY_ATTENDANCE.includes(kind) ? "ATTENDANCE" : ROUTED_BY_PAYROLL.includes(kind) ? "PAYROLL" : null;
+// Company-level kinds have no employee the request is about: the filer is the only party, so HR filing satisfies the HR
+// level and a Management approver filing decides it (no second approver).
+const filedByCompany = (kind) => kind === "PAYROLL" || ROUTED_BY_PAYROLL.includes(kind);
 export const matrixRequired = (kind) => ROUTED_BY_ATTENDANCE.includes(kind) || ROUTED_BY_PAYROLL.includes(kind);
 export const LEVEL_ACTIONS = Object.freeze(["RECOMMEND", "VERIFY", "APPROVE"]);
 export const APPROVER_MODES = Object.freeze(["NAMED", "EMPLOYEE_MANAGER"]);
@@ -119,6 +122,16 @@ const uniq = (codes) => [...new Set(codes.filter(Boolean))];
 //                       Neither may approve the request.
 // Throws when a required level has nobody left to act.
 export function buildRoute({ kind, matrixVersion, levels, initiator, subject, amount, approvers }) {
+  // A named Management approver filing a company-level change (tax slabs) is the decision: no further approval.
+  const decider = levels.at(-1);
+  if (ROUTED_BY_PAYROLL.includes(kind) && decider && !decider.paused && uniq(approvers(decider)).includes(initiator))
+    return {
+      kind, matrixVersion, selfApproved: true, acted: [{ level: levels.length - 1, code: initiator }],
+      levels: levels.map((l, i) => ({
+        index: i, name: l.name, action: l.action, required: l.required, canReject: l.canReject, canReturn: l.canReturn,
+        approverCodes: [], viaManager: false, engaged: !l.paused, auto: true, skipped: l.paused ? "PAUSED" : null,
+      })),
+    };
   const sealed = levels.map((l, i) => {
     const at = `Level ${i + 1} (${l.name})`;
     if (l.paused)
@@ -149,10 +162,10 @@ export function buildRoute({ kind, matrixVersion, levels, initiator, subject, am
     // always raised by the person it was processed by; for any other kind the raiser must be someone
     // other than the employee the request is about (nobody verifies their own case).
     if (
-      (l.satisfiedByInitiator || (l.allowSelf && initiator === subject)) &&
+      (l.satisfiedByInitiator || (l.allowSelf && initiator === subject) || (ROUTED_BY_PAYROLL.includes(kind) && l.action === "VERIFY")) &&
       l.action !== "APPROVE" &&
       assigned.includes(initiator) &&
-      (kind === "PAYROLL" || initiator !== subject || l.allowSelf)
+      (filedByCompany(kind) || initiator !== subject || l.allowSelf)
     )
       return { ...out, auto: true };
     if (!eligible.length) {

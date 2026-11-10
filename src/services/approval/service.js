@@ -565,14 +565,15 @@ async function submitWithin(
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
     const route = matrix ? await sealRoute(tx, env, input.kind, matrix, source) : null;
+    const selfApproved = route?.selfApproved === true;
     const data = {
       // The canonical owner code of the source, not the caller's: identical for
       // a self submission, the employee's for an on-behalf one.
       employeeCode: source.who.employee_code,
-      stage: route ? "LEVEL" : sentToHr ? "HR" : stageAfterSubmission(input.kind),
+      stage: selfApproved ? "APPROVED" : route ? "LEVEL" : sentToHr ? "HR" : stageAfterSubmission(input.kind),
       route: route ?? Prisma.DbNull,
-      level: route ? route.levels.findIndex((l) => l.engaged) : null,
-      pendingCodes: route ? route.levels.find((l) => l.engaged).approverCodes : [],
+      level: route && !selfApproved ? route.levels.findIndex((l) => l.engaged) : null,
+      pendingCodes: route && !selfApproved ? route.levels.find((l) => l.engaged).approverCodes : [],
       managerCode: sentToHr ? null : (manager?.employee_code ?? null),
       managerActorCode: null,
       hrActorCode: null,
@@ -612,7 +613,11 @@ async function submitWithin(
     // SUBMIT into HR, then VERIFY by the same filer into MANAGEMENT — so the
     // auto-verification is visible rather than implied.
     let current = next;
-    if (route) current = await settleAutoLevels(tx, env, next, source, input.reason);
+    if (selfApproved) {
+      const execution = await applyDecision(tx, env, next, source, true, input.reason, {});
+      current = await tx.hrApprovalRequest.update({ where: { id: next.id }, data: { execution, version: { increment: 1 } } });
+      await audit(tx, env, next, current, "APPROVE", `${noteOf(input.reason)} [Filed by Management: no further approval needed]`);
+    } else if (route) current = await settleAutoLevels(tx, env, next, source, input.reason);
     else if (onBehalf && isVerifiedOnBehalf(input.kind) && next.stage === "HR") {
       current = await tx.hrApprovalRequest.update({
         where: { id: next.id },
