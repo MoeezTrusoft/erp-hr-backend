@@ -16,7 +16,9 @@ import {
   punchFingerprint,
   legacyPunchFingerprints,
   validTimeZone,
+  wallAt,
 } from "../lib/attendanceCapture.js";
+import { correctPunch, tooFarAhead, usableOffsetSeconds, describeOffset, DRIFT_SECONDS } from "../lib/deviceClock.js";
 import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
 
 const system = (fn) => mcpCtx.run({ system: true }, fn);
@@ -34,7 +36,8 @@ async function partitionRepeats(db, events, sn) {
     }
     const punch = {
       deviceUserId: event.parsed.deviceUserId,
-      punchedAt: new Date(event.parsed.punchedAt),
+      // The identity of a punch is the machine's own reading, so a later clock correction never makes a repeat look new.
+      punchedAt: new Date(event.parsed.machine?.punchedAt ?? event.parsed.punchedAt),
     };
     keys.set(event.id, {
       own: [punchFingerprint(sn, punch, event.tenantId)],
@@ -334,7 +337,14 @@ export async function receiveCapture(
     const receiptId = randomUUID();
     const supervised =
       device.acceptanceMode === "SUPERVISED" ? "ONSITE_SUPERVISED_REVIEW" : null;
-    const events = parsed.flatMap(({ raw, parsed: punch, reason }) => {
+    // A machine whose clock is wrong: its punches count at the server's time; its own reading stays on the punch.
+    const arrival = new Date();
+    const offset = source === "MANUAL" ? 0 : usableOffsetSeconds(device, arrival);
+    let corrected = 0;
+    const events = parsed.flatMap(({ raw, parsed: machinePunch, reason: parseReason }) => {
+      const punch = machinePunch && offset ? correctPunch(machinePunch, offset, wallAt) : machinePunch;
+      if (punch && offset) corrected += 1;
+      const reason = parseReason || (punch && source !== "MANUAL" && tooFarAhead(punch, arrival) ? "The time is more than a day ahead of the server clock; check the machine's date" : null);
       const outcome = punch
         ? source === "MANUAL"
           ? { hits: [{ employeeId: manualEmployeeId, tenantId }], issues: [] }
@@ -364,7 +374,7 @@ export async function receiveCapture(
           source,
           sn,
           fingerprint: punch
-            ? punchFingerprint(sn, punch, perCompany ? target.tenantId : null)
+            ? punchFingerprint(sn, machinePunch, perCompany ? target.tenantId : null)
             : fingerprint([sn, raw]),
           deviceUserId: punch?.deviceUserId,
           raw: {
@@ -456,6 +466,7 @@ export async function receiveCapture(
           pending: inserted.filter((e) => e.state === "PENDING").length,
           needsReview: inserted.filter((e) => e.state === "NEEDS_REVIEW")
             .length,
+          ...(corrected ? { clockCorrected: corrected } : {}),
         };
         await tx.attendanceCaptureReceipt.create({
           data: {
@@ -482,6 +493,12 @@ export async function receiveCapture(
           reason: "Durable attendance receipt",
           detail: summary,
         });
+        if (corrected)
+          await captureAudit(tx, {
+            tenantId: owner, receiptId, actorId: "attendance-capture", action: "CLOCK_CORRECTED",
+            reason: `The machine's clock is ${describeOffset(offset)}; its punches count at the server's time`,
+            detail: { sn, offsetSeconds: offset, punches: corrected },
+          });
         return { receiptId, ...summary, replayed: false };
       },
       { system: true, txOptions: { timeout: 30000 } },
@@ -557,6 +574,8 @@ export async function captureOverview(
     devices: devices.map((d) => ({
       ...devicePublic(d),
       stale: !d.lastSeenAt || now - d.lastSeenAt > d.staleAfterMinutes * 60000,
+      clockDrifting: Number.isFinite(d.clockOffsetSeconds) && Math.abs(d.clockOffsetSeconds) > DRIFT_SECONDS,
+      clockNote: Number.isFinite(d.clockOffsetSeconds) && Math.abs(d.clockOffsetSeconds) > DRIFT_SECONDS ? describeOffset(d.clockOffsetSeconds) : null,
     })),
     counts: Object.fromEntries(counts.map((c) => [c.state, c._count._all])),
     oldestPendingAt: oldest?.createdAt,
@@ -614,7 +633,7 @@ export async function captureHeartbeat(
   const clock = deviceTime
     ? parseCaptureTimestamp(deviceTime, device.timeZone)
     : null;
-  return system(
+  const updated = await system(
     async () =>
       await db.attendanceCaptureDevice.update({
         where: { id: device.id },
@@ -632,6 +651,10 @@ export async function captureHeartbeat(
         select: { id: true, lastSeenAt: true, clockOffsetSeconds: true },
       }),
   );
+  // A machine that now reports the right time closes any waiting correction; one that does not gets it again.
+  const { closeFixedCommands, commandsForHeartbeat } = await import("./attendanceDeviceCommand.service.js");
+  await closeFixedCommands(device.id, updated.clockOffsetSeconds, now, db);
+  return { ...updated, commands: await commandsForHeartbeat(device, now, db) };
 }
 
 export async function monitorCaptureDevices(
@@ -751,7 +774,7 @@ export async function reconcileCaptureIdentities(
             if (!copies.length) return;
             const punch = {
               deviceUserId: row.parsed.deviceUserId,
-              punchedAt: new Date(row.parsed.punchedAt),
+              punchedAt: new Date(row.parsed.machine?.punchedAt ?? row.parsed.punchedAt),
             };
             await tx.attendanceCaptureEvent.createMany({
               data: copies.map((copy) => ({

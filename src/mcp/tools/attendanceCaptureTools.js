@@ -14,6 +14,7 @@ import {
   updateCaptureDevice,
 } from "../../services/attendanceCapture.service.js";
 import { reEnrol } from "../../services/deviceEnrolment.service.js";
+import { requestClockFix, listClockCommands } from "../../services/attendanceDeviceCommand.service.js";
 import {
   requestDeviceAccess,
   decideDeviceAccess,
@@ -209,6 +210,20 @@ export function registerAttendanceCaptureTools(server) {
     "PUT",
     reEnrol,
     "device",
+  );
+  tool(
+    "hr_attendance_device_clock_fix",
+    "Ask a machine to set its clock to the server's time. The device agent applies it on its next heartbeat; until then punches already count at the server's time",
+    { sn: z.string().min(1).max(64) },
+    "PUT",
+    requestClockFix,
+  );
+  tool(
+    "hr_attendance_device_clock_commands",
+    "Time corrections asked of the company's machines and where each one stands",
+    { limit: z.number().int().min(1).max(200).optional() },
+    "PUT",
+    listClockCommands,
   );
   // ATT-DEVICE-ACCESS-01 — a company asks to use another company's device; the
   // owning company approves, and either side can end the access later.

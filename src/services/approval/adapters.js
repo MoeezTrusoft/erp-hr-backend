@@ -196,6 +196,13 @@ const definitions = {
     ["PENDING"],
     ["action", "payload", "reason"],
   ],
+  CAPTURE_CHANGE: [
+    "captureChangeRequest",
+    "capture_change_requests",
+    "requestedById",
+    ["PENDING"],
+    ["action", "payload", "reason"],
+  ],
   GOAL: [
     "goal",
     "Goal",
@@ -331,6 +338,7 @@ export const registry = Object.fromEntries(
           "HOLIDAY_EXEMPTION",
           "ATTENDANCE_RULE_CHANGE",
           "LEAVE_CHANGE",
+          "CAPTURE_CHANGE",
           "TIME_CREDIT",
           "TIME_CREDIT_REVOCATION",
           "ASSESSMENT_RELEASE",
@@ -770,6 +778,9 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
   } else if (kind === "LEAVE_CHANGE") {
     const { finalizeLeaveChange } = await import("../leaveChangeRequest.service.js");
     await finalizeLeaveChange(tx, env, row, approved);
+  } else if (kind === "CAPTURE_CHANGE") {
+    const { finalizeCaptureChange } = await import("../captureChangeRequest.service.js");
+    await finalizeCaptureChange(tx, env, row, approved);
   } else if (kind === "GOAL")
     await tx.goal.update({
       where: { id: row.id },

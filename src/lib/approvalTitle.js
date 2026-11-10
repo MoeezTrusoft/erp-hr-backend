@@ -71,6 +71,13 @@ export function requestTitle(kind, snapshot) {
       const what = s.action === "GRACE_MEMBERSHIP" ? "Team or department assignment" : "Grace period change";
       return from ? `${what} from ${from}` : what;
     }
+    case "CAPTURE_CHANGE": {
+      const p = s.payload ?? {};
+      if (s.action !== "MANUAL_PUNCH") return null;
+      const when = day(String(p.localTime ?? "").slice(0, 10));
+      const kind = p.direction === "OUT" ? "check-out" : "check-in";
+      return p.employeeName ? `Manual ${kind}: ${p.employeeName}${when ? `, ${when}` : ""}` : `Manual ${kind}`;
+    }
     case "LEAVE_CHANGE": {
       const p = s.payload ?? {};
       if (s.action === "POLICY_CREATE") return p.policy?.name ? `Leave type added: ${p.policy.name}` : "Leave type added";

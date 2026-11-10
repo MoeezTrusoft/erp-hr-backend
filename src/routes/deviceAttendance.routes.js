@@ -5,6 +5,7 @@ import {
   captureHeartbeat,
 } from "../services/attendanceCapture.service.js";
 import logger from "../lib/logger.js";
+import { ackCommand } from "../services/attendanceDeviceCommand.service.js";
 import biometricRoutes from './attendanceBiometric.routes.js';
 const router = express.Router();
 router.use('/biometric', biometricRoutes);
@@ -36,8 +37,9 @@ router.post("/heartbeat", async (req, res) => {
       req.body?.sn,
       req.get("X-Intake-Key"),
     );
-    await captureHeartbeat({ device, deviceTime: req.body?.deviceTime });
-    res.json({ success: true });
+    const beat = await captureHeartbeat({ device, deviceTime: req.body?.deviceTime });
+    // Anything HR asked the machine to do (set its clock) rides back on the answer.
+    res.json({ success: true, commands: beat.commands ?? [] });
   } catch (err) {
     res
       .status(err.status || 500)
@@ -45,6 +47,14 @@ router.post("/heartbeat", async (req, res) => {
         success: false,
         message: err.status ? err.message : "Heartbeat failed",
       });
+  }
+});
+router.post("/command-ack", async (req, res) => {
+  try {
+    const device = await authenticateCaptureDevice(req.body?.sn, req.get("X-Intake-Key"));
+    res.json({ success: true, ...(await ackCommand({ device, id: req.body?.id, ok: req.body?.ok === true, error: req.body?.error })) });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.status ? err.message : "Acknowledgement failed" });
   }
 });
 export default router;
