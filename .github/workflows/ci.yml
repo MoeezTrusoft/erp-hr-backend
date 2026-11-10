@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 985eab0049296d2930365313370dc10eadcd8e75 # contracts: PR #31 (capture change kind) on top of #30
+          ref: 8491aceb9f17466e1adde6393dcebd8051ec8516 # contracts: TAX_SLAB_CHANGE kind (loans, claims and tax PR) on top of #31
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: MoeezTrusoft/erp-contracts
-          ref: 985eab0049296d2930365313370dc10eadcd8e75
+          ref: 8491aceb9f17466e1adde6393dcebd8051ec8516 # contracts: TAX_SLAB_CHANGE kind (loans, claims and tax PR) on top of #31
           path: _contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
           persist-credentials: false
