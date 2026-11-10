@@ -6,7 +6,6 @@ import {
   getAttendanceSetup,
   saveAttendanceSettings,
   previewAttendanceSetup,
-  publishAttendanceSetup,
   simulateAttendance,
   restoreAttendanceDraft,
 } from '../../services/attendanceSetup.service.js';
@@ -18,6 +17,7 @@ import {
   assignSetupCalendar,
   createSetupCalendar,
 } from '../../services/attendanceSetupOperations.service.js';
+import { requestAttendanceSetupPublish } from '../../services/attendanceRuleChangeRequest.service.js';
 import { requireEmployeeActor } from '../../lib/employeeActor.js';
 
 export function registerAttendanceReadinessTools(server) {
@@ -71,7 +71,7 @@ export function registerAttendanceReadinessTools(server) {
     'Publish a validated immutable configuration for an operating period',
     { ...dates, reason: z.string().min(1), previewToken: z.string() },
     'POST',
-    publishAttendanceSetup,
+    (a) => requestAttendanceSetupPublish({ ...a, requestedById: a.actorId }),
   );
   register(
     'hr_attendance_setup_restore',

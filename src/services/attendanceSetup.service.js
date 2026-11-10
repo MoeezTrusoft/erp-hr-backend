@@ -231,6 +231,8 @@ export async function previewAttendanceSetup({ tenantId, from, to }) {
     previousVersion: previous?.version ?? null,
   };
 }
+// `tx` runs the publication inside an outer transaction (the approval's final decision); `dryRun` stops after every
+// check, so a request can be refused when it is filed rather than at the last approval level.
 export async function publishAttendanceSetup({
   tenantId,
   from,
@@ -238,12 +240,12 @@ export async function publishAttendanceSetup({
   reason,
   previewToken,
   publishedById,
+  tx: outerTx,
+  dryRun = false,
 }) {
   dateRange(from, to);
   if (!reason?.trim()) throw badSetup('A publication reason is required');
-  return tenantTransaction(
-    prisma,
-    async (tx) => {
+  const run = async (tx) => {
       await lockAttendancePeriod(tx,tenantId);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${scope(tenantId)}:attendance-setup`}))`;
       const config = await buildAttendanceSetup(tenantId, tx);
@@ -311,6 +313,7 @@ export async function publishAttendanceSetup({
           409,
         );
       }
+      if (dryRun) return { ok: true };
       const version = (latest?.version ?? 0) + 1;
       const release = await tx.attendanceSetupRelease.create({
         data: {
@@ -348,9 +351,12 @@ export async function publishAttendanceSetup({
         coverageThrough: release.coverageThrough,
         publishedAt: release.publishedAt,
       };
-    },
-    { tenantId, txOptions: { isolationLevel: 'Serializable', timeout: 30000 } },
-  );
+  };
+  if (outerTx) return run(outerTx);
+  return tenantTransaction(prisma, run, {
+    tenantId,
+    txOptions: { isolationLevel: 'Serializable', timeout: 30000 },
+  });
 }
 export async function restoreAttendanceDraft({
   tenantId,

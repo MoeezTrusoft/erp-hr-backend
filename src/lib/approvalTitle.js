@@ -62,6 +62,15 @@ export function requestTitle(kind, snapshot) {
       const other = day(s.toDate);
       return `Shift swap, ${when}${other && other !== when ? ` for ${other}` : ""}`;
     }
+    case "ATTENDANCE_RULE_CHANGE": {
+      if (s.action === "PUBLISH_SETUP") {
+        const from = day(s.payload?.from);
+        return from ? `Attendance rules published from ${from}` : "Attendance rules published";
+      }
+      const from = day(s.payload?.effectiveFrom);
+      const what = s.action === "GRACE_MEMBERSHIP" ? "Team or department assignment" : "Grace period change";
+      return from ? `${what} from ${from}` : what;
+    }
     case "ROSTER_CHANGE": {
       if (s.action === "DELETE") return "Roster removal";
       const from = day(s.payload?.effective_start_date);

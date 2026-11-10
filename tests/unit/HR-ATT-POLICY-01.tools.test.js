@@ -39,6 +39,7 @@ jest.unstable_mockModule('../../src/services/attendanceApprovalLevel.service.js'
 }));
 
 jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({getAttendanceSetup:jest.fn(async args=>args),saveAttendanceSettings:jest.fn(async args=>args),previewAttendanceSetup:jest.fn(async args=>args),publishAttendanceSetup:jest.fn(async args=>args),simulateAttendance:jest.fn(async args=>args),restoreAttendanceDraft:jest.fn(async args=>args)}));
+jest.unstable_mockModule('../../src/services/attendanceRuleChangeRequest.service.js',()=>({requestAttendanceSetupPublish:jest.fn(async args=>args)}));
 jest.unstable_mockModule('../../src/services/attendanceSetupOperations.service.js',()=>({bulkAssignRosters:jest.fn(async args=>args),previewDeviceMapping:jest.fn(async args=>args),rolloverHolidayCalendar:jest.fn(async args=>args),importSetupHolidays:jest.fn(async args=>args),assignSetupCalendar:jest.fn(async args=>args),createSetupCalendar:jest.fn(async args=>args)}));
 const { registerAttendanceSetupTools } = await import('../../src/mcp/tools/attendanceSetupTools.js');
 const approvals = await import('../../src/services/attendanceApprovalLevel.service.js');
