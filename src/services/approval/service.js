@@ -618,7 +618,15 @@ async function submitWithin(
       current = await tx.hrApprovalRequest.update({ where: { id: next.id }, data: { execution, version: { increment: 1 } } });
       await audit(tx, env, next, current, "APPROVE", `${noteOf(input.reason)} [Filed by Management: no further approval needed]`);
     } else if (route) current = await settleAutoLevels(tx, env, next, source, input.reason);
-    else if (onBehalf && isVerifiedOnBehalf(input.kind) && next.stage === "HR") {
+    // HR filing its own loan or claim: the filing is the HR check, so Management alone decides (no second HR needed).
+    else if (
+      next.stage === "HR" &&
+      isVerifiedOnBehalf(input.kind) &&
+      (onBehalf ||
+        (["CLAIM", "LOAN"].includes(input.kind) &&
+          permits(env, "verify") &&
+          source.who.employee_code === env.who.employee_code))
+    ) {
       current = await tx.hrApprovalRequest.update({
         where: { id: next.id },
         data: {

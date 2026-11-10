@@ -180,3 +180,14 @@ test("an employee makes and submits their own claim; nobody else's claim can be 
   assert.ok(mine.items.some((c) => c.id === id));
   assert.ok(!mine.items.some((c) => c.id === theirs), "only their own");
 });
+
+test("HR claiming her own expense: her filing is the HR check and Management alone decides", async () => {
+  await once();
+  const made = await as("HR", () => createClaim({ tenantId: company, employeeId: people.HR.id, title: "HR conference travel", amount: 900 }));
+  const id = idOf(made);
+  await as("HR", () => submitMyClaim({ tenantId: company, employeeId: people.HR.id, id }));
+  const ar = await db((tx) => tx.hrApprovalRequest.findFirst({ where: { tenantId: company, kind: "CLAIM", sourceRef: String(id) } }));
+  assert.equal(ar.stage, "MANAGEMENT", "no second HR is needed");
+  assert.equal(ar.hrActorCode, people.HR.employee_code);
+  assert.equal((await act("MANAGEMENT", { approvalRef: ar.id, version: ar.version }, "APPROVE")).stage, "APPROVED");
+});

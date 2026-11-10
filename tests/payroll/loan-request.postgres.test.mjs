@@ -133,3 +133,19 @@ test("if the request cannot be opened (someone without the HR grant raising it f
   await assert.rejects(as("OTHER", () => loans.createLoan({ tenantId: company, employeeId: people.EMPLOYEE.id, kind: "LOAN", principalMinor: 100000, tenureMonths: 5, reason: "Raised without the HR grant", createdById: people.OTHER.id, submit: true })));
   assert.equal(await db((tx) => tx.loan.count({ where: { tenantId: company, status: "PENDING" } })), 0);
 });
+
+test("HR asking for her own advance: her filing is the HR check and Management alone decides; others still go to HR", async () => {
+  await once();
+  await clear();
+  const own = await as("HR", () => loans.requestMyLoan({ tenantId: company, employeeId: people.HR.id, kind: "ADVANCE", principalMinor: 2000000, tenureMonths: 1, reason: "Own advance, HR manager" }));
+  const ar = await approvalOf(own.loanId);
+  assert.equal(ar.stage, "MANAGEMENT", "no second HR is needed");
+  assert.equal(ar.hrActorCode, people.HR.employee_code, "the trail records her as the HR check");
+  await assert.rejects(act("HR", { approvalRef: ar.id, version: ar.version }, "APPROVE"), /./, "she cannot approve her own request");
+  assert.equal((await act("MANAGEMENT", { approvalRef: ar.id, version: ar.version }, "APPROVE")).stage, "APPROVED");
+  assert.equal((await loan(own.loanId)).status, "ACTIVE");
+  await clear();
+  const emp = await mine();
+  assert.notEqual((await approvalOf(emp.loanId)).stage, "MANAGEMENT", "an ordinary employee's request still goes through the earlier stages");
+  await clear();
+});
