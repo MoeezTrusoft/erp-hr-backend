@@ -41,6 +41,8 @@ test("an employee asks for a salary advance for themselves; nothing is lent unti
   await clear();
   const asked = await mine();
   assert.equal(asked.requested, true);
+  assert.equal(asked.status, "PENDING");
+  assert.match(asked.message, /Sent for approval/);
   const row = await loan(asked.loanId);
   assert.equal(row.status, "PENDING");
   assert.equal(row.kind, "ADVANCE");
@@ -154,6 +156,8 @@ test("Management asking for her own advance is approved at once, with the reason
   await once();
   await clear();
   const own = await as("MANAGEMENT", () => loans.requestMyLoan({ tenantId: company, employeeId: people.MANAGEMENT.id, kind: "ADVANCE", principalMinor: 1500000, tenureMonths: 1, reason: "Own advance, Management" }));
+  assert.equal(own.status, "ACTIVE", "the answer says what happened");
+  assert.match(own.message, /Approved at once/);
   const ar = await approvalOf(own.loanId);
   assert.equal(ar.stage, "APPROVED");
   assert.equal((await loan(own.loanId)).status, "ACTIVE");
