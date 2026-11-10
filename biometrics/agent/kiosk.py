@@ -6,8 +6,10 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import secrets
 import ssl
+import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -27,6 +29,28 @@ def sample_message(sample):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_args, **_kwargs):
         raise RuntimeError("Redirects are not permitted for biometric requests")
+
+
+def set_system_time(server_time, run=subprocess.run, system=platform.system):
+    """Set this machine's clock to the server's time (UTC). Returns (ok, error); needs administrator rights."""
+    try:
+        target = dt.datetime.fromisoformat(str(server_time).replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+    except ValueError:
+        return False, "The server time was not understood"
+    now = dt.datetime.now(dt.timezone.utc)
+    if abs((target - now).total_seconds()) > 7 * 24 * 3600:
+        return False, "The server time is more than a week from this machine's clock; set it by hand"
+    try:
+        if system() == "Windows":
+            command = ["powershell", "-NoProfile", "-Command", "Set-Date -Date ([datetime]::Parse('%s', [Globalization.CultureInfo]::InvariantCulture).ToUniversalTime())" % target.strftime("%Y-%m-%dT%H:%M:%SZ")]
+        else:
+            command = ["date", "-u", "-s", target.strftime("%Y-%m-%d %H:%M:%S")]
+        result = run(command, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False, "The machine refused to change its clock; run the agent as administrator"
+    if result.returncode != 0:
+        return False, "The machine refused to change its clock; run the agent as administrator"
+    return True, None
 
 
 def post_json(url, data, headers, context=None):
@@ -77,6 +101,16 @@ class CaptureAgent:
         }, {"X-Intake-Key": self.credential}, self.tls)
         if not response.get("success"):
             raise RuntimeError("Kiosk heartbeat was not acknowledged")
+        # Anything HR asked of this machine (set its clock) rides back on the answer; confirm each one.
+        for command in response.get("commands") or []:
+            if command.get("type") == "SET_TIME":
+                ok, error = set_system_time(command.get("serverTime"))
+                self.acknowledge(command.get("id"), ok, error)
+
+    def acknowledge(self, command_id, ok, error=None):
+        post_json(self.base + "/device-attendance/command-ack", {
+            "sn": self.sn, "id": command_id, "ok": bool(ok), **({} if ok else {"error": error or "The machine could not set its clock"})
+        }, {"X-Intake-Key": self.credential}, self.tls)
 
     def capture(self, ticket):
         if dt.datetime.fromisoformat(ticket["expiresAt"].replace("Z", "+00:00")) <= dt.datetime.now(dt.timezone.utc):

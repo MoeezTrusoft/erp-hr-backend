@@ -645,6 +645,7 @@ export const cancelLeaveRequest = async (id, employeeId, reason) => {
 };
 
 export const updateLeaveRequest = async (id, data) => {
+  refuseDirect();
   const existingRequest = await prisma.leaveRequest.findUnique({
     where: { id }
   });
