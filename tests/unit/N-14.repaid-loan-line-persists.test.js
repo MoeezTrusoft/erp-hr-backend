@@ -17,6 +17,12 @@ describe('N-14 loan bridge selection', () => {
         expect(w.OR).toContainEqual({ status:'ACTIVE', outstandingMinor: { gt: 0 } });
     });
 
+    it('holds a loan back until its disbursement date (the whole last day of the period counts)', () => {
+        const w = loanBridgeWhere(500, 9, new Date('2031-03-31T00:00:00Z'));
+        const active = w.OR.find((b) => b.status === 'ACTIVE');
+        expect(active.disbursementDate.lte.toISOString()).toBe('2031-03-31T23:59:59.999Z');
+    });
+
     it('also selects loans already repaid BY THIS RUN', () => {
         const w = loanBridgeWhere(533, 9);
         expect(w.OR).toContainEqual({
