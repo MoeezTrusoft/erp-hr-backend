@@ -1,0 +1,141 @@
+// src/services/payrollRuleConfig.service.js
+//
+// Payroll Setup → Pay Rules. One PayrollRuleConfig row per tenant holds the six
+// policy toggles + the garnishment cap. Reads fold the verified tenant via
+// scopedWhere(tenantId, where); the multi-step upsert runs inside a
+// tenantTransaction so the FORCE-RLS tenant GUC is set for both the read and the
+// create/update (PayrollRuleConfig is an RLS model — see src/lib/rlsTenant.js).
+import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import logger from "../lib/logger.js";
+import { SUPPORTED_PAY_RULES } from '../lib/payrollConfiguration.js';
+
+function badRequest(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+// The boolean policy toggles the payroll engine reads.
+const BOOL_KEYS = [
+  "midMonthJoinerProration",
+  "lwpRecovery",
+  "garnishmentRecovery",
+  // Banking paused: bank details are not required, salaries are paid in cash.
+  "cashDisbursement",
+  // HR-PAYROLL-EOBI-01. Off for every tenant until someone deliberately turns
+  // it on; see the rate/ceiling validation below.
+  "eobiEnabled",
+  // N-01 / T-0.3 — absence & half-day day-credit loss priced into pay.
+  // Ships false for every tenant: enabling changes real money behavior and is
+  // gated on the HR stacking-policy sign-off (plan 20, T-2.1).
+  "absenceRecoveryEnabled",
+];
+
+// HR-PAYROLL-DEDUCTION-BASIS-01 — what a deducted day is charged against.
+// OPERATOR RULE 2026-11-06 — a deducted day is always charged on the complete
+// monthly salary (basic + allowances). BASIC is no longer an option: keeping it
+// in the API would let a company halve every attendance penalty by accident.
+const DEDUCTION_BASES = ["GROSS"];
+
+// A DRAFT default row (id:null) when the tenant has no PayrollRuleConfig yet.
+function defaultRules() {
+  return {
+    id: null,
+    midMonthJoinerProration: true,
+    lwpRecovery: true,
+    garnishmentRecovery: true,
+    garnishmentCapPct: 33,
+    cashDisbursement: false,
+    // HR-PAYROLL-DEDUCTION-BASIS-01 — a deducted day is charged against the
+    // contracted package (base + allowances) over the month's calendar days.
+    deductionBasis: "GROSS",
+    // HR-PAYROLL-EOBI-01 — disabled by default. The rate and ceiling are the
+    // figures the original hardcoded comment named, not ones confirmed against
+    // a filed return, so they only take effect once a tenant opts in.
+    eobiEnabled: false,
+    eobiEmployeeRatePct: 1,
+    eobiWageCeilingMinor: 1700000,
+    // Attendance policy: unexcused ABSENT/HALF_DAY day-credit loss is deducted;
+    // approved anomaly requests are excluded by the payroll bridge.
+    absenceRecoveryEnabled: true,
+    status: "DRAFT",
+    version: 1,
+  };
+}
+
+// Columns kept in the table but never read by the payroll engine; they are not part of the API.
+const UNUSED_COLUMNS = ["midMonthExitSettlement", "complianceHold", "offCycleRelease"];
+export function publicRules(row) {
+  if (!row) return row;
+  const rest = { ...row };
+  for (const key of UNUSED_COLUMNS) delete rest[key];
+  return rest;
+}
+
+export async function getPayrollRules({ tenantId }) {
+  const row = await prisma.payrollRuleConfig.findUnique({ where: { tenantId } });
+  return publicRules(row ?? defaultRules());
+}
+
+export async function updatePayrollRules({ tenantId, ...toggles }) {
+  const unsupported=Object.keys(toggles).filter(key=>!SUPPORTED_PAY_RULES.includes(key));
+  if(unsupported.length) throw badRequest(`These settings are not supported by the payroll engine: ${unsupported.join(', ')}`);
+  // Build the change-set from ONLY the provided keys.
+  const data = {};
+  for (const key of BOOL_KEYS) {
+    if (toggles[key] !== undefined) {
+      if(typeof toggles[key]!=='boolean') throw badRequest(`${key} must be true or false`);
+      data[key] = toggles[key];
+    }
+  }
+  if (toggles.garnishmentCapPct !== undefined) {
+    const pct = Number(toggles.garnishmentCapPct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      throw badRequest("garnishmentCapPct must be a number between 0 and 100");
+    }
+    data.garnishmentCapPct = pct;
+  }
+
+  // HR-PAYROLL-DEDUCTION-BASIS-01 — rejected rather than coerced. An
+  // unrecognised value falls back to GROSS at compute time, which would hide a
+  // typo behind plausible-looking numbers.
+  if (toggles.deductionBasis !== undefined) {
+    const basis = String(toggles.deductionBasis).trim().toUpperCase();
+    if (!DEDUCTION_BASES.includes(basis)) {
+      throw badRequest(
+        basis === "BASIC"
+          ? "deductionBasis BASIC is no longer supported: attendance deductions are always priced on the complete salary (basic + allowances)"
+          : `deductionBasis must be one of: ${DEDUCTION_BASES.join(", ")}`,
+      );
+    }
+    data.deductionBasis = basis;
+  }
+
+  // HR-PAYROLL-EOBI-01 — both guard a statutory deduction, so a typo here comes
+  // out of somebody's pay. A 0 ceiling would silently charge nothing, which is
+  // indistinguishable from the rule being off, so it is rejected as a mistake.
+  if (toggles.eobiEmployeeRatePct !== undefined) {
+    const pct = Number(toggles.eobiEmployeeRatePct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      throw badRequest("eobiEmployeeRatePct must be a number between 0 and 100");
+    }
+    data.eobiEmployeeRatePct = pct;
+  }
+  if (toggles.eobiWageCeilingMinor !== undefined) {
+    const ceiling = Number(toggles.eobiWageCeilingMinor);
+    if (!Number.isInteger(ceiling) || ceiling <= 0) {
+      throw badRequest("eobiWageCeilingMinor must be a whole number of minor units greater than 0");
+    }
+    data.eobiWageCeilingMinor = ceiling;
+  }
+
+  const row = await tenantTransaction(prisma, async (tx) => {
+    return tx.payrollRuleConfig.upsert({
+      where: { tenantId },
+      create: { tenantId, ...data, status: "DRAFT", version: 1 },
+      update: { ...data, status: "DRAFT", version: { increment: 1 } },
+    });
+  });
+
+  logger.info({ id: row.id }, "payroll rules updated");
+  return publicRules(row);
+}

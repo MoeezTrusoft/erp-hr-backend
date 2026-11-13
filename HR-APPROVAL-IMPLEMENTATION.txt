@@ -1,0 +1,233 @@
+HR APPROVAL WORKFLOW ALIGNMENT
+Implementation and verification record — 15 October 2026
+
+Status: implemented and tested in the local checkouts. Not merged, deployed,
+or certified against the live erp.trusoft.ai environment by this change.
+Existing uncommitted assessment and separation work has been preserved.
+
+1. AGREED PROCESS
+
+Employee initiator submits/resubmits -> current direct line manager recommends
+approval or rejection -> HR verifies -> Management approves or rejects.
+
+Return destinations:
+  Line manager -> employee initiator.
+  HR -> employee initiator.
+  Management -> HR. HR can resolve the issue and verify again for Management,
+                or return the request to the employee initiator.
+
+A manager's rejection recommendation is advisory; it does not reject the request.
+A Management return clears the HR verification and retains the manager's
+recommendation. A return to the initiator clears current recommendations and
+verification. Resubmission starts a new review round and retains prior history.
+Material changes or a changed reporting line cannot reuse outdated reviews.
+
+2. COVERAGE
+
+The shared Approval Centre at /hr/approvals handles these 22 request types:
+
+  Attendance and time:
+    TIME_CREDIT              Site-travel time credit
+    TIME_CREDIT_REVOCATION   Revocation of an approved time credit
+    LEAVE                    Leave request
+    OVERTIME                 Overtime request
+    TIMESHEET                Timesheet approval
+    SHIFT_SWAP               Shift-swap request
+    ATTENDANCE               Current-rule attendance anomaly decision
+
+  Financial and recruitment:
+    CLAIM                    Expense/reimbursement claim
+    LOAN                     Loan activation
+    LOAN_WRITEOFF            Loan write-off
+    PAYROLL                  Completed payroll-run approval
+    REQUISITION              Recruitment requisition
+    OFFER                    Offer authorization before sending
+
+  Performance, assessment and employment:
+    GOAL                     Employee goal
+    PERFORMANCE              Performance review finalization
+    ASSESSMENT_RELEASE       Release of an acknowledged practical assessment
+    DEVELOPMENT              Development-plan approval
+    JOB_DESCRIPTION          Job-description proposal approval
+    CATEGORY_CONVERSION      Employee-category/code conversion
+    NOTICE_CHANGE            Separation notice change
+    SEPARATION_WITHDRAWAL    Withdrawal after separation approval
+    SETTLEMENT               Final settlement before payroll handoff
+
+The main separation workflow retains its existing native policy, evidence,
+authority and workstream controls. Its return routing follows the same agreed
+process. Assessment practical review, moderation, acknowledgment, JD owner review,
+clearances and financial preparation remain prerequisites, rather than substitutes
+for the business approval chain.
+
+Employee identity in the new public commands and review records uses employee
+codes. Internal numeric foreign keys stay within the backend. The owner is the
+subject employee for personal requests; requisitions, payroll runs and offers
+use their initiating/requesting/processing employee. A valid company, linked
+employee account and current reporting line are required. This implementation
+does not invent proxy authority for an unavailable or deceased employee.
+
+3. USER EXPERIENCE AND FINAL EFFECTS
+
+The centre provides My requests, reviewer queue, audit view, request-type filter,
+source details, immutable review history, stage-specific actions, reasons and a
+deliberate review confirmation. It requires a single active company. HR can select
+a leave policy during verification. The UI supports desktop and mobile layouts.
+
+Legacy decision buttons route to the centre. Direct legacy approval/rejection
+API calls fail with HR-4201 before changing balances, payments or source status.
+Existing save/submission entry points preserve their native result shape while
+submission enters the common chain. Old payroll/overtime approval matrices do
+not authorize new decisions through the retired decision paths.
+
+Only a Management decision applies immediate native effects: leave balance and
+attendance updates, overtime roster updates, claim status, loan activation or
+write-off, timesheet/swap/goal/requisition status, payroll-run approval, current
+attendance rule effects, and performance finalization. Final effects and approval
+history commit together or roll back together. Creating a loan or time credit
+no longer activates it automatically. Payslip approval/disbursement requires an
+approved parent payroll run and the existing financial separation of duties.
+
+Specialist actions remain explicit after approval: assessment release,
+development/JD execution, category conversion, notice change, offer sending,
+separation withdrawal and settlement handoff. Each native action verifies the
+matching final decision and exact source revision inside its own transaction,
+then records execution as APPLIED with its native effects. SEPARATE_ACTION in the
+centre means that the authorized specialist action is still required. The native
+domain's prerequisites and role permissions still apply.
+
+Employees can withdraw their pending leave, overtime, claim or shift-swap requests
+at any active review stage. This records WITHDRAWN and clears the queue, preserving
+the audit. It is distinct from a Management rejection and does not cancel an
+already approved business effect.
+
+4. AUTHORIZATION, INTEGRITY AND INTERFACES
+
+Five typed MCP tools have matching POST /api/hr/approvals/<route> endpoints:
+  hr_approval_list     list
+  hr_approval_read     read
+  hr_approval_preview  preview
+  hr_approval_submit   submit
+  hr_approval_action   action
+
+Commands use strict shared schemas, employee codes, source references, expected
+versions, mandatory reasons and UUID idempotency keys. Caller-supplied company,
+actor, role, employee row ID or return destination is rejected. Stale commands
+return 412. Replays recheck current access and cannot repeat business effects.
+
+Authorization uses the verified account's linked employee and company. Manager
+actions require the current direct manager. Initiator, manager, HR verifier and
+Management decision maker are distinct actors for a request. General admin
+permissions do not implicitly grant final approval.
+
+The three approval tables have forced tenant RLS. Audit and replay receipts are
+immutable; source snapshots and replay payloads use existing C4 encryption.
+Transactions lock the approval and source records. Reviewed parent fields and
+claim/time/payroll lines cannot be edited after approval. Child-line edits lock
+the approval parent, preventing concurrent finalization from approving old facts.
+Source fingerprints include material child records and assessment revisions.
+
+Each transition writes an outbox event transactionally. No new email/SMS delivery
+consumer is claimed by this implementation; live delivery depends on the existing
+event infrastructure and configured consumers.
+
+5. REQUIRED ROLLOUT
+
+Coordinate the contracts, HR backend, RBAC, gateway and frontend releases. The
+changes span these local checkouts:
+  C:/Multistation Pro/contracts
+  C:/Multistation Pro/hr-review-source
+  C:/Multistation Pro/hr-frontend-source
+  Implementation Guide/finance-implementation/reference/rbac
+  Implementation Guide/finance-implementation/reference/gateway
+
+a. Complete the preceding assessment/employee-code/separation migration and data
+   prerequisites described in SEPARATION-IMPLEMENTATION.md. Verify employee codes,
+   account links, reporting lines and company ownership; do not guess mappings.
+b. Build consumers against matching contracts containing hr-approval exports.
+c. Back up the database and apply the two new HR migrations in order:
+     20261015115900_hr_approval_loan_states
+     20261015120000_hr_approval_workflow
+   The enum addition must commit before the main migration uses its values.
+   Generate Prisma Client for the resulting schema. Use a non-owner application
+   role with the existing tenant transaction context. Keep HR_C4_ENCRYPTION_KEY
+   stable and configured; losing it makes encrypted snapshots unreadable.
+d. Review migration treatment of legacy loans: ACTIVE loans without historical
+   approval or repayments are moved to PENDING. Historically approved or repaid
+   loans are retained. Existing finalized history is not retroactively assigned
+   fabricated recommendations. Pending legacy requests enter review through an
+   authenticated employee's submission.
+e. Install the RBAC approval permission catalog using the existing seed hook and
+   explicitly assign company roles to authorized employees:
+     HR_APPROVAL_EMPLOYEE   hr.approvals.self
+     HR_APPROVAL_MANAGER    self + manager
+     HR_APPROVAL_HR         self + verify + read
+     HR_APPROVAL_MANAGEMENT self + approve + read
+     HR_APPROVAL_AUDITOR    self + read
+   The seed creates roles/grants; it does not assign users. Domain execution
+   permissions remain necessary for specialist actions. Refresh cached sessions
+   and permission hydration after assignment.
+f. Deploy gateway capability mappings and the frontend with the backend. Validate
+   each role in a single company before enabling employee use. Test that another
+   company's records and a general administrator cannot bypass the chain.
+g. Confirm existing outbox processing and required specialist integrations. Run
+   live acceptance with approved test records before treating production as
+   certified. This local change does not redirect any device feeds or jobs.
+
+CI files now include database/migration workflow tests and the browser acceptance
+job. Private cross-repository checkout needs CONTRACTS_DEPLOY_KEY and HR_DEPLOY_KEY;
+ASSESSMENT_CONTRACTS_REF and HR_APPROVAL_BACKEND_REF must resolve to matching
+revisions. A hosted CI success has not been claimed or observed for these edits.
+
+6. VALIDATION
+
+Final local results:
+  HR Jest: 3,215 passed; 11 existing skips, across 268 passing suites.
+  Native assessment/separation/approval PostgreSQL: 108 passed, zero skips.
+  Approval browser acceptance: 26 passed against the real local backend and DB.
+  Contracts approval/employment: 9 passed.
+  Gateway approval/separation permissions: 5 passed.
+  RBAC approval role seeding: 2 passed.
+  Frontend production build: passed.
+  HR approval ESLint, frontend affected-file ESLint, HR library boundaries and
+  tracked diff whitespace checks: passed.
+
+The full frontend unit run passed 3,022 cases and exposed one stale manifest tool
+count (328 instead of 333). It was corrected; the affected HR/auth/manifest rerun
+passed 491 cases with three existing skips. A separate approval-client/manifest
+run passed 18 cases. No subsequent clean full frontend run is asserted.
+
+All 22 request types exercise approval, advisory rejection recommendation,
+Management return to HR, HR resolution, manager/HR return to initiator,
+resubmission and final rejection through real non-owner PostgreSQL. The browser
+exercises all 22 types plus resubmission/rejection, required inputs/mobile,
+All Companies isolation and employee withdrawal. Additional database cases
+cover identity/tenant/role isolation, stale requests, duplicate commands, current
+manager changes, source edits, approval rollback, child-row concurrency, legacy
+bypass prevention, native specialist execution and actual migration upgrades.
+
+Separation coverage includes native resignation and termination-with-cause
+completion plus its return, policy, integration, code-conversion and replay tests.
+This is not a claim of live completion of every separation type or external
+asset/payroll/Communication adapter. Existing unavailable-employee acknowledgment
+and frozen-clearance exception limits remain documented in the separation record.
+
+Reproducible entry points:
+  HR: node --test tests/assessment/*.test.mjs tests/separation/*.test.mjs tests/approval/*.test.mjs
+      (requires the guarded disposable PostgreSQL test database and test URLs)
+  Frontend: pnpm test:approval:browser
+  Contracts: node --test test/hr-approval.test.mjs test/employment.test.mjs
+
+Detailed local logs are under C:/Multistation Pro/assessment-test-runtime/:
+  approval-hr-complete.txt / .json
+  approval-native-complete.txt
+  approval-browser-complete.txt
+  approval-fe-vitest2.txt / .json
+  approval-fe-focused.txt
+  approval-client-final.txt
+  approval-fe-build.txt
+
+The repository Bash gate wrappers and unavailable visual-baseline checks were
+not run in this Windows environment. Available equivalent checks were executed
+directly. No merge, deployment, production-data change or live-ERP certification
+is included in this handoff.

@@ -1,0 +1,1365 @@
+import { requestTitle } from "../../lib/approvalTitle.js";
+import { isAppraisalApproval, appraisalApprovalPermission, canReadAppraisalApproval,
+  appraisalApprovalActions, appraisalApprovalSource, actAppraisalApproval } from "../appraisals/approval-bridge.js";
+import { has as hasAppraisal } from "../appraisals/base.js";
+import { transitionInTransaction } from "../appraisals/core.js";
+import { encryptString, decryptString } from "../../lib/crypto.js";
+import prisma from "../../lib/prisma.js";
+import { tenantTransaction } from "../../lib/rlsTenant.js";
+import { getCtx } from "../../mcp/context.js";
+import {
+  ApprovalList,
+  ApprovalRead,
+  ApprovalPreview,
+  ApprovalSubmit,
+  ApprovalAction,
+  ApprovalResult,
+} from "@trusoft/contracts/hr-approval";
+import {
+  HR_APPROVAL_ACTIONS,
+  hrRevertTarget,
+} from "@trusoft/contracts/hr-approval-rules";
+import {
+  isVerifiedOnBehalf,
+  requiresLineManager,
+  skipsManagerWhenNone,
+  stageAfterSubmission,
+} from "../../lib/approvalStagePolicy.js";
+import {
+  actor,
+  employee,
+  ownsCode,
+  employeeCodes,
+} from "../separation/base.js";
+import { enqueueHrDomainEvent } from "../hrDomainEvent.service.js";
+import {
+  fail,
+  hash,
+  json,
+  loadSource,
+  sourceCandidates,
+  onSubmit,
+  onReturn,
+  applyDecision,
+} from "./adapters.js";
+import { Prisma } from "@prisma/client";
+import { identitiesByCode } from "../../lib/personIdentity.js";
+import {
+  matrixKindFor,
+  matrixRequired,
+  PERMISSION_BY_ACTION,
+  amountOf,
+  buildRoute,
+  levelActions,
+  nextActionable,
+  previousActionable,
+} from "../../lib/approvalMatrix.js";
+import { loadPublishedMatrix } from "../approvalMatrix.service.js";
+const seal = (value) => ({
+  sealed: encryptString(JSON.stringify(json(value))),
+});
+const unseal = (value) => JSON.parse(decryptString(value.sealed));
+const permits = (env, key) =>
+  env.ctx.permissions?.includes("hr.approvals." + key) === true;
+const assertVersion = (row, version) => {
+  if (row.version !== version)
+    fail("Request changed. Refresh and review the current version.", 412);
+};
+async function execute(input, operation, fn) {
+  const ctx = getCtx();
+  if (!ctx.actorVerified || !ctx.user.tenantId)
+    fail("Verified company and employee identity required", 401);
+  return tenantTransaction(
+    prisma,
+    async (tx) => {
+      const who = await actor(tx, ctx),
+        env = { ctx, who, tenantId: ctx.user.tenantId, now: new Date() };
+      if (
+        !["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))
+        && !hasAppraisal(env, "hr.performance.read")
+      )
+        fail("Approval access required", 403);
+      env.codeAliases = await tx.employeeCodeAlias.findMany({
+        where: { tenantId: env.tenantId },
+        select: { employeeCode: true, newCode: true },
+      });
+      env.identityCodes = employeeCodes(env, who.employee_code);
+      const digest = hash({ operation, input });
+      if (input.requestKey) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${env.tenantId + ":approval-key:" + input.requestKey},0))`;
+        const prior = await tx.hrApprovalReceipt.findUnique({
+          where: {
+            tenantId_requestKey: {
+              tenantId: env.tenantId,
+              requestKey: input.requestKey,
+            },
+          },
+        });
+        if (prior) {
+          if (!ownsCode(env, prior.actorCode) || prior.digest !== digest)
+            fail("Request key already used for another command");
+          const cached = ApprovalResult.parse(unseal(prior.result));
+          const current = await tx.hrApprovalRequest.findFirst({
+            where: { tenantId: env.tenantId, id: cached.record.approvalRef },
+          });
+          const from = cached.record.history.at(-1)?.fromStage;
+          const grant =
+            operation === "SUBMIT" || input.action === "WITHDRAW"
+              ? "self"
+              : {
+                  LINE_MANAGER: "manager",
+                  HR: "verify",
+                  MANAGEMENT: "approve",
+                }[from];
+          if (
+            !current ||
+            (isAppraisalApproval(current)
+              ? !hasAppraisal(env, appraisalApprovalPermission(current))
+              : !grant || !permits(env, grant)) ||
+            !(await canRead(tx, env, current))
+          )
+            fail("Approval access required", 403);
+          return cached;
+        }
+      }
+      const result = ApprovalResult.parse(json(await fn(tx, env)));
+      if (input.requestKey)
+        await tx.hrApprovalReceipt.create({
+          data: {
+            tenantId: env.tenantId,
+            requestKey: input.requestKey,
+            actorCode: who.employee_code,
+            digest,
+            result: seal(result),
+          },
+        });
+      return result;
+    },
+    { tenantId: ctx.user.tenantId, txOptions: { timeout: 60000 } },
+  );
+}
+// ── Configurable matrix (ATTENDANCE / PAYROLL with a published route) ─────────────────────────────
+// A request that sealed a route waits at stage LEVEL; everything else keeps the fixed stages.
+const INACTIVE = /inactive|terminated|exited|separated/i;
+const stageLabel = (row) =>
+  row.stage === "LEVEL" && row.route?.levels?.[row.level]
+    ? `LEVEL ${row.level + 1}: ${row.route.levels[row.level].name}`
+    : row.stage;
+const routeView = (row) =>
+  row.route && ["LEVEL", "APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)
+    ? {
+        matrixVersion: row.route.matrixVersion,
+        current: row.stage === "LEVEL" ? row.level : null,
+        levels: row.route.levels.map(
+          ({ index, name, action, required, engaged, auto, skipped }) => ({
+            index, name, action, required, engaged, auto, skipped,
+          }),
+        ),
+      }
+    : null;
+function levelActionsFor(env, row) {
+  const level = row.route?.levels?.[row.level];
+  if (!level || !env.identityCodes.some((c) => row.pendingCodes.includes(c))) return [];
+  const actions = permits(env, PERMISSION_BY_ACTION[level.action]) ? levelActions(level) : [];
+  // HR may reject outright (a reason is required), except an attendance case: payroll prices only the cases
+  // Management disapproves, so an HR rejection would leave the day uncharged and unreviewed. HR returns those.
+  return row.kind === "ATTENDANCE" && level.action === "VERIFY" ? actions.filter((a) => a !== "REJECT") : actions;
+}
+async function sealRoute(tx, env, kind, matrix, source) {
+  const ids = [...new Set(matrix.levels.flatMap((l) => l.approverIds))];
+  const named = ids.length
+    ? await tx.employee.findMany({ where: { tenant_id: env.tenantId, id: { in: ids } } })
+    : [];
+  const live = (e) =>
+    e?.employee_code && !INACTIVE.test(`${e.status} ${e.employement_status}`) ? e.employee_code : null;
+  const byId = new Map(named.map((e) => [e.id, live(e)]));
+  const manager = source.who.managerId
+    ? await tx.employee.findFirst({ where: { tenant_id: env.tenantId, id: source.who.managerId } })
+    : null;
+  return buildRoute({
+    kind,
+    matrixVersion: matrix.version,
+    levels: matrix.levels,
+    initiator: env.who.employee_code,
+    subject: source.who.employee_code,
+    amount: amountOf(kind, source),
+    approvers: (l) =>
+      l.approverMode === "EMPLOYEE_MANAGER" ? [live(manager)] : l.approverIds.map((id) => byId.get(id)),
+  });
+}
+const advancePatch = (route, from, acted) => {
+  const next = nextActionable(route, from + 1, acted.map((a) => a.code));
+  if (!next) fail("The approval route has no level left to act", 409);
+  return { level: next.index, pendingCodes: next.codes };
+};
+const verifyComment = (tx, env, source, row, extra = {}) =>
+  tx.attendanceRuleAudit.create({
+    data: {
+      tenantId: env.tenantId,
+      employeeId: source.row.employeeId,
+      anomalyId: source.row.id,
+      action: "COMMENT",
+      actorId: env.who.employee_code,
+      data: {
+        kind: "HR",
+        comment: extra.comment,
+        factHash: source.row.factHash,
+        approvalRef: row.id,
+        round: row.round,
+        ...(extra.verifiedOnBehalf ? { verifiedOnBehalf: true } : {}),
+      },
+    },
+  });
+// Levels the initiator satisfies by raising the request (HR raising payroll or an attendance case).
+// An approver's note is optional (operator, 2026-11-02), but the attendance rule cases keep their invariant that a decision
+// carries a comment, so an empty note is stored as this plain sentence instead.
+export const NO_NOTE = "No note given";
+export const noteOf = (reason) => String(reason ?? "").trim() || NO_NOTE;
+
+async function settleAutoLevels(tx, env, row, source, reason) {
+  let current = row;
+  while (current.route.levels[current.level]?.auto) {
+    const level = current.route.levels[current.level];
+    const acted = [...current.route.acted, { level: current.level, code: env.who.employee_code }];
+    const verify = level.action === "VERIFY";
+    const updated = await tx.hrApprovalRequest.update({
+      where: { id: current.id },
+      data: {
+        ...advancePatch(current.route, current.level, acted),
+        route: { ...current.route, acted },
+        ...(verify
+          ? { verification: reason, hrActorCode: env.who.employee_code }
+          : { recommendation: "RECOMMEND_APPROVAL", managerActorCode: env.who.employee_code, managerCode: env.who.employee_code }),
+        version: { increment: 1 },
+      },
+    });
+    if (verify && current.kind === "ATTENDANCE")
+      await verifyComment(tx, env, source, current, {
+        comment: noteOf(reason),
+        verifiedOnBehalf: source.who.employee_code !== env.who.employee_code,
+      });
+    await audit(tx, env, current, updated, verify ? "VERIFY" : "RECOMMEND_APPROVAL", reason);
+    current = updated;
+  }
+  return current;
+}
+async function levelTransition(tx, env, row, source, input) {
+  const route = row.route;
+  const level = route.levels[row.level];
+  const me = env.who.employee_code;
+  if (input.action === "REVERT") {
+    const previous = previousActionable(route, row.level);
+    if (previous === null) {
+      await onReturn(tx, row.kind, source, "INITIATOR");
+      return {
+        stage: "INITIATOR", level: null, pendingCodes: [], recommendation: null, verification: null,
+        managerActorCode: null, hrActorCode: null, route: { ...route, acted: [] },
+      };
+    }
+    const acted = route.acted.filter((a) => a.level < previous);
+    return {
+      level: previous,
+      pendingCodes: route.levels[previous].approverCodes.filter((c) => !acted.some((a) => a.code === c)),
+      route: { ...route, acted },
+      verification: null,
+      hrActorCode: null,
+    };
+  }
+  if (source.digest !== row.sourceHash)
+    fail("The request or evidence changed. Revert to the initiator for a fresh review.");
+  if (level.viaManager) {
+    const manager = source.who.managerId
+      ? await tx.employee.findFirst({ where: { tenant_id: env.tenantId, id: source.who.managerId } })
+      : null;
+    if (manager?.employee_code !== level.approverCodes[0])
+      fail("The line manager changed. Revert to the initiator for a fresh recommendation.");
+  }
+  const acted = [...route.acted, { level: row.level, code: me }];
+  const base = { route: { ...route, acted } };
+  if (input.action.startsWith("RECOMMEND_"))
+    return { ...base, ...advancePatch(route, row.level, acted), recommendation: input.action, managerActorCode: me, managerCode: me };
+  if (input.action === "VERIFY") {
+    if (row.kind === "ATTENDANCE") await verifyComment(tx, env, source, row, { comment: noteOf(input.reason) });
+    return { ...base, ...advancePatch(route, row.level, acted), verification: input.reason, hrActorCode: me };
+  }
+  return { ...base, stage: input.action === "APPROVE" ? "APPROVED" : "REJECTED", pendingCodes: [] };
+}
+// Who may take the final decision. The line-manager recommender never decides; a requester never decides their own
+// case (handled above); and the HR verifier is excluded too, so one person cannot verify and then approve.
+//
+// Exception (2026-11-06): a legacy ATTENDANCE request — raised before the company published an approval route, so the row
+// carries no sealed route and no named approvers — left nobody able to decide once Management itself had verified it:
+// the verifier was the only holder of the approve grant, and both this gate and the queue hid the request from them. The
+// request sat at MANAGEMENT forever (production: EMP-00484 Trusoft and EMP159 HomeVision, 2026-11-06). Attendance already
+// allows self-verification on the routed path (matrix `allowSelf`), so on these route-less rows the verifier may decide;
+// the trail still records the same actor on VERIFY and APPROVE. Routed requests keep the two-people rule unchanged.
+const verifierMayDecide = (row) => row.kind === "ATTENDANCE" && !row.route;
+function mayDecide(env, row) {
+  if (ownsCode(env, row.managerActorCode)) return false;
+  return verifierMayDecide(row) || !ownsCode(env, row.hrActorCode);
+}
+// Who will take the final decision on a sealed route (the last engaged APPROVE level).
+const decidingLevelIndex = (row) => {
+  const levels = row.route?.levels ?? [];
+  for (let i = levels.length - 1; i >= 0; i -= 1)
+    if (levels[i].engaged && !levels[i].auto && levels[i].action === "APPROVE")
+      return i;
+  return -1;
+};
+// A level never asks the same person twice: whoever acts at an earlier level is dropped from the
+// later ones (`nextActionable` filters the actors out). So a Management approver who also holds the
+// HR level consumed the decision by verifying and then met "everyone assigned to this level has
+// already acted" (issue 409 follow-up, 2026-11-06). Keep that person in reserve for the decision,
+// unless nobody else can take the step that is waiting now — hiding it would block the request.
+function reservedForDecision(env, row) {
+  if (row.stage !== "LEVEL" || !row.route?.levels) return false;
+  const deciding = decidingLevelIndex(row);
+  if (deciding <= row.level) return false;
+  if (!(row.route.levels[deciding].approverCodes ?? []).some((c) => ownsCode(env, c)))
+    return false;
+  return (row.pendingCodes ?? []).some((c) => !ownsCode(env, c));
+}
+async function actionsFor(tx, env, row) {
+  if (isAppraisalApproval(row)) return appraisalApprovalActions(tx, env, row);
+  if (["APPROVED", "REJECTED", "WITHDRAWN"].includes(row.stage)) return [];
+  const subject = await employee(tx, env.tenantId, row.employeeCode),
+    self = ownsCode(env, row.employeeCode);
+  // A verification level may allow the employee to verify their own request (matrix `allowSelf`).
+  if (self && row.stage === "LEVEL" && row.route?.levels?.[row.level]?.allowSelf)
+    return levelActionsFor(env, row);
+  if (self)
+    return permits(env, "self")
+      ? [
+          ...(row.stage === "INITIATOR" ? ["SUBMIT"] : []),
+          ...(["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP"].includes(row.kind)
+            ? ["WITHDRAW"]
+            : []),
+        ]
+      : [];
+  if (row.stage === "LEVEL")
+    return reservedForDecision(env, row) ? [] : levelActionsFor(env, row);
+  if (row.stage === "LINE_MANAGER")
+    return subject.managerId === env.who.id && permits(env, "manager")
+      ? HR_APPROVAL_ACTIONS.LINE_MANAGER
+      : [];
+  if (row.stage === "HR")
+    return permits(env, "verify") && !ownsCode(env, row.managerActorCode)
+      ? [...HR_APPROVAL_ACTIONS.HR, ...(row.kind === "ATTENDANCE" ? [] : ["REJECT"])]
+      : [];
+  if (row.stage === "MANAGEMENT")
+    return permits(env, "approve") && mayDecide(env, row)
+      ? HR_APPROVAL_ACTIONS.MANAGEMENT
+      : [];
+  return [];
+}
+async function canRead(tx, env, row) {
+  if (isAppraisalApproval(row)) return canReadAppraisalApproval(tx, env, row);
+  if (
+    ownsCode(env, row.employeeCode) ||
+    permits(env, "read") ||
+    permits(env, "verify") ||
+    permits(env, "approve")
+  )
+    return true;
+  if (row.stage === "LEVEL" && env.identityCodes.some((c) => row.pendingCodes.includes(c)))
+    return true;
+  const subject = await employee(tx, env.tenantId, row.employeeCode);
+  return permits(env, "manager") && subject.managerId === env.who.id;
+}
+// The sealed snapshot of the request, for its title only; a row without a readable one has no title.
+function safeSnapshot(row) {
+  try {
+    return row.snapshot ? unseal(row.snapshot) : null;
+  } catch {
+    return null;
+  }
+}
+async function view(tx, env, row, summary = false, people = null) {
+  if (!(await canRead(tx, env, row))) fail("Request not found", 404);
+  const leavePolicies =
+    !summary && row.kind === "LEAVE" && permits(env, "verify")
+      ? (
+          await tx.leavePolicy.findMany({
+            where: { tenantId: env.tenantId, active: true },
+            select: { id: true, name: true },
+            orderBy: { name: "asc" },
+          })
+        ).map((p) => ({ ref: String(p.id), label: p.name }))
+      : [];
+  const history = summary
+    ? []
+    : await tx.hrApprovalAudit.findMany({
+        where: { tenantId: env.tenantId, approvalRef: row.id },
+        orderBy: { version: "asc" },
+      });
+  const who =
+    people ??
+    (await identitiesByCode(tx, env.tenantId, [
+      row.employeeCode,
+      row.managerCode,
+      ...history.map((h) => h.actorCode),
+    ]));
+  return {
+    approvalRef: row.id,
+    kind: row.kind,
+    sourceRef: row.sourceRef,
+    employeeCode: row.employeeCode,
+    employee: who.get(row.employeeCode) ?? { code: row.employeeCode, name: row.employeeCode },
+    title: requestTitle(row.kind, safeSnapshot(row)),
+    stage: row.stage,
+    level: row.level,
+    route: routeView(row),
+    pendingCodes: row.stage === "LEVEL" ? row.pendingCodes : [],
+    version: row.version,
+    round: row.round,
+    managerCode: row.managerCode,
+    recommendation: row.recommendation,
+    verification: row.verification,
+    execution: row.execution,
+    source: summary ? {} : isAppraisalApproval(row)
+      ? await appraisalApprovalSource(tx, env, row) : unseal(row.snapshot),
+    leavePolicies,
+    actions: summary ? [] : [...(await actionsFor(tx, env, row)), ...(await editActionsFor(tx, env, row))],
+    history: history.map(
+      ({
+        actorCode,
+        fromStage,
+        toStage,
+        action,
+        reason,
+        round,
+        version,
+        createdAt,
+      }) => ({
+        actorCode,
+        actor: who.get(actorCode) ?? { code: actorCode, name: actorCode },
+        fromStage,
+        toStage,
+        action,
+        reason,
+        round,
+        version,
+        createdAt,
+      }),
+    ),
+    updatedAt: row.updatedAt,
+  };
+}
+async function audit(tx, env, before, after, action, reason) {
+  await tx.hrApprovalAudit.create({
+    data: {
+      tenantId: env.tenantId,
+      approvalRef: after.id,
+      version: after.version,
+      round: after.round,
+      actorCode: env.who.employee_code,
+      fromStage: stageLabel(before),
+      toStage: stageLabel(after),
+      action,
+      reason,
+      sourceHash: after.sourceHash,
+    },
+  });
+  const queued = await enqueueHrDomainEvent(tx, {
+    tenantId: env.tenantId,
+    actorId: env.who.employee_code,
+    actorType: "user",
+    eventName: "hr.approval.transitioned.v1",
+    aggregateType: "HrApprovalRequest",
+    aggregateId: after.id,
+    correlationId: env.ctx.correlationId,
+    payload: {
+      approvalRef: after.id,
+      kind: after.kind,
+      sourceRef: after.sourceRef,
+      employeeCode: after.employeeCode,
+      actorCode: env.who.employee_code,
+      fromStage: before.stage,
+      toStage: after.stage,
+      action,
+      version: after.version,
+      round: after.round,
+    },
+  });
+  if (!queued) fail("Transactional approval event could not be recorded", 503);
+}
+// The shared submission body. `submitApproval` is the employee initiator's own
+// door (owner-only); `submitApprovalOnBehalf` is the HR door used by specialist
+// services that file a request FOR an employee.
+async function submitWithin(
+  tx,
+  env,
+  input,
+  { onBehalf = false, allowManagerFiler = false, prepare } = {},
+) {
+  if (onBehalf) {
+    // TS-ONBEHALF-01 — HR filing on an employee's behalf. The specialist
+    // service has already asserted that the caller may act for this employee;
+    // here we re-assert the grant the HR stage itself requires, so no role
+    // weaker than the verifier can open a request in someone else's name.
+    // Issue 395 — the one other door is the employee's own LINE MANAGER: the
+    // specialism has asserted the reporting line and the owner check below
+    // re-reads it from the source, so neither a stranger nor any other role can
+    // use this path.
+    if (!permits(env, "verify") && !allowManagerFiler)
+      fail("Only HR may submit a request on an employee's behalf", 403);
+  } else if (!permits(env, "self") || !ownsCode(env, input.employeeCode)) {
+    fail("Only the employee initiator can submit", 403);
+  }
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${env.tenantId + ":approval-source:" + input.kind + ":" + input.sourceRef},0))`;
+    let row = await tx.hrApprovalRequest.findUnique({
+      where: {
+        tenantId_kind_sourceRef: {
+          tenantId: env.tenantId,
+          kind: input.kind,
+          sourceRef: input.sourceRef,
+        },
+      },
+    });
+    if (row) {
+      await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${row.id}::uuid FOR UPDATE`;
+      row = await tx.hrApprovalRequest.findUnique({ where: { id: row.id } });
+      assertVersion(row, input.expectedVersion);
+      if (row.stage !== "INITIATOR")
+        fail("Only a draft or returned request can be submitted");
+    } else if (input.expectedVersion !== 0)
+      fail("Request changed. Refresh before submission", 412);
+    if (prepare) await prepare(tx, env);
+    const source = await loadSource(tx, env, input.kind, input.sourceRef, {
+      lock: true,
+    });
+    if (onBehalf) {
+      // The owner always comes from the source, never from the caller: an
+      // on-behalf submission cannot attach a request to a third employee.
+      if (source.who.employee_code !== input.employeeCode)
+        fail("The request belongs to another employee", 403);
+      // A filer without the HR verification grant must BE the owner's line
+      // manager — read from the source, not from the request payload.
+      if (!permits(env, "verify") && Number(source.who.managerId) !== Number(env.who.id))
+        fail("Only the employee's line manager or HR may file this request for them", 403);
+    } else if (!ownsCode(env, source.who.employee_code)) {
+      fail("Only the employee initiator can submit", 403);
+    }
+    // A paused manager stage needs no manager configured — the request enters
+    // the HR verification stage instead (see lib/approvalStagePolicy.js).
+    const matrixKind = matrixKindFor(input.kind);
+    const matrix = matrixKind ? await loadPublishedMatrix(tx, env.tenantId, matrixKind) : null;
+    if (!matrix && matrixRequired(input.kind))
+      fail(`Publish the ${matrixKind.toLowerCase()} approval route in Payroll Setup before submitting this request`, 409);
+    const needsManager = !matrix && requiresLineManager(input.kind);
+    const manager = needsManager
+      ? await tx.employee.findFirst({
+          where: { tenant_id: env.tenantId, id: source.who.managerId ?? -1 },
+        })
+      : null;
+    const noUsableManager =
+      needsManager &&
+      (!manager?.employee_code ||
+        manager.id === env.who.id ||
+        /inactive|terminated|exited|separated/i.test(
+          `${manager.status} ${manager.employement_status}`,
+        ));
+    // Leave, overtime, claims and loans go to HR when there is no usable manager; other kinds still need one.
+    const sentToHr = noUsableManager && skipsManagerWhenNone(input.kind);
+    if (noUsableManager && !sentToHr)
+      fail("Configure an active independent line manager before submission");
+    await onSubmit(tx, env, input.kind, source);
+    const route = matrix ? await sealRoute(tx, env, input.kind, matrix, source) : null;
+    const selfApproved = route?.selfApproved === true;
+    const data = {
+      // The canonical owner code of the source, not the caller's: identical for
+      // a self submission, the employee's for an on-behalf one.
+      employeeCode: source.who.employee_code,
+      stage: selfApproved ? "APPROVED" : route ? "LEVEL" : sentToHr ? "HR" : stageAfterSubmission(input.kind),
+      route: route ?? Prisma.DbNull,
+      level: route && !selfApproved ? route.levels.findIndex((l) => l.engaged) : null,
+      pendingCodes: route && !selfApproved ? route.levels.find((l) => l.engaged).approverCodes : [],
+      managerCode: sentToHr ? null : (manager?.employee_code ?? null),
+      managerActorCode: null,
+      hrActorCode: null,
+      recommendation: null,
+      verification: null,
+      sourceHash: source.digest,
+      snapshot: seal(source.snapshot),
+      execution: "PENDING",
+    };
+    const next = row
+      ? await tx.hrApprovalRequest.update({
+          where: { id: row.id },
+          data: { ...data, version: { increment: 1 }, round: { increment: 1 } },
+        })
+      : await tx.hrApprovalRequest.create({
+          data: {
+            tenantId: env.tenantId,
+            kind: input.kind,
+            sourceRef: input.sourceRef,
+            ...data,
+            version: 1,
+            round: 1,
+          },
+        });
+    await audit(
+      tx,
+      env,
+      row || { stage: "INITIATOR" },
+      next,
+      "SUBMIT",
+      sentToHr
+        ? `${input.reason ?? ""} [No active line manager: sent to HR for verification]`.trim()
+        : input.reason,
+    );
+    // HR raising on behalf has reviewed the day: the filing IS the HR
+    // verification (lib/approvalStagePolicy.js). The trail keeps both steps —
+    // SUBMIT into HR, then VERIFY by the same filer into MANAGEMENT — so the
+    // auto-verification is visible rather than implied.
+    let current = next;
+    if (selfApproved) {
+      const execution = await applyDecision(tx, env, next, source, true, input.reason, {});
+      current = await tx.hrApprovalRequest.update({ where: { id: next.id }, data: { execution, version: { increment: 1 } } });
+      await audit(tx, env, next, current, "APPROVE", `${noteOf(input.reason)} [Filed by Management: no further approval needed]`);
+    } else if (route) current = await settleAutoLevels(tx, env, next, source, input.reason);
+    // Management filing its own loan or claim: it is the decision, so no other approval is needed.
+    else if (
+      !onBehalf &&
+      ["CLAIM", "LOAN"].includes(input.kind) &&
+      permits(env, "approve") &&
+      source.who.employee_code === env.who.employee_code
+    ) {
+      current = await tx.hrApprovalRequest.update({
+        where: { id: next.id },
+        data: { stage: "APPROVED", pendingCodes: [], version: { increment: 1 } },
+      });
+      const execution = await applyDecision(tx, env, current, source, true, input.reason, {});
+      current = await tx.hrApprovalRequest.update({ where: { id: next.id }, data: { execution } });
+      await audit(tx, env, next, current, "APPROVE", `${noteOf(input.reason)} [Filed by Management: no further approval needed]`);
+    }
+    // HR filing its own loan or claim: the filing is the HR check, so Management alone decides (no second HR needed).
+    else if (
+      next.stage === "HR" &&
+      isVerifiedOnBehalf(input.kind) &&
+      (onBehalf ||
+        (["CLAIM", "LOAN"].includes(input.kind) &&
+          permits(env, "verify") &&
+          source.who.employee_code === env.who.employee_code))
+    ) {
+      current = await tx.hrApprovalRequest.update({
+        where: { id: next.id },
+        data: {
+          stage: "MANAGEMENT",
+          verification: input.reason,
+          hrActorCode: env.who.employee_code,
+          version: { increment: 1 },
+        },
+      });
+      if (input.kind === "ATTENDANCE")
+        await tx.attendanceRuleAudit.create({
+          data: {
+            tenantId: env.tenantId,
+            employeeId: source.row.employeeId,
+            anomalyId: source.row.id,
+            action: "COMMENT",
+            actorId: env.who.employee_code,
+            data: {
+              kind: "HR",
+              comment: noteOf(input.reason),
+              factHash: source.row.factHash,
+              approvalRef: next.id,
+              round: next.round,
+              verifiedOnBehalf: true,
+            },
+          },
+        });
+      await audit(tx, env, next, current, "VERIFY", input.reason);
+    }
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, current),
+    };
+}
+
+export function submitApproval(raw, { prepare } = {}) {
+  const input = ApprovalSubmit.parse(raw);
+  return execute(input, "SUBMIT", (tx, env) => submitWithin(tx, env, input, { prepare }));
+}
+
+// TS-ONBEHALF-01 — HR submits a request FOR an employee.
+//
+// `hr_approval_submit` is the employee initiator's door and stays owner-only.
+// This second door exists for the specialist services where HR acts for an
+// employee (the attendance anomaly resolution request is the first caller).
+// The CALLER MUST HAVE ALREADY ASSERTED ITS OWN PERMISSION — the attendance
+// rules service requires the HR role and an in-scope employee before it gets
+// here — because this function re-asserts only the approval-centre grant.
+//
+// The request's owner is the SUBJECT employee (input.employeeCode, checked
+// against the source), while HrApprovalAudit.actorCode records the FILER, so
+// the trail always distinguishes a self-filed request from an on-behalf one.
+export function submitApprovalOnBehalf(raw, { allowManagerFiler = false } = {}) {
+  const input = ApprovalSubmit.parse(raw);
+  return execute(input, "SUBMIT", (tx, env) =>
+    submitWithin(tx, env, input, { onBehalf: true, allowManagerFiler }),
+  );
+}
+
+// Management's decision level: the sealed route's APPROVE level, or the legacy
+// MANAGEMENT stage. A salary deduction is a Management decision, never the
+// initiator's or HR's verification note.
+function atManagementDecisionLevel(row) {
+  if (row.stage === "MANAGEMENT") return true;
+  if (row.stage !== "LEVEL" || !row.route?.levels) return false;
+  const level = row.route.levels[row.level];
+  // The route's final APPROVE level is Management's decision; its display name
+  // is configurable, so the action is the reliable marker.
+  return Boolean(
+    level &&
+      (level.action === "APPROVE" || /management|mgmt/i.test(level.name || "")),
+  );
+}
+
+export async function actApproval(raw) {
+  const input = ApprovalAction.parse(raw);
+  // Set inside the transaction when the case behind the request is already
+  // closed; the request is withdrawn in a second transaction because the first
+  // one rolls back on the refusal (see the check below).
+  let staleCase = null;
+  let result;
+  try {
+  result = await execute(input, "ACTION", async (tx, env) => {
+    await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
+    const row = await tx.hrApprovalRequest.findFirst({
+      where: { tenantId: env.tenantId, id: input.approvalRef },
+    });
+    if (!row) fail("Request not found", 404);
+    if (isAppraisalApproval(row)) {
+      const next = await actAppraisalApproval(tx, env, row, input, transitionInTransaction);
+      return { actorCode: env.who.employee_code, record: await view(tx, env, next) };
+    }
+    if (!(await canRead(tx, env, row))) fail("Request not found", 404);
+    assertVersion(row, input.expectedVersion);
+        if (!(await actionsFor(tx, env, row)).includes(input.action))
+      fail("You cannot perform this action at the current stage", 403);
+
+    if (input.deductionDays !== undefined) {
+      if (row.kind !== "ATTENDANCE" || input.action !== "REJECT")
+        fail(
+          "Only the rejection of an attendance request can carry a salary deduction",
+          422,
+        );
+      if (!atManagementDecisionLevel(row))
+        fail("Only Management may set the salary deduction", 403);
+    }
+
+    // HR-4200 "The source is not ready for approval" was the whole error an
+    // approver saw when the attendance re-evaluation had already closed the case
+    // under a PENDING request (production: Trusoft 2632/2637/2204/2304,
+    // HomeVision 2408). Close such a request in place and say what happened,
+    // instead of a raw refusal that leaves the card on the screen.
+    if (row.kind === "ATTENDANCE" && input.action !== "WITHDRAW") {
+      const anomalyId = Number(String(row.sourceRef).split("@")[0]);
+      const anomaly = Number.isInteger(anomalyId)
+        ? await tx.attendanceAnomaly.findFirst({
+            where: { tenantId: env.tenantId, id: anomalyId },
+          })
+        : null;
+      if (anomaly && anomaly.status !== "PENDING") {
+        staleCase = {
+          tenantId: env.tenantId,
+          approvalId: row.id,
+          anomalyId: anomaly.id,
+          employeeId: anomaly.employeeId,
+          actorCode: env.who.employee_code,
+          status: anomaly.status,
+          action: input.action,
+        };
+        throw Object.assign(new Error("STALE_ATTENDANCE_CASE"), { stale: true });
+      }
+    }
+    let source = await loadSource(tx, env, row.kind, row.sourceRef, {
+      lock: true,
+    });
+    const data = { version: { increment: 1 } };
+    if (input.action === "WITHDRAW") {
+      data.stage = "WITHDRAWN";
+      data.execution = "APPLIED";
+    } else if (row.stage === "LEVEL") {
+      Object.assign(data, await levelTransition(tx, env, row, source, input));
+    } else if (input.action === "REVERT") {
+      data.stage = hrRevertTarget(row.stage);
+      data.verification = null;
+      data.hrActorCode = null;
+      await onReturn(tx, row.kind, source, data.stage);
+      if (data.stage === "INITIATOR") {
+        data.recommendation = null;
+        data.managerActorCode = null;
+      }
+    } else {
+      if (
+        row.stage !== "LINE_MANAGER" &&
+        row.managerActorCode &&
+        (await employee(tx, env.tenantId, row.managerActorCode)).id !==
+          source.who.managerId
+      )
+        fail(
+          "The line manager changed. Revert to the initiator for a fresh recommendation.",
+        );
+      if (source.digest !== row.sourceHash)
+        fail(
+          "The request or evidence changed. Revert to the initiator for a fresh review.",
+        );
+      if (input.leavePolicyRef) {
+        if (row.kind !== "LEAVE" || input.action !== "VERIFY")
+          fail("Only HR verification may classify a leave request", 403);
+        const policy = await tx.leavePolicy.findFirst({
+          where: {
+            tenantId: env.tenantId,
+            id: Number(input.leavePolicyRef),
+            active: true,
+          },
+        });
+        if (!policy) fail("Choose an active company leave policy", 422);
+        await tx.leaveRequest.update({
+          where: { id: source.row.id },
+          data: { leavePolicyId: policy.id },
+        });
+        source = await loadSource(tx, env, row.kind, row.sourceRef);
+        data.sourceHash = source.digest;
+        data.snapshot = seal(source.snapshot);
+      }
+      if (input.action.startsWith("RECOMMEND_")) {
+        data.stage = "HR";
+        data.recommendation = input.action;
+        data.managerActorCode = env.who.employee_code;
+        data.managerCode = env.who.employee_code;
+      } else if (input.action === "VERIFY") {
+        if (row.kind === "LEAVE" && !source.row.leavePolicyId)
+          fail("Select the leave policy before verification", 422);
+        data.stage = "MANAGEMENT";
+        data.verification = input.reason;
+        data.hrActorCode = env.who.employee_code;
+        if (row.kind === "ATTENDANCE")
+          await tx.attendanceRuleAudit.create({
+            data: {
+              tenantId: env.tenantId,
+              employeeId: source.row.employeeId,
+              anomalyId: source.row.id,
+              action: "COMMENT",
+              actorId: env.who.employee_code,
+              data: {
+                kind: "HR",
+                comment: noteOf(input.reason),
+                factHash: source.row.factHash,
+                approvalRef: row.id,
+                round: row.round,
+              },
+            },
+          });
+      } else {
+        data.stage = input.action === "APPROVE" ? "APPROVED" : "REJECTED";
+      }
+    }
+    let next = await tx.hrApprovalRequest.update({
+      where: { id: row.id },
+      data,
+    });
+    if (input.action === "WITHDRAW") {
+      await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${row.kind + ":" + source.row.id},true)`;
+      await tx[source.definition.model].update({
+        where: { id: source.row.id },
+        data: { status: row.kind === "LEAVE" ? "CANCELLED" : "WITHDRAWN" },
+      });
+    }
+    if (["APPROVE", "REJECT"].includes(input.action)) {
+      const execution = await applyDecision(
+        tx,
+        env,
+        row,
+        source,
+        input.action === "APPROVE",
+        input.reason,
+        { deductionDays: input.deductionDays },
+      );
+      next = await tx.hrApprovalRequest.update({
+        where: { id: row.id },
+        data: { execution },
+      });
+    }
+    await audit(tx, env, row, next, input.action, input.reason);
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, next),
+    };
+  });
+  } catch (err) {
+    if (!err?.stale || !staleCase) throw err;
+    // The case closed under the request, so no approver can ever decide it.
+    // Close the request for good and answer with what happened instead of the
+    // raw HR-4200 "The source is not ready for approval".
+    await tenantTransaction(
+      prisma,
+      async (tx) => {
+        await tx.hrApprovalRequest.update({
+          where: { id: staleCase.approvalId },
+          data: { stage: "WITHDRAWN", execution: "APPLIED", version: { increment: 1 } },
+        });
+        await tx.attendanceRuleAudit.create({
+          data: {
+            tenantId: staleCase.tenantId,
+            employeeId: staleCase.employeeId,
+            anomalyId: staleCase.anomalyId,
+            action: "REQUEST_WITHDRAWN",
+            actorId: staleCase.actorCode,
+            data: json({
+              reason: `Case is ${staleCase.status}; the request was closed on ${staleCase.action}`,
+              approvalRef: staleCase.approvalId,
+            }),
+          },
+        });
+      },
+      { tenantId: staleCase.tenantId },
+    );
+    fail(
+      `This request is closed: the attendance case was already ${staleCase.status.toLowerCase()} by a re-evaluation, so there is nothing left to decide. Refresh and the card is gone.`,
+      409,
+    );
+  }
+  // MULTI-COMPANY-MIRROR-01 (B-B) — carry the outcome to the other companies'
+  // copies of the same request: a first decision decides the siblings still
+  // pending, a withdrawal withdraws only the pending mirrors. After the
+  // transaction on purpose: a mirror problem never rolls back this decision.
+  await mirrorApprovalOutcome(input, result);
+  return result;
+}
+const EDIT_REASON_LIMIT = 4000;
+// Why the caller may not edit this resolution request's message, or null when
+// they may. One place for the rules, shared by the edit command and by the
+// record's `actions` (so a screen offers Edit only when it will work).
+//
+// Matrix (operator, 2026-11-05):
+//   • HR edits any open resolution request, at any stage, until it is decided:
+//     the permission that makes an HR approver (`hr.approvals.verify`), not the
+//     sealed route's list, decides, so an employee's own note is not stuck with
+//     wording HR cannot fix (operator, 2026-11-05: "Allow HR to edit any anomaly");
+//   • an employee edits the request they raised about their own day, until the
+//     first approver decides it;
+//   • on a request raised on behalf, the filer and the employee's line manager
+//     edit it, until the level after HR's step acts;
+//   • Management never edits a request: it decides.
+async function attendanceEditRefusal(tx, env, row, anomaly) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING")
+    return { status: 409, message: "This request has already been decided and can no longer be edited" };
+  if (anomaly.rulesVersion !== 2)
+    return { status: 409, message: "Only a resolution request can be edited" };
+  const levels = row.route?.levels ?? [],
+    acted = row.route?.acted ?? [];
+  // The approver who takes the final decision is never the one writing the ask.
+  if (
+    levels.some(
+      (level) =>
+        level.action === "APPROVE" &&
+        level.engaged &&
+        (level.approverCodes ?? []).some((code) => ownsCode(env, code)),
+    )
+  )
+    return { status: 403, message: "Management decides this request and cannot edit it" };
+  // HR holds the verify permission in every company it serves; its wording may
+  // be corrected at any stage, whoever raised the request (operator, 2026-11-05).
+  if (permits(env, "verify")) return null;
+  // The employee's own request: their note, until an approver has decided.
+  if (anomaly.raisedById === anomaly.employeeId || !anomaly.raisedByName) {
+    // A sealed route records acts in `route.acted`; a legacy request records the
+    // line manager's and HR's acts in their own columns. Either one ends the edit.
+    if (acted.length || row.managerActorCode || row.hrActorCode)
+      return { status: 409, message: "An approver has already decided this request; it can no longer be edited" };
+    const subject = await tx.employee.findFirst({
+      where: { tenant_id: env.tenantId, id: anomaly.employeeId },
+      select: { employee_code: true },
+    });
+    if (!(subject && ownsCode(env, subject.employee_code)))
+      return { status: 403, message: "Only the employee who raised this request can edit it" };
+    return null;
+  }
+  // Raised on behalf: the filer and the line manager edit it only while it waits
+  // for the level after HR's step (HR itself is above, on the verify permission).
+  let editable = false;
+  if (row.stage === "LEVEL" && row.route?.levels) {
+    const hr = row.route.levels.find((l) => l.action === "VERIFY" && l.engaged);
+    editable = Boolean(hr) && row.level > hr.index && acted.every((a) => a.level <= hr.index);
+  } else if (row.stage === "MANAGEMENT" && !row.route) {
+    editable = true;
+  }
+  if (!editable) return { status: 409, message: "This request has moved past the step where it can be edited" };
+  const filer = await tx.employee.findFirst({
+    where: { tenant_id: env.tenantId, id: anomaly.raisedById },
+    select: { employee_code: true },
+  });
+  const subject = await tx.employee.findFirst({
+    where: { tenant_id: env.tenantId, id: anomaly.employeeId },
+    select: { id: true, managerId: true },
+  });
+  const isFiler = Boolean(filer && ownsCode(env, filer.employee_code));
+  const isLineManager = Boolean(subject?.managerId) && subject.managerId === env.who.id;
+  if (!isFiler && !isLineManager)
+    return { status: 403, message: "Only HR, the person who filed this request or the employee's line manager can edit it" };
+  if (env.who.id === anomaly.employeeId)
+    return { status: 403, message: "You cannot edit a request about your own day" };
+  return null;
+}
+async function editActionsFor(tx, env, row) {
+  if (row.kind !== "ATTENDANCE" || row.execution !== "PENDING") return [];
+  const id = Number(String(row.sourceRef).split("@")[0]);
+  if (!Number.isInteger(id)) return [];
+  const anomaly = await tx.attendanceAnomaly.findFirst({ where: { tenantId: env.tenantId, id, rulesVersion: 2 } });
+  return anomaly && !(await attendanceEditRefusal(tx, env, row, anomaly)) ? ["EDIT_REASON"] : [];
+}
+// The filer of an on-behalf attendance resolution request (and the HR approver
+// on the sealed route) may correct its reason until the level after HR has acted.
+// The reason is part of the source digest, so the digest and the snapshot are
+// sealed again in the same transaction; the stage and the approvers do not change.
+export async function editAttendanceRequestReason(raw) {
+  const input = {
+    approvalRef: String(raw?.approvalRef ?? ""),
+    expectedVersion: Number(raw?.expectedVersion),
+    reason: String(raw?.reason ?? "").trim(),
+  };
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.approvalRef) || !Number.isInteger(input.expectedVersion))
+    fail("A request reference and its version are required", 400);
+  if (!input.reason) fail("A reason is required", 400);
+  if (input.reason.length > EDIT_REASON_LIMIT)
+    fail(`The reason must be at most ${EDIT_REASON_LIMIT} characters`, 400);
+  // The case id is read inside the transaction; the mirror carries the edit to
+  // the employee's other companies after this one has committed (best effort).
+  let editedAnomalyId = null,
+    editedTenantId = null;
+  const result = await execute(input, "EDIT_REASON", async (tx, env) => {
+    await tx.$queryRaw`SELECT id FROM "HrApprovalRequest" WHERE "tenantId"=${env.tenantId}::uuid AND id=${input.approvalRef}::uuid FOR UPDATE`;
+    const row = await tx.hrApprovalRequest.findFirst({
+      where: { tenantId: env.tenantId, id: input.approvalRef },
+    });
+    if (!row || row.kind !== "ATTENDANCE" || !(await canRead(tx, env, row)))
+      fail("Request not found", 404);
+    assertVersion(row, input.expectedVersion);
+    if (row.execution !== "PENDING")
+      fail("This request has already been decided and can no longer be edited", 409);
+    const source = await loadSource(tx, env, row.kind, row.sourceRef, { lock: true });
+    const anomaly = source.row;
+    const refused = await attendanceEditRefusal(tx, env, row, anomaly);
+    if (refused) fail(refused.message, refused.status);
+    if (input.reason === String(anomaly.reason ?? "").trim())
+      fail("The reason is unchanged", 400);
+    const changed = await tx.attendanceAnomaly.updateMany({
+      where: { tenantId: env.tenantId, id: anomaly.id, workflowVersion: anomaly.workflowVersion },
+      data: { reason: input.reason, workflowVersion: { increment: 1 } },
+    });
+    if (changed.count !== 1) fail("The case changed; refresh and try again", 409);
+    await tx.attendanceRuleAudit.create({
+      data: {
+        tenantId: env.tenantId,
+        employeeId: anomaly.employeeId,
+        anomalyId: anomaly.id,
+        action: "REQUEST_EDITED",
+        actorId: env.who.employee_code,
+        data: json({ before: anomaly.reason, after: input.reason, approvalRef: row.id, round: row.round }),
+      },
+    });
+    const resealed = await loadSource(tx, env, row.kind, row.sourceRef);
+    const next = await tx.hrApprovalRequest.update({
+      where: { id: row.id },
+      data: {
+        version: { increment: 1 },
+        sourceHash: resealed.digest,
+        snapshot: seal(resealed.snapshot),
+      },
+    });
+    await audit(tx, env, row, next, "EDITED", input.reason);
+    editedAnomalyId = anomaly.id;
+    editedTenantId = env.tenantId;
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, next),
+    };
+  });
+  // MULTI-COMPANY-MIRROR-01 — the same employee's other companies hold their own
+  // copy of the case; their message follows the edit, still pending, and each
+  // copy's sealed digest is refreshed so its approver can decide it.
+  if (editedAnomalyId)
+    await mirrorEditOutcome({
+      tenantId: editedTenantId,
+      anomalyId: editedAnomalyId,
+      reason: input.reason,
+    });
+  return result;
+}
+
+async function mirrorEditOutcome({ tenantId, anomalyId, reason }) {
+  try {
+    const { mirrorEditReason, mirrorSafely } = await import(
+      "../attendanceRequestMirror.service.js"
+    );
+    const id = tenantId || getCtx()?.user?.tenantId;    if (!id) return;
+    await mirrorSafely("edit", () =>
+      mirrorEditReason({ tenantId: id, anomalyId, reason }),
+    );
+  } catch {
+    // A mirror problem never fails the caller's own edit.
+  }
+}
+
+async function mirrorApprovalOutcome(input, result) {
+  try {
+    const { mcpCtx } = await import("../../lib/requestContext.js");
+    const row = await mcpCtx.run({ system: true }, () =>
+      prisma.hrApprovalRequest.findFirst({
+        where: { id: input.approvalRef },
+        select: { kind: true, sourceRef: true, tenantId: true, stage: true },
+      }),
+    );
+    if (!row || row.kind !== "ATTENDANCE") return;
+    const anomalyId = Number(String(row.sourceRef ?? "").split("@")[0]);
+    if (!Number.isInteger(anomalyId) || anomalyId < 1) return;
+    const { mirrorDecision, withdrawMirrors, mirrorSafely } = await import(
+      "../attendanceRequestMirror.service.js"
+    );
+    if (row.stage === "APPROVED" || row.stage === "REJECTED")
+      await mirrorSafely("decision", () =>
+        mirrorDecision({
+          tenantId: row.tenantId,
+          anomalyId,
+          decision: row.stage,
+          comment: input.reason ?? null,
+          deciderName: result?.actorCode ?? null,
+          deductionDays: input.deductionDays,
+        }),
+      );
+    else if (row.stage === "WITHDRAWN")
+      await mirrorSafely("withdraw", () =>
+        withdrawMirrors({ tenantId: row.tenantId, anomalyId }),
+      );
+  } catch {
+    // never fail the caller's own decision on a mirror problem
+  }
+}
+
+export function readApproval(raw) {
+  const input = ApprovalRead.parse(raw);
+  return execute(input, "READ", async (tx, env) => {
+    const row = await tx.hrApprovalRequest.findFirst({
+      where: { tenantId: env.tenantId, id: input.approvalRef },
+    });
+    if (!row) fail("Request not found", 404);
+    return {
+      actorCode: env.who.employee_code,
+      record: await view(tx, env, row),
+    };
+  });
+}
+export function listApprovals(raw) {
+  const input = ApprovalList.parse(raw);
+  return execute(input, "LIST", async (tx, env) => {
+    if (
+      !["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))
+      && !hasAppraisal(env, "hr.performance.read")
+    )
+      fail("Approval access required", 403);
+    if (input.scope === "ALL" && !permits(env, "read") && !hasAppraisal(env, "hr.performance.read.all"))
+      fail("Approval audit access required", 403);
+    // The scope filter alone: the same rows the counts are taken over, whatever type or page is shown.
+    const where = { tenantId: env.tenantId };
+    if (input.scope === "MINE") where.employeeCode = { in: env.identityCodes };
+    // Scope in SQL before pagination so a busy tenant cannot hide a manager's queue.
+    if (input.scope === "QUEUE") {
+      const reports = permits(env, "manager")
+        ? await tx.employee.findMany({
+            where: { tenant_id: env.tenantId, managerId: env.who.id },
+            select: { employee_code: true },
+          })
+        : [];
+      where.OR = [
+        ...(permits(env, "self")
+          ? [{ stage: "INITIATOR", employeeCode: { in: env.identityCodes } }]
+          : []),
+        ...(reports.length
+          ? [
+              {
+                stage: "LINE_MANAGER",
+                employeeCode: {
+                  in: reports.flatMap((e) =>
+                    employeeCodes(env, e.employee_code),
+                  ),
+                },
+              },
+            ]
+          : []),
+        ...(permits(env, "verify")
+          ? [
+              {
+                stage: "HR",
+                employeeCode: { notIn: env.identityCodes },
+                OR: [
+                  { managerActorCode: null },
+                  { managerActorCode: { notIn: env.identityCodes } },
+                ],
+              },
+            ]
+          : []),
+        ...(["manager", "verify", "approve"].some((k) => permits(env, k))
+          ? [
+              {
+                stage: "LEVEL",
+                employeeCode: { notIn: env.identityCodes },
+                pendingCodes: { hasSome: env.identityCodes },
+              },
+            ]
+          : []),
+        // `notIn` never matches a NULL column in SQL. A request with no line-manager step (no manager, or a paused level) has
+        // managerActorCode NULL, so Management never saw it (issue 137: six production requests are stuck this way). NULL is
+        // "nobody acted", which is not the approver, so it must match.
+        ...(permits(env, "approve")
+          ? [
+              {
+                stage: "MANAGEMENT",
+                employeeCode: { notIn: env.identityCodes },
+                AND: [
+                  { OR: [{ managerActorCode: null }, { managerActorCode: { notIn: env.identityCodes } }] },
+                  {
+                    OR: [
+                      { hrActorCode: null },
+                      { hrActorCode: { notIn: env.identityCodes } },
+                      // A route-less attendance request verified by this very approver is still theirs to decide
+                      // (see verifierMayDecide): excluding it hid the request from its only approver.
+                      { kind: "ATTENDANCE", route: { equals: Prisma.DbNull } },
+                    ],
+                  },
+                ],
+              },
+            ]
+          : []),
+      ];
+    }
+    const appraisalVisible = hasAppraisal(env, "hr.performance.read.all");
+    const normalFor = ({ kind, cursor }) => {
+      const w = {
+        NOT: { sourceRef: { startsWith: "perf:" } },
+        ...where,
+        ...(kind ? { kind } : {}),
+        ...(cursor ? { id: { gt: cursor } } : {}),
+      };
+      if (!["self", "manager", "verify", "approve", "read"].some((k) => permits(env, k))) w.id = { in: [] };
+      return w;
+    };
+    const appraisalFor = async ({ kind, cursor }) => {
+    const appraisalWhere = { tenantId: env.tenantId, kind: "PERFORMANCE",
+      sourceRef: { startsWith: "perf:" }, ...(cursor ? { id: { gt: cursor } } : {}) };
+    if (kind && kind !== "PERFORMANCE") appraisalWhere.AND = [{ id: { in: [] } }];
+    if (input.scope === "QUEUE") {
+      appraisalWhere.stage = "MANAGEMENT";
+      appraisalWhere.employeeCode = { notIn: env.identityCodes };
+      appraisalWhere.managerActorCode = { notIn: env.identityCodes };
+      appraisalWhere.OR = [
+        ...(appraisalVisible && hasAppraisal(env, "hr.performance.approve")
+          ? [{ sourceRef: { startsWith: "perf:SENIOR:" } }] : []),
+        ...(appraisalVisible && hasAppraisal(env, "hr.performance.release")
+          ? [{ sourceRef: { startsWith: "perf:RELEASE:" } }] : []),
+      ];
+    } else if (!appraisalVisible || input.scope === "MINE") {
+      const visible = await tx.perfReview.findMany({ where: {
+        tenantId: env.tenantId, employeeId: env.who.id, releasedRevisionId: { not: null },
+      }, select: { id: true } });
+      const bindings = await tx.perfApprovalBinding.findMany({ where: {
+        tenantId: env.tenantId, reviewId: { in: visible.map((r) => r.id) },
+      }, select: { approvalRef: true } });
+      appraisalWhere.id = { in: bindings.map((b) => b.approvalRef) };
+    } else {
+      const unreleased = await tx.perfReview.findMany({ where: {
+        tenantId: env.tenantId, employeeId: env.who.id, releasedRevisionId: null,
+      }, select: { id: true } });
+      const bindings = await tx.perfApprovalBinding.findMany({ where: {
+        tenantId: env.tenantId, reviewId: { in: unreleased.map((r) => r.id) },
+      }, select: { approvalRef: true } });
+      appraisalWhere.NOT = { id: { in: bindings.map((b) => b.approvalRef) } };
+    }
+    return appraisalWhere;
+    };
+    const scopedWhere = {
+      OR: [
+        normalFor({ kind: input.kind, cursor: input.cursor }),
+        await appraisalFor({ kind: input.kind, cursor: input.cursor }),
+      ],
+    };
+    // One source for "how many": the same scope, counted by type, ignoring the type filter and the page.
+    const countRows = await tx.hrApprovalRequest.groupBy({
+      by: ["kind"],
+      where: { OR: [normalFor({}), await appraisalFor({})] },
+      _count: { _all: true },
+    });
+    const counts = {
+      total: countRows.reduce((sum, r) => sum + r._count._all, 0),
+      byKind: Object.fromEntries(countRows.map((r) => [r.kind, r._count._all])),
+    };
+    const rows = await tx.hrApprovalRequest.findMany({
+        where: scopedWhere,
+        orderBy: { id: "asc" },
+        take: input.limit + 1,
+      }),
+      page = rows.slice(0, input.limit);
+    // A pending request whose attendance case is already closed (resolved or
+    // superseded by a re-evaluation) cannot be decided: it only produced the
+    // HR-4200 error when someone clicked it. Keep it out of the list and out of
+    // the counts; the action itself closes the row if it is reached another way.
+    const closedCases = new Set();
+    const attendanceIds = page
+      .filter((r) => r.kind === "ATTENDANCE")
+      .map((r) => Number(String(r.sourceRef).split("@")[0]))
+      .filter((id) => Number.isInteger(id));
+    if (attendanceIds.length)
+      for (const anomaly of await tx.attendanceAnomaly.findMany({
+        where: {
+          tenantId: env.tenantId,
+          id: { in: attendanceIds },
+          status: { not: "PENDING" },
+        },
+        select: { id: true },
+      }))
+        closedCases.add(anomaly.id);
+    const stale = (row) =>
+      row.kind === "ATTENDANCE" &&
+      closedCases.has(Number(String(row.sourceRef).split("@")[0]));
+    const items = [];
+    const people = await identitiesByCode(tx, env.tenantId, page.map((r) => r.employeeCode));
+    for (const row of page)
+      if (!stale(row)) items.push(await view(tx, env, row, true, people));
+    const staleCount = page.filter(stale).length;
+    if (staleCount && counts.byKind.ATTENDANCE)
+      counts.byKind.ATTENDANCE = Math.max(0, counts.byKind.ATTENDANCE - staleCount);
+    if (staleCount) counts.total = Math.max(0, counts.total - staleCount);
+    const candidates =
+      input.scope === "MINE" && permits(env, "self")
+        ? await sourceCandidates(tx, env, input.kind)
+        : [];
+    const owners = await identitiesByCode(tx, env.tenantId, candidates.map((c) => c.employeeCode));
+    return {
+      actorCode: env.who.employee_code,
+      items,
+      candidates: candidates.map((c) => ({ ...c, employee: owners.get(c.employeeCode) ?? null })),
+      nextCursor: rows.length > input.limit ? page.at(-1).id : null,
+      counts,
+    };
+  });
+}
+
+export function previewApproval(raw) {
+  const input = ApprovalPreview.parse(raw);
+  return execute(input, "PREVIEW", async (tx, env) => {
+    const source = await loadSource(tx, env, input.kind, input.sourceRef);
+    if (!ownsCode(env, source.who.employee_code) || !permits(env, "self"))
+      fail("Only the employee initiator may preview submission", 403);
+    return {
+      actorCode: env.who.employee_code,
+      preview: {
+        kind: input.kind,
+        sourceRef: input.sourceRef,
+        employeeCode: source.who.employee_code,
+        source: source.snapshot,
+      },
+    };
+  });
+}

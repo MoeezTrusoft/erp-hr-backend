@@ -18,6 +18,15 @@ jest.unstable_mockModule('axios', () => {
     };
 });
 
+const mockSignServiceJwtEdDSA = jest.fn().mockImplementation(() => {
+    if (!process.env.SERVICE_JWT_SECRET) return null;
+    return 'fake-eddsa-token.header.payload';
+});
+jest.unstable_mockModule('../../../src/lib/serviceJwt.js', () => ({
+    signServiceJwtEdDSA: mockSignServiceJwtEdDSA,
+    ambientTenantHeader: jest.fn().mockReturnValue({}),
+}));
+
 const FIXED_SECRET = 'test-service-secret-do-not-use-in-prod';
 const FIXED_INTERNAL = 'legacy-internal-secret-value';
 

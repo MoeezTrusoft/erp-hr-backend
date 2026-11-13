@@ -1,4 +1,5 @@
 import * as svc from "../services/compliance.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createChecklist = async (req, res) => {
   try {
@@ -15,7 +16,7 @@ export const listChecklists = async (_req, res) => {
     const data = await svc.listChecklists();
     res.status(200).json({ success: true, message: "Success", data });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    respondServerError(req, res, e);
   }
 };
 

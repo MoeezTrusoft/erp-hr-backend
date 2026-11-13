@@ -1,0 +1,360 @@
+// Attendance Anomaly Rules, supplied 2026-10-12. Facts and financial decisions
+// are separate: only a management-disapproved, still-applicable case is priced.
+export const ANOMALY_RULE_VERSION = 2;
+export const RULE_TYPES = [
+  "MISSING_CHECKIN",
+  "MISSING_CHECKOUT",
+  "ABSENT",
+  "LATE_CHECKIN",
+  "EARLY_CHECKOUT",
+];
+const keyDate = (value) => new Date(value).toISOString().slice(0, 10);
+export function resolveGrace(rules = [], context = {}) {
+  const levels = [
+    ["SHIFT", context.shiftKey],
+    ["EMPLOYEE", String(context.employeeId)],
+    ["TEAM", context.teamKey],
+    ["DEPARTMENT", context.departmentKey],
+    ["COMPANY", "*"],
+  ];
+  const result = { checkInMinutes: 0, checkOutMinutes: 0, sources: {} };
+  for (const field of ["checkInMinutes", "checkOutMinutes"]) {
+    for (const [scope, scopeKey] of levels) {
+      if (!scopeKey) continue;
+      const row = rules
+        .filter(
+          (r) =>
+            r.scope === scope &&
+            r.scopeKey === scopeKey &&
+            keyDate(r.effectiveFrom) <= keyDate(context.date),
+        )
+        .sort(
+          (a, b) =>
+            +new Date(b.effectiveFrom) - +new Date(a.effectiveFrom) ||
+            (b.version || 0) - (a.version || 0),
+        )[0];
+      if (row?.[field] == null) continue;
+      result[field] = Number(row[field]);
+      result.sources[field] = {
+        scope,
+        scopeKey,
+        id: row.id,
+        effectiveFrom: row.effectiveFrom,
+        version: row.version,
+      };
+      break;
+    }
+  }
+  return result;
+}
+export function shiftRuleKey(info = {}) {
+  return String(
+    info.pattern?.graceKey ||
+      (info.shift?.start && info.shift?.end
+        ? `${new Date(info.shift.start).toISOString().slice(11, 16)}-${new Date(info.shift.end).toISOString().slice(11, 16)}`
+        : "UNASSIGNED"),
+  );
+}
+// Published legacy settings remain attributable defaults during adoption. Any
+// dated rule at the same scope replaces the default, including null/inherit.
+export function legacyGraceDefaults(config, info, employeeId) {
+  const profile = config?.settings?.profiles?.find(
+    (p) => p.id === info.profile?.profileId,
+  );
+  const row = (scope, scopeKey, policy) => ({
+    scope,
+    scopeKey,
+    effectiveFrom: "0001-01-01",
+    id: `published-setup:${config?.version}:${scopeKey}`,
+    version: config?.version,
+    checkInMinutes: policy?.graceMinutes ?? null,
+    checkOutMinutes: policy?.earlyLeaveGraceMin ?? null,
+  });
+  return [
+    row("COMPANY", "*", config?.policy),
+    row("EMPLOYEE", String(employeeId), profile?.policy),
+  ];
+}
+export function anomalyFacts({
+  checkIn,
+  checkOut,
+  shift = {},
+  grace = {},
+  closed = true,
+  workedPercent = null,
+  halfDayMinPercent = 50,
+}) {
+  const facts = [];
+  const add = (type, expectedTime, actualTime, minutes = null) =>
+    facts.push({
+      type,
+      expectedTime: expectedTime || null,
+      actualTime: actualTime || null,
+      minutes,
+      severity: minutes == null ? null : minutes > 30 ? "MAJOR" : "MINOR",
+    });
+  if (closed) {
+    if (!checkIn && !checkOut) add("ABSENT", shift.start, null);
+    else if (!checkIn) add("MISSING_CHECKIN", shift.start, null);
+    else if (!checkOut) add("MISSING_CHECKOUT", shift.end, null);
+  }
+  // Exact elapsed time: grace and the 30-minute threshold have separate purposes.
+  const late =
+    checkIn && shift.start
+      ? (+new Date(checkIn) - +new Date(shift.start)) / 60000
+      : 0;
+  const early =
+    checkOut && shift.end
+      ? (+new Date(shift.end) - +new Date(checkOut)) / 60000
+      : 0;
+  // Grace is counted in whole minutes (operator, 2026-10-30): with 5 minutes, any arrival inside the
+  // 5th minute (09:05:xx for a 09:00 start) is on time, and the 6th minute (09:06:00) is late.
+  if (Math.floor(late) > (grace.checkInMinutes ?? 0))
+    add("LATE_CHECKIN", shift.start, checkIn, late);
+  if (early > (grace.checkOutMinutes ?? 0)) {
+    // Leaving before the half-day mark is an absence (operator, 2026-10-30): it replaces the
+    // lateness and early-leave facts so the day is priced once.
+    if (closed && workedPercent != null && workedPercent < halfDayMinPercent)
+      return [{ type: "ABSENT", expectedTime: shift.start || null, actualTime: checkOut || null, minutes: null, severity: null, reason: "EARLY_CHECKOUT_BEFORE_HALF_DAY" }];
+    add("EARLY_CHECKOUT", shift.end, checkOut, early);
+  }
+  return facts;
+}
+export function applyAnomalyRules(result, { shift = {}, policy = {} } = {}) {
+  if (result.status === "PUNCH_CONFLICT") return result;
+  const grace = policy.resolvedGrace || {
+    checkInMinutes: policy.graceMinutes ?? 0,
+    checkOutMinutes: policy.earlyLeaveGraceMin ?? 0,
+  };
+  const anomalies = anomalyFacts({
+    checkIn: result.checkIn,
+    checkOut: result.checkOut,
+    shift,
+    grace,
+    closed: !result.inProgress,
+    workedPercent: result.workedPercent,
+    halfDayMinPercent: policy.halfDayMinPercent ?? 50,
+  });
+  const status = [
+    "ABSENT",
+    "MISSING_CHECKIN",
+    "MISSING_CHECKOUT",
+    "EARLY_CHECKOUT",
+    "LATE_CHECKIN",
+  ].find((type) => anomalies.some((a) => a.type === type));
+  return {
+    ...result,
+    rulesVersion: ANOMALY_RULE_VERSION,
+    anomalies,
+    status:
+      status === "LATE_CHECKIN"
+        ? "LATE"
+        : status ||
+          (result.inProgress && !result.checkIn
+            ? "PENDING_ATTENDANCE"
+            : "PRESENT"),
+    // Credit is a review-state indicator, never an automatic salary deduction.
+    dayCredit: result.inProgress || anomalies.length ? null : 1,
+    processingState: result.inProgress
+      ? "OPEN"
+      : anomalies.length
+        ? "NEEDS_REVIEW"
+        : "FINALIZED",
+    requiresRegularization: anomalies.length > 0,
+  };
+}
+// The deduction rules payroll prices anomalies with. DEFAULT_DEDUCTION_RULES are
+// the values that were hard-coded here before they became configurable, so a
+// tenant that has not changed anything is priced exactly as before.
+//   • A late arrival / early departure longer than majorThresholdMinutes is a
+//     MAJOR case and is priced on its own (majorTimingDays).
+//   • Shorter ones are MINOR: every `poolSize` of them, per employee, within the
+//     payroll period being priced, cost pooledMinorDays. The pool is per period:
+//     leftovers do not carry into the next period.
+export const DEFAULT_DEDUCTION_RULES = Object.freeze({
+  majorThresholdMinutes: 30,
+  poolSize: 3,
+  absentDays: 1,
+  missingPunchDays: 1,
+  missingPoolSize: 3,
+  majorTimingDays: 0.5,
+  pooledMinorDays: 1,
+});
+const POLICY_RULE_FIELDS = {
+  majorThresholdMinutes: "deductMajorThresholdMinutes",
+  poolSize: "deductPoolSize",
+  absentDays: "deductAbsentDays",
+  missingPunchDays: "deductMissingPunchDays",
+  missingPoolSize: "deductMissingPoolSize",
+  majorTimingDays: "deductMajorTimingDays",
+  pooledMinorDays: "deductPooledMinorDays",
+};
+// A tenant's rules from its attendance policy row; any field not set falls back
+// to the default. Values outside the editor's limits are ignored, never priced.
+export function deductionRulesFromPolicy(policy = {}) {
+  const rules = { ...DEFAULT_DEDUCTION_RULES };
+  for (const [key, column] of Object.entries(POLICY_RULE_FIELDS)) {
+    const value = Number(policy?.[column]);
+    if (policy?.[column] == null || !Number.isFinite(value) || value < 0) continue;
+    if ((key === "poolSize" || key === "missingPoolSize") && (!Number.isInteger(value) || value < 1)) continue;
+    rules[key] = value;
+  }
+  return rules;
+}
+// Management may attach a fixed deduction to the rejection of one attendance
+// case (half, one or two days of salary). It REPLACES the policy's normal
+// pricing for that employee's work date: the shift is priced once, at the
+// highest marking given to any case on it, and takes no part in the automatic
+// credit-loss or occurrence counters. This is the "explicit deduction" the
+// operator asked for; without a marking the policy prices the case as before.
+export const MANUAL_DEDUCTION_DAYS = Object.freeze([0.5, 1, 2]);
+export function manualDeductionDays(value) {
+  if (value == null) return null;
+  const days = Number(value);
+  if (!MANUAL_DEDUCTION_DAYS.includes(days))
+    throw new Error("Invalid manual attendance deduction");
+  return days;
+}
+export function ruleDeductions(anomalies = [], { from, to, rules } = {}) {
+  const r = { ...DEFAULT_DEDUCTION_RULES, ...(rules || {}) };
+  const seen = new Set(),
+    lines = [],
+    minors = [],
+    missing = [];
+  const inPeriod = (a) =>
+    !(
+      (from && keyDate(a.date) < keyDate(from)) ||
+      (to && keyDate(a.date) > keyDate(to))
+    );
+  const shiftKey = (a) => `${a.employeeId}|${keyDate(a.date)}`;
+  // An APPROVED case excuses only itself: it is not priced (only disapproved or
+  // lapsed cases are), but it does NOT excuse the other cases of that day, and the
+  // other cases still count toward the minor-late and missing-punch pools.
+  // Operator ruling 2026-11-06 (register row 356, replaces HR-ATT-EXCUSE-01 of
+  // PR #122): Wajahat Ali, HomeVision, October 2026, had a 22-minute late on the
+  // same day as an approved missing check-out; the late is a minor that completes
+  // his pool of three (7, 8 and 22 minutes) and costs 1 day, so 3 majors (1.5) plus
+  // the pool (1) = 2.5 days. A day is restated by resolving its cases (evidenceState
+  // leaves ACTIVE), not by an approval of one of them.
+  // One marking per employee work date: the highest of its cases wins, so a
+  // late check-in and a missing check-out on the same day cannot charge twice.
+  const manualMarks = new Map();
+  for (const a of anomalies) {
+    if (
+      a.rulesVersion !== 2 ||
+      a.status !== "REJECTED" ||
+      a.decisionRole !== "Management" ||
+      a.evidenceState !== "ACTIVE" ||
+      !a.date ||
+      !inPeriod(a)
+    )
+      continue;
+    const days = manualDeductionDays(a.manualDeductionDays);
+    if (days == null) continue;
+    const key = shiftKey(a);
+    const mark = manualMarks.get(key);
+    if (mark) {
+      mark.days = Math.max(mark.days, days);
+      if (a.id != null) mark.anomalyIds.add(a.id);
+    } else
+      manualMarks.set(key, {
+        days,
+        date: keyDate(a.date),
+        anomalyIds: new Set(a.id == null ? [] : [a.id]),
+      });
+  }
+  for (const mark of manualMarks.values())
+    lines.push({
+      anomalyIds: [...mark.anomalyIds],
+      days: mark.days,
+      date: mark.date,
+      manual: true,
+    });
+  for (const a of [...anomalies].sort(
+    (a, b) => +new Date(a.date) - +new Date(b.date) || a.id - b.id,
+  )) {
+    // Priced: a case Management disapproved, or one nobody raised in time (`lapsed`, set by
+    // services/attendanceLapse.service.js once its two working days have passed). A raised case is
+    // held until it is decided; an approved one is excused.
+    const disapproved = a.status === "REJECTED" && a.decisionRole === "Management";
+    const lapsed = a.status === "PENDING" && a.lapsed === true;
+    if (
+      a.rulesVersion !== 2 ||
+      !(disapproved || lapsed) ||
+      a.evidenceState !== "ACTIVE"
+    )
+      continue;
+    if (!inPeriod(a)) continue;
+    // A manually marked shift is priced by its marking above; its cases do not
+    // also feed the automatic lines or their pools.
+    if (manualMarks.has(shiftKey(a))) continue;
+    const key = `${a.employeeId}|${keyDate(a.date)}|${a.sessionKey}|${a.type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (a.type === "ABSENT")
+      lines.push({ anomalyIds: [a.id], days: r.absentDays, date: keyDate(a.date) });
+    else if (["MISSING_CHECKIN", "MISSING_CHECKOUT"].includes(a.type)) missing.push(a);
+    else if (["LATE_CHECKIN", "EARLY_CHECKOUT"].includes(a.type)) {
+      const minutes =
+        a.measuredMinutes ??
+        ((a.type === "LATE_CHECKIN" ? 1 : -1) *
+          (+new Date(a.actualTime) - +new Date(a.expectedTime))) /
+          60000;
+      if (!Number.isFinite(Number(minutes)) || minutes <= 0)
+        throw new Error(
+          "Timing evidence is required before pricing an anomaly",
+        );
+      if (minutes > r.majorThresholdMinutes)
+        lines.push({ anomalyIds: [a.id], days: r.majorTimingDays, date: keyDate(a.date) });
+      else minors.push(a);
+    }
+  }
+  // Missing check-ins and check-outs share one pool per employee: every `missingPoolSize` of them
+  // cost `missingPunchDays`. Like the minors, leftovers do not carry into the next period.
+  let missingRemainder = 0;
+  for (const id of [...new Set(missing.map((a) => a.employeeId))]) {
+    const own = missing.filter((a) => a.employeeId === id);
+    for (let i = 0; i + r.missingPoolSize <= own.length; i += r.missingPoolSize)
+      lines.push({
+        anomalyIds: own.slice(i, i + r.missingPoolSize).map((a) => a.id),
+        days: r.missingPunchDays,
+        date: keyDate(own[i + r.missingPoolSize - 1].date),
+        pooled: true,
+      });
+    missingRemainder += own.length % r.missingPoolSize;
+  }
+  // Pool per employee; callers may also use this helper for a whole-site preview.
+  const employees = [...new Set(minors.map((a) => a.employeeId))];
+  let remainder = 0;
+  for (const id of employees) {
+    const own = minors.filter((a) => a.employeeId === id);
+    for (let i = 0; i + r.poolSize <= own.length; i += r.poolSize)
+      lines.push({
+        anomalyIds: own.slice(i, i + r.poolSize).map((a) => a.id),
+        days: r.pooledMinorDays,
+        date: keyDate(own[i + r.poolSize - 1].date),
+        pooled: true,
+      });
+    remainder += own.length % r.poolSize;
+  }
+  return {
+    days: lines.reduce((sum, line) => sum + line.days, 0),
+    minorCount: minors.length,
+    minorRemainder: remainder,
+    missingCount: missing.length,
+    missingRemainder,
+    lines,
+  };
+}
+export const roleNames = (user) =>
+  (user?.roles || []).map((r) =>
+    String(typeof r === "string" ? r : r.name || r.role || "")
+      .trim()
+      .toLowerCase(),
+  );
+export const isManagement = (user) => roleNames(user).includes("management");
+export const isAttendanceHr = (user) =>
+  isManagement(user) ||
+  roleNames(user).some((r) =>
+    ["hr", "hr manager", "hr admin", "human resources"].includes(r),
+  );

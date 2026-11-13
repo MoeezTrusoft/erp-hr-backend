@@ -1,5 +1,31 @@
+import { prepareEmployeeInsert, guardIdentityEdit } from "./employee-code.service.js";
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
+import {
+  enqueueEmployeeLifecycle,
+  mapEmployeeToLifecycleInput,
+} from "./employeeOutbox.service.js";
+import { assertIfMatch } from "../lib/optimisticConcurrency.js";
+
+// A.4 — emit hr.employee.lifecycle.v1 into the outbox INSIDE the aggregate tx.
+// ctx carries the request correlationId (A.5) + acting principal so the event
+// is traceable end-to-end. Fail-soft is handled inside enqueueEmployeeLifecycle
+// (returns null when the OutboxEvent model is unavailable); a CONTRACT failure
+// throws and rolls back the surrounding tx so a bad event never escapes.
+async function emitEmployeeLifecycle(tx, employee, phase, ctx = {}, extra = {}) {
+  if (!employee) return null;
+  const input = mapEmployeeToLifecycleInput(employee, phase, extra);
+  // Skip emission when the tenant is unknown (fail-closed): an event with no
+  // tenant cannot be contract-valid and must not break the aggregate write.
+  if (!input.tenantId) return null;
+  return enqueueEmployeeLifecycle(tx, {
+    ...input,
+    aggregateId: employee.id,
+    actorId: ctx.actorId,
+    correlationId: ctx.correlationId,
+  });
+}
 
 
 // ✅ Create Employee
@@ -79,6 +105,7 @@ import { logAction } from "../utils/logs.js";
 //     module: "Employee",
 //     result: "SUCCESS",
 //     notes: `Employee ${employee.id} created successfully`,
+//     tenantId: typeof tenantId !== "undefined" ? tenantId : null,
 //   });
 
 //   return employee;
@@ -108,7 +135,7 @@ function calculateTenure(hireDate) {
   };
 }
 
-export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,createdBy) => {
+export const createEmployeeService = async (data, finalMediaId, finalMediaUrl, createdBy, ctx = {}) => {
   // ------------ REQUIRED FIELDS -----------------
   const requiredFields = ["job_title", "hire_date", "status", "positionId"];
 
@@ -198,7 +225,9 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,cr
   const tenure = calculateTenure(hireDate);
   // ------------ Parse Incoming Data Properly --------------------
   const parsedData = {
-    tenant_id: data.tenant_id ? Number(data.tenant_id) : null,
+    // REQ-007: tenant_id is an opaque RBAC Company.uuid string — store it
+    // verbatim, never Number()/parseInt it. Absent → null (fail-closed).
+    tenant_id: data.tenant_id != null ? data.tenant_id : null,
     employee_media_id: finalMediaId,
     first_name: data.first_name || null,
     middle_name: data.middle_name || null,
@@ -256,9 +285,16 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,cr
     createdById: Number(createdBy) || null,
   };
 
-  // ------------ Create Employee -------------------------------
-  const employee = await prisma.employee.create({
-    data: parsedData,
+  // ------------ Create Employee (+ lifecycle event in the SAME tx) --------
+  // A.4: the Employee row and its hr.employee.lifecycle.v1 (phase=hired) event
+  // commit or roll back together. The C4 encryption $extends and payroll engine
+  // are untouched — we still write through the same singleton client, just
+  // wrapped in an interactive transaction so the outbox row is atomic with it.
+  const employee = await tenantTransaction(prisma, async (tx) => {
+    const prepared = await prepareEmployeeInsert(tx, parsedData, { tenantId: ctx.tenantId, category: data.employeeCategory });
+    const created = await tx.employee.create({ data: prepared });
+    await emitEmployeeLifecycle(tx, created, "hired", ctx);
+    return created;
   });
 
   // ------------ Log Action -------------------------------------
@@ -268,6 +304,7 @@ export const createEmployeeService = async (data, finalMediaId, finalMediaUrl,cr
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${employee.id} created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return employee;
@@ -414,12 +451,19 @@ export const createEmployeeMediaRecordService = async ({
 
 
 // ✅ Update Employee
-export const updateEmployeeService = async (id, data, updatedBy) => {
+export const updateEmployeeService = async (id, data, updatedBy, ctx = {}) => {
   const exists = await prisma.employee.findUnique({
     where: { id: Number(id) },
   });
 
   if (!exists) throw new Error("Employee not found");
+  guardIdentityEdit(exists, data);
+
+  // X-07 / ARCH-01 §3.4 — If-Match / 412 optimistic concurrency. Opt-in: when
+  // the caller supplies ctx.ifMatch (the request If-Match header), reject the
+  // write with 412 if the employee row was modified by another writer since the
+  // caller read it. No precondition ⇒ no-op (back-compat).
+  assertIfMatch(ctx.ifMatch, exists);
 
   if (data.positionId) {
     const pos = await prisma.position.findUnique({
@@ -428,14 +472,20 @@ export const updateEmployeeService = async (id, data, updatedBy) => {
     if (!pos) throw new Error(`Position ID ${data.positionId} does not exist`);
   }
 
-  const updated = await prisma.employee.update({
-    where: { id: Number(id) },
-    data: {
-      ...data,
-      hire_date: data.hire_date ? new Date(data.hire_date) : exists.hire_date,
-      updatedById: Number(updatedBy),
-      positionId: data.positionId ? Number(data.positionId) : exists.positionId,
-    },
+  // A.4: the update and its hr.employee.lifecycle.v1 (phase=transferred) event
+  // commit or roll back together.
+  const updated = await tenantTransaction(prisma, async (tx) => {
+    const row = await tx.employee.update({
+      where: { id: Number(id) },
+      data: {
+        ...data,
+        hire_date: data.hire_date ? new Date(data.hire_date) : exists.hire_date,
+        updatedById: Number(updatedBy),
+        positionId: data.positionId ? Number(data.positionId) : exists.positionId,
+      },
+    });
+    await emitEmployeeLifecycle(tx, row, "transferred", ctx);
+    return row;
   });
 
   await logAction({
@@ -444,24 +494,57 @@ export const updateEmployeeService = async (id, data, updatedBy) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${id} updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return updated;
 };
 
-// ✅ Delete Employee
-export const deleteEmployeeService = async (id, deletedBy) => {
+// ✅ Delete Employee (terminate)
+//
+// T-1.4 / A-01 — employees with PAYROLL HISTORY are refused, not deleted.
+// The old body removed the Employee row plus their attendance and leave rows,
+// orphaning every payslip, EmploymentPeriod, Loan, PayrollAuditLog and audit
+// Log row that referenced them — one delete silently destroyed the audit
+// trail and the reproducibility of every run that paid them (report 19,
+// advisory A-01). Termination is a lifecycle state: deactivate the employee
+// and close their EmploymentPeriod; the payroll_included flag already keeps
+// them out of future runs and leaver proration pays the days they worked.
+// Only a true mis-entry (never paid, never on a roster spell) may be removed.
+export const deleteEmployeeService = async (id, deletedBy, ctx = {}) => {
   const exists = await prisma.employee.findUnique({
     where: { id: Number(id) },
   });
 
   if (!exists) throw new Error("Employee not found");
 
-  // Clean dependent data
-  await prisma.attendance.deleteMany({ where: { employeeId: Number(id) } });
-  await prisma.leave.deleteMany({ where: { employeeId: Number(id) } });
+  await tenantTransaction(prisma, async (tx) => {
+    // A-01 GUARD — history check FIRST, inside the tx, so a racing payslip
+    // cannot slip between the check and the delete.
+    const [payslipCount, periodCount] = await Promise.all([
+      tx.payrollPayslip ? tx.payrollPayslip.count({ where: { employeeId: Number(id) } }) : Promise.resolve(0),
+      tx.employmentPeriod ? tx.employmentPeriod.count({ where: { employeeId: Number(id) } }) : Promise.resolve(0),
+    ]);
+    if (payslipCount > 0 || periodCount > 0) {
+      throw Object.assign(
+        new Error(
+          `A-01: employee ${id} has payroll history (${payslipCount} payslip(s), ${periodCount} employment period(s)) and cannot be hard-deleted. Deactivate them instead — termination must preserve the audit trail and payroll reproducibility.`,
+        ),
+        { status: 409 },
+      );
+    }
 
-  await prisma.employee.delete({ where: { id: Number(id) } });
+    // A.4: emit hr.employee.lifecycle.v1 (phase=terminated) BEFORE the row is
+    // deleted (the mapper needs the still-present employee), all in ONE tx so
+    // the event and the deletion are atomic. Mis-entry path only.
+    await emitEmployeeLifecycle(tx, exists, "terminated", ctx, {
+      terminationCause: ctx.terminationCause,
+    });
+    // Clean dependent data
+    await tx.attendance.deleteMany({ where: { employeeId: Number(id) } });
+    await tx.leave.deleteMany({ where: { employeeId: Number(id) } });
+    await tx.employee.delete({ where: { id: Number(id) } });
+  });
 
   await logAction({
     employeeId: Number(deletedBy),
@@ -469,6 +552,7 @@ export const deleteEmployeeService = async (id, deletedBy) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${id} deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return { message: "Employee deleted successfully" };

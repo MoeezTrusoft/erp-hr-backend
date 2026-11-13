@@ -1,0 +1,42 @@
+import {describe,it,expect,jest} from '@jest/globals';
+import {buildPayrollRegister} from '../../src/lib/payrollRegister.js';
+const run={id:19,currencyCode:'PKR',periodStart:new Date('2026-09-01'),status:'COMPLETED'};
+const slip={id:1,employee:{employee_name:'Example',job_title:'Engineer',businessUnit:{name:'Engineering'}},payrollOffice:'PECHS',payableDays:null,grossAmount:'115.25',totalDeductions:'15.25',netAmount:'100',earnings:[{amount:'80',description:'Base salary for September',earningType:{code:'BASIC'}},{amount:'10',earningType:{code:'BONUS'}},{amount:'20',earningType:{code:'COMMISSION'}},{amount:'5.25',earningType:{code:'HOUSE'}}],deductions:[{amount:'5',description:'Income Tax'},{amount:'4',description:'Salary advance'},{amount:'3',description:'Loan repayment'},{amount:'3.25',description:'Absence recovery'}]};
+describe('payroll register',()=>{
+ it('keeps every earning and deduction in a reconciled template column',()=>{const m=buildPayrollRegister({run,payslips:[slip]});expect(m.totals).toEqual({basic:8000n,bonus:1000n,commission:2000n,otherEarnings:525n,gross:11525n,tax:500n,advance:400n,loan:300n,otherDeductions:325n,deductions:1525n,net:10000n});expect(m.offices[0].departments[0].rows[0].paidDays).toBe('-');});
+ it('groups by office then department and preserves recorded half-days',()=>{const m=buildPayrollRegister({run,payslips:[slip,{...slip,id:2,payrollOffice:'Headend',payableDays:'29.5',employee:{employee_name:'Other',additional_fields:{payrollDepartment:'Office Staff'}}}]});expect(m.offices).toHaveLength(2);expect(m.offices[1].departments[0].name).toBe('Office Staff');expect(m.offices[1].departments[0].rows[0].paidDays).toBe('29.5');expect(m.totals.net).toBe(20000n);});
+ it('refuses misleading totals if persisted line items disagree',()=>expect(()=>buildPayrollRegister({run,payslips:[{...slip,grossAmount:'999'}]})).toThrow('reconcile'));
+ it('does not mistake non-taxable allowance names for income withholding',()=>{const m=buildPayrollRegister({run,payslips:[{...slip,deductions:[{amount:'15.25',description:'Other deduction'}]}]});expect(m.totals.tax).toBe(0n);});
+});
+
+const {payrollRegisterProfile}=await import('../../src/lib/payrollRegisterProfiles.js');
+it.each([
+ ['8f4a526f-d45b-4da2-b772-d6682e849812','JOC'],
+ ['14d8c7b1-194d-4e35-b058-b9cb9aa9fba2','BOC'],
+ ['8ff0533b-62f6-4be9-a78e-69adf49e00bc','HomeNet'],
+ ['40314ef4-0a81-4390-b631-b3ad3f21f523','TruSoft'],
+ ['61b7eb53-ab6e-413f-9d9a-1ecf4e071e73','HomeVision'],
+])('uses actual approval actor codes instead of static personal names for %s',(tenant,companyName)=>{
+ expect(payrollRegisterProfile(tenant)).toEqual({companyName});
+});
+it('does not match a company display label as a tenant identity',()=>expect(payrollRegisterProfile('HomeVision')).toBeNull());
+
+it('retains historical payroll rows when the employee is no longer accessible in this tenant',()=>{const m=buildPayrollRegister({run,payslips:[{...slip,employeeId:549,employee:null,payableDays:30}]});expect(m.count).toBe(1);expect(m.offices[0].departments[0].rows[0]).toMatchObject({name:'Employee code required',paidDays:'30'});expect(m.totals.net).toBe(10000n);});
+
+it('retains employment deduction explanations in the register',()=>{
+ const m=buildPayrollRegister({run,payslips:[{...slip,deductions:[{amount:'15.25',description:'Joining/leaving date deduction (20 days outside employment)',deductionType:{code:'EMPLOYMENT_PRORATION'}}]}]});
+ expect(m.offices[0].departments[0].rows[0].employmentDeductions).toEqual([{amount:1525n,description:'Joining/leaving date deduction (20 days outside employment)'}]);expect(m.totals.otherDeductions).toBe(1525n);
+});
+
+it('shows the employee full name, and falls back to the code when no name is recorded',()=>{
+ const named=buildPayrollRegister({run,payslips:[{...slip,employee:{...slip.employee,employee_name:'Asad Ullah',employee_code:'EMP-00482'}}]});
+ expect(named.offices[0].departments[0].rows[0].name).toBe('Asad Ullah');
+ const unnamed=buildPayrollRegister({run,payslips:[{...slip,employee:{...slip.employee,employee_name:null,employee_code:'EMP-00482'}}]});
+ expect(unnamed.offices[0].departments[0].rows[0].name).toBe('EMP-00482');
+});
+
+it('names the PDF after the month and the company',async()=>{
+ const {payrollRegisterFilename}=await import('../../src/services/payrollRegisterPdf.service.js');
+ expect(payrollRegisterFilename({run:{periodStart:new Date('2026-09-01T00:00:00Z')},companyName:'TruSoft'})).toBe('September Payroll - TruSoft.pdf');
+ expect(payrollRegisterFilename({run:{periodStart:new Date('2026-10-01T00:00:00Z')},companyName:'A/B'})).toBe('October Payroll - AB.pdf');
+});

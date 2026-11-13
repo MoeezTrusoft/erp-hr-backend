@@ -1,0 +1,1739 @@
+/**
+ * Dev HR seed — modest, internally-consistent dataset for the dev tenant so the
+ * live HR list tools (mcpList*) return coherent rows after the mock→live bind.
+ *
+ * Run:  node prisma/dev-seed-hr.js
+ *
+ * IDEMPOTENT: every write is an upsert / skip-if-present keyed on a stable
+ * natural key, so re-running adds NO duplicates. All rows carry the dev tenant
+ * (14c350e8-d0bc-4ee9-90c7-dea2b7a7a007). Referentially consistent:
+ *   - employees sit in a real department + position + grade, with a manager in
+ *     the right dept and tenure consistent with the join date;
+ *   - candidates apply to real requisitions with a coherent pipeline status;
+ *   - leave requests reference real employees + real leave policies, with
+ *     non-overlapping date ranges and sensible statuses;
+ *   - payslips are one-per-employee for a run with net = gross - deductions;
+ *   - performance reviews reference real employees + their manager as reviewer.
+ *
+ * We import the SINGLETON client (src/lib/prisma.js) so the C4 encryption
+ * extension is applied on write exactly as the app expects (ARCH-01 §5.3).
+ */
+import prisma from "../src/lib/prisma.js";
+import { mcpCtx } from "../src/mcp/context.js"; // run the seed under a tenant context so FORCE-RLS writes pass
+import { deriveAttendanceStatus, resolveShiftStartMin } from "../src/lib/attendanceStatus.js"; // seed status must agree with the app write-path
+
+const TENANT = "14c350e8-d0bc-4ee9-90c7-dea2b7a7a007";
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+const d = (s) => new Date(`${s}T00:00:00.000Z`);
+const NOW = new Date("2026-06-28T00:00:00.000Z");
+
+function monthsBetween(from, to) {
+  return (
+    (to.getUTCFullYear() - from.getUTCFullYear()) * 12 +
+    (to.getUTCMonth() - from.getUTCMonth())
+  );
+}
+
+// inclusive whole-day span between two dates
+function dayspan(start, end) {
+  return Math.round((d(end) - d(start)) / 86_400_000) + 1;
+}
+
+async function getOrCreate(model, find, create) {
+  const existing = await prisma[model].findFirst({ where: find });
+  if (existing) return existing;
+  return prisma[model].create({ data: create });
+}
+
+// Prisma 7 (strict) rejects a non-unique `where` in upsert. This idempotent
+// helper replicates upsert semantics keyed on an arbitrary (non-unique) filter:
+// find-by-filter → update-by-id if present, else create. Returns the row, so the
+// call-site shape is identical to the upsert it replaces.
+async function upsertBy(model, where, createData, updateData) {
+  const existing = await prisma[model].findFirst({ where });
+  if (existing) return prisma[model].update({ where: { id: existing.id }, data: updateData });
+  return prisma[model].create({ data: createData });
+}
+
+// ── 1. Departments (BusinessUnit) ────────────────────────────────────────────
+const DEPARTMENTS = [
+  "Engineering",
+  "Human Resources",
+  "Sales",
+  "Finance",
+  "Operations",
+];
+
+// ── 2. Grade levels ───────────────────────────────────────────────────────────
+const GRADES = [
+  { name: "G1", description: "Associate" },
+  { name: "G2", description: "Senior" },
+  { name: "G3", description: "Lead" },
+  { name: "G4", description: "Manager" },
+  { name: "G5", description: "Director" },
+];
+
+// ── 3. Positions (jobCode is @unique) ─────────────────────────────────────────
+const POSITIONS = [
+  { jobCode: "ENG-SWE", title: "Software Engineer", dept: "Engineering" },
+  { jobCode: "ENG-SSE", title: "Senior Software Engineer", dept: "Engineering" },
+  { jobCode: "ENG-MGR", title: "Engineering Manager", dept: "Engineering" },
+  { jobCode: "HR-GEN", title: "HR Generalist", dept: "Human Resources" },
+  { jobCode: "HR-MGR", title: "HR Manager", dept: "Human Resources" },
+  { jobCode: "SAL-EXE", title: "Sales Executive", dept: "Sales" },
+  { jobCode: "SAL-MGR", title: "Sales Manager", dept: "Sales" },
+  { jobCode: "FIN-ACC", title: "Accountant", dept: "Finance" },
+  { jobCode: "FIN-MGR", title: "Finance Manager", dept: "Finance" },
+  { jobCode: "OPS-ANL", title: "Operations Analyst", dept: "Operations" },
+  { jobCode: "OPS-MGR", title: "Operations Manager", dept: "Operations" },
+];
+
+// ── 4. Employees (25) ─────────────────────────────────────────────────────────
+// mgr = employee_code of the direct manager (a G4 in the same department).
+const EMPLOYEES = [
+  // Engineering
+  { code: "DEV-001", first: "Imran", last: "Sheikh", dept: "Engineering", job: "ENG-MGR", grade: "G4", joined: "2019-03-01", mgr: null },
+  { code: "DEV-002", first: "Ahmed", last: "Raza", dept: "Engineering", job: "ENG-SSE", grade: "G2", joined: "2020-06-15", mgr: "DEV-001" },
+  { code: "DEV-003", first: "Bilal", last: "Hussain", dept: "Engineering", job: "ENG-SSE", grade: "G2", joined: "2021-01-10", mgr: "DEV-001" },
+  { code: "DEV-004", first: "Hassan", last: "Iqbal", dept: "Engineering", job: "ENG-SWE", grade: "G1", joined: "2022-09-05", mgr: "DEV-001" },
+  { code: "DEV-005", first: "Maria", last: "Yousaf", dept: "Engineering", job: "ENG-SWE", grade: "G1", joined: "2023-02-20", mgr: "DEV-001" },
+  { code: "DEV-006", first: "Usman", last: "Tariq", dept: "Engineering", job: "ENG-SWE", grade: "G1", joined: "2023-08-01", mgr: "DEV-001" },
+  { code: "DEV-024", first: "Junaid", last: "Akhtar", dept: "Engineering", job: "ENG-SWE", grade: "G1", joined: "2024-01-08", mgr: "DEV-001" },
+  // Human Resources
+  { code: "DEV-007", first: "Fatima", last: "Khan", dept: "Human Resources", job: "HR-MGR", grade: "G4", joined: "2018-11-12", mgr: null },
+  { code: "DEV-008", first: "Sana", last: "Malik", dept: "Human Resources", job: "HR-GEN", grade: "G1", joined: "2021-05-03", mgr: "DEV-007" },
+  { code: "DEV-009", first: "Hina", last: "Aslam", dept: "Human Resources", job: "HR-GEN", grade: "G1", joined: "2022-07-18", mgr: "DEV-007" },
+  { code: "DEV-025", first: "Areeba", last: "Khan", dept: "Human Resources", job: "HR-GEN", grade: "G1", joined: "2024-02-19", mgr: "DEV-007" },
+  // Sales
+  { code: "DEV-010", first: "Omar", last: "Farooq", dept: "Sales", job: "SAL-MGR", grade: "G4", joined: "2019-09-23", mgr: null },
+  { code: "DEV-011", first: "Zain", last: "Ali", dept: "Sales", job: "SAL-EXE", grade: "G2", joined: "2020-12-01", mgr: "DEV-010" },
+  { code: "DEV-012", first: "Ayesha", last: "Siddiqui", dept: "Sales", job: "SAL-EXE", grade: "G1", joined: "2022-03-14", mgr: "DEV-010" },
+  { code: "DEV-013", first: "Bilal", last: "Ahmed", dept: "Sales", job: "SAL-EXE", grade: "G1", joined: "2023-04-10", mgr: "DEV-010" },
+  { code: "DEV-014", first: "Nida", last: "Riaz", dept: "Sales", job: "SAL-EXE", grade: "G1", joined: "2023-10-02", mgr: "DEV-010" },
+  // Finance
+  { code: "DEV-015", first: "Saad", last: "Mahmood", dept: "Finance", job: "FIN-MGR", grade: "G4", joined: "2018-06-30", mgr: null },
+  { code: "DEV-016", first: "Kiran", last: "Shah", dept: "Finance", job: "FIN-ACC", grade: "G2", joined: "2020-08-19", mgr: "DEV-015" },
+  { code: "DEV-017", first: "Tariq", last: "Jameel", dept: "Finance", job: "FIN-ACC", grade: "G1", joined: "2022-01-25", mgr: "DEV-015" },
+  { code: "DEV-018", first: "Sadia", last: "Noor", dept: "Finance", job: "FIN-ACC", grade: "G1", joined: "2023-06-12", mgr: "DEV-015" },
+  // Operations
+  { code: "DEV-019", first: "Adnan", last: "Qureshi", dept: "Operations", job: "OPS-MGR", grade: "G4", joined: "2019-02-11", mgr: null },
+  { code: "DEV-020", first: "Rabia", last: "Aslam", dept: "Operations", job: "OPS-ANL", grade: "G2", joined: "2021-03-30", mgr: "DEV-019" },
+  { code: "DEV-021", first: "Faisal", last: "Mehmood", dept: "Operations", job: "OPS-ANL", grade: "G1", joined: "2022-11-08", mgr: "DEV-019" },
+  { code: "DEV-022", first: "Hamza", last: "Saeed", dept: "Operations", job: "OPS-ANL", grade: "G1", joined: "2023-05-22", mgr: "DEV-019" },
+  { code: "DEV-023", first: "Mehwish", last: "Tariq", dept: "Operations", job: "OPS-ANL", grade: "G1", joined: "2023-09-15", mgr: "DEV-019" },
+];
+
+// gross monthly pay by grade (PKR) — drives payslip arithmetic
+const GROSS_BY_GRADE = { G1: 120000, G2: 180000, G3: 250000, G4: 350000, G5: 500000 };
+
+// ── 5. Leave policies (leave types) ───────────────────────────────────────────
+const LEAVE_POLICIES = [
+  { name: "Annual Leave", leaveTypeCode: "AL", accrualRate: 1.75, accrualPeriod: "MONTHLY" },
+  { name: "Sick Leave", leaveTypeCode: "SL", accrualRate: 0.83, accrualPeriod: "MONTHLY" },
+  { name: "Casual Leave", leaveTypeCode: "CL", accrualRate: 0.83, accrualPeriod: "MONTHLY" },
+  { name: "Unpaid Leave", leaveTypeCode: "UL", accrualRate: 0.0, accrualPeriod: "NONE" },
+];
+
+// ── 6. Requisitions (10) — unique titles for idempotent keying ────────────────
+const REQUISITIONS = [
+  { title: "Software Engineer - Platform Team", job: "ENG-SWE", dept: "Engineering", reqBy: "DEV-001", status: "POSTED", openings: 2, approvedBy: "DEV-007" },
+  { title: "Senior Software Engineer - Core", job: "ENG-SSE", dept: "Engineering", reqBy: "DEV-001", status: "APPROVED", openings: 1, approvedBy: "DEV-007" },
+  { title: "Software Engineer - Mobile Team", job: "ENG-SWE", dept: "Engineering", reqBy: "DEV-001", status: "POSTED", openings: 1, approvedBy: "DEV-007" },
+  { title: "Sales Executive - Enterprise", job: "SAL-EXE", dept: "Sales", reqBy: "DEV-010", status: "POSTED", openings: 3, approvedBy: "DEV-007" },
+  { title: "Sales Executive - SMB", job: "SAL-EXE", dept: "Sales", reqBy: "DEV-010", status: "CLOSED", openings: 1, approvedBy: "DEV-007" },
+  { title: "Accountant - Payables", job: "FIN-ACC", dept: "Finance", reqBy: "DEV-015", status: "PENDING_APPROVAL", openings: 1, approvedBy: null },
+  { title: "Operations Analyst - Logistics", job: "OPS-ANL", dept: "Operations", reqBy: "DEV-019", status: "POSTED", openings: 2, approvedBy: "DEV-007" },
+  { title: "HR Generalist - People Ops", job: "HR-GEN", dept: "Human Resources", reqBy: "DEV-007", status: "CLOSED", openings: 1, approvedBy: "DEV-007" },
+  { title: "Engineering Manager - Data", job: "ENG-MGR", dept: "Engineering", reqBy: "DEV-001", status: "DRAFT", openings: 1, approvedBy: null },
+  { title: "Finance Manager - FP&A", job: "FIN-MGR", dept: "Finance", reqBy: "DEV-015", status: "DRAFT", openings: 1, approvedBy: null },
+];
+
+// ── 7. Candidates (15) + their application to a real requisition ──────────────
+// stage pipeline is coherent: hired only on CLOSED reqs; rejected/offer/etc on open.
+const CANDIDATES = [
+  { first: "Daniyal", last: "Aziz", email: "daniyal.aziz@example.com", source: "LinkedIn", req: "Software Engineer - Platform Team", stage: "interview", appStatus: "open" },
+  { first: "Mahnoor", last: "Shah", email: "mahnoor.shah@example.com", source: "Referral", req: "Software Engineer - Platform Team", stage: "screening", appStatus: "open" },
+  { first: "Talha", last: "Rauf", email: "talha.rauf@example.com", source: "Job Board", req: "Software Engineer - Mobile Team", stage: "applied", appStatus: "open" },
+  { first: "Iqra", last: "Hameed", email: "iqra.hameed@example.com", source: "LinkedIn", req: "Senior Software Engineer - Core", stage: "offer", appStatus: "open" },
+  { first: "Waleed", last: "Asif", email: "waleed.asif@example.com", source: "Referral", req: "Senior Software Engineer - Core", stage: "rejected", appStatus: "closed" },
+  { first: "Komal", last: "Javed", email: "komal.javed@example.com", source: "Job Board", req: "Sales Executive - Enterprise", stage: "interview", appStatus: "open" },
+  { first: "Shahzad", last: "Anwar", email: "shahzad.anwar@example.com", source: "LinkedIn", req: "Sales Executive - Enterprise", stage: "screening", appStatus: "open" },
+  { first: "Rida", last: "Fatima", email: "rida.fatima@example.com", source: "Career Fair", req: "Sales Executive - Enterprise", stage: "applied", appStatus: "open" },
+  { first: "Noman", last: "Bashir", email: "noman.bashir@example.com", source: "Referral", req: "Sales Executive - SMB", stage: "hired", appStatus: "closed" },
+  { first: "Sania", last: "Iqbal", email: "sania.iqbal@example.com", source: "LinkedIn", req: "Operations Analyst - Logistics", stage: "interview", appStatus: "open" },
+  { first: "Arsalan", last: "Malik", email: "arsalan.malik@example.com", source: "Job Board", req: "Operations Analyst - Logistics", stage: "applied", appStatus: "open" },
+  { first: "Hareem", last: "Zafar", email: "hareem.zafar@example.com", source: "Referral", req: "HR Generalist - People Ops", stage: "hired", appStatus: "closed" },
+  { first: "Yasir", last: "Nadeem", email: "yasir.nadeem@example.com", source: "LinkedIn", req: "Accountant - Payables", stage: "applied", appStatus: "open" },
+  { first: "Mariam", last: "Saleem", email: "mariam.saleem@example.com", source: "Career Fair", req: "Operations Analyst - Logistics", stage: "screening", appStatus: "open" },
+  { first: "Fahad", last: "Rashid", email: "fahad.rashid@example.com", source: "Job Board", req: "Software Engineer - Mobile Team", stage: "screening", appStatus: "open" },
+];
+
+// ── 8. Leave requests (15) — non-overlapping per employee, sensible statuses ──
+const LEAVE_REQUESTS = [
+  { emp: "DEV-002", policy: "Annual Leave", start: "2026-02-02", end: "2026-02-06", status: "APPROVED" },
+  { emp: "DEV-003", policy: "Sick Leave", start: "2026-03-10", end: "2026-03-11", status: "APPROVED" },
+  { emp: "DEV-004", policy: "Casual Leave", start: "2026-04-06", end: "2026-04-06", status: "APPROVED" },
+  { emp: "DEV-005", policy: "Annual Leave", start: "2026-05-18", end: "2026-05-22", status: "PENDING" },
+  { emp: "DEV-006", policy: "Sick Leave", start: "2026-06-01", end: "2026-06-02", status: "APPROVED" },
+  { emp: "DEV-008", policy: "Annual Leave", start: "2026-03-23", end: "2026-03-27", status: "APPROVED" },
+  { emp: "DEV-009", policy: "Casual Leave", start: "2026-05-04", end: "2026-05-05", status: "REJECTED" },
+  { emp: "DEV-011", policy: "Annual Leave", start: "2026-04-13", end: "2026-04-17", status: "APPROVED" },
+  { emp: "DEV-012", policy: "Sick Leave", start: "2026-06-08", end: "2026-06-09", status: "PENDING" },
+  { emp: "DEV-013", policy: "Unpaid Leave", start: "2026-02-16", end: "2026-02-20", status: "APPROVED" },
+  { emp: "DEV-016", policy: "Annual Leave", start: "2026-05-11", end: "2026-05-15", status: "APPROVED" },
+  { emp: "DEV-017", policy: "Casual Leave", start: "2026-06-15", end: "2026-06-15", status: "PENDING" },
+  { emp: "DEV-020", policy: "Annual Leave", start: "2026-03-02", end: "2026-03-06", status: "APPROVED" },
+  { emp: "DEV-021", policy: "Sick Leave", start: "2026-04-20", end: "2026-04-21", status: "REJECTED" },
+  { emp: "DEV-022", policy: "Annual Leave", start: "2026-06-22", end: "2026-06-26", status: "PENDING" },
+];
+
+// ── 9. Performance review statuses (cycle through) ────────────────────────────
+const REVIEW_STATUSES = ["FINALIZED", "IN_PROGRESS", "DRAFT"];
+
+async function main() {
+  console.log(`Seeding HR dev dataset for tenant ${TENANT} ...`);
+
+  // 1. Departments
+  const deptByName = {};
+  for (const name of DEPARTMENTS) {
+    deptByName[name] = await getOrCreate(
+      "businessUnit",
+      { name, tenantId: TENANT },
+      { name, description: `${name} department`, tenantId: TENANT }
+    );
+  }
+
+  // 2. Grades
+  const gradeByName = {};
+  for (const g of GRADES) {
+    gradeByName[g.name] = await getOrCreate(
+      "gradeLevel",
+      { name: g.name, tenantId: TENANT },
+      { name: g.name, description: g.description, tenantId: TENANT }
+    );
+  }
+
+  // 3. Positions (jobCode NOT db-unique → upsertBy find/update/create)
+  const posByCode = {};
+  for (const p of POSITIONS) {
+    posByCode[p.jobCode] = await upsertBy(
+      "position",
+      { jobCode: p.jobCode },
+      { jobCode: p.jobCode, title: p.title, isActive: true, tenantId: TENANT },
+      { title: p.title, isActive: true, tenantId: TENANT }
+    );
+  }
+
+  // 4. Employees — two passes so managerId can reference seeded rows.
+  const empByCode = {};
+  for (const e of EMPLOYEES) {
+    const pos = posByCode[e.job];
+    const existing = await prisma.employee.findFirst({
+      where: { employee_code: e.code, tenant_id: TENANT },
+    });
+    const data = {
+      tenant_id: TENANT,
+      first_name: e.first,
+      last_name: e.last,
+      employee_name: `${e.first} ${e.last}`,
+      employee_code: e.code,
+      email: `${e.first}.${e.last}@trusoft.dev`.toLowerCase(),
+      work_email: `${e.first}.${e.last}@trusoft.dev`.toLowerCase(),
+      job_title: pos.title,
+      employee_type: "permanent",
+      employement_status: "Active",
+      status: "Active",
+      gender: "Unspecified",
+      joining_date: d(e.joined),
+      hire_date: d(e.joined),
+      tenureMonths: String(monthsBetween(d(e.joined), NOW)),
+      fte: 1.0,
+      positionId: pos.id,
+      businessUnitId: deptByName[e.dept].id,
+      gradeLevelId: gradeByName[e.grade].id,
+    };
+    empByCode[e.code] = existing
+      ? await prisma.employee.update({ where: { id: existing.id }, data })
+      : await prisma.employee.create({ data });
+  }
+  // manager pass
+  for (const e of EMPLOYEES) {
+    if (!e.mgr) continue;
+    await prisma.employee.update({
+      where: { id: empByCode[e.code].id },
+      data: { managerId: empByCode[e.mgr].id, reportToId: empByCode[e.mgr].id },
+    });
+  }
+
+  const hrManager = empByCode["DEV-007"]; // policy / request author
+  const financeManager = empByCode["DEV-015"]; // run approver
+
+  // 5. Leave policies (name unique → upsert; createdById required)
+  const policyByName = {};
+  for (const lp of LEAVE_POLICIES) {
+    policyByName[lp.name] = await prisma.leavePolicy.upsert({
+      where: { name: lp.name },
+      update: { tenantId: TENANT },
+      create: {
+        name: lp.name,
+        description: `${lp.name} policy`,
+        leaveTypeCode: lp.leaveTypeCode,
+        accrualRate: lp.accrualRate,
+        accrualPeriod: lp.accrualPeriod,
+        carryForwardAllowed: lp.leaveTypeCode === "AL",
+        maxCarryForward: lp.leaveTypeCode === "AL" ? 10 : 0,
+        active: true,
+        createdById: hrManager.id,
+        tenantId: TENANT,
+      },
+    });
+  }
+
+  // 6. Requisitions (unique title → findFirst/create)
+  const reqByTitle = {};
+  for (const r of REQUISITIONS) {
+    reqByTitle[r.title] = await getOrCreate(
+      "jobRequisition",
+      { title: r.title, tenantId: TENANT },
+      {
+        title: r.title,
+        description: `${r.title} opening`,
+        departmentId: deptByName[r.dept].id,
+        positionId: posByCode[r.job].id,
+        requestedById: empByCode[r.reqBy].id,
+        approvedById: r.approvedBy ? empByCode[r.approvedBy].id : null,
+        openings: r.openings,
+        status: r.status,
+        tenantId: TENANT,
+      }
+    );
+  }
+
+  // 7. Candidates (email unique → upsert) + Application (compound unique → upsert)
+  for (const c of CANDIDATES) {
+    const candidate = await prisma.candidate.upsert({
+      where: { email: c.email },
+      update: { tenantId: TENANT, status: "active" },
+      create: {
+        firstName: c.first,
+        lastName: c.last,
+        email: c.email,
+        source: c.source,
+        status: "active",
+        tenantId: TENANT,
+      },
+    });
+    const req = reqByTitle[c.req];
+    await prisma.application.upsert({
+      where: {
+        candidateId_jobRequisitionId: {
+          candidateId: candidate.id,
+          jobRequisitionId: req.id,
+        },
+      },
+      update: { stage: c.stage, status: c.appStatus, tenantId: TENANT },
+      create: {
+        candidateId: candidate.id,
+        jobRequisitionId: req.id,
+        stage: c.stage,
+        status: c.appStatus,
+        tenantId: TENANT,
+      },
+    });
+  }
+
+  // 8. Leave requests (findFirst on emp+policy+start → create)
+  for (const lr of LEAVE_REQUESTS) {
+    const emp = empByCode[lr.emp];
+    const policy = policyByName[lr.policy];
+    const existing = await prisma.leaveRequest.findFirst({
+      where: { employeeId: emp.id, leavePolicyId: policy.id, startDate: d(lr.start), tenantId: TENANT },
+    });
+    if (existing) continue;
+    await prisma.leaveRequest.create({
+      data: {
+        employeeId: emp.id,
+        leavePolicyId: policy.id,
+        startDate: d(lr.start),
+        endDate: d(lr.end),
+        totalDays: dayspan(lr.start, lr.end),
+        reason: `${lr.policy} request`,
+        status: lr.status,
+        createdById: emp.id,
+        tenantId: TENANT,
+      },
+    });
+  }
+
+  // 9. Payroll run (compound unique [tenantId, periodStart, periodEnd]) + payslips
+  const periodStart = d("2026-05-01");
+  const periodEnd = d("2026-05-31");
+  let run = await prisma.payrollRun.findFirst({
+    where: { tenantId: TENANT, periodStart, periodEnd },
+  });
+  // Pre-compute totals from the per-employee gross/deduction model.
+  let totalGross = 0;
+  let totalDeductions = 0;
+  const payslipPlan = EMPLOYEES.map((e) => {
+    const gross = GROSS_BY_GRADE[e.grade];
+    const deductions = Math.round(gross * 0.12); // tax + statutory ~ 12%
+    const net = gross - deductions;
+    totalGross += gross;
+    totalDeductions += deductions;
+    return { code: e.code, gross, deductions, net };
+  });
+  const totalNet = totalGross - totalDeductions;
+
+  if (!run) {
+    run = await prisma.payrollRun.create({
+      data: {
+        tenantId: TENANT,
+        periodStart,
+        periodEnd,
+        countryCode: "PK",
+        currencyCode: "PKR",
+        status: "FINALIZED",
+        totalGross,
+        totalDeductions,
+        totalNet,
+        employeeCount: payslipPlan.length,
+        processedBy: hrManager.id,
+        approvedBy: financeManager.id, // distinct approver (no self-approval)
+        approvedAt: d("2026-06-01"),
+        processedAt: d("2026-05-31"),
+        ruleVersion: "2026.05",
+        ratesEffectiveAt: d("2026-05-01"),
+      },
+    });
+  }
+
+  // A second, in-flight run so the runs list shows >1 status.
+  const junStart = d("2026-06-01");
+  const junEnd = d("2026-06-30");
+  await getOrCreate(
+    "payrollRun",
+    { tenantId: TENANT, periodStart: junStart, periodEnd: junEnd },
+    {
+      tenantId: TENANT,
+      periodStart: junStart,
+      periodEnd: junEnd,
+      countryCode: "PK",
+      currencyCode: "PKR",
+      status: "PROCESSING",
+      employeeCount: payslipPlan.length,
+      processedBy: hrManager.id,
+      ruleVersion: "2026.06",
+      ratesEffectiveAt: junStart,
+    }
+  );
+
+  // Payslips: one per employee for the May run; net = gross - deductions.
+  for (const p of payslipPlan) {
+    const emp = empByCode[p.code];
+    await prisma.payrollPayslip.upsert({
+      where: { payrollRunId_employeeId: { payrollRunId: run.id, employeeId: emp.id } },
+      update: {
+        grossAmount: p.gross,
+        totalDeductions: p.deductions,
+        netAmount: p.net,
+        status: "DISTRIBUTED",
+        tenantId: TENANT,
+      },
+      create: {
+        tenantId: TENANT,
+        payrollRunId: run.id,
+        employeeId: emp.id,
+        grossAmount: p.gross,
+        totalDeductions: p.deductions,
+        netAmount: p.net,
+        status: "DISTRIBUTED",
+        distributedAt: d("2026-06-02"),
+        ruleVersion: "2026.05",
+      },
+    });
+  }
+
+  // 10. Performance cycle (findFirst on name) + reviews for non-managers
+  const cycle = await getOrCreate(
+    "performanceCycle",
+    { name: "H1 2026 Review", tenantId: TENANT },
+    {
+      name: "H1 2026 Review",
+      description: "First-half 2026 performance review cycle",
+      start_date: d("2026-01-01"),
+      end_date: d("2026-06-30"),
+      status: "ACTIVE",
+      tenantId: TENANT,
+    }
+  );
+
+  let ri = 0;
+  for (const e of EMPLOYEES) {
+    if (!e.mgr) continue; // managers reviewed elsewhere; reviewers are managers
+    const emp = empByCode[e.code];
+    const reviewer = empByCode[e.mgr];
+    const existing = await prisma.performanceReview.findFirst({
+      where: { employeeId: emp.id, cycleId: cycle.id, tenantId: TENANT },
+    });
+    if (existing) {
+      ri += 1;
+      continue;
+    }
+    const status = REVIEW_STATUSES[ri % REVIEW_STATUSES.length];
+    const rating = Math.round((3.2 + (ri % 9) * 0.18) * 10) / 10; // 3.2 .. 4.6
+    await prisma.performanceReview.create({
+      data: {
+        employeeId: emp.id,
+        reviewerId: reviewer.id,
+        cycleId: cycle.id,
+        period_start: d("2026-01-01"),
+        period_end: d("2026-06-30"),
+        overall_rating: status === "DRAFT" ? null : rating,
+        comments: status === "DRAFT" ? null : `H1 2026 performance review for ${emp.employee_name}`,
+        submittedAt: status === "FINALIZED" ? d("2026-06-20") : null,
+        status,
+        type: "MANAGER",
+        tenantId: TENANT,
+      },
+    });
+    ri += 1;
+  }
+
+  // 11. Attendance — BLOCKER-2: ~50 coherent rows (25 employees × 2 recent
+  // business days) for the dev tenant so the hr_attendance_list screen renders
+  // real, tenant-scoped data instead of null-tenant junk. Statuses cover
+  // present/late/absent; present/late carry sensible check-in/out + hours.
+  // Idempotent: keyed on (employeeId, tenantId, exact date) → re-runs add none.
+  // Cover the last several days INCLUDING the current date (2026-06-28) so the
+  // attendance tool — which defaults its window to "today" (new Date()) — renders
+  // populated by default instead of empty. (Was Jun 25/26 only → empty on Jun 28.)
+  const ATTENDANCE_DATES = ["2026-06-24", "2026-06-25", "2026-06-26", "2026-06-27", "2026-06-28"];
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const at = (dateStr, h, m) => new Date(`${dateStr}T${pad2(h)}:${pad2(m)}:00.000Z`);
+  let attCreated = 0;
+  for (let j = 0; j < ATTENDANCE_DATES.length; j += 1) {
+    const dateStr = ATTENDANCE_DATES[j];
+    const dateAtMidnight = d(dateStr);
+    let i = 0;
+    for (const e of EMPLOYEES) {
+      const emp = empByCode[e.code];
+      const seq = i + j;
+
+      let status;
+      let check_in = null;
+      let check_out = null;
+      let total_hours = null;
+      let remarks = null;
+
+      if (seq % 11 === 0) {
+        status = "ABSENT";
+        remarks = "No punch recorded";
+      } else if (seq % 4 === 1) {
+        status = "LATE";
+        check_in = at(dateStr, 9, 30 + (i % 20)); // after 09:15 grace
+        check_out = at(dateStr, 18, i % 30);
+        total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        remarks = "Late arrival";
+      } else {
+        status = "PRESENT";
+        check_in = at(dateStr, 9, i % 12); // 09:00–09:11, within grace
+        check_out = at(dateStr, 17, 30 + (i % 20));
+        total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+      }
+
+      const existing = await prisma.attendance.findFirst({
+        where: { employeeId: emp.id, tenantId: TENANT, date: dateAtMidnight },
+      });
+      if (!existing) {
+        await prisma.attendance.create({
+          data: {
+            employeeId: emp.id,
+            tenantId: TENANT,
+            date: dateAtMidnight,
+            check_in,
+            check_out,
+            total_hours,
+            status,
+            remarks,
+          },
+        });
+        attCreated += 1;
+      }
+      i += 1;
+    }
+  }
+  console.log(`Attendance: ${attCreated} new rows (target ~${EMPLOYEES.length * ATTENDANCE_DATES.length}).`);
+
+  // 11b. Current-month attendance (July 2026) — a realistic month-to-date grid
+  // for ~10 employees across working days (Mon–Sat) so the current-month
+  // attendance / timesheet screens render live, coherent data. Status is derived
+  // by the SAME shared helper the app write-path uses (deriveAttendanceStatus +
+  // resolveShiftStartMin), so seed and app agree. Idempotent: keyed on
+  // (employeeId, exact date) → re-runs add none. No tenantId passed — the ambient
+  // RLS create-net default stamps it.
+  const monthEmployees = await prisma.employee.findMany({ take: 10 });
+  const monthBase = new Date("2026-07-01");
+  const monthEnd = new Date("2026-07-24"); // month-to-date
+  const isoDate = (dt) =>
+    `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+  // Normalize minute overflow into the hour (callers pass e.g. m=60/75 for
+  // 10:00 / 10:15) so we never build an invalid "HH:60" clock string.
+  const atUtc = (dateStr, h, m) => {
+    const hh = h + Math.floor(m / 60);
+    const mm = m % 60;
+    return new Date(`${dateStr}T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00.000Z`);
+  };
+
+  // Work days: Mon–Sat (skip Sunday, getUTCDay() === 0).
+  const workDays = [];
+  for (let dt = new Date(monthBase); dt <= monthEnd; dt = new Date(dt.getTime() + 86_400_000)) {
+    if (dt.getUTCDay() !== 0) workDays.push(isoDate(dt));
+  }
+
+  // Deterministic mix: mostly PRESENT (on-time), a scatter of LATE, HALF_DAY,
+  // ABSENT, plus a few missing check-outs. Work-mode mostly Onsite with some
+  // Remote/Hybrid. Keyed off (employee index, day index) so it's stable.
+  const WORK_MODES = ["Onsite", "Onsite", "Onsite", "Remote", "Hybrid"];
+  const monthBuckets = { PRESENT: 0, LATE: 0, HALF_DAY: 0, ABSENT: 0 };
+  let monthAttCreated = 0;
+  for (let di = 0; di < workDays.length; di += 1) {
+    const dateStr = workDays[di];
+    const dateAtMidnight = d(dateStr);
+    const shiftStartMin = resolveShiftStartMin({ date: dateAtMidnight });
+    for (let ei = 0; ei < monthEmployees.length; ei += 1) {
+      const emp = monthEmployees[ei];
+      const seq = ei * 3 + di; // spread the pattern across the grid
+
+      let check_in = null;
+      let check_out = null;
+      let total_hours = null;
+      let remarks = null;
+      const work_mode = WORK_MODES[(ei + di) % WORK_MODES.length];
+
+      if (seq % 13 === 5) {
+        // ABSENT — no punch.
+        remarks = "No punch recorded";
+      } else if (seq % 11 === 4) {
+        // HALF_DAY — arrives 09:45–10:30 (≥30min late).
+        check_in = atUtc(dateStr, 9, 45 + (seq % 3) * 15); // 09:45 / 10:00 / 10:15
+        // half-days leave early; a couple have no check-out ("-").
+        if (seq % 2 === 0) {
+          check_out = atUtc(dateStr, 14, seq % 30);
+          total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        }
+        remarks = "Half day";
+      } else if (seq % 5 === 2) {
+        // LATE — arrives 09:10–09:25.
+        check_in = atUtc(dateStr, 9, 10 + (seq % 4) * 5); // 09:10..09:25
+        check_out = atUtc(dateStr, 17, 30 + (seq % 20));
+        total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        remarks = "Late arrival";
+      } else {
+        // PRESENT — on-time, 08:55–09:00.
+        check_in = atUtc(dateStr, seq % 2 === 0 ? 8 : 9, seq % 2 === 0 ? 55 + (seq % 5) : seq % 1);
+        // leave check_out null on a few present days to exercise the "-" case.
+        if (seq % 7 !== 3) {
+          check_out = atUtc(dateStr, 17, (seq % 60));
+          total_hours = Math.round(((check_out - check_in) / 3_600_000) * 100) / 100;
+        }
+      }
+
+      // Status derived by the shared helper so seed == app write-path.
+      const status = deriveAttendanceStatus(check_in, shiftStartMin);
+      monthBuckets[status] += 1;
+
+      const existing = await prisma.attendance.findFirst({
+        where: { employeeId: emp.id, date: dateAtMidnight },
+      });
+      if (existing) continue;
+      await prisma.attendance.create({
+        data: {
+          employeeId: emp.id,
+          date: dateAtMidnight,
+          check_in,
+          check_out,
+          total_hours,
+          status,
+          work_mode: status === "ABSENT" ? null : work_mode,
+          remarks,
+        },
+      });
+      monthAttCreated += 1;
+    }
+  }
+  console.log(
+    `July-2026 attendance: +${monthAttCreated} rows across ${workDays.length} work days ` +
+      `(PRESENT ${monthBuckets.PRESENT}, LATE ${monthBuckets.LATE}, HALF_DAY ${monthBuckets.HALF_DAY}, ABSENT ${monthBuckets.ABSENT}).`
+  );
+
+  // 11c. Attendance anomalies (~6) — "Inform Abnormality" requests feeding the
+  // Timesheet pending-approvals list + Leave & Anomaly screen. Mostly PENDING,
+  // a couple decided. Idempotent: keyed on (employeeId, type, date). No tenantId
+  // passed — ambient RLS default stamps it.
+  const ANOMALIES = [
+    { empIdx: 0, type: "LATE_CHECKIN", date: "2026-07-03", from: [9, 30], to: [9, 45], status: "PENDING", reason: "Traffic on the ring road; requesting late-mark waiver." },
+    { empIdx: 1, type: "MISSING_CHECKOUT", date: "2026-07-07", from: [17, 30], to: [18, 30], status: "PENDING", reason: "Forgot to punch out after client call." },
+    { empIdx: 2, type: "ABSENT", date: "2026-07-09", from: null, to: null, status: "PENDING", reason: "Was on approved field visit; attendance not recorded." },
+    { empIdx: 3, type: "OTHER", date: "2026-07-11", from: [9, 0], to: [13, 0], status: "PENDING", reason: "Worked from partner office; device did not capture punch.", detail: "Off-site at partner premises" },
+    { empIdx: 4, type: "LATE_CHECKIN", date: "2026-07-02", from: [9, 20], to: [9, 30], status: "APPROVED", reason: "Medical appointment in the morning.", decided: true },
+    { empIdx: 5, type: "MISSING_CHECKOUT", date: "2026-07-04", from: [18, 0], to: [19, 0], status: "REJECTED", reason: "No prior approval for overtime stay.", decided: true },
+  ];
+  const anomToTime = (dateStr, hm) => (hm ? atUtc(dateStr, hm[0], hm[1]) : null);
+  const anomBuckets = { PENDING: 0, APPROVED: 0, REJECTED: 0 };
+  let anomCreated = 0;
+  for (const a of ANOMALIES) {
+    const emp = monthEmployees[a.empIdx % monthEmployees.length];
+    const dateAtMidnight = d(a.date);
+    anomBuckets[a.status] += 1;
+    const existing = await prisma.attendanceAnomaly.findFirst({
+      where: { employeeId: emp.id, type: a.type, date: dateAtMidnight },
+    });
+    if (existing) continue;
+    await prisma.attendanceAnomaly.create({
+      data: {
+        employeeId: emp.id,
+        type: a.type,
+        reason: a.reason,
+        detail: a.detail ?? null,
+        date: dateAtMidnight,
+        fromTime: anomToTime(a.date, a.from),
+        toTime: anomToTime(a.date, a.to),
+        status: a.status,
+        reviewerId: a.decided ? hrManager.id : null,
+        reviewNote: a.decided ? (a.status === "APPROVED" ? "Approved — supporting reason accepted." : "Rejected — no prior approval.") : null,
+        decidedAt: a.decided ? atUtc(a.date, 12, 0) : null,
+      },
+    });
+    anomCreated += 1;
+  }
+  console.log(
+    `Attendance anomalies: +${anomCreated} (PENDING ${anomBuckets.PENDING}, APPROVED ${anomBuckets.APPROVED}, REJECTED ${anomBuckets.REJECTED}).`
+  );
+
+  // 11d. Overtime requests (~4, all PENDING) — feeds the pending-approvals feed
+  // with overtime items. July 2026, hours 1–4. Idempotent: keyed on
+  // (employeeId, date, reason). No tenantId passed — ambient RLS default stamps.
+  const OVERTIME = [
+    { empIdx: 0, date: "2026-07-08", hours: 2, from: "18:00", to: "20:00", reason: "Production release window support." },
+    { empIdx: 2, date: "2026-07-10", hours: 3, from: "18:30", to: "21:30", reason: "Sprint deadline — feature completion." },
+    { empIdx: 5, date: "2026-07-15", hours: 1.5, from: "17:30", to: "19:00", reason: "Month-end reconciliation." },
+    { empIdx: 7, date: "2026-07-18", hours: 4, from: "17:00", to: "21:00", reason: "Client demo preparation." },
+  ];
+  let otCreated = 0;
+  for (const o of OVERTIME) {
+    const emp = monthEmployees[o.empIdx % monthEmployees.length];
+    const dateAtMidnight = d(o.date);
+    const existing = await prisma.overtimeRequest.findFirst({
+      where: { employeeId: emp.id, date: dateAtMidnight, reason: o.reason },
+    });
+    if (existing) continue;
+    await prisma.overtimeRequest.create({
+      data: {
+        employeeId: emp.id,
+        date: dateAtMidnight,
+        hours: o.hours,
+        rate: 1.5,
+        fromTime: o.from,
+        toTime: o.to,
+        reason: o.reason,
+        status: "PENDING",
+      },
+    });
+    otCreated += 1;
+  }
+  console.log(`Overtime requests: +${otCreated} (all PENDING).`);
+
+  // ── 11e. Overtime & Shift Management screen data ──────────────────────────
+  // Feeds the read tools: shift templates (+assigned counts), this-week shift
+  // roster, shift-swap requests, and a 6-month OT spread across all four
+  // statuses (with 1–2 employees exceeding 75% of the 24h monthly limit so the
+  // at-risk / approaching-limit surfaces have rows). All idempotent (skip-if-
+  // present on a stable natural key). No tenantId passed — the ambient RLS
+  // create-net default stamps it. Reuses `monthEmployees` (10 employees).
+
+  // 11e-i. Shift templates (Morning / Evening / Night). Keyed on name.
+  const SHIFT_TEMPLATES = [
+    { name: "Morning", fromTime: "09:00", toTime: "17:00", shiftType: "morning", workMode: "onsite" },
+    { name: "Evening", fromTime: "14:00", toTime: "22:00", shiftType: "evening", workMode: "hybrid" },
+    { name: "Night", fromTime: "22:00", toTime: "06:00", shiftType: "night", workMode: "onsite" },
+  ];
+  const templateByName = {};
+  let tmplCreated = 0;
+  for (const t of SHIFT_TEMPLATES) {
+    const existing = await prisma.shiftTemplate.findFirst({ where: { name: t.name } });
+    templateByName[t.name] = existing
+      ? existing
+      : await prisma.shiftTemplate.create({ data: t });
+    if (!existing) tmplCreated += 1;
+  }
+  console.log(`Shift templates: +${tmplCreated} (target ${SHIFT_TEMPLATES.length}).`);
+
+  // 11e-ii. Shift assignments for the current week (Mon 2026-07-20 .. Sun
+  // 2026-07-26) across the first ~8 employees. Mix of shiftTypes; a couple of
+  // off days; some rows carry overtimeHours. Keyed on (employeeId, exact date).
+  const WEEK_MON = "2026-07-20"; // Monday of the current week (July 2026)
+  const weekDayIso = (offset) => {
+    const base = new Date(`${WEEK_MON}T00:00:00.000Z`);
+    base.setUTCDate(base.getUTCDate() + offset);
+    return isoDate(base);
+  };
+  // day offsets 0..6 (Mon..Sun); each entry: shiftType or "off", + optional OT.
+  const ROSTER_PLAN = [
+    // empIdx 0 — morning week, Sat/Sun off, some OT
+    { empIdx: 0, tmpl: "Morning", days: ["morning","morning","morning","morning","morning","off","off"], ot: [0,0,1.5,0,2,0,0] },
+    { empIdx: 1, tmpl: "Morning", days: ["morning","morning","off","morning","morning","off","off"], ot: [0,0,0,0,1,0,0] },
+    { empIdx: 2, tmpl: "Evening", days: ["evening","evening","evening","evening","evening","off","off"], ot: [0,1,0,0,0,0,0] },
+    { empIdx: 3, tmpl: "Evening", days: ["evening","evening","evening","off","evening","off","off"], ot: [0,0,0,0,0,0,0] },
+    { empIdx: 4, tmpl: "Night", days: ["night","night","night","night","off","off","off"], ot: [0,0,2,0,0,0,0] },
+    { empIdx: 5, tmpl: "Morning", days: ["morning","morning","morning","morning","morning","off","off"], ot: [0,0,0,0,0,0,0] },
+    { empIdx: 6, tmpl: "Evening", days: ["evening","off","evening","evening","evening","off","off"], ot: [0,0,0,1.5,0,0,0] },
+    { empIdx: 7, tmpl: "Night", days: ["night","night","off","night","night","off","off"], ot: [0,0,0,0,0,0,0] },
+  ];
+  const TEMPLATE_TIMES = {
+    morning: { from: "09:00", to: "17:00" },
+    evening: { from: "14:00", to: "22:00" },
+    night: { from: "22:00", to: "06:00" },
+  };
+  let saCreated = 0;
+  for (const plan of ROSTER_PLAN) {
+    const emp = monthEmployees[plan.empIdx % monthEmployees.length];
+    const tmpl = templateByName[plan.tmpl];
+    for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+      const kind = plan.days[dayOffset];
+      const dateAtMidnight = d(weekDayIso(dayOffset));
+      const existing = await prisma.shiftAssignment.findFirst({
+        where: { employeeId: emp.id, date: dateAtMidnight },
+      });
+      if (existing) continue;
+      const isOff = kind === "off";
+      const times = isOff ? null : TEMPLATE_TIMES[kind];
+      await prisma.shiftAssignment.create({
+        data: {
+          employeeId: emp.id,
+          date: dateAtMidnight,
+          shiftType: isOff ? "morning" : kind,
+          workMode: "onsite",
+          status: isOff ? "off" : "on_shift",
+          fromTime: times?.from ?? null,
+          toTime: times?.to ?? null,
+          overtimeHours: plan.ot[dayOffset] || 0,
+          templateId: isOff ? null : tmpl?.id ?? null,
+        },
+      });
+      saCreated += 1;
+    }
+  }
+  console.log(`Shift assignments (this week): +${saCreated}.`);
+
+  // 11e-iii. Shift-swap requests (a few PENDING). Keyed on (requesterId,
+  // targetId, fromDate).
+  const SWAPS = [
+    { reqIdx: 0, tgtIdx: 5, fromDate: "2026-07-22", toDate: "2026-07-22", shiftType: "morning", reason: "Doctor's appointment — need the morning off." },
+    { reqIdx: 2, tgtIdx: 3, fromDate: "2026-07-23", toDate: "2026-07-24", shiftType: "evening", reason: "Family event; swapping two evening shifts." },
+    { reqIdx: 4, tgtIdx: 7, fromDate: "2026-07-25", toDate: "2026-07-25", shiftType: "night", reason: "Prefer a day shift this week." },
+  ];
+  let swapCreated = 0;
+  for (const s of SWAPS) {
+    const requester = monthEmployees[s.reqIdx % monthEmployees.length];
+    const target = monthEmployees[s.tgtIdx % monthEmployees.length];
+    const fromDate = d(s.fromDate);
+    const existing = await prisma.shiftSwapRequest.findFirst({
+      where: { requesterId: requester.id, targetId: target.id, fromDate },
+    });
+    if (existing) continue;
+    await prisma.shiftSwapRequest.create({
+      data: {
+        requesterId: requester.id,
+        targetId: target.id,
+        fromDate,
+        toDate: d(s.toDate),
+        shiftType: s.shiftType,
+        reason: s.reason,
+        status: "PENDING",
+      },
+    });
+    swapCreated += 1;
+  }
+  console.log(`Shift-swap requests: +${swapCreated} (all PENDING).`);
+
+  // 11e-iv. 6-month OT spread (Feb 2026 → Jul 2026) across all four statuses so
+  // the trend chart has data. Two employees (empIdx 0 & 2) get large APPROVED OT
+  // THIS month (July) so they exceed 75% of the 24h limit (18h) → at-risk /
+  // approaching-limit. Keyed on (employeeId, date, reason).
+  const OT_SPREAD = [
+    // Older months (trend history) — mixed statuses.
+    { empIdx: 1, date: "2026-02-11", hours: 3, status: "APPROVED", reason: "OT spread: Feb release support." },
+    { empIdx: 3, date: "2026-02-18", hours: 2, status: "REJECTED", reason: "OT spread: Feb overrun (rejected)." },
+    { empIdx: 2, date: "2026-03-06", hours: 4, status: "APPROVED", reason: "OT spread: Mar migration window." },
+    { empIdx: 4, date: "2026-03-20", hours: 2.5, status: "WITHDRAWN", reason: "OT spread: Mar (withdrawn)." },
+    { empIdx: 0, date: "2026-04-09", hours: 5, status: "APPROVED", reason: "OT spread: Apr feature push." },
+    { empIdx: 5, date: "2026-04-22", hours: 1.5, status: "PENDING", reason: "OT spread: Apr pending." },
+    { empIdx: 6, date: "2026-05-07", hours: 3, status: "APPROVED", reason: "OT spread: May audit prep." },
+    { empIdx: 3, date: "2026-05-19", hours: 2, status: "REJECTED", reason: "OT spread: May (rejected)." },
+    { empIdx: 1, date: "2026-06-04", hours: 4, status: "APPROVED", reason: "OT spread: Jun release." },
+    { empIdx: 7, date: "2026-06-16", hours: 2, status: "PENDING", reason: "OT spread: Jun pending." },
+    // Current month (July) — push two employees over 75% of 24h (>=18h approved).
+    { empIdx: 0, date: "2026-07-02", hours: 8, status: "APPROVED", reason: "OT spread: Jul at-risk block A1." },
+    { empIdx: 0, date: "2026-07-09", hours: 7, status: "APPROVED", reason: "OT spread: Jul at-risk block A2." },
+    { empIdx: 0, date: "2026-07-16", hours: 5, status: "APPROVED", reason: "OT spread: Jul at-risk block A3." },
+    { empIdx: 2, date: "2026-07-03", hours: 9, status: "APPROVED", reason: "OT spread: Jul at-risk block B1." },
+    { empIdx: 2, date: "2026-07-11", hours: 10, status: "APPROVED", reason: "OT spread: Jul at-risk block B2." },
+    // A couple more July rows across the other statuses for the current bucket.
+    { empIdx: 4, date: "2026-07-14", hours: 3, status: "REJECTED", reason: "OT spread: Jul (rejected)." },
+    { empIdx: 6, date: "2026-07-17", hours: 2, status: "WITHDRAWN", reason: "OT spread: Jul (withdrawn)." },
+  ];
+  let otSpreadCreated = 0;
+  for (const o of OT_SPREAD) {
+    const emp = monthEmployees[o.empIdx % monthEmployees.length];
+    const dateAtMidnight = d(o.date);
+    const existing = await prisma.overtimeRequest.findFirst({
+      where: { employeeId: emp.id, date: dateAtMidnight, reason: o.reason },
+    });
+    if (existing) continue;
+    await prisma.overtimeRequest.create({
+      data: {
+        employeeId: emp.id,
+        date: dateAtMidnight,
+        hours: o.hours,
+        rate: 1.5,
+        reason: o.reason,
+        status: o.status,
+        decidedAt:
+          o.status === "APPROVED" || o.status === "REJECTED"
+            ? new Date(`${o.date}T12:00:00.000Z`)
+            : null,
+      },
+    });
+    otSpreadCreated += 1;
+  }
+  console.log(`Overtime 6-month spread: +${otSpreadCreated} (mixed statuses; 2 employees at-risk in July).`);
+
+  // 12. Course Catalog + Certifications (LMS) — coherent data so the Course
+  // Catalog, Course View, Transcripts and Certifications screens render real
+  // rows. New-model tenantId is stamped by the RLS extension / column DEFAULT
+  // hr_current_tenant() under the ambient tenant context, so seed creates do NOT
+  // pass tenantId. Parent rows are created first, then children reference the
+  // returned id sequentially (no nested create) so each row's GUC/default
+  // applies cleanly. Idempotent-ish: guarded on the course courseCode.
+  const CERT_BASE = new Date("2026-07-23T00:00:00.000Z");
+  const plusDays = (base, n) => new Date(base.getTime() + n * 86_400_000);
+
+  // Reuse a handful of real employees as authors / instructors / enrollees /
+  // reviewers / certification owners.
+  const lmsEmps = await prisma.employee.findMany({ take: 8 });
+
+  // Training categories (name is not db-unique → getOrCreate find/create).
+  const CATEGORY_NAMES = ["Web Development", "Data & AI", "Compliance"];
+  const catByName = {};
+  for (const name of CATEGORY_NAMES) {
+    catByName[name] = await getOrCreate(
+      "trainingCategory",
+      { name },
+      { name, description: `${name} courses` }
+    );
+  }
+
+  // Full course specs — each with sections/lectures/outcomes/reviews.
+  const COURSES = [
+    {
+      courseCode: "WD-101",
+      title: "Complete Web Development Bootcamp",
+      subtitle: "Go from zero to full-stack developer",
+      category: "Web Development",
+      mode: "ONLINE",
+      durationHours: 40,
+      tags: ["html", "css", "javascript", "react"],
+      relatedTopics: ["JavaScript", "React", "Node.js"],
+      requirements: ["A computer with internet", "No prior experience needed"],
+      description:
+        "A hands-on bootcamp covering HTML, CSS, JavaScript, React and Node.js to build and ship real web applications.",
+      sections: [
+        {
+          title: "Getting Started with the Web",
+          lectures: [
+            { title: "Welcome & Course Overview", dur: 420 },
+            { title: "How the Web Works", dur: 780 },
+            { title: "Setting Up Your Editor", dur: 540 },
+            { title: "Your First HTML Page", dur: 900 },
+          ],
+        },
+        {
+          title: "Styling with CSS",
+          lectures: [
+            { title: "CSS Fundamentals", dur: 660 },
+            { title: "The Box Model", dur: 720 },
+            { title: "Flexbox & Grid", dur: 1080 },
+            { title: "Responsive Design", dur: 960 },
+            { title: "CSS Project: Landing Page", dur: 1200 },
+          ],
+        },
+        {
+          title: "JavaScript & React",
+          lectures: [
+            { title: "JavaScript Basics", dur: 840 },
+            { title: "DOM Manipulation", dur: 720 },
+            { title: "Intro to React", dur: 1020 },
+            { title: "React Hooks", dur: 1140 },
+            { title: "Building a React App", dur: 1200 },
+            { title: "Deploying Your App", dur: 600 },
+          ],
+        },
+      ],
+      outcomes: [
+        { title: "Build responsive websites", description: "Structure and style pages that work on any device." },
+        { title: "Write modern JavaScript", description: "Use ES modules, promises and async/await confidently." },
+        { title: "Create React applications", description: "Compose components and manage state with hooks." },
+        { title: "Deploy to production", description: "Ship a full-stack app to a live URL." },
+      ],
+      reviews: [
+        { rating: 5, comment: "Best bootcamp I've taken — clear and practical." },
+        { rating: 4, comment: "Great pacing, wish there was more on testing." },
+        { rating: 5, comment: "The React section alone was worth it." },
+        { rating: 4, comment: "Solid fundamentals, hands-on projects helped." },
+        { rating: 5, comment: "Highly recommend for beginners." },
+      ],
+    },
+    {
+      courseCode: "DS-201",
+      title: "Data Science & Machine Learning",
+      subtitle: "From data wrangling to predictive models",
+      category: "Data & AI",
+      mode: "HYBRID",
+      durationHours: 60,
+      tags: ["python", "pandas", "machine-learning", "statistics"],
+      relatedTopics: ["Python", "Pandas", "scikit-learn"],
+      requirements: ["Basic Python knowledge", "High-school level math"],
+      description:
+        "Learn to clean and analyze data, visualize insights, and train machine-learning models with Python.",
+      sections: [
+        {
+          title: "Foundations of Data Science",
+          lectures: [
+            { title: "What is Data Science?", dur: 480 },
+            { title: "Python for Data", dur: 900 },
+            { title: "NumPy Essentials", dur: 780 },
+            { title: "Pandas DataFrames", dur: 1020 },
+          ],
+        },
+        {
+          title: "Exploratory Analysis",
+          lectures: [
+            { title: "Data Cleaning", dur: 840 },
+            { title: "Descriptive Statistics", dur: 720 },
+            { title: "Data Visualization", dur: 960 },
+            { title: "Feature Engineering", dur: 1080 },
+          ],
+        },
+        {
+          title: "Machine Learning",
+          lectures: [
+            { title: "Supervised Learning", dur: 1140 },
+            { title: "Regression Models", dur: 1020 },
+            { title: "Classification Models", dur: 1080 },
+            { title: "Model Evaluation", dur: 900 },
+          ],
+        },
+      ],
+      outcomes: [
+        { title: "Wrangle real datasets", description: "Clean, merge and reshape data with Pandas." },
+        { title: "Visualize insights", description: "Communicate findings with clear charts." },
+        { title: "Train ML models", description: "Build and evaluate regression and classification models." },
+        { title: "Avoid common pitfalls", description: "Recognize overfitting and data leakage." },
+      ],
+      reviews: [
+        { rating: 5, comment: "Deep and practical, great real-world datasets." },
+        { rating: 4, comment: "Challenging but rewarding." },
+        { rating: 4, comment: "Loved the ML evaluation module." },
+      ],
+    },
+    {
+      courseCode: "CMP-100",
+      title: "Workplace Safety & Compliance",
+      subtitle: "Stay compliant and keep your team safe",
+      category: "Compliance",
+      mode: "OFFLINE",
+      durationHours: 8,
+      tags: ["safety", "compliance", "policy"],
+      relatedTopics: ["Occupational Safety", "Data Privacy", "Ethics"],
+      requirements: ["No prerequisites"],
+      description:
+        "Mandatory training on workplace safety procedures, data privacy and the company code of conduct.",
+      sections: [
+        {
+          title: "Health & Safety",
+          lectures: [
+            { title: "Emergency Procedures", dur: 600 },
+            { title: "Ergonomics at Work", dur: 480 },
+            { title: "Incident Reporting", dur: 540 },
+            { title: "Fire Safety", dur: 420 },
+          ],
+        },
+        {
+          title: "Data & Conduct",
+          lectures: [
+            { title: "Data Privacy Basics", dur: 660 },
+            { title: "Handling Sensitive Data", dur: 720 },
+            { title: "Code of Conduct", dur: 540 },
+            { title: "Reporting Violations", dur: 480 },
+          ],
+        },
+        {
+          title: "Assessment",
+          lectures: [
+            { title: "Compliance Scenarios", dur: 600 },
+            { title: "Final Knowledge Check", dur: 300 },
+            { title: "Certification Steps", dur: 360 },
+            { title: "Wrap-up & Resources", dur: 300 },
+          ],
+        },
+      ],
+      outcomes: [
+        { title: "Respond to emergencies", description: "Follow correct emergency and evacuation procedures." },
+        { title: "Protect sensitive data", description: "Apply data-privacy rules to daily work." },
+        { title: "Uphold the code of conduct", description: "Recognize and report policy violations." },
+        { title: "Pass the compliance check", description: "Meet the mandatory annual requirement." },
+      ],
+      reviews: [
+        { rating: 4, comment: "Clear and to the point." },
+        { rating: 3, comment: "Necessary, if a bit dry." },
+        { rating: 5, comment: "The scenarios made it stick." },
+        { rating: 4, comment: "Good refresher on data privacy." },
+      ],
+    },
+  ];
+
+  let lmsCourses = 0;
+  let lmsSections = 0;
+  let lmsLectures = 0;
+  let lmsOutcomes = 0;
+  let lmsReviews = 0;
+  const courseByCode = {};
+
+  for (const c of COURSES) {
+    // Guard: skip the whole block if this course already exists.
+    const already = await prisma.trainingCourse.findFirst({ where: { courseCode: c.courseCode } });
+    if (already) {
+      courseByCode[c.courseCode] = already;
+      continue;
+    }
+
+    const author = lmsEmps[lmsCourses % lmsEmps.length];
+    const instructor = lmsEmps[(lmsCourses + 1) % lmsEmps.length];
+    const course = await prisma.trainingCourse.create({
+      data: {
+        title: c.title,
+        subtitle: c.subtitle,
+        description: c.description,
+        courseCode: c.courseCode,
+        language: "English",
+        mode: c.mode,
+        durationHours: c.durationHours,
+        tags: c.tags,
+        relatedTopics: c.relatedTopics,
+        requirements: c.requirements,
+        introVideoMediaId: 1001 + lmsCourses,
+        createdById: author.id,
+        instructorId: instructor.id,
+        status: "ACTIVE",
+        categoryId: catByName[c.category].id,
+      },
+    });
+    courseByCode[c.courseCode] = course;
+    lmsCourses += 1;
+
+    // Sections + their lectures (sequential; first lecture of first section is preview).
+    let sIdx = 0;
+    for (const s of c.sections) {
+      const section = await prisma.courseSection.create({
+        data: { courseId: course.id, title: s.title, sortOrder: sIdx },
+      });
+      lmsSections += 1;
+      let lIdx = 0;
+      for (const lec of s.lectures) {
+        await prisma.courseLecture.create({
+          data: {
+            sectionId: section.id,
+            title: lec.title,
+            videoMediaId: 2001 + lmsLectures,
+            durationSeconds: lec.dur,
+            sortOrder: lIdx,
+            isPreview: sIdx === 0 && lIdx === 0,
+          },
+        });
+        lmsLectures += 1;
+        lIdx += 1;
+      }
+      sIdx += 1;
+    }
+
+    // Outcomes.
+    let oIdx = 0;
+    for (const o of c.outcomes) {
+      await prisma.courseOutcome.create({
+        data: { courseId: course.id, title: o.title, description: o.description, sortOrder: oIdx },
+      });
+      lmsOutcomes += 1;
+      oIdx += 1;
+    }
+
+    // Reviews from different employees.
+    let rIdx = 0;
+    for (const rv of c.reviews) {
+      const reviewer = lmsEmps[(lmsCourses + rIdx) % lmsEmps.length];
+      await prisma.courseReview.create({
+        data: { courseId: course.id, employeeId: reviewer.id, rating: rv.rating, comment: rv.comment },
+      });
+      lmsReviews += 1;
+      rIdx += 1;
+    }
+
+    // Denormalize rating avg/count from the reviews just created.
+    const ratings = c.reviews.map((r) => r.rating);
+    const ratingCount = ratings.length;
+    const ratingAvg = Math.round((ratings.reduce((a, b) => a + b, 0) / ratingCount) * 100) / 100;
+    await prisma.trainingCourse.update({
+      where: { id: course.id },
+      data: { ratingAvg, ratingCount },
+    });
+  }
+  console.log(
+    `LMS courses: +${lmsCourses} (sections ${lmsSections}, lectures ${lmsLectures}, outcomes ${lmsOutcomes}, reviews ${lmsReviews}).`
+  );
+
+  // Enrollments — mix of statuses so the transcript screen has data. Keyed on
+  // (courseId, employeeId) via findFirst → idempotent.
+  const ENROLLMENTS = [
+    { code: "WD-101", empIdx: 0, status: "COMPLETED", progress: 100, completed: 30, score: 92 },
+    { code: "WD-101", empIdx: 1, status: "IN_PROGRESS", progress: 55 },
+    { code: "WD-101", empIdx: 2, status: "ENROLLED", progress: 0 },
+    { code: "DS-201", empIdx: 3, status: "COMPLETED", progress: 100, completed: 45, score: 88 },
+    { code: "DS-201", empIdx: 4, status: "IN_PROGRESS", progress: 40 },
+    { code: "CMP-100", empIdx: 0, status: "COMPLETED", progress: 100, completed: 15, score: 95 },
+    { code: "CMP-100", empIdx: 5, status: "COMPLETED", progress: 100, completed: 20, score: 78 },
+    { code: "CMP-100", empIdx: 6, status: "ENROLLED", progress: 0 },
+  ];
+  let lmsEnrollments = 0;
+  for (const en of ENROLLMENTS) {
+    const course = courseByCode[en.code];
+    const emp = lmsEmps[en.empIdx % lmsEmps.length];
+    const existing = await prisma.trainingEnrollment.findFirst({
+      where: { courseId: course.id, employeeId: emp.id },
+    });
+    if (existing) continue;
+    await prisma.trainingEnrollment.create({
+      data: {
+        courseId: course.id,
+        employeeId: emp.id,
+        status: en.status,
+        progress: en.progress,
+        completionDate: en.status === "COMPLETED" ? plusDays(CERT_BASE, -(en.completed || 30)) : null,
+        score: en.status === "COMPLETED" ? en.score ?? null : null,
+      },
+    });
+    lmsEnrollments += 1;
+  }
+  console.log(`LMS enrollments: +${lmsEnrollments}.`);
+
+  // Certifications — spread across ALL KPI buckets. Keyed on (employeeId, name)
+  // via findFirst → idempotent. Owners cycle through the reused employees.
+  const CERTIFICATIONS = [
+    // ACTIVE (3–4): expiry well in the future or null.
+    { empIdx: 0, name: "AWS Certified Solutions Architect", category: "Technical", status: "ACTIVE", issuedBy: "Amazon Web Services", issued: -400, expiry: 330, course: "WD-101" },
+    { empIdx: 1, name: "Certified Kubernetes Administrator", category: "Technical", status: "ACTIVE", issuedBy: "CNCF", issued: -200, expiry: 500 },
+    { empIdx: 2, name: "Professional Scrum Master", category: "Technical", status: "ACTIVE", issuedBy: "Scrum.org", issued: -120, expiry: null },
+    { empIdx: 3, name: "ISO 9001 Auditor", category: "Compliance", status: "ACTIVE", issuedBy: "ISO", issued: -300, expiry: 400 },
+    // RENEWAL / expiring soon (1–2): expiryDate within ~45 days of base.
+    { empIdx: 4, name: "First Aid Certification", category: "Safety", status: "RENEWAL", issuedBy: "Red Crescent", issued: -700, expiry: 30, course: "CMP-100" },
+    { empIdx: 5, name: "OSHA Safety Certification", category: "Safety", status: "ACTIVE", issuedBy: "OSHA", issued: -350, expiry: 20 },
+    // INACTIVE (1).
+    { empIdx: 6, name: "Legacy PCI-DSS Assessor", category: "Compliance", status: "INACTIVE", issuedBy: "PCI SSC", issued: -900, expiry: -60 },
+    // EXPIRED (1–2): expiryDate in the past.
+    { empIdx: 7, name: "Google Analytics Certification", category: "Technical", status: "EXPIRED", issuedBy: "Google", issued: -800, expiry: -120 },
+    { empIdx: 0, name: "GDPR Data Protection Certification", category: "Compliance", status: "EXPIRED", issuedBy: "IAPP", issued: -750, expiry: -30 },
+  ];
+  let lmsCerts = 0;
+  const certBuckets = { ACTIVE: 0, RENEWAL: 0, INACTIVE: 0, EXPIRED: 0 };
+  for (const ct of CERTIFICATIONS) {
+    const emp = lmsEmps[ct.empIdx % lmsEmps.length];
+    const existing = await prisma.certification.findFirst({
+      where: { employeeId: emp.id, name: ct.name },
+    });
+    if (existing) {
+      certBuckets[ct.status] += 1;
+      continue;
+    }
+    await prisma.certification.create({
+      data: {
+        employeeId: emp.id,
+        courseId: ct.course ? courseByCode[ct.course]?.id ?? null : null,
+        name: ct.name,
+        category: ct.category,
+        status: ct.status,
+        issuedBy: ct.issuedBy,
+        issuedAt: plusDays(CERT_BASE, ct.issued),
+        expiryDate: ct.expiry === null ? null : plusDays(CERT_BASE, ct.expiry),
+      },
+    });
+    lmsCerts += 1;
+    certBuckets[ct.status] += 1;
+  }
+  console.log(
+    `LMS certifications: +${lmsCerts} (ACTIVE ${certBuckets.ACTIVE}, RENEWAL ${certBuckets.RENEWAL}, INACTIVE ${certBuckets.INACTIVE}, EXPIRED ${certBuckets.EXPIRED}).`
+  );
+
+  // ── 13. Employee documents (EmployeeMedia) with expiry dates ─────────────
+  // Feeds the HR Reports → Document Expiry Alerts screen. expiry_date is a
+  // STRING (ISO). Dates are relative to 2026-07-23 and span ALL KPI buckets:
+  //   2 expired (past), 2 expiring<=30d, 1 expiring<=60d, 1 expiring<=90d,
+  //   2 healthy (>90d). Idempotent: keyed on (employee_id, file_name). No
+  //   tenantId passed — the ambient RLS create-net default stamps it.
+  const DOC_BASE = new Date("2026-07-23T00:00:00.000Z");
+  const isoDay = (n) => plusDays(DOC_BASE, n).toISOString();
+  const EMPLOYEE_DOCS = [
+    // expired (2)
+    { empIdx: 0, title: "Passport", file_name: "Passport.pdf", category: "Identity", expiry: -45 },
+    { empIdx: 1, title: "Work Visa", file_name: "Work Visa.pdf", category: "Legal", expiry: -10 },
+    // expiring within 30d (2)
+    { empIdx: 2, title: "Work Permit", file_name: "Work Permit.pdf", category: "Legal", expiry: 12 },
+    { empIdx: 3, title: "National ID", file_name: "National ID.pdf", category: "Identity", expiry: 28 },
+    // expiring within 60d (1)
+    { empIdx: 4, title: "Employment Contract", file_name: "Contract.pdf", category: "Contract", expiry: 50 },
+    // expiring within 90d (1)
+    { empIdx: 5, title: "Medical Certificate", file_name: "Medical Certificate.pdf", category: "Legal", expiry: 80 },
+    // healthy > 90d (2)
+    { empIdx: 6, title: "Driving License", file_name: "Driving License.pdf", category: "Identity", expiry: 200 },
+    { empIdx: 7, title: "NDA Agreement", file_name: "NDA.pdf", category: "Contract", expiry: 400 },
+  ];
+  let docsCreated = 0;
+  const docBuckets = { expired: 0, expiring30: 0, expiring60: 0, expiring90: 0, healthy: 0 };
+  for (const doc of EMPLOYEE_DOCS) {
+    const emp = lmsEmps[doc.empIdx % lmsEmps.length];
+    if (doc.expiry < 0) docBuckets.expired += 1;
+    else if (doc.expiry <= 30) docBuckets.expiring30 += 1;
+    else if (doc.expiry <= 60) docBuckets.expiring60 += 1;
+    else if (doc.expiry <= 90) docBuckets.expiring90 += 1;
+    else docBuckets.healthy += 1;
+
+    const existing = await prisma.employeeMedia.findFirst({
+      where: { employee_id: emp.id, file_name: doc.file_name },
+    });
+    if (existing) continue;
+    await prisma.employeeMedia.create({
+      data: {
+        title: doc.title,
+        file_name: doc.file_name,
+        category: doc.category,
+        mime_type: "application/pdf",
+        media_id: 900000 + docsCreated,
+        expiry_date: isoDay(doc.expiry),
+        uploaded_at: plusDays(DOC_BASE, -365),
+        employee_id: emp.id,
+        status: "active",
+      },
+    });
+    docsCreated += 1;
+  }
+  console.log(
+    `Employee documents (EmployeeMedia): +${docsCreated} (expired ${docBuckets.expired}, <=30d ${docBuckets.expiring30}, <=60d ${docBuckets.expiring60}, <=90d ${docBuckets.expiring90}, healthy ${docBuckets.healthy}).`
+  );
+
+  // ── Leave & Anomaly screen — screen-shaped leave data ────────────────────────
+  // The Leave & Anomaly Management screen buckets leave by the canonical type
+  // CODES ANNUAL/SICK/CASUAL/MATERNITY (distinct from the legacy AL/SL/CL/UL
+  // policies above). Ensure a policy exists for each of those four codes, then
+  // seed ~10 leave requests submitted THIS month (July 2026): a mix of PENDING
+  // (no type — leavePolicyId null), APPROVED (with a type spread across the four
+  // policies), and REJECTED. Idempotent on (employeeId, startDate, reason).
+  const LR_BASE = new Date("2026-07-01T00:00:00.000Z");
+  const lrDay = (n) => new Date(LR_BASE.getTime() + n * 86_400_000);
+
+  const SCREEN_LEAVE_POLICIES = [
+    { code: "ANNUAL", name: "Annual Leave (Screen)" },
+    { code: "SICK", name: "Sick Leave (Screen)" },
+    { code: "CASUAL", name: "Casual Leave (Screen)" },
+    { code: "MATERNITY", name: "Maternity Leave (Screen)" },
+  ];
+  const screenPolicyByCode = {};
+  for (const p of SCREEN_LEAVE_POLICIES) {
+    screenPolicyByCode[p.code] = await getOrCreate(
+      "leavePolicy",
+      { leaveTypeCode: p.code, tenantId: TENANT },
+      {
+        name: p.name,
+        description: `${p.name} policy`,
+        leaveTypeCode: p.code,
+        accrualRate: 0,
+        accrualPeriod: "NONE",
+        carryForwardAllowed: false,
+        maxCarryForward: 0,
+        active: true,
+        createdById: hrManager.id,
+        tenantId: TENANT,
+      }
+    );
+  }
+
+  // ~10 rows: submittedAt (created_at) in July, dates single-day + ranges, a
+  // mix of statuses. `type` null → PENDING; a code → APPROVED with that policy.
+  const SCREEN_LEAVE_REQUESTS = [
+    { emp: "DEV-004", start: 2, end: 4, status: "PENDING", type: null, reason: "Family trip" },
+    { emp: "DEV-005", start: 7, end: 7, status: "PENDING", type: null, reason: "Personal errand" },
+    { emp: "DEV-011", start: 9, end: 12, status: "PENDING", type: null, reason: "Out of town" },
+    { emp: "DEV-002", start: 1, end: 5, status: "APPROVED", type: "ANNUAL", reason: "Summer vacation" },
+    { emp: "DEV-016", start: 3, end: 3, status: "APPROVED", type: "SICK", reason: "Fever" },
+    { emp: "DEV-020", start: 6, end: 6, status: "APPROVED", type: "CASUAL", reason: "Family function" },
+    { emp: "DEV-012", start: 8, end: 21, status: "APPROVED", type: "MATERNITY", reason: "Maternity leave" },
+    { emp: "DEV-017", start: 10, end: 11, status: "APPROVED", type: "SICK", reason: "Flu recovery" },
+    { emp: "DEV-013", start: 14, end: 16, status: "REJECTED", type: null, reason: "Short-staffed period" },
+    { emp: "DEV-022", start: 18, end: 18, status: "REJECTED", type: null, reason: "Insufficient balance" },
+  ];
+
+  let screenLeaveCreated = 0;
+  const screenLeaveCounts = { PENDING: 0, APPROVED: 0, REJECTED: 0 };
+  for (const lr of SCREEN_LEAVE_REQUESTS) {
+    const emp = empByCode[lr.emp];
+    if (!emp) continue;
+    const startDate = lrDay(lr.start);
+    const endDate = lrDay(lr.end);
+    const existing = await prisma.leaveRequest.findFirst({
+      where: { employeeId: emp.id, startDate, reason: lr.reason, tenantId: TENANT },
+    });
+    if (existing) {
+      screenLeaveCounts[lr.status] += 1;
+      continue;
+    }
+    // totalDays: inclusive whole-day span for the seed (screen still recomputes
+    // Mon–Sat working days on live submits; seed rows just carry a plausible n).
+    const totalDays = Math.round((endDate - startDate) / 86_400_000) + 1;
+    await prisma.leaveRequest.create({
+      data: {
+        employeeId: emp.id,
+        leavePolicyId: lr.type ? screenPolicyByCode[lr.type].id : null,
+        startDate,
+        endDate,
+        totalDays,
+        reason: lr.reason,
+        status: lr.status,
+        created_at: lrDay(lr.start), // submittedAt within July
+        createdById: emp.id,
+      },
+    });
+    screenLeaveCreated += 1;
+    screenLeaveCounts[lr.status] += 1;
+  }
+  console.log(
+    `Leave & Anomaly (screen): policies ANNUAL/SICK/CASUAL/MATERNITY ensured; ` +
+      `+${screenLeaveCreated} leave requests ` +
+      `(PENDING ${screenLeaveCounts.PENDING}, APPROVED ${screenLeaveCounts.APPROVED}, REJECTED ${screenLeaveCounts.REJECTED}).`
+  );
+
+  // ── 14. Payroll Setup config (salary components, tax slabs, approval matrix,
+  //         calendar, rules, grade bands) — the Payroll Setup screen. Idempotent.
+  {
+    // Grade bands (PKR) on existing grades so the test-payslip has a BASIC base.
+    const bands = {
+      G1: [60000, 80000, 100000],
+      G2: [90000, 120000, 150000],
+      G4: [200000, 260000, 320000],
+      G5: [350000, 450000, 600000],
+    };
+    let bandCount = 0;
+    for (const [name, [mn, md, mx]] of Object.entries(bands)) {
+      const g = await prisma.gradeLevel.findFirst({ where: { name } });
+      if (g) {
+        await prisma.gradeLevel.update({
+          where: { id: g.id },
+          data: { minSalary: mn, midSalary: md, maxSalary: mx, bandCurrency: "PKR" },
+        });
+        bandCount++;
+      }
+    }
+
+    // Salary components (BASIC comes from the grade band base; these are on top).
+    const components = [
+      { code: "HRA", name: "House Rent Allowance", type: "EARNING", computation: "FORMULA", formula: "BASIC * 0.4", taxable: true, sortOrder: 1 },
+      { code: "MEDICAL", name: "Medical Allowance", type: "EARNING", computation: "FIXED", value: 5000, taxable: false, sortOrder: 2 },
+      { code: "TRANSPORT", name: "Transport Allowance", type: "EARNING", computation: "FIXED", value: 3000, taxable: false, sortOrder: 3 },
+      { code: "BONUS", name: "Performance Bonus", type: "EARNING", computation: "PERCENTAGE", value: 10, taxable: true, sortOrder: 4 },
+      { code: "PF", name: "Provident Fund", type: "DEDUCTION", computation: "FORMULA", formula: "BASIC * 0.05", taxable: false, sortOrder: 5 },
+      { code: "EOBI", name: "EOBI Contribution", type: "DEDUCTION", computation: "FIXED", value: 370, taxable: false, sortOrder: 6 },
+      { code: "LOAN", name: "Staff Loan Recovery", type: "DEDUCTION", computation: "FIXED", value: 8000, taxable: false, sortOrder: 7 },
+    ];
+    let compCount = 0;
+    for (const c of components) {
+      const exists = await prisma.salaryComponent.findFirst({ where: { code: c.code } });
+      if (!exists) {
+        await prisma.salaryComponent.create({ data: { ...c, active: true, status: "DRAFT" } });
+        compCount++;
+      }
+    }
+
+    // FBR-style monthly tax slabs (baseTax + rate on excess over `from`).
+    const slabs = [
+      { bracketMin: 0, bracketMax: 50000, baseTax: 0, rate: 0 },
+      { bracketMin: 50000, bracketMax: 100000, baseTax: 0, rate: 0.05 },
+      { bracketMin: 100000, bracketMax: 200000, baseTax: 2500, rate: 0.15 },
+      { bracketMin: 200000, bracketMax: null, baseTax: 17500, rate: 0.25 },
+    ];
+    let slabCount = 0;
+    for (const s of slabs) {
+      const exists = await prisma.taxRate.findFirst({ where: { bracketMin: s.bracketMin, countryCode: "PK" } });
+      if (!exists) {
+        await prisma.taxRate.create({
+          data: { ...s, countryCode: "PK", status: "ACTIVE", effectiveFrom: new Date("2026-07-01") },
+        });
+        slabCount++;
+      }
+    }
+
+    // Approval matrix (higher level = higher authority) with approver employees.
+    const emps = await prisma.employee.findMany({ take: 6, orderBy: { id: "asc" } });
+    const matrix = [
+      { level: 1, role: "Team Lead", thresholdRequired: false, approverId: emps[0]?.id },
+      { level: 2, role: "HR Manager", thresholdRequired: true, thresholdAmount: 500000, approverId: emps[1]?.id },
+      { level: 3, role: "Finance Director", thresholdRequired: true, thresholdAmount: 2000000, approverId: emps[2]?.id },
+    ];
+    let matrixCount = 0;
+    for (const m of matrix) {
+      const exists = await prisma.payrollApprovalMatrix.findFirst({ where: { level: m.level } });
+      if (!exists) {
+        await prisma.payrollApprovalMatrix.create({ data: { ...m, status: "ACTIVE" } });
+        matrixCount++;
+      }
+    }
+
+    // Cycle & Calendar (singleton).
+    if (!(await prisma.payrollCalendar.findFirst({}))) {
+      await prisma.payrollCalendar.create({
+        data: {
+          payFrequency: "MONTHLY",
+          periodStartAnchor: "FIRST_OF_MONTH",
+          periodEndAnchor: "LAST_OF_MONTH",
+          attendanceCutoff: new Date("2026-07-25T18:00:00.000Z"),
+          approvalsClose: new Date("2026-07-27T18:00:00.000Z"),
+          payDateAnchor: "LAST_OF_MONTH",
+          payDateWeekendShift: true,
+          status: "DRAFT",
+        },
+      });
+    }
+
+    // Pay rules (singleton, defaults).
+    if (!(await prisma.payrollRuleConfig.findFirst({}))) {
+      await prisma.payrollRuleConfig.create({ data: { status: "DRAFT" } });
+    }
+
+    // Config meta (singleton, unpublished draft).
+    if (!(await prisma.payrollConfigMeta.findFirst({}))) {
+      await prisma.payrollConfigMeta.create({ data: { status: "DRAFT", draftVersion: 1, publishedVersion: 0, hasUnpublished: true } });
+    }
+
+    console.log(
+      `Payroll Setup: grade-bands ${bandCount}, components +${compCount}, tax-slabs +${slabCount}, ` +
+        `approval-levels +${matrixCount}; calendar/rules/meta ensured.`
+    );
+  }
+
+  // ── 15. Payroll RUNTIME (runs + payslips + claims) for the Payroll-This-Month,
+  //         My-Payslip, and Claims screens. Idempotent.
+  {
+    const r2 = (n) => Math.round(n * 100) / 100;
+    // Ensure earning/deduction types (by unique code).
+    const etBasic = await getOrCreate("payrollEarningType", { code: "BASIC" }, { code: "BASIC", name: "Basic Salary", type: "EARNING", isTaxable: true });
+    const etHra = await getOrCreate("payrollEarningType", { code: "HRA" }, { code: "HRA", name: "House Rent Allowance", type: "EARNING", isTaxable: true });
+    const etMed = await getOrCreate("payrollEarningType", { code: "MEDICAL" }, { code: "MEDICAL", name: "Medical Allowance", type: "EARNING", isTaxable: false });
+    const dtTax = await getOrCreate("payrollDeductionType", { code: "TAX" }, { code: "TAX", name: "Income Tax", type: "DEDUCTION", preTax: false });
+    const dtPf = await getOrCreate("payrollDeductionType", { code: "PF" }, { code: "PF", name: "Provident Fund", type: "DEDUCTION", preTax: true });
+
+    const payEmps = await prisma.employee.findMany({ take: 10, orderBy: { id: "asc" } });
+    const statuses = ["DISTRIBUTED", "APPROVED", "DRAFT", "HOLD"];
+    // 6 monthly runs (Feb–Jul 2026). Line items only on the latest (July) run.
+    const months = [1, 2, 3, 4, 5, 6]; // month index (Feb=1 .. Jul=6) → 2026-0(2..7)
+    let runCount = 0;
+    let slipCount = 0;
+    for (const m of months) {
+      const mm = m + 1; // 2..7
+      const periodStart = new Date(Date.UTC(2026, mm - 1, 1));
+      const periodEnd = new Date(Date.UTC(2026, mm - 1, mm === 2 ? 28 : 30));
+      const isLatest = mm === 7;
+      let run = await prisma.payrollRun.findFirst({ where: { periodStart, periodEnd } });
+      if (!run) {
+        run = await prisma.payrollRun.create({
+          data: {
+            periodStart, periodEnd, countryCode: "PK", currencyCode: "PKR",
+            status: isLatest ? "COMPLETED" : "FINALIZED",
+            processedAt: periodEnd, processedBy: payEmps[0]?.id ?? null,
+            employeeCount: payEmps.length,
+          },
+        });
+        runCount++;
+      }
+      let runGross = 0, runDed = 0, runNet = 0;
+      for (let i = 0; i < payEmps.length; i++) {
+        const emp = payEmps[i];
+        const drift = 0.95 + m * 0.01; // slight month-over-month growth
+        const base = r2((80000 + i * 12000) * drift);
+        const hra = r2(base * 0.4);
+        const med = 5000;
+        const gross = r2(base + hra + med);
+        const tax = r2(gross * 0.1);
+        const pf = r2(base * 0.05);
+        const totalDed = r2(tax + pf);
+        const net = r2(gross - totalDed);
+        runGross = r2(runGross + gross); runDed = r2(runDed + totalDed); runNet = r2(runNet + net);
+        const existing = await prisma.payrollPayslip.findFirst({ where: { payrollRunId: run.id, employeeId: emp.id } });
+        if (existing) continue;
+        const status = isLatest ? statuses[i % statuses.length] : "DISTRIBUTED";
+        const slip = await prisma.payrollPayslip.create({
+          data: {
+            payrollRunId: run.id, employeeId: emp.id, grossAmount: gross, totalDeductions: totalDed, netAmount: net,
+            status,
+            distributedAt: status === "DISTRIBUTED" ? periodEnd : null,
+            approvedAt: status === "APPROVED" || status === "DISTRIBUTED" ? periodEnd : null,
+            approvedById: status === "APPROVED" || status === "DISTRIBUTED" ? payEmps[0]?.id ?? null : null,
+          },
+        });
+        slipCount++;
+        if (isLatest) {
+          await prisma.payrollEarning.create({ data: { payslipId: slip.id, earningTypeId: etBasic.id, amount: base, description: "Basic" } });
+          await prisma.payrollEarning.create({ data: { payslipId: slip.id, earningTypeId: etHra.id, amount: hra, description: "HRA" } });
+          await prisma.payrollEarning.create({ data: { payslipId: slip.id, earningTypeId: etMed.id, amount: med, description: "Medical" } });
+          await prisma.payrollDeduction.create({ data: { payslipId: slip.id, deductionTypeId: dtTax.id, amount: tax, description: "Income Tax" } });
+          await prisma.payrollDeduction.create({ data: { payslipId: slip.id, deductionTypeId: dtPf.id, amount: pf, description: "Provident Fund" } });
+        }
+      }
+      await prisma.payrollRun.update({ where: { id: run.id }, data: { totalGross: runGross, totalDeductions: runDed, totalNet: runNet } });
+    }
+
+    // Claims with items + approval chains + varied statuses.
+    const claimSpecs = [
+      { title: "Client dinner — Karachi", category: "Meals", status: "SUBMITTED", items: [{ name: "Dinner", amount: 8500 }, { name: "Cab", amount: 1500 }] },
+      { title: "Conference travel — Lahore", category: "Travel", status: "APPROVED", items: [{ name: "Air ticket", amount: 32000 }, { name: "Hotel 2 nights", amount: 24000 }] },
+      { title: "Laptop accessories", category: "Equipment", status: "REJECTED", items: [{ name: "Monitor", amount: 45000 }] },
+      { title: "Team lunch", category: "Meals", status: "NEEDS_INFO", items: [{ name: "Lunch (8 pax)", amount: 12000 }] },
+      { title: "Home internet reimbursement", category: "Utilities", status: "PAID", items: [{ name: "Internet — July", amount: 6000 }] },
+      { title: "Taxi to airport", category: "Travel", status: "SUBMITTED", items: [{ name: "Airport cab", amount: 3200 }] },
+    ];
+    let claimCount = 0;
+    for (let i = 0; i < claimSpecs.length; i++) {
+      const spec = claimSpecs[i];
+      const emp = payEmps[i % payEmps.length];
+      const exists = await prisma.reimbursementClaim.findFirst({ where: { title: spec.title, employeeId: emp.id } });
+      if (exists) continue;
+      const amount = r2(spec.items.reduce((s, it) => s + it.amount, 0));
+      const claim = await prisma.reimbursementClaim.create({
+        data: {
+          employeeId: emp.id, title: spec.title, category: spec.category, amount, currency: "PKR",
+          status: spec.status, submittedAt: new Date("2026-07-10"),
+          approvedById: ["APPROVED", "PAID"].includes(spec.status) ? payEmps[0]?.id ?? null : null,
+          approvedAt: ["APPROVED", "PAID"].includes(spec.status) ? new Date("2026-07-12") : null,
+          paidAt: spec.status === "PAID" ? new Date("2026-07-15") : null,
+          rejectedReason: spec.status === "REJECTED" ? "Outside policy limit" : null,
+        },
+      });
+      for (const it of spec.items) {
+        await prisma.claimItem.create({ data: { claimId: claim.id, name: it.name, amount: it.amount } });
+      }
+      // 2-step approval chain (Manager → Finance).
+      const chainDecided = ["APPROVED", "PAID"].includes(spec.status) ? "APPROVED" : spec.status === "REJECTED" ? "REJECTED" : "PENDING";
+      await prisma.claimApproval.create({ data: { claimId: claim.id, level: 1, role: "Manager", approverId: payEmps[0]?.id ?? null, status: chainDecided === "PENDING" ? "PENDING" : "APPROVED", decidedAt: chainDecided === "PENDING" ? null : new Date("2026-07-11") } });
+      await prisma.claimApproval.create({ data: { claimId: claim.id, level: 2, role: "Finance", approverId: payEmps[1]?.id ?? null, status: chainDecided, decidedAt: chainDecided === "PENDING" ? null : new Date("2026-07-12") } });
+      if (spec.status === "NEEDS_INFO") {
+        await prisma.claimInformation.create({ data: { claimId: claim.id, requestedById: payEmps[0]?.id ?? null, question: "Please attach the itemized receipt.", status: "PENDING" } });
+      }
+      claimCount++;
+    }
+
+    console.log(`Payroll runtime: runs +${runCount}, payslips +${slipCount}, claims +${claimCount}.`);
+  }
+
+  // ── 16. Onboarding Portal (new-hire self-service screen) ────────────────────
+  {
+    const emps = await prisma.employee.findMany({
+      where: { tenant_id: TENANT },
+      take: 6,
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    if (emps.length >= 4) {
+      const [nh, mgr, buddy, resp] = emps;
+      // A recent join date so the directory new-hire window (90d) also tags them.
+      const joinRecent = new Date(NOW.getTime() - 12 * 86_400_000);
+      await prisma.employee.update({ where: { id: nh.id }, data: { managerId: mgr.id, joining_date: joinRecent } });
+
+      const checklist = await upsertBy(
+        "onboardingChecklist",
+        { employeeId: nh.id },
+        { employeeId: nh.id, title: "Employee Onboarding", startDate: joinRecent, status: "IN_PROGRESS", tenantId: TENANT },
+        { status: "IN_PROGRESS" }
+      );
+
+      await upsertBy(
+        "onboardingBuddy",
+        { checklistId: checklist.id },
+        { checklistId: checklist.id, buddyId: buddy.id, tenantId: TENANT },
+        { buddyId: buddy.id }
+      );
+
+      // Tasks span the FE categories; responsible = a real employee (resp/mgr).
+      const taskSpecs = [
+        { title: "Provision laptop & SSO access", category: "IT_ACCESS_SETUP", due: "2026-07-05", who: resp.id, done: true },
+        { title: "Assign desk & access card", category: "WORKSPACE_EQUIPMENT", due: "2026-07-06", who: resp.id, done: false },
+        { title: "Complete orientation session", category: "ORIENTATION_TRAINING", due: "2026-07-07", who: mgr.id, done: false },
+        { title: "Submit signed offer & tax docs", category: "HR_DOCUMENTATION", due: "2026-07-04", who: resp.id, done: true },
+        { title: "Meet the team", category: "TEAM_INTRODUCTION", due: "2026-07-08", who: mgr.id, done: false },
+        { title: "Acknowledge code of conduct", category: "COMPLIANCE_POLICY", due: "2026-07-09", who: mgr.id, done: false },
+      ];
+      let onbTasks = 0;
+      for (const t of taskSpecs) {
+        const exists = await prisma.onboardingTask.findFirst({ where: { checklistId: checklist.id, title: t.title } });
+        if (exists) continue;
+        await prisma.onboardingTask.create({
+          data: {
+            checklistId: checklist.id,
+            title: t.title,
+            category: t.category,
+            assigneeId: t.who,
+            dueDate: d(t.due),
+            completed: t.done,
+            completedAt: t.done ? d(t.due) : null,
+            tenantId: TENANT,
+          },
+        });
+        onbTasks++;
+      }
+
+      // One submitted feedback (radio answers matching the canonical options).
+      const fbExists = await prisma.onboardingFeedback.findFirst({ where: { checklistId: checklist.id } });
+      if (!fbExists) {
+        await prisma.onboardingFeedback.create({
+          data: {
+            checklistId: checklist.id,
+            employeeId: nh.id,
+            tenantId: TENANT,
+            comments: "Great start — the team has been very welcoming.",
+            responses: [
+              { questionId: "role_clarity", question: "How clear are your role and responsibilities?", answer: "Clear" },
+              { questionId: "team_support", question: "How supported do you feel by your team?", answer: "Very supported" },
+              { questionId: "overall_experience", question: "Overall, how would you rate your onboarding experience?", answer: "Good" },
+            ],
+          },
+        });
+      }
+      console.log(`Onboarding portal: checklist ${checklist.id}, tasks +${onbTasks}, buddy + feedback seeded.`);
+    }
+  }
+
+  console.log("HR dev seed complete.");
+}
+
+mcpCtx.run({ user: { tenantId: TENANT }, permissions: {} }, () => main())
+  .then(async () => {
+    await prisma.$disconnect();
+  })
+  .catch(async (err) => {
+    console.error("HR dev seed failed:", err);
+    await prisma.$disconnect();
+    process.exit(1);
+  });

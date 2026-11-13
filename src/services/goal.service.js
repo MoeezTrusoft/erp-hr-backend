@@ -1,31 +1,30 @@
+import { legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+
+// C.2 — verified tenant (T-P2.1) threaded in as a trailing `tenantId`; folded
+// into goal reads and stamped on creates, fail-closed when present.
 
 // ✅ Create a new goal
-export const createGoalService = async (data, createdBy) => {
+export const createGoalService = async (data, createdBy, tenantId) => {
   const { employeeId, title, description, category, start_date, end_date, target_value } = data;
 
   if (!employeeId || !title) throw new Error("Employee ID and Title are required");
 
   const create = await prisma.goal.create({
-    data: {
+    data: scopedData(tenantId, {
       employeeId: Number(employeeId),
       title,
       description,
       category,
       start_date: new Date(start_date),
       end_date: new Date(end_date),
-      target_value: target_value ? Number(target_value) : null,
+      target_value: target_value == null ? null : Number(target_value),
       status: "PENDING",
-      employeeId: number(createdBy),
-    },
-     employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
+    }),
   });
 
  await logAction({
@@ -34,13 +33,14 @@ export const createGoalService = async (data, createdBy) => {
     module: "Goal",
     result: "SUCCESS",
     notes: `Goal "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return create
 };
 
 // ✅ Get goals (all or by employee)
-export const getGoalsService = async (employeeId) => {
-  const where = employeeId ? { employeeId: Number(employeeId) } : {};
+export const getGoalsService = async (employeeId, tenantId) => {
+  const where = scopedWhere(tenantId, employeeId ? { employeeId: Number(employeeId) } : {});
   return prisma.goal.findMany({
     where,
     include: {
@@ -53,41 +53,42 @@ export const getGoalsService = async (employeeId) => {
 };
 
 // ✅ Update goal details or progress
-export const updateGoalService = async (id, data,updatedBy) => {
+export const updateGoalService = async (id, data,updatedBy,tenantId) => {
   const { title, description, progress, status } = data;
 
-  // Find existing goal
-  const existing = await prisma.goal.findUnique({ where: { id: Number(id) } });
+  // API-2 — optimistic-concurrency guard (opt-in via expectedVersion). Absent ⇒ no reject.
+  const expectedVersion = normalizeExpectedVersion(data?.expectedVersion);
+
+  // Find existing goal (tenant-scoped pre-read; cross-tenant id → not-found)
+  const existing = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!existing) throw new Error("Goal not found");
 
-  //const targetValue = existing.target_value ?? 0;
-   let newCurrentValue = existing.current_value - progress;
+  if (progress !== undefined && (!Number.isFinite(progress) || progress < 0 || progress > 100)) throw Object.assign(new Error('Progress must be from 0 to 100'), {status:422});
+  if (status === 'APPROVED' || status === 'REJECTED') throw Object.assign(new Error('Use the goal approval workflow'), {status:409});
+  const newCurrentValue = existing.current_value;
 
-   if (newCurrentValue < progress){
-    throw new Error("Progress can not be greater than current progress value");
-    
-   }
-
-
-  // Update goal
-  const update = await prisma.goal.update({
-    where: { id: Number(id) },
+  // Update goal — API-2 atomic compare-and-set + version bump, tenant-scoped.
+  const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+  const { count } = await prisma.goal.updateMany({
+    where: scopedWhere(tenantId, { id: Number(id), ...versionWhere }),
     data: {
       title: title ?? existing.title,
       description: description ?? existing.description,
       progress: progress ?? existing.progress,
       current_value: newCurrentValue,
       status: status ?? existing.status,
-      updatedById: Number(updatedBy)
+
+      version: { increment: 1 },
     },
-     updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
   });
+  if (count === 0 && expectedVersion != null) {
+    const fresh = await prisma.goal.findFirst({
+      where: scopedWhere(tenantId, { id: Number(id) }),
+      select: { version: true },
+    });
+    throw preconditionFailedError(fresh?.version);
+  }
+  const update = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
 
    await logAction({
     employeeId: Number(updatedBy),
@@ -95,93 +96,52 @@ export const updateGoalService = async (id, data,updatedBy) => {
     module: "Goal",
     result: "SUCCESS",
     notes: `Goal "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update
 };
 
 // ✅ Approve or reject goal
-export const approveGoalService = async (id, status, approvedBy) => {
-  if (!["APPROVED", "REJECTED"].includes(status))
-    throw new Error("Invalid status. Use APPROVED or REJECTED.");
-const existing = await prisma.goal.findUnique({where:{id: Number(id)}})
-if (!existing) throw new Error("Goal Not found");
-
-
-  const approve =  await prisma.goal.update({
-    where: { id: Number(id) },
-    data: {
-      status,
-      approvedById: Number(approvedBy),
-    },
-     approvedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-  });
-
- await logAction({
-    employeeId: Number(approvedBy),
-    type: "Approved Goal", // 👈 changed from CREATE to UPDATE
-    module: "Goal",
-    result: "SUCCESS",
-    notes: `Goal "${id}" Approved successfully`,
-  });
-
-  return approve
+export const approveGoalService = async (id, status, approvedBy, tenantId) => {
+  return legacyDecision('GOAL',id);
 };
 
 // ✅ Add a progress update
-export const addGoalProgressService = async (data,createdBy) => {
+export const addGoalProgressService = async (data,createdBy,tenantId) => {
   const { goalId, comment, progress, } = data;
 
-  const goal = await prisma.goal.findUnique({ where: { id: Number(goalId) } });
-  if (!goal) throw new Error("Goal not found");
-
-  const newProgress = await prisma.goalProgress.create({
-    data: {
-      goalId: Number(goalId),
-      comment,
-      progress: Number(progress),
-      created_by: Number(createdBy),
-    },
-     createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-  });
-
-  // Update goal's overall progress
-  await prisma.goal.update({
-    where: { id: Number(goalId) },
-    data: { progress: Number(progress), updated_at: new Date() },
-  });
+  if (!Number.isFinite(Number(progress)) || Number(progress)<0 || Number(progress)>100) throw Object.assign(new Error('Progress must be from 0 to 100'),{status:422});
+  const newProgress=await tenantTransaction(prisma,async tx=>{
+    const goal=await tx.goal.findFirst({where:scopedWhere(tenantId,{id:Number(goalId)})});
+    if(!goal)throw Object.assign(new Error('Goal not found'),{status:404});
+    const expectedVersion=normalizeExpectedVersion(data.expectedVersion);
+    if(expectedVersion!==null && expectedVersion!==undefined && expectedVersion!==goal.version)throw preconditionFailedError(goal.version);
+    const changed=await tx.goal.updateMany({where:scopedWhere(tenantId,{id:goal.id,version:goal.version}),data:{progress:Number(progress),version:{increment:1}}});
+    if(changed.count!==1)throw preconditionFailedError();
+    return tx.goalProgress.create({data:scopedData(tenantId,{goalId:goal.id,comment,progress:Number(progress),created_by:Number(createdBy)})});
+  },{tenantId});
 
  await logAction({
     employeeId: Number(createdBy),
     type: "Add Goal Progres", // 👈 changed from CREATE to UPDATE
     module: "Goal",
     result: "SUCCESS",
-    notes: `Goal Progress"${id}" Added successfully`,
+    notes: `Goal Progress"${goalId}" Added successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return newProgress;
 };
 
 // ✅ Get all progress updates for a goal
-export const getGoalProgressService = async (id) => {
+export const getGoalProgressService = async (id, tenantId) => {
 
-  const goal = await prisma.goal.findUnique({ where: { id: Number(id) } });
+  const goal = await prisma.goal.findFirst({ where: scopedWhere(tenantId, { id: Number(id) }) });
   if (!goal) throw new Error("Goal not found");
 
   return prisma.goalProgress.findMany({
-    where: { goalId: Number(id) },
+    where: scopedWhere(tenantId, { goalId: Number(id) }),
     include: { createdBy: true },
     orderBy: { update_date: "desc" },
   });

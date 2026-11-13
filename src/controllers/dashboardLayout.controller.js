@@ -2,6 +2,7 @@ import {
   saveDashboardLayout,
  // getDashboardLayout
 } from "../services/dashboardLayout.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const saveLayoutController = async (req, res) => {
   try {
@@ -15,10 +16,13 @@ export const saveLayoutController = async (req, res) => {
       });
     }
 
+    // C.2-completion — verified tenant (req.user.tenantId; T-P2.1) threaded in
+    // so a tenant never overwrites/reads another tenant's saved layout.
     const data = await saveDashboardLayout(
       employeeId,
       dashboardType,
-      layout
+      layout,
+      req.user?.tenantId
     );
 
     res.json({
@@ -28,10 +32,7 @@ export const saveLayoutController = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    respondServerError(req, res, error);
   }
 };
 
@@ -48,9 +49,6 @@ export const saveLayoutController = async (req, res) => {
 //     });
 
 //   } catch (error) {
-//     res.status(500).json({
-//       success: false,
-//       message: error.message
-//     });
+//     respondServerError(req, res, error);
 //   }
 // };

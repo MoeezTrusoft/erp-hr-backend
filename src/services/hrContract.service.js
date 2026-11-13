@@ -1,7 +1,22 @@
+import { legacyDecision, legacySubmit } from './approval/legacy.js';
+import { prepareEmployeeInsert, guardIdentityEdit } from "./employee-code.service.js";
 import prisma from "../config/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import logger from "../lib/logger.js";
 import { getDamAssetById, normalizeDamAssetResponse, uploadFileToDAM } from "./dam.media.service.js";
 import { logAction } from "../utils/logs.js";
+import {
+  enqueueEmployeeLifecycle,
+  mapEmployeeToLifecycleInput,
+} from "./employeeOutbox.service.js";
 import { buildListPayload, parseListQuery, toInt } from "../utils/apiContract.js";
+import { exportRows } from "../lib/export.util.js";
+import { scopedEmployeeWhere, scopedWhere, scopedData } from "../lib/tenancy.js";
+import { normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import {
+  buildSystemAccountProvisioningIntent,
+  publicProvisioningState,
+} from "../jobs/system-account-provisioning.js";
 import {
   createEmployeeContractSchema,
   createEmployeeDocumentSchema,
@@ -60,6 +75,8 @@ const buildPositionDescription = (data, existingDescription = null) => {
 const compactEmployeeSelect = {
   id: true,
   employee_code: true,
+  employeeCategory: true,
+  contractNoticeDays: true,
   employee_name: true,
   first_name: true,
   middle_name: true,
@@ -106,6 +123,9 @@ const employeeDirectoryRow = (employee) => {
       : null,
     companyId: integration.companyId || null,
     departmentId: integration.departmentId || employee.businessUnitId || null,
+    // Raw business-unit id — the value the directory's Department filter sends
+    // (buildEmployeeListWhere maps departmentId -> businessUnitId).
+    businessUnitId: employee.businessUnitId || null,
     department: integration.departmentName || employee.businessUnit?.name || null,
     grade: employee.gradeLevel?.name || null,
     location: employee.region?.name || null,
@@ -128,7 +148,10 @@ const positionRow = (position) => {
     description: parsed.description,
     companyId: parsed.meta.companyId || null,
     departmentId: parsed.meta.departmentId || null,
-    band: parsed.meta.band || null,
+    // `band` is a real Position column; the FE form also stashes it in the
+    // description meta. Prefer the meta (latest edit) then the column so a band
+    // set either way shows in the directory.
+    band: parsed.meta.band ?? position.band ?? null,
     responsibilities: parsed.meta.responsibilities || "",
     requirements: parsed.meta.requirements || "",
     code: position.jobCode,
@@ -139,6 +162,7 @@ const positionRow = (position) => {
     requisitionCount: position._count?.JobRequisition || 0,
     createdAt: position.createdAt,
     updatedAt: position.updatedAt,
+    version: position.version, // API-2 — optimistic-concurrency version
   };
 };
 
@@ -195,6 +219,8 @@ const parseJsonArray = (value) => {
 
 const normalizeContractPayload = (payload = {}) => ({
   ...payload,
+  // FE-compat: `company` is an alias for `companyId` (canonical wins).
+  companyId: payload.companyId ?? payload.company,
   emergencyContacts: parseJsonArray(payload.emergencyContacts),
   documents: parseJsonArray(payload.documents),
 });
@@ -272,11 +298,14 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
     country: data.country,
     postal_code: data.postalCode,
     employee_code: data.employeeCode,
+    employeeCategory: data.employeeCategory,
+    contractNoticeDays: data.contractNoticeDays,
     job_title: data.jobTitle,
     positionId: data.positionId,
     businessUnitId: data.businessUnitId,
     managerId: data.managerId,
     regionId: data.locationId,
+    ntn: data.ntn, // C4-encrypted at rest by the prisma extension
     employee_type: data.employmentType,
     employement_status: data.employmentStatus,
     status: data.employmentStatus,
@@ -326,8 +355,70 @@ const employeeDataFromContract = (data, actorId, existing = {}) => {
   return Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined));
 };
 
+// Collect the primary-BankDetail fields present in a contract payload. Returns
+// null when none are supplied so create/update can skip banking entirely.
+// accountNumber / iban are C4-encrypted transparently on write.
+const bankFieldsFromContract = (data) => {
+  // FE-compat: banking may arrive TOP-LEVEL (canonical) OR nested in
+  // additionalFields (the FE's current shape, keys `bank`/`distribution`/…).
+  // Top-level wins; additionalFields fills the gaps so the primary bank row is
+  // created either way.
+  const af = data.additionalFields && typeof data.additionalFields === "object" ? data.additionalFields : {};
+  const map = {
+    bankName: data.bankName ?? af.bankName ?? af.bank,
+    accountTitle: data.accountTitle ?? af.accountTitle,
+    accountNumber: data.accountNumber ?? af.accountNumber,
+    iban: data.iban ?? af.iban,
+    branch: data.branch ?? af.branch,
+    disbursementMethod: data.disbursementMethod ?? af.disbursementMethod ?? af.distribution,
+    routingNumber: data.routingNumber ?? af.routingNumber,
+    accountType: data.accountType ?? af.accountType,
+  };
+  const present = Object.fromEntries(Object.entries(map).filter(([, v]) => v !== undefined && v !== ""));
+  return Object.keys(present).length ? present : null;
+};
+
+// Upsert the employee's PRIMARY BankDetail inside a transaction. A NEW row needs
+// both bankName + accountNumber (NOT NULL columns); a partial patch updates the
+// existing primary. Returns true if a write happened.
+const upsertPrimaryBankDetail = async (tx, employeeId, tenantId, bank) => {
+  if (!bank) return false;
+  const existing = await tx.bankDetail.findFirst({
+    where: { employeeId: Number(employeeId), isPrimary: true },
+    orderBy: { created_at: "desc" },
+    select: { id: true },
+  });
+
+  if (existing) {
+    await tx.bankDetail.update({ where: { id: existing.id }, data: bank });
+    return true;
+  }
+
+  if (!bank.bankName || !bank.accountNumber) {
+    // Can't create a new bank row without the NOT NULL fields; skip silently so
+    // a partial update on an employee with no bank row is a no-op, not a 500.
+    return false;
+  }
+  await tx.bankDetail.create({
+    data: {
+      employeeId: Number(employeeId),
+      tenantId: tenantId ?? null,
+      isPrimary: true,
+      accountType: bank.accountType || "CHECKING",
+      ...bank,
+    },
+  });
+  return true;
+};
+
 const employeeProfileSelect = {
   ...compactEmployeeSelect,
+  version: true, // API-2 — optimistic-concurrency version for If-Match chaining
+  ntn: true,
+  bankDetails: {
+    orderBy: [{ isPrimary: "desc" }, { created_at: "desc" }],
+    take: 1,
+  },
   date_of_birth: true,
   nationality: true,
   nationality_id_type: true,
@@ -357,12 +448,36 @@ const employeeProfileSelect = {
   reports: { select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true } },
 };
 
+const maskTail = (v) => {
+  const s = String(v ?? "");
+  return s ? `****${s.slice(-4)}` : null;
+};
+
 const employeeContractProfile = (employee) => {
   const summary = employeeDirectoryRow(employee);
   const additionalFields =
     employee.additional_fields && typeof employee.additional_fields === "object" ? employee.additional_fields : {};
+  // Primary bank row (C4-decrypted on read); account/iban masked here since this
+  // profile is gated on hr:employee (not hr:payroll). The full-detail, permission
+  // -gated view lives in the consolidated hr_employee_profile_get tool.
+  const primaryBank = employee.bankDetails?.[0] || null;
   return {
   summary,
+  version: employee.version, // API-2 — the new version, for optimistic-concurrency chaining
+  ntn: employee.ntn ? maskTail(employee.ntn) : null,
+  banking: primaryBank
+    ? {
+        id: primaryBank.id,
+        accountTitle: primaryBank.accountTitle ?? null,
+        bankName: primaryBank.bankName ?? null,
+        accountNumber: maskTail(primaryBank.accountNumber),
+        iban: maskTail(primaryBank.iban),
+        branch: primaryBank.branch ?? null,
+        disbursementMethod: primaryBank.disbursementMethod ?? null,
+        accountType: primaryBank.accountType ?? null,
+        isPrimary: primaryBank.isPrimary,
+      }
+    : null,
   personal: {
     firstName: employee.first_name,
     middleName: employee.middle_name,
@@ -389,6 +504,8 @@ const employeeContractProfile = (employee) => {
   },
   employment: {
     employeeCode: employee.employee_code,
+    employeeCategory: employee.employeeCategory,
+    contractNoticeDays: employee.contractNoticeDays,
     jobTitle: employee.job_title,
     positionId: employee.positionId,
     departmentId: summary.departmentId || employee.businessUnitId,
@@ -507,6 +624,77 @@ const normalizeMediaPayload = async ({ mediaId, file, type, fallback = {} }) => 
   return null;
 };
 
+// Decode a FE-supplied inline upload (raw base64 OR a `data:<mime>;base64,…`
+// URI) into the multer-style file object uploadFileToDAM expects, so the FE can
+// send the raw bytes and the BE extracts fileName/mimeType/fileSize itself.
+// Accepts either a bare string or an object carrying { fileBase64, fileName,
+// mimeType }. Returns null when there is no usable base64 content.
+// Filename-extension → MIME, used to give DAM a correct content-type when the
+// caller supplies a plain base64 string (no data: URI) and no explicit mimeType.
+// Without this, every such upload was stored as application/octet-stream.
+const EXT_MIME = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  csv: "text/csv",
+  txt: "text/plain",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  zip: "application/zip",
+};
+
+const mimeFromName = (name) => {
+  const ext = String(name || "").toLowerCase().split(".").pop();
+  return EXT_MIME[ext] || null;
+};
+
+export const fileFromBase64 = (input, fallbackName = "upload.bin") => {
+  if (!input) return null;
+  const raw = typeof input === "string" ? input : input.fileBase64 || input.base64;
+  if (!raw || typeof raw !== "string") return null;
+
+  let mimetype = typeof input === "object" ? input.mimeType || input.mimetype : null;
+  let b64 = raw.trim();
+  const dataUri = b64.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?(?:;base64)?,(.*)$/s);
+  if (dataUri) {
+    if (dataUri[1] && !mimetype) mimetype = dataUri[1];
+    b64 = dataUri[2];
+  }
+  b64 = b64.replace(/\s/g, "");
+  if (!b64) return null;
+
+  const buffer = Buffer.from(b64, "base64");
+  if (!buffer.length) return null;
+
+  const originalname =
+    (typeof input === "object" && (input.fileName || input.filename)) || fallbackName;
+  // Prefer an explicit/data-URI mime; otherwise infer from the filename extension
+  // so DAM stores the real content-type (e.g. application/pdf for resumes).
+  return {
+    buffer,
+    originalname,
+    mimetype: mimetype || mimeFromName(originalname) || "application/octet-stream",
+    size: buffer.length,
+  };
+};
+
+// Resolve an employee media slot from EITHER an inline base64 upload OR a
+// pre-existing DAM mediaId. base64 wins when both are present.
+const resolveEmployeeMedia = async (base64Input, mediaId, type, fallback = {}) => {
+  const file = fileFromBase64(base64Input, `${type}.bin`);
+  if (file) return normalizeMediaPayload({ file, type });
+  if (mediaId) return normalizeMediaPayload({ mediaId, type, fallback });
+  return null;
+};
+
 const documentDataFromContract = (document, employeeId, actorId, media = null) => ({
   title: document.title || media?.fileName || null,
   category: document.category || null,
@@ -594,39 +782,178 @@ export const saveDashboardLayout = async (employeeId, layout) => {
   return dashboardLayout;
 };
 
-export const listEmployees = async (query) => {
-  const list = parseListQuery(query, { sort: "created_at" });
+// BLOCKER-1 / C.2 — the verified tenant (req.user.tenantId → tenantId param) is
+// folded into the where via scopedEmployeeWhere so the directory NEVER returns
+// another tenant's (or null-tenant) employees. Employee carries the snake_case
+// `tenant_id` column (REQ-007). `undefined` keeps the legacy unscoped path for
+// back-compat; a present value (incl. null) is fail-closed.
+// Shared WHERE builder for the directory list AND export so the two never
+// drift. Supports search (q), status, position, department, and a joining-date
+// range (joinedFrom/joinedTo, matched against hire_date OR joining_date).
+const buildEmployeeListWhere = (query, tenantId, q) => {
   const filters = {
     status: query.status || null,
     positionId: toInt(query.positionId),
     departmentId: toInt(query.departmentId),
+    joinedFrom: query.joinedFrom ? new Date(query.joinedFrom) : null,
+    joinedTo: query.joinedTo ? new Date(query.joinedTo) : null,
   };
+  const range = {};
+  if (filters.joinedFrom && !Number.isNaN(filters.joinedFrom.getTime())) range.gte = filters.joinedFrom;
+  if (filters.joinedTo && !Number.isNaN(filters.joinedTo.getTime())) range.lte = filters.joinedTo;
+  const dateFilter = Object.keys(range).length
+    ? { OR: [{ hire_date: range }, { joining_date: range }] }
+    : {};
 
   const where = {
     AND: [
-      list.q
+      scopedEmployeeWhere(tenantId, {}),
+      // Global search spans every column the directory shows — name (all parts),
+      // code, department (business-unit name), role/position, email, phone,
+      // manager and status — not just the name/email/job-title trio it used to.
+      q
         ? {
             OR: [
-              { employee_name: { contains: list.q, mode: "insensitive" } },
-              { first_name: { contains: list.q, mode: "insensitive" } },
-              { last_name: { contains: list.q, mode: "insensitive" } },
-              { employee_code: { contains: list.q, mode: "insensitive" } },
-              { email: { contains: list.q, mode: "insensitive" } },
-              { work_email: { contains: list.q, mode: "insensitive" } },
-              { job_title: { contains: list.q, mode: "insensitive" } },
+              { employee_name: { contains: q, mode: "insensitive" } },
+              { first_name: { contains: q, mode: "insensitive" } },
+              { last_name: { contains: q, mode: "insensitive" } },
+              { preferred_name: { contains: q, mode: "insensitive" } },
+              { middle_name: { contains: q, mode: "insensitive" } },
+              { employee_code: { contains: q, mode: "insensitive" } },
+              { email: { contains: q, mode: "insensitive" } },
+              { work_email: { contains: q, mode: "insensitive" } },
+              { work_phone: { contains: q, mode: "insensitive" } },
+              { personal_contact: { contains: q, mode: "insensitive" } },
+              { job_title: { contains: q, mode: "insensitive" } },
+              { status: { contains: q, mode: "insensitive" } },
+              { employement_status: { contains: q, mode: "insensitive" } },
+              { businessUnit: { is: { name: { contains: q, mode: "insensitive" } } } },
+              { Position: { is: { title: { contains: q, mode: "insensitive" } } } },
+              { manager: { is: { employee_name: { contains: q, mode: "insensitive" } } } },
             ],
           }
+        : {},
+      // Column-specific search (directory per-column search boxes). Each is
+      // ANDed so several columns can be searched at once; each targets only its
+      // own field(s), unlike the generic `q` above.
+      query.nameQ
+        ? {
+            OR: [
+              { employee_name: { contains: query.nameQ, mode: "insensitive" } },
+              { first_name: { contains: query.nameQ, mode: "insensitive" } },
+              { last_name: { contains: query.nameQ, mode: "insensitive" } },
+              { preferred_name: { contains: query.nameQ, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      query.codeQ ? { employee_code: { contains: query.codeQ, mode: "insensitive" } } : {},
+      query.departmentQ
+        ? { businessUnit: { is: { name: { contains: query.departmentQ, mode: "insensitive" } } } }
+        : {},
+      query.roleQ ? { job_title: { contains: query.roleQ, mode: "insensitive" } } : {},
+      query.emailQ
+        ? {
+            OR: [
+              { email: { contains: query.emailQ, mode: "insensitive" } },
+              { work_email: { contains: query.emailQ, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      query.statusQ
+        ? {
+            OR: [
+              { status: { contains: query.statusQ, mode: "insensitive" } },
+              { employement_status: { contains: query.statusQ, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      query.managerQ
+        ? { manager: { is: { employee_name: { contains: query.managerQ, mode: "insensitive" } } } }
         : {},
       filters.status
         ? { OR: [{ status: filters.status }, { employement_status: filters.status }] }
         : {},
       filters.positionId ? { positionId: filters.positionId } : {},
       filters.departmentId ? { businessUnitId: filters.departmentId } : {},
+      dateFilter,
     ],
   };
+  return { where, filters };
+};
 
-  const allowedSorts = ["created_at", "updated_at", "employee_name", "employee_code", "hire_date"];
-  const orderBy = { [allowedSorts.includes(list.sort) ? list.sort : "created_at"]: list.order };
+// Sort key -> Prisma orderBy. Includes relation-ordered columns (department by
+// business-unit name, manager by manager name) so the directory can sort every
+// visible column alphabetically. Keys are the values the frontend sends.
+const EMPLOYEE_ORDER_BY = {
+  created_at: (o) => ({ created_at: o }),
+  updated_at: (o) => ({ updated_at: o }),
+  employee_name: (o) => ({ employee_name: o }),
+  employee_code: (o) => ({ employee_code: o }),
+  hire_date: (o) => ({ hire_date: o }),
+  department: (o) => ({ businessUnit: { name: o } }),
+  role: (o) => ({ job_title: o }),
+  status: (o) => ({ status: o }),
+  manager: (o) => ({ manager: { employee_name: o } }),
+};
+const EMPLOYEE_SORTS = Object.keys(EMPLOYEE_ORDER_BY);
+// Inactive/disabled employees are pinned to the bottom of the directory: the
+// status grouping leads every sort (Active < Disabled < Inactive), and the
+// requested sort applies inside each group. Skipped only when the caller is
+// already sorting by status, so that sort isn't fought by the grouping.
+const buildEmployeeOrderBy = (sort, order, fallback = "created_at") => {
+  const primary = (EMPLOYEE_ORDER_BY[sort] || EMPLOYEE_ORDER_BY[fallback])(order);
+  return sort === "status" ? primary : [{ status: "asc" }, primary];
+};
+
+// A directory row is tagged a "new hire" when the employee has an OPEN
+// onboarding checklist (status != COMPLETED) OR joined within this many days.
+const NEW_HIRE_WINDOW_DAYS = Number(process.env.NEW_HIRE_WINDOW_DAYS || 90);
+
+// Batch-resolve new-hire status for a page of directory rows (never N+1): one
+// findMany over the page's employee ids picks up any onboarding checklist, and a
+// hire/joining-date window is the fallback. Returns rows enriched with
+// `isNewHire` (bool) + `onboardingStatus` (checklist status or null).
+async function enrichNewHire(rows, tenantId) {
+  const ids = rows.map((r) => r.id).filter((v) => v != null);
+  const statusById = new Map();
+  if (ids.length) {
+    try {
+      const checklists = await prisma.onboardingChecklist.findMany({
+        where: scopedWhere(tenantId, { employeeId: { in: ids } }),
+        select: { employeeId: true, status: true, startDate: true },
+        orderBy: { startDate: "desc" },
+      });
+      // Keep the most relevant checklist per employee: an OPEN one wins, else latest.
+      for (const c of checklists) {
+        const prev = statusById.get(c.employeeId);
+        const isOpen = c.status !== "COMPLETED";
+        if (!prev || (isOpen && prev.status === "COMPLETED")) {
+          statusById.set(c.employeeId, { status: c.status });
+        }
+      }
+    } catch {
+      // Fail-soft: without the map we fall back to the date window only.
+    }
+  }
+  const now = Date.now();
+  const windowMs = NEW_HIRE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  return rows.map((r) => {
+    const cl = statusById.get(r.id) || null;
+    const hasOpenOnboarding = !!cl && cl.status !== "COMPLETED";
+    const withinWindow = r.hireDate ? now - new Date(r.hireDate).getTime() <= windowMs : false;
+    return {
+      ...r,
+      isNewHire: hasOpenOnboarding || withinWindow,
+      onboardingStatus: cl?.status ?? null,
+    };
+  });
+}
+
+export const listEmployees = async (query, tenantId) => {
+  const list = parseListQuery(query, { sort: "created_at" });
+  const { where, filters } = buildEmployeeListWhere(query, tenantId, list.q);
+
+  const orderBy = buildEmployeeOrderBy(list.sort, list.order, "created_at");
 
   const [items, total] = await Promise.all([
     prisma.employee.findMany({
@@ -639,17 +966,59 @@ export const listEmployees = async (query) => {
     prisma.employee.count({ where }),
   ]);
 
+  const rows = await enrichNewHire(items.map(employeeDirectoryRow), tenantId);
+
   return buildListPayload({
     ...list,
     total,
     filters,
-    items: items.map(employeeDirectoryRow),
+    items: rows,
   });
 };
 
-export const getEmployeeQuickView = async (id) => {
-  const employee = await prisma.employee.findUnique({
-    where: { id: Number(id) },
+// Employee Directory export — same filters/sort as listEmployees but returns a
+// CSV or PDF Buffer of ALL matching rows (capped) rather than one page.
+const EMPLOYEE_EXPORT_COLUMNS = [
+  { key: "code", header: "Code" },
+  { key: "name", header: "Name" },
+  { key: "department", header: "Department", value: (r) => r.department || "-" },
+  { key: "role", header: "Position / Role", value: (r) => r.role || "-" },
+  { key: "email", header: "Email", value: (r) => r.email || "-" },
+  { key: "manager", header: "Manager", value: (r) => r.manager?.name || "-" },
+  { key: "status", header: "Status" },
+  { key: "joined", header: "Joining Date", value: (r) => (r.hireDate ? new Date(r.hireDate).toISOString().slice(0, 10) : "-") },
+];
+
+export const exportEmployees = async (query, tenantId, format = "csv") => {
+  const list = parseListQuery(query, { sort: "employee_name" });
+  const { where } = buildEmployeeListWhere(query, tenantId, list.q);
+  const orderBy = buildEmployeeOrderBy(list.sort, list.order, "employee_name");
+
+  const rows = await prisma.employee.findMany({
+    where,
+    select: compactEmployeeSelect,
+    orderBy,
+    take: 5000, // hard cap so an export can never run away
+  });
+  const items = rows.map(employeeDirectoryRow);
+  const { mimeType, ext, buffer } = await exportRows(format, {
+    title: "Employee Directory",
+    subtitle: `${items.length} employee(s) — generated ${new Date().toISOString().slice(0, 10)}`,
+    columns: EMPLOYEE_EXPORT_COLUMNS,
+    rows: items,
+  });
+  return {
+    format,
+    fileName: `employee-directory-${new Date().toISOString().slice(0, 10)}.${ext}`,
+    mimeType,
+    count: items.length,
+    base64: buffer.toString("base64"),
+  };
+};
+
+export const getEmployeeQuickView = async (id, tenantId) => {
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(id) }),
     select: {
       ...compactEmployeeSelect,
       emergencyContact: { take: 2 },
@@ -673,26 +1042,132 @@ export const getEmployeeQuickView = async (id) => {
   };
 };
 
-export const createEmployee = async (payload, actorId) => {
+// A.4 / ARCH-01 §7–§8 — emit hr.employee.lifecycle.v1 into the outbox INSIDE the
+// aggregate tx so the Employee row and its lifecycle event commit or roll back
+// together. Mirrors src/services/hr.service.js::emitEmployeeLifecycle so the
+// MCP contract path and the REST path share ONE envelope/outbox shape. ctx
+// carries the request correlationId (A.5) + acting principal so the event is
+// traceable end-to-end. Fail-soft (no OutboxEvent model on the client) and
+// fail-closed (no tenant) are both handled by the shared helpers; a CONTRACT
+// failure throws and rolls back the surrounding tx so a bad event never escapes.
+const emitEmployeeLifecycle = async (tx, employee, phase, ctx = {}, extra = {}) => {
+  if (!employee) return null;
+  const input = mapEmployeeToLifecycleInput(employee, phase, extra);
+  // Skip emission when the tenant is unknown (fail-closed): an event with no
+  // tenant cannot be contract-valid and must not break the aggregate write.
+  if (!input.tenantId) return null;
+  return enqueueEmployeeLifecycle(tx, {
+    ...input,
+    aggregateId: employee.id,
+    actorId: ctx.actorId ?? extra.actorId,
+    correlationId: ctx.correlationId,
+  });
+};
+
+// Columns the in-tx lifecycle mapper needs to build a contract-valid event from
+// the freshly-created row (tenant, identity, org unit, code, effective date).
+const lifecycleSourceSelect = {
+  id: true,
+  tenant_id: true,
+  employee_code: true,
+  employeeCategory: true,
+  contractNoticeDays: true,
+  employee_name: true,
+  first_name: true,
+  last_name: true,
+  work_email: true,
+  businessUnitId: true,
+  positionId: true,
+  status: true,
+  hire_date: true,
+};
+
+export const createEmployee = async (payload, actorId, ctx = {}) => {
   const data = createEmployeeContractSchema.parse(normalizeContractPayload(payload));
+  // F-03: provisioning must be tenant-scoped and valid before any aggregate
+  // side effect. The actual durable row is built after Employee has its id.
+  if (data.createSystemAccount === true) {
+    const tenantId = ctx.tenantId ?? null;
+    if (!tenantId) throw new Error("HR-0301: verified tenant is required for system-account provisioning");
+    if (!data.roleId) throw new Error("HR-0302: roleId is required for system-account provisioning");
+  }
+  if(!ctx.tenantId)throw Object.assign(new Error("Verified company is required"),{status:403});
   await assertEmployeeReferences(data);
-  const profilePhoto = data.profilePhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.profilePhotoMediaId, type: "employee-profile-photo" })
-    : null;
-  const coverPhoto = data.coverPhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
-    : null;
+  // Photos: accept an inline base64/data-URI upload OR a pre-existing mediaId.
+  const profilePhoto = await resolveEmployeeMedia(
+    { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
+    data.profilePhotoMediaId,
+    "employee-profile-photo"
+  );
+  const coverPhoto = await resolveEmployeeMedia(
+    { fileBase64: data.coverPhotoBase64, fileName: data.coverPhotoFileName },
+    data.coverPhotoMediaId,
+    "employee-cover-photo"
+  );
+  // Documents: upload any base64 file to DAM BEFORE the tx (network I/O must not
+  // run inside a prisma transaction), resolving each to a media record. A doc is
+  // valid with an inline file OR an existing mediaId.
+  const documentMedia = await Promise.all(
+    (data.documents || []).map(async (document) => {
+      const file = fileFromBase64(document, "employee-document.bin");
+      let media = null;
+      if (file) {
+        media = await normalizeMediaPayload({ file, type: "employee-document" });
+      } else if (document.mediaId) {
+        media = await normalizeMediaPayload({
+          mediaId: document.mediaId,
+          type: "employee-document",
+          fallback: {
+            fileName: document.fileName,
+            mimeType: document.mimeType,
+            fileSize: document.fileSize,
+            url: document.downloadUrl,
+          },
+        });
+      }
+      if (!media?.mediaId) {
+        throw new Error("Each employee document requires an inline file (fileBase64) or an existing mediaId");
+      }
+      return { document, media };
+    })
+  );
+  // T-P2.2/T-P2.6: tenant comes ONLY from the verified claim (ctx.tenantId,
+  // surfaced from the service-JWT tenant on req.user) — NEVER the request body.
+  // It is an opaque RBAC Company.uuid string; thread it verbatim, null → null
+  // (fail-closed). The persisted status defaults to the directory display value
+  // ("Active") when the caller supplies none, so the row matches the API.
+  const verifiedTenantId = ctx.tenantId != null ? ctx.tenantId : null;
+  const effectiveStatus = data.employmentStatus || "Active";
   const employeeData = {
     ...data,
+    employmentStatus: effectiveStatus,
     profilePhotoUrl: profilePhoto?.url,
     coverPhotoUrl: coverPhoto?.url,
   };
 
-  const employee = await prisma.$transaction(async (tx) => {
+  const createdResult = await tenantTransaction(prisma, async (tx) => {
+    const createData = await prepareEmployeeInsert(tx, employeeDataFromContract(employeeData, actorId), { tenantId: verifiedTenantId, category: data.employeeCategory });
+    createData.tenant_id = verifiedTenantId;
     const created = await tx.employee.create({
-      data: employeeDataFromContract(employeeData, actorId),
-      select: { id: true },
+      data: createData,
+      select: lifecycleSourceSelect,
     });
+
+
+
+    // A.4 / Phase 3: enqueue hr.employee.lifecycle.v1 (phase=hired) in the SAME
+    // tx as the employee write, via the shared validate-before-write helper.
+    await emitEmployeeLifecycle(tx, created, "hired", { ...ctx, actorId: ctx.actorId ?? actorId });
+
+    // Phase 3: also emit onboarded event when wizard supplies an onboardingStartDate.
+    // This signals IAM-provisioning consumers (RBAC user creation, access grant).
+    const onboardingDate = data.additionalFields?.onboardingStartDate ?? data.onboardingStartDate ?? null;
+    if (onboardingDate) {
+      await emitEmployeeLifecycle(tx, created, "transferred", {
+        ...ctx,
+        actorId: ctx.actorId ?? actorId,
+      }, { effectiveOn: onboardingDate }).catch(() => {/* non-fatal: hired already emitted */});
+    }
 
     if (data.emergencyContacts.length > 0) {
       await tx.emergencyContacts.createMany({
@@ -703,27 +1178,36 @@ export const createEmployee = async (payload, actorId) => {
           email: contact.email || null,
           is_primary: Boolean(contact.isPrimary),
           employee_Id: created.id,
+          // FORCE-RLS: the row's tenantId must match app.tenant_id (the verified
+          // caller tenant) or the WITH CHECK policy rejects the insert.
+          tenantId: verifiedTenantId,
         })),
       });
     }
 
-    if (data.documents.length > 0) {
+    if (documentMedia.length > 0) {
       await tx.employeeMedia.createMany({
-        data: data.documents.map((document) => {
-          const parsedDocument = createEmployeeDocumentSchema.parse(document);
-          if (!parsedDocument.mediaId) {
-            throw new Error("Nested employee documents require mediaId");
-          }
-          return documentDataFromContract(parsedDocument, created.id, actorId);
-        }),
+        data: documentMedia.map(({ document, media }) =>
+          documentDataFromContract(document, created.id, actorId, media)
+        ),
       });
     }
 
-    return tx.employee.findUnique({
+    // Banking (A/C title, bank, account #, IBAN, branch, disbursement) — no
+    // create path existed before. Verified tenant rides on the row.
+    await upsertPrimaryBankDetail(tx, created.id, verifiedTenantId, bankFieldsFromContract(data));
+
+    const employee = await tx.employee.findUnique({
       where: { id: created.id },
       select: employeeProfileSelect,
     });
-  });
+    const intentData = buildSystemAccountProvisioningIntent(data, employee, ctx);
+    const systemAccount = intentData
+      ? await tx.systemAccountProvisioning.create({ data: intentData })
+      : null;
+    return { employee, systemAccount };
+  }, { tenantId: verifiedTenantId });
+  const { employee, systemAccount: provisioning } = createdResult;
 
   await logAction({
     employeeId: actorId,
@@ -732,35 +1216,85 @@ export const createEmployee = async (payload, actorId) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${employee.id} created from HR contract`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
-  return employeeContractProfile(employee);
+  // Opt-in AI resume parsing: only when BOTH resumeMediaId + parseResume are set.
+  // Best-effort enrichment — a parse failure must NOT fail employee creation.
+  // The resume service is dynamically imported so its lazy AI deps are never
+  // touched unless a caller opts in.
+  let resumeParsing = null;
+  if (data.resumeMediaId && data.parseResume) {
+    try {
+      const { ingestEmployeeResume } = await import("./resumeParsing.service.js");
+      resumeParsing = await ingestEmployeeResume({
+        employeeId: employee.id,
+        mediaId: data.resumeMediaId,
+        tenantId: verifiedTenantId,
+        actorId,
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err?.message, employeeId: employee.id },
+        "createEmployee: opt-in resume parse failed (non-fatal)"
+      );
+      resumeParsing = { error: err?.message || "resume parse failed" };
+    }
+  }
+
+  const profile = employeeContractProfile(employee);
+  return {
+    ...profile,
+    ...(resumeParsing ? { resumeParsing } : {}),
+    ...(provisioning ? { systemAccount: publicProvisioningState(provisioning) } : {}),
+  };
 };
 
-export const updateEmployee = async (id, payload, actorId) => {
+export const updateEmployee = async (id, payload, actorId, ctx = {}) => {
   const employeeId = Number(id);
   const existing = await prisma.employee.findUnique({ where: { id: employeeId } });
   if (!existing) throw new Error("Employee not found");
 
+  // API-2 — optimistic-concurrency guard. Opt-in: only enforced when the caller
+  // supplies an expectedVersion (the version they last read). Absent ⇒ no reject.
+  const expectedVersion = normalizeExpectedVersion(ctx.expectedVersion);
+
   const data = updateEmployeeContractSchema.parse(normalizeContractPayload(payload));
+  guardIdentityEdit(existing, data);
   await assertEmployeeReferences(data, employeeId);
-  const profilePhoto = data.profilePhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.profilePhotoMediaId, type: "employee-profile-photo" })
-    : null;
-  const coverPhoto = data.coverPhotoMediaId
-    ? await normalizeMediaPayload({ mediaId: data.coverPhotoMediaId, type: "employee-cover-photo" })
-    : null;
+  const profilePhoto = await resolveEmployeeMedia(
+    { fileBase64: data.profilePhotoBase64, fileName: data.profilePhotoFileName },
+    data.profilePhotoMediaId,
+    "employee-profile-photo"
+  );
+  const coverPhoto = await resolveEmployeeMedia(
+    { fileBase64: data.coverPhotoBase64, fileName: data.coverPhotoFileName },
+    data.coverPhotoMediaId,
+    "employee-cover-photo"
+  );
   const employeeData = {
     ...data,
     profilePhotoUrl: profilePhoto?.url,
     coverPhotoUrl: coverPhoto?.url,
   };
 
-  const employee = await prisma.$transaction(async (tx) => {
-    await tx.employee.update({
-      where: { id: employeeId },
-      data: employeeDataFromContract(employeeData, actorId, existing),
+  const employee = await tenantTransaction(prisma, async (tx) => {
+    // API-2 — atomic compare-and-set on version. When expectedVersion is supplied
+    // the write only lands if the row is still at that version; otherwise it lands
+    // unconditionally. Either way version is bumped so concurrent editors observe
+    // the advance. count===0 with a supplied expectedVersion ⇒ stale (412).
+    const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+    const { count } = await tx.employee.updateMany({
+      where: { id: employeeId, ...versionWhere },
+      data: {
+        ...employeeDataFromContract(employeeData, actorId, existing),
+        version: { increment: 1 },
+      },
     });
+    if (count === 0 && expectedVersion != null) {
+      const fresh = await tx.employee.findUnique({ where: { id: employeeId }, select: { version: true } });
+      throw preconditionFailedError(fresh?.version);
+    }
 
     if (data.emergencyContacts?.length > 0) {
       await tx.emergencyContacts.deleteMany({ where: { employee_Id: employeeId } });
@@ -772,15 +1306,22 @@ export const updateEmployee = async (id, payload, actorId) => {
           email: contact.email || null,
           is_primary: Boolean(contact.isPrimary),
           employee_Id: employeeId,
+          // FORCE-RLS: match the employee's tenant (== the verified caller tenant
+          // / app.tenant_id GUC) so the WITH CHECK policy accepts the insert.
+          tenantId: existing.tenant_id,
         })),
       });
     }
+
+    // Banking upsert — patch the existing primary BankDetail or create one when
+    // bankName + accountNumber are supplied. Tenant inherited from the employee.
+    await upsertPrimaryBankDetail(tx, employeeId, existing.tenant_id ?? null, bankFieldsFromContract(data));
 
     return tx.employee.findUnique({
       where: { id: employeeId },
       select: employeeProfileSelect,
     });
-  });
+  }, { tenantId: existing.tenant_id });
 
   await logAction({
     employeeId: actorId,
@@ -789,14 +1330,15 @@ export const updateEmployee = async (id, payload, actorId) => {
     module: "Employee",
     result: "SUCCESS",
     notes: `Employee ${employeeId} updated from HR contract`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return employeeContractProfile(employee);
 };
 
-export const getEmployeeProfile = async (id) => {
-  const employee = await prisma.employee.findUnique({
-    where: { id: Number(id) },
+export const getEmployeeProfile = async (id, tenantId) => {
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(id) }),
     select: employeeProfileSelect,
   });
 
@@ -805,7 +1347,15 @@ export const getEmployeeProfile = async (id) => {
   return employeeContractProfile(employee);
 };
 
-export const getEmployeeDocuments = async (id) => {
+export const getEmployeeDocuments = async (id, tenantId) => {
+  // BLOCKER-1 / C.2 — EmployeeMedia has no tenant column; deny cross-tenant doc
+  // reads by construction by first asserting the parent employee is in-tenant.
+  const employee = await prisma.employee.findFirst({
+    where: scopedEmployeeWhere(tenantId, { id: Number(id) }),
+    select: { id: true },
+  });
+  if (!employee) throw new Error("Employee not found");
+
   const documents = await prisma.employeeMedia.findMany({
     where: { employee_id: Number(id) },
     orderBy: { id: "desc" },
@@ -818,6 +1368,9 @@ export const getEmployeeDocuments = async (id) => {
 
 export const updateEmployeeStatus = async (id, status, actorId) => {
   const parsed = employeeStatusSchema.parse({ status });
+  const current = await prisma.employee.findUnique({ where: { id: Number(id) } });
+  if (!current) throw Object.assign(new Error("Employee not found"), { status: 404 });
+  guardIdentityEdit(current, {});
 
   const employee = await prisma.employee.update({
     where: { id: Number(id) },
@@ -834,6 +1387,7 @@ export const updateEmployeeStatus = async (id, status, actorId) => {
 
 export const uploadEmployeeProfilePhoto = async (id, payload, file, actorId) => {
   const data = mediaAttachSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-profile-photo.bin");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
     file,
@@ -863,6 +1417,7 @@ export const uploadEmployeeProfilePhoto = async (id, payload, file, actorId) => 
 
 export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
   const data = mediaAttachSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-cover-photo.bin");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
     file,
@@ -890,9 +1445,73 @@ export const uploadEmployeeCoverPhoto = async (id, payload, file, actorId) => {
   };
 };
 
+// ── Photo slot removal (profile / cover) ─────────────────────────────────
+//
+// WHY A DEDICATED REMOVE instead of `hr_employee_update` with an empty photo:
+// the update contract carries a media id / URL, not "clear this slot" — an
+// absent field means "leave it", so a null can never express removal. Clearing
+// the slot also has to report WHICH asset was detached, because the DAM copy and
+// the employee's reference to it are two different things owned by two different
+// grants: unlinking is hr:employee EDIT, while moving the library asset to the
+// DAM trash is dam:asset DELETE. This service therefore NEVER touches DAM — it
+// only detaches, and the caller decides what to do with the returned mediaId.
+const EMPLOYEE_PHOTO_SLOTS = {
+  profile: {
+    mediaIdField: "employee_media_id",
+    urlField: "photo_url",
+  },
+  cover: {
+    mediaIdField: "cover_photo_media_id",
+    urlField: "cover_photo_url",
+  },
+};
+
+const removeEmployeePhotoSlot = async (id, slot, actorId) => {
+  const fields = EMPLOYEE_PHOTO_SLOTS[slot];
+  const employee = await prisma.employee.findUnique({
+    where: { id: Number(id) },
+    select: { id: true, [fields.mediaIdField]: true, [fields.urlField]: true },
+  });
+
+  if (!employee) {
+    throw Object.assign(new Error("Employee not found"), { status: 404 });
+  }
+
+  const mediaId = employee[fields.mediaIdField] ?? null;
+  const url = employee[fields.urlField] ?? null;
+  const removed = Boolean(mediaId || url);
+
+  if (removed) {
+    await prisma.employee.update({
+      where: { id: Number(id) },
+      data: {
+        [fields.mediaIdField]: null,
+        [fields.urlField]: null,
+        updatedById: actorId ? Number(actorId) : undefined,
+      },
+    });
+  }
+
+  return { removed, mediaId, url };
+};
+
+/**
+ * Detach the employee's profile photo.
+ * @returns {Promise<{ removed: boolean, mediaId: number|null, url: string|null }>}
+ *   `mediaId` identifies the DAM asset that was attached (null when the slot was
+ *   already empty or held a non-DAM URL) so the caller can offer to trash it.
+ */
+export const removeEmployeeProfilePhoto = async (id, actorId) =>
+  removeEmployeePhotoSlot(id, "profile", actorId);
+
+/** Detach the employee's cover (banner) photo. Same contract as the profile slot. */
+export const removeEmployeeCoverPhoto = async (id, actorId) =>
+  removeEmployeePhotoSlot(id, "cover", actorId);
+
 export const createEmployeeDocument = async (employeeId, payload, file, actorId) => {
   await requireRecord("employee", employeeId, "Employee");
   const data = createEmployeeDocumentSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-document.bin");
   if (!file && !data.mediaId) throw new Error("mediaId or uploaded file is required");
   const media = await normalizeMediaPayload({
     mediaId: data.mediaId,
@@ -921,6 +1540,7 @@ export const updateEmployeeDocument = async (employeeId, documentId, payload, fi
   if (!existing) throw new Error("Employee document not found");
 
   const data = updateEmployeeDocumentSchema.parse(payload || {});
+  file = file || fileFromBase64(data, "employee-document.bin");
   const media = file || data.mediaId
     ? await normalizeMediaPayload({
         mediaId: data.mediaId || existing.media_id,
@@ -979,6 +1599,12 @@ export const listEmployeeEmergencyContacts = async (employeeId) => {
 export const createEmployeeEmergencyContact = async (employeeId, payload) => {
   await requireRecord("employee", employeeId, "Employee");
   const data = emergencyContactSchema.parse(payload);
+  // FORCE-RLS: the new row's tenantId must match app.tenant_id (the caller's
+  // verified tenant). The employee's own tenant_id is that value.
+  const emp = await prisma.employee.findUnique({
+    where: { id: Number(employeeId) },
+    select: { tenant_id: true },
+  });
 
   if (data.isPrimary) {
     await prisma.emergencyContacts.updateMany({
@@ -995,6 +1621,7 @@ export const createEmployeeEmergencyContact = async (employeeId, payload) => {
       email: data.email || null,
       is_primary: Boolean(data.isPrimary),
       employee_Id: Number(employeeId),
+      tenantId: emp?.tenant_id ?? null,
     },
   });
 
@@ -1039,7 +1666,7 @@ export const deleteEmployeeEmergencyContact = async (employeeId, contactId) => {
   return { id: Number(contactId), deleted: true };
 };
 
-export const listPositions = async (query) => {
+export const listPositions = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const filters = {
     status: query.status || null,
@@ -1048,6 +1675,7 @@ export const listPositions = async (query) => {
   };
   const where = {
     AND: [
+      scopedWhere(tenantId, {}),
       list.q ? { title: { contains: list.q, mode: "insensitive" } } : {},
       filters.status ? { isActive: filters.status.toLowerCase() === "active" } : {},
     ],
@@ -1072,9 +1700,10 @@ export const listPositions = async (query) => {
   });
 };
 
-export const getPosition = async (id) => {
-  const position = await prisma.position.findUnique({
-    where: { id: Number(id) },
+export const getPosition = async (id, tenantId) => {
+  // Tenant isolation: a position outside the caller's tenant is not found.
+  const position = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       employees: { select: compactEmployeeSelect, take: 20, orderBy: { employee_name: "asc" } },
       JobRequisition: { take: 10, orderBy: { createdAt: "desc" } },
@@ -1091,42 +1720,61 @@ export const getPosition = async (id) => {
   };
 };
 
-export const createPosition = async (data, actorId) => {
+export const createPosition = async (data, actorId, tenantId) => {
   if (!data.title) throw new Error("Title is required");
 
+  // C.2 / T-P2.6: scope the findFirst to the same tenant so the
+  // generated job-code sequence doesn't cross tenant boundaries.
   const lastPosition = await prisma.position.findFirst({
+    where: scopedWhere(tenantId, {}),
     orderBy: { id: "desc" },
     select: { id: true },
   });
   const nextId = lastPosition ? lastPosition.id + 1 : 1;
 
   const position = await prisma.position.create({
-    data: {
+    // scopedData stamps tenantId (verified RBAC Company.uuid) onto every
+    // new position row. If tenantId is null the column is written as null
+    // (legacy / unscoped) — fail-closed: never writes another tenant's id.
+    data: scopedData(tenantId, {
       title: data.title,
       description: buildPositionDescription(data),
       isActive: data.isActive ?? true,
       createdById: actorId ? Number(actorId) : null,
       jobCode: data.jobCode || `TST-${nextId.toString().padStart(3, "0")}`,
-    },
+    }),
     include: { _count: { select: { employees: true, JobRequisition: true } } },
   });
 
   return positionRow(position);
 };
 
-export const updatePosition = async (id, data) => {
+export const updatePosition = async (id, data, ctx = {}) => {
   const existing = await prisma.position.findUnique({ where: { id: Number(id) } });
   if (!existing) throw new Error("Position not found");
 
-  const position = await prisma.$transaction(async (tx) => {
-    const updated = await tx.position.update({
-      where: { id: Number(id) },
+  // API-2 — optimistic-concurrency guard (opt-in via expectedVersion).
+  const expectedVersion = normalizeExpectedVersion(ctx.expectedVersion);
+
+  const position = await tenantTransaction(prisma, async (tx) => {
+    // API-2 — atomic compare-and-set + version bump (see updateEmployee).
+    const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+    const { count } = await tx.position.updateMany({
+      where: { id: Number(id), ...versionWhere },
       data: {
         title: data.title,
         description: buildPositionDescription(data, existing.description),
         isActive: data.isActive,
         jobCode: data.jobCode,
+        version: { increment: 1 },
       },
+    });
+    if (count === 0 && expectedVersion != null) {
+      const fresh = await tx.position.findUnique({ where: { id: Number(id) }, select: { version: true } });
+      throw preconditionFailedError(fresh?.version);
+    }
+    const updated = await tx.position.findUnique({
+      where: { id: Number(id) },
       include: { _count: { select: { employees: true, JobRequisition: true } } },
     });
 
@@ -1147,7 +1795,7 @@ export const updatePosition = async (id, data) => {
 };
 
 export const updatePositionStatus = async (id, isActive) => {
-  const position = await prisma.$transaction(async (tx) => {
+  const position = await tenantTransaction(prisma, async (tx) => {
     const updated = await tx.position.update({
       where: { id: Number(id) },
       data: { isActive },
@@ -1168,7 +1816,7 @@ export const updatePositionStatus = async (id, isActive) => {
   return positionRow(position);
 };
 
-export const listRequisitions = async (query) => {
+export const listRequisitions = async (query, tenantId) => {
   const list = parseListQuery(query, { sort: "createdAt" });
   const filters = {
     status: query.status || null,
@@ -1176,6 +1824,7 @@ export const listRequisitions = async (query) => {
   };
   const where = {
     AND: [
+      scopedWhere(tenantId, {}),
       list.q ? { title: { contains: list.q, mode: "insensitive" } } : {},
       filters.status ? { status: filters.status } : {},
       filters.positionId ? { positionId: filters.positionId } : {},
@@ -1201,9 +1850,10 @@ export const listRequisitions = async (query) => {
   return buildListPayload({ ...list, total, filters, items: items.map(requisitionRow) });
 };
 
-export const getRequisition = async (id) => {
-  const requisition = await prisma.jobRequisition.findUnique({
-    where: { id: Number(id) },
+export const getRequisition = async (id, tenantId) => {
+  // Tenant isolation: a requisition outside the caller's tenant is not found.
+  const requisition = await prisma.jobRequisition.findFirst({
+    where: scopedWhere(tenantId, { id: Number(id) }),
     include: {
       position: true,
       requestedBy: true,
@@ -1228,7 +1878,8 @@ export const createRequisition = async (data, actorId) => {
       description: data.description || null,
       departmentId: toInt(data.departmentId),
       positionId: toInt(data.positionId),
-      requestedById: Number(actorId),
+      // Hiring manager: an explicitly chosen requestedById wins, else the creator.
+      requestedById: toInt(data.requestedById) || Number(actorId),
       openings: Number(data.openings || 1),
       status: data.status || "DRAFT",
     },
@@ -1247,6 +1898,10 @@ export const updateRequisition = async (id, data) => {
       departmentId: data.departmentId === undefined ? undefined : toInt(data.departmentId),
       positionId: data.positionId === undefined ? undefined : toInt(data.positionId),
       openings: data.openings === undefined ? undefined : Number(data.openings),
+      requestedById:
+        data.requestedById === undefined || data.requestedById === ''
+          ? undefined
+          : toInt(data.requestedById),
     },
     include: { position: true, requestedBy: true, approvedBy: true, approvals: true },
   });
@@ -1255,12 +1910,14 @@ export const updateRequisition = async (id, data) => {
 };
 
 const transitionRequisition = async ({ id, status, actorId, comments }) => {
+  if (["APPROVED","REJECTED"].includes(status)) return legacyDecision("REQUISITION",id);
+  if (status === "PENDING_APPROVAL") return legacySubmit("REQUISITION",id,comments);
   if (!actorId) throw new Error("Employee context is required");
 
   const requisition = await prisma.jobRequisition.findUnique({ where: { id: Number(id) } });
   if (!requisition) throw new Error("Requisition not found");
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const updated = await tenantTransaction(prisma, async (tx) => {
     if (["APPROVED", "REJECTED"].includes(status)) {
       await tx.requisitionApproval.create({
         data: {

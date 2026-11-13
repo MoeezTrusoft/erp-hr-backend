@@ -118,9 +118,13 @@ describe('Analytics Routes Integration Tests', () => {
                     endDate: '2024-01-31'
                 });
 
+            // ERR-3: the raw service error message must not reach the client on
+            // a 5xx — expect the leak-safe ErrorEnvelope (generic message +
+            // HR-5000), with the real cause only in the server logs.
             expect(response.status).toBe(500);
-            expect(response.body.success).toBe(false);
-            expect(response.body.error).toBe('Database connection timeout');
+            expect(response.body.error.code).toBe('HR-5000');
+            expect(response.body.error.message).toBe('Internal server error');
+            expect(JSON.stringify(response.body)).not.toContain('Database connection timeout');
         });
     });
 

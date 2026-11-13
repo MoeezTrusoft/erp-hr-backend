@@ -10,7 +10,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 // ==================== ENUMS ====================
@@ -29,9 +28,53 @@ enum LeaveAccrualPeriod {
 }
 
 enum StatusAttendance {
+  PENDING_ATTENDANCE
+  PUNCH_CONFLICT
+  SETUP_REQUIRED
   PRESENT
   ABSENT
-  LATE
+  LATE // late arrival at any lateness past grace; when lateness ≥ the half-day
+  // mark the day is still docked half a day via day_credit — T&A-RULE-07
+  // splits the display (LATE) from the deduction (day_credit 0.5).
+  HALF_DAY // T&A-RULE-06: checked out BEFORE the half-day mark (half credit)
+  // T&A-RULE-06: checked out AFTER the half-day mark but before the shift end
+  // (half credit) — both early-checkout bands cost half a day and count as
+  // early checkout.
+  EARLY_CHECKOUT
+  // HR-ATT-POLICY-01 — a punch pair that never completed. These are BLOCKING
+  // states, not shades of present: day_credit stays null and
+  // requires_regularization is set, so payroll holds the day instead of
+  // silently paying zero. They outrank LATE in the single-valued `status`
+  // column; the lateness itself is still recorded as a LATE_CHECKIN anomaly.
+  MISSING_CHECKIN
+  MISSING_CHECKOUT
+  // HR-ATT-STATUS-01 — a day off, STATED. Until these existed, "not working"
+  // was represented by the absence of a row, which is indistinguishable from a
+  // day whose data never arrived, and it forced every cleanup to be a DELETE.
+  // None of the three appears in attendanceDeduction's STATUS_TO_RULE
+  // allow-list, so none can be charged: they are a statement of fact, not a
+  // price.
+  WEEKLY_OFF // rostered off-day, including a rotation rest day
+  HOLIDAY // public / calendar holiday the employee is entitled to
+  ON_LEAVE // approved leave
+}
+
+// Attendance anomaly / correction requests — the "Inform Abnormality" action and
+// the Timesheet pending-approvals feed. Employee-raised; HR approves/rejects.
+enum AnomalyType {
+  LATE_CHECKIN
+  MISSING_CHECKIN
+  MISSING_CHECKOUT
+  EARLY_CHECKOUT
+  ABSENT
+  OTHER
+}
+
+enum AnomalyStatus {
+  RESOLVED
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum LeaveStatus {
@@ -75,6 +118,20 @@ enum EnrollmentStatus {
   CANCELLED
 }
 
+// Certification lifecycle for the Certifications & Transcripts screen KPIs.
+// ACTIVE   — valid, not expired.
+// RENEWAL  — due for renewal (expiring soon / renewal in progress).
+// INACTIVE — archived/revoked/superseded (not counted as active).
+// EXPIRED  — past expiryDate. NOTE: expiry is ALSO derived dynamically from
+//            expiryDate at read time so a stale ACTIVE row past its date still
+//            counts as expired in the KPIs.
+enum CertificationStatus {
+  ACTIVE
+  RENEWAL
+  INACTIVE
+  EXPIRED
+}
+
 enum CycleStatus {
   DRAFT
   ACTIVE
@@ -112,14 +169,19 @@ enum PayrollRunStatus {
   PENDING
   PROCESSING
   COMPLETED
+  APPROVED // HR-02 / T-P4.1 — human-approved (distinct approver) and ready to FINALIZE
+  REJECTED // HR-PAY-REJECT-01 — processed batch rejected with an auditable reason
+  FINALIZED // HR-02 / T-P4.1 — finalized after approval; payslips locked for distribution
   CANCELLED
   FAILED
 }
 
 enum PayslipStatus {
-  DRAFT
-  FINALIZED
-  DISTRIBUTED
+  DRAFT // pending (not yet approved)
+  APPROVED // approved for disbursement
+  HOLD // held back (blocking issue / manual hold)
+  FINALIZED // run finalized / locked
+  DISTRIBUTED // disbursed to the employee
 }
 
 enum PayElementType {
@@ -132,6 +194,33 @@ enum PayFrequency {
   BI_WEEKLY
   SEMI_MONTHLY
   MONTHLY
+}
+
+// Payroll Setup — how a salary component's amount is derived.
+enum ComputationType {
+  FIXED // a flat amount (value)
+  PERCENTAGE // value% of the reference base (BASIC/GROSS)
+  FORMULA // safe-evaluated expression (payrollFormula.js)
+}
+
+// Payroll Setup — draft/publish lifecycle for the whole config set (PayrollConfigMeta).
+enum ConfigStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// Payroll Setup — row-level active/inactive toggle shown in the tax-slab and
+// approval-matrix tables (enable/disable without deleting).
+enum RowStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// Payroll Setup — anchor for a Cycle & Calendar boundary (period start/end, pay date).
+enum CalendarAnchor {
+  FIXED_DATE // an explicit date is supplied
+  FIRST_OF_MONTH // day 1 of the month
+  LAST_OF_MONTH // last day of the month
 }
 
 enum TimeEntryType {
@@ -162,6 +251,15 @@ enum ApprovalDecision {
   REJECTED
 }
 
+// F-03 / ARCH-01 §3.5, §7-§9 — HR-owned system-account workflow states.
+enum SystemAccountProvisioningStatus {
+  PENDING
+  PROCESSING
+  RETRY_WAIT
+  SUCCEEDED
+  TERMINAL_FAILED
+}
+
 // ==================== MODELS ====================
 
 model DashboardLayout {
@@ -174,56 +272,97 @@ model DashboardLayout {
 
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
-  @@unique([dashboardType])
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, employeeId, dashboardType])
+  @@index([tenantId])
 }
 
 model Employee {
-  id                  Int       @id @default(autoincrement())
-  tenant_id           Int?
-  first_name          String?
-  middle_name         String?
-  last_name           String?
-  preferred_name      String?
-  nationality_id_type String?
-  employee_code       String?   @db.VarChar(50)
-  date_of_birth       DateTime?
-  joining_date        DateTime?
-  probation_end_date  DateTime?
-  employee_type       String? // contract permenant etc..
-  remarks             String?
-  marital_status      String?
-  nationality         String?
-  nationality_id_no   String?
-  nationality_id      Int?
-  current_address     String?
-  permenant_address   String?
-  city                String?
-  state               String?
-  province            String?
-  country             String?
-  postal_code         String?
-  personal_contact    String?
-  email               String?
-  work_email          String?
-  work_phone          String?
-  employement_status  String? // Active/ Inactive
-  photo_url           String?
-  cover_photo_url     String?
+  employeeCategory EmploymentCategory?
+  contractNoticeDays Int?
+  separatedAt DateTime?
+  rehireEligible Boolean?
+  biometricProfiles AttendanceBiometricProfile[]
+  biometricChallenges AttendanceBiometricChallenge[]
+  payrollOffice String? @db.VarChar(100)
+  attendanceInputMode String @default("DEVICE")
+  monthlyAttendance MonthlyPayrollAttendance[]
+  id                   Int       @id @default(autoincrement())
+  tenant_id            String?   @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
+  first_name           String?
+  middle_name          String?
+  last_name            String?
+  preferred_name       String?
+  nationality_id_type  String?
+  employee_code        String    @db.VarChar(50)
+  biometric_id         String?   @db.VarChar(64) // ZKTeco device enrollment user-ID; attendance punches join on this (falls back to employee_code). Bulk-import "Biometric / Device ID".
+  personId             String?   @db.Uuid // Phase A: cross-tenant identity anchor → RBAC Person.id (enforced at app layer, not DB FK — cross-database)
+  login_password       String? // C4-encrypted (AES-256-GCM envelope) copy of the auto-generated login password, for HR read-back via hr_employee_login_password_get. RBAC holds the real hash.
+  date_of_birth        DateTime?
+  joining_date         DateTime?
+  probation_end_date   DateTime?
+  employee_type        String? // contract permenant etc..
+  work_mode            String? // Remote | Onsite | Hybrid
+  remarks              String?   @db.Text
+  marital_status       String?
+  nationality          String?
+  nationality_id_no    String?
+  nationality_id       Int?
+  current_address      String?   @db.Text
+  permenant_address    String?   @db.Text
+  city                 String?
+  state                String?
+  province             String?
+  country              String?
+  postal_code          String?
+  personal_contact     String?
+  email                String?
+  work_email           String?
+  work_phone           String?
+  employement_status   String? // Active/ Inactive
+  // HR-PAY-ELIG-01 — is this person on payroll at all?
+  // Contractors, FOC staff and anyone HR excludes still scan on the shared
+  // device, and the evaluator was deriving attendance, absences and deduction
+  // forecasts against them regardless. False stops all of that; their punches
+  // are still stored, so re-including somebody recovers their history.
+  // Defaults TRUE: attendance is the norm and exclusion must be stated, so
+  // nobody drops out by accident or by a backfill that missed them.
+  payroll_included     Boolean   @default(true)
+  // Tracked for attendance but never paid through payroll (no payslip, not in any run).
+  attendance_only      Boolean   @default(false)
+  // Paid in full but outside income tax (operator-approved per person): the payroll engine takes no income tax for this employee.
+  tax_exempt           Boolean   @default(false)
+  // HR-IMPORT-01 — the label HR's workbook uses for this person ("G Rasool",
+  // "Hasaam", "Shokat"). Sheet columns are headed with informal names, and
+  // matching them by fuzzy token overlap put "G Rasool" onto Abdul Rasool
+  // Junejo and left four columns matching nobody. Mapped once, then it is a
+  // lookup rather than a guess.
+  sheet_alias          String?   @db.VarChar(120)
+  photo_url            String?
+  cover_photo_url      String?
   cover_photo_media_id Int?
-  updatedById         Int?
-  createdById         Int?
-  additional_fields   Json?
-  gender              String?
-  job_title           String?
-  hire_date           DateTime?
-  status              String?
-  userId              Int?
-  employee_media_id   Int?
-  employee_name       String?
-  created_at          DateTime  @default(now())
-  updated_at          DateTime  @updatedAt
+  updatedById          Int?
+  createdById          Int?
+  additional_fields    Json?
+  gender               String?
+  job_title            String?
+  hire_date            DateTime?
+  status               String?
+  userId               Int?
+  employee_media_id    Int?
+  employee_name        String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  // API-2 — optimistic-concurrency guard. Bumped on every _update write; a
+  // caller-supplied expectedVersion that no longer matches → HR-4120 (412).
+  version Int @default(0)
 
   // NEW FIELDS
+  // Pakistan National Tax Number. Additive nullable; C4-encrypted at rest via the
+  // prisma C4 extension (C4_FIELDS.employee.ntn) — plaintext string in memory.
+  ntn            String?
   businessUnitId Int? // Business Unit / Platform
   gradeLevelId   Int? // Employee Grade
   managerId      Int? // Direct Supervisor (Manager)
@@ -232,29 +371,39 @@ model Employee {
   tenureMonths   String? // Tenure in months (system-calculated)
 
   // Existing relations
-  emergencyContact      EmergencyContacts[]   @relation("RelationWithEmployee")
+  emergencyContact      EmergencyContacts[]     @relation("RelationWithEmployee")
   attendance            Attendance[]
   leaves                Leave[]
-  reviewsGiven          PerformanceReview[]   @relation("Reviewer")
-  reviewsReceived       PerformanceReview[]   @relation("EmployeeReviews")
-  feedbackGiven         ReviewFeedback[]      @relation("FeedbackByEmployee")
-  Position              Position?             @relation(fields: [positionId], references: [id])
+  reviewsGiven          PerformanceReview[]     @relation("Reviewer")
+  reviewsReceived       PerformanceReview[]     @relation("EmployeeReviews")
+  feedbackGiven         ReviewFeedback[]        @relation("FeedbackByEmployee")
+  Position              Position?               @relation(fields: [positionId], references: [id])
   positionId            Int?
-  requisitionsRequested JobRequisition[]      @relation("RequestedBy")
-  requisitionsApproved  JobRequisition[]      @relation("ApprovedBy")
+  requisitionsRequested JobRequisition[]        @relation("RequestedBy")
+  requisitionsApproved  JobRequisition[]        @relation("ApprovedBy")
   approvals             RequisitionApproval[]
   JobRequisition        JobRequisition[]
   TrainingCourse        TrainingCourse[]
-  TrainingEnrollment    TrainingEnrollment[]
+  coursesCreated        TrainingCourse[]        @relation("CourseCreatedBy")
+  courseReviews         CourseReview[]
+  attendanceAnomalies   AttendanceAnomaly[]
+  payrollApprovalRoles  PayrollApprovalMatrix[] @relation("PayrollApprover")
+
+  // HR-ATT-POLICY-01
+  attendanceAnomalyApprovals AttendanceAnomalyApproval[] @relation("AttendanceAnomalyApprover")
+  attendanceApprovalRoles    AttendanceApprovalLevel[]   @relation("AttendanceApprover")
+  overtimeApprovals          OvertimeRequestApproval[]   @relation("OvertimeApprover")
+  claimApprovals             ClaimApproval[]             @relation("ClaimApprover")
+  TrainingEnrollment         TrainingEnrollment[]
   // positionCreatedBy     Position[]            @relation("CreatedBy")
-  actionBy              Log[]                 @relation("ActionBy")
-  logs                  Log[]
-  goalCreatedBy         Goal[]                @relation("GoalCreatedBy")
-  approvedBy            Goal[]                @relation("GoalApprover")
-  goalProgress          GoalProgress[]        @relation("GoalProgressCreatedBy")
-  feedBackBy            ReviewFeedback[]      @relation("FeedbackBy")
-  ReviewReminder        ReviewReminder[]
-  calibratedBy          RatingAdjustment[]    @relation("CalibratedBy")
+  actionBy                   Log[]                       @relation("ActionBy")
+  logs                       Log[]
+  goalCreatedBy              Goal[]                      @relation("GoalCreatedBy")
+  approvedBy                 Goal[]                      @relation("GoalApprover")
+  goalProgress               GoalProgress[]              @relation("GoalProgressCreatedBy")
+  feedBackBy                 ReviewFeedback[]            @relation("FeedbackBy")
+  ReviewReminder             ReviewReminder[]
+  calibratedBy               RatingAdjustment[]          @relation("CalibratedBy")
 
   businessUnit BusinessUnit? @relation(fields: [businessUnitId], references: [id])
   gradeLevel   GradeLevel?   @relation(fields: [gradeLevelId], references: [id])
@@ -262,10 +411,13 @@ model Employee {
   reportTo     Employee?     @relation("ReportToRelation", fields: [reportToId], references: [id])
   teamMembers  Employee[]    @relation("ManagerRelation")
   reports      Employee[]    @relation("ReportToRelation")
+  supervisedShifts ShiftTemplate[] @relation("ShiftSupervisor")
 
   // Payroll relations
   payrollPayslips    PayrollPayslip[]
   employmentTerms    EmploymentTerms[]
+  employmentPeriods  EmploymentPeriod[]
+  deviceEnrolments   EmployeeDeviceEnrolment[]
   payrollAssignments PayrollAssignment[]
   bankDetails        BankDetail[]
   PayrollAuditLog    PayrollAuditLog[]
@@ -273,6 +425,7 @@ model Employee {
   Timesheet          Timesheet[]
   TimeApproval       TimeApproval[]
   WorkSchedule       WorkSchedule[]
+  loans              Loan[]
 
   // Leave Management relations
   leavePoliciesCreated     LeavePolicy[]             @relation("LeavePolicyCreatedBy")
@@ -301,33 +454,47 @@ model Employee {
   dashboardLayouts      DashboardLayout[]
 
   // Onboarding relations
-  onboardingChecklists OnboardingChecklist[]
-  onboardingDocuments  OnboardingDocument[]
-  onboardingSurveys    OnboardingSurvey[]
-  buddyAssignments     OnboardingBuddy[]     @relation("BuddyRelation")
+  onboardingChecklists      OnboardingChecklist[]
+  onboardingDocuments       OnboardingDocument[]
+  onboardingSurveys         OnboardingSurvey[]
+  buddyAssignments          OnboardingBuddy[]     @relation("BuddyRelation")
+  onboardingTaskAssignments OnboardingTask[]      @relation("OnboardingTaskAssignee")
+  onboardingFeedbacks       OnboardingFeedback[]  @relation("OnboardingFeedbackEmployee")
 
   // Recruitment relations
-  interviewPanels    InterviewInterviewer[]
-  interviewScorecardsGiven InterviewScorecard[] @relation("ScorecardReviewer")
+  interviewPanels          InterviewInterviewer[]
+  interviewScorecardsGiven InterviewScorecard[]   @relation("ScorecardReviewer")
 
   // Learning & Development relations
-  certifications     Certification[]
-  facilitatedSessions TrainingSession[]    @relation("SessionFacilitator")
-  sessionAttendances TrainingSessionAttendee[]
+  certifications          Certification[]
+  recognitions            Recognition[]
+  facilitatedSessions     TrainingSession[]         @relation("SessionFacilitator")
+  sessionAttendances      TrainingSessionAttendee[]
   learningPathEnrollments LearningPathEnrollment[]
 
   // Employee management relations
-  skills             EmployeeSkill[]
-  lifecycleEvents    EmployeeLifecycleEvent[]
-  offboardingChecklist OffboardingChecklist?
+  skills                   EmployeeSkill[]
+  lifecycleEvents          EmployeeLifecycleEvent[]
+  offboardingChecklist     OffboardingChecklist?
   offboardingTasksAssigned OffboardingTask[]
 
   // Compliance, IDP, Reimbursement relations
-  complianceItems    ComplianceItem[]
-  developmentPlans   DevelopmentPlan[]
-  reimbursementClaims ReimbursementClaim[]          @relation("ReimbursementEmployee")
-  reimbursementsApproved ReimbursementClaim[]       @relation("ReimbursementApprover")
-  documentExpiryAlerts DocumentExpiryAlert[]
+  complianceItems        ComplianceItem[]
+  developmentPlans       DevelopmentPlan[]
+  reimbursementClaims    ReimbursementClaim[]  @relation("ReimbursementEmployee")
+  reimbursementsApproved ReimbursementClaim[]  @relation("ReimbursementApprover")
+  documentExpiryAlerts   DocumentExpiryAlert[]
+  // HR-BENEFITS-04 — benefit enrollments for this employee.
+  benefitEnrollments     EmployeeBenefit[]     @relation("EmployeeBenefits")
+
+  @@unique([tenant_id, employee_code])
+  @@index([biometric_id])
+  @@index([personId])
+  @@index([positionId])
+  @@index([businessUnitId])
+  @@index([gradeLevelId])
+  @@index([managerId])
+  @@index([reportToId])
 }
 
 model EmployeeMedia {
@@ -349,6 +516,10 @@ model EmployeeMedia {
   uploaded_by_id Int?
   uploaded_at    DateTime  @default(now())
   status         String    @default("active")
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model BusinessUnit {
@@ -359,16 +530,33 @@ model BusinessUnit {
   updated_at  DateTime @updatedAt
 
   employees Employee[]
+  shifts ShiftTemplate[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model GradeLevel {
-  id          Int      @id @default(autoincrement())
-  name        String // e.g., "G5", "Senior", "Associate"
-  description String?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id           Int      @id @default(autoincrement())
+  name         String // e.g., "G5", "Senior", "Associate"
+  description  String?
+  // Payroll Setup — salary band for the grade (nullable; major units).
+  minSalary    Decimal? @db.Decimal(18, 4)
+  midSalary    Decimal? @db.Decimal(18, 4)
+  maxSalary    Decimal? @db.Decimal(18, 4)
+  bandCurrency String? // ISO 4217, e.g. "PKR"
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
-  employees Employee[]
+  employees        Employee[]
+  salaryComponents SalaryComponent[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model EmergencyContacts {
@@ -380,6 +568,11 @@ model EmergencyContacts {
   is_primary   Boolean   @default(false)
   employee_Id  Int?
   employee     Employee? @relation("RelationWithEmployee", fields: [employee_Id], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employee_Id])
 }
 
 model Log {
@@ -406,9 +599,23 @@ model Log {
   payrollRunId Int?
   payslip      PayrollPayslip? @relation(fields: [payslipId], references: [id])
   payslipId    Int?
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model Attendance {
+  processingState String @default("AWAITING_DATA")
+  evaluationVersion Int @default(0)
+  evaluationHash String?
+  calculation Json?
+  finalizedAt DateTime?
+  nextEvaluationAt DateTime?
+  sessions AttendanceSession[]
+  evaluations AttendanceEvaluation[]
+  setupVersion Int?
+  setupSnapshot Json?
   id          Int              @id @default(autoincrement())
   employeeId  Int
   date        DateTime         @default(now())
@@ -416,13 +623,597 @@ model Attendance {
   check_out   DateTime?
   total_hours Float?
   status      StatusAttendance @default(ABSENT)
+  work_mode   String? // Remote | Onsite | Hybrid — the day's work mode (WFH/Remote KPI). Mirrors Employee.work_mode values.
   remarks     String?
+
+  // HR-ATT-POLICY-01 — the day's payable credit, in days: 1.0 full, 0.5 half,
+  // 0.0 unpaid. NULL means "not yet determined" (a MISSING_* day awaiting
+  // regularization). Payroll must read this rather than re-deriving policy from
+  // `status`, and must treat NULL as a hold, never as zero.
+  day_credit              Float?
+  requires_regularization Boolean @default(false)
+
+  // HR-ATT-PRIMARY-DEVICE-01 — device provenance of the day. `primary_sn` is
+  // the primary enrolment's device serial AS AT the day's end (point-in-time,
+  // like enrolment resolution); null = the employee had no SN-scoped primary.
+  // `secondary_punches` counts the day's session punches that arrived on any
+  // OTHER device — the explicit cross-site record (check-in at Site A,
+  // check-out at Site B still credits the day; the provenance is preserved,
+  // not discarded). Null primary ⇒ zero secondaries: unmarked, not "clean".
+  primary_sn        String? @db.VarChar(64)
+  secondary_punches Int     @default(0)
+
+  // HR-ATT-CORRECTION-01 — a day fixed by hand. The device roll-up SKIPS these:
+  // without that, HR corrects a day and the next sync silently overwrites it,
+  // which is the one failure that would make manual correction worthless.
+  manually_corrected Boolean   @default(false)
+  corrected_by_id    Int?
+  corrected_at       DateTime?
+  correction_reason  String?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
   logs     Log[]    @relation("AttendanceMark")
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  // HR-ATT-IMPORT-01: one attendance row per employee per day. `date` is stored
+  // at midnight (see the matching migration) so the DAY is the key — this is what
+  // makes a bulk import idempotent and re-runnable without doubling history.
+  @@unique([tenantId, employeeId, date], map: "Attendance_tenant_employee_day_key")
+  // F-DB-07: employee history and latest-day reads are tenant-leading and
+  // deterministic when multiple marks share a date.
+  @@index([tenantId, employeeId, date(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_employee_date_id_idx")
+  @@index([tenantId, date(sort: Desc), check_in(sort: Desc), id(sort: Desc)], map: "Attendance_tenant_date_checkin_id_idx")
+}
+
+// HR-ATT-DEVICE-INTAKE-01 — durable raw store of every punch pushed by a
+// biometric device over ADMS/iclock. Kept separate from Attendance (the
+// rolled-up daily row): this is the append-only source of truth so a re-import
+// or a mapping fix can rebuild Attendance without re-contacting the device.
+// deviceUserId is the device enrolment id; it maps to Employee.biometric_id
+// when the punch is rolled up. Unmatched punches are still stored here.
+// HR-ATT-ONCALL-01 — HR calls an employee in on a rostered day off.
+//
+// A weekend on-call is not a roster change and not an overtime request: HR
+// rings somebody in for ONE date. That date becomes a working day for that
+// employee (workingDay.service gives it precedence over the rostered off-day
+// and rotation rest), so punches on it score normally and a NO-SHOW on it is
+// an ordinary absence — marked ABSENT and charged by the existing deduction
+// path, with no anomaly form in the way. One row per employee-day.
+model AttendanceCallIn {
+  id         Int      @id @default(autoincrement())
+  employeeId Int // plain ref — same pattern as AttendanceDevicePunch
+  date       DateTime // the called-in calendar day
+  reason     String?  @db.Text // why they were called in
+  calledBy   String? // snapshot of the HR caller
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenantId String? @db.Uuid // stamped by tenantScope on create; FORCE-RLS
+
+  @@unique([tenantId, employeeId, date], map: "attendance_call_ins_day_key")
+  @@index([tenantId, date], map: "attendance_call_ins_tenant_date_idx")
+  @@map("attendance_call_ins")
+}
+
+model AttendanceSession {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  attendanceId Int
+  attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  sessionKey String
+  shiftStart DateTime?
+  shiftEnd DateTime?
+  processingState String
+  intervals Json
+  calculation Json
+  @@unique([tenantId, attendanceId, sessionKey])
+  @@map("attendance_sessions")
+}
+
+// Immutable calculation revisions; raw biometric images/templates are never included.
+model AttendanceEvaluation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  attendanceId Int
+  attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  version Int
+  algorithmVersion String
+  inputHash String
+  trigger String
+  snapshot Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, attendanceId, version])
+  @@index([tenantId, createdAt])
+  @@map("attendance_evaluations")
+}
+
+model AttendanceEvaluationJob {
+  rulesReconciliation Boolean @default(false)
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime
+  state String @default("PENDING")
+  nextAttemptAt DateTime @default(now())
+  attempts Int @default(0)
+  lastError String?
+  completedAt DateTime?
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, employeeId, date])
+  @@index([state, nextAttemptAt])
+  @@map("attendance_evaluation_jobs")
+}
+
+model AttendanceEvaluationCursor {
+  tenantId String @id @db.Uuid
+  plannedThrough DateTime
+  updatedAt DateTime @updatedAt
+  @@map("attendance_evaluation_cursors")
+}
+
+// Approved, attributed time adjustments do not edit the underlying punches.
+model AttendanceTimeCredit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime
+  kind String
+  start DateTime
+  end DateTime
+  fromSiteId String?
+  toSiteId String?
+  paid Boolean @default(false)
+  state String @default("PENDING")
+  reason String
+  approvedBy String
+  revokedBy String?
+  revokedReason String?
+  createdAt DateTime @default(now())
+  @@index([tenantId, employeeId, date, state])
+  @@map("attendance_time_credits")
+}
+
+model AttendanceDevicePunch {
+  excludedAt DateTime?
+  excludedBy String?
+  exclusionReason String?
+  exclusionVersion Int @default(0)
+  siteId String?
+  assurance Json?
+  directionVerified Boolean @default(false)
+  captureEventId String? @unique @db.Uuid
+  occurredAt DateTime?
+  localTime String?
+  timeZone String?
+  enrolmentId Int?
+  id           Int      @id @default(autoincrement())
+  sn           String   @db.VarChar(64) // device serial number (iclock SN=)
+  deviceUserId String   @db.VarChar(64) // enrolment id on the device
+  punchedAt    DateTime // punch timestamp as reported by the device
+  status       Int      @default(0) // device status byte: 0=check-in, 1=check-out, ...
+  verifyMode   Int      @default(0) // 1=fingerprint, 15=face, ...
+  workCode     Int      @default(0)
+  employeeId   Int? // resolved Employee.id, null when biometric_id is unknown
+  rawLine      String?  @db.Text // the exact tab-separated ATTLOG row, for replay
+  ingestedAt   DateTime @default(now())
+
+  tenantId String? @db.Uuid // create-stamped from the intake tenant; FORCE-RLS
+
+  // Idempotency: the device re-pushes the same rows on reconnect. One physical
+  // punch = one (tenant, device, user, time, status).
+  @@unique([tenantId, sn, deviceUserId, punchedAt, status], map: "attendance_device_punch_natural_key")
+  @@index([tenantId, deviceUserId, punchedAt(sort: Desc)], map: "attendance_device_punch_user_time_idx")
+  @@index([tenantId, employeeId, punchedAt(sort: Desc)], map: "attendance_device_punch_emp_time_idx")
+  @@map("attendance_device_punches")
+}
+
+// Attendance anomaly / correction request. Raised by an employee ("Inform
+// Abnormality"), reviewed by HR (approve/reject). Feeds the Timesheet
+// pending-approvals list and the Leave & Anomaly screen.
+model AttendanceAnomaly {
+  rulesVersion Int @default(1)
+  sessionKey String?
+  measuredMinutes Float?
+  decisionRole String?
+  factHash String?
+  evidenceState String @default("ACTIVE")
+  resolvedAt DateTime?
+  routingSnapshot Json?
+  approvalEnteredAt DateTime @default(now())
+  approvalPolicy String @default("STANDARD")
+  id         Int           @id @default(autoincrement())
+  employeeId Int
+  type       AnomalyType
+  reason     String?       @db.Text
+  detail     String?       @db.Text // free text for OTHER {specify}
+  date       DateTime? // the affected work date
+  fromTime   DateTime? // time-range start
+  toTime     DateTime? // time-range end
+  status     AnomalyStatus @default(PENDING)
+  reviewerId Int? // Employee id of the HR reviewer (no relation — plain ref)
+  reviewNote String?
+  decidedAt  DateTime?
+  createdAt  DateTime      @default(now())
+
+  // HR-ATT-POLICY-01 — the request form. Everything except `reason` is filled in
+  // by the system; the employee only explains themselves. Position/department
+  // are SNAPSHOTS taken at raise time: a transfer months later must not rewrite
+  // the record a decision was made on.
+  applicationDate    DateTime  @default(now()) // defaults to the raise date
+  positionSnapshot   String?
+  departmentSnapshot String?
+
+  // TS-ONBEHALF-01 — WHO filled the form. Null on rows raised before the field
+  // existed. raisedById === employeeId means the employee filed it themselves;
+  // a different id (or the ops raise path) means HR filed it on their behalf.
+  // The name is a SNAPSHOT for the same reason position/department are: the
+  // card must say who filed it at raise time, not who they are today.
+  raisedById   Int? // plain ref — no FK, same pattern as reviewerId
+  raisedByName String?
+
+  // HR-ANOM-DEADLINE-01 — last date the employee could submit this request.
+  // LATE / MISSING_CHECKIN / MISSING_CHECKOUT: 2nd working day COUNTING the
+  // anomaly day (day 1); every other type: 2 working days AFTER. Null on
+  // evaluator-sourced rows means "not employee-subject" (informational).
+  requestDeadline DateTime?
+  expectedTime       DateTime? // e.g. rostered shift start for a LATE_CHECKIN
+  actualTime         DateTime? // e.g. the punch that was actually recorded
+
+  // Dedup key for auto-raised anomalies. DISAPPROVED_LEAVE can arrive from BOTH
+  // a rejected LeaveRequest and a rejected regularization, so the generator
+  // upserts on this instead of creating one row per source.
+  sourceKind String? // 'DEVICE' | 'LEAVE_REQUEST' | 'REGULARIZATION' | 'MANUAL'
+  sourceRef  String? // e.g. "leaveRequest:123"
+
+  // MULTI-COMPANY-MIRROR-01 (B-B) — an employee in two companies raises the
+  // request once. A mirrored row points at the case that started the group;
+  // every row of one group (origin + mirrors, across companies) carries the
+  // same mirrorGroupId. No new tables: the anchor is Employee.personId.
+  originAnomalyId        Int?
+  originTenantId         String? @db.Uuid
+  mirrorGroupId          String? @db.Uuid
+  originRaisedByName     String?
+  // Payroll guard: the sibling was decided after its company's payroll already
+  // covered the day, so the payroll office must adjust deliberately.
+  decidedAfterPayrollLock Boolean @default(false)
+
+  currentApprovalLevel Int @default(1)
+  workflowVersion Int @default(0)
+  workflowHistory Json @default("[]")
+  attachments Json @default("[]")
+  // Management's explicit deduction on a rejection: 0.5, 1 or 2 days; null = the
+  // attendance policy prices the case. See lib/attendanceAnomalyRules.js.
+  manualDeductionDays Float?
+
+  // HR-ATT-APPEAL-01 — a case Management rejected may be appealed once. The
+  // appeal is a NEW case for the same day, type and evidence (sourceKind
+  // APPEAL); this column points at the rejected original, which stays as
+  // history with evidenceState SUPERSEDED so payroll prices at most one of the
+  // two. NULL on ordinary cases.
+  appealOfAnomalyId Int?
+
+
+  employee  Employee                    @relation(fields: [employeeId], references: [id])
+  approvals AttendanceAnomalyApproval[]
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, sourceKind, sourceRef], map: "attendance_anomalies_source_key")
+  // F-DB-07: the default HR review queue filters tenant + status and sorts by
+  // createdAt, with id as the stable pagination tie-break.
+  @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)], map: "attendance_anomalies_tenant_status_created_id_idx")
+  @@index([employeeId])
+  @@index([status])
+  @@index([tenantId, employeeId, date, type], map: "attendance_anomaly_employee_date_type_idx")
+  @@index([mirrorGroupId], map: "attendance_anomalies_mirror_group_idx")
+  @@index([tenantId, appealOfAnomalyId], map: "attendance_anomalies_appeal_idx")
+  // One mirror per origin case per company: a retried mirror cannot duplicate.
+  @@unique([originAnomalyId, tenantId], map: "attendance_anomalies_mirror_key")
+  @@map("attendance_anomalies")
+}
+
+// HR-ATT-POLICY-01 — one decision per approval level, mirroring
+// LeaveRequestApproval. The chain is defined by AttendanceApprovalLevel.
+model AttendanceGraceRule {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  scope String
+  scopeKey String
+  effectiveFrom DateTime @db.Date
+  checkInMinutes Int?
+  checkOutMinutes Int?
+  version Int @default(0)
+  actorId String
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, scope, scopeKey, effectiveFrom])
+  @@map("attendance_grace_rules")
+}
+
+model AttendanceGraceMembership {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  effectiveFrom DateTime @db.Date
+  teamKey String?
+  departmentKey String?
+  version Int @default(0)
+  @@unique([tenantId, employeeId, effectiveFrom])
+  @@map("attendance_grace_memberships")
+}
+
+model AttendanceExportJob {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  ownerUserId String
+  filters Json
+  employeeIds Json
+  columns Json
+  format String
+  status String @default("QUEUED")
+  progress Int @default(0)
+  total Int?
+  artifact Json?
+  leaseToken String? @db.Uuid
+  leaseUntil DateTime?
+  error String?
+  generatedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, ownerUserId, createdAt], map: "attendance_export_owner")
+  @@index([status, leaseUntil], map: "attendance_export_queue")
+  @@map("attendance_export_jobs")
+}
+
+model AttendanceSavedView {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  ownerUserId String
+  name String
+  filters Json
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, ownerUserId], map: "attendance_view_owner")
+  @@map("attendance_saved_views")
+}
+
+model AttendanceCorrectionRequest {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime @db.Date
+  sessionKey String
+  checkIn String?
+  checkOut String?
+  reason String
+  evidence String
+  reasonCategory String?
+  evidenceDate String?
+  status String @default("PENDING")
+  version Int @default(1)
+  evaluationVersion Int
+  filedById Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, employeeId, date], map: "attendance_correction_scope")
+  @@map("attendance_correction_requests")
+}
+
+model AttendanceManualTime {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  date DateTime @db.Date
+  sessionKey String
+  direction String
+  timestamp DateTime
+  actorId String
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, employeeId, date, sessionKey, direction])
+  @@map("attendance_manual_times")
+}
+
+model AttendanceRuleAudit {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int?
+  anomalyId Int?
+  action String
+  actorId String
+  data Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, anomalyId, id])
+  @@map("attendance_rule_audit")
+}
+
+model AttendancePayrollAdjustment {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  sourcePayslipId Int
+  sourcePeriodEnd DateTime
+  currencyCode String
+  amountMinor String
+  appliedPayslipId Int?
+  revision Int
+  createdAt DateTime @default(now())
+  sourcePayslip PayrollPayslip @relation("AttendanceAdjustmentSource",fields:[sourcePayslipId],references:[id],onDelete:Restrict)
+  appliedPayslip PayrollPayslip? @relation("AttendanceAdjustmentTarget",fields:[appliedPayslipId],references:[id],onDelete:SetNull)
+  @@unique([tenantId, sourcePayslipId, revision])
+  @@index([tenantId, employeeId, appliedPayslipId])
+  @@map("attendance_payroll_adjustments")
+}
+
+model AttendanceAnomalyApproval {
+  id           Int              @id @default(autoincrement())
+  anomalyId    Int
+  level        Int
+  approverId   Int
+  approverRole String
+  decision     ApprovalDecision
+  comments     String?
+  decidedAt    DateTime         @default(now())
+  createdAt    DateTime         @default(now())
+
+  anomaly  AttendanceAnomaly @relation(fields: [anomalyId], references: [id], onDelete: Cascade)
+  approver Employee          @relation("AttendanceAnomalyApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([anomalyId, level])
+  @@index([anomalyId])
+  @@index([approverId])
+  @@index([tenantId])
+  @@map("attendance_anomaly_approvals")
+}
+
+// ─── Payroll Setup · Attendance ────────────────────────────────────────────
+// These three models are part of the PAYROLL CONFIG SET: they carry
+// ConfigStatus + version and are flipped DRAFT→PUBLISHED and snapshotted by the
+// same "Publish changes" action as PayrollRuleConfig. A payroll run records the
+// config version it used, so re-running a period cannot silently change pay.
+
+// Thresholds the attendance evaluator reads. One row per tenant; a tenant with
+// no row falls back to the service-level defaults.
+model AttendancePolicyConfig {
+  id Int @id @default(autoincrement())
+
+  graceMinutes        Int @default(0) // PRESENT while check-in <= shiftStart + this
+  halfDayAfterMinutes Int @default(30) // HALF_DAY once lateness >= this (fixed minutes)
+
+  // When set, the half-day threshold is this PERCENT of the employee's own
+  // rostered shift instead of the fixed minutes above. Required because policy
+  // here is "half the shift" for four of the five tenants, and half a shift is
+  // 90 minutes for EMG's 3-hour roster but 360 for Homenet's 12-hour one — a
+  // single integer cannot express it. Null keeps the fixed-minutes behaviour.
+  halfDayAfterPercentOfShift Float?
+  earlyLeaveGraceMin         Int     @default(0) // EARLY_CHECKOUT once check-out < shiftEnd - this
+  checkoutLeniencyMin        Int     @default(240) // how long past shift end a check-out still counts
+  overtimeAfterMinutes       Int     @default(45) // OT only past this much beyond shift end
+  overtimeNeedsApproval      Boolean @default(true)
+
+  // Duration bands as a PERCENTAGE of the rostered shift, never absolute hours:
+  // this fleet runs shifts from 3h (EMG 15:30-18:30) to 12h (Homenet 22:00-10:00),
+  // so a fixed "<4h = absent" rule would mark whole teams absent every day.
+  fullDayMinPercent Float @default(90)
+  halfDayMinPercent Float @default(50)
+
+  // Anti-passback: identical punches inside this window collapse to one.
+  duplicatePunchWindowMin Int @default(5)
+
+  // Sessionisation gap; mirrors ATTENDANCE_SHIFT_GAP_HOURS.
+  shiftGapHours Int @default(11)
+
+  defaultShiftStart String @default("09:00")
+
+  // Anomaly deductions that drive payroll (rules v2). Defaults are the values
+  // that were hard-coded before this became configurable, so adding the columns
+  // changes no payslip. Minutes late/early beyond the threshold are a MAJOR case
+  // priced on its own; shorter ones share a pool of `deductPoolSize` per
+  // employee per payroll period (no carry-over between periods).
+  deductMajorThresholdMinutes Int   @default(30)
+  deductPoolSize              Int   @default(3)
+  deductAbsentDays            Float @default(1)
+  deductMissingPunchDays      Float @default(1)
+  // Missing check-ins/check-outs per employee and period that cost deductMissingPunchDays (a pool, like minors).
+  deductMissingPoolSize       Int   @default(3)
+  deductMajorTimingDays       Float @default(0.5)
+  deductPooledMinorDays       Float @default(1)
+
+  // A day whose only presence is a session shorter than this is an accidental
+  // double tap and is held as a punch conflict. 0 turns it off.
+  minSessionMinutes Int @default(5)
+
+  status    ConfigStatus @default(DRAFT)
+  version   Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId])
+  @@map("attendance_policy_config")
+}
+
+enum AttendanceDeductionRuleKey {
+  DISAPPROVED_LEAVE
+  LATE
+  MISSING_CHECKIN // deliberately separate from MISSING_CHECKOUT: a missing
+  MISSING_CHECKOUT // check-out is routine on this device, a missing check-in is not
+  EARLY_CHECKOUT
+}
+
+// "N occurrences in a period cost X days of salary." triggerCount = 1 means the
+// deduction applies per occurrence (how DISAPPROVED_LEAVE is used).
+model AttendanceDeductionRule {
+  id      Int                        @id @default(autoincrement())
+  ruleKey AttendanceDeductionRuleKey
+  enabled Boolean                    @default(false) // OFF until a dry-run is reviewed
+
+  triggerCount  Int   @default(1) // N
+  deductionDays Float @default(0.5) // X — fractional allowed (0.5 = half day)
+
+  // Timing bands: longer incidents are charged individually; shorter incidents share the counter.
+  durationThresholdMinutes Float?
+  overThresholdDeductionDays Float?
+
+  // Counting window. PAY_PERIOD follows PayrollCalendar.
+  periodScope String @default("PAY_PERIOD") // 'PAY_PERIOD' | 'MONTH'
+
+  // Rules sharing a counterGroup POOL their occurrences into one counter, so
+  // "3 missed punches of either kind = 1 day" is configuration rather than code.
+  // Null means the rule counts alone. Splitting them again later is a settings
+  // change, not a migration. Rules in one group must agree on N/X/scope/cap —
+  // enforced on write, so the UI can present a group as a single row.
+  counterGroup String?
+
+  maxDeductionDaysPerPeriod Float? // cap per employee per period
+
+  status    ConfigStatus @default(DRAFT)
+  version   Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, ruleKey])
+  @@index([tenantId])
+  @@map("attendance_deduction_rules")
+}
+
+// The anomaly approval chain: level 1 first, ascending. A level whose approver
+// cannot be resolved is SKIPPED, not blocked — that is the "if the manager does
+// not exist, hop to the next" rule. `useEmployeeManager` resolves the approver
+// dynamically from the requester's manager instead of a fixed person.
+model AttendanceApprovalLevel {
+  id                     Int     @id @default(autoincrement())
+  level                  Int // 1 = first approver
+  role                   String // 'MANAGER' | 'HR' | 'MANAGEMENT' | free text
+  approverId             Int? // fixed approver; null when resolved dynamically
+  useEmployeeManager     Boolean @default(false)
+  skipIfUnresolved       Boolean @default(true)
+  autoEscalateAfterHours Int?
+
+  rowStatus RowStatus    @default(ACTIVE)
+  status    ConfigStatus @default(DRAFT)
+  version   Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  approver Employee? @relation("AttendanceApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, level])
+  @@index([tenantId])
+  @@map("attendance_approval_levels")
 }
 
 model Leave {
@@ -441,6 +1232,11 @@ model Leave {
   updated_at DateTime @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
 }
 
 // ==================== LEAVE MANAGEMENT MODELS ====================
@@ -471,14 +1267,22 @@ model LeavePolicy {
   updatedBy   Employee? @relation("LeavePolicyUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
-  @@unique([name])
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("leave_policies")
 }
 
 model LeaveRequest {
   id            Int                @id @default(autoincrement())
   employeeId    Int
-  leavePolicyId Int
+  // Nullable: the leave TYPE (= LeavePolicy) is assigned by HR at approval, not
+  // chosen by the employee at request time. A pending request may have no policy.
+  leavePolicyId Int?
   startDate     DateTime
   endDate       DateTime
   totalDays     Float
@@ -488,7 +1292,7 @@ model LeaveRequest {
 
   // Relations
   employee    Employee               @relation(fields: [employeeId], references: [id])
-  leavePolicy LeavePolicy            @relation(fields: [leavePolicyId], references: [id])
+  leavePolicy LeavePolicy?           @relation(fields: [leavePolicyId], references: [id])
   approvals   LeaveRequestApproval[]
 
   // Audit
@@ -499,9 +1303,16 @@ model LeaveRequest {
   updatedBy   Employee? @relation("LeaveRequestUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId])
   @@index([status])
   @@index([startDate, endDate])
+  @@index([tenantId])
+  // F-DB-07: payslip leave-overlap accounting qualifies all four leading
+  // predicates; id makes equal ranges deterministic.
+  @@index([tenantId, employeeId, status, startDate, endDate, id], map: "leave_requests_tenant_employee_status_dates_id_idx")
+  @@index([tenantId, status, created_at(sort: Desc), id(sort: Desc)], map: "leave_requests_tenant_status_created_id_idx")
   @@map("leave_requests")
 }
 
@@ -523,8 +1334,11 @@ model LeaveRequestApproval {
   createdBy   Employee @relation("LeaveRequestApprovalCreatedBy", fields: [createdById], references: [id])
   createdById Int
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([leaveRequestId])
   @@index([approverId])
+  @@index([tenantId])
   @@map("leave_request_approvals")
 }
 
@@ -543,7 +1357,10 @@ model LeaveBalance {
   updatedBy   Employee? @relation("LeaveBalanceUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([employeeId, leavePolicyId])
+  @@index([tenantId])
   @@map("leave_balances")
 }
 
@@ -564,7 +1381,10 @@ model ApprovalWorkflow {
   updatedBy   Employee? @relation("ApprovalWorkflowUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
-  @@unique([name])
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("approval_workflows")
 }
 
@@ -576,7 +1396,10 @@ model ApprovalWorkflowStep {
   // Relations
   approvalWorkflow ApprovalWorkflow @relation(fields: [approvalWorkflowId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([approvalWorkflowId, stepOrder])
+  @@index([tenantId])
   @@map("approval_workflow_steps")
 }
 
@@ -598,7 +1421,10 @@ model Region {
   updatedById Int?
   Employee    Employee[]
 
-  @@unique([name])
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("regions")
 }
 
@@ -622,10 +1448,16 @@ model HolidayCalendar {
   updatedBy   Employee? @relation("HolidayCalendarUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("holiday_calendars")
 }
 
 model Holiday {
+  startTime         String?
+  endTime           String?
   id                Int      @id @default(autoincrement())
   holidayCalendarId Int
   date              DateTime
@@ -644,7 +1476,10 @@ model Holiday {
   updatedBy   Employee? @relation("HolidayUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([holidayCalendarId, date])
+  @@index([tenantId])
   @@map("holidays")
 }
 
@@ -658,7 +1493,10 @@ model EmployeeHolidayCalendar {
   employee        Employee        @relation(fields: [employeeId], references: [id])
   holidayCalendar HolidayCalendar @relation(fields: [holidayCalendarId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([employeeId, holidayCalendarId, effectiveFrom])
+  @@index([tenantId])
   @@map("employee_holiday_calendars")
 }
 
@@ -685,8 +1523,11 @@ model TimeEntry {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId, work_date])
   @@index([timesheetId])
+  @@index([tenantId])
 }
 
 model Timesheet {
@@ -707,8 +1548,11 @@ model Timesheet {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([employeeId, period_start, period_end])
   @@index([employeeId, status])
+  @@index([tenantId])
 }
 
 model TimeApproval {
@@ -725,7 +1569,10 @@ model TimeApproval {
 
   created_at DateTime @default(now())
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([timesheetId])
+  @@index([tenantId])
 }
 
 model OvertimeRule {
@@ -746,7 +1593,132 @@ model OvertimeRule {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("overtime_rules")
+}
+
+model ShiftTemplate {
+  id        Int      @id @default(autoincrement())
+  name      String
+  fromTime  String // "09:00"
+  toTime    String // "17:00"
+  shiftType String   @default("morning") // morning | evening | night
+  workMode  String? // remote | hybrid | onsite
+  departmentId Int?
+  supervisorId Int?
+  checkoutCutoffTime String?
+  checkoutCutoffDayOffset Int @default(0)
+  department BusinessUnit? @relation(fields: [departmentId], references: [id], onDelete: Restrict, map: "shift_department_fk")
+  supervisor Employee? @relation("ShiftSupervisor", fields: [supervisorId], references: [id], onDelete: Restrict, map: "shift_supervisor_fk")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenantId  String?  @db.Uuid
+
+  @@unique([tenantId, name])
+  @@index([tenantId, departmentId, fromTime, toTime], map: "shift_department_window_idx")
+  @@index([tenantId])
+  @@map("shift_templates")
+}
+
+model ShiftAssignment {
+  id            Int      @id @default(autoincrement())
+  employeeId    Int
+  date          DateTime
+  shiftType     String   @default("morning") // morning | evening | night
+  workMode      String   @default("onsite") // remote | hybrid | onsite
+  status        String   @default("on_shift") // on_shift | on_leave | off | holiday
+  fromTime      String?
+  toTime        String?
+  overtimeHours Float    @default(0)
+  templateId    Int?
+  checkoutCutoffTime String?
+  checkoutCutoffDayOffset Int @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tenantId      String?  @db.Uuid
+
+  @@index([employeeId, date])
+  @@index([tenantId])
+  @@map("shift_assignments")
+}
+
+model ShiftSwapRequest {
+  id          Int       @id @default(autoincrement())
+  requesterId Int
+  targetId    Int?
+  fromDate    DateTime
+  toDate      DateTime?
+  shiftType   String? // morning | evening | night
+  reason      String?
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
+  approverId  Int?
+  decidedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  tenantId    String?   @db.Uuid
+
+  @@index([tenantId])
+  @@map("shift_swap_requests")
+}
+
+model OvertimeRequest {
+  id         Int       @id @default(autoincrement())
+  employeeId Int
+  date       DateTime
+  hours      Float
+  rate       Float     @default(1.5) // e.g. 1.5x
+  project    String?
+  reason     String?
+  fromTime   String?
+  toTime     String?
+  approverId Int?
+  status     String    @default("PENDING") // PENDING | APPROVED | REJECTED | WITHDRAWN
+  decidedAt  DateTime?
+
+  // HR-OT-APPROVAL-01 — overtime routes through the SAME ordered chain as
+  // payroll (PayrollApprovalMatrix), so a single approverId is not enough.
+  currentApprovalLevel Int                       @default(1)
+  source               String                    @default("MANUAL") // MANUAL | DEVICE_PUNCH
+  approvals            OvertimeRequestApproval[]
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  tenantId String? @db.Uuid
+
+  @@index([employeeId])
+  // F-DB-07: manager queue and employee-period aggregation have different
+  // selective prefixes; both carry date + id ordering.
+  @@index([tenantId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_status_date_id_idx")
+  @@index([tenantId, employeeId, status, date(sort: Desc), id(sort: Desc)], map: "overtime_requests_tenant_employee_status_date_id_idx")
+  @@map("overtime_requests")
+}
+
+// HR-OT-APPROVAL-01 — one decision per level of the payroll approval chain,
+// mirroring AttendanceAnomalyApproval. Overtime costs money, so who approved
+// which level has to be reconstructable.
+model OvertimeRequestApproval {
+  id                Int              @id @default(autoincrement())
+  overtimeRequestId Int
+  level             Int
+  approverId        Int
+  approverRole      String
+  decision          ApprovalDecision
+  comments          String?
+  decidedAt         DateTime         @default(now())
+  createdAt         DateTime         @default(now())
+
+  overtimeRequest OvertimeRequest @relation(fields: [overtimeRequestId], references: [id], onDelete: Cascade)
+  approver        Employee        @relation("OvertimeApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid
+
+  @@unique([overtimeRequestId, level])
+  @@index([approverId])
+  @@index([tenantId])
+  @@map("overtime_request_approvals")
 }
 
 model WorkSchedule {
@@ -766,8 +1738,35 @@ model WorkSchedule {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId, effective_start_date])
+  @@index([tenantId])
   @@map("work_schedules")
+}
+
+// Draft settings are editable; published releases are immutable snapshots.
+model AttendanceSetupDraft {
+  tenantId String @id @db.Uuid
+  version Int @default(1)
+  settings Json @default("{}")
+  updatedAt DateTime @updatedAt
+  @@map("attendance_setup_drafts")
+}
+
+model AttendanceSetupRelease {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  version Int
+  effectiveFrom DateTime @db.Date
+  coverageThrough DateTime @db.Date
+  config Json
+  reason String
+  publishedById Int?
+  publishedAt DateTime @default(now())
+  @@unique([tenantId, version])
+  @@index([tenantId, effectiveFrom, version])
+  @@map("attendance_setup_releases")
 }
 
 model Source {
@@ -782,6 +1781,11 @@ model Source {
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 // ==================== PERFORMANCE MANAGEMENT MODELS ====================
@@ -794,7 +1798,7 @@ model PerformanceReview {
   period_start   DateTime?
   period_end     DateTime?
   overall_rating Float?
-  comments       String?
+  comments       String?      @db.Text
   submittedAt    DateTime?
   status         ReviewStatus @default(IN_PROGRESS)
   type           ReviewType   @default(SELF)
@@ -812,6 +1816,12 @@ model PerformanceReview {
   calibrationSessionId   Int?
   RatingAdjustment       RatingAdjustment[]      @relation("RatingPerformanceReview")
   performanceReviewItems PerformanceReviewItem[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([cycleId])
 }
 
 model ReviewFeedback {
@@ -827,20 +1837,37 @@ model ReviewFeedback {
   review     PerformanceReview @relation(fields: [reviewId], references: [id])
   reviewer   Employee          @relation("FeedbackByEmployee", fields: [reviewerId], references: [id])
   feedbackBy Employee?         @relation("FeedbackBy", fields: [feedbackById], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([reviewId])
+  @@index([reviewerId])
 }
 
 model Position {
-  id             Int              @id @default(autoincrement())
-  title          String
-  description    String?
-  createdById    Int?
-  jobCode        String?          @unique // <-- new field
-  isActive       Boolean          @default(true)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  employees      Employee[]
-  JobRequisition JobRequisition[]
+  id               Int              @id @default(autoincrement())
+  title            String
+  description      String?
+  band             String? // job band / grade label
+  responsibilities String? // free text or JSON string
+  requirements     String? // free text or JSON string
+  createdById      Int?
+  jobCode          String?
+  isActive         Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  employees        Employee[]
+  JobRequisition   JobRequisition[]
   // createdBy      Employee?        @relation("CreatedBy", fields: [createdById], references: [id])
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, title])
+  @@index([tenantId])
 }
 
 model JobRequisition {
@@ -853,6 +1880,8 @@ model JobRequisition {
   approvedById  Int?
   employeeId    Int?
   openings      Int               @default(1)
+  priority      String? // Low | Medium | High | Urgent
+  requirements  String? // free text / JSON string (description = JD)
   status        RequisitionStatus @default(DRAFT)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
@@ -866,6 +1895,17 @@ model JobRequisition {
   employee     Employee?             @relation(fields: [employeeId], references: [id])
   applications Application[]
   offers       Offer[]
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([positionId])
+  @@index([requestedById])
+  @@index([approvedById])
+  @@index([employeeId])
 }
 
 model RequisitionApproval {
@@ -879,6 +1919,12 @@ model RequisitionApproval {
   // Relations
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])
   approver    Employee       @relation(fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([requisitionId])
+  @@index([approverId])
 }
 
 model JobPosting {
@@ -890,14 +1936,24 @@ model JobPosting {
 
   // Relations
   requisition JobRequisition @relation(fields: [requisitionId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([requisitionId])
 }
 
 model TrainingCategory {
-  id          Int              @id @default(autoincrement())
-  name        String
-  description String?
+  id            Int              @id @default(autoincrement())
+  name          String
+  description   String?
   courses       TrainingCourse[]
   learningPaths LearningPath[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model TrainingCourse {
@@ -916,12 +1972,112 @@ model TrainingCourse {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  category        TrainingCategory       @relation(fields: [categoryId], references: [id])
-  instructor      Employee?              @relation(fields: [instructorId], references: [id])
-  enrollments     TrainingEnrollment[]
-  sessions        TrainingSession[]
-  pathCourses     LearningPathCourse[]
-  certifications  Certification[]
+  // ── Course-catalog (LMS) fields — Course Catalog + Course View screens ──
+  courseCode        String? // human catalog code, e.g. "WD-101" (unique per tenant)
+  subtitle          String? // short tagline under the title on the course view
+  introVideoMediaId Int? // DAM asset ID for the course introduction video
+  language          String? // primary language of instruction, e.g. "English"
+  createdById       Int? // Employee who authored the course ("created by")
+  tags              String[] @default([]) // free-form catalog tags (card chips)
+  relatedTopics     String[] @default([]) // related topics shown on the course view
+  requirements      String[] @default([]) // prerequisites, rendered as bullets
+  ratingAvg         Float    @default(0) // denormalized avg of course_reviews.rating (0-5)
+  ratingCount       Int      @default(0) // denormalized count of course_reviews
+
+  category       TrainingCategory     @relation(fields: [categoryId], references: [id])
+  instructor     Employee?            @relation(fields: [instructorId], references: [id])
+  createdBy      Employee?            @relation("CourseCreatedBy", fields: [createdById], references: [id])
+  enrollments    TrainingEnrollment[]
+  sessions       TrainingSession[]
+  pathCourses    LearningPathCourse[]
+  certifications Certification[]
+  sections       CourseSection[]
+  outcomes       CourseOutcome[]
+  reviews        CourseReview[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, courseCode])
+  @@index([tenantId])
+  @@index([categoryId])
+}
+
+// A named group of lectures within a course (e.g. "Introduction to Web
+// Development"). The course view shows each section with its lecture count and
+// summed duration.
+model CourseSection {
+  id        Int    @id @default(autoincrement())
+  courseId  Int
+  title     String
+  sortOrder Int    @default(0)
+
+  course   TrainingCourse  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lectures CourseLecture[]
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_sections")
+}
+
+// A single lecture (video) inside a section. The video asset lives in DAM
+// (videoMediaId); durationSeconds is the "length" the FE renders (as minutes).
+model CourseLecture {
+  id              Int      @id @default(autoincrement())
+  sectionId       Int
+  title           String
+  videoMediaId    Int? // DAM asset ID for the lecture video
+  durationSeconds Int      @default(0) // lecture length in seconds
+  sortOrder       Int      @default(0)
+  isPreview       Boolean  @default(false) // free preview (viewable without enrollment)
+  createdAt       DateTime @default(now())
+
+  section CourseSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([sectionId])
+  @@map("course_lectures")
+}
+
+// A learning outcome shown on the course view ("What you'll learn"): each has a
+// title and an optional description.
+model CourseOutcome {
+  id          Int     @id @default(autoincrement())
+  courseId    Int
+  title       String
+  description String?
+  sortOrder   Int     @default(0)
+
+  course TrainingCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_outcomes")
+}
+
+// A learner rating/review. Feeds the denormalized TrainingCourse.ratingAvg /
+// ratingCount shown on the catalog + course view.
+model CourseReview {
+  id         Int      @id @default(autoincrement())
+  courseId   Int
+  employeeId Int?
+  rating     Int // 1-5
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  course   TrainingCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  employee Employee?      @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_reviews")
 }
 
 model TrainingEnrollment {
@@ -932,9 +2088,17 @@ model TrainingEnrollment {
   progress       Float            @default(0)
   status         EnrollmentStatus @default(ENROLLED)
   completionDate DateTime?
+  // Assessment score 0-100 (additive nullable). Training tab averages completed scores.
+  score          Int?
 
   course   TrainingCourse @relation(fields: [courseId], references: [id])
   employee Employee       @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@index([employeeId])
 }
 
 model PerformanceCycle {
@@ -951,6 +2115,11 @@ model PerformanceCycle {
   templateId         Int?
   reviews            PerformanceReview[]
   CalibrationSession CalibrationSession[] @relation("CalibrationPerformanceCycle")
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model PerformanceTemplate {
@@ -963,6 +2132,11 @@ model PerformanceTemplate {
   updated_at     DateTime @updatedAt
 
   cycles PerformanceCycle[]
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model Goal {
@@ -988,6 +2162,13 @@ model Goal {
   parentGoal      GoalAlignment[] @relation("GoalAlignmentsParent")
   alignedGoal     GoalAlignment[] @relation("GoalAlignmentsChild")
   goal            GoalAlignment[]
+
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model GoalProgress {
@@ -1001,6 +2182,10 @@ model GoalProgress {
   // Relations
   goal      Goal?     @relation(fields: [goalId], references: [id])
   createdBy Employee? @relation("GoalProgressCreatedBy", fields: [created_by], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model GoalAlignment {
@@ -1013,6 +2198,10 @@ model GoalAlignment {
   alignedGoal Goal? @relation("GoalAlignmentsChild", fields: [alignedGoalId], references: [id])
   Goal        Goal? @relation(fields: [goalId], references: [id])
   goalId      Int?
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model ReviewReminder {
@@ -1024,6 +2213,10 @@ model ReviewReminder {
 
   review PerformanceReview @relation(fields: [reviewId], references: [id])
   sentTo Employee          @relation(fields: [sentToId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model CalibrationSession {
@@ -1040,6 +2233,10 @@ model CalibrationSession {
   performance_reviews PerformanceReview[] @relation("CalibrationPerformanceReviews")
   ratingAdjustments   RatingAdjustment[]  @relation("CalibrationSessions")
   cycle               PerformanceCycle?   @relation("CalibrationPerformanceCycle", fields: [cycleId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 model RatingAdjustment {
@@ -1056,43 +2253,107 @@ model RatingAdjustment {
   calibrationSession CalibrationSession? @relation("CalibrationSessions", fields: [calibrationSessionId], references: [id])
   performance_review PerformanceReview?  @relation("RatingPerformanceReview", fields: [reviewId], references: [id])
   calibratedBy       Employee?           @relation("CalibratedBy", fields: [calibrated_by_employee_id], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
 }
 
 // ==================== PAYROLL MODELS ====================
 
+model PayrollFinanceSummary {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  month String
+  runId Int
+  revision Int
+  version Int @default(1)
+  status String @default("DRAFT")
+  requestId String
+  inputHash String
+  payload Json
+  reason String
+  preparedBy String
+  approvedBy String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  approvedAt DateTime? @db.Timestamptz
+  run PayrollRun @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: Restrict)
+  @@unique([tenantId, month, revision])
+  @@unique([tenantId, requestId])
+  @@map("payroll_finance_summaries")
+}
+
 model PayrollRun {
-  id              Int              @id @default(autoincrement())
-  periodStart     DateTime
-  periodEnd       DateTime
-  countryCode     String           @db.Char(2)
-  currencyCode    String           @db.Char(3)
-  status          PayrollRunStatus @default(PENDING)
-  totalGross      Float?           @default(0)
-  totalDeductions Float?           @default(0)
-  totalNet        Float?           @default(0)
-  employeeCount   Int?             @default(0)
-  processedAt     DateTime?
-  created_at      DateTime         @default(now())
-  updated_at      DateTime         @updatedAt
+  id               Int              @id @default(autoincrement())
+  tenantId         String?          @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  periodStart      DateTime
+  periodEnd        DateTime
+  countryCode      String           @db.Char(2)
+  currencyCode     String           @db.Char(3)
+  status           PayrollRunStatus @default(PENDING)
+  totalGross       Decimal?         @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalDeductions  Decimal?         @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalNet         Decimal?         @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  employeeCount    Int?             @default(0)
+  processedAt      DateTime?
+  // HR-02 / T-P4.1 — separation of duties + reproducibility.
+  // processedBy : employee id that ran processing (the processor).
+  // approvedBy  : employee id that approved the run; MUST differ from
+  //               processedBy (no self-approval). FINALIZE requires this set.
+  // approvedAt  : when approval was recorded.
+  // ruleVersion / ratesEffectiveAt : the versioned tax/rule snapshot the run
+  //               was computed against, so the run is reproducible against the
+  //               rates that were in effect (not whatever the table holds now).
+  processedBy      Int?
+  approvedBy       Int?
+  approvedAt       DateTime?
+  ruleVersion      String?
+  ratesEffectiveAt DateTime?
+  calculationConfigVersion Int?
+  created_at       DateTime         @default(now())
+  updated_at       DateTime         @updatedAt
 
   // Relations
   payslips        PayrollPayslip[]
+  financeSummaries PayrollFinanceSummary[]
   logs            Log[]
   PayrollAuditLog PayrollAuditLog[]
 
-  @@unique([periodStart, periodEnd])
+  // REQ-006 follow-up / REQ-007 — period uniqueness is tenant-scoped: a period
+  // is unique WITHIN a tenant, so two DIFFERENT tenants may each own the same
+  // (periodStart, periodEnd). The app-level overlap guard in createPayrollRun is
+  // already tenant-scoped (withTenant), so this aligns the DB constraint with it.
+  @@index([tenantId, periodStart, periodEnd])
+  @@unique([tenantId, id], map: "payroll_runs_tenant_id_id")
+  @@index([tenantId])
   @@map("payroll_runs")
 }
 
 model PayrollPayslip {
+  attendanceBasisMinor String?
+  attendancePeriodDays Int?
+  payrollOffice String? @db.VarChar(100)
+  attendanceInputMode String @default("DEVICE")
+  payableDays Decimal? @db.Decimal(5, 2)
   id              Int           @id @default(autoincrement())
+  tenantId        String?       @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   payrollRunId    Int
   employeeId      Int
-  grossAmount     Float
-  totalDeductions Float
-  netAmount       Float
+  grossAmount     Decimal       @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  totalDeductions Decimal       @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  netAmount       Decimal       @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  // HR-02 / T-P4.1 — the rule/rate version this payslip was computed against,
+  // copied from its run so a single payslip is independently reproducible.
+  ruleVersion     String?
   distributedAt   DateTime?
+  paidAt DateTime?
+  paymentReference String?
+  paymentEvidence Json?
   status          PayslipStatus @default(DRAFT)
+  // Payroll-This-Month bulk actions (approve/hold/disburse) audit.
+  approvedById    Int?
+  approvedAt      DateTime?
+  holdReason      String?
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
 
@@ -1101,10 +2362,15 @@ model PayrollPayslip {
   employee        Employee           @relation(fields: [employeeId], references: [id])
   earnings        PayrollEarning[]
   deductions      PayrollDeduction[]
+  questions       PayslipQuestion[]
   logs            Log[]
   PayrollAuditLog PayrollAuditLog[]
+  attendanceAdjustmentsFrom AttendancePayrollAdjustment[] @relation("AttendanceAdjustmentSource")
+  attendanceAdjustmentsApplied AttendancePayrollAdjustment[] @relation("AttendanceAdjustmentTarget")
 
   @@unique([payrollRunId, employeeId])
+  // F-DB-08: employee payroll history is the dominant list/read path.
+  @@index([tenantId, employeeId, created_at(sort: Desc), id(sort: Desc)], map: "payroll_payslips_tenant_employee_created_id_idx")
   @@map("payroll_payslips")
 }
 
@@ -1112,7 +2378,7 @@ model PayrollEarning {
   id            Int      @id @default(autoincrement())
   payslipId     Int
   earningTypeId Int
-  amount        Float
+  amount        Decimal  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   description   String?
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
@@ -1121,6 +2387,9 @@ model PayrollEarning {
   payslip     PayrollPayslip     @relation(fields: [payslipId], references: [id], onDelete: Cascade)
   earningType PayrollEarningType @relation(fields: [earningTypeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("payroll_earnings")
 }
 
@@ -1128,7 +2397,7 @@ model PayrollDeduction {
   id              Int      @id @default(autoincrement())
   payslipId       Int
   deductionTypeId Int
-  amount          Float
+  amount          Decimal  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
   description     String?
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
@@ -1137,12 +2406,16 @@ model PayrollDeduction {
   payslip       PayrollPayslip       @relation(fields: [payslipId], references: [id], onDelete: Cascade)
   deductionType PayrollDeductionType @relation(fields: [deductionTypeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("payroll_deductions")
 }
 
 model PayrollEarningType {
   id          Int            @id @default(autoincrement())
-  code        String         @unique
+  tenantId    String?        @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  code        String
   name        String
   description String?
   type        PayElementType @default(EARNING)
@@ -1154,16 +2427,20 @@ model PayrollEarningType {
   earnings    PayrollEarning[]
   assignments PayrollAssignment[]
 
+  @@unique([tenantId, code])
+  @@index([tenantId])
   @@map("payroll_earning_types")
 }
 
 model PayrollDeductionType {
   id          Int            @id @default(autoincrement())
-  code        String         @unique
+  tenantId    String?        @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  code        String
   name        String
   description String?
   type        PayElementType @default(DEDUCTION)
-  rate        Float?
+  rate        Decimal?       @db.Decimal(8, 6)
+  preTax      Boolean        @default(false) // whether the deduction is applied pre-tax (hr_payroll_deduction_type_create)
   created_at  DateTime       @default(now())
   updated_at  DateTime       @updatedAt
 
@@ -1171,16 +2448,101 @@ model PayrollDeductionType {
   deductions  PayrollDeduction[]
   assignments PayrollAssignment[]
 
+  @@unique([tenantId, code])
+  @@index([tenantId])
   @@map("payroll_deduction_types")
+}
+
+/// HR-ATT-DEVICE-ENROLMENT-01 — which device id belonged to whom, and when.
+///
+/// `Employee.biometric_id` is a single string, so a person can hold only one
+/// enrolment. Re-enrolment is routine — a finger stops reading, a card is
+/// reissued, a device is replaced — and every time it happens the punches under
+/// the new id resolve to nobody and never reach Attendance.
+///
+/// A multi-value id list on Employee would NOT be safe. Device ids get REUSED:
+/// once `2` is issued to somebody else, a list would claim every historical
+/// punch under `2` for the original holder, moving attendance silently between
+/// people. So an enrolment is true for a PERIOD, and a punch resolves against
+/// the id that was current when it happened.
+///
+/// `Employee.biometric_id` stays as a convenience "current id" for the profile
+/// screen and the bulk import; removing it is a separate change.
+model EmployeeDeviceEnrolment {
+  id            Int       @id @default(autoincrement())
+  tenantId      String?   @db.Uuid
+  employeeId    Int
+  deviceUserId  String    @db.VarChar(64) // what the device sends
+  sn            String?   @db.VarChar(64) // device serial; null = any device
+  // HR-ATT-PRIMARY-DEVICE-01 — the employee's PRIMARY biometric device for the
+  // period. Check-ins/outs on the primary are the normal case; punches that
+  // arrive on any OTHER device are explicitly preserved on the day row
+  // (Attendance.primary_sn / Attendance.secondary_punches) instead of being
+  // indistinguishable. Null = no primary assigned yet (day rows stay unmarked).
+  // Only SN-scoped enrolments can be primary: a null-`sn` catch-all matches
+  // every machine, so "the" primary device would be undefined.
+  isPrimary     Boolean   @default(false)
+  effectiveFrom DateTime
+  effectiveTo   DateTime? // null = current
+  note          String?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([tenantId, deviceUserId, effectiveFrom])
+  @@index([tenantId, employeeId, effectiveFrom])
+  @@map("employee_device_enrolments")
+}
+
+/// HR-PAYROLL-EMPLOYMENT-PERIOD-01 — when someone was actually employed.
+///
+/// Employee carries `hire_date` and no leaving date of any kind, so a leaver
+/// could not be prorated (payroll read `employee.term_date`, a column that does
+/// not exist) and a re-hire could not be represented at all: one hire_date
+/// cannot hold "joined, left, came back".
+///
+/// One row per spell. `endDate` null means currently employed. Payroll prorates
+/// on the share of the run these rows cover, so a mid-month leaver is paid to
+/// their last day and a re-hire is simply two rows.
+///
+/// This is NOT EmploymentTerms. That model is effective-dated too, but its
+/// boundaries are COMPENSATION versions — a raise opens a new row mid-month, and
+/// prorating from it would half-pay everyone who ever got a raise.
+///
+/// `hire_date` stays the tenure anchor for accrual, gratuity and probation; it
+/// simply stops being a payroll input.
+model EmploymentPeriod {
+  id         Int       @id @default(autoincrement())
+  tenantId   String?   @db.Uuid
+  employeeId Int
+  startDate  DateTime
+  endDate    DateTime? // null = still employed
+  reason     String? // resignation, contract end, re-hire, ...
+  note       String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([tenantId, employeeId, startDate])
+  @@map("employment_periods")
 }
 
 model EmploymentTerms {
   id              Int          @id @default(autoincrement())
+  tenantId        String?      @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   employeeId      Int
-  baseSalary      Float
+  // HR-01 / T-P4.2 — C4 salary/comp encrypted at rest (was Float). Stored as a
+  // self-describing AES-256-GCM envelope string; the prisma C4 extension
+  // decrypts to a Number on read so callers (payroll/analytics) are unchanged.
+  baseSalary      String
   currency        String       @default("USD")
   payFrequency    PayFrequency
-  bonusTarget     Float?
+  bonusTarget     String? // HR-01 / T-P4.2 — C4 bonus encrypted at rest (was Float?)
+  // Equity component (RSUs/options/grant value) — free-form, C4-encrypted at rest
+  // (C4_FIELDS.employmentTerms.equity). Additive nullable. Job & Comp tab.
+  equity          String?
   equalityDetails String?
   effectiveFrom   DateTime
   effectiveTo     DateTime?
@@ -1190,16 +2552,19 @@ model EmploymentTerms {
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
 
+  // F-DB-08: payroll selects the latest effective terms for each employee.
+  @@index([tenantId, employeeId, effectiveFrom(sort: Desc), id(sort: Desc)], map: "employment_terms_tenant_employee_effective_id_idx")
   @@map("employment_terms")
 }
 
 model PayrollAssignment {
   id              Int       @id @default(autoincrement())
+  tenantId        String?   @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   employeeId      Int
   earningTypeId   Int?
   deductionTypeId Int?
-  amount          Float?
-  rate            Float?
+  amount          Decimal?  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  rate            Decimal?  @db.Decimal(8, 6)
   effectiveFrom   DateTime
   effectiveTo     DateTime?
   isActive        Boolean   @default(true)
@@ -1211,43 +2576,318 @@ model PayrollAssignment {
   earningType   PayrollEarningType?   @relation(fields: [earningTypeId], references: [id])
   deductionType PayrollDeductionType? @relation(fields: [deductionTypeId], references: [id])
 
+  // F-DB-08: active employee assignments are evaluated by effective window.
+  @@index([tenantId, employeeId, isActive, effectiveFrom(sort: Desc), id(sort: Desc)], map: "payroll_assignments_tenant_employee_active_effective_id_idx")
   @@map("payroll_assignments")
 }
 
+model Loan {
+  id                      Int        @id @default(autoincrement())
+  tenantId                String?    @db.Uuid
+  employeeId              Int
+  principalMinor          Int // Loan amount in minor units (cents)
+  interestRatePct         Float?     @default(0) // Annual interest rate %
+  tenureMonths            Int // Number of monthly installments
+  disbursementDate        DateTime
+  // HR-PAYROLL-ADVANCE-01 — a salary advance IS a loan (tenureMonths 1,
+  // interestRatePct 0); the discriminator lets the two report separately while
+  // sharing the payroll bridge, garnishment cap and repayment ledger.
+  kind                    LoanKind   @default(LOAN)
+  status                  LoanStatus @default(PENDING)
+  outstandingMinor        Int // Remaining balance in minor units
+  monthlyInstallmentMinor Int // Fixed monthly deduction in minor units
+  reason                  String?
+  createdById             Int?
+  approvedById            Int?
+  created_at              DateTime   @default(now())
+  updated_at              DateTime   @updatedAt
+
+  employee   Employee        @relation(fields: [employeeId], references: [id])
+  repayments LoanRepayment[]
+
+  @@index([tenantId, employeeId, status])
+  @@index([tenantId, status])
+  @@index([tenantId, kind, status])
+  @@map("loans")
+}
+
+model LoanRepayment {
+  id           Int      @id @default(autoincrement())
+  tenantId     String?  @db.Uuid
+  loanId       Int
+  amountMinor  Int // Amount deducted this installment
+  payrollRunId Int? // Link to the payroll run that deducted it
+  payslipId    Int? // Link to the payslip line
+  deductedAt   DateTime @default(now())
+  settledAt DateTime?
+  note         String?
+
+  loan Loan @relation(fields: [loanId], references: [id])
+
+  @@index([tenantId, loanId, deductedAt])
+  // N-02 / T-1.2 — one repayment per (loan, run). Partial (NULL-run legacy rows
+  // like the "Pre-system installment" history are allowed); the application
+  // layer also checks before decrementing, this is the belt to the braces.
+  @@index([loanId, payrollRunId])
+  @@map("loan_repayments")
+}
+
+enum LoanKind {
+  LOAN
+  ADVANCE
+}
+
+enum LoanStatus {
+  PENDING
+  REJECTED
+  ACTIVE
+  PAID_OFF
+  WRITTEN_OFF
+  DEFAULTED
+}
+
 model BankDetail {
-  id            Int      @id @default(autoincrement())
-  employeeId    Int
-  bankName      String
-  accountNumber String
-  routingNumber String?
-  accountType   String   @default("CHECKING")
-  isPrimary     Boolean  @default(true)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id                 Int      @id @default(autoincrement())
+  tenantId           String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
+  employeeId         Int
+  bankName           String
+  // HR-01 / T-P4.2 — C4 bank account encrypted at rest (AES-256-GCM envelope).
+  // GCM uses a random IV so ciphertext differs per write, which would break the
+  // old @@unique([employeeId, accountNumber]) and any lookup-by-account. The
+  // accountNumberBidx column below holds a deterministic HMAC (blind index) of
+  // the plaintext; uniqueness and equality lookups move to it (see the prisma
+  // C4 extension). The encrypted value still lives in accountNumber.
+  accountNumber      String
+  accountNumberBidx  String? // HR-01 / T-P4.2 — deterministic HMAC of the plaintext account for unique + lookup
+  routingNumber      String? // HR-01 / T-P4.2 — C4 routing number encrypted at rest
+  accountType        String   @default("CHECKING")
+  // Consolidated-profile fields (additive nullable).
+  accountTitle       String? // A/C Title — name the account is held under
+  iban               String? // C4-encrypted at rest (C4_FIELDS.bankDetail.iban); embeds the account number
+  branch             String? // bank branch name / code
+  disbursementMethod String? // how net pay is disbursed: Bank Transfer | Cheque | Cash
+  isPrimary          Boolean  @default(true)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
 
   // Relations
   employee Employee @relation(fields: [employeeId], references: [id])
 
-  @@unique([employeeId, accountNumber])
+  // HR-01 / T-P4.2 — uniqueness moved off the (now-encrypted) accountNumber to
+  // its blind index so a duplicate account is still rejected.
+  @@unique([employeeId, accountNumberBidx])
+  @@index([tenantId])
   @@map("bank_details")
 }
 
 model TaxRate {
   id            Int       @id @default(autoincrement())
+  tenantId      String?   @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   countryCode   String    @db.Char(2)
-  bracketMin    Float
-  bracketMax    Float?
-  rate          Float
+  bracketMin    Decimal   @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  bracketMax    Decimal?  @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  rate          Decimal   @db.Decimal(8, 6)
+  // Payroll Setup (FBR-style slabs): baseTax = cumulative tax up to bracketMin;
+  // status toggles a slab active/inactive without deleting it.
+  baseTax       Decimal   @default(0) @db.Decimal(18, 4) // F-12 / ARCH-01 §5.1
+  status        RowStatus @default(ACTIVE)
   effectiveFrom DateTime
   effectiveTo   DateTime?
   created_at    DateTime  @default(now())
   updated_at    DateTime  @updatedAt
 
+  // F-DB-08: rule snapshots load one tenant/country and evaluate effective
+  // windows; id resolves equal effective dates deterministically.
+  @@index([tenantId, countryCode, effectiveFrom(sort: Desc), effectiveTo, id], map: "tax_rates_tenant_country_effective_id_idx")
   @@map("tax_rates")
+}
+
+// ==================== PAYROLL SETUP (config screen) ====================
+
+// Salary Structure — a unified, state-of-the-art salary component. `computation`
+// selects how the amount is derived: FIXED (value), PERCENTAGE (value% of a base),
+// or FORMULA (safe-evaluated expression referencing other component codes + the
+// payroll variables BASIC/GROSS/DAYS_WORKED/WORKING_DAYS/LWP_DAYS). Optionally
+// scoped to a grade band via gradeLevelId.
+model SalaryComponent {
+  id           Int             @id @default(autoincrement())
+  code         String // referenced by other components' formulas (unique per tenant)
+  name         String
+  type         PayElementType // EARNING | DEDUCTION
+  computation  ComputationType @default(FIXED)
+  value        Decimal?        @db.Decimal(18, 8) // FIXED amount or PERCENTAGE percent (0-100); 8 dp because the standard split is 400/9 … of basic
+  formula      String? // FORMULA expression (payrollFormula.js), required when computation=FORMULA
+  taxable      Boolean         @default(true)
+  active       Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  gradeLevelId Int? // optional band/grade scoping
+  status       ConfigStatus    @default(DRAFT) // draft until the config is published
+  version      Int             @default(1)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  gradeLevel GradeLevel? @relation(fields: [gradeLevelId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([gradeLevelId])
+  @@map("salary_components")
+}
+
+// Cycle & Calendar — one config row per tenant. Period/pay-date boundaries use a
+// CalendarAnchor (+ explicit date when FIXED_DATE). attendanceCutoff also LOCKS
+// shift/OT entry edits; approvalsClose bars approvals after it; payDateWeekendShift
+// pulls a weekend pay date earlier to the nearest working day.
+model PayrollCalendar {
+  id                  Int            @id @default(autoincrement())
+  payFrequency        PayFrequency   @default(MONTHLY)
+  periodStartAnchor   CalendarAnchor @default(FIRST_OF_MONTH)
+  periodStartDate     DateTime?
+  periodEndAnchor     CalendarAnchor @default(LAST_OF_MONTH)
+  periodEndDate       DateTime?
+  attendanceCutoff    DateTime? // date+time; locks shift + OT entries
+  approvalsClose      DateTime? // date+time; no approvals after
+  payDateAnchor       CalendarAnchor @default(LAST_OF_MONTH)
+  payDate             DateTime?
+  payDateWeekendShift Boolean        @default(true)
+  status              ConfigStatus   @default(DRAFT)
+  version             Int            @default(1)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId])
+  @@map("payroll_calendars")
+}
+
+// Approval Matrix — an ordered approval level for payroll (higher level = higher
+// authority). Optional monetary threshold + an auto-escalate deadline.
+model PayrollApprovalMatrix {
+  id                Int       @id @default(autoincrement())
+  level             Int // 1,2,3 … (higher = higher authority)
+  role              String // approving role/title
+  approverId        Int? // resolved Employee approver
+  thresholdRequired Boolean   @default(false)
+  thresholdAmount   Decimal?  @db.Decimal(18, 4) // F-12: amount at/above which this level is required
+  autoEscalateAfter DateTime? // date+time after which the request escalates
+  status            RowStatus @default(ACTIVE)
+  version           Int       @default(1)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  approver Employee? @relation("PayrollApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([level])
+  @@map("payroll_approval_matrix")
+}
+
+// Pay Rules — one config row per tenant: the six policy toggles + parameters.
+model PayrollRuleConfig {
+  id                      Int          @id @default(autoincrement())
+  midMonthJoinerProration Boolean      @default(true) // pro-rate by calendar days from join date
+  midMonthExitSettlement  Boolean      @default(true) // final settlement + gratuity + leave encashment
+  lwpRecovery             Boolean      @default(true) // monthly basic ÷ working days × LWP days
+  complianceHold          Boolean      @default(true) // block disbursement on unfiled EOBI/PSSF
+  garnishmentRecovery     Boolean      @default(true) // loan/garnishment recovery
+  garnishmentCapPct       Float        @default(33) // cap as % of net pay; roll balance forward
+  offCycleRelease         Boolean      @default(true) // single-employee off-cycle disbursement
+  // HR-PAYROLL-EOBI-01 — Pakistani EOBI employee contribution. Ships DISABLED
+  // for every tenant: the ceiling and rate below are the figures the original
+  // (unimplemented) comment named, not ones confirmed against a filed return.
+  // Enabling is a deliberate per-tenant act, not a default.
+  // HR-PAYROLL-DEDUCTION-BASIS-01 — what one deducted day is charged against.
+  // GROSS = base + fixed allowances (the contracted monthly package); BASIC =
+  // base salary alone. Salaries here are basic 45% + allowances 55%, so BASIC
+  // under-deducts by more than half — hence the GROSS default.
+  deductionBasis          String       @default("GROSS")
+  // Pay in cash (banking paused): bank details are not required before finalize.
+  cashDisbursement        Boolean      @default(false)
+  eobiEnabled             Boolean      @default(false)
+  eobiEmployeeRatePct     Float        @default(1) // % of the assessable wage
+  eobiWageCeilingMinor    Int          @default(1700000) // PKR 17,000 in paisa; contribution stops rising above this
+  // Attendance policy: unexcused ABSENT/HALF_DAY day-credit loss is deducted;
+  // approved anomaly requests are excluded by the payroll bridge.
+  absenceRecoveryEnabled  Boolean      @default(true)
+  status                  ConfigStatus @default(DRAFT)
+  version                 Int          @default(1)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId])
+  @@map("payroll_rule_config")
+}
+
+// Payroll Setup → Pay Rules: discrete, tenant-owned policy rules (an array on
+// the screen). Each rule carries a human title + description; the backend
+// camel-cases the title into a stable `ruleKey` (e.g. "Mid Month Joiner
+// Proration" → "midMonthJoinerProration") used as the row's machine key
+// (unique per tenant). Distinct from the singleton PayrollRuleConfig toggles.
+model PayrollRule {
+  id          Int          @id @default(autoincrement())
+  ruleKey     String // camelCased from title; unique per tenant (machine key)
+  title       String // human-entered rule title
+  description String? // human-entered rule description
+  enabled     Boolean      @default(true)
+  sortOrder   Int          @default(0)
+  status      ConfigStatus @default(DRAFT) // draft until the config set is published
+  version     Int          @default(1)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, ruleKey])
+  @@index([tenantId])
+  @@map("payroll_rules")
+}
+
+// Draft/Publish state for the whole payroll config set (one row per tenant).
+// "Publish changes" flips DRAFT config rows → PUBLISHED, bumps publishedVersion,
+// and writes a PayrollConfigSnapshot.
+model PayrollConfigMeta {
+  id               Int          @id @default(autoincrement())
+  status           ConfigStatus @default(DRAFT)
+  draftVersion     Int          @default(1)
+  publishedVersion Int          @default(0)
+  hasUnpublished   Boolean      @default(true)
+  publishedAt      DateTime?
+  publishedById    Int?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId])
+  @@map("payroll_config_meta")
+}
+
+// An immutable published snapshot of the entire payroll config (for export + audit).
+model PayrollConfigSnapshot {
+  id            Int      @id @default(autoincrement())
+  version       Int
+  config        Json // full config set at publish time
+  publishedById Int?
+  publishedAt   DateTime @default(now())
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@unique([tenantId, version])
+  @@index([tenantId])
+  @@map("payroll_config_snapshots")
 }
 
 model PayrollAuditLog {
   id           Int      @id @default(autoincrement())
+  actorUserId  Int? // RBAC user behind the action (stamped by lib/auditActor.js); null for system jobs and older rows
+  tenantId     String?  @db.Uuid // HR-04 / T-P2.2 + REQ-007 — RBAC Company.uuid (verified service-JWT claim; was Int companyId)
   action       String
   details      String?
   payrollRunId Int?
@@ -1262,6 +2902,9 @@ model PayrollAuditLog {
   payslip    PayrollPayslip? @relation(fields: [payslipId], references: [id])
   employee   Employee?       @relation(fields: [employeeId], references: [id])
 
+  // F-DB-08: tenant audit pagination is newest-first with a stable id tie-break.
+  @@index([tenantId, created_at(sort: Desc), id(sort: Desc)], map: "payroll_audit_logs_tenant_created_id_idx")
+  @@index([tenantId, action], map: "payroll_audit_logs_tenant_action_idx")
   @@map("payroll_audit_logs")
 }
 
@@ -1269,7 +2912,7 @@ model Tag {
   id          Int      @id @default(autoincrement())
   name        String
   type        String? // e.g. "skill", "keyword"
-  tenantId    Int?
+  tenantId    String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   isActive    Boolean  @default(true)
   createdById Int?
   createdAt   DateTime @default(now())
@@ -1284,22 +2927,55 @@ model Candidate {
   id            Int      @id @default(autoincrement())
   firstName     String
   lastName      String?
-  email         String   @unique
+  email         String
   phone         String?
   source        String? // LinkedIn, Referral, etc.
+  location      String? // city / region
   resumeUrl     String? // legacy - use resumeMediaId for new uploads
   resumeMediaId Int? // DAM asset ID for resume file
   notes         String?
   status        String   @default("active") // active | archived
-  tenantId      Int?
+  // AI resume-parsing output (skills/competencies/certifications + raw meta).
+  // Additive nullable JSON; candidates have no Certification relation so their
+  // extracted certs live here.
+  parsedResume  Json?
+  tenantId      String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById   Int?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  tags         CandidateTag[]
-  applications Application[]
-  talentPools  TalentPool[]
-  offers       Offer[]
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
+  tags            CandidateTag[]
+  applications    Application[]
+  talentPools     TalentPool[]
+  offers          Offer[]
+  candidateSkills CandidateSkill[]
+
+  @@unique([tenantId, email])
+}
+
+model CandidateSkill {
+  id          Int      @id @default(autoincrement())
+  candidateId Int
+  // Self-contained (candidates are pre-hire, not linked to the Skill catalog):
+  // name + category ('skill' | 'competency') + AI rating (score 0-100 + level).
+  name        String
+  category    String?  @default("skill")
+  score       Int?
+  level       String?
+  source      String?  @default("ai-resume")
+  createdAt   DateTime @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid; nullable, fail-closed
+
+  @@unique([candidateId, name])
+  @@index([candidateId])
+  @@index([tenantId])
+  @@map("candidate_skills")
 }
 
 model CandidateTag {
@@ -1310,7 +2986,10 @@ model CandidateTag {
   candidate Candidate @relation(fields: [candidateId], references: [id])
   tag       Tag       @relation(fields: [tagId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([candidateId, tagId])
+  @@index([tenantId])
 }
 
 model Application {
@@ -1319,7 +2998,7 @@ model Application {
   jobRequisitionId Int
   stage            String   @default("applied") // applied | screening | interview | offer | hired | rejected
   status           String   @default("open") // open | closed
-  tenantId         Int?
+  tenantId         String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById      Int?
   appliedAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1330,6 +3009,8 @@ model Application {
   offer          Offer?
 
   @@unique([candidateId, jobRequisitionId])
+  @@index([candidateId])
+  @@index([jobRequisitionId])
 }
 
 model PerformanceMetric {
@@ -1338,7 +3019,7 @@ model PerformanceMetric {
   description String?
   category    String? // e.g. "Core", "Leadership"
   isActive    Boolean  @default(true)
-  tenantId    Int?
+  tenantId    String?  @db.Uuid // REQ-007 — RBAC Company.uuid (was Int companyId)
   createdById Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1356,7 +3037,10 @@ model PerformanceReviewItem {
   review PerformanceReview @relation(fields: [reviewId], references: [id])
   metric PerformanceMetric @relation(fields: [metricId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([reviewId, metricId])
+  @@index([tenantId])
 }
 
 // ==================== ONBOARDING ENUMS ====================
@@ -1381,64 +3065,123 @@ enum SurveyType {
   DAY_90
 }
 
+// Onboarding-task category — the FE "Onboarding Portal" groups tasks by the KIND
+// of setup (orthogonal to `stage`, which is the WHEN). Labels for the FE live in
+// src/lib/onboardingTaxonomy.js (ONBOARDING_TASK_CATEGORY_LABELS).
+enum OnboardingTaskCategory {
+  IT_ACCESS_SETUP
+  WORKSPACE_EQUIPMENT
+  ORIENTATION_TRAINING
+  HR_DOCUMENTATION
+  TEAM_INTRODUCTION
+  COMPLIANCE_POLICY
+  OTHER
+}
+
 // ==================== ONBOARDING MODELS ====================
 
 model OnboardingChecklist {
-  id          Int               @id @default(autoincrement())
-  employeeId  Int
-  title       String
-  startDate   DateTime
-  targetDate  DateTime?
-  status      OnboardingStatus  @default(NOT_STARTED)
-  completedAt DateTime?
-  notes       String?
-  created_at  DateTime          @default(now())
-  updated_at  DateTime          @updatedAt
+  id                Int              @id @default(autoincrement())
+  employeeId        Int
+  title             String           @default("Employee Onboarding")
+  startDate         DateTime
+  targetDate        DateTime?
+  status            OnboardingStatus @default(NOT_STARTED)
+  completedAt       DateTime?
+  notes             String?
+  readyToCollect    Boolean          @default(false)
+  currentStage      String? // pre_joining | pre_boarding | first_week | equipment | complete
+  template          String? // onboarding template name
+  preboarding       Json? // { readiness:{}, itSetup:{}, engagement:{}, workspace:{} } booleans
+  memberAssignments Json? // [{ employeeId, name, role }]
+  activityLog       Json? // [{ at, actor, text }]
+  created_at        DateTime         @default(now())
+  updated_at        DateTime         @updatedAt
 
-  employee  Employee              @relation(fields: [employeeId], references: [id])
-  tasks     OnboardingTask[]
-  documents OnboardingDocument[]
-  surveys   OnboardingSurvey[]
-  buddy     OnboardingBuddy?
+  employee       Employee             @relation(fields: [employeeId], references: [id])
+  tasks          OnboardingTask[]
+  documents      OnboardingDocument[]
+  surveys        OnboardingSurvey[]
+  sessions       OnboardingSession[]
+  buddy          OnboardingBuddy?
+  portalFeedback OnboardingFeedback?
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
   @@map("onboarding_checklists")
 }
 
-model OnboardingTask {
-  id           Int              @id @default(autoincrement())
-  checklistId  Int
-  title        String
-  description  String?
-  assigneeType TaskAssigneeType
-  assigneeId   Int?
-  dueDate      DateTime?
-  completed    Boolean          @default(false)
-  completedAt  DateTime?
-  sortOrder    Int              @default(0)
-  mediaId      Int?
-  created_at   DateTime         @default(now())
-  updated_at   DateTime         @updatedAt
+model OnboardingSession {
+  id          Int       @id @default(autoincrement())
+  checklistId Int
+  title       String
+  sessionDate DateTime?
+  fromTime    String? // "09:00"
+  toTime      String? // "10:00"
+  sessionType String? // orientation | training | meeting
+  location    String? // room or link
+  assigneeId  Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid
+
+  @@index([checklistId])
+  @@index([tenantId])
+  @@map("onboarding_sessions")
+}
+
+model OnboardingTask {
+  id           Int                     @id @default(autoincrement())
+  checklistId  Int
+  title        String
+  description  String?
+  stage        String? // pre_joining | pre_boarding | first_week | equipment
+  category     OnboardingTaskCategory? @default(OTHER) // FE Onboarding-Portal grouping (IT & Access, Workspace, ...)
+  assigneeType TaskAssigneeType        @default(HR)
+  assigneeId   Int? // responsible employee (any employee, incl. the onboarding person)
+  dueDate      DateTime?
+  completed    Boolean                 @default(false)
+  completedAt  DateTime?
+  sortOrder    Int                     @default(0)
+  mediaId      Int?
+  created_at   DateTime                @default(now())
+  updated_at   DateTime                @updatedAt
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  // Responsible employee — no DB-level FK (assigneeId may reference legacy ids);
+  // Prisma resolves the join at query time so the portal can show their profile.
+  assignee  Employee?           @relation("OnboardingTaskAssignee", fields: [assigneeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([assigneeId])
   @@map("onboarding_tasks")
 }
 
 model OnboardingDocument {
-  id            Int      @id @default(autoincrement())
+  id            Int       @id @default(autoincrement())
   checklistId   Int
   employeeId    Int
   title         String
   mediaId       Int
   category      String?
-  requiresSign  Boolean  @default(false)
+  requiresSign  Boolean   @default(false)
   signedAt      DateTime?
   signedByEmpId Int?
-  created_at    DateTime @default(now())
+  created_at    DateTime  @default(now())
 
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee            @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("onboarding_documents")
 }
 
@@ -1452,6 +3195,9 @@ model OnboardingBuddy {
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   buddy     Employee            @relation("BuddyRelation", fields: [buddyId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("onboarding_buddies")
 }
 
@@ -1467,8 +3213,36 @@ model OnboardingSurvey {
   checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee            @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([checklistId, type])
+  @@index([tenantId])
   @@map("onboarding_surveys")
+}
+
+// New-hire onboarding-experience feedback (FE Onboarding Portal → "Submit
+// feedback"). A radio-questionnaire distinct from the DAY_30/60/90 surveys:
+// `responses` is [{ questionId, question, answer }] validated against the
+// canonical questions in src/lib/onboardingTaxonomy.js. One submission per
+// checklist (upserted) so a re-submit overwrites.
+model OnboardingFeedback {
+  id          Int      @id @default(autoincrement())
+  checklistId Int      @unique
+  employeeId  Int
+  responses   Json? // [{ questionId, question, answer }]
+  comments    String?
+  submittedAt DateTime @default(now())
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  checklist OnboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  employee  Employee            @relation("OnboardingFeedbackEmployee", fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@map("onboarding_feedback")
 }
 
 // ==================== RECRUITMENT COMPLETION ENUMS ====================
@@ -1479,6 +3253,8 @@ enum InterviewType {
   BEHAVIORAL
   PANEL
   FINAL
+  ONSITE
+  VIDEO
 }
 
 enum InterviewStatus {
@@ -1507,6 +3283,7 @@ model Interview {
   durationMinutes Int             @default(60)
   location        String?
   status          InterviewStatus @default(SCHEDULED)
+  decision        String? // NEXT_ROUND | HOLD | REJECTED (interview outcome)
   notes           String?
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
@@ -1515,22 +3292,30 @@ model Interview {
   interviewers InterviewInterviewer[]
   scorecards   InterviewScorecard[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([applicationId])
   @@map("interviews")
 }
 
 model InterviewInterviewer {
   interviewId Int
   employeeId  Int
+  status      String? // invited | accepted | declined | completed
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   employee  Employee  @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([interviewId, employeeId])
+  @@index([tenantId])
   @@map("interview_interviewers")
 }
 
 model InterviewScorecard {
-  id             Int      @id @default(autoincrement())
+  id             Int       @id @default(autoincrement())
   interviewId    Int
   reviewerId     Int
   scores         Json
@@ -1543,32 +3328,51 @@ model InterviewScorecard {
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   reviewer  Employee  @relation("ScorecardReviewer", fields: [reviewerId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([interviewId, reviewerId])
+  @@index([tenantId])
   @@map("interview_scorecards")
 }
 
 model Offer {
-  id               Int         @id @default(autoincrement())
-  applicationId    Int         @unique
-  candidateId      Int
-  jobRequisitionId Int
-  salary           Float
-  currency         String      @default("USD")
-  startDate        DateTime?
-  expiryDate       DateTime?
-  status           OfferStatus @default(DRAFT)
+  id                 Int         @id @default(autoincrement())
+  applicationId      Int         @unique
+  candidateId        Int
+  jobRequisitionId   Int
+  // HR-01 / T-P4.2 — C4 offered salary encrypted at rest (was Float). Decrypted
+  // to a Number on read by the prisma C4 extension.
+  salary             String
+  currency           String      @default("USD")
+  startDate          DateTime?
+  expiryDate         DateTime?
+  status             OfferStatus @default(DRAFT)
   offerLetterMediaId Int?
-  notes            String?
-  sentAt           DateTime?
-  respondedAt      DateTime?
-  createdById      Int?
-  created_at       DateTime    @default(now())
-  updated_at       DateTime    @updatedAt
+  notes              String?     @db.Text
+  sentAt             DateTime?
+  respondedAt        DateTime?
+  viewedAt           DateTime?
+  offerType          String? // Standard | Contract | Internship | Promotion
+  employmentType     String? // Full-time | Part-time | Contract
+  terms              Json? // { probationMonths, noticePeriodDays, additionalTerms, specialClauses }
+  compensation       Json? // { baseSalary, currency, bonus, allowances, benefits:[...] }
+  approvals          Json? // { hiringManager, hrHead, finance } each { by, decision, at, reason }
+  createdById        Int?
+  created_at         DateTime    @default(now())
+  updated_at         DateTime    @updatedAt
 
   application    Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   candidate      Candidate      @relation(fields: [candidateId], references: [id])
   jobRequisition JobRequisition @relation(fields: [jobRequisitionId], references: [id])
 
+  // API-2 — optimistic-concurrency guard (see Employee.version).
+  version Int @default(0)
+
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([candidateId])
+  @@index([jobRequisitionId])
   @@map("offers")
 }
 
@@ -1582,8 +3386,29 @@ model TalentPool {
 
   candidate Candidate @relation(fields: [candidateId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([candidateId, poolName])
+  @@index([tenantId])
   @@map("talent_pools")
+}
+
+// Per-tenant recruitment cost inputs so cost-per-hire is real (not illustrative).
+model RecruitmentCostConfig {
+  id         Int      @id @default(autoincrement())
+  tenantId   String?  @db.Uuid
+  period     String   @default("all") // e.g. "all" | "FY26"
+  jobAds     Decimal  @default(0) @db.Decimal(18, 4)
+  agencyFees Decimal  @default(0) @db.Decimal(18, 4)
+  tools      Decimal  @default(0) @db.Decimal(18, 4)
+  other      Decimal  @default(0) @db.Decimal(18, 4)
+  currency   String   @default("PKR")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, period])
+  @@index([tenantId])
+  @@map("recruitment_cost_configs")
 }
 
 // ==================== LEARNING & DEVELOPMENT ENUMS ====================
@@ -1619,6 +3444,9 @@ model LearningPath {
   courses     LearningPathCourse[]
   enrollments LearningPathEnrollment[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("learning_paths")
 }
 
@@ -1631,7 +3459,10 @@ model LearningPathCourse {
   learningPath LearningPath   @relation(fields: [learningPathId], references: [id], onDelete: Cascade)
   course       TrainingCourse @relation(fields: [courseId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([learningPathId, courseId])
+  @@index([tenantId])
   @@map("learning_path_courses")
 }
 
@@ -1647,7 +3478,10 @@ model LearningPathEnrollment {
   learningPath LearningPath @relation(fields: [learningPathId], references: [id])
   employee     Employee     @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([learningPathId, employeeId])
+  @@index([tenantId])
   @@map("learning_path_enrollments")
 }
 
@@ -1670,6 +3504,9 @@ model TrainingSession {
   facilitator Employee?                 @relation("SessionFacilitator", fields: [facilitatorId], references: [id])
   attendees   TrainingSessionAttendee[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("training_sessions")
 }
 
@@ -1681,25 +3518,35 @@ model TrainingSessionAttendee {
   session  TrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   employee Employee        @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@id([sessionId, employeeId])
+  @@index([tenantId])
   @@map("training_session_attendees")
 }
 
 model Certification {
-  id                 Int       @id @default(autoincrement())
+  id                 Int                 @id @default(autoincrement())
   employeeId         Int
   courseId           Int?
   name               String
+  category           String? // certification category (card chip on the Certifications screen)
+  status             CertificationStatus @default(ACTIVE) // lifecycle for KPI counts (expiry also derived from expiryDate)
   issuedBy           String?
   issuedAt           DateTime?
   expiryDate         DateTime?
   credentialId       String?
   certificateMediaId Int?
-  created_at         DateTime  @default(now())
+  created_at         DateTime            @default(now())
 
   employee Employee        @relation(fields: [employeeId], references: [id])
   course   TrainingCourse? @relation(fields: [courseId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([courseId])
   @@map("certifications")
 }
 
@@ -1727,14 +3574,37 @@ enum OffboardingStatus {
 
 // ==================== EMPLOYEE MANAGEMENT MODELS ====================
 
+model Recognition {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  title       String
+  description String?
+  category    String? // Award | Kudos | Spot Bonus | Milestone
+  givenById   Int? // employee/user who gave the recognition
+  awardedAt   DateTime @default(now())
+  created_at  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  tenantId String? @db.Uuid // RBAC Company.uuid; nullable, fail-closed
+
+  @@index([employeeId])
+  @@index([tenantId])
+  @@map("recognitions")
+}
+
 model Skill {
   id         Int      @id @default(autoincrement())
-  name       String   @unique
+  name       String
   category   String?
   created_at DateTime @default(now())
 
   employeeSkills EmployeeSkill[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("skills")
 }
 
@@ -1743,6 +3613,12 @@ model EmployeeSkill {
   employeeId   Int
   skillId      Int
   proficiency  String?
+  // AI resume-parsing ratings (additive nullable). score 0-100 + a level label
+  // (Beginner/Intermediate/Advanced/Expert). source marks provenance, e.g.
+  // "ai-resume" so AI-derived ratings are distinguishable from manual ones.
+  score        Int?
+  level        String?
+  source       String?
   verified     Boolean  @default(false)
   verifiedById Int?
   addedAt      DateTime @default(now())
@@ -1750,7 +3626,10 @@ model EmployeeSkill {
   employee Employee @relation(fields: [employeeId], references: [id])
   skill    Skill    @relation(fields: [skillId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@unique([employeeId, skillId])
+  @@index([tenantId])
   @@map("employee_skills")
 }
 
@@ -1767,7 +3646,10 @@ model EmployeeLifecycleEvent {
 
   employee Employee @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
   @@index([employeeId, effectiveDate])
+  @@index([tenantId])
   @@map("employee_lifecycle_events")
 }
 
@@ -1781,9 +3663,12 @@ model OffboardingChecklist {
   created_at           DateTime          @default(now())
   updated_at           DateTime          @updatedAt
 
-  employee Employee         @relation(fields: [employeeId], references: [id])
+  employee Employee          @relation(fields: [employeeId], references: [id])
   tasks    OffboardingTask[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("offboarding_checklists")
 }
 
@@ -1798,9 +3683,13 @@ model OffboardingTask {
   completedAt  DateTime?
   created_at   DateTime         @default(now())
 
-  checklist   OffboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
-  assignee    Employee?            @relation(fields: [assigneeId], references: [id])
+  checklist OffboardingChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  assignee  Employee?            @relation(fields: [assigneeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([checklistId])
   @@map("offboarding_tasks")
 }
 
@@ -1822,26 +3711,65 @@ enum IDPItemStatus {
 
 enum ReimbursementStatus {
   DRAFT
-  SUBMITTED
+  SUBMITTED // pending review
+  NEEDS_INFO // info requested from the claimant
   APPROVED
   REJECTED
-  PAID
+  WITHDRAWN
+  PAID // reimbursed
+}
+
+// Claims & Reimbursements — a single step in a claim's ordered approval chain.
+enum ClaimApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Claims & Reimbursements — status of a request-for-information on a claim.
+enum ClaimInfoStatus {
+  PENDING // HR asked, awaiting the claimant's response
+  RESPONDED
+}
+
+// My Payslip — status of an employee's question raised on a payslip.
+enum PayslipQuestionStatus {
+  OPEN
+  ANSWERED
+}
+
+// HR-BENEFITS-04 — per-employee benefits (health / retirement / allowances).
+enum BenefitType {
+  HEALTH
+  RETIREMENT
+  ALLOWANCE
+  OTHER
+}
+
+enum EmployeeBenefitStatus {
+  ACTIVE
+  WAIVED
+  TERMINATED
 }
 
 // ==================== COMPLIANCE & IDP & REIMBURSEMENT MODELS ====================
 
 model ComplianceChecklist {
-  id            Int      @id @default(autoincrement())
-  name          String
-  description   String?
-  applicableTo  String?
-  refId         Int?
-  isActive      Boolean  @default(true)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id           Int      @id @default(autoincrement())
+  name         String
+  description  String?
+  applicableTo String?
+  refId        Int?
+  isActive     Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
   items ComplianceItem[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
   @@map("compliance_checklists")
 }
 
@@ -1862,21 +3790,30 @@ model ComplianceItem {
   checklist ComplianceChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
   employee  Employee?           @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([checklistId])
+  @@index([employeeId])
   @@map("compliance_items")
 }
 
 model DocumentExpiryAlert {
-  id               Int      @id @default(autoincrement())
+  id               Int       @id @default(autoincrement())
   employeeMediaId  Int
   employeeId       Int
   alertDate        DateTime
   daysBeforeExpiry Int
-  notified         Boolean  @default(false)
+  notified         Boolean   @default(false)
   notifiedAt       DateTime?
-  created_at       DateTime @default(now())
+  created_at       DateTime  @default(now())
 
   employee Employee @relation(fields: [employeeId], references: [id])
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
   @@map("document_expiry_alerts")
 }
 
@@ -1885,7 +3822,7 @@ model DevelopmentPlan {
   employeeId   Int
   title        String
   description  String?
-  startDate    DateTime
+  startDate    DateTime  @default(now())
   endDate      DateTime?
   reviewedById Int?
   created_at   DateTime  @default(now())
@@ -1894,6 +3831,9 @@ model DevelopmentPlan {
   employee Employee              @relation(fields: [employeeId], references: [id])
   items    DevelopmentPlanItem[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
   @@map("development_plans")
 }
 
@@ -1909,6 +3849,10 @@ model DevelopmentPlanItem {
 
   plan DevelopmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([planId])
   @@map("development_plan_items")
 }
 
@@ -1916,7 +3860,8 @@ model ReimbursementClaim {
   id             Int                 @id @default(autoincrement())
   employeeId     Int
   title          String
-  amount         Float
+  description    String?
+  amount         Decimal             @db.Decimal(18, 4)
   currency       String              @default("USD")
   category       String?
   receiptMediaId Int?
@@ -1924,17 +3869,2072 @@ model ReimbursementClaim {
   submittedAt    DateTime?
   approvedById   Int?
   approvedAt     DateTime?
+  rejectedReason String?
   paidAt         DateTime?
   notes          String?
+  // An approved claim is paid through payroll: the run that has reserved it (and its payslip), and, once that run is
+  // finalised, the claim is PAID with paidAt. A reservation by a cancelled or failed run no longer holds the claim.
+  payrollRunId   Int?
+  payslipId      Int?
   created_at     DateTime            @default(now())
   updated_at     DateTime            @updatedAt
 
-  employee   Employee  @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
-  approvedBy Employee? @relation("ReimbursementApprover", fields: [approvedById], references: [id])
+  employee     Employee           @relation("ReimbursementEmployee", fields: [employeeId], references: [id])
+  approvedBy   Employee?          @relation("ReimbursementApprover", fields: [approvedById], references: [id])
+  items        ClaimItem[]
+  approvals    ClaimApproval[]
+  infoRequests ClaimInformation[]
 
+  tenantId String? @db.Uuid // C.2 / T-P2.2 / T-P2.6 — RBAC Company.uuid (verified service-JWT claim); nullable, fail-closed
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([tenantId, status, payrollRunId], map: "reimbursement_claims_pay_idx")
   @@map("reimbursement_claims")
+}
+
+// Claims & Reimbursements — a claim line item (name/description/amount + optional
+// DAM attachment).
+model ClaimItem {
+  id          Int      @id @default(autoincrement())
+  claimId     Int
+  name        String
+  description String?
+  amount      Decimal  @db.Decimal(18, 4)
+  mediaId     Int? // DAM attachment asset id
+  createdAt   DateTime @default(now())
+
+  claim ReimbursementClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([claimId])
+  @@map("claim_items")
+}
+
+// Claims & Reimbursements — one ordered step in a claim's approval chain.
+model ClaimApproval {
+  id         Int                 @id @default(autoincrement())
+  claimId    Int
+  level      Int // step order (1,2,3…)
+  role       String?
+  approverId Int?
+  status     ClaimApprovalStatus @default(PENDING)
+  comments   String?
+  decidedAt  DateTime?
+  createdAt  DateTime            @default(now())
+
+  claim    ReimbursementClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  approver Employee?          @relation("ClaimApprover", fields: [approverId], references: [id])
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([claimId])
+  @@map("claim_approvals")
+}
+
+// Claims & Reimbursements — a request-for-information (HR ↔ claimant Q&A).
+model ClaimInformation {
+  id            Int             @id @default(autoincrement())
+  claimId       Int
+  requestedById Int?
+  question      String
+  response      String?
+  status        ClaimInfoStatus @default(PENDING)
+  requestedAt   DateTime        @default(now())
+  respondedAt   DateTime?
+
+  claim ReimbursementClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([claimId])
+  @@map("claim_information")
+}
+
+// My Payslip — an employee's question raised on one of their payslips (routed to HR).
+model PayslipQuestion {
+  id            Int                   @id @default(autoincrement())
+  payslipId     Int
+  employeeId    Int
+  question      String
+  status        PayslipQuestionStatus @default(OPEN)
+  response      String?
+  respondedById Int?
+  respondedAt   DateTime?
+  createdAt     DateTime              @default(now())
+
+  payslip PayrollPayslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+
+  tenantId String? @db.Uuid // create-stamped from hr_current_tenant(); FORCE-RLS
+
+  @@index([tenantId])
+  @@index([payslipId])
+  @@index([employeeId])
+  @@map("payslip_questions")
+}
+
+// HR-BENEFITS-04 — a benefit plan a tenant offers (health / retirement /
+// allowance / other). Money fields are carried as INTEGER MINOR UNITS (cents)
+// per src/lib/money.js — the API boundary converts to/from major units. Plans
+// are tenant-scoped (RBAC Company.uuid, verified service-JWT claim; fail-closed).
+model BenefitPlan {
+  id                        Int         @id @default(autoincrement())
+  tenantId                  String?     @db.Uuid
+  name                      String
+  type                      BenefitType
+  description               String?
+  // Stored in integer minor units (cents) — see src/lib/money.js.
+  employerContributionMinor Int?
+  employeeContributionMinor Int?
+  active                    Boolean     @default(true)
+  created_at                DateTime    @default(now())
+  updated_at                DateTime    @updatedAt
+
+  enrollments EmployeeBenefit[]
+
+  @@index([tenantId])
+  @@map("benefit_plans")
+}
+
+// HR-BENEFITS-04 — enrollment join between an Employee and a BenefitPlan.
+// electedAmount (employee-chosen contribution/allowance) is integer minor units.
+model EmployeeBenefit {
+  id                 Int                   @id @default(autoincrement())
+  tenantId           String?               @db.Uuid
+  employeeId         Int
+  benefitPlanId      Int
+  enrolledAt         DateTime              @default(now())
+  status             EmployeeBenefitStatus @default(ACTIVE)
+  electedAmountMinor Int?
+  created_at         DateTime              @default(now())
+  updated_at         DateTime              @updatedAt
+
+  employee    Employee    @relation("EmployeeBenefits", fields: [employeeId], references: [id])
+  benefitPlan BenefitPlan @relation(fields: [benefitPlanId], references: [id])
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([benefitPlanId])
+  @@map("employee_benefits")
+}
+
+// ==================== OUTBOX (A.4 · ARCH-01 §7–§8) ====================
+//
+// Transactional outbox for HR fabric events. A domain event (today
+// `hr.employee.lifecycle.v1`) is written into this table INSIDE the same
+// transaction as the source aggregate (Employee create/update/terminate), so
+// the event and the business write commit or roll back together — no lost or
+// phantom events. A separate claim/lease dispatcher (src/jobs/outbox.dispatcher
+// .js) drains unpublished rows and XADDs the persisted EventEnvelope to a Redis
+// stream. Mirrors erp-communication-backend's CommunicationOutbox shape.
+//
+// payload is the full @trusoft/contracts EventEnvelope (validate-before-write),
+// whose `.payload` is the HrEmployeeLifecycleV1 ids-only payload.
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  tenantId      String    @db.Uuid
+  eventName     String // e.g. 'hr.employee.lifecycle.v1'
+  aggregateType String // 'Employee'
+  aggregateId   String // stringified source row id
+  payload       Json // a conformant EventEnvelope
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
+
+  // Lease-based claim so multiple dispatcher replicas coordinate without an
+  // external lock service. A row is claimable when publishedAt IS NULL AND
+  // (claimedAt IS NULL OR claimExpiresAt < NOW()). claimedBy is a bounded,
+  // PII-free worker id.
+  claimedAt      DateTime?
+  claimedBy      String?
+  claimExpiresAt DateTime?
+
+  // F-DB-06: retained for tenant-scoped operational inspection. Dispatcher
+  // indexes are partial SQL indexes deployed outside Prisma transactions.
+  @@index([tenantId, publishedAt])
+  @@map("outbox_events")
+}
+
+// F-03 — durable projection of the RBAC account-provisioning intent. This row
+// commits with Employee and contains no plaintext password.
+model SystemAccountProvisioning {
+  id                 String                          @id @default(uuid()) @db.Uuid
+  tenantId           String                          @db.Uuid
+  employeeId         Int
+  status             SystemAccountProvisioningStatus @default(PENDING)
+  idempotencyKey     String                          @db.Uuid
+  payloadFingerprint String
+  payload            Json
+  actor              Json
+  correlationId      String?
+  attempts           Int                             @default(0)
+  maxAttempts        Int                             @default(5)
+  nextAttemptAt      DateTime?                       @default(now())
+  claimedAt          DateTime?
+  claimedBy          String?
+  claimExpiresAt     DateTime?
+  rbacUserId         String?
+  result             Json?
+  lastError          String?
+  lastErrorCode      String?
+  lastHttpStatus     Int?
+  manualRetryCount   Int                             @default(0)
+  createdAt          DateTime                        @default(now())
+  updatedAt          DateTime                        @updatedAt
+  completedAt        DateTime?
+
+  @@unique([tenantId, employeeId])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status, updatedAt])
+  @@map("system_account_provisioning")
 }
 
 // ==================== LEARNING PATH CATEGORY RELATION ====================
 
 // Note: LearningPath.category references TrainingCategory which already exists
+
+// Monthly payable days are a payroll input, not fabricated device punches.
+model MonthlyPayrollAttendance {
+  id Int @id @default(autoincrement())
+  tenantId String @db.Uuid
+  employeeId Int
+  month String @db.VarChar(7)
+  payableDays Decimal @db.Decimal(5,2)
+  reason String
+  version Int @default(1)
+  updatedById Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields:[employeeId], references:[id])
+  @@unique([tenantId, employeeId, month])
+  @@index([tenantId, month])
+  @@map("monthly_payroll_attendance")
+}
+
+
+// Stage 2: original evidence is immutable; attribution and processing are audited.
+model AttendanceCaptureDevice {
+  acceptanceSiteRef String? @db.Uuid
+  acceptanceMode String?
+  siteId String?
+  biometricProfiles AttendanceBiometricProfile[]
+  biometricChallenges AttendanceBiometricChallenge[]
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  sn String @unique @db.VarChar(64)
+  name String
+  timeZone String
+  active Boolean @default(false)
+  allowedTenantIds String[] @db.Uuid
+  credentialHash String?
+  legacyKeyAllowed Boolean @default(false)
+  biometricPublicKey String?
+  biometricSite String?
+  fingerprintPadLevel Int @default(0)
+  fingerprintPadValidated Boolean @default(false)
+  lastSeenAt DateTime?
+  clockOffsetSeconds Int?
+  clockSampledAt DateTime?
+  lastHealthState String?
+  staleAfterMinutes Int @default(30)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, active])
+  @@map("attendance_capture_devices")
+}
+// ATT-DEVICE-ACCESS-01 — a company asks to use another company's device and the
+// device-owning company decides. Approval adds the requester to the device's
+// allowedTenantIds; each company still resolves only its own enrolments.
+// `tenantId` is the REQUESTING company; both companies may read the row.
+model AttendanceDeviceAccessRequest {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @db.Uuid
+  ownerTenantId  String    @db.Uuid
+  deviceId       String    @db.Uuid
+  sn             String    @db.VarChar(64)
+  state          String    @default("PENDING") @db.VarChar(16) // PENDING | APPROVED | REJECTED | WITHDRAWN | REVOKED
+  reason         String
+  requestedBy    String
+  requestedAt    DateTime  @default(now())
+  decidedBy      String?
+  decidedAt      DateTime?
+  decisionReason String?
+  endedBy        String?
+  endedAt        DateTime?
+  endReason      String?
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  @@index([tenantId, state])
+  @@index([ownerTenantId, state])
+  @@index([deviceId, tenantId, state])
+  @@map("attendance_device_access_requests")
+}
+model AttendanceCaptureReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  source String
+  sn String?
+  requestKey String
+  payloadHash String
+  actorId String?
+  summary Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, source, requestKey])
+  @@index([tenantId, createdAt])
+  @@map("attendance_capture_receipts")
+}
+model AttendanceCaptureEvent {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  receiptId String @db.Uuid
+  fingerprint String @unique
+  source String
+  sn String
+  deviceUserId String?
+  raw Json
+  parsed Json?
+  employeeId Int?
+  enrolmentId Int?
+  state String @default("PENDING")
+  reason String?
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  leaseUntil DateTime?
+  leaseToken String? @db.Uuid
+  version Int @default(1)
+  result Json?
+  processedAt DateTime?
+  biometricApprovedBy String?
+  biometricApprovedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([state, nextAttemptAt, createdAt])
+  @@index([tenantId, state, id])
+  @@index([tenantId, employeeId, createdAt])
+  @@map("attendance_capture_events")
+}
+
+// Templates never leave the recognition boundary through HR list/trace APIs.
+model AttendanceBiometricProfile {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  modality String
+  slot String
+  engine String
+  engineVersion String
+  encryptedTemplate String?
+  active Boolean @default(true)
+  enrolledBy String
+  enrolledDeviceId String @db.Uuid
+  enrolledDevice AttendanceCaptureDevice @relation(fields: [enrolledDeviceId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  @@index([tenantId, employeeId, modality, active], map: "attendance_biometric_profiles_lookup")
+  @@map("attendance_biometric_profiles")
+}
+
+model AttendanceBiometricChallenge {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  deviceId String @db.Uuid
+  device AttendanceCaptureDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  expectedProfileId String? @db.Uuid
+  deviceConfigHash String
+  modality String
+  purpose String
+  slot String
+  direction Int?
+  actorId String?
+  reason String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  consumedAt DateTime?
+  payloadHash String?
+  result Json?
+  @@index([tenantId, deviceId, createdAt], map: "attendance_biometric_challenges_device")
+  @@index([expiresAt], map: "attendance_biometric_challenges_expiry")
+  @@map("attendance_biometric_challenges")
+}
+model AttendanceCaptureAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  eventId String? @db.Uuid
+  receiptId String? @db.Uuid
+  actorId String
+  action String
+  reason String
+  detail Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, eventId, createdAt])
+  @@map("attendance_capture_audit")
+}
+model AttendanceImportBatch {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  actorId String
+  fileHash String
+  previewToken String
+  options Json
+  rows Json
+  results Json
+  state String @default("PREVIEW")
+  cursor Int @default(0)
+  summary Json
+  reason String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, createdAt])
+  @@map("attendance_import_batches")
+}
+// HR Task Assessment v2.1. Company-scoped employee codes are the business keys.
+model AssessmentIdentity {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  employeeRowId Int
+  managerCode String?
+  departmentRef String?
+  positionRef String?
+  categoryCode String?
+  active Boolean @default(true)
+  verifiedAt DateTime @default(now())
+  @@unique([tenantId, employeeCode])
+  @@unique([tenantId, employeeRowId])
+}
+model AssessmentCategory {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  categoryCode String
+  label String
+  active Boolean @default(true)
+  version Int @default(1)
+  @@unique([tenantId, categoryCode])
+}
+model AssessmentTaskVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskCode String
+  taskVersion Int
+  familyCode String
+  sectionCode String
+  status String @default("DRAFT")
+  definition Json
+  ownerCode String
+  createdByCode String
+  approvedByCode String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  publishedAt DateTime?
+  @@unique([tenantId, taskCode, taskVersion])
+  @@index([tenantId, familyCode, status])
+}
+model AssessmentProfileVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  profileCode String
+  profileVersion Int
+  departmentRef String
+  categoryCode String
+  positionRef String
+  status String @default("DRAFT")
+  definition Json
+  guideRef String?
+  impactComparison Json?
+  ownerCode String
+  createdByCode String
+  subjectReviewedByCode String?
+  approvedByCode String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  publishedAt DateTime?
+  @@unique([tenantId, profileCode, profileVersion])
+  @@index([tenantId, departmentRef, categoryCode, positionRef, status])
+}
+model AssessmentProfileTask {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  profileRef String @db.Uuid
+  taskRef String @db.Uuid
+  taskCode String
+  requirement Json
+  ordinal Int
+  @@unique([tenantId, profileRef, taskCode])
+}
+model AssessmentGuideVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  profileRef String @db.Uuid
+  locale String @default("en")
+  version Int
+  content Json
+  digest String
+  publishedAt DateTime @default(now())
+  @@unique([tenantId, profileRef, locale, version])
+}
+model EmployeeAssessmentProfile {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  profileRef String @db.Uuid
+  effectiveFrom DateTime
+  effectiveUntil DateTime?
+  approvedByCode String
+  sourceEventRef String?
+  version Int @default(1)
+  @@index([tenantId, employeeCode, effectiveFrom])
+}
+model AssessmentQualification {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  familyCode String
+  scopes Json
+  calibration Json
+  flags Json @default("[]")
+  authorizedByCode String
+  expiresAt DateTime
+  completedAssessments Int @default(0)
+  version Int @default(1)
+  @@unique([tenantId, employeeCode, familyCode])
+}
+model AssessmentConfiguration {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @unique @db.Uuid
+  policy Json
+  sourceRegister Json @default("[]")
+  departments Json @default("[]")
+  learningMappings Json @default("[]")
+  translations Json @default("{}")
+  rolloutEvidence Json @default("{}")
+  version Int @default(1)
+  updatedByCode String
+  updatedAt DateTime @updatedAt
+}
+model AssessmentTriggerPolicy {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  triggerType String
+  scopeFilter Json
+  policy Json
+  enabled Boolean @default(false)
+  version Int @default(1)
+  @@unique([tenantId, triggerType])
+}
+model AssessmentAssignment {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  profileRef String @db.Uuid
+  profileSnapshot Json
+  policySnapshot Json
+  purpose String
+  period String
+  raterCode String
+  reviewerCode String
+  taskCodes Json
+  state String @default("ASSIGNED")
+  revisionNo Int @default(1)
+  version Int @default(1)
+  triggerRef String?
+  idempotencyKey String
+  inputDigest String
+  dueAt DateTime
+  holdUntil DateTime?
+  notifiedAt DateTime?
+  stageStartedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, raterCode, state, dueAt])
+  @@index([tenantId, employeeCode, state])
+}
+model AssessmentRevision {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  snapshot Json
+  digest String
+  checksDigest String
+  reviewTier String
+  sampled Boolean
+  state String @default("SUBMITTED")
+  submittedAt DateTime @default(now())
+  approvedAt DateTime?
+  publishedAt DateTime?
+  sequence Int?
+  @@unique([tenantId, assessmentRef, revisionNo])
+}
+model AssessmentObservation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  taskCode String
+  taskVersion Int
+  employeeCode String @db.VarChar(50)
+  qualityStatus String
+  criticalFailure Boolean @default(false)
+  criticalExceptionReason String?
+  observationNote String
+  evidenceBriefDigest String
+  draftedNote Json?
+  timingRefs Json @default("[]")
+  velocityInput Json?
+  durationSeconds Int?
+  observedAt DateTime @default(now())
+  assessorCode String
+  @@unique([tenantId, assessmentRef, revisionNo, taskCode])
+}
+model AssessmentDimension {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  observationRef String @db.Uuid
+  dimension String
+  status String @default("PENDING")
+  score Int?
+  reasonCode String?
+  rationale String?
+  evidenceRefs Json @default("[]")
+  behaviorCheck Json?
+  calculation Json?
+  expiresAt DateTime?
+  @@unique([tenantId, observationRef, dimension])
+}
+model AssessmentCase {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  origin String
+  title String
+  taskCodes Json
+  context Json
+  createdByCode String?
+  observedAt DateTime
+  idempotencyKey String
+  inputDigest String
+  @@unique([tenantId, idempotencyKey])
+}
+model AssessmentEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  caseRef String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  source String
+  sourceRecordId String
+  sourceVersion Int
+  origin String
+  method String
+  taskCodes Json
+  dimensions Json
+  attribution Json
+  sourceRef String
+  contentHash String
+  classification String
+  accepted Boolean
+  executionVerified Boolean
+  substantive Boolean
+  nonroutine Boolean
+  qualityStatus String
+  integrityFlags Json @default("[]")
+  scanState String
+  captureAt DateTime
+  expiresAt DateTime
+  withdrawnAt DateTime?
+  retentionUntil DateTime
+  legalHold Boolean @default(false)
+  @@unique([tenantId, source, sourceRecordId, sourceVersion, employeeCode])
+  @@index([tenantId, employeeCode, captureAt])
+}
+model AssessmentEvidenceLink {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  taskCode String
+  evidenceRef String @db.Uuid
+  state String
+  reason String?
+  contributionConfirmed Boolean @default(false)
+  acceptanceConfirmed Boolean @default(false)
+  behaviorCheck String?
+  confirmedByCode String
+  @@unique([tenantId, assessmentRef, revisionNo, taskCode, evidenceRef])
+}
+model AssessmentTimingSample {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  evidenceRef String @db.Uuid
+  caseRef String @db.Uuid
+  taskCode String
+  taskVersion Int
+  origin String
+  unit String
+  clockBasis String
+  complexity String
+  technology String
+  context String
+  attributableMinutes Decimal @db.Decimal(18,6)
+  elapsedMinutes Decimal @db.Decimal(18,6)
+  waitMinutes Decimal @db.Decimal(18,6)
+  acceptedUnits Decimal @db.Decimal(18,6)
+  accepted Boolean
+  comparable Boolean
+  attempts Int
+  reworkMinutes Decimal @db.Decimal(18,6)
+  input Json
+  capturedAt DateTime
+  withdrawnAt DateTime?
+  @@unique([tenantId, evidenceRef, taskCode])
+  @@index([tenantId, taskCode, taskVersion, capturedAt])
+}
+model AssessmentBenchmark {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskCode String
+  taskVersion Int
+  version Int
+  scopeKey String
+  unit String
+  clockBasis String
+  complexity String
+  technology String
+  context String
+  minutesPerUnit Decimal @db.Decimal(18,6)
+  provenance Json
+  status String @default("CANDIDATE")
+  ownerCode String
+  approvedByCode String?
+  effectiveFrom DateTime?
+  reviewAt DateTime
+  createdAt DateTime @default(now())
+  @@unique([tenantId, taskCode, taskVersion, scopeKey, version])
+}
+model AssessmentSignOff {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  assessmentRef String @db.Uuid
+  revisionNo Int
+  action String
+  employeeCode String
+  actorPrincipal String
+  digest String
+  attestation String
+  reason String?
+  metadata Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, assessmentRef, revisionNo])
+}
+model AssessmentRestriction {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  taskCode String
+  cause String
+  sourceRef String
+  raisedAt DateTime @default(now())
+  liftedAt DateTime?
+  liftedByCode String?
+  restorationRef String?
+  @@unique([tenantId, employeeCode, taskCode, cause, sourceRef])
+  @@index([tenantId, employeeCode, liftedAt])
+}
+model AssessmentCapability {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  taskCode String
+  taskVersion Int
+  scopeKey String
+  dimension String
+  status String
+  score Int?
+  revisionRef String @db.Uuid
+  sequence Int
+  expiresAt DateTime
+  publishedAt DateTime
+  @@unique([tenantId, employeeCode, taskCode, scopeKey, dimension])
+  @@index([tenantId, expiresAt])
+}
+model AssessmentAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  aggregateRef String
+  actorPrincipal String
+  actorCode String?
+  action String
+  inputDigest String
+  resultDigest String
+  metadata Json
+  createdAt DateTime @default(now())
+  @@index([tenantId, aggregateRef, createdAt])
+}
+model AssessmentAutomationRun {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  runKey String
+  policyVersion Int
+  kind String
+  inputDigest String
+  inputs Json
+  actions Json
+  outcome String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, runKey])
+}
+model AssessmentException {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  key String
+  kind String
+  ownerRole String
+  scopeRef String
+  detail Json
+  status String @default("OPEN")
+  stableSince DateTime?
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+  version Int @default(1)
+  @@unique([tenantId, key])
+  @@index([tenantId, kind, status])
+}
+model AssessmentInboxEvent {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  eventId String
+  source String
+  payload Json
+  status String @default("PENDING")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  leaseUntil DateTime?
+  lastErrorCode String?
+  createdAt DateTime @default(now())
+  processedAt DateTime?
+  @@unique([tenantId, eventId])
+  @@index([status, nextAttemptAt])
+}
+model AssessmentIntegration {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  kind String
+  key String
+  sourceRef String
+  targetRef String?
+  status String
+  payload Json
+  sequence Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, kind, key])
+}
+model AssessmentAppraisalInput {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  cycleId Int
+  revisionRef String @db.Uuid
+  content Json
+  amendment Boolean @default(false)
+  createdAt DateTime @default(now())
+  @@unique([tenantId, employeeCode, cycleId, revisionRef])
+}
+model AssessmentCodeChange {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  oldCode String
+  newCode String
+  approvedByCode String
+  reason String
+  changedAt DateTime @default(now())
+  propagationState String @default("PENDING")
+  @@unique([tenantId, oldCode])
+}
+model AssessmentNotification {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String @db.VarChar(50)
+  key String
+  kind String
+  assessmentRef String?
+  dueAt DateTime
+  sentAt DateTime?
+  readAt DateTime?
+  payload Json
+  @@unique([tenantId, key])
+  @@index([tenantId, employeeCode, sentAt])
+}
+
+// Employee identity and separation. Business references are company + employee code.
+enum EmploymentCategory {
+  MANAGEMENT
+  EMPLOYEE
+  INTERNEE
+}
+enum SeparationType {
+  RESIGNATION
+  TERMINATION_WITH_CAUSE
+  TERMINATION_WITHOUT_CAUSE
+  CONTRACT_END
+  INTERNSHIP_COMPLETION
+  RETIREMENT
+  MUTUAL_SEPARATION
+  DEATH_IN_SERVICE
+}
+enum SeparationState {
+  DRAFT
+  SUBMITTED
+  MANAGER_REVIEW
+  HR_VERIFICATION
+  MANAGEMENT_DECISION
+  APPROVED
+  NOTICE_PERIOD
+  HANDOVER_IN_PROGRESS
+  CLEARANCE
+  EXIT_COMPLETED
+  WITHDRAWN
+  CANCELLED
+}
+model EmployeeCodeConfiguration {
+  tenantId String @id @db.Uuid
+  padding Int @default(4)
+  separator String @default("-")
+  version Int @default(1)
+  actorCode String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model EmployeeCodeSequence {
+  tenantId String @db.Uuid
+  prefix String
+  lastValue BigInt @default(0)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@id([tenantId, prefix])
+}
+model EmployeeCodeReservation {
+  tenantId String @db.Uuid
+  employeeCode String
+  collisionKey String
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@id([tenantId, employeeCode])
+  @@unique([tenantId, collisionKey])
+}
+model EmployeeCodeAlias {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  newCode String
+  effectiveAt DateTime
+  reason String
+  actorCode String
+  conversionRef String? @db.Uuid
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, employeeCode])
+}
+model EmployeeCategoryConversion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  category EmploymentCategory
+  effectiveAt DateTime
+  reason String
+  requestedByCode String
+  approvedByCode String?
+  state String @default("REQUESTED")
+  newCode String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, state, effectiveAt])
+}
+model SeparationPolicy {
+  tenantId String @id @db.Uuid
+  approvalReviewRef String? @db.Uuid
+  policy Json
+  actorCode String
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model HrSetupTask {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskKey String
+  version Int @default(1)
+  payload Json
+  editorUserIds Json
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, taskKey])
+}
+
+model HrSetupEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  taskKey String
+  payload Json
+  content String
+  uploadedByCode String
+  createdAt DateTime @default(now())
+  @@index([tenantId, taskKey])
+}
+
+model HrSetupReview {
+  reservedEmployeeId Int?
+  reservedUserId Int?
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  kind String
+  subjectKey String
+  employeeCode String?
+  state String @default("DRAFT")
+  version Int @default(1)
+  payload Json
+  source Json
+  contentHash String
+  preparedByCode String
+  preparedByUserId Int
+  editorUserIds Json
+  approvedByCode String?
+  approvedByUserId Int?
+  approvedHash String?
+  approvedAt DateTime?
+  activatedAt DateTime?
+  activationPlan Json?
+  failure String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId, kind, state, createdAt])
+  @@index([tenantId, subjectKey])
+}
+
+model HrSetupAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewRef String @db.Uuid
+  version Int
+  action String
+  actorCode String
+  actorUserId Int
+  reason String
+  contentHash String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewRef, version])
+}
+
+model HrSetupReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  requestKey String @db.Uuid
+  actorUserId Int
+  digest String
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, requestKey])
+}
+model Separation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  type SeparationType
+  state SeparationState @default(DRAFT)
+  reasonCode String
+  reason String
+  proposedLastWorkingAt DateTime
+  lastWorkingAt DateTime?
+  submittedAt DateTime?
+  approvedAt DateTime?
+  deferredUntil DateTime?
+  withdrawalRequestedAt DateTime?
+  completedAt DateTime?
+  accessDueEmittedAt DateTime?
+  createdByCode String
+  managerCode String?
+  category EmploymentCategory
+  gradeCode String
+  policySnapshot Json
+  recommendation Json?
+  verification Json?
+  verifiedByCode String?
+  documents Json
+  rehireEligible Boolean?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, id])
+  @@index([tenantId, employeeCode, state])
+  @@index([tenantId, deferredUntil])
+  separationTransitions SeparationTransition[]
+  noticePeriodRecords NoticePeriodRecord[]
+  replacementPlans ReplacementPlan[]
+  replacementSessions ReplacementSession[]
+  knowledgeTransferItems KnowledgeTransferItem[]
+  assetHandoverItems AssetHandoverItem[]
+  accessRevocationTasks AccessRevocationTask[]
+  clearanceItems ClearanceItem[]
+  exitInterviews ExitInterview[]
+  finalSettlementSheets FinalSettlementSheet[]
+  separationDocuments SeparationDocument[]
+  separationSourceSnapshots SeparationSourceSnapshot[]
+}
+
+model SeparationTransition {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model NoticePeriodRecord {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ReplacementPlan {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ReplacementSession {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model KnowledgeTransferItem {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model AssetHandoverItem {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model AccessRevocationTask {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ClearanceItem {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model ExitInterview {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model FinalSettlementSheet {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model SeparationDocument {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model SeparationSourceSnapshot {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  separationRef String @db.Uuid
+  key String
+  ownerCode String?
+  dueAt DateTime?
+  status String @default("PENDING")
+  evidenceRefs Json @default("[]")
+  payload Json @default("{}")
+  version Int @default(1)
+  actorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  separation Separation @relation(fields:[tenantId, separationRef], references:[tenantId,id])
+  @@unique([tenantId, separationRef, key])
+  @@index([tenantId, employeeCode])
+}
+
+model EmploymentCommandReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  requestKey String @db.Uuid
+  actorCode String
+  digest String
+  result Json
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, requestKey])
+}
+model EmploymentDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeCode String
+  key String
+  kind String
+  payload Json
+  state String @default("PENDING")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  lastError String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, key])
+}
+
+
+// Shared HR business approvals. Technical evidence reviews remain prerequisites.
+model HrApprovalRequest {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  kind String
+  sourceRef String
+  employeeCode String
+  stage String @default("INITIATOR")
+  version Int @default(0)
+  round Int @default(0)
+  managerCode String?
+  managerActorCode String?
+  hrActorCode String?
+  recommendation String?
+  verification String?
+  sourceHash String
+  snapshot Json
+  execution String @default("PENDING")
+  // Configurable matrix: the published route sealed at submission, the level the request waits at
+  // and the employee codes allowed to act there. NULL route = the four fixed stages.
+  route Json?
+  level Int?
+  pendingCodes String[] @default([])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, kind, sourceRef])
+  @@index([pendingCodes], type: Gin)
+  @@unique([tenantId, id])
+  @@index([tenantId, stage, id])
+  @@index([tenantId, employeeCode])
+}
+// Versioned approval route per company and kind (ATTENDANCE, PAYROLL): ordered levels with their
+// action, required flag and approvers. One DRAFT and one PUBLISHED row per kind.
+model ApprovalMatrix {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  kind String
+  version Int
+  status String
+  levels Json
+  note String?
+  createdById String
+  publishedById String?
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@unique([tenantId, kind, version])
+  @@map("approval_matrices")
+}
+model HrApprovalAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  approvalRef String @db.Uuid
+  version Int
+  round Int
+  actorCode String
+  fromStage String
+  toStage String
+  action String
+  reason String
+  sourceHash String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, approvalRef, version])
+}
+model HrApprovalReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  requestKey String @db.Uuid
+  actorCode String
+  digest String
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, requestKey])
+}
+
+// Onsite acceptance is company-scoped; approval binds a frozen evidence revision.
+model AttendanceAcceptanceSite {
+  technicalByCode String?
+  technicalByUserId Int?
+  technicalHash String?
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  slot String
+  state String @default("DRAFT")
+  version Int @default(1)
+  payload Json
+  contentHash String
+  editorUserIds Json
+  createdByCode String
+  createdByUserId Int
+  managerCode String?
+  managerUserId Int?
+  verifiedByCode String?
+  verifiedByUserId Int?
+  verifiedHash String?
+  approvedByCode String?
+  approvedByUserId Int?
+  approvedHash String?
+  approvedAt DateTime?
+  activatedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([tenantId, slot])
+  @@index([tenantId, state])
+}
+model AttendanceAcceptanceAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  siteRef String @db.Uuid
+  version Int
+  action String
+  actorCode String
+  actorUserId Int
+  payload Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, siteRef, version])
+}
+model AttendanceAcceptanceEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  siteRef String @db.Uuid
+  runKey String
+  payload Json
+  content String
+  uploadedByCode String
+  createdAt DateTime @default(now())
+  @@index([tenantId, siteRef])
+}
+
+// Performance Appraisals — versioned domain, 2026-10-26.
+// Tenant composite foreign keys and immutability triggers are installed by the matching migration.
+model PerfConfiguration {
+  tenantId String @id @db.Uuid
+  version Int @default(0)
+  coreEnabled Boolean @default(false)
+  policy Json
+  updatedAt DateTime @updatedAt
+}
+model PerfTemplateVersion {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  name String
+  status String @default("DRAFT")
+  version Int @default(0)
+  rubric Json
+  createdBy Int
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, name, id])
+  @@unique([tenantId, id])
+}
+model PerfCycle {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  name String
+  templateId String @db.Uuid
+  status String @default("DRAFT")
+  version Int @default(0)
+  policy Json
+  timezone String
+  periodStart String
+  periodEnd String
+  selfDue DateTime
+  managerDue DateTime
+  launchCursor Int @default(0)
+  launchedAt DateTime?
+  closingSnapshot Json?
+  closedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, name])
+  @@unique([tenantId, id])
+}
+model PerfParticipant {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  cycleId String @db.Uuid
+  employeeId Int
+  managerId Int
+  reviewType String @default("ANNUAL")
+  snapshot Json
+  inclusionState String @default("INCLUDED")
+  originalSelfDue DateTime
+  originalManagerDue DateTime
+  createdAt DateTime @default(now())
+  @@unique([tenantId, cycleId, employeeId, reviewType])
+  @@unique([tenantId, id])
+  @@index([tenantId, cycleId, id])
+}
+model PerfReview {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  participantId String @db.Uuid
+  cycleId String @db.Uuid
+  employeeId Int
+  managerId Int
+  state String @default("SELF_OPEN")
+  version Int @default(0)
+  revisionNo Int @default(0)
+  currentRevisionId String? @db.Uuid
+  releasedRevisionId String? @db.Uuid
+  scheduleVersion Int @default(0)
+  selfWaiver String?
+  selfDue DateTime
+  managerDue DateTime
+  releasedAt DateTime?
+  appealDeadline String?
+  acknowledgedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, participantId])
+  @@unique([tenantId, id])
+  @@index([tenantId, cycleId, state])
+  @@index([tenantId, employeeId])
+  @@index([tenantId, managerId])
+}
+model PerfResponse {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  role String
+  authorId Int
+  responseNo Int
+  answers Json
+  submittedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewId, role, authorId, responseNo])
+  @@unique([tenantId, id])
+}
+model PerfReviewRevision {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionNo Int
+  predecessorId String? @db.Uuid
+  content Json
+  digest String
+  score Json
+  reason String?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewId, revisionNo])
+  @@unique([tenantId, id])
+}
+model PerfSignoff {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String? @db.Uuid
+  actorId Int
+  action String
+  approvedVersion Int
+  reason String?
+  requestHash String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfEvidenceLink {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  source String
+  sourceId String
+  sourceVersion String
+  description String
+  verifiedBy Int
+  snapshot Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfAppeal {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String @db.Uuid
+  filedBy Int
+  reason String
+  status String @default("OPEN")
+  decideBy String
+  decidedBy Int?
+  decisionReason String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+  @@index([tenantId, reviewId, status])
+}
+model PerfCommandReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  actorId Int
+  operation String
+  requestKey String
+  digest String
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, actorId, operation, requestKey])
+  @@unique([tenantId, id])
+}
+model PerfAudit {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  aggregateId String @db.Uuid
+  actorId Int
+  operation String
+  version Int
+  inputDigest String
+  correlationId String?
+  metadata Json @default("{}")
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+  @@index([tenantId, aggregateId, createdAt])
+}
+model PerfGoal {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  cycleId String @db.Uuid
+  employeeId Int
+  title String
+  parentId String? @db.Uuid
+  status String @default("DRAFT")
+  version Int @default(0)
+  keyResults Json
+  approvedBy Int?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfMeasurement {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  goalId String @db.Uuid
+  keyResultId String
+  actual Float
+  sourceSystem String
+  sourceRef String
+  period String
+  sourceVersion Int
+  progress Json
+  recordedBy Int
+  createdAt DateTime @default(now())
+  @@unique([tenantId, goalId, keyResultId, sourceSystem, sourceRef, period, sourceVersion])
+  @@unique([tenantId, id])
+}
+model PerfCheckin {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  managerId Int
+  scheduledAt DateTime
+  agenda String
+  actions Json
+  version Int @default(0)
+  notes String?
+  employeeConfirmedAt DateTime?
+  managerConfirmedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfFeedback {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  employeeId Int
+  authorId Int
+  reviewId String? @db.Uuid
+  audience String
+  text String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfDecisionCase {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String @db.Uuid
+  employeeId Int
+  kind String
+  rationale String
+  instruction Json
+  proposedBy Int
+  state String @default("PROPOSED")
+  version Int @default(0)
+  hrApprover Int?
+  budgetApprover Int?
+  executionApprover Int?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, id])
+}
+model PerfIntegrationHandoff {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  decisionId String @db.Uuid
+  decisionVersion Int
+  destination String
+  businessKey String
+  payloadHash String
+  state String @default("SHADOW")
+  receiverReceipt Json?
+  lastError String?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, destination, decisionId, decisionVersion])
+  @@unique([tenantId, businessKey])
+  @@unique([tenantId, id])
+}
+model PerfReminderIntent {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  recipientId Int
+  scheduleVersion Int
+  stage String
+  dueAt DateTime
+  state String @default("PENDING")
+  hubReceipt String?
+  createdAt DateTime @default(now())
+  @@unique([tenantId, reviewId, recipientId, scheduleVersion, stage])
+  @@unique([tenantId, id])
+}
+model PerfInbox {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  consumer String
+  eventId String
+  digest String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, consumer, eventId])
+  @@unique([tenantId, id])
+}
+
+model PerfApprovalBinding {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  approvalRef String @db.Uuid
+  reviewId String @db.Uuid
+  revisionId String @db.Uuid
+  reviewVersion Int
+  purpose String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, approvalRef])
+  @@unique([tenantId, reviewId, revisionId, reviewVersion, purpose])
+}
+
+model PerfLaunchRun {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  cycleId String @db.Uuid
+  state String @default("QUEUED")
+  version Int @default(0)
+  total Int
+  processed Int @default(0)
+  batchNo Int @default(0)
+  jobId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+  @@unique([tenantId,id])
+  @@unique([tenantId,cycleId])
+}
+model PerfLaunchBatch {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  runId String @db.Uuid
+  batchNo Int
+  firstParticipantId String @db.Uuid
+  lastParticipantId String @db.Uuid
+  count Int
+  digest String
+  createdAt DateTime @default(now())
+  @@unique([tenantId,runId,batchNo])
+}
+
+model PerfPeerRound {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  reviewId String @db.Uuid
+  minimum Int
+  closesAt DateTime
+  state String @default("OPEN")
+  version Int @default(0)
+  rubric Json
+  summary Json?
+  createdBy Int
+  createdAt DateTime @default(now())
+  closedAt DateTime?
+  @@unique([tenantId,id])
+  @@unique([tenantId,reviewId])
+}
+model PerfPeerNomination {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  roundId String @db.Uuid
+  employeeId Int
+  proposedBy Int
+  reason String
+  state String @default("PROPOSED")
+  version Int @default(0)
+  decidedBy Int?
+  decisionReason String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([tenantId,id])
+  @@unique([tenantId,roundId,employeeId])
+  @@index([tenantId,employeeId,id])
+}
+model PerfPeerResponse {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  roundId String @db.Uuid
+  nominationId String @db.Uuid
+  authorId Int
+  answers Json
+  digest String
+  submittedAt DateTime @default(now())
+  @@unique([tenantId,id])
+  @@unique([tenantId,nominationId])
+  @@unique([tenantId,roundId,authorId])
+}
+
+model HrPmAvailabilityVersion {
+ tenantId String @db.Uuid
+ employeeId Int
+ version BigInt @default(1)
+ @@id([tenantId,employeeId])
+ @@map("hr_pm_availability_versions")
+}
+
+model RosterChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  employeeId    Int
+  action        String
+  scheduleId    Int?
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, employeeId, status], map: "roster_change_requests_scope")
+  @@map("roster_change_requests")
+}
+
+model HolidayChangeRequest {
+  id                String   @id @db.Uuid
+  tenantId          String   @db.Uuid
+  action            String
+  holidayId         Int?
+  holidayCalendarId Int
+  payload           Json
+  reason            String
+  requestedById     Int
+  status            String   @default("PENDING")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  @@index([tenantId, holidayCalendarId, status], map: "holiday_change_requests_scope")
+  @@map("holiday_change_requests")
+}
+
+model HolidayExemptionRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  mode          String   @default("EXEMPT")
+  holidayId     Int
+  employeeIds   Int[]
+  summary       Json     @default("{}")
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, holidayId, status], map: "holiday_exemption_requests_scope")
+  @@map("holiday_exemption_requests")
+}
+
+model HolidayExemption {
+  id         Int      @id @default(autoincrement())
+  tenantId   String   @db.Uuid
+  holidayId  Int
+  employeeId Int
+  requestId  String?  @db.Uuid
+  createdAt  DateTime @default(now())
+  @@unique([holidayId, employeeId])
+  @@index([tenantId, employeeId], map: "holiday_exemptions_scope")
+  @@map("holiday_exemptions")
+}
+
+model AttendanceRuleChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "attendance_rule_change_requests_scope")
+  @@map("attendance_rule_change_requests")
+}
+
+model LeaveBalanceLedger {
+  id             BigInt   @id @default(autoincrement())
+  tenantId       String   @db.Uuid
+  employeeId     Int
+  leavePolicyId  Int
+  kind           String
+  days           Float
+  balanceAfter   Float
+  idempotencyKey String?
+  sourceRef      String?
+  reason         String?
+  createdById    Int?
+  createdAt      DateTime @default(now())
+  @@unique([tenantId, idempotencyKey], map: "leave_balance_ledger_key")
+  @@index([tenantId, employeeId, leavePolicyId, createdAt], map: "leave_balance_ledger_employee")
+  @@map("leave_balance_ledger")
+}
+
+model LeaveChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "leave_change_requests_scope")
+  @@map("leave_change_requests")
+}
+
+model CaptureChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "capture_change_requests_scope")
+  @@map("capture_change_requests")
+}
+
+// Income-tax slab changes by approval (TAX_SLAB_CHANGE): one request replaces a country's whole slab set from a date.
+model TaxSlabChangeRequest {
+  id            String   @id @db.Uuid
+  tenantId      String   @db.Uuid
+  action        String
+  payload       Json
+  reason        String
+  requestedById Int
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@index([tenantId, action, status], map: "tax_slab_change_requests_scope")
+  @@map("tax_slab_change_requests")
+}
+
+model AttendanceDeviceCommand {
+  id          String    @id @db.Uuid
+  tenantId    String    @db.Uuid
+  deviceId    String    @db.Uuid
+  sn          String    @db.VarChar(64)
+  type        String
+  state       String    @default("PENDING")
+  detail      Json?
+  requestedBy String
+  createdAt   DateTime  @default(now())
+  sentAt      DateTime?
+  doneAt      DateTime?
+  @@index([deviceId, state], map: "attendance_device_commands_open")
+  @@map("attendance_device_commands")
+}

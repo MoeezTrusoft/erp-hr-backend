@@ -1,32 +1,63 @@
 import prisma from "../config/prisma.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+import { upsertInterviewScorecard } from "./interview-scorecard.service.js";
+import { tenantTransaction } from "../lib/rlsTenant.js"; // GUC-in-tx so the atomic interview+stage write passes FORCE-RLS
 
-export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes }) => {
-    return prisma.interview.create({
-        data: {
-            applicationId: Number(applicationId),
-            interviewType: interviewType || type || "PANEL",
-            scheduledAt: new Date(scheduledAt),
-            durationMinutes: durationMinutes || 60,
-            location,
-            notes,
-            interviewers: interviewerIds?.length
-                ? { create: interviewerIds.map(id => ({ employeeId: Number(id) })) }
-                : undefined,
-        },
-        include: {
-            interviewers: {
-                include: {
-                    employee: {
-                        select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true },
+// C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field on the args
+// object / trailing param; folded into reads and stamped on creates, fail-closed
+// so tenant B can never read/mutate tenant A's interviews/scorecards.
+
+export const scheduleInterview = async ({ applicationId, type, interviewType, scheduledAt, durationMinutes, location, interviewerIds, notes, tenantId }) => {
+    // Scheduling an interview also advances the linked application's pipeline
+    // stage to "interview" (parity with hr_application_update_stage), so the
+    // recruitment board stays coherent without a separate manual move. The two
+    // writes are atomic (one tx) and tenant-scoped. The stage move is guarded so
+    // it never REGRESSES an application already further along or closed
+    // (offer/hired/rejected) — a follow-up interview must not undo an offer.
+    const scheduledDate = new Date(scheduledAt);
+    if (Number.isNaN(scheduledDate.getTime())) {
+        throw new Error("scheduledAt must be a valid ISO 8601 datetime");
+    }
+    return tenantTransaction(prisma, async (tx) => {
+        const interview = await tx.interview.create({
+            data: scopedData(tenantId, {
+                applicationId: Number(applicationId),
+                interviewType: interviewType || type || "PANEL",
+                scheduledAt: scheduledDate,
+                durationMinutes: durationMinutes || 60,
+                location,
+                notes,
+                interviewers: interviewerIds?.length
+                    ? { create: interviewerIds.map(id => ({ employeeId: Number(id), ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
+                    : undefined,
+            }),
+            include: {
+                interviewers: {
+                    include: {
+                        employee: {
+                            select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
+                        },
                     },
                 },
             },
-        },
+        });
+
+        if (applicationId != null) {
+            await tx.application.updateMany({
+                where: scopedWhere(tenantId, {
+                    id: Number(applicationId),
+                    stage: { notIn: ["interview", "offer", "hired", "rejected"] },
+                }),
+                data: { stage: "interview" },
+            });
+        }
+
+        return interview;
     });
 };
 
-export const listInterviews = async ({ applicationId, page = 1, limit = 20 }) => {
-    const where = applicationId ? { applicationId: Number(applicationId) } : {};
+export const listInterviews = async ({ applicationId, page = 1, limit = 20, tenantId }) => {
+    const where = scopedWhere(tenantId, applicationId ? { applicationId: Number(applicationId) } : {});
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
         prisma.interview.findMany({
@@ -44,7 +75,7 @@ export const listInterviews = async ({ applicationId, page = 1, limit = 20 }) =>
                 interviewers: {
                     include: {
                         employee: {
-                            select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true },
+                            select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
                         },
                     },
                 },
@@ -66,7 +97,7 @@ const interviewInclude = {
     interviewers: {
         include: {
             employee: {
-                select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true },
+                select: { id: true, employee_name: true, first_name: true, last_name: true, job_title: true, photo_url: true },
             },
         },
     },
@@ -96,9 +127,13 @@ const averageRating = (ratings = {}) => {
     return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
 };
 
-export const updateInterview = async (id, data = {}) => {
+export const updateInterview = async (id, data = {}, tenantId) => {
     const interviewId = Number(id);
     const { updateData, feedback, reviewerId } = normalizeInterviewUpdateData(data);
+
+    // Tenant-scoped pre-read so a cross-tenant id cannot be mutated (fail-closed).
+    const existingInterview = await prisma.interview.findFirst({ where: scopedWhere(tenantId, { id: interviewId }) });
+    if (!existingInterview) throw new Error("Interview not found");
 
     await prisma.interview.update({
         where: { id: interviewId },
@@ -107,7 +142,17 @@ export const updateInterview = async (id, data = {}) => {
 
     if (feedback) {
         const { ratings = {}, decision, recommendation, comments } = feedback;
-        const resolvedReviewerId = Number(reviewerId || 1);
+        // HR-INTERVIEW-FEEDBACK-01 — a scorecard is attributable evidence, so it
+        // must name a real reviewer. This used to fall back to employee id 1,
+        // silently filing feedback under whoever that is whenever the caller's
+        // token carried no employeeId. Fail loudly instead, like scoreInterview.
+        const resolvedReviewerId = Number(reviewerId);
+        if (!Number.isInteger(resolvedReviewerId) || resolvedReviewerId <= 0) {
+            throw Object.assign(
+                new Error("A reviewer (employee) id is required to submit interview feedback"),
+                { status: 400 },
+            );
+        }
         const scorePayload = {
             scores: ratings,
             overallScore: averageRating(ratings),
@@ -116,53 +161,49 @@ export const updateInterview = async (id, data = {}) => {
             submittedAt: new Date(),
         };
 
-        const existing = await prisma.interviewScorecard.findUnique({
-            where: {
-                interviewId_reviewerId: {
-                    interviewId,
-                    reviewerId: resolvedReviewerId,
-                },
-            },
+        // HR-INTERVIEW-FEEDBACK-01 — feedback must be re-submittable: one shared
+        // create-or-update keyed on the real unique index, so an existing (or
+        // legacy tenant-less) scorecard is updated instead of colliding on
+        // insert with "Unique constraint failed".
+        await upsertInterviewScorecard({
+            interviewId,
+            reviewerId: resolvedReviewerId,
+            data: scorePayload,
+            tenantId,
         });
-
-        if (existing) {
-            await prisma.interviewScorecard.update({
-                where: { id: existing.id },
-                data: scorePayload,
-            });
-        } else {
-            await prisma.interviewScorecard.create({
-                data: {
-                    interviewId,
-                    reviewerId: resolvedReviewerId,
-                    ...scorePayload,
-                },
-            });
-        }
     }
 
-    return prisma.interview.findUnique({
-        where: { id: interviewId },
+    return prisma.interview.findFirst({
+        where: scopedWhere(tenantId, { id: interviewId }),
         include: interviewInclude,
     });
 };
 
-export const submitScorecard = async ({ interviewId, reviewerId, scores, overallScore, recommendation, notes }) => {
-    return prisma.interviewScorecard.create({
+export const submitScorecard = async ({ interviewId, reviewerId, scores, overallScore, recommendation, notes, tenantId }) => {
+    // HR-INTERVIEW-FEEDBACK-01 — was an unconditional create, so a reviewer
+    // could never revise their own scorecard (P2002 on the second submit).
+    const interview = await prisma.interview.findFirst({
+        where: scopedWhere(tenantId, { id: Number(interviewId) }),
+        select: { id: true },
+    });
+    if (!interview) throw Object.assign(new Error("Interview not found"), { status: 404 });
+
+    return upsertInterviewScorecard({
+        interviewId: Number(interviewId),
+        reviewerId: Number(reviewerId),
         data: {
-            interviewId: Number(interviewId),
-            reviewerId: Number(reviewerId),
             scores: scores || {},
             overallScore: overallScore ? Number(overallScore) : null,
             recommendation,
             notes,
         },
+        tenantId,
     });
 };
 
-export const getScorecards = async (interviewId) => {
+export const getScorecards = async (interviewId, tenantId) => {
     return prisma.interviewScorecard.findMany({
-        where: { interviewId: Number(interviewId) },
+        where: scopedWhere(tenantId, { interviewId: Number(interviewId) }),
         include: { reviewer: { select: { id: true, employee_name: true, first_name: true, last_name: true } } },
     });
 };

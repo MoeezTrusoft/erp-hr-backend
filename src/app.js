@@ -1,3 +1,8 @@
+import {resolveProvisioningIntent,resolveProvisioningContact,resolveProvisioningEligibility} from "./services/provisioning-reader-native.mjs";
+import attendanceAcceptanceRoutes from './routes/attendanceAcceptance.routes.js';
+import setupRoutes from './routes/company-setup.routes.js';
+import approvalRoutes from './routes/approval.routes.js';
+import separationRoutes from "./routes/separation.routes.js";
 // src/app.js
 //
 // Testable Express app factory for erp-hr-backend.
@@ -32,10 +37,13 @@ import cors from "cors";
 import client from "prom-client";
 import prisma from "./lib/prisma.js";
 import { createHealthRouter } from "./routes/health.routes.js";
+import { createComplianceHealthRouter } from "./routes/complianceHealth.routes.js";
 
 import logRoutes from "./routes/log.route.js";
 import hrRoutes from "./routes/hr.routes.js";
 import attendanceRoutes from "./routes/attendance.routes.js";
+import deviceAttendanceRoutes from "./routes/deviceAttendance.routes.js";
+import appraisalsRoutes from './routes/appraisals.routes.js';
 import performanceRoutes from "./routes/performance.routes.js";
 import positionRoutes from "./routes/position.routes.js";
 import requisitionRoutes from "./routes/requisition.routes.js";
@@ -61,8 +69,19 @@ import employeeMediaRoutes from "./routes/employee.mediaRoute.js";
 import hrContractRoutes from "./routes/hrContract.routes.js";
 import { attachHrContext } from "./middlewares/hrContext.middleware.js";
 import { internalServiceGuard } from "./middlewares/internalService.middleware.js";
+import { establishTenantContext } from "./middlewares/tenantContext.middleware.js";
 import { attachInternalBoundaryMetric } from "./lib/authMetrics.js";
+import {
+    createHttpMetricsMiddleware,
+    attachHttpRequestDurationMetric,
+} from "./lib/httpMetrics.js";
 import { attachRequestId } from "./utils/apiContract.js";
+import { attachCorrelationId } from "./middlewares/correlationId.middleware.js";
+import { errorHandler } from "./middlewares/error.middleware.js";
+import {
+    denyUnknownHrRoute,
+    mountAuthorizedHrRouter,
+} from "./middlewares/routeAuthorization.middleware.js";
 import dashboardLayoutRoutes from "./routes/dashboardLayout.routes.js";
 
 import onboardingRoutes from "./routes/onboarding.routes.js";
@@ -81,6 +100,8 @@ import complianceRoutes from "./routes/compliance.routes.js";
 import developmentPlanRoutes from "./routes/developmentPlan.routes.js";
 import reimbursementRoutes from "./routes/reimbursement.routes.js";
 import gdprRoutes from "./routes/gdpr.routes.js";
+import benefitRoutes from "./routes/benefit.routes.js";
+import resumeRoutes from "./routes/resume.routes.js";
 
 import mcpRouter from "./mcp/mcpRouter.js";
 
@@ -92,8 +113,14 @@ export const createApp = () => {
     // same exposition the rest of the service uses. attachInternal-
     // BoundaryMetric is idempotent across createApp() calls.
     attachInternalBoundaryMetric(register);
+    // A-RED (08-sota-roadmap §DO-NOW #2): surface the shared
+    // http_request_duration_seconds histogram on this app's /metrics so
+    // Prometheus/Grafana can compute Rate / Error / p95 per route.
+    attachHttpRequestDurationMetric(register);
 
-    app.use(express.json());
+    // Document uploads (employee/profile docs) can arrive as base64 in the JSON
+    // body; the express default (100kb) trips them with 413. Env-tunable ceiling.
+    app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "25mb" }));
 
     const allowedOrigins = process.env.ALLOWED_DOMAINS
         ?.split(",")
@@ -119,74 +146,129 @@ export const createApp = () => {
             "X-Request-ID",
             "X-Service-Authorization",
             "X-Internal-Secret",
+            // C.2 / T-P2.2 — clients send Idempotency-Key on mutating HR calls.
+            "Idempotency-Key",
         ],
         optionsSuccessStatus: 204,
     }));
 
     app.use(attachRequestId);
+    // A.5: read/mint x-correlation-id, bind a per-request child logger on
+    // req.log, echo the header on the response. Mounted before the route tree
+    // (and before the /api guard) so EVERY request — including health probes
+    // and rejected calls — is traceable end-to-end.
+    app.use(attachCorrelationId);
     app.use(attachHrContext);
+
+    // A-RED (08-sota-roadmap §DO-NOW #2): observe inbound request duration into
+    // the http_request_duration_seconds histogram (exposed on this app's
+    // /metrics). Mounted BEFORE the route tree (and the /api guard) so it times
+    // every request via res 'finish'/'close'. Purely observational — never
+    // alters response/auth/tenancy.
+    app.use(createHttpMetricsMiddleware());
 
     // HR routes
     // Browser clients should reach this service through the API gateway. The gateway
     // is responsible for rewriting /hr/api/hr/* to /api/hr/* and injecting the
     // internal secret plus x-user-* context headers before requests arrive here.
-    app.use("/api", internalServiceGuard);
-    app.use("/api/hr", hrContractRoutes);
-    app.use("/api/employee", hrRoutes);
-    app.use("/api/attendance", attendanceRoutes);
-    app.use("/api/performance", performanceRoutes);
-    app.use("/api/positions", positionRoutes);
-    app.use("/api/requisitions", requisitionRoutes);
-    app.use("/api/train_cat", traningCategoryRoutes);
-    app.use("/api/course", traningCourseRoutes);
-    app.use("/api/enrollment", traningEnrollmentRoutes);
-    app.use("/api/log", logRoutes);
-    app.use("/api/performance/cycles", performanceCycleRoutes);
-    app.use("/api/performance/templates", performanceTemplateRoutes);
-    app.use("/api/goals", goalsRoutes);
-    app.use("/api/goal-alignments", goalAllignmentRoutes);
-    app.use("/api/PerformanceReview", performanceReviewRoutes);
-    app.use("/api/calibration", calibrationRoutes);
-    app.use("/api/calibration/reports", calibrationReportRoutes);
-    app.use("/api/time-attendance", timeAttendanceRoutes);
-    app.use("/api/leaves", leaveRoutes);
-    app.use("/api/holidays", holidayRoutes);
-    app.use("/api/payroll", payrollRoutes);
-    app.use("/api/training", trainingRoutes);
-    app.use("/api/analytics", analyticsRoutes);
-    app.use("/api/recruitment", recruitmentRoutes);
-    app.use("/api/emergency-contacts", emergencyContactRoutes);
-    app.use("/api/employee-media", employeeMediaRoutes);
-    app.use("/api/dashboard-layout", dashboardLayoutRoutes);
+    // HR-ATT-DEVICE-INTAKE-01: biometric device push intake. Mounted BEFORE the
+    // /api guard because the device cannot present a gateway service-JWT; the
+    // route has its own X-Intake-Key gate. Not proxied by the public gateway.
+    app.use("/device-attendance", deviceAttendanceRoutes);
 
-    app.use("/api/onboarding", onboardingRoutes);
-    app.use("/api/interviews", interviewRoutes);
-    app.use("/api/offers", offerRoutes);
-    app.use("/api/talent-pool", talentPoolRoutes);
-    app.use("/api/learning-paths", learningPathRoutes);
-    app.use("/api/training-sessions", trainingSessionRoutes);
-    app.use("/api/certifications", certificationRoutes);
-    app.use("/api/skills", employeeSkillRoutes);
-    app.use("/api/employee-lifecycle", employeeLifecycleRoutes);
-    app.use("/api/offboarding", offboardingRoutes);
-    app.use("/api/org-chart", orgChartRoutes);
-    app.use("/api/self", selfRoutes);
-    app.use("/api/compliance", complianceRoutes);
-    app.use("/api/development-plans", developmentPlanRoutes);
-    app.use("/api/reimbursements", reimbursementRoutes);
-    app.use("/api/gdpr", gdprRoutes);
+    app.use("/api", internalServiceGuard);
+    // Bind the verified tenant to the async context so the Prisma tenant-scope
+    // extension auto-scopes every REST query (deny-by-default). Runs after the
+    // guard has filled req.user.tenantId.
+    app.use("/api", establishTenantContext);
+    app.post("/api/internal/system-account-provisioning/resolve", resolveProvisioningIntent);
+    app.post("/api/internal/system-account-provisioning/contact", resolveProvisioningContact);
+    app.post("/api/internal/system-account-provisioning/eligibility", resolveProvisioningEligibility);
+    const authorizedRouters = [
+        ["/api/hr/appraisals", appraisalsRoutes],
+        ["/api/hr/attendance-acceptance", attendanceAcceptanceRoutes],
+        ["/api/hr/company-setup", setupRoutes],
+        ["/api/hr/approvals", approvalRoutes],
+        ["/api/hr/separations", separationRoutes],
+        ["/api/hr", hrContractRoutes],
+        ["/api/employee", hrRoutes],
+        ["/api/attendance", attendanceRoutes],
+        ["/api/performance", performanceRoutes],
+        ["/api/positions", positionRoutes],
+        ["/api/requisitions", requisitionRoutes],
+        ["/api/train_cat", traningCategoryRoutes],
+        ["/api/course", traningCourseRoutes],
+        ["/api/enrollment", traningEnrollmentRoutes],
+        ["/api/log", logRoutes],
+        ["/api/performance/cycles", performanceCycleRoutes],
+        ["/api/performance/templates", performanceTemplateRoutes],
+        ["/api/goals", goalsRoutes],
+        ["/api/goal-alignments", goalAllignmentRoutes],
+        ["/api/PerformanceReview", performanceReviewRoutes],
+        ["/api/calibration", calibrationRoutes],
+        ["/api/calibration/reports", calibrationReportRoutes],
+        ["/api/time-attendance", timeAttendanceRoutes],
+        ["/api/leaves", leaveRoutes],
+        ["/api/holidays", holidayRoutes],
+        ["/api/payroll", payrollRoutes],
+        ["/api/training", trainingRoutes],
+        ["/api/analytics", analyticsRoutes],
+        ["/api/recruitment", recruitmentRoutes],
+        ["/api/emergency-contacts", emergencyContactRoutes],
+        ["/api/employee-media", employeeMediaRoutes],
+        ["/api/dashboard-layout", dashboardLayoutRoutes],
+        ["/api/onboarding", onboardingRoutes],
+        ["/api/interviews", interviewRoutes],
+        ["/api/offers", offerRoutes],
+        ["/api/talent-pool", talentPoolRoutes],
+        ["/api/learning-paths", learningPathRoutes],
+        ["/api/training-sessions", trainingSessionRoutes],
+        ["/api/certifications", certificationRoutes],
+        ["/api/skills", employeeSkillRoutes],
+        ["/api/employee-lifecycle", employeeLifecycleRoutes],
+        ["/api/offboarding", offboardingRoutes],
+        ["/api/org-chart", orgChartRoutes],
+        ["/api/self", selfRoutes],
+        ["/api/compliance", complianceRoutes],
+        ["/api/development-plans", developmentPlanRoutes],
+        ["/api/reimbursements", reimbursementRoutes],
+        ["/api/gdpr", gdprRoutes],
+        ["/api/benefits", benefitRoutes],
+        ["/api/resume", resumeRoutes],
+    ];
+    for (const [path, router] of authorizedRouters) {
+        mountAuthorizedHrRouter(app, path, router);
+    }
+    app.use("/api", denyUnknownHrRoute);
 
     app.get("/metrics", async (_req, res) => {
         res.setHeader("Content-Type", register.contentType);
         res.end(await register.metrics());
     });
 
-    app.use("/mcp", mcpRouter);
+    // SECURITY: the /mcp boundary MUST verify the gateway's service-JWT (same as
+    // /api above + rbac/comms /mcp) — NOT merely trust a present x-mcp-internal
+    // header. Without internalServiceGuard, any caller reaching this service with
+    // a non-empty x-mcp-internal could spoof tenant/permissions in the MCP ctx and
+    // bypass every HR tool gate (payroll/SSN/bank/benefits/GDPR). [HR-MCP-AUTH-01]
+    app.use("/mcp", internalServiceGuard, mcpRouter);
 
     app.get("/", (_req, res) => res.json({ message: "HR Service Running 🏢" }));
 
     // /healthz (liveness) + /readyz (readiness; pings DB via singleton).
     app.use(createHealthRouter({ prisma }));
+
+    // A.6: GET /compliance — readyz-style conformance assertion (verify key
+    // present, outbox dispatcher heartbeat, key/cert expiry). Mounted at the
+    // top level alongside /readyz so probes reach it without the /api guard.
+    app.use(createComplianceHealthRouter());
+
+    // ERR-1: the SINGLE terminal error middleware — mounted LAST, after every
+    // route. Any thrown AppError / ZodError / Prisma error / unexpected bug that
+    // reaches next(err) (Express 5 auto-forwards async rejections) is logged in
+    // full server-side and rendered as the canonical ErrorEnvelope, with 5xx
+    // bodies genericized so no stack/SQL/RLS detail leaks to clients (ERR-3).
+    app.use(errorHandler);
 
     return app;
 };

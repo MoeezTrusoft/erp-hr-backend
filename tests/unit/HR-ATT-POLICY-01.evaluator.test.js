@@ -1,0 +1,407 @@
+// HR-ATT-POLICY-01 — the attendance evaluator.
+//
+// Pure function, so no mocks: the inputs ARE the fixtures. That is the point of
+// keeping it free of I/O — the shadow replay runs this exact code over 4314 real
+// punches, and anything it cannot decide from its arguments would make that
+// replay dishonest.
+import { describe, it, expect } from '@jest/globals';
+import { evaluateShift, DAY_CREDIT } from '../../src/lib/attendanceEvaluator.js';
+
+const at = (iso) => new Date(iso);
+
+// Day shift 10:00-18:00 (8h) and night shift 22:00-08:00 (10h), both real
+// rosters from this fleet.
+const DAY_SHIFT = { start: at('2026-08-14T10:00:00Z'), end: at('2026-08-14T18:00:00Z') };
+const NIGHT_SHIFT = { start: at('2026-08-14T22:00:00Z'), end: at('2026-08-15T08:00:00Z') };
+
+const POLICY = {
+    graceMinutes: 15,
+    halfDayAfterMinutes: 30,
+    earlyLeaveGraceMin: 10,
+    checkoutLeniencyMin: 240,
+    fullDayMinPercent: 90,
+    halfDayMinPercent: 50,
+    duplicatePunchWindowMin: 5,
+};
+
+const CLOSED = { working: false, nextShiftStart: null };
+const LATER = at('2026-08-20T00:00:00Z');   // well past every cutoff below
+
+const IN = (iso) => ({ timestamp: at(iso), type: 'IN' });
+const OUT = (iso) => ({ timestamp: at(iso), type: 'OUT' });
+
+describe('HR-ATT-POLICY-01 arrival', () => {
+    it('is PRESENT inside the grace window', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:12:00Z'), OUT('2026-08-14T18:00:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('PRESENT');
+        expect(r.dayCredit).toBe(DAY_CREDIT.FULL);
+    });
+
+    it('holds credit for late arrivals pending Management review', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:20:00Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('LATE');
+        expect(r.dayCredit).toBeNull(); // Pending review is not an automatic deduction.
+        expect(r.anomalies.map((a) => a.type)).toContain('LATE_CHECKIN');
+    });
+
+    // Grace boundaries use exact timestamps; seconds must not be discarded.
+    it('counts grace in whole minutes: 5m47s is still the 5th minute, so not late', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:05:47Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBeCloseTo(5 + 47/60);
+        expect(r.status).toBe('PRESENT'); // operator, 2026-10-30: the 5th minute is on time, the 6th is late.
+    });
+
+    it('still flags LATE once elapsed minutes EXCEED grace', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:06:01Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: { ...POLICY, graceMinutes: 5 }, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBeCloseTo(6 + 1/60);
+        expect(r.status).toBe('LATE');
+    });
+
+    // T&A-RULE-07 — past the half-day mark the day is still docked HALF a day,
+    // but the table says LATE: display ≠ deduction.
+    it('shows LATE and holds credit when arrival exceeds thirty minutes', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:35:00Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('LATE');
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+    });
+
+    it('reads an after-midnight arrival on a night shift as LATE, not early', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-15T00:30:00Z'), OUT('2026-08-15T08:00:00Z')],
+            shift: NIGHT_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        // 2.5h into a 22:00 shift. Minutes-of-day maths would call this 21.5h early.
+        expect(r.latenessMinutes).toBe(150);
+        // T&A-RULE-07 — arrival verdicts never say HALF_DAY any more.
+        expect(r.status).toBe('LATE');
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+    });
+
+    it('reads a pre-midnight arrival for a 00:00 shift as early', () => {
+        const midnightShift = { start: at('2026-08-15T00:00:00Z'), end: at('2026-08-15T10:00:00Z') };
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T23:05:00Z'), OUT('2026-08-15T10:00:00Z')],
+            shift: midnightShift, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(-55); // Signed arrival offset, not a lateness anomaly.
+        expect(r.status).toBe('PRESENT');
+    });
+});
+
+describe('HR-ATT-POLICY-01 missing punches', () => {
+    it('flags MISSING_CHECKOUT once the cutoff has passed, and holds the day', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:02:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('MISSING_CHECKOUT');
+        expect(r.dayCredit).toBeNull();          // held, not paid and not docked
+        expect(r.requiresRegularization).toBe(true);
+    });
+
+    it('does NOT flag while the search window is still open', () => {
+        // Shift ended 18:00, leniency 4h -> cutoff 22:00. At 19:00 the person
+        // may simply still be at work.
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:02:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED,
+            now: at('2026-08-14T19:00:00Z'),
+        });
+
+        expect(r.status).not.toBe('MISSING_CHECKOUT');
+        expect(r.inProgress).toBe(true);
+    });
+
+    it('closes at its own deadline even when tomorrow has a later working shift', () => {
+        const nextShiftStart = at('2026-08-15T10:00:00Z');
+        const beforeNextShift = at('2026-08-15T09:00:00Z');
+
+        const open = evaluateShift({
+            punches: [IN('2026-08-14T10:02:00Z')], shift: DAY_SHIFT, policy: POLICY,
+            nextDay: { working: true, nextShiftStart }, now: beforeNextShift,
+        });
+        const closed = evaluateShift({
+            punches: [IN('2026-08-14T10:02:00Z')], shift: DAY_SHIFT, policy: POLICY,
+            nextDay: { working: true, nextShiftStart }, now: nextShiftStart,
+        });
+
+        expect(open.status).toBe('MISSING_CHECKOUT');
+        expect(closed.status).toBe('MISSING_CHECKOUT');
+    });
+
+    it('flags MISSING_CHECKIN only when the device direction is trusted', () => {
+        const r = evaluateShift({
+            punches: [OUT('2026-08-14T18:00:00Z')],
+            shift: DAY_SHIFT,
+            policy: POLICY,
+            nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('MISSING_CHECKIN');
+        expect(r.dayCredit).toBeNull();
+        expect(r.requiresRegularization).toBe(true);
+    });
+
+    it('reads a lone scan positionally when direction is NOT trusted', () => {
+        // Measured on this hardware: 462 of 1640 August sessions open with a
+        // check-out code because people scan without selecting a mode. Believing
+        // the code produced 417 phantom MISSING_CHECKIN. Someone who scanned once
+        // came to work and forgot to leave, far more often than the reverse.
+        const r = evaluateShift({
+            punches: [OUT('2026-08-14T18:00:00Z')],
+            shift: DAY_SHIFT,
+            policy: { ...POLICY, trustDeviceDirection: false },
+            nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('MISSING_CHECKOUT');
+    });
+
+    it('is ABSENT with no scan at all', () => {
+        const r = evaluateShift({
+            punches: [], shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('ABSENT');
+        expect(r.dayCredit).toBeNull();
+        expect(r.requiresRegularization).toBe(true); // Absence needs review.
+    });
+});
+
+describe('HR-ATT-POLICY-01 duration and precedence', () => {
+    // T&A-RULE-06 — a checkout before the half-day mark is a HALF DAY (half
+    // credit), not ABSENT: the person showed up and worked a real, if short,
+    // slice of the day.
+    it('treats a checkout before half the shift as an absence (operator, 2026-10-30)', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T12:00:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.workedPercent).toBeCloseTo(25, 0);
+        expect(r.status).toBe('ABSENT');
+        expect(r.dayCredit).toBeNull(); // the absence is a case until it is decided or lapses
+        expect(r.anomalies.map((a) => a.type)).toEqual(['ABSENT']);
+    });
+
+    it('holds credit in the middle band, labelled EARLY_CHECKOUT', () => {
+        // 10:00 -> 15:00 = 5h of 8h = 62.5% — after the half-day mark.
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T15:00:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('EARLY_CHECKOUT');
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+    });
+
+    it('holds a late arrival even when the full duration was worked', () => {
+        // Late (half-day by arrival) but a long shift worked (full by duration).
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:40:00Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+    });
+
+    it('measures a 3-hour shift on its own scale, not an absolute hours band', () => {
+        // EMG 15:30-18:30. Three hours worked is a FULL day here; an absolute
+        // "<4h = absent" rule would mark this team absent every single day.
+        const shortShift = { start: at('2026-08-14T15:30:00Z'), end: at('2026-08-14T18:30:00Z') };
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T15:30:00Z'), OUT('2026-08-14T18:30:00Z')],
+            shift: shortShift, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.workedMinutes).toBe(180);
+        expect(r.status).toBe('PRESENT');
+        expect(r.dayCredit).toBe(DAY_CREDIT.FULL);
+    });
+
+    it('cannot downgrade a day when the employee has no rostered shift', () => {
+        // The 16 roster-only employees: nothing to measure against.
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T12:00:00Z')],
+            shift: { start: null, end: null }, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.workedPercent).toBeNull();
+        expect(r.dayCredit).toBe(DAY_CREDIT.FULL);
+        expect(r.status).toBe('PRESENT');
+    });
+
+    // T&A-RULE-06 — both early-checkout bands cost half a day and BOTH count
+    // as early checkout. Before the mark the day reads HALF_DAY; after it,
+    // EARLY_CHECKOUT.
+    it('treats an early checkout just before half the shift as an absence', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T13:59:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('ABSENT');
+        expect(r.anomalies.map((a) => a.type)).toEqual(['ABSENT']);
+    });
+
+    it('classifies checkout after half the shift but before the end as EARLY_CHECKOUT', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T14:01:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('EARLY_CHECKOUT');
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+    });
+
+    it('raises EARLY_CHECKOUT past the grace', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T17:00:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        const early = r.anomalies.find((a) => a.type === 'EARLY_CHECKOUT');
+        expect(early?.minutes).toBe(60);
+    });
+});
+
+describe('HR-ATT-POLICY-01 anti-passback', () => {
+    it('collapses a burst of identical scans', () => {
+        // Real data: 23:05:15, :16 and :17 from one enrolment.
+        const r = evaluateShift({
+            punches: [
+                IN('2026-08-14T10:05:15Z'), IN('2026-08-14T10:05:16Z'), IN('2026-08-14T10:05:17Z'),
+                OUT('2026-08-14T18:00:00Z'),
+            ],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.checkIn.toISOString()).toBe('2026-08-14T10:05:15.000Z');
+        expect(r.checkOut.toISOString()).toBe('2026-08-14T18:00:00.000Z');
+    });
+
+    it('collapses two arrivals two minutes apart', () => {
+        // Same direction, seconds apart: a re-swipe because the reader did not
+        // confirm, not a two-minute shift.
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), IN('2026-08-14T10:02:00Z')],
+            shift: DAY_SHIFT, policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.checkOut).toBeNull();
+        expect(r.status).toBe('MISSING_CHECKOUT');
+    });
+
+    it('keeps a close in/out pair, since opposite directions are never duplicates', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T10:02:00Z')],
+            shift: DAY_SHIFT,
+            policy: POLICY,
+            nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.workedMinutes).toBe(2);
+    });
+});
+
+describe('HR-ATT-POLICY-01 unrostered employees', () => {
+    it('still closes the check-out window with no rostered shift end', () => {
+        // 16 employees are roster-only. With no shift end there was no cutoff,
+        // so the day never resolved: held with null credit forever, neither
+        // flagged for regularization nor paid. 252 August shifts sat like that.
+        const r = evaluateShift({
+            punches: [{ timestamp: at('2026-08-14T10:02:00Z'), type: 'IN' }],
+            shift: { start: null, end: null },
+            policy: POLICY, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('MISSING_CHECKOUT');
+        expect(r.inProgress).toBeUndefined();
+    });
+
+    it('leaves it in progress within 24h of the scan', () => {
+        const r = evaluateShift({
+            punches: [{ timestamp: at('2026-08-14T10:02:00Z'), type: 'IN' }],
+            shift: { start: null, end: null },
+            policy: POLICY, nextDay: CLOSED,
+            now: at('2026-08-14T20:00:00Z'),
+        });
+
+        expect(r.inProgress).toBe(true);
+    });
+});
+
+describe('HR-ATT-POLICY-01 half-day threshold as a share of the shift', () => {
+    const PCT = { ...POLICY, graceMinutes: 15, halfDayAfterPercentOfShift: 50 };
+
+    it('uses half of an 8h shift (240 min), not the fixed 30', () => {
+        // 2h late on an 8h shift: well past the fixed 30-minute threshold but
+        // nowhere near half the shift, so it stays LATE.
+        const r = evaluateShift({
+            // Stays a full 8h so the DURATION rule cannot downgrade the day and
+            // the arrival threshold is what is actually under test.
+            punches: [IN('2026-08-14T12:00:00Z'), OUT('2026-08-14T20:00:00Z')],
+            shift: DAY_SHIFT, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(120);
+        expect(r.status).toBe('LATE');
+    });
+
+    it('shows LATE (half-credit) once past half the shift — T&A-RULE-07', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T14:30:00Z'), OUT('2026-08-14T22:30:00Z')],
+            shift: {...DAY_SHIFT,checkoutCutoff:at('2026-08-14T23:00:00Z')}, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(270);        // > 240
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+        expect(r.status).toBe('LATE');
+    });
+
+    it('shows LATE on a scaled threshold too, not HALF_DAY', () => {
+        // EMG 15:30-18:30. A fixed 240-minute threshold could never be reached
+        // on a shift this short; a percentage adapts.
+        const shortShift = { start: at('2026-08-14T15:30:00Z'), end: at('2026-08-14T18:30:00Z') };
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T17:05:00Z'), OUT('2026-08-14T20:05:00Z')],
+            shift: shortShift, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.latenessMinutes).toBe(95);         // > 90
+        expect(r.dayCredit).toBeNull(); // Management must decide before final credit.
+        expect(r.status).toBe('LATE');
+    });
+
+    it('falls back to fixed minutes when there is no rostered shift', () => {
+        const r = evaluateShift({
+            punches: [IN('2026-08-14T10:00:00Z'), OUT('2026-08-14T18:00:00Z')],
+            shift: { start: null, end: null }, policy: PCT, nextDay: CLOSED, now: LATER,
+        });
+
+        expect(r.status).toBe('PRESENT');           // no shift start -> no lateness
+    });
+});

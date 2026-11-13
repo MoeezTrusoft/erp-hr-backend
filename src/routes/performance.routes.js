@@ -11,12 +11,12 @@ const router = express.Router();
 
 router.post("/", createPerformanceReview);
 router.get("/", getAllReviews);
-router.get("/:employeeId", getReviewsByEmployee);
+
 router.put("/:id", updateReview);
 
-router.post("/", addFeedback);
-router.put("/:id", updateFeedback);
-router.delete("/:id", deleteFeedback);
+router.post("/feedback", addFeedback);
+router.put("/feedback/:id", updateFeedback);
+router.delete("/feedback/:id", deleteFeedback);
 
 router.get("/metrics", listMetrics);
 router.post("/metrics", createMetric);
@@ -26,4 +26,5 @@ router.delete("/metrics/:id", deactivateMetric);
 router.get("/reviews/:reviewId/items", getReviewItems);
 router.post("/reviews/:reviewId/items", upsertReviewItems);
 
+router.get("/employees/:employeeId", getReviewsByEmployee);
 export default router;

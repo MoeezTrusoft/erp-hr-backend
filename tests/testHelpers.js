@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
 
 export const createTestEmployee = async (employeeData = {}) => {
     return prisma.employee.create({
@@ -66,7 +67,6 @@ export const createTestDeductionType = async (deductionTypeData = {}) => {
 
 export const cleanupTestData = async () => {
     try {
-        await prisma.payrollAuditLog.deleteMany({});
         await prisma.payrollPayslip.deleteMany({});
         await prisma.payrollRun.deleteMany({});
         await prisma.payrollAssignment.deleteMany({});

@@ -1,4 +1,5 @@
 import * as svc from "../services/developmentPlan.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createPlan = async (req, res) => {
   try {
@@ -14,7 +15,7 @@ export const listPlans = async (req, res) => {
     const data = await svc.listPlans({ employeeId: req.query.employeeId });
     res.status(200).json({ success: true, message: "Success", data });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    respondServerError(req, res, e);
   }
 };
 

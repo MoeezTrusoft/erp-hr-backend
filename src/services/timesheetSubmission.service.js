@@ -1,0 +1,320 @@
+import { cycleInstantForMonth } from "./payrollCycleDates.js";
+import { attendanceTransaction,lockAttendancePeriod } from './attendancePeriod.service.js';
+import { assertAttendanceComplete,attendanceCompleteness } from './attendanceEvaluation.service.js';
+import { assertMonthlyInputsComplete } from './monthlyPayrollAttendance.service.js';
+// src/services/timesheetSubmission.service.js
+//
+// TS-SUBMIT-01 (operator item 3, 2026-09-17) — the Submit-Timesheet gatekeeper.
+//
+// The workflow, as the operator specified it:
+//
+//   1. The attendance cycle for the payroll month must be LOCKED with the
+//      configured attendance lock rule from payroll setup (PayrollCalendar.
+//      attendanceCutoff). HR may override timing at their discretion — a
+//      `force` flag exists for exactly that (the override itself is audited).
+//   2. The timesheet can only be submitted after ALL pending anomaly requests
+//      for the month are resolved (approved/disapproved/rejected/cancelled).
+//      A pending anomaly is a question about money that nobody has answered.
+//   3. Submitting is a mandatory BLOCKER: payroll cannot be initiated for the
+//      month until a submission exists.
+//
+// There is deliberately no new state table: submission is recorded as the
+// month's PENDING PayrollRun (the Payroll Vault row the operator described —
+// "a payroll run request is automatically activated in the Payroll Vault with
+// a Pending status"), plus a payroll_audit_log entry naming the submitter.
+// The run is CREATED here but never PROCESSED here — running the calculation
+// stays a separate, explicit act on the Payroll Vault screen.
+//
+// The gate that payroll processing honours: processPayroll* refuses to run a
+// month with no submission record (see payrollService.assertTimesheetSubmitted).
+import prisma from "../lib/prisma.js";
+import { scopedWhere } from "../lib/tenancy.js";
+import { AppError } from "../utils/AppError.js";
+import { logAction } from "../utils/logs.js";
+import { openRequestCount } from "../lib/openAnomalyRequests.js";
+
+/** The month window a submission covers (payroll period = calendar month). */
+function submissionWindow(month) {
+  // Deliberately NOT resolvePeriod: its null-`to` default is the CURRENT
+  // calendar month's end, which bled e.g. August's window into Sep 30 and
+  // matched the WRONG month's run. A submission window is exactly
+  // month-start..month-end of the requested month, on the UTC calendar.
+  const [y, m] = String(month).split("-").map(Number);
+  const from = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0, 0));
+  const to = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+  return { from, to };
+}
+
+/** Find the active Payroll Vault run covering exactly this calendar month. */
+async function findSubmissionRun(tenantId, month, db = prisma) {
+  const { from, to } = submissionWindow(month);
+  return db.payrollRun.findFirst({
+    where: scopedWhere(tenantId, {
+      periodStart: { gte: from, lte: to },
+      periodEnd: { gte: from, lte: to },
+      status: { notIn: ["CANCELLED", "FAILED"] },
+    }),
+    orderBy: { id: "desc" },
+    select: { id: true, status: true, periodStart: true, periodEnd: true },
+  });
+}
+
+/**
+ * Has this month's timesheet been submitted?
+ *
+ * A PayrollRun alone is not proof of submission because runs can be created
+ * by migration, API clients, or older UI flows. The authoritative marker is
+ * the immutable TIMESHEET_SUBMITTED audit event linked to that run.
+ */
+export async function isTimesheetSubmitted(tenantId, month) {
+  const run = await findSubmissionRun(tenantId, month);
+  if (!run) return { submitted: false, run: null };
+
+  const audit = await prisma.payrollAuditLog.findFirst({
+    where: scopedWhere(tenantId, {
+      action: "TIMESHEET_SUBMITTED",
+      payrollRunId: run.id,
+    }),
+    select: { id: true },
+  });
+  return audit ? { submitted: true, run } : { submitted: false, run: null };
+}
+
+/**
+ * Full submission-state probe for the UI's Submit-Timesheet gating
+ * (TS-GATE-UI-01, operator items 5.1/5.2, 2026-09-21).
+ *
+ * Returns everything the button needs to disable itself with a REASON:
+ *   submitted        — the TIMESHEET_SUBMITTED audit marker exists
+ *   attendanceLocked — the month's attendance cutoff has passed (gate 1)
+ *   attendanceCutoff — the configured cutoff instant (null = unconfigured)
+ *   pendingAnomalies — unresolved anomaly requests in the month (gate 2)
+ *
+ * Mirrors submitTimesheet's gates exactly — the button must never enable on a
+ * looser reading than the submit itself enforces.
+ */
+export async function getTimesheetSubmissionState(tenantId, month) {
+  if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
+    throw new AppError("month must be YYYY-MM", 400);
+  }
+  const submittedState = await isTimesheetSubmitted(tenantId, month);
+  const { from, to } = submissionWindow(month);
+
+  const calendar = await prisma.payrollCalendar.findFirst({
+    where: scopedWhere(tenantId, {}),
+    select: { attendanceCutoff: true },
+  });
+  // The stored instant is a rule (day + time); the cutoff of THIS month is that day in the month after it.
+  const cutoff = cycleInstantForMonth(calendar?.attendanceCutoff, month);
+  const attendanceLocked = cutoff != null && cutoff.getTime() <= Date.now();
+  const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to });
+
+  const completeness=await attendanceCompleteness({tenantId,from:from.toISOString().slice(0,10),to:to.toISOString().slice(0,10)});
+  return {
+    completeness,
+    ...submittedState,
+    attendanceLocked,
+    attendanceCutoff: cutoff ? new Date(cutoff).toISOString() : null,
+    pendingAnomalies,
+  };
+}
+
+/**
+ * Count unresolved anomaly requests inside the month window. The predicate is
+ * shared with the payroll process/finalize gates (`lib/openAnomalyRequests.js`)
+ * so a month cannot pass one gate and fail another for different reasons.
+ */
+async function pendingAnomalyCount(tenantId, { from, to }, db = prisma) {
+  return openRequestCount(db, tenantId, { from, to });
+}
+
+/**
+ * Submit the timesheet for `month` (YYYY-MM) — the gatekeeper.
+ *
+ * @param {{tenantId:string, month:string, actorEmployeeId?:number|null, actorNote?:string, force?:boolean}} args
+ * @returns {Promise<{run:object, created:boolean, pendingAnomalies:number, forced: boolean}>}
+ */
+/**
+ * Reverse an unprocessed submission so HR can correct the month and submit it
+ * again. Only a PENDING vault run can be unsubmitted; processed/approved/
+ * finalized payroll is immutable. The cancelled run and audit row remain as
+ * evidence, while isTimesheetSubmitted() becomes false for the month.
+ */
+export async function unsubmitTimesheet({ tenantId, month, actorEmployeeId = null, actorNote = null, reason }) {
+  if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
+    throw new AppError("month must be YYYY-MM", 400);
+  }
+  const why = String(reason ?? "").trim();
+  if (why.length < 3) throw new AppError("Give a reason for reopening the month (at least 3 characters)", 400);
+  const { from, to } = submissionWindow(month);
+  return attendanceTransaction(prisma,tenantId,async db=>{
+    await lockAttendancePeriod(db,tenantId,true);
+  const run = await db.payrollRun.findFirst({
+    where: scopedWhere(tenantId, { periodStart: { gte: from, lte: to }, periodEnd: { gte: from, lte: to }, status: { notIn: ["CANCELLED", "FAILED"] } }),
+    orderBy: { id: "desc" },
+    select: { id: true, status: true, periodStart: true, periodEnd: true },
+  });
+  if (!run) return { unsubmitted: false, reason: "No submitted timesheet exists for this month" };
+  if (run.status !== "PENDING") {
+    throw new AppError(`HR-TP-04 run #${run.id} is ${run.status}; only an unprocessed PENDING run may be unsubmitted`, 409);
+  }
+  await db.payrollRun.update({ where: { id: run.id, status: "PENDING" }, data: { status: "CANCELLED" } });
+  await db.payrollAuditLog.create({
+    data: {
+      tenantId: tenantId ?? null,
+      action: "TIMESHEET_UNSUBMITTED",
+      payrollRunId: run.id,
+      details: `Timesheet for ${month} unsubmitted by ${actorEmployeeId != null ? `employee ${actorEmployeeId}` : actorNote ?? "unknown actor"}; pending vault run #${run.id} cancelled. Reason: ${why}`,
+    },
+  });
+  await db.attendanceEvaluationJob.updateMany({where:{tenantId,date:{gte:from,lte:to},state:"PROTECTED"},
+    data:{state:"PENDING",nextAttemptAt:new Date(),lastError:null}});
+  return { unsubmitted: true, cancelledRunId: run.id, month };
+  });
+}
+
+export async function submitTimesheet(args) {
+  return attendanceTransaction(prisma,args.tenantId,async db=>{
+    await lockAttendancePeriod(db,args.tenantId,true);
+    return submitTimesheetTransaction(args,db);
+  });
+}
+async function submitTimesheetTransaction({
+  tenantId,
+  month,
+  actorEmployeeId = null,
+  actorNote = null,
+  force = false,
+  reason,
+}, db) {
+  if (!/^\d{4}-\d{2}$/.test(String(month ?? ""))) {
+    throw new AppError("month must be YYYY-MM", 400);
+  }
+  await assertMonthlyInputsComplete({tenantId,month});
+  const who =
+    Number.isInteger(actorEmployeeId) && actorEmployeeId > 0
+      ? { actorEmployeeId }
+      : actorNote
+        ? { actorNote }
+        : (() => {
+            throw new AppError("actorEmployeeId is required to submit a timesheet", 400);
+          })();
+
+  const { from, to } = submissionWindow(month);
+  const now = new Date();
+
+  // ── Gate 1: attendance cycle locked (PayrollCalendar.attendanceCutoff) ────
+  const calendar = await db.payrollCalendar.findFirst({
+    where: scopedWhere(tenantId, {}),
+    select: { attendanceCutoff: true },
+  });
+  const cutoff = cycleInstantForMonth(calendar?.attendanceCutoff, month);
+  const cutoffPassed = cutoff != null && cutoff.getTime() <= now.getTime();
+  const why = String(reason ?? "").trim();
+  if (!cutoffPassed && force) {
+    // An early submit is for a month that has ended but whose cutoff has not passed; a month still running can change.
+    if (to.getTime() >= now.getTime()) throw new AppError(`The month ${month} has not ended yet, so it cannot be submitted early`, 400);
+    if (why.length < 3) throw new AppError("Give a reason for submitting before the attendance cutoff (at least 3 characters)", 400);
+  }
+  if (!cutoffPassed && !force) {
+    throw new AppError(
+      `HR-TP-01 the attendance cycle for ${month} is not locked yet `
+        + `(attendance cutoff ${cutoff ? new Date(cutoff).toISOString() : "not configured"}). `
+        + "HR may submit early with an explicit override (force).",
+      400,
+    );
+  }
+
+  // ── Gate 2: zero unresolved anomaly requests for the month ────────────────
+  const pendingAnomalies = await pendingAnomalyCount(tenantId, { from, to }, db);
+  if (pendingAnomalies > 0) {
+    throw new AppError(
+      `HR-TP-02 ${pendingAnomalies} unresolved anomaly request(s) for ${month} — `
+        + "the timesheet can only be submitted after every anomaly request is resolved "
+        + "(approved or disapproved).",
+      400,
+    );
+  }
+  // Note: gate 2 has no force escape — an answered question cannot be
+  // unanswered by HR discretion, and paying over unresolved anomalies is
+  // exactly what the operator's gatekeeper exists to prevent.
+
+  // ── Effect: activate the Payroll Vault run request (PENDING) ──────────────
+  await assertAttendanceComplete({tenantId,from:from.toISOString().slice(0,10),to:to.toISOString().slice(0,10)},db);
+  const existingRun = await findSubmissionRun(tenantId, month, db);
+  if (existingRun) {
+    if (existingRun.status !== "PENDING") {
+      throw new AppError(
+        `HR-TP-04 run #${existingRun.id} is ${existingRun.status}; only a PENDING run may receive a timesheet submission`,
+        409,
+      );
+    }
+    // Idempotent: a re-submit after edits must not stack duplicate vault rows.
+    // But the submission AUDIT row must exist for this run either way — the
+    // payroll blocker (HR-TP-03) reads it, and runs created out-of-band
+    // (e.g. before this gatekeeper existed) only become processable once HR
+    // submits their month through here. Write it when missing.
+    const audit = await db.payrollAuditLog.findFirst({
+      where: scopedWhere(tenantId, {
+        action: "TIMESHEET_SUBMITTED",
+        payrollRunId: existingRun.id,
+      }),
+      select: { id: true },
+    });
+    if (!audit) {
+      await db.payrollAuditLog.create({
+        data: {
+          tenantId: tenantId ?? null,
+          action: "TIMESHEET_SUBMITTED",
+          payrollRunId: existingRun.id,
+          details:
+            `Timesheet for ${month} submitted by ${
+              who.actorEmployeeId != null ? `employee ${who.actorEmployeeId}` : who.actorNote
+            }; linked to existing vault run #${existingRun.id} (PENDING)`,
+        },
+      });
+    }
+    return {
+      run: existingRun,
+      created: false,
+      pendingAnomalies,
+      forced: false,
+    };
+  }
+
+  const run = await db.payrollRun.create({
+    data: {
+      tenantId: tenantId ?? null,
+      periodStart: from,
+      periodEnd: to,
+      countryCode: "PK",
+      currencyCode: "PKR",
+      status: "PENDING",
+      employeeCount: 0,
+    },
+  });
+
+  await db.payrollAuditLog.create({
+    data: {
+      tenantId: tenantId ?? null,
+      action: "TIMESHEET_SUBMITTED",
+      payrollRunId: run.id,
+      details:
+        `Timesheet for ${month} submitted${force && !cutoffPassed ? ` (HR early-submission override. Reason: ${why})` : ""}`
+        + ` by ${who.actorEmployeeId != null ? `employee ${who.actorEmployeeId}` : who.actorNote}`
+        + `; vault run #${run.id} activated as PENDING`
+        + `${cutoffPassed ? "" : `; cutoff was ${cutoff ? new Date(cutoff).toISOString() : "not configured"}`}`,
+    },
+  });
+
+  await logAction({
+    employeeId: who.actorEmployeeId ?? null,
+    type: "Create",
+    module: "Payroll Run",
+    result: "SUCCESS",
+    notes: `Timesheet ${month} submitted — vault run #${run.id} (PENDING)${force ? " [force]" : ""}`,
+    tenantId: tenantId ?? null,
+  });
+
+  return { run, created: true, pendingAnomalies, forced: Boolean(force) && !cutoffPassed };
+}

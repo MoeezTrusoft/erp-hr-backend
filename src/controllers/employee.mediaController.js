@@ -6,6 +6,7 @@ import {
     deleteEmployeeMediaService,
 } from "../services/employee.mediaService.js";
 import { uploadFileToDAM, getDamAssetById } from "../services/dam.media.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 // CREATE
 export const createEmployeeMedia = async (req, res) => {
@@ -51,7 +52,7 @@ export const getAllEmployeeMedia = async (req, res) => {
         const data = await getAllEmployeeMediaService();
         res.json({ success: true, data });
     } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        respondServerError(req, res, err);
     }
 };
 

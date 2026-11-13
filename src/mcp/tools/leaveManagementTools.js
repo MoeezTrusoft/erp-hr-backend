@@ -1,0 +1,203 @@
+// src/mcp/tools/leaveManagementTools.js — Leave Management dashboard MCP facade.
+//
+// Read/aggregate + unified-decision tools backing the HR Leave Management
+// dashboard. All tools are tenant-scoped via ctx (verified tenant) and gated on
+// hr:leave (deny-by-default). Writes assert PUT; reads assert GET.
+//
+// Existing leave tools (registered by leaveTools.js — NOT duplicated here):
+//   hr_leave_request_create, hr_leave_request_approve, hr_leave_request_reject,
+//   hr_leave_requests_list, hr_leave_balances_list.
+// This module adds the dashboard-specific surface. hr_leave_request_decide is a
+// unified wrapper over approve/reject (reason required on reject); the pairwise
+// approve/reject tools remain available for callers that prefer them.
+import { z } from "zod";
+import { mcpCtx as mcpRequestContext } from "../context.js";
+import { assertPermission } from "../utils/assertPermission.js";
+import { withToolError } from "../utils/toolError.js";
+import {
+  getLeaveBalancesSummary,
+  getLeaveRequestsDashboard,
+  decideLeaveRequest,
+  getNext30Coverage,
+  getLeaveByTypeReport,
+  getLeaveMonthOverview,
+} from "../../services/leaveManagement.service.js";
+import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
+import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
+
+function getCtx() {
+  const ctx = mcpRequestContext.getStore();
+  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  return ctx;
+}
+
+const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
+
+export function registerLeaveManagementTools(server) {
+  // 1 ── balances summary by type ────────────────────────────────────────────
+  server.tool(
+    "hr_leave_balances_summary",
+    "Leave balances grouped by type (annual/sick/casual/maternity/other). With employeeId → that employee; else tenant-wide aggregate.",
+    {
+      employeeId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Employee id (Employee.id) to scope to; omit → tenant-wide aggregate"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      // HR-LEAVE-SELFSCOPE-01 — same pinning as the month overview: a VIEW-only
+      // session reads its own balances, a foreign employeeId is refused.
+      const { actingEmployeeId, canViewOthers } = resolveActorScope(user, permissions);
+      const effectiveEmployeeId = assertEmployeeScope({
+        user,
+        permissions,
+        explicit: args.employeeId,
+        actingEmployeeId,
+        canViewOthers,
+        allowUnbound: true,
+      });
+      const data = await getLeaveBalancesSummary(
+        { employeeId: effectiveEmployeeId },
+        user.tenantId,
+      );
+      return ok(data);
+    }, "hr_leave_balances_summary")
+  );
+
+  // 2 ── requests dashboard (paginated) ──────────────────────────────────────
+  server.tool(
+    "hr_leave_requests_dashboard",
+    "Paginated leave-requests dashboard rows with search (q=employee), filter (status/type/from/to), sort (submitted|status).",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      q: z.string().optional(),
+      search: z.string().optional(),
+      status: z.string().optional(),
+      type: z.string().optional(),
+      from: z.string().optional().describe("ISO date — window start"),
+      to: z.string().optional().describe("ISO date — window end"),
+      sort: z.enum(["submitted", "status"]).optional(),
+      order: z.enum(["asc", "desc"]).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await getLeaveRequestsDashboard(args, user.tenantId);
+      return ok(data);
+    }, "hr_leave_requests_dashboard")
+  );
+
+  // 3 ── unified approve/reject decision ─────────────────────────────────────
+  server.tool(
+    "hr_leave_request_decide",
+    "Approve or reject a leave request (unified). reason required when decision=reject. Records an approval row and updates status.",
+    {
+      id: z.union([z.string(), z.number()]).describe("Leave request ID (LeaveRequest.id)"),
+      decision: z.enum(["approve", "reject"]).describe("Decision — one of approve | reject"),
+      reason: z
+        .string()
+        .optional()
+        .describe("Conditionally required: MUST be non-empty when decision=reject (enforced server-side, 400 otherwise); stored as LeaveRequestApproval.comments"),
+      leavePolicyId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("HR-LEAVE-TYPELESS-01 — the leave TYPE to assign when approving (LeavePolicy.id). Required at approval for typeless employee requests; ignored on reject."),
+      approverId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Employee id to record as the reviewer. Optional — defaults to the caller's own employeeId (resolved from userId/email for a super-admin without a session employee). 400 if none resolves."),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:leave", user.isAdmin);
+      // decideLeaveRequest reads user.employeeId as the approver (NOT-NULL FK).
+      // A super-admin has none, so resolve one and hand the service a synthetic
+      // user carrying it; fail with a clear, actionable 400 otherwise.
+      const approverId = await resolveActingEmployeeId(user, {
+        explicit: args.approverId,
+        tenantId: user.tenantId,
+      });
+      if (approverId == null) {
+        throw Object.assign(
+          new Error(
+            "Could not resolve the acting reviewer. Pass approverId, or link an Employee to your account."
+          ),
+          { status: 400 }
+        );
+      }
+      const data = await decideLeaveRequest(args, { ...user, employeeId: approverId }, user.tenantId);
+      return ok(data);
+    }, "hr_leave_request_decide")
+  );
+
+  // 3b ── month overview (KPIs + department bars + heatmap, one call) ────────
+  server.tool(
+    "hr_leave_month_overview",
+    "Leave dashboard for ONE month: per-type counts (annual/sick/casual/maternity/other), per-department aggregates, and a per-day grid of approved/disapproved/requested leaves with the requesting employees embedded. HR/manager scope: tenant-wide; employee scope: own rows only.",
+    {
+      month: z.string().regex(/^\d{4}-\d{2}$/, "month must be YYYY-MM").describe("Selected month, YYYY-MM"),
+      employeeId: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Optional employee scope — an employee session is ALWAYS pinned to their own id regardless of this argument"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      // HR-LEAVE-SELFSCOPE-01 — mirrors the payslip rule (D1=A): a session on
+      // the leave READ surface without a leave/employee WRITE or EXPORT gate
+      // sees its own rows only; an explicit foreign employeeId is refused, not
+      // remapped, so misuse is observable.
+      const { actingEmployeeId, canViewOthers } = resolveActorScope(user, permissions);
+      // HR and Management see the whole company's month; an employee sees their own.
+      const effectiveEmployeeId =
+        canViewOthers && (args.employeeId == null || args.employeeId === "")
+          ? null
+          : assertEmployeeScope({
+              user,
+              permissions,
+              explicit: args.employeeId,
+              actingEmployeeId,
+              canViewOthers,
+              allowUnbound: true,
+            });
+      const data = await getLeaveMonthOverview(
+        { month: args.month, employeeId: effectiveEmployeeId },
+        user.tenantId,
+      );
+      return ok(data);
+    }, "hr_leave_month_overview")
+  );
+
+  // 4 ── next-30-day coverage ────────────────────────────────────────────────
+  server.tool(
+    "hr_leave_next30_coverage",
+    "Per-department coverage for the next 30 days (present vs on-leave, presentPct) plus a daily present/on-leave series.",
+    z.object({}),
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await getNext30Coverage(args, user.tenantId);
+      return ok(data);
+    }, "hr_leave_next30_coverage")
+  );
+
+  // 5 ── leave-by-type report ────────────────────────────────────────────────
+  server.tool(
+    "hr_leave_by_type_report",
+    "Leave taken (in days) by type from APPROVED requests: {annual,sick,casual,maternity,other}. Optional from/to period filter.",
+    {
+      from: z.string().optional().describe("ISO date — period start"),
+      to: z.string().optional().describe("ISO date — period end"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      const data = await getLeaveByTypeReport(args);
+      return ok(data);
+    }, "hr_leave_by_type_report")
+  );
+}

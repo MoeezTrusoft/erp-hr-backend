@@ -13,9 +13,24 @@ import {
   exportReport,
 } from "../../controllers/analyticsController.js";
 
+// IC-15 — getRecruitmentDashboard / getPerformanceDashboard carry a secondary,
+// hard-coded role-name gate (HR_ADMIN | HR_MANAGER | RECRUITER, etc.) intended
+// for the HTTP path. On the MCP path authorization is already enforced at the
+// resource boundary by the hr:analytics:VIEW check (analyticsTools.js), so a
+// holder whose role string isn't literally in that list (e.g. the super-admin
+// RBAC_ADMIN) was wrongly 403'd. Present an effective HR_ADMIN role to satisfy
+// the redundant gate — authorization-equivalent (the boundary already proved
+// the caller holds hr:analytics) and data-scope-neutral (these dashboards are
+// tenant-wide aggregates; applyDataScope treats HR_ADMIN and RBAC_ADMIN
+// identically — no department/employee narrowing). HTTP callers are unaffected.
+const asAnalyticsReader = (user) => ({
+  ...user,
+  roles: ["HR_ADMIN", ...(Array.isArray(user?.roles) ? user.roles : [])],
+});
+
 export const mcpGetAnalyticsDashboardOverview = (user) => runController(getDashboardKPIs, { user });
-export const mcpGetAnalyticsDashboardRecruitment = (user) => runController(getRecruitmentDashboard, { user });
-export const mcpGetAnalyticsDashboardPerformance = (user) => runController(getPerformanceDashboard, { user });
+export const mcpGetAnalyticsDashboardRecruitment = (user) => runController(getRecruitmentDashboard, { user: asAnalyticsReader(user) });
+export const mcpGetAnalyticsDashboardPerformance = (user) => runController(getPerformanceDashboard, { user: asAnalyticsReader(user) });
 
 export const mcpGetAnalyticsHeadcount = (user) => runController(getHeadcountReport, { user, query: { startDate: "2026-01-01", endDate: "2026-12-31" } });
 export const mcpGetAnalyticsTurnover = (user) => runController(getTurnoverReport, { user, query: { startDate: "2026-01-01", endDate: "2026-12-31" } });

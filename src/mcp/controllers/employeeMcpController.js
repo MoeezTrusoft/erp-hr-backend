@@ -1,6 +1,7 @@
 import { deleteEmployee } from "../../controllers/hr.controller.js";
 import {
   deletePositionController,
+  getPositionByIdController,
 } from "../../controllers/position.controller.js";
 import { getOrgChart as getOrgChartController } from "../../controllers/orgChart.controller.js";
 import { logLifecycleEvent } from "../../controllers/employeeLifecycle.controller.js";
@@ -14,6 +15,10 @@ import {
   remove as deleteEmergencyContactController,
 } from "../../controllers/emergencyContacts.controller.js";
 import * as hrContractService from "../../services/hrContract.service.js";
+import { getEmployeeConsolidatedProfile } from "../../services/employeeProfile.service.js";
+import { getEmployeeProfileTab } from "../../services/employeeProfileTabs.service.js";
+import logger from "../../lib/logger.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
 
 async function runController(controller, { user = {}, params = {}, query = {}, body = {} } = {}) {
   const req = {
@@ -58,24 +63,52 @@ async function runController(controller, { user = {}, params = {}, query = {}, b
   return payload;
 }
 
+// BLOCKER-1 / C.2 — thread the VERIFIED tenant (user.tenantId — the RBAC
+// Company.uuid from the service-JWT claim, NEVER a request header) into every
+// hrContract read so a tool can only ever see its own tenant's rows. F-06 rejects
+// tenantless interactive calls before a tool reaches this adapter.
 export async function mcpGetEmployees(user, args = {}) {
-  return hrContractService.listEmployees(args);
+  return hrContractService.listEmployees(args, user?.tenantId ?? null);
 }
 
-export async function mcpListEmployeesContract(query = {}) {
-  return hrContractService.listEmployees(query);
+export async function mcpListEmployeesContract(query = {}, tenantId) {
+  return hrContractService.listEmployees(query, tenantId ?? null);
+}
+
+export async function mcpExportEmployees(query = {}, tenantId, format = "csv") {
+  return { success: true, data: await hrContractService.exportEmployees(query, tenantId ?? null, format) };
 }
 
 export async function mcpGetEmployeeById(user, id) {
-  return { success: true, data: await hrContractService.getEmployeeProfile(id) };
+  return { success: true, data: await hrContractService.getEmployeeProfile(id, user?.tenantId ?? null) };
 }
 
+// Consolidated employee profile (department/company from RBAC, bank block, ntn,
+// tax slab, EOBI/PF, monthly/YTD tax, compensation history, skills/competencies,
+// certifications, documents). Sensitive fields (raw salary/account/iban/ntn) are
+// gated on `showSensitive` — set by the tool from the caller's hr:payroll VIEW.
+export async function mcpGetEmployeeProfile(user, id, opts = {}) {
+  return {
+    success: true,
+    data: await getEmployeeConsolidatedProfile(id, user?.tenantId ?? null, opts),
+  };
+}
+
+// Tab-scoped profile: fetches ONE tab's data + the always-on identity header.
+export async function mcpGetEmployeeProfileTab(user, id, opts = {}) {
+  return {
+    success: true,
+    data: await getEmployeeProfileTab(id, user?.tenantId ?? null, opts),
+  };
+}
+
+
 export async function mcpGetEmployeeQuickView(user, id) {
-  return { success: true, data: await hrContractService.getEmployeeQuickView(id) };
+  return { success: true, data: await hrContractService.getEmployeeQuickView(id, user?.tenantId ?? null) };
 }
 
 export async function mcpGetEmployeeDocuments(user, id) {
-  return { success: true, data: await hrContractService.getEmployeeDocuments(id) };
+  return { success: true, data: await hrContractService.getEmployeeDocuments(id, user?.tenantId ?? null) };
 }
 
 export async function mcpUpdateEmployeeStatus(user, id, status, actorId) {
@@ -85,45 +118,86 @@ export async function mcpUpdateEmployeeStatus(user, id, status, actorId) {
   };
 }
 
-export async function mcpCreateEmployee(user, data) {
-  return hrContractService.createEmployee(data, user?.employeeId || user?.userId);
+export async function mcpCreateEmployee(user, data, ctx = {}) {
+  // T-P2.2/T-P2.6 + A.4: thread the VERIFIED tenant (user.tenantId, from the
+  // service-JWT claim — never the request body) and the request correlationId so
+  // createEmployee writes tenant_id and emits the hr.employee.lifecycle.v1 event
+  // in-tx. actorId stays the acting principal.
+  const actorEmployeeId = await requireEmployeeActor(user);
+  return hrContractService.createEmployee(data, actorEmployeeId, {
+    tenantId: user?.tenantId ?? null,
+    correlationId: ctx.correlationId,
+    actorId: actorEmployeeId,
+    actor: ctx.actor,
+  });
 }
 
 export async function mcpUpdateEmployee(user, id, data) {
-  return hrContractService.updateEmployee(id, data, user?.employeeId || user?.userId);
+  // API-2 — pull the optional optimistic-concurrency guard out of the tool args
+  // and thread it to the service as ctx.expectedVersion (opt-in If-Match).
+  const { expectedVersion, ...rest } = data ?? {};
+  return hrContractService.updateEmployee(id, rest, await requireEmployeeActor(user), { expectedVersion });
 }
 
 export async function mcpDeleteEmployee(user, id) {
-  return runController(deleteEmployee, { user, params: { id: String(id) } });
+  // RBAC-only admins have no linked Employee record (the normal operator shape —
+  // see hr_employee_status_update). The delete controller uses the employee-id
+  // header as audit actor metadata and rejects an empty value (HR-4040).
+  // F-07: use employeeId directly — never fall back to userId.
+  return runController(deleteEmployee, {
+    user,
+    params: { id: String(id) },
+    headers: { "employee-id": String(user.employeeId ?? "") },
+  });
 }
 
 export async function mcpUploadEmployeeProfilePhoto(user, id, data) {
-  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, user?.employeeId || user?.userId);
+  return hrContractService.uploadEmployeeProfilePhoto(id, data, null, await requireEmployeeActor(user));
 }
 
 export async function mcpUploadEmployeeCoverPhoto(user, id, data) {
-  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, user?.employeeId || user?.userId);
+  return hrContractService.uploadEmployeeCoverPhoto(id, data, null, await requireEmployeeActor(user));
+}
+
+// Photo removal detaches only the employee's reference — the DAM asset itself is
+// left for the caller to deal with (trash it under dam:asset DELETE, or keep it
+// in the library). See removeEmployeePhotoSlot in hrContract.service.js.
+export async function mcpRemoveEmployeeProfilePhoto(user, id) {
+  return hrContractService.removeEmployeeProfilePhoto(id, await requireEmployeeActor(user));
+}
+
+export async function mcpRemoveEmployeeCoverPhoto(user, id) {
+  return hrContractService.removeEmployeeCoverPhoto(id, await requireEmployeeActor(user));
 }
 
 export async function mcpCreateEmployeeDocument(user, employeeId, data) {
-  return hrContractService.createEmployeeDocument(employeeId, data, null, user?.employeeId || user?.userId);
+  return hrContractService.createEmployeeDocument(employeeId, data, null, await requireEmployeeActor(user));
 }
 
 export async function mcpGetPositions(user) {
-  return hrContractService.listPositions({ page: 1, pageSize: 10 });
+  return hrContractService.listPositions({ page: 1, pageSize: 10 }, user?.tenantId ?? null);
 }
 
-export async function mcpListPositionsContract(query = {}) {
-  return hrContractService.listPositions(query);
+export async function mcpListPositionsContract(query = {}, tenantId) {
+  return hrContractService.listPositions(query, tenantId ?? null);
 }
 
 export async function mcpCreatePosition(user, data) {
-  return hrContractService.createPosition(data, user?.employeeId || user?.userId);
+  // T-P2.6: thread the verified tenant (RBAC Company.uuid, resolved by
+  // buildContextFromHeaders from the gateway-forwarded X-Tenant-Id header)
+  // so the created Position row is correctly tenant-scoped.
+  const tenantId = user?.tenantId ?? null;
+  const actorId = await requireEmployeeActor(user);
+  return hrContractService.createPosition(data, actorId, tenantId);
 }
 
 export async function mcpUpdatePosition(user, id, data) {
-  return hrContractService.updatePosition(id, data);
+  // API-2 — thread the optional optimistic-concurrency guard (see mcpUpdateEmployee).
+  const { expectedVersion, ...rest } = data ?? {};
+  return hrContractService.updatePosition(id, rest, { expectedVersion });
 }
+
+export const mcpGetPositionByPositionId = (user, id) => runController(getPositionByIdController, { user, params: { id: String(id) } });
 
 export async function mcpUpdatePositionStatus(user, id, isActive) {
   return hrContractService.updatePositionStatus(id, isActive);
@@ -132,6 +206,7 @@ export async function mcpUpdatePositionStatus(user, id, isActive) {
 export async function mcpDeletePosition(user, id) {
   return runController(deletePositionController, { user, params: { id: String(id) } });
 }
+
 
 export async function mcpGetOrgChart(user) {
   return runController(getOrgChartController, { user });
@@ -150,6 +225,10 @@ export async function mcpUpdateOffboarding(user, id, data) {
 }
 
 export async function mcpCreateEmergencyContact(user, data) {
+  // LOG-1: NEVER log the raw `data` — emergency-contact fields (name, phone,
+  // relationship) are PII and console.* bypasses the pino redact surface. Trace
+  // at debug with the tool name only.
+  logger.debug({ toolName: "mcpCreateEmergencyContact" }, "MCP tool called");
   return runController(createEmergencyContactController, { user, body: data });
 }
 

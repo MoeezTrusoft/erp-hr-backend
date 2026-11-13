@@ -1,0 +1,206 @@
+// scripts/payroll-dryrun.mjs — a full payroll, computed and thrown away.
+//
+// Assembles exactly what processPayrollRun assembles and runs the SAME engine,
+// but persists nothing. The point is to see the money before committing to it:
+// real gross, real FBR tax, real attendance deductions from the rules that are
+// live right now.
+//
+// READ-ONLY. It creates no payroll run, no payslip, no deduction type.
+import prisma from "../src/lib/prisma.js";
+import { mcpCtx } from "../src/mcp/context.js";
+import { buildPayslipFromInputs } from "../src/services/payrollService.js";
+import { countViolationDays, computeAttendanceDeductions } from "../src/lib/attendanceDeduction.js";
+
+const TENANTS = {
+  Trusoft: "40314ef4-0a81-4390-b631-b3ad3f21f523",
+  Homenet: "8ff0533b-62f6-4be9-a78e-69adf49e00bc",
+  EMG: "61b7eb53-ab6e-413f-9d9a-1ecf4e071e73",
+  JOC: "8f4a526f-d45b-4da2-b772-d6682e849812",
+  BOC: "14d8c7b1-194d-4e35-b058-b9cb9aa9fba2",
+};
+
+const periodStart = new Date("2026-08-01T00:00:00.000Z");
+const periodEnd = new Date("2026-08-31T23:59:59.999Z");
+const VERBOSE = process.argv.includes("--verbose");
+
+const n = (v) => Number(v || 0);
+const fmt = (v) => n(v).toLocaleString("en-PK", { maximumFractionDigits: 0 }).padStart(11);
+const name = (e) => e.employee_name || [e.first_name, e.last_name].filter(Boolean).join(" ") || e.employee_code;
+
+const grand = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, other: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
+
+async function main() {
+  console.log(`AUGUST 2026 PAYROLL — DRY RUN (nothing written)\n`);
+
+  for (const [tenantName, tenantId] of Object.entries(TENANTS)) {
+    await mcpCtx.run({ user: { tenantId } }, async () => {
+      const rules = await prisma.attendanceDeductionRule.findMany({
+        where: { tenantId, enabled: true },
+        orderBy: { ruleKey: "asc" },
+      });
+      const ruleConfig = (await prisma.payrollRuleConfig.findUnique({ where: { tenantId } })) ?? {};
+      const taxRateRows = await prisma.taxRate.findMany({ where: { tenantId, countryCode: "PK" } });
+
+      const terms = await prisma.employmentTerms.findMany({ where: { tenantId } });
+      const tot = { people: 0, gross: 0, tax: 0, attendance: 0, lwp: 0, other: 0, net: 0, penalised: 0, loan: 0, prorated: 0 };
+
+      const lines = [];
+      for (const term of terms) {
+        const emp = await prisma.employee.findUnique({
+          where: { id: term.employeeId },
+          select: {
+            id: true, employee_code: true, employee_name: true,
+            first_name: true, last_name: true, hire_date: true, status: true,
+            // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — the spells overlapping this run.
+            // Without them a leaver is paid a full month and a re-hire is paid
+            // for the weeks before they came back.
+            employmentPeriods: {
+              // Past spells included on purpose — see the note in
+              // payrollService: filtering to overlapping spells only leaves a
+              // leaver with an empty list, which reads as "no history" and pays
+              // a full month.
+              where: { startDate: { lte: periodEnd } },
+              select: { startDate: true, endDate: true },
+              orderBy: { startDate: "asc" },
+            },
+          },
+        });
+        if (!emp) continue;
+
+        // HR-PAYROLL-LOAN-LOAD-01 — an active loan takes its monthly installment,
+        // never more than what is still outstanding.
+        const loans = await prisma.loan.findMany({
+          where: { employeeId: emp.id, status: "ACTIVE", outstandingMinor: { gt: 0 } },
+          select: {
+            id: true, kind: true, outstandingMinor: true,
+            monthlyInstallmentMinor: true, disbursementDate: true,
+          },
+        });
+        const loanLines = loans
+          .filter((l) => l.disbursementDate <= periodEnd)
+          .map((l) => ({
+            loanId: l.id,
+            amountMinor: Math.min(l.monthlyInstallmentMinor, l.outstandingMinor),
+            name: l.kind === "ADVANCE" ? "Salary Advance Recovery" : "Loan Repayment",
+          }));
+
+        const assignments = await prisma.payrollAssignment.findMany({
+          where: {
+            employeeId: emp.id,
+            isActive: true,
+            effectiveFrom: { lte: periodEnd },
+            OR: [{ effectiveTo: null }, { effectiveTo: { gte: periodStart } }],
+          },
+          include: { earningType: true, deductionType: true },
+        });
+
+        // HR-ATT-PAYROLL-BRIDGE-01 — pass the complete stored attendance
+        // evidence into the REAL payslip engine. The earlier dry-run selected
+        // only date/status/manual flags, so pooled/credit-based attendance
+        // deductions silently saw no attendanceRows/day_credit and reported
+        // zero money despite listing violation days.
+        const attendance = await prisma.attendance.findMany({
+          where: { employeeId: emp.id, date: { gte: periodStart, lte: periodEnd } },
+          select: {
+            date: true,
+            status: true,
+            manually_corrected: true,
+            day_credit: true,
+            requires_regularization: true,
+          },
+        });
+        const anomalies = await prisma.attendanceAnomaly.findMany({
+          where: { employeeId: emp.id, date: { gte: periodStart, lte: periodEnd } },
+          select: { date: true, status: true, type: true },
+        });
+
+        const attendanceDeductionLines = rules.length
+          ? computeAttendanceDeductions({
+              violations: countViolationDays({ attendance, anomalies }),
+              rules,
+            })
+          : [];
+
+        const slip = buildPayslipFromInputs({
+          employee: emp,
+          employmentTerm: term,
+          assignments,
+          payrollRun: { periodStart, periodEnd, countryCode: "PK", currencyCode: "PKR" },
+          taxRateRows,
+          asOf: periodEnd,
+          bridges: {
+            attendanceDeductionLines,
+            attendanceRows: attendance,
+            anomalyRows: anomalies,
+            loanLines,
+          },
+          ruleConfig,
+        });
+
+        const find = (pred) => slip.deductions.filter(pred).reduce((s, d) => s + n(d.amount), 0);
+        const tax = find((d) => d.description === "Income Tax");
+        const att = find((d) =>
+          d.code === "ATTENDANCE_DEDUCTION" ||
+          d.code === "ABSENCE_RECOVERY" ||
+          String(d.description).startsWith("Attendance") ||
+          String(d.description).startsWith("Absence recovery"),
+        );
+        const lwp = find((d) => d.code === "LWP_RECOVERY" || String(d.description).startsWith("LWP"));
+        const days = attendanceDeductionLines.reduce((s, l) => s + l.days, 0);
+        const loanAmt = find((d) => d.code === "LOAN_REPAYMENT");
+        const totalDeductionAmt = find(() => true);
+        const other = totalDeductionAmt - tax - att - lwp - loanAmt;
+        const pf = slip.prorationFactor ?? 1;
+
+        tot.people++;
+        tot.gross += n(slip.grossAmount);
+        tot.tax += tax;
+        tot.attendance += att;
+        tot.lwp += lwp;
+        tot.other += other;
+        tot.net += n(slip.netAmount);
+        tot.loan += loanAmt;
+        if (att > 0) tot.penalised++;
+        if (pf < 1) tot.prorated++;
+
+        lines.push(
+          `  ${emp.employee_code.padEnd(7)} ${name(emp).slice(0, 24).padEnd(24)}` +
+            `${fmt(slip.grossAmount)}${fmt(tax)}${fmt(att)}${days ? ` (${days}d)` : "     "}` +
+            `${fmt(loanAmt)}${pf < 1 ? ` ${(pf * 100).toFixed(0)}%` : "    "}${fmt(slip.netAmount)}`,
+        );
+      }
+
+      console.log(`=== ${tenantName} ${"=".repeat(58 - tenantName.length)}`);
+      console.log(
+        `  ${"code".padEnd(7)} ${"employee".padEnd(24)}${"gross".padStart(11)}${"tax".padStart(11)}${"attend".padStart(11)}     ${"loan".padStart(11)}     ${"net".padStart(11)}`,
+      );
+      if (VERBOSE) lines.forEach((l) => console.log(l));
+      console.log(
+        `  ${String(tot.people).padStart(3)} people${" ".repeat(22)}${fmt(tot.gross)}${fmt(tot.tax)}${fmt(tot.attendance)}     ${fmt(tot.loan)}     ${fmt(tot.net)}`,
+      );
+      console.log(`  ${tot.penalised} with an attendance deduction, ${tot.prorated} prorated (part-month)`);
+      console.log(`  other deductions          ${fmt(tot.other)}\n`);
+
+      for (const k of Object.keys(grand)) grand[k] += tot[k];
+    });
+  }
+
+  console.log(`${"=".repeat(64)}`);
+  console.log(`GRAND TOTAL — ${grand.people} employees`);
+  console.log(`  gross                 ${fmt(grand.gross)}`);
+  console.log(`  income tax            ${fmt(grand.tax)}`);
+  console.log(`  loans + advances      ${fmt(grand.loan)}`);
+  console.log(`  attendance deductions ${fmt(grand.attendance)}   (${grand.penalised} employees affected)`);
+  console.log(`  unpaid leave           ${fmt(grand.lwp)}`);
+  console.log(`  other deductions      ${fmt(grand.other)}`);
+  console.log(`  NET PAYABLE           ${fmt(grand.net)}`);
+  console.log(`  reconciliation        ${fmt(grand.gross - grand.tax - grand.loan - grand.attendance - grand.lwp - grand.other - grand.net)} (must be 0)`);
+  console.log(`\nNothing was written.`);
+}
+
+try {
+  await main();
+} finally {
+  await prisma.$disconnect().catch(() => {});
+}
+process.exit(0);

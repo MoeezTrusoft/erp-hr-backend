@@ -1,6 +1,11 @@
 // src/services/enrollmentService.js
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
+
+// C.2-completion — verified tenant (T-P2.1) threaded via `tenantId` (inside the
+// enrollment payload, or a trailing read/update param); folded into enrollment
+// reads/writes fail-closed so tenant B never touches tenant A's enrollments.
 
 export const enrollUser = async (enrollmentData, createdBy) => {
     try {
@@ -8,15 +13,17 @@ export const enrollUser = async (enrollmentData, createdBy) => {
             throw new Error('Course ID and Employee ID are required');
         }
 
-        // Check if user is already enrolled
+        const { tenantId } = enrollmentData;
+
+        // Check if user is already enrolled (scoped to this tenant)
         const existingEnrollment = await prisma.trainingEnrollment.findFirst({
-            where: {
+            where: scopedWhere(tenantId, {
                 courseId: parseInt(enrollmentData.courseId),
                 employeeId: parseInt(enrollmentData.employeeId),
                 status: {
                     in: ['ENROLLED', 'IN_PROGRESS']
                 }
-            }
+            })
         });
 
         if (existingEnrollment) {
@@ -24,11 +31,11 @@ export const enrollUser = async (enrollmentData, createdBy) => {
         }
 
         const enrollment = await prisma.trainingEnrollment.create({
-            data: {
+            data: scopedData(tenantId, {
                 courseId: parseInt(enrollmentData.courseId),
                 employeeId: parseInt(enrollmentData.employeeId),
                 status: 'ENROLLED'
-            },
+            }),
             include: {
                 course: {
                     include: {
@@ -51,6 +58,7 @@ export const enrollUser = async (enrollmentData, createdBy) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollment.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
         return enrollment;
@@ -59,7 +67,7 @@ export const enrollUser = async (enrollmentData, createdBy) => {
     }
 };
 
-export const bulkEnrollUsers = async (courseId, employeeIds,createdBy) => {
+export const bulkEnrollUsers = async (courseId, employeeIds, createdBy, tenantId) => {
     try {
         if (!courseId || !employeeIds || !Array.isArray(employeeIds)) {
             throw new Error('Course ID and Employee IDs array are required');
@@ -68,11 +76,11 @@ export const bulkEnrollUsers = async (courseId, employeeIds,createdBy) => {
         const enrollments = await prisma.$transaction(
             employeeIds.map(employeeId =>
                 prisma.trainingEnrollment.create({
-                    data: {
+                    data: scopedData(tenantId, {
                         courseId: parseInt(courseId),
                         employeeId: parseInt(employeeId),
                         status: 'ENROLLED'
-                    },
+                    }),
                     include: {
                         employee: {
                             select: {
@@ -92,6 +100,7 @@ export const bulkEnrollUsers = async (courseId, employeeIds,createdBy) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollments.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -111,7 +120,7 @@ export const getUserEnrollments = async (employeeId, filters = {}) => {
         const { status, page = 1, limit = 10 } = filters;
         const skip = (page - 1) * limit;
 
-        const where = { employeeId: parseInt(employeeId) };
+        const where = scopedWhere(filters.tenantId, { employeeId: parseInt(employeeId) });
         if (status) where.status = status;
 
         const [enrollments, total] = await Promise.all([
@@ -161,7 +170,7 @@ export const getCourseEnrollments = async (courseId, filters = {}) => {
         const { status, page = 1, limit = 10 } = filters;
         const skip = (page - 1) * limit;
 
-        const where = { courseId: parseInt(courseId) };
+        const where = scopedWhere(filters.tenantId, { courseId: parseInt(courseId) });
         if (status) where.status = status;
 
         const [enrollments, total] = await Promise.all([
@@ -198,10 +207,18 @@ export const getCourseEnrollments = async (courseId, filters = {}) => {
     }
 };
 
-export const updateEnrollmentStatus = async (enrollmentId, status, updatedBy) => {
+export const updateEnrollmentStatus = async (enrollmentId, status, updatedBy, tenantId) => {
     try {
         if (!enrollmentId || !status) {
             throw new Error('Enrollment ID and status are required');
+        }
+
+        // When a verified tenant is supplied, guard the row by tenant first so a
+        // cross-tenant id can't be mutated. Legacy (no-tenant) callers keep the
+        // original P2025-translation pathway untouched.
+        if (tenantId !== undefined) {
+            const existing = await prisma.trainingEnrollment.findFirst({ where: scopedWhere(tenantId, { id: parseInt(enrollmentId) }) });
+            if (!existing) throw new Error('Enrollment not found');
         }
 
         const updateData = { status };
@@ -231,6 +248,7 @@ export const updateEnrollmentStatus = async (enrollmentId, status, updatedBy) =>
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollmentId}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -243,10 +261,18 @@ export const updateEnrollmentStatus = async (enrollmentId, status, updatedBy) =>
     }
 };
 
-export const updateProgress = async (enrollmentId, progress, updatedBy) => {
+export const updateProgress = async (enrollmentId, progress, updatedBy, tenantId) => {
     try {
         if (!enrollmentId || progress === undefined) {
             throw new Error('Enrollment ID and progress are required');
+        }
+
+        // When a verified tenant is supplied, guard the row by tenant first so a
+        // cross-tenant id can't be mutated. Legacy (no-tenant) callers keep the
+        // original P2025-translation pathway untouched.
+        if (tenantId !== undefined) {
+            const existing = await prisma.trainingEnrollment.findFirst({ where: scopedWhere(tenantId, { id: parseInt(enrollmentId) }) });
+            if (!existing) throw new Error('Enrollment not found');
         }
 
         const enrollment = await prisma.trainingEnrollment.update({
@@ -273,6 +299,7 @@ export const updateProgress = async (enrollmentId, progress, updatedBy) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollmentId}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
         return enrollment;
@@ -284,17 +311,17 @@ export const updateProgress = async (enrollmentId, progress, updatedBy) => {
     }
 };
 
-export const getEmployeeTranscript = async (employeeId) => {
+export const getEmployeeTranscript = async (employeeId, tenantId) => {
     try {
         if (!employeeId) {
             throw new Error('Employee ID is required');
         }
 
         const enrollments = await prisma.trainingEnrollment.findMany({
-            where: {
+            where: scopedWhere(tenantId, {
                 employeeId: parseInt(employeeId),
                 status: 'COMPLETED'
-            },
+            }),
             include: {
                 course: {
                     include: {
@@ -343,6 +370,7 @@ export const cancelEnrollment = async (enrollmentId, cancelledBy) => {
     module: "Training Enrollment",
     result: "SUCCESS",
     notes: `Training Enrollment "${enrollmentId}" Cancelled successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
         return enrollment;

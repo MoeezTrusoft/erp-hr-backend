@@ -1,12 +1,20 @@
 import * as leaveService from '../services/leave.service.js';
 import { createRequisitionController } from './requisition.controller.js';
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
+
+// C.2 / T-P2.2 — the verified tenant arrives on req.user.tenantId (set by
+// internalServiceGuard from the signed service-JWT claim; T-P2.1) — NEVER from
+// a request header. Threaded into the scoped leave service calls so tenant B
+// cannot read/mutate tenant A's leave rows.
+const tenantOf = (req) => req.user?.tenantId ?? null;
 
 export const getLeavePolicies = async (req, res) => {
   try {
     const policies = await leaveService.getLeavePolicies(req.query);
     res.json({ success: true, data: policies });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -18,14 +26,14 @@ export const getLeavePolicyById = async (req, res) => {
     }
     res.json({ success: true, data: policy });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const createLeavePolicy = async (req, res) => {
   try {
 
-     const employeeId = req.headers['employee-id'];
+     const employeeId = req.user?.employeeId;
     const policy = await leaveService.createLeavePolicy({
       ...req.body,
       createdById: employeeId
@@ -38,20 +46,22 @@ export const createLeavePolicy = async (req, res) => {
 
 export const updateLeavePolicy = async (req, res) => {
   try {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = req.user?.employeeId;
     const policy = await leaveService.updateLeavePolicy(
       parseInt(req.params.id),
       { ...req.body, updatedById: parseInt(employeeId)}
     );
     res.json({ success: true, data: policy });
   } catch (error) {
+    // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
+    if (respondPreconditionAware(res, error)) return;
     res.status(400).json({ success: false, error: error.message });
   }
 };
 
 export const deleteLeavePolicy = async (req, res) => {
   try {
-    const deletedBy = req.headers['employee-id'];
+    const deletedBy = req.user?.employeeId;
     await leaveService.deleteLeavePolicy(parseInt(req.params.id), deletedBy);
     res.json({ success: true, message: 'Leave policy deleted successfully' });
   } catch (error) {
@@ -61,45 +71,61 @@ export const deleteLeavePolicy = async (req, res) => {
 
 export const getLeaveRequests = async (req, res) => {
   try {
+    const filters = { ...req.query };
     // If user is not HR/Manager, only show their own requests
-    const filters = req.user.role === 'EMPLOYEE'
-      ? { ...req.query, employeeId: req.user.id }
-      : req.query;
+    if (req.user.role === 'EMPLOYEE') {
+      const self = await requireEmployeeActor(req.user);
+      if (filters.involvingEmployeeId != null) {
+        // Issue 395 — "my rows + the ones I raised for someone else". The id is
+        // re-derived here, so a forged query cannot widen the scope, and the
+        // single-employee pin is dropped or it would undo the OR.
+        filters.involvingEmployeeId = self;
+        delete filters.employeeId;
+      } else {
+        filters.employeeId = self;
+      }
+    }
+    filters.tenantId = tenantOf(req);
 
     const requests = await leaveService.getLeaveRequests(filters);
     res.json({ success: true, data: requests });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const getLeaveRequestById = async (req, res) => {
   try {
-    const request = await leaveService.getLeaveRequestById(parseInt(req.params.id));
+    const request = await leaveService.getLeaveRequestById(parseInt(req.params.id), tenantOf(req));
     if (!request) {
       return res.status(404).json({ success: false, error: 'Leave request not found' });
     }
 
     // Check if user has permission to view this request
-    if (req.user.role === 'EMPLOYEE' && request.employeeId !== req.user.id) {
+    if (req.user.role === 'EMPLOYEE' && request.employeeId !== await requireEmployeeActor(req.user)) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
     res.json({ success: true, data: request });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const createLeaveRequest = async (req, res) => {
   try {
-    
-    const employeeId = req.headers['employee-id'];
-    const request = await leaveService.createLeaveRequest({
-      ...req.body,
-     // employeeId: req.user.id,
-      createdById: employeeId
-    });
+    // createdById is the service's SECOND POSITIONAL arg — the prior bug passed
+    // it inside `data` (where the service ignores it) and `undefined` here, so
+    // parseInt(undefined) => NaN broke the createdById FK write. Thread the
+    // resolved creator (MCP path stamps req.body.createdById), then the session
+    // header, then the request's own subject (self-service).
+    const createdById =
+      req.body.createdById ?? req.user?.employeeId ?? req.body.employeeId;
+    const request = await leaveService.createLeaveRequest(
+      { ...req.body },
+      createdById,
+      tenantOf(req)
+    );
     res.status(201).json({ success: true, data: request });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -109,11 +135,12 @@ export const createLeaveRequest = async (req, res) => {
 export const cancelLeaveRequest = async (req, res) => {
   try {
     const leaveRequestId = Number(req.params.id);
-     const updatedById = req.headers['employee-id'];
-    const request = await leaveService.cancelLeaveRequest({
-     id: leaveRequestId,
-    employeeId: Number(updatedById)
-  });
+     const updatedById = await requireEmployeeActor(req.user);
+    const request = await leaveService.cancelLeaveRequest(
+      leaveRequestId,
+      Number(updatedById),
+      req.body?.reason
+    );
     res.json({ success: true, data: request });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -122,10 +149,10 @@ export const cancelLeaveRequest = async (req, res) => {
 
 export const getPendingApprovals = async (req, res) => {
   try {
-    const approvals = await leaveService.getPendingApprovals(req.user.id, req.user.role);
+    const approvals = await leaveService.getPendingApprovals(await requireEmployeeActor(req.user), req.user.role);
     res.json({ success: true, data: approvals });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -134,19 +161,23 @@ export const getLeaveRequestApprovals = async (req, res) => {
     const approvals = await leaveService.getLeaveRequestApprovals(parseInt(req.params.id));
     res.json({ success: true, data: approvals });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const approveLeaveRequest = async (req, res) => {
   try {
-    const employeeId = req.headers['employee-id'];
+    // Prefer the reviewer the MCP layer resolved (body.approverId) over the
+    // session header — the header is empty for a super-admin with no linked
+    // Employee, which used to stamp a NaN approverId FK.
+    const approverId = req.body.approverId ?? await requireEmployeeActor(req.user);
+    const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.approveLeaveRequest(
       parseInt(req.params.id),
       {
         ...req.body,
-        approverId: employeeId,
-        createdById: employeeId
+        approverId,
+        createdById
       }
     );
     res.json({ success: true, data: result });
@@ -157,13 +188,14 @@ export const approveLeaveRequest = async (req, res) => {
 
 export const rejectLeaveRequest = async (req, res) => {
   try {
-    const createdBy = req.headers['employee-id'];
+    const approverId = req.body.approverId ?? await requireEmployeeActor(req.user);
+    const createdById = req.body.createdById ?? approverId;
     const result = await leaveService.rejectLeaveRequest(
       parseInt(req.params.id),
       {
         ...req.body,
-        approverId:  createdBy,
-        createdById:  createdBy
+        approverId,
+        createdById
       }
     );
     res.json({ success: true, data: result });
@@ -177,7 +209,7 @@ export const getLeaveBalances = async (req, res) => {
     const balances = await leaveService.getLeaveBalances(req.query);
     res.json({ success: true, data: balances });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -185,19 +217,19 @@ export const getEmployeeLeaveBalances = async (req, res) => {
   try {
     // Employees can only view their own balances
     const employeeId = req.user.role === 'EMPLOYEE'
-      ? req.user.id
+      ? await requireEmployeeActor(req.user)
       : parseInt(req.params.employeeId);
 
     const balances = await leaveService.getEmployeeLeaveBalances(employeeId);
     res.json({ success: true, data: balances });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const updateLeaveBalance = async (req, res) => {
   try {
-    const UpdatedBy = req.headers['employee-id'];
+    const UpdatedBy = req.user?.employeeId;
     const balance = await leaveService.updateLeaveBalance(
       parseInt(req.params.employeeId),
       { ...req.body, updatedById: UpdatedBy}
@@ -222,7 +254,7 @@ export const getAccrualHistory = async (req, res) => {
     const history = await leaveService.getAccrualHistory(req.query);
     res.json({ success: true, data: history });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -231,22 +263,22 @@ export const getHolidays = async (req, res) => {
     const holidays = await leaveService.getHolidays(req.query);
     res.json({ success: true, data: holidays });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const getHolidayCalendar = async (req, res) => {
   try {
-    const calendar = await leaveService.getHolidayCalendar(req.user.id);
+    const calendar = await leaveService.getHolidayCalendar(await requireEmployeeActor(req.user));
     res.json({ success: true, data: calendar });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const createHoliday = async (req, res) => {
   try {
-    const employeeId = req.headers['employee-id'];
+    const employeeId = req.user?.employeeId;
     const holiday = await leaveService.createHoliday({
       ...req.body,
       createdById: employeeId

@@ -1,0 +1,200 @@
+import prisma from "../lib/prisma.js";
+import { employeeCode } from "../lib/payrollConfiguration.js";
+import { dateRange } from "../lib/attendanceDates.js";
+import { monthlyMode } from "./monthlyPayrollAttendance.service.js";
+
+const monthLabel = (date) =>
+  date.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+
+// Loaded on demand, and only when a caller asks for the setup-coverage check.
+const defaultLoadRuntime = async (args) => (await import("./attendanceSetup.service.js")).loadAttendanceRuntime(args);
+
+// Issues that stop a payslip being CALCULATED are always blocking. These three
+// only stop the run being FINALIZED (paid out), so calculation may go ahead and
+// HR fixes them before closing the run.
+export const FINALIZE_ONLY = new Set(["BANK_REQUIRED", "NEGATIVE_LEAVE", "OVERTIME_PENDING"]);
+
+export async function payrollReadiness({
+  tenantId,
+  run,
+  employees,
+  db = prisma,
+  // The run screen also asks whether a published attendance setup covers the period;
+  // processing and finalize run their own checks, so they leave this off.
+  checkAttendanceSetup = false,
+  loadRuntime = defaultLoadRuntime,
+}) {
+  const ids = employees.map((e) => e.id),
+    issues = [];
+  const [banks, negativeLeave, pendingOt, snapshot] = await Promise.all([
+    db.bankDetail.findMany({
+      where: { tenantId, employeeId: { in: ids }, isPrimary: true },
+    }),
+    db.leaveBalance.findMany({
+      where: { tenantId, employeeId: { in: ids }, balance: { lt: 0 } },
+      select: { employeeId: true },
+    }),
+    db.overtimeRequest.findMany({
+      where: {
+        tenantId,
+        employeeId: { in: ids },
+        status: "PENDING",
+        date: { gte: run.periodStart, lte: run.periodEnd },
+      },
+      select: { employeeId: true },
+    }),
+    db.payrollConfigSnapshot.findFirst({
+      where: {
+        tenantId,
+        ...(run.calculationConfigVersion
+          ? { version: run.calculationConfigVersion }
+          : {}),
+      },
+      orderBy: { version: "desc" },
+    }),
+  ]);
+  const add = (code, message, employee) =>
+    issues.push({
+      code,
+      type: code,
+      phase: FINALIZE_ONLY.has(code) ? "FINALIZE" : "CALCULATE",
+      severity: "high",
+      count: 1,
+      message: employee ? `${employeeCode(employee)}: ${message}` : message,
+      employeeCode: employee ? employeeCode(employee) : null,
+    });
+  if (!employees.length)
+    add("NO_EMPLOYEES", "No eligible employees in this period");
+  if (!snapshot)
+    add("CONFIG_REQUIRED", "Publish Payroll Setup before calculation");
+  const month = run.periodStart.toISOString().slice(0, 7);
+  let runtime = null;
+  if (checkAttendanceSetup) {
+    let covered = false;
+    try {
+      runtime = await loadRuntime({ tenantId, from: run.periodStart, to: run.periodEnd });
+      covered = dateRange(run.periodStart, run.periodEnd).every((day) => runtime.configOn(day));
+    } catch {
+      runtime = null;
+      covered = false;
+    }
+    if (!covered)
+      add("ATTENDANCE_SETUP_REQUIRED", "Publish attendance setup covering this payroll period");
+  }
+  // §362 — a manual-monthly employee is paid from their entered payable-days row.
+  // Without one the engine used to pay a silent full month. Block the CALCULATE
+  // instead; an explicit zero stays legal because the row exists.
+  // The published setup is the authoritative method (lib/attendanceSetup.js
+  // effectiveProfile: profile mode, then the employee's own field). Processing
+  // hands over employees it has already resolved from the same runtime; the run
+  // screen has not, so resolve here when the runtime is loaded.
+  const modeOf = (employee) => {
+    if (!runtime) return employee.attendanceInputMode;
+    try {
+      return monthlyMode(runtime, employee.id, month);
+    } catch {
+      // A setup gap is reported by ATTENDANCE_SETUP_REQUIRED, not as a missing entry.
+      return employee.attendanceInputMode;
+    }
+  };
+  const manual = employees.filter((e) => modeOf(e) === "MANUAL_MONTHLY");
+  if (manual.length) {
+    const entered = new Set(
+      (
+        await db.monthlyPayrollAttendance.findMany({
+          where: { tenantId, month, employeeId: { in: manual.map((e) => e.id) } },
+          select: { employeeId: true },
+        })
+      ).map((r) => r.employeeId),
+    );
+    for (const e of manual)
+      if (!entered.has(e.id))
+        add(
+          "MONTHLY_ATTENDANCE_REQUIRED",
+          `Enter payable days for ${monthLabel(run.periodStart)} in Payroll Setup > Offices & monthly attendance`,
+          e,
+        );
+  }
+  const rates = snapshot?.config?.taxSlabs || [];
+  const cashDisbursement = snapshot?.config?.payRules?.cashDisbursement === true;
+  const effective = rates
+    .filter(
+      (r) =>
+        r.countryCode === run.countryCode &&
+        r.status === "ACTIVE" &&
+        +new Date(r.effectiveFrom) <= +run.periodEnd &&
+        (!r.effectiveTo || +new Date(r.effectiveTo) >= +run.periodEnd),
+    )
+    .sort((a, b) => Number(a.bracketMin) - Number(b.bracketMin));
+  let ceiling = 0;
+  for (const r of effective) {
+    if (
+      Number(r.bracketMin) !== ceiling ||
+      Number(r.rate) < 0 ||
+      Number(r.rate) > 1 ||
+      (r.bracketMax != null && Number(r.bracketMax) <= Number(r.bracketMin))
+    ) {
+      add(
+        "TAX_BRACKETS_INVALID",
+        "Effective tax brackets must be contiguous, non-overlapping and use rates between 0 and 1",
+      );
+      break;
+    }
+    ceiling = r.bracketMax == null ? Infinity : Number(r.bracketMax);
+  }
+  if (effective.length && ceiling !== Infinity)
+    add("TAX_BRACKETS_INVALID", "The final tax bracket must be open-ended");
+  if (
+    !rates.some(
+      (r) =>
+        r.countryCode === run.countryCode &&
+        r.status === "ACTIVE" &&
+        +new Date(r.effectiveFrom) <= +run.periodEnd &&
+        (!r.effectiveTo || +new Date(r.effectiveTo) >= +run.periodEnd),
+    )
+  )
+    add(
+      "TAX_REQUIRED",
+      "Publish tax brackets effective at the payroll period end",
+    );
+  for (const e of employees) {
+    if (!e.employee_code)
+      add(
+        "EMPLOYEE_CODE_REQUIRED",
+        "Assign an employee code before payroll",
+        e,
+      );
+    if (!e.employmentTerms?.length)
+      add("SALARY_REQUIRED", "Effective salary terms are missing", e);
+    if (e.employmentTerms?.some((t) => t.currency !== run.currencyCode))
+      add(
+        "CURRENCY_MISMATCH",
+        "Salary currency differs from payroll currency",
+        e,
+      );
+    const bank = banks.find((b) => b.employeeId === e.id);
+    // A company that pays in cash (banking paused) publishes payRules.cashDisbursement.
+    if (!cashDisbursement && (!bank?.accountNumber || !bank?.routingNumber))
+      add(
+        "BANK_REQUIRED",
+        "Primary bank account and routing details are required",
+        e,
+      );
+    if (negativeLeave.some((r) => r.employeeId === e.id))
+      add("NEGATIVE_LEAVE", "Resolve the negative leave balance", e);
+    if (pendingOt.some((r) => r.employeeId === e.id))
+      add("OVERTIME_PENDING", "Complete the pending overtime review", e);
+  }
+  return { issues, snapshot };
+}
+
+// stage "CALCULATE" ignores the finalize-only issues; the default blocks on all.
+export function assertReady(issues, { stage = "FINALIZE" } = {}) {
+  const blocking =
+    stage === "CALCULATE" ? issues.filter((i) => !FINALIZE_ONLY.has(i.code)) : issues;
+  if (blocking.length)
+    throw Object.assign(
+      new Error("HR-4302: " + blocking.map((i) => i.message).join("; ")),
+      { status: 409, code: "HR-4302", details: { issues: blocking } },
+    );
+}

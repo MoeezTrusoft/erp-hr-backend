@@ -1,0 +1,150 @@
+{
+  "checkedAt": "2026-10-15",
+  "source": "HR_Task_Assessment_Implementation_Guide_v2_1.docx",
+  "deploymentPerformed": false,
+  "hrUnit": {
+    "earlierFullRun": {
+      "passed": 3107,
+      "failed": 0,
+      "suites": 250
+    },
+    "latestFullRun": {
+      "passed": 3096,
+      "failed": 11,
+      "failedSuites": 5,
+      "environment": "Asia/Karachi; legacy attendance fixtures require UTC"
+    },
+    "utcFailedSuiteRerun": {
+      "passed": 54,
+      "failed": 0,
+      "suites": 5
+    },
+    "allLatestFailuresResolvedInFocusedRerun": true
+  },
+  "hrAssessmentIntegrationAndRules": {
+    "passed": 34,
+    "failed": 0,
+    "nonOwnerPostgres": true
+  },
+  "pmDatabase": {
+    "passed": 10,
+    "failed": 0
+  },
+  "pmSmokeFiles": {
+    "passed": 44,
+    "failed": 0
+  },
+  "contractsVitest": {
+    "passed": 494,
+    "failed": 0
+  },
+  "contractsNode": {
+    "passed": 25,
+    "failed": 0
+  },
+  "gatewayAssessment": {
+    "passed": 7,
+    "failed": 0
+  },
+  "gatewayCanonical": {
+    "passed": 13,
+    "failed": 0
+  },
+  "rbacAssessment": {
+    "passed": 2,
+    "failed": 0
+  },
+  "rbacBroad": {
+    "passed": 564,
+    "failed": 113,
+    "skipped": 68
+  },
+  "releaseAccepted": false,
+  "pmOpportunityRules": {
+    "passed": 1,
+    "failed": 0
+  },
+  "frontendBroad": {
+    "passed": 3005,
+    "failed": 18,
+    "skipped": 3,
+    "files": 386,
+    "note": "Broad run before PM tool-count assertion and import-loading test fixes; resource-contention timeouts were investigated with focused reruns."
+  },
+  "frontendFailedFileRerun": {
+    "files": 11,
+    "passed": 92,
+    "failed": 3,
+    "remainingFailures": "Module-import timeouts in two files"
+  },
+  "frontendRemainingFileRerun": {
+    "files": 2,
+    "passed": 20,
+    "failed": 0,
+    "note": "Moved module loading out of measured test bodies; did not increase timeouts or weaken assertions."
+  },
+  "assessmentBrowser": {
+    "passed": 8,
+    "failed": 0,
+    "boundary": "Actual components and Chromium; mocked authenticated API boundary, not live ERP end-to-end testing."
+  },
+  "frontendProductionBuild": {
+    "passed": true,
+    "warnings": [
+      "Existing large bundle chunks",
+      "Browserslist data age"
+    ]
+  },
+  "lint": {
+    "hrAssessment": "passed",
+    "pmAssessment": "passed",
+    "frontendChangedFiles": "passed after import-order autofix"
+  },
+  "remainingAcceptance": [
+    "Configure and accept real source endpoints, credentials and work-type mappings",
+    "Approve company profiles, guides, benchmarks and calibrated roles",
+    "Live source/scanner attribution, withdrawal and authorized access checks",
+    "Business-owner UAT for all attachment scenarios",
+    "Private stream replay, projection rebuild and backup/restore drills",
+    "550-employee / 7-site load, availability and propagation SLO checks",
+    "Resolve broad RBAC suite failures before full release acceptance"
+  ],
+  "repositories": [
+    {
+      "path": "C:\\Multistation Pro\\hr-review-source",
+      "branch": "codex/hr-task-assessment-v21",
+      "baseCommit": "43effe29c1a123ae18179b6c7d75958597ac997f",
+      "changes": "local, uncommitted"
+    },
+    {
+      "path": "C:\\Multistation Pro\\hr-frontend-source",
+      "branch": "codex/hr-task-assessment-v21",
+      "baseCommit": "02df16073070379b91e5e97aee1a56ecbef384e1",
+      "changes": "local, uncommitted"
+    },
+    {
+      "path": "C:\\Multistation Pro\\contracts",
+      "branch": "codex/hr-task-assessment-v21",
+      "baseCommit": "5b0b70b045f83cb0fb10162d11f8148d06d519c2",
+      "changes": "local, uncommitted"
+    },
+    {
+      "path": "C:\\Multistation Pro\\pm-assessment-source",
+      "branch": "codex/hr-task-assessment-v21",
+      "baseCommit": "f84d61dd9efdf8d9f915d44b74dd49166265a155",
+      "changes": "local, uncommitted"
+    },
+    {
+      "path": "C:\\BookCraft Publishers\\ERP\\ERP Modules\\ERP New Modules\\Implementation Guide\\finance-implementation\\reference\\rbac",
+      "branch": "codex/hr-task-assessment-v21",
+      "baseCommit": "2cbc19ee11607b070f351afce378dd639f9583cb",
+      "changes": "local, uncommitted"
+    },
+    {
+      "path": "C:\\BookCraft Publishers\\ERP\\ERP Modules\\ERP New Modules\\Implementation Guide\\finance-implementation\\reference\\gateway",
+      "branch": "codex/hr-task-assessment-v21",
+      "baseCommit": "f4aa76d038bce995a8d1e0f9f9fd1146f7060da3",
+      "changes": "local, uncommitted"
+    }
+  ]
+}

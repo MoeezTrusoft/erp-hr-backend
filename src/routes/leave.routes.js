@@ -1,5 +1,6 @@
 import express from 'express';
 import * as leaveController from '../controllers/leave.controller.js';
+import { idempotency } from '../middlewares/idempotency.middleware.js';
 
 
 const router = express.Router();
@@ -15,7 +16,9 @@ router.delete('/policies/:id', leaveController.deleteLeavePolicy);
 // Leave Requests
 router.get('/requests', leaveController.getLeaveRequests);
 router.get('/requests/:id', leaveController.getLeaveRequestById);
-router.post('/requests', leaveController.createLeaveRequest);
+// C.2 / T-P2.2 — idempotent create: a repeat with the same Idempotency-Key
+// replays the first response (store+replay) instead of double-applying.
+router.post('/requests', idempotency(), leaveController.createLeaveRequest);
 router.put('/requests/:id/cancel', leaveController.cancelLeaveRequest);
 
 // Leave Approvals

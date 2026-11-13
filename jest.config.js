@@ -13,6 +13,8 @@
 // package.json). That script overrides this `testPathIgnorePatterns`
 // on the CLI so the perf files run.
 export default {
+    // Native node:test suites (.mjs) are exercised by the database-contract CI job.
+    testMatch: ["**/?(*.)+(spec|test).[jt]s?(x)"],
     testPathIgnorePatterns: [
         '/node_modules/',
         '\\.performance\\.test\\.js$',

@@ -1,11 +1,12 @@
 import * as holidayService from '../services/holiday.service.js';
+import { respondServerError } from '../utils/httpError.js';
 
 export const getRegions = async (req, res) => {
   try {
     const regions = await holidayService.getRegions(req.query);
     res.json({ success: true, data: regions });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -17,7 +18,7 @@ export const getRegionById = async (req, res) => {
     }
     res.json({ success: true, data: region });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -59,7 +60,7 @@ export const getHolidayCalendars = async (req, res) => {
     const calendars = await holidayService.getHolidayCalendars(req.query);
     res.json({ success: true, data: calendars });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -71,7 +72,7 @@ export const getHolidayCalendarById = async (req, res) => {
     }
     res.json({ success: true, data: calendar });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -113,7 +114,7 @@ export const getHolidays = async (req, res) => {
     const holidays = await holidayService.getHolidays(req.query);
     res.json({ success: true, data: holidays });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -122,18 +123,15 @@ export const getHolidaysByCalendar = async (req, res) => {
     const holidays = await holidayService.getHolidaysByCalendar(parseInt(req.params.calendarId), req.query);
     res.json({ success: true, data: holidays });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
 export const createHoliday = async (req, res) => {
   try {
     const employeeId = req.headers['employee-id'];
-    const holiday = await holidayService.createHoliday({
-      ...req.body,
-      createdById: employeeId
-    });
-    res.status(201).json({ success: true, data: holiday });
+    const holiday = await holidayService.createHoliday(req.body, employeeId);
+    res.status(202).json({ success: true, data: holiday });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -148,7 +146,7 @@ export const updateHoliday = async (req, res) => {
       req.body,
       updatedById
     );
-    res.json({ success: true, data: holiday });
+    res.status(202).json({ success: true, data: holiday });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -157,8 +155,8 @@ export const updateHoliday = async (req, res) => {
 export const deleteHoliday = async (req, res) => {
   try {
     const deletedBy = req.headers['employee-id'];
-    await holidayService.deleteHoliday(parseInt(req.params.calendarId), req.params.date,deletedBy);
-    res.json({ success: true, message: 'Holiday deleted successfully' });
+    const result = await holidayService.deleteHoliday(parseInt(req.params.calendarId), req.params.date, deletedBy, req.body?.reason ?? req.query?.reason);
+    res.status(202).json({ success: true, data: result, message: result.message });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -169,7 +167,7 @@ export const getEmployeeHolidays = async (req, res) => {
     const holidays = await holidayService.getEmployeeHolidays(parseInt(req.params.employeeId), req.query);
     res.json({ success: true, data: holidays });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -180,7 +178,7 @@ export const getUpcomingHolidays = async (req, res) => {
     const holidays = await holidayService.getUpcomingHolidays(days, regionId);
     res.json({ success: true, data: holidays });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -194,7 +192,7 @@ export const checkHoliday = async (req, res) => {
     const isHoliday = await holidayService.isHoliday(date, regionId);
     res.json({ success: true, data: { date, isHoliday } });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 
@@ -223,7 +221,7 @@ export const getEmployeeCalendarAssignments = async (req, res) => {
     const assignments = await holidayService.getEmployeeCalendarAssignments(parseInt(req.params.employeeId));
     res.json({ success: true, data: assignments });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    respondServerError(req, res, error);
   }
 };
 

@@ -1,0 +1,36 @@
+import { describe, expect, it } from "@jest/globals";
+import { requestTitle } from "../../src/lib/approvalTitle.js";
+
+describe("requestTitle", () => {
+  it("names an attendance case by what happened and the day", () => {
+    expect(requestTitle("ATTENDANCE", { type: "LATE_CHECKIN", date: "2026-10-27T00:00:00Z" })).toBe("Late check-in, 27 Oct");
+    expect(requestTitle("ATTENDANCE", { type: "ABSENT" })).toBe("Absent");
+    expect(requestTitle("ATTENDANCE", { type: "SOMETHING_NEW", date: "2026-10-27" })).toBeNull();
+  });
+  it("names leave by its dates and days", () => {
+    expect(requestTitle("LEAVE", { startDate: "2026-11-03", endDate: "2026-11-07", totalDays: 5 })).toBe("Leave, 3 Nov to 7 Nov (5 days)");
+    expect(requestTitle("LEAVE", { startDate: "2026-11-03", endDate: "2026-11-03", totalDays: 1 })).toBe("Leave, 3 Nov (1 day)");
+  });
+  it("names overtime, claims, loans and payroll", () => {
+    expect(requestTitle("OVERTIME", { date: "2026-10-20", hours: 2 })).toBe("Overtime, 20 Oct, 2 hours");
+    expect(requestTitle("CLAIM", { title: "Taxi to client" })).toBe("Claim: Taxi to client");
+    expect(requestTitle("CLAIM", { title: "Taxi to client", amount: "1250", currency: "PKR" })).toBe("Claim: Taxi to client, PKR 1,250");
+    expect(requestTitle("LOAN", { kind: "ADVANCE" })).toBe("Salary advance");
+    expect(requestTitle("LOAN", { kind: "ADVANCE", principalMinor: 800000, tenureMonths: 1 })).toBe("Salary advance, 8,000");
+    expect(requestTitle("LOAN", { kind: "LOAN", principalMinor: 2000000, tenureMonths: 4 })).toBe("Loan, 20,000 over 4 months");
+    expect(requestTitle("PAYROLL", { periodStart: "2026-09-01", totalNet: 1355785, currencyCode: "PKR" })).toBe("Payroll for September 2026, net PKR 1,355,785");
+  });
+  it("has no title for unknown kinds or empty snapshots", () => {
+    expect(requestTitle("TIMESHEET", {})).toBeNull();
+    expect(requestTitle("LEAVE", null)).toBeNull();
+  });
+  it("names a shift swap, and shows no second day when the swap is on one day", () => {
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08", toDate: null })).toBe("Shift swap, 8 Oct");
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08" })).toBe("Shift swap, 8 Oct");
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08", toDate: "" })).toBe("Shift swap, 8 Oct");
+    expect(requestTitle("SHIFT_SWAP", { fromDate: "2026-10-08", toDate: "2026-10-10" })).toBe("Shift swap, 8 Oct for 10 Oct");
+  });
+  it("does not turn a missing end date into 1 Jan", () => {
+    expect(requestTitle("LEAVE", { startDate: "2026-11-03", endDate: null, totalDays: 1 })).toBe("Leave, 3 Nov (1 day)");
+  });
+});

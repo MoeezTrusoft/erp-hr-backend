@@ -1,4 +1,5 @@
 import * as categoryService from "../services/trainingCategory.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createCategory = async (req, res) => {
   try {
@@ -14,7 +15,7 @@ export const getAllCategories = async (req, res) => {
     const result = await categoryService.getAllCategories();
     res.status(200).json({ success: true, data: result });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    respondServerError(req, res, error);
   }
 };
 

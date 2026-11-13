@@ -7,6 +7,8 @@ import {
   getAuditLogs,
   createPayrollRun,
   processPayrollRun,
+  approvePayrollRun,
+  rejectPayrollRun,
   finalizePayrollRun,
   cancelPayrollRun,
   distributePayslip,
@@ -14,19 +16,27 @@ import {
   createPayrollAssignment,
   createEarningType,
   createDeductionType,
+  exportBankDisbursementFile,
 } from "../../controllers/payrollController.js";
 
-export const mcpListPayrollRuns = (user) => runController(getPayrollRuns, { user });
-export const mcpListPayslips = (user) => runController(getPayslips, { user });
+export const mcpListPayrollRuns = (user, query = {}) => runController(getPayrollRuns, { user, query });
+export const mcpListPayslips = (user, query = {}) => runController(getPayslips, { user, query });
 export const mcpListEarningTypes = (user) => runController(getEarningTypes, { user });
 export const mcpListDeductionTypes = (user) => runController(getDeductionTypes, { user });
 export const mcpListPayrollAuditLogs = (user) => runController(getAuditLogs, { user });
 
 export const mcpCreatePayrollRun = (user, data) => runController(createPayrollRun, { user, body: data });
 export const mcpProcessPayrollRun = (user, id) => runController(processPayrollRun, { user, params: { id: String(id) } });
-export const mcpFinalizePayrollRun = (user, id) => runController(finalizePayrollRun, { user, params: { id: String(id) } });
-export const mcpCancelPayrollRun = (user, id) => runController(cancelPayrollRun, { user, params: { id: String(id) } });
+export const mcpApprovePayrollRun = (user, id) => runController(approvePayrollRun, { user, params: { id: String(id) } });
+export const mcpRejectPayrollRun = (user, id, reason) => runController(rejectPayrollRun, { user, params: { id: String(id) }, body: { reason } });
+export const mcpFinalizePayrollRun = (user, id, ifMatch) => runController(finalizePayrollRun, { user, params: { id: String(id) }, headers: ifMatch == null ? {} : { "if-match": String(ifMatch) } });
+export const mcpCancelPayrollRun = (user, id, reason) =>
+  runController(cancelPayrollRun, { user, params: { id: String(id) }, body: { reason } });
 export const mcpDistributePayslip = (user, id) => runController(distributePayslip, { user, params: { id: String(id) } });
+
+// HR-BANKFILE-03 / HR-PAY-04 — bank/ACH disbursement export for a FINALIZED run.
+export const mcpExportBankDisbursementFile = (user, id, query = {}) =>
+  runController(exportBankDisbursementFile, { user, params: { id: String(id) }, query });
 
 export const mcpCreateEmploymentTerms = (user, employeeId, data) =>
   runController(createEmploymentTerms, { user, params: { employeeId: String(employeeId) }, body: data });

@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hr-appraisals-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hr-appraisals-worker
+  template:
+    metadata:
+      labels:
+        app: hr-appraisals-worker
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: erp-hr-backend:REPLACE_WITH_VERIFIED_DIGEST
+          command: ["node", "src/jobs/appraisals.worker.js"]
+          envFrom:
+            - secretRef:
+                name: hr-runtime
+            - configMapRef:
+                name: hr-appraisals-worker
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true

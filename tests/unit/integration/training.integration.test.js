@@ -156,7 +156,10 @@ describe('Training API Integration Tests', () => {
             expect(response.status).toBe(404);
             expect(response.body.success).toBe(false);
             expect(response.body.message).toBe('Course not found');
-            expect(mockGetCourseById).toHaveBeenCalledWith('999');
+            // C.2-completion: the controller now also forwards the verified
+            // tenant (req.user.tenantId) as a trailing arg — undefined here since
+            // the test app sets no service-JWT tenant claim.
+            expect(mockGetCourseById).toHaveBeenCalledWith('999', undefined);
         });
 
         test('POST /api/training/enrollments surfaces enrollment service validation as 400', async () => {

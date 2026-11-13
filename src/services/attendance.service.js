@@ -1,157 +1,51 @@
 import prisma from "../lib/prisma.js";
-import { logAction } from "../utils/logs.js";
+import { scopedWhere } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as a `tenantId` field (on the data
+// object) / trailing param; folded into attendance reads and stamped on the
+// check-in create, fail-closed so tenant B can never read/mutate tenant A's
+// attendance records. Employee carries snake_case `tenant_id` (REQ-007).
 
-function parseCheckInInput({ date, check_in, timestamp }) {
-  if (timestamp) {
-    const ts = new Date(timestamp);
-    if (Number.isNaN(ts.getTime())) throw new Error("Invalid timestamp");
-    return ts;
-  }
-
-  if (!date) throw new Error("date is required");
-  if (!check_in) throw new Error("check_in is required");
-
-  const parsed = new Date(`${date} ${check_in}`);
-  if (Number.isNaN(parsed.getTime())) throw new Error("Invalid check_in/date value");
-  return parsed;
-}
-
-function getDayRange(dt) {
-  const start = new Date(dt);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(dt);
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
-}
-
-function resolveStatus(checkInTs, providedStatus) {
-  if (providedStatus) return String(providedStatus).toUpperCase();
-  const shiftStartRaw = process.env.ATTENDANCE_SHIFT_START || "09:00";
-  const graceMinutes = Number(process.env.ATTENDANCE_LATE_GRACE_MINUTES || 15);
-  const [h, m] = shiftStartRaw.split(":").map(Number);
-  const cutoff = new Date(checkInTs);
-  cutoff.setHours(Number.isInteger(h) ? h : 9, Number.isInteger(m) ? m + graceMinutes : graceMinutes, 0, 0);
-  return checkInTs > cutoff ? "LATE" : "PRESENT";
-}
-
-export const createAttendanceService = async (data) => {
-  const { employeeId, date, check_in, status, timestamp } = data;
-
-  if (!employeeId) throw new Error("employeeId is required");
-
-  const empId = Number(employeeId);
-  if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
-
-  // ✅ Ensure employee exists
-  const employee = await prisma.employee.findUnique({
-    where: { id: empId },
-  });
-  if (!employee) throw new Error("Employee not found");
-
-  const parsedCheckIn = parseCheckInInput({ date, check_in, timestamp });
-  const { start, end } = getDayRange(parsedCheckIn);
-  const computedStatus = resolveStatus(parsedCheckIn, status);
-
-  const existing = await prisma.attendance.findFirst({
-    where: {
-      employeeId: empId,
-      date: {
-        gte: start,
-        lte: end,
-      },
-    },
-    orderBy: { id: "desc" },
-  });
-
-  const attendanceIn = existing
-    ? await prisma.attendance.update({
-      where: { id: existing.id },
-      data: {
-        check_in: existing.check_in
-          ? new Date(Math.min(existing.check_in.getTime(), parsedCheckIn.getTime()))
-          : parsedCheckIn,
-        status: computedStatus,
-      },
-    })
-    : await prisma.attendance.create({
-      data: {
-        employeeId: empId,
-        date: start,
-        check_in: parsedCheckIn,
-        status: computedStatus,
-      },
-    });
-
-   // Log the update action
-    await logAction({
-      employeeId: 1,
-      type: "Check In", // 👈 changed from CREATE to UPDATE
-      module: "Attandance",
-      result: "SUCCESS",
-      notes: `Attandance check In "${empId}" successfully`,
-    });
-  return attendanceIn;
+// A manual punch is a request that the attendance approval route approves (captureChangeRequest.service.js);
+// these direct writers are closed so nothing can record one without it.
+const refuseDirectPunch = () => {
+  throw Object.assign(new Error('A manual punch is sent for approval first; it is recorded once approved'), { status: 409 });
 };
-export const checkOutService = async (employeeId) => {
-  return checkOutServiceWithTimestamp(employeeId);
-};
+export const createAttendanceService = async () => refuseDirectPunch();
+export const checkOutService = async () => refuseDirectPunch();
+export const checkOutServiceWithTimestamp = async () => refuseDirectPunch();
 
-export const checkOutServiceWithTimestamp = async (employeeId, timestamp) => {
-  const empId = Number(employeeId);
-  if (!Number.isInteger(empId) || empId <= 0) throw new Error("Invalid employeeId");
-
-  const attendance = await prisma.attendance.findFirst({
-    where: { employeeId: empId },
-    orderBy: { date: "desc" }
-  });
-
-  if (!attendance || attendance.check_out)
-    throw new Error("No active check-in found");
-
-  const checkOutTime = timestamp ? new Date(timestamp) : new Date();
-  if (Number.isNaN(checkOutTime.getTime())) throw new Error("Invalid checkout timestamp");
-
-  const totalHours =
-    (checkOutTime - attendance.check_in) / (1000 * 60 * 60);
-
-  const checkOut=  await prisma.attendance.update({
-    where: { id: attendance.id },
-    data: { check_out: checkOutTime, total_hours: totalHours }
-  });
-
-  // Log the update action
-  await logAction({
-    employeeId: 1,
-    type: "Check Out", // 👈 changed from CREATE to UPDATE
-    module: "Attandance",
-    result: "SUCCESS",
-    notes: `CHeck Out "${1}" updated successfully`,
-  });
-  return checkOut;
-};
-
-export const getAttendanceByEmployee = async (employeeId) => {
+export const getAttendanceByEmployee = async (employeeId, tenantId) => {
   return prisma.attendance.findMany({
-    where: { employeeId },
-    orderBy: { date: "desc" }
+    where: scopedWhere(tenantId, { employeeId }),
+    orderBy: [{ date: "desc" }, { id: "desc" }],
   });
 };
 
-export const listAttendanceRecords = async ({ date, limit = 100 } = {}) => {
+export const listAttendanceRecords = async ({
+  date,
+  limit = 100,
+  tenantId,
+  employeeId,
+} = {}) => {
   const target = date ? new Date(date) : new Date();
   const start = new Date(target);
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
 
+  // HR-RBAC-01 T1.5 — employee-scope pin. When the tool layer forces an
+  // employeeId (a VIEW-only session), the where-clause narrows to that person's
+  // rows; a forced pin of null (unbound employee session) matches NOTHING
+  // (Prisma `in: []` semantics) — fail-closed, never the whole tenant.
+  const scope = { date: { gte: start, lt: end } };
+  if (employeeId !== undefined) {
+    const pin = Number(employeeId);
+    scope.employeeId = Number.isInteger(pin) && pin > 0 ? pin : { in: [] };
+  }
+
   return prisma.attendance.findMany({
-    where: {
-      date: {
-        gte: start,
-        lt: end,
-      },
-    },
+    where: scopedWhere(tenantId, scope),
     include: {
       employee: {
         select: {
@@ -164,7 +58,7 @@ export const listAttendanceRecords = async ({ date, limit = 100 } = {}) => {
         },
       },
     },
-    orderBy: [{ check_in: "desc" }, { date: "desc" }],
+    orderBy: [{ check_in: "desc" }, { date: "desc" }, { id: "desc" }],
     take: Number(limit) || 100,
   });
 };

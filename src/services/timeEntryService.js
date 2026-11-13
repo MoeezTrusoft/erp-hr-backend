@@ -1,9 +1,24 @@
 import prisma from "../lib/prisma.js";
 import { AppError } from '../utils/AppError.js';
+import { logAction } from "../utils/logs.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
+// C.2 — verified tenant (T-P2.1) threaded in as `tenantId` on the args object /
+// trailing param; folded into time-entry reads and stamped on creates,
+// fail-closed so tenant B never reads/mutates tenant A's time entries.
 
-export const getTimeEntries = async ({ employeeId, startDate, endDate }) => {
-    const where = { employeeId: parseInt(employeeId) };
+export const getTimeEntries = async ({ employeeId, startDate, endDate, tenantId }) => {
+    // REQ-HR-004: `parseInt(undefined)` / `parseInt(null)` is NaN, and a NaN in
+    // an Int filter makes Prisma reject the whole query with
+    // "Argument `employeeId` is missing" — which reached the browser verbatim.
+    // A caller with no resolvable employee (an operator account) asked for the
+    // tenant's list, so scope by tenant only instead of building a broken
+    // filter. Tenancy is still enforced by scopedWhere + RLS.
+    const employeeFilter = Number.parseInt(employeeId, 10);
+    const where = scopedWhere(
+        tenantId,
+        Number.isInteger(employeeFilter) ? { employeeId: employeeFilter } : {},
+    );
 
     if (startDate && endDate) {
         where.work_date = {
@@ -30,7 +45,7 @@ export const getTimeEntries = async ({ employeeId, startDate, endDate }) => {
 };
 
 export const createTimeEntry = async (data) => {
-    const { employeeId, start_time, end_time, work_type, note, sourceId } = data;
+    const { employeeId, start_time, end_time, work_type, note, sourceId, tenantId } = data;
 
     // Validate time range
     if (end_time && new Date(end_time) <= new Date(start_time)) {
@@ -38,7 +53,7 @@ export const createTimeEntry = async (data) => {
     }
 
     const create =  await prisma.timeEntry.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             start_time: new Date(start_time),
             end_time: end_time ? new Date(end_time) : null,
@@ -50,7 +65,7 @@ export const createTimeEntry = async (data) => {
             duration_minutes: end_time
                 ? Math.round((new Date(end_time) - new Date(start_time)) / (1000 * 60))
                 : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -67,13 +82,14 @@ export const createTimeEntry = async (data) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Time Entry "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return create;
 };
 
-export const updateTimeEntry = async (id, data, userId) => {
+export const updateTimeEntry = async (id, data, actorEmployeeId, tenantId, isAdmin = false) => {
     const entry = await prisma.timeEntry.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -81,8 +97,11 @@ export const updateTimeEntry = async (id, data, userId) => {
         throw new AppError('Time entry not found', 404);
     }
 
-    // Check permission
-    if (entry.employeeId !== userId) {
+    // Ownership gate — a self-service employee may only edit their OWN entry.
+    // An admin / HR manager (tool already asserted hr:attendance EDIT) manages any
+    // entry in their tenant, so bypass the owner check for them. employeeId arrives as
+    // a header/string; entry.employeeId is a number — compare numerically.
+    if (!isAdmin && entry.employeeId !== Number(actorEmployeeId)) {
         throw new AppError('Not authorized to update this time entry', 403);
     }
 
@@ -116,18 +135,19 @@ export const updateTimeEntry = async (id, data, userId) => {
     });
 
       await logAction({
-    employeeId: Number(userId),
+    employeeId: Number(actorEmployeeId),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Time Entry "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return update;
 };
 
-export const deleteTimeEntry = async (id, userId) => {
+export const deleteTimeEntry = async (id, actorEmployeeId, tenantId, isAdmin = false) => {
     const entry = await prisma.timeEntry.findFirst({
-        where: { id: parseInt(id) },
+        where: scopedWhere(tenantId, { id: parseInt(id) }),
         include: { employee: true }
     });
 
@@ -135,33 +155,35 @@ export const deleteTimeEntry = async (id, userId) => {
         throw new AppError('Time entry not found', 404);
     }
 
-    if (entry.employeeId !== userId) {
+    // Admin / HR manager bypasses the self-service owner gate (see updateTimeEntry).
+    if (!isAdmin && entry.employeeId !== Number(actorEmployeeId)) {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
 
-    const deleted =  prisma.timeEntry.delete({
+    const deleted =  await prisma.timeEntry.delete({
         where: { id: parseInt(id) }
     });
-    
+
       await logAction({
-    employeeId: Number(userId),
+    employeeId: Number(actorEmployeeId),
     type: "Deleted", // 👈 changed from CREATE to UPDATE
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Time Entry "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return deleted
 };
 
-export const clockIn = async ({ employeeId, location, note, sourceId }) => {
+export const clockIn = async ({ employeeId, location, note, sourceId, tenantId }) => {
     // Check if already clocked in
     const activeEntry = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null,
             entry_type: 'CLOCK_IN'
-        }
+        })
     });
 
     if (activeEntry) {
@@ -171,7 +193,7 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
     const now = new Date();
 
     const create =  await prisma.timeEntry.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             start_time: now,
             work_date: now,
@@ -179,7 +201,7 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
             work_type: 'REGULAR',
             note,
             sourceId: sourceId ? parseInt(sourceId) : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -197,18 +219,19 @@ export const clockIn = async ({ employeeId, location, note, sourceId }) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Clock In "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return create;
 };
 
-export const clockOut = async ({ employeeId, location, note, sourceId }) => {
+export const clockOut = async ({ employeeId, location, note, sourceId, tenantId }) => {
     // Find active clock-in entry
     const activeEntry = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null,
             entry_type: 'CLOCK_IN'
-        }
+        })
     });
 
     if (!activeEntry) {
@@ -241,16 +264,17 @@ export const clockOut = async ({ employeeId, location, note, sourceId }) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Clock Out "${activeEntry.id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return clockOut;
 };
 
-export const startBreak = async ({ employeeId, note, sourceId }) => {
+export const startBreak = async ({ employeeId, note, sourceId, tenantId }) => {
     const now = new Date();
 
     const breakStart = await prisma.timeEntry.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: parseInt(employeeId),
             start_time: now,
             work_date: now,
@@ -258,7 +282,7 @@ export const startBreak = async ({ employeeId, note, sourceId }) => {
             work_type: 'REGULAR',
             note,
             sourceId: sourceId ? parseInt(sourceId) : null
-        },
+        }),
         include: {
             employee: {
                 select: {
@@ -276,17 +300,18 @@ export const startBreak = async ({ employeeId, note, sourceId }) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `Break Started "${breakStart.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return breakStart;
 };
 
-export const endBreak = async ({ employeeId, note, sourceId }) => {
+export const endBreak = async ({ employeeId, note, sourceId, tenantId }) => {
     const activeBreak = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null,
             entry_type: 'BREAK_START'
-        }
+        })
     });
 
     if (!activeBreak) {
@@ -319,16 +344,17 @@ export const endBreak = async ({ employeeId, note, sourceId }) => {
     module: "Attanace - Time Entry",
     result: "SUCCESS",
     notes: `End Break "${activeBreak.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
     return endBreak;
 };
 
-export const getCurrentStatus = async (employeeId) => {
+export const getCurrentStatus = async (employeeId, tenantId) => {
     const activeEntry = await prisma.timeEntry.findFirst({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             end_time: null
-        },
+        }),
         orderBy: { start_time: 'desc' },
         include: {
             employee: {
@@ -341,13 +367,13 @@ export const getCurrentStatus = async (employeeId) => {
     });
 
     const todayEntries = await prisma.timeEntry.findMany({
-        where: {
+        where: scopedWhere(tenantId, {
             employeeId: parseInt(employeeId),
             work_date: {
                 gte: new Date().setHours(0, 0, 0, 0),
                 lte: new Date().setHours(23, 59, 59, 999)
             }
-        },
+        }),
         orderBy: { start_time: 'asc' }
     });
 

@@ -1,55 +1,37 @@
+import { legacyWithdraw, legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
 import { logAction } from "../utils/logs.js";
+import { withTenant, tenantData } from "../lib/tenancy.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+import { leaveApprovedEvent, leaveRejectedEvent } from "./hrEvents.js";
+import { assertIfMatch, normalizeExpectedVersion, preconditionFailedError } from "../lib/optimisticConcurrency.js";
+import { resolveWorkingDays } from "./workingDay.service.js";
+import { dateKey } from "../lib/attendanceDates.js";
+
+// C.2 / T-P2.2 / T-P2.6 — leave is a representative newly-scoped HR family. The
+// verified tenant (RBAC Company.uuid; T-P2.1) is threaded in from the controller
+// as `tenantId` and folded into the per-query predicate via withTenant. The
+// param is optional so legacy callers/tests keep working; when a tenant IS
+// supplied the read/write is fail-closed to that tenant — tenant B can never
+// read or mutate tenant A's leave request for the SAME id (resolves not-found).
+// `undefined` means "no tenant scoping requested" (legacy path); a present value
+// (incl. null) applies the fail-closed predicate.
+const scopedWhere = (tenantId, where) =>
+  tenantId === undefined ? where : withTenant(tenantId, where);
 
 // Helper Functions
-const calculateWorkingDays = async (employeeId, startDate, endDate) => {
-  let count = 0;
-  const current = new Date(startDate);
-  const end = new Date(endDate);
+const calculateWorkingDays = async (employeeId, startDate, endDate, tenantId) => {
+  const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true});
+  if([...days.values()].some(d=>d.working==null))throw Object.assign(new Error('Complete attendance setup before calculating leave'),{status:409});
+  return [...days.values()].reduce((count,d)=>count+(d.working?1:0),0);
+};
 
-  // Get employee's holiday calendar
-  const employeeCalendar = await prisma.employeeHolidayCalendar.findFirst({
-    where: {
-      employeeId,
-      OR: [
-        { effectiveTo: null },
-        { effectiveTo: { gte: current } }
-      ]
-    },
-    include: {
-      holidayCalendar: {
-        include: {
-          holidays: {
-            where: {
-              date: {
-                gte: current,
-                lte: end
-              }
-            }
-          }
-        }
-      }
-    }
-  });
 
-  const holidays = employeeCalendar?.holidayCalendar?.holidays || [];
-
-  while (current <= end) {
-    const dayOfWeek = current.getDay();
-    // Skip weekends (Sunday = 0, Saturday = 6)
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      // Check if it's a holiday
-      const isHoliday = holidays.some(holiday =>
-        holiday.date.toDateString() === current.toDateString()
-      );
-      if (!isHoliday) {
-        count++;
-      }
-    }
-    current.setDate(current.getDate() + 1);
-  }
-
-  return count;
+// Leave types and balances are changed by approved requests (leaveChangeRequest.service.js) and the ledger
+// (leaveLedger.service.js); these older direct writers are closed so nothing can bypass the approval route.
+const refuseDirect = () => {
+  throw Object.assign(new Error('Leave types, balances and accruals are changed through an approval request or the leave ledger, not directly'), { status: 409 });
 };
 
 const calculateAccrualAmount = async (policy, employee, date) => {
@@ -142,14 +124,14 @@ export const getLeavePolicies = async (filters = {}) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -172,14 +154,14 @@ export const getLeavePolicyById = async (id) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
@@ -188,7 +170,7 @@ export const getLeavePolicyById = async (id) => {
           employee: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true
             }
           }
@@ -201,6 +183,7 @@ export const getLeavePolicyById = async (id) => {
 };
 
 export const createLeavePolicy = async (data,createdById) => {
+  refuseDirect();
   const {
     name,
     description,
@@ -255,7 +238,7 @@ export const createLeavePolicy = async (data,createdById) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -268,6 +251,7 @@ export const createLeavePolicy = async (data,createdById) => {
     module: "Leave Policy",
     result: "SUCCESS",
     notes: `Leave Policy "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -275,6 +259,12 @@ export const createLeavePolicy = async (data,createdById) => {
 };
 
 export const updateLeavePolicy = async (id, data,updatedById) => {
+  refuseDirect();
+  // API-2 — pull the optional optimistic-concurrency guard out of the payload so
+  // it is NOT spread into the Prisma `data` (it is not a column). Absent ⇒ no reject.
+  const { expectedVersion: rawExpectedVersion, ...policyData } = data ?? {};
+  const expectedVersion = normalizeExpectedVersion(rawExpectedVersion);
+
   const existingPolicy = await prisma.leavePolicy.findUnique({
     where: { id }
   });
@@ -283,13 +273,24 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
     throw new Error('Leave policy not found');
   }
 
-  const update = await prisma.leavePolicy.update({
-    where: { id },
+  // API-2 — atomic compare-and-set + version bump.
+  const versionWhere = expectedVersion == null ? {} : { version: expectedVersion };
+  const { count } = await prisma.leavePolicy.updateMany({
+    where: { id, ...versionWhere },
     data: {
-      ...data,
+      ...policyData,
       updatedById: updatedById,
-      updated_at: new Date()
+      updated_at: new Date(),
+      version: { increment: 1 },
     },
+  });
+  if (count === 0 && expectedVersion != null) {
+    const fresh = await prisma.leavePolicy.findUnique({ where: { id }, select: { version: true } });
+    throw preconditionFailedError(fresh?.version);
+  }
+
+  const update = await prisma.leavePolicy.findUnique({
+    where: { id },
     include: {
       approvalWorkflow: {
         include: {
@@ -301,7 +302,7 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -313,11 +314,13 @@ export const updateLeavePolicy = async (id, data,updatedById) => {
     module: "Leave Policy",
     result: "SUCCESS",
     notes: `Leave Policy "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return update
 };
 
 export const deleteLeavePolicy = async (id, deletedBy) => {
+  refuseDirect();
   // Check if policy is being used by any leave requests
   const existingRequests = await prisma.leaveRequest.count({
     where: { leavePolicyId: id }
@@ -345,6 +348,7 @@ export const deleteLeavePolicy = async (id, deletedBy) => {
     module: "Leave Policy",
     result: "SUCCESS",
     notes: `Leave Policy "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return deleted
@@ -354,17 +358,24 @@ export const deleteLeavePolicy = async (id, deletedBy) => {
 export const getLeaveRequests = async (filters = {}) => {
   const {
     employeeId,
+    // Issue 395 — "rows that concern this employee": theirs, plus the ones they
+    // raised for someone else (a line manager's on-behalf filings). One integer,
+    // always derived from the session by the caller, never a client list.
+    involvingEmployeeId,
     status,
     leavePolicyId,
     startDate,
     endDate,
     department,
     page = 1,
-    limit = 20
+    limit = 20,
+    tenantId
   } = filters;
 
-  const where = {};
   const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  // C.2: fold the verified tenant into the predicate (fail-closed when present).
+  const where = scopedWhere(tenantId, {});
 
   if (employeeId) {
     where.employeeId = parseInt(employeeId);
@@ -379,11 +390,26 @@ export const getLeaveRequests = async (filters = {}) => {
   }
 
   if (startDate && endDate) {
-    where.OR = [
+    // Kept as an AND group so it composes with the involvingEmployeeId OR below
+    // instead of overwriting it.
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
       {
-        startDate: { lte: new Date(endDate) },
-        endDate: { gte: new Date(startDate) }
+        OR: [
+          {
+            startDate: { lte: new Date(endDate) },
+            endDate: { gte: new Date(startDate) }
+          }
+        ]
       }
+    ];
+  }
+
+  const involvingId = parseInt(involvingEmployeeId);
+  if (Number.isInteger(involvingId)) {
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      { OR: [{ employeeId: involvingId }, { createdById: involvingId }] }
     ];
   }
 
@@ -394,14 +420,14 @@ export const getLeaveRequests = async (filters = {}) => {
         employee: {
           select: {
             id: true,
-            first_name: true,
+            employee_code: true, first_name: true,
             last_name: true,
             job_title: true,
-            position: {
-              include: {
-                department: true
-              }
-            }
+            businessUnit: { select: { id: true, name: true } },
+            // C.2 bugfix: the Employee→Position relation is `Position` (schema
+            // l.246), not `position`; Position has no `department` relation, so
+            // a plain include is the correct, working read.
+            Position: true
           }
         },
         leavePolicy: true,
@@ -410,7 +436,7 @@ export const getLeaveRequests = async (filters = {}) => {
             approver: {
               select: {
                 id: true,
-                first_name: true,
+                employee_code: true, first_name: true,
                 last_name: true
               }
             }
@@ -420,7 +446,7 @@ export const getLeaveRequests = async (filters = {}) => {
         createdBy: {
           select: {
             id: true,
-            first_name: true,
+            employee_code: true, first_name: true,
             last_name: true
           }
         }
@@ -443,21 +469,23 @@ export const getLeaveRequests = async (filters = {}) => {
   };
 };
 
-export const getLeaveRequestById = async (id) => {
-  return await prisma.leaveRequest.findUnique({
-    where: { id },
+export const getLeaveRequestById = async (id, tenantId) => {
+  // C.2: when a tenant is supplied, scope by [id, tenantId] so a cross-tenant
+  // id resolves to not-found (null) — never another tenant's leave row. We use
+  // findFirst (findUnique cannot carry the non-unique tenantId predicate).
+  return await prisma.leaveRequest.findFirst({
+    where: scopedWhere(tenantId, { id }),
     include: {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true,
-          position: {
-            include: {
-              department: true
-            }
-          }
+          // C.2 bugfix: the Employee→Position relation is `Position` (schema
+          // l.246), not `position`; Position has no `department` relation, so
+          // a plain include is the correct, working read.
+          Position: true
         }
       },
       leavePolicy: {
@@ -476,7 +504,7 @@ export const getLeaveRequestById = async (id) => {
           approver: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true,
               job_title: true
             }
@@ -487,14 +515,14 @@ export const getLeaveRequestById = async (id) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -502,7 +530,7 @@ export const getLeaveRequestById = async (id) => {
   });
 };
 
-export const createLeaveRequest = async (data,createdById) => {
+export const createLeaveRequest = async (data,createdById, tenantId) => {
   const {
     employeeId,
     leavePolicyId,
@@ -510,6 +538,10 @@ export const createLeaveRequest = async (data,createdById) => {
     endDate,
     reason,
     notes,
+    // Issue 395 — set by hr_leave_request_create for an authorised ON-BEHALF
+    // raise only: a manager or HR filing for a day the employee has already
+    // taken. Never settable from a self-service call (the tool decides it).
+    allowPastDates = false,
   } = data;
 
   // Validate dates
@@ -521,7 +553,8 @@ export const createLeaveRequest = async (data,createdById) => {
     throw new Error('Start date cannot be after end date');
   }
 
-  if (start < today) {
+  // A leave that starts today is not in the past: compare calendar days in company time, not the clock.
+  if (dateKey(start) < today.toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' }) && !allowPastDates) {
     throw new Error('Cannot request leave for past dates');
   }
 
@@ -544,44 +577,27 @@ export const createLeaveRequest = async (data,createdById) => {
   }
 
   // Calculate duration (excluding weekends and holidays)
-  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end);
+  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end, tenantId);
 
   if (durationDays <= 0) {
     throw new Error('No working days in the selected date range');
   }
 
-  // Check leave balance
-  const balance = await prisma.leaveBalance.findUnique({
-    where: {
-      employeeId_leavePolicyId: {
-        employeeId: parseInt(employeeId),
-        leavePolicyId: parseInt(leavePolicyId)
-      }
-    }
-  });
-
-  if (!balance || balance.balance < durationDays) {
-    throw new Error(`Insufficient leave balance. Available: ${balance?.balance || 0} days, Requested: ${durationDays} days`);
-  }
-
-  // Get leave policy to check approval workflow
-  const leavePolicy = await prisma.leavePolicy.findUnique({
-    where: { id: parseInt(leavePolicyId) },
-    include: {
-      approvalWorkflow: {
-        include: {
-          steps: {
-            orderBy: { stepOrder: 'asc' }
-          }
-        }
-      }
-    }
-  });
+  // HR-LEAVE-TYPELESS-01 (2026-09-22, operator ruling) — the EMPLOYEE does
+  // NOT pick a leave type: they submit dates + reason only, and HR assigns
+  // the type (= LeavePolicy) at approval. A pending request therefore has no
+  // policy, so the balance check and the approval-workflow lookup move to
+  // approveLeaveRequest, which refuses to approve a still-typeless request
+  // (C5 guard). Deduction/balance integrity is enforced where the type is
+  // actually known, not guessed here.
 
   const create = await prisma.leaveRequest.create({
-    data: {
+    // C.2: stamp the verified tenant on the new row (omitted → unchanged legacy
+    // behavior; present → fail-closed via tenantData).
+    data: (tenantId === undefined ? (d) => d : (d) => tenantData(tenantId, d))({
       employeeId: parseInt(employeeId),
-      leavePolicyId: parseInt(leavePolicyId),
+      // Typeless while PENDING — HR assigns the LeavePolicy at approval.
+      leavePolicyId: leavePolicyId != null ? parseInt(leavePolicyId) : null,
       startDate: start,
       endDate: end,
       totalDays: durationDays,
@@ -589,12 +605,12 @@ export const createLeaveRequest = async (data,createdById) => {
       notes,
       status: 'PENDING',
       createdById: parseInt(createdById)
-    },
+    }),
     include: {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
@@ -618,54 +634,18 @@ export const createLeaveRequest = async (data,createdById) => {
     module: "Leave Request",
     result: "SUCCESS",
     notes: `Leave Request "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
 };
 
-export const cancelLeaveRequest = async (id, employeeId) => {
-  const existingRequest = await prisma.leaveRequest.findUnique({
-    where: { id }
-  });
-
-  if (!existingRequest) {
-    throw new Error('Leave request not found');
-  }
-
-  if (existingRequest.employeeId !== employeeId) {
-    throw new Error('You can only cancel your own leave requests');
-  }
-
-  if (existingRequest.status !== 'PENDING') {
-    throw new Error('Cannot cancel non-pending leave requests');
-  }
-
-  const update = await prisma.leaveRequest.update({
-    where: { id },
-    data: { status: 'CANCELLED' },
-    include: {
-      updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true
-    }
-  });
-
-    await logAction({
-    employeeId: Number(employeeId),
-    type: "Updated", // 👈 changed from CREATE to UPDATE
-    module: "Leave Request",
-    result: "SUCCESS",
-    notes: `Leave Request "${id}" Cancelled successfully`,
-  });
-  return update;
+export const cancelLeaveRequest = async (id, employeeId, reason) => {
+  return legacyWithdraw('LEAVE',id,reason);
 };
 
 export const updateLeaveRequest = async (id, data) => {
+  refuseDirect();
   const existingRequest = await prisma.leaveRequest.findUnique({
     where: { id }
   });
@@ -688,7 +668,7 @@ export const updateLeaveRequest = async (id, data) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
@@ -724,7 +704,7 @@ export const getPendingApprovals = async (userId, userRole) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true
         }
@@ -735,7 +715,7 @@ export const getPendingApprovals = async (userId, userRole) => {
           approver: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true
             }
           }
@@ -753,7 +733,7 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
       approver: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true
         }
@@ -761,7 +741,7 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -771,188 +751,11 @@ export const getLeaveRequestApprovals = async (leaveRequestId) => {
 };
 
 export const approveLeaveRequest = async (leaveRequestId, data,) => {
-  const { approverId, approverRole, comments, createdById } = data;
-
-  const leaveRequest = await prisma.leaveRequest.findUnique({
-    where: { id: leaveRequestId },
-    include: {
-      leavePolicy: {
-        include: {
-          approvalWorkflow: {
-            include: {
-              steps: {
-                orderBy: { stepOrder: 'asc' }
-              }
-            }
-          }
-        }
-      },
-      approvals: true
-    }
-  });
-
-  if (!leaveRequest) {
-    throw new Error('Leave request not found');
-  }
-
-  if (leaveRequest.status !== 'PENDING') {
-    throw new Error('Leave request is not pending approval');
-  }
-
-  // Check if approver has already approved this request
-  const existingApproval = await prisma.leaveRequestApproval.findFirst({
-    where: {
-      leaveRequestId,
-      approverId: parseInt(approverId)
-    }
-  });
-
-  if (existingApproval) {
-    throw new Error('You have already acted on this leave request');
-  }
-
-  // Record approval
-  await prisma.leaveRequestApproval.create({
-    data: {
-      leaveRequestId,
-      approverId: parseInt(approverId),
-      approverRole,
-      decision: 'APPROVED',
-      comments,
-      decision_date: new Date(),
-      createdById: parseInt(createdById)
-    }
-  });
-
-  // Check if this was the final approval
-  const workflow = leaveRequest.leavePolicy.approvalWorkflow;
-  const totalSteps = workflow ? workflow.steps.length : 1;
-  const approvalsCount = await prisma.leaveRequestApproval.count({
-    where: { leaveRequestId, decision: 'APPROVED' }
-  });
-
-  let newStatus = leaveRequest.status;
-
-  if (approvalsCount >= totalSteps || !workflow) {
-    // Final approval - update status and deduct leave balance
-    newStatus = 'APPROVED';
-
-    await prisma.leaveBalance.update({
-      where: {
-        employeeId_leavePolicyId: {
-          employeeId: leaveRequest.employeeId,
-          leavePolicyId: leaveRequest.leavePolicyId
-        }
-      },
-      data: {
-        balance: {
-          decrement: leaveRequest.totalDays
-        },
-        lastUpdated: new Date()
-      }
-    });
-
-    // Create attendance records for the leave period
-    await createLeaveAttendanceRecords(leaveRequest);
-  }
-
-  const update = await prisma.leaveRequest.update({
-    where: { id: leaveRequestId },
-    data: { status: newStatus },
-    include: {
-      employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true,
-      approvals: {
-        include: {
-          approver: {
-            select: {
-              id: true,
-              first_name: true,
-              last_name: true
-            }
-          }
-        }
-      }
-    }
-  });
-    await logAction({
-      employeeId: Number(createdById),
-      type: 'Update',
-      module: 'Leave Request',
-      result: 'SUCCESS',
-      notes: `Leave request ID ${leaveRequestId} approved successfully by employee ID ${createdById}.`,
-    });
-
-  return update;
+  return legacyDecision('LEAVE',leaveRequestId);
 };
 
 export const rejectLeaveRequest = async (leaveRequestId, data) => {
-  const { approverId, approverRole, comments, createdById } = data;
-
-  const leaveRequest = await prisma.leaveRequest.findUnique({
-    where: { id: leaveRequestId }
-  });
-
-  if (!leaveRequest) {
-    throw new Error('Leave request not found');
-  }
-
-  if (leaveRequest.status !== 'PENDING') {
-    throw new Error('Leave request is not pending approval');
-  }
-
-  // Record rejection
-  await prisma.leaveRequestApproval.create({
-    data: {
-      leaveRequestId,
-      approverId: parseInt(approverId),
-      approverRole,
-      decision: 'REJECTED',
-      comments,
-      decision_date: new Date(),
-      createdById: parseInt(createdById)
-    }
-  });
-
-  const update = await prisma.leaveRequest.update({
-    where: { id: leaveRequestId },
-    data: { status: 'REJECTED' },
-    include: {
-      employee: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      },
-      leavePolicy: true,
-      approvals: {
-        include: {
-          approver: {
-            select: {
-              id: true,
-              first_name: true,
-              last_name: true
-            }
-          }
-        }
-      }
-    }
-  });
-  await logAction({
-    employeeId: Number(createdById),
-    type: "Update", // 👈 changed from CREATE to UPDATE
-    module: "Leave Request",
-    result: "SUCCESS",
-    notes: `Leave Request "${leaveRequestId}" Rejected successfully`,
-  });
-  return update;
+  return legacyDecision('LEAVE',leaveRequestId);
 };
 
 // Leave Balance Services
@@ -979,21 +782,20 @@ export const getLeaveBalances = async (filters = {}) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true,
           job_title: true,
-          position: {
-            include: {
-              department: true
-            }
-          }
+          // C.2 bugfix: the Employee→Position relation is `Position` (schema
+          // l.246), not `position`; Position has no `department` relation, so
+          // a plain include is the correct, working read.
+          Position: true
         }
       },
       leavePolicy: true,
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -1018,6 +820,7 @@ export const getEmployeeLeaveBalances = async (employeeId) => {
 };
 
 export const updateLeaveBalance = async (employeeId, data) => {
+  refuseDirect();
   const { leavePolicyId, balance, carryOverBalance, updatedById, notes } = data;
 
   const existingBalance = await prisma.leaveBalance.findUnique({
@@ -1055,14 +858,14 @@ export const updateLeaveBalance = async (employeeId, data) => {
       employee: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -1076,6 +879,7 @@ export const updateLeaveBalance = async (employeeId, data) => {
     module: "Leave Balance",
     result: "SUCCESS",
     notes: `Leave Balance "${employeeId}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return result;
@@ -1083,6 +887,7 @@ export const updateLeaveBalance = async (employeeId, data) => {
 
 // Accrual Services
 export const runLeaveAccruals = async (data) => {
+  refuseDirect();
   const { accrualDate = new Date(), policyIds = [] } = data;
   const date = new Date(accrualDate);
 
@@ -1207,7 +1012,7 @@ export const getAccrualHistory = async (filters = {}) => {
         action_by: {
           select: {
             id: true,
-            first_name: true,
+            employee_code: true, first_name: true,
             last_name: true
           }
         }
@@ -1263,14 +1068,14 @@ export const getHolidays = async (filters = {}) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       },
       updatedBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -1342,7 +1147,7 @@ export const createHoliday = async (data) => {
       createdBy: {
         select: {
           id: true,
-          first_name: true,
+          employee_code: true, first_name: true,
           last_name: true
         }
       }
@@ -1354,47 +1159,141 @@ export const createHoliday = async (data) => {
     module: "Leave (Holiday)",
     result: "SUCCESS",
     notes: `Leave Holiday "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
 };
 
 // Additional Helper Functions
-const createLeaveAttendanceRecords = async (leaveRequest) => {
-  const { employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
+// C3 — leave write-back, rebuilt (HR policy 2026-09-18).
+//
+// The old implementation had three defects, each with real payroll blast
+// radius:
+//   1. It stamped status ABSENT on every leave day — approved leave looked
+//      exactly like an unexcused absence, feeding the absence/credit-loss
+//      deduction bridge and the Absentees KPI.
+//   2. It hardcoded weekends as Sat/Sun instead of the employee's ROSTER, so
+//      Mon-Fri workers with a Sunday-off got phantom rows and rotating-roster
+//      employees got charged rest days.
+//   3. It upsert-overwrote existing attendance rows, erasing real biometric
+//      punches (and manual corrections) for any day the device already had.
+//
+// The replacement derives each leave day through resolveWorkingDays (the SAME
+// derivation attendance and payroll read: approved leave > holiday > rostered
+// off-day), writes ON_LEAVE only on rostered working days, and SKIPS any day
+// that already has an attendance row — punch integrity beats the leave mark
+// (HR-ATT-CORRECTION-01 precedence). Employees with no schedule in force keep
+// the old conservative reading: every non-holiday weekday is a working day.
+export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma) => {
+  const { tenantId, employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
   const start = new Date(startDate);
   const end = new Date(endDate);
-  const current = new Date(start);
 
-  while (current <= end) {
-    const dayOfWeek = current.getDay();
-    // Only create records for weekdays
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      await prisma.attendance.upsert({
-        where: {
-          employeeId_date: {
-            employeeId,
-            date: new Date(current)
-          }
-        },
-        update: {
-          status: 'ABSENT',
-          remarks: `On ${(await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave'}`
-        },
-        create: {
-          employeeId,
-          date: new Date(current),
-          status: 'ABSENT',
-          remarks: `On ${(await prisma.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave'}`
+  const policyName =
+    (await db.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.name || 'Leave';
+
+  // Derive the leave window day-by-day on the employee's actual roster.
+  let workingDays;
+  try {
+    const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end, ignoreLeaves: true, db });
+    workingDays = [...derived.values()].filter((d) => d.working);
+  } catch {
+    // Derivation needs the employee to exist; a defunct employee must not
+    // block the approval itself.
+    workingDays = [];
+  }
+
+  for (const day of workingDays) {
+    const dayDate = new Date(day.date);
+    // HR-LEAVE-TYPELESS-01 fix — the Attendance table is tenant-scoped: its
+    // compound unique is tenantId_employeeId_date (see attendanceImport.service
+    // upsert), NOT the legacy bare employeeId_date. The stale selector made
+    // EVERY approval with an in-window working day throw
+    // PrismaClientValidationError → HR-5000 at the decide tool.
+    const existing = await db.attendance.findUnique({
+      where: { tenantId_employeeId_date: { tenantId, employeeId, date: dayDate } },
+      select: { id: true, check_in: true, check_out: true, status: true },
+    });
+
+    // Never overwrite a real punch or an HR correction: if the device already
+    // recorded the day, the employee showed up — leave does not erase that.
+    if (existing && (existing.check_in || existing.check_out)) continue;
+
+    if (existing) {
+      await db.attendance.update({
+        where: { id: existing.id },
+        data: {
+          status: 'ON_LEAVE',
+          day_credit: 1,
+          requires_regularization: false,
+          remarks: `On ${policyName}`
         }
       });
+    } else {
+      await db.attendance.create({
+        data: tenantData(leaveRequest.tenantId, {
+          employeeId,
+          date: dayDate,
+          status: 'ON_LEAVE',
+          day_credit: 1,
+          remarks: `On ${policyName}`
+        })
+      });
     }
-    current.setDate(current.getDate() + 1);
   }
+};
+
+// C4 — the legacy `Leave` MIRROR. Day-derivation (workingDay.service) reads
+// prisma.leave for the approved-leave precedence, but the request flow only
+// writes LeaveRequest — nothing ever wrote legacy Leave, so approved leave
+// never became ON_LEAVE and attendance/payroll kept treating those days as
+// expected-working. One mirror row per approved request closes that join.
+// Idempotent: re-approval paths reuse the row instead of duplicating.
+export const upsertLegacyLeaveMirror = async (leaveRequest, db = prisma) => {
+  const { employeeId, startDate, endDate, leavePolicyId, tenantId } = leaveRequest;
+  const typeCode =
+    (await db.leavePolicy.findUnique({ where: { id: leavePolicyId } }))?.leaveTypeCode || 'LEAVE';
+
+  const existing = await db.leave.findFirst({
+    where: {
+      employeeId,
+      start_date: new Date(startDate),
+      end_date: new Date(endDate),
+      ...(tenantId ? { tenantId } : {})
+    }
+  });
+
+  if (existing) {
+    await db.leave.update({
+      where: { id: existing.id },
+      data: {
+        type: typeCode,
+        status: 'APPROVED',
+        total_days: Math.max(1, Math.round(Number(leaveRequest.totalDays) || 1)),
+        approved_at: new Date()
+      }
+    });
+    return existing.id;
+  }
+
+  const created = await db.leave.create({
+    data: tenantData(tenantId, {
+      employeeId,
+      type: typeCode,
+      start_date: new Date(startDate),
+      end_date: new Date(endDate),
+      total_days: Math.max(1, Math.round(Number(leaveRequest.totalDays) || 1)),
+      status: 'APPROVED',
+      approved_at: new Date()
+    })
+  });
+  return created.id;
 };
 
 // Carry Over Processing
 export const processCarryOver = async (data) => {
+  refuseDirect();
   const { effectiveDate = new Date(), policyIds = [] } = data;
   const date = new Date(effectiveDate);
 
@@ -1425,7 +1324,7 @@ export const processCarryOver = async (data) => {
           employee: {
             select: {
               id: true,
-              first_name: true,
+              employee_code: true, first_name: true,
               last_name: true,
               status: true
             }

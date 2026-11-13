@@ -1,8 +1,14 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { scopedWhere } from "../lib/tenancy.js";
 
-export const getAllLogs = async (userId, ip) => {
+// C.2-completion — verified tenant (T-P2.1) threaded via a trailing `tenantId`;
+// audit-log reads are tenant-scoped fail-closed so one tenant never reads
+// another tenant's audit trail.
+
+export const getAllLogs = async (employeeId, ip, tenantId) => {
   const logs = await prisma.log.findMany({
+    where: scopedWhere(tenantId, {}),
     include: {
       user: true,
       action_by: true,
@@ -11,21 +17,22 @@ export const getAllLogs = async (userId, ip) => {
   });
 
   await logAction({
-    userId,
+    employeeId,
     type: "READ_ALL",
     module: "Log",
     result: "Success",
     notes: "Fetched all logs",
     ip,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return logs;
 
 };
 
-export const getLogById = async (id, userId, ip) => {
-  const log = await prisma.log.findUnique({
-    where: { id: parseInt(id) },
+export const getLogById = async (id, employeeId, ip, tenantId) => {
+  const log = await prisma.log.findFirst({
+    where: scopedWhere(tenantId, { id: parseInt(id) }),
     include: {
       user: true,
       action_by: true,
@@ -35,23 +42,25 @@ export const getLogById = async (id, userId, ip) => {
   if (!log) {
 
     await logAction({
-      userId,
+      employeeId,
       type: "READ_ONE",
       module: "Log",
       result: "Fail",
       notes: `Log ID ${id} not found`,
-      ip
+      ip,
+      tenantId: typeof tenantId !== "undefined" ? tenantId : null,
     });
     throw new Error("Log not found");
   }
 
   await logAction({
-    userId,
+    employeeId,
     type: "READ_ONE",
     module: "Log",
     result: "Success",
     notes: `Fetched log ID ${id}`,
     ip,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return log;

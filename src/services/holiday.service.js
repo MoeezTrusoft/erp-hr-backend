@@ -1,5 +1,8 @@
 import prisma from "../lib/prisma.js";
 import { logAction } from "../utils/logs.js";
+import { dateOnly } from '../lib/attendanceDates.js';
+import { mcpCtx } from '../lib/requestContext.js';
+import { requestHolidayChange } from './holidayChangeRequest.service.js';
 
 
 // Region Services
@@ -130,6 +133,7 @@ export const createRegion = async (data, createdBy) => {
     module: "Holiday Region",
     result: "SUCCESS",
     notes: `Holiday Region  "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -186,11 +190,12 @@ export const updateRegion = async (id, updatedById, data) => {
     }
   });
 await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(updatedById),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Holiday Region",
     result: "SUCCESS",
     notes: `Holiday Region "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -225,6 +230,7 @@ export const deleteRegion = async (id, deletedBy) => {
     module: "Holiday Region",
     result: "SUCCESS",
     notes: `Holiday Assign "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted;
 };
@@ -367,6 +373,7 @@ await logAction({
     module: "Holiday Calender",
     result: "SUCCESS",
     notes: `Holiday Calender "${create.id}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return create;
@@ -404,11 +411,12 @@ export const updateHolidayCalendar = async (id, data, updatedById) => {
   });
 
 await logAction({
-    employeeId: Number(assignBy),
+    employeeId: Number(updatedById),
     type: "Update", // 👈 changed from CREATE to UPDATE
     module: "Holiday Calender",
     result: "SUCCESS",
     notes: `Holiday Calender "${id}" Updated successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
   return update;
@@ -443,6 +451,7 @@ await logAction({
     module: "Holiday Calender",
     result: "SUCCESS",
     notes: `Holiday Calender "${id}" Deleted successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
   return deleted
 };
@@ -563,194 +572,44 @@ export const getHolidaysByCalendar = async (calendarId, filters = {}) => {
   });
 };
 
-export const createHoliday = async (data,createdById) => {
-  const {
-    holidayCalendarId,
-    name,
-    date,
-    description,
-    fullDay = true,
-    startTime,
-    endTime,
-  } = data;
+// Marking, changing or removing a holiday is an approval request (HOLIDAY_CHANGE): it goes to the company's attendance
+// route and the calendar changes only on the final approval, for past, present and future days alike.
+const tenantFromContext = () => {
+  const tenantId = mcpCtx.getStore()?.user?.tenantId;
+  if (!tenantId) throw Object.assign(new Error('Tenant is required'), { status: 403 });
+  return tenantId;
+};
+const reasonFrom = (data = {}) => data.reason ?? data.changeReason;
 
-  const holidayDate = new Date(date);
-
-  // Validate date is not in the past
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (holidayDate < today) {
-    throw new Error('Cannot create holiday for past dates');
-  }
-
-  // Check for duplicate holiday on same date in same calendar
-  const existingHoliday = await prisma.holiday.findFirst({
-    where: {
-      holidayCalendarId: parseInt(holidayCalendarId),
-      date: holidayDate
-    }
+export const createHoliday = async (data, createdById) =>
+  requestHolidayChange({
+    tenantId: tenantFromContext(), requestedById: createdById, action: 'CREATE',
+    holidayCalendarId: data.holidayCalendarId, holidays: [data], reason: reasonFrom(data),
   });
 
-  if (existingHoliday) {
-    throw new Error('Holiday already exists on this date for the selected calendar');
-  }
-
-  // Validate time fields for partial day holidays
-  if (!fullDay && (!startTime || !endTime)) {
-    throw new Error('Start time and end time are required for partial day holidays');
-  }
-
-  const create = await prisma.holiday.create({
-    data: {
-      holidayCalendarId: parseInt(holidayCalendarId),
-      name,
-      date: holidayDate,
-      description,
-      fullDay: Boolean(fullDay),
-      startTime: fullDay ? null : startTime,
-      endTime: fullDay ? null : endTime,
-      createdById: parseInt(createdById)
-    },
-    include: {
-      holidayCalendar: {
-        include: {
-          region: true
-        }
-      },
-      createdBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      }
-    }
+const holidayOn = async (calendarId, date) => {
+  const existing = await prisma.holiday.findUnique({
+    where: { holidayCalendarId_date: { holidayCalendarId: parseInt(calendarId), date: dateOnly(date) } },
   });
-
-await logAction({
-    employeeId: Number(assignBy),
-    type: "Create", // 👈 changed from CREATE to UPDATE
-    module: "Holiday ",
-    result: "SUCCESS",
-    notes: `Holiday "${create.id}" Created successfully`,
-  });
-return create;
+  if (!existing) throw new Error('Holiday not found');
+  return existing;
 };
 
-export const updateHoliday = async (calendarId, date, data,updatedById) => {
-  const holidayDate = new Date(date);
-
-  const existingHoliday = await prisma.holiday.findUnique({
-    where: {
-      holidayCalendarId_date: {
-        holidayCalendarId: parseInt(calendarId),
-        date: holidayDate
-      }
-    }
+export const updateHoliday = async (calendarId, date, data, updatedById) => {
+  const existing = await holidayOn(calendarId, date);
+  const { reason, changeReason, ...changes } = data;
+  return requestHolidayChange({
+    tenantId: tenantFromContext(), requestedById: updatedById, action: 'UPDATE',
+    holidayCalendarId: existing.holidayCalendarId, holidayId: existing.id, changes, reason: reason ?? changeReason,
   });
-
-  if (!existingHoliday) {
-    throw new Error('Holiday not found');
-  }
-
-  // Check for duplicate if date is being changed
-  if (data.date && new Date(data.date).getTime() !== holidayDate.getTime()) {
-    const duplicateHoliday = await prisma.holiday.findFirst({
-      where: {
-        holidayCalendarId: parseInt(calendarId),
-        date: new Date(data.date),
-        NOT: {
-          holidayCalendarId_date: {
-            holidayCalendarId: parseInt(calendarId),
-            date: holidayDate
-          }
-        }
-      }
-    });
-
-    if (duplicateHoliday) {
-      throw new Error('Another holiday already exists on this date for the selected calendar');
-    }
-  }
-
-  const update = await prisma.holiday.update({
-    where: {
-      holidayCalendarId_date: {
-        holidayCalendarId: parseInt(calendarId),
-        date: holidayDate
-      }
-    },
-    data: {
-      ...data,
-      updatedById: Number(updatedById),
-      updated_at: new Date()
-    },
-    include: {
-      holidayCalendar: {
-        include: {
-          region: true
-        }
-      },
-      updatedBy: {
-        select: {
-          id: true,
-          first_name: true,
-          last_name: true
-        }
-      }
-    }
-  });
-
-  await logAction({
-    employeeId: Number(assignBy),
-    type: "Update", // 👈 changed from CREATE to UPDATE
-    module: "Holiday",
-    result: "SUCCESS",
-    notes: `Holiday  "${calendarId}" updated successfully`,
-  });
-  return update;
 };
 
-export const deleteHoliday = async (calendarId, date, deletedBy) => {
-  const holidayDate = new Date(date);
-
-  const existingHoliday = await prisma.holiday.findUnique({
-    where: {
-      holidayCalendarId_date: {
-        holidayCalendarId: parseInt(calendarId),
-        date: holidayDate
-      }
-    }
+export const deleteHoliday = async (calendarId, date, deletedBy, reason) => {
+  const existing = await holidayOn(calendarId, date);
+  return requestHolidayChange({
+    tenantId: tenantFromContext(), requestedById: deletedBy, action: 'DELETE',
+    holidayCalendarId: existing.holidayCalendarId, holidayId: existing.id, reason,
   });
-
-  if (!existingHoliday) {
-    throw new Error('Holiday not found');
-  }
-
-  // Check if holiday is in the past
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (holidayDate < today) {
-    throw new Error('Cannot delete past holidays');
-  }
-
-  const deleted = await prisma.holiday.delete({
-    where: {
-      holidayCalendarId_date: {
-        holidayCalendarId: parseInt(calendarId),
-        date: holidayDate
-      }
-    }
-  });
-await logAction({
-    employeeId: Number(assignBy),
-    type: "Delete", // 👈 changed from CREATE to UPDATE
-    module: "Holiday",
-    result: "SUCCESS",
-    notes: `Holiday  "${calendarId}" Deleted successfully`,
-  });
-
-  return deleted;
 };
 
 export const getEmployeeHolidays = async (employeeId, filters = {}) => {
@@ -940,6 +799,7 @@ export const assignEmployeeToCalendar = async (employeeId, calendarId, effective
     module: "Holiday",
     result: "SUCCESS",
     notes: `Holiday Assign "${employeeId}""${calendarId}" Created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
 
@@ -970,32 +830,12 @@ export const getEmployeeCalendarAssignments = async (employeeId) => {
 };
 
 // Bulk Operations
-export const importHolidays = async (calendarId, holidays, createdById) => {
-  const results = {
-    success: 0,
-    errors: [],
-    duplicates: 0
-  };
-
-  for (const holidayData of holidays) {
-    try {
-      await createHoliday({
-        ...holidayData,
-        holidayCalendarId: parseInt(calendarId),
-        createdById: parseInt(createdById)
-      });
-      results.success++;
-    } catch (error) {
-      if (error.message.includes('already exists')) {
-        results.duplicates++;
-      } else {
-        results.errors.push(`Date ${holidayData.date}: ${error.message}`);
-      }
-    }
-  }
-
-  return results;
-};
+// One request for the whole file (the route approves the import once, not row by row).
+export const importHolidays = async (calendarId, holidays, createdById, reason = 'Holiday import') =>
+  requestHolidayChange({
+    tenantId: tenantFromContext(), requestedById: createdById, action: 'CREATE',
+    holidayCalendarId: calendarId, holidays, reason,
+  });
 
 export default {
   getRegions,

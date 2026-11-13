@@ -8,9 +8,9 @@ import logger from "../lib/logger.js";
 
 export const checkIn = async (req, res) => {
   try {
-    const result = await attandanceService.createAttendanceService(req.body);
-    res.status(200).json({
-      message: "Attendance marked successfully",
+    const result = await attandanceService.createAttendanceService({ ...req.body, requestKey: req.body?.requestKey || req.headers?.['idempotency-key'], tenantId: req.user?.tenantId, actorId: req.user?.id || req.user?.userId || req.user?.employeeId });
+    res.status(202).json({
+      message: "Attendance received for processing",
       attendance: result,
     });
   } catch (error) {
@@ -22,8 +22,8 @@ export const checkIn = async (req, res) => {
 export const checkOut = async (req, res) => {
   try {
     const { employeeId, timestamp } = req.body;
-    const result = await attandanceService.checkOutServiceWithTimestamp(employeeId, timestamp);
-    res.status(200).json(result);
+    const result = await attandanceService.checkOutServiceWithTimestamp(employeeId, timestamp, req.user?.tenantId, req.user?.id || req.user?.userId || req.user?.employeeId, req.body?.requestKey || req.headers?.['idempotency-key'], req.body?.notes);
+    res.status(202).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -32,7 +32,9 @@ export const checkOut = async (req, res) => {
 export const getEmployeeAttendance = async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await attandanceService.getAttendanceByEmployee(Number(id));
+    // BLOCKER-2 / C.2 — fail-closed tenant scope from the verified claim so a
+    // tenant can never read another tenant's (or null-tenant) attendance.
+    const result = await attandanceService.getAttendanceByEmployee(Number(id), req.user?.tenantId ?? null);
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -41,9 +43,19 @@ export const getEmployeeAttendance = async (req, res) => {
 
 export const listAttendanceRecords = async (req, res) => {
   try {
+    // BLOCKER-2 / C.2 — thread the verified tenant so the attendance list is
+    // tenant-scoped (no null-tenant/foreign rows leak into the HR screen).
     const result = await attandanceService.listAttendanceRecords({
       date: req.query?.date,
       limit: req.query?.limit,
+      tenantId: req.user?.tenantId ?? null,
+      // HR-RBAC-01 T1.5 — full-read callers (HR/admin/service principals, which
+      // the route middleware only admits WITH hr.attendance.read) keep the
+      // tenant-wide list. Callers admitted via the `.self` fallback are pinned
+      // to their own employee id; an unbound pin matches nothing (fail-closed).
+      ...(!req.user?.permissions?.includes("hr.attendance.read")
+        ? { employeeId: req.user?.employeeId ?? { in: [] } }
+        : {}),
     });
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -62,16 +74,17 @@ export const testDeviceConnectivity = async (req, res) => {
 
 export const syncDeviceAttendance = async (req, res) => {
   try {
-    const result = await syncAttendanceFromPunches(req.body || {});
-    return res.status(200).json(result);
+    const result = await syncAttendanceFromPunches({ ...req.body, tenantId: req.user?.tenantId, actorId: req.user?.id || req.user?.userId || req.user?.employeeId });
+    return res.status(req.body?.dryRun === false ? 202 : 200).json(result);
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(error.status || 400).json({ error: error.message });
   }
 };
 
 export const getDailyAttendanceStatusSummary = async (req, res) => {
   try {
     const result = await getDailyAttendanceSummary({
+      tenantId: req.user?.tenantId, // HR-ATT-DAILYSUM-TENANT-01 — verified tenant, never a header
       date: req.query?.date,
       shiftStart: req.query?.shiftStart,
       lateGraceMinutes: req.query?.lateGraceMinutes,

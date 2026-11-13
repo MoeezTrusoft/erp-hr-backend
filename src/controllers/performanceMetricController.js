@@ -1,12 +1,14 @@
 // src/controllers/performanceMetricController.js
 import * as metricService from "../services/performanceMetricService.js";
+import { respondServerError } from '../utils/httpError.js';
+import { performanceMetricCreate, performanceReviewItems } from '../validators/performance.schema.js';
 
 export const createMetric = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
         const createdById = user.employeeId || user.id || null;
-        const { name, description, category } = req.body;
+        const { name, description, category } = performanceMetricCreate.parse(req.body);
 
         if (!name) {
             return res.status(400).json({
@@ -29,10 +31,7 @@ export const createMetric = async (req, res) => {
             data: metric,
         });
     } catch (error) {
-        return res.status(400).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -54,10 +53,7 @@ export const listMetrics = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -74,10 +70,7 @@ export const deactivateMetric = async (req, res) => {
 
         return res.status(204).send();
     } catch (error) {
-        return res.status(400).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -86,12 +79,12 @@ export const upsertReviewItems = async (req, res) => {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
         const { reviewId } = req.params;
-        const { items } = req.body; // [{ metricId, rating, comment }]
+        const { items } = performanceReviewItems.parse(req.body);
 
         const updated = await metricService.upsertReviewItems({
             reviewId: Number(reviewId),
             tenantId,
-            items: Array.isArray(items) ? items : [],
+            items,
         });
 
         return res.status(200).json({
@@ -99,10 +92,7 @@ export const upsertReviewItems = async (req, res) => {
             data: updated,
         });
     } catch (error) {
-        return res.status(400).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 
@@ -122,9 +112,6 @@ export const getReviewItems = async (req, res) => {
             data: list,
         });
     } catch (error) {
-        return res.status(400).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };

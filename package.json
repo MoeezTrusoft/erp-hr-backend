@@ -1,27 +1,36 @@
 {
-  "name": "rbac-project",
+  "name": "erp-hr-backend",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "test:appraisals": "node --test --test-concurrency=1 tests/appraisals/*.test.mjs",
+    "worker:appraisals": "node src/jobs/appraisals.worker.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "sync:k20:march": "node scripts/sync_k20_march_to_db.js --month 3",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit",
-    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration",
-    "test:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e",
-    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
-    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
-    "test:training:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js",
-    "test:training:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration/training.integration.test.js",
-    "test:training:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e/training.e2e.test.js",
-    "test:training:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js tests/integration/training.integration.test.js tests/e2e/training.e2e.test.js",
+    "test": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:unit": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit",
+    "test:integration": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration",
+    "test:e2e": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e",
+    "test:coverage": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "test:watch": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:training:unit": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js",
+    "test:training:integration": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/integration/training.integration.test.js",
+    "test:training:e2e": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e/training.e2e.test.js",
+    "test:training:all": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/trainingService.test.js tests/unit/trainingController.test.js tests/integration/training.integration.test.js tests/e2e/training.e2e.test.js",
     "test:sprint8": "npm run test:training:all",
-    "test:analytics:all": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/analyticsService.final.test.js tests/unit/analyticsController.test.js tests/integration/analytics.integration.test.js",
+    "test:analytics:all": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/analyticsService.final.test.js tests/unit/analyticsController.test.js tests/integration/analytics.integration.test.js",
     "test:sprint9": "npm run test:analytics:all",
-    "test:perf": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --testPathIgnorePatterns=/node_modules/ --testPathPatterns=performance\\.test\\.js$",
+    "test:perf": "TZ=UTC node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --testPathIgnorePatterns=/node_modules/ --testPathPatterns=performance\\.test\\.js$",
     "test:db:prepare": "node scripts/test-db-provision.js",
-    "gate:p1": "bash scripts/gate-p1.sh"
+    "backfill:c4": "node scripts/backfill-c4-encryption.js",
+    "backfill:tenants": "node scripts/backfill-tenant-ids.js",
+    "db:indexes:deploy": "node scripts/apply-hr-indexes.js",
+    "smoke:deploy": "node scripts/deploy-smoke.mjs",
+    "gate:p1": "bash scripts/gate-p1.sh",
+    "test:assessment": "node --test tests/assessment/*.test.mjs",
+    "test:payroll": "node --test tests/payroll/*.test.mjs",
+    "test:approval": "node --test tests/approval/*.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -29,25 +38,34 @@
   "description": "",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@prisma/client": "^6.19.0",
-    "@trusoft/contracts": "github:MoeezTrusoft/erp-contracts#v0.4.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "@trusoft/contracts": "file:../contracts",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.79.1",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "express-async-handler": "^1.2.0",
     "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^2.0.1",
-    "node-cron": "^4.2.1",
-    "nodemailer": "^7.0.4",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.1.0",
+    "pdfkit": "^0.15.2",
     "pino": "^10.3.1",
-    "prisma": "^6.19.0",
+    "prisma": "^7.8.0",
     "prom-client": "^15.1.3",
-    "socket.io": "^4.8.3",
+    "pureimage": "^0.4.20",
     "uuid": "^11.1.0",
-    "zod": "^4.3.6"
+    "zod": "^4.6.6"
+  },
+  "optionalDependencies": {
+    "mammoth": "^1.11.0",
+    "openai": "^6.9.1",
+    "pdf-parse": "^2.4.5"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
@@ -56,10 +74,24 @@
     "@babel/preset-env": "^7.29.7",
     "@eslint/js": "^10.0.1",
     "@jest/globals": "^30.2.0",
+    "acorn": "^8.18.0",
     "dependency-cruiser": "^17.4.3",
     "eslint": "^10.5.0",
     "jest": "^30.2.0",
     "nodemon": "^3.1.10",
+    "pg": "^8.16.3",
     "supertest": "^7.1.4"
+  },
+  "overrides": {
+    "body-parser": "^2.4.0",
+    "@prisma/config": {
+      "deepmerge-ts": "^8.0.0"
+    },
+    "prisma": {
+      "mysql2": "^3.23.1"
+    },
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

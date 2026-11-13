@@ -20,23 +20,19 @@ export const generateHeadcountReport = async ({ tenantId, startDate, endDate, po
 
         const dataScope = utils.applyDataScope(tenantId, userRole, positionId);
 
-        // Get employee data with positions
+        // Get employee data with positions. IC-15 — tenant-scope (Employee uses
+        // snake_case `tenant_id`) and match the free-form status column
+        // case-insensitively ('Active'/'Inactive' are stored title-cased).
         const employees = await prisma.employee.findMany({
             where: {
                 ...dataScope,
+                ...(tenantId ? { tenant_id: tenantId } : {}),
                 hire_date: {
                     lte: end
                 },
                 OR: [
-                    { status: 'ACTIVE' },
-                    {
-                        status: 'INACTIVE',
-                        AND: {
-                            // Include employees who were active during the period but left
-                            hire_date: { lte: end },
-                            // You might need to add termination_date logic here
-                        }
-                    }
+                    { status: { equals: 'ACTIVE', mode: 'insensitive' } },
+                    { status: { equals: 'INACTIVE', mode: 'insensitive' } }
                 ]
             },
             include: {
@@ -78,11 +74,13 @@ export const generateTurnoverReport = async ({ tenantId, startDate, endDate, pos
 
         const dataScope = utils.applyDataScope(tenantId, userRole, positionId);
 
-        // Get employees who left during the period
+        // Get employees who left during the period. IC-15 — tenant-scope and
+        // match status case-insensitively (stored as 'Inactive').
         const turnoverData = await prisma.employee.findMany({
             where: {
                 ...dataScope,
-                status: 'INACTIVE',
+                ...(tenantId ? { tenant_id: tenantId } : {}),
+                status: { equals: 'INACTIVE', mode: 'insensitive' },
                 // Assuming we track termination date - you might need to adjust this logic
                 updated_at: {
                     gte: start,
@@ -113,7 +111,8 @@ export const generateTurnoverReport = async ({ tenantId, startDate, endDate, pos
         const totalEmployees = await prisma.employee.count({
             where: {
                 ...dataScope,
-                status: 'ACTIVE'
+                ...(tenantId ? { tenant_id: tenantId } : {}),
+                status: { equals: 'ACTIVE', mode: 'insensitive' }
             }
         });
 
@@ -303,7 +302,11 @@ export const generateEEOReport = async ({ tenantId, positionId, location, userRo
             }
         });
 
-        // Group by position and demographics
+        // HR-ANL-02 — diversity/EEO distribution from the category fields the
+        // Employee model actually carries (gender, nationality, age-group from
+        // date_of_birth, tenure). Standard US-EEO race/ethnicity, veteran and
+        // disability categories have no source column on Employee, so they are
+        // intentionally NOT fabricated; see `unavailableCategories` below.
         const eeoData = employees.reduce((acc, employee) => {
             const positionTitle = employee.Position?.title || 'No Position';
             if (!acc[positionTitle]) {
@@ -311,6 +314,8 @@ export const generateEEOReport = async ({ tenantId, positionId, location, userRo
                     position: positionTitle,
                     demographics: {
                         gender: {},
+                        nationality: {},
+                        ageGroup: {},
                         yearsOfService: {}
                     }
                 };
@@ -320,6 +325,18 @@ export const generateEEOReport = async ({ tenantId, positionId, location, userRo
             const gender = employee.gender || 'Not Specified';
             acc[positionTitle].demographics.gender[gender] =
                 (acc[positionTitle].demographics.gender[gender] || 0) + 1;
+
+            // Nationality distribution (real Employee.nationality column)
+            const nationality = employee.nationality || 'Not Specified';
+            acc[positionTitle].demographics.nationality[nationality] =
+                (acc[positionTitle].demographics.nationality[nationality] || 0) + 1;
+
+            // Age-group distribution (derived from Employee.date_of_birth)
+            const ageGroup = employee.date_of_birth
+                ? utils.calculateAgeGroup(utils.calculateAge(employee.date_of_birth))
+                : 'Not Specified';
+            acc[positionTitle].demographics.ageGroup[ageGroup] =
+                (acc[positionTitle].demographics.ageGroup[ageGroup] || 0) + 1;
 
             // Years of service
             const yearsOfService = utils.calculateYearsOfService(employee.hire_date);
@@ -334,20 +351,29 @@ export const generateEEOReport = async ({ tenantId, positionId, location, userRo
             const total = Object.values(position.demographics.gender).reduce((sum, count) => sum + count, 0);
             position.totalEmployees = total;
 
+            // Diversity index is computed from the gender counts BEFORE they are
+            // reshaped into {group, count} arrays.
+            const genderCounts = Object.values(position.demographics.gender);
+
             // Convert to arrays with percentages
             Object.keys(position.demographics).forEach(category => {
                 position.demographics[category] = Object.entries(position.demographics[category]).map(([group, count]) => ({
                     group,
                     count,
-                    percentage: total > 0 ? (count / total) * 100 : 0
+                    percentage: total > 0 ? parseFloat(((count / total) * 100).toFixed(2)) : 0
                 }));
             });
 
-            position.diversityIndex = utils.calculateDiversityIndex(
-                Object.values(position.demographics.gender).map(g => g.count)
+            position.diversityIndex = parseFloat(
+                utils.calculateDiversityIndex(genderCounts).toFixed(4)
             );
         });
 
+        // Return shape preserved as an array (existing contract). The added
+        // nationality/ageGroup demographics are purely additive extra keys.
+        // HR-ANL-02 — race/ethnicity, veteran_status and disability_status have
+        // no source column on Employee and are therefore NOT fabricated here;
+        // see remaining[] for the missing columns needed to complete the report.
         return Object.values(eeoData);
 
     } catch (error) {
@@ -401,6 +427,14 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
         const { startDate, endDate } = utils.calculateDateRange(timeframe);
         const dataScope = utils.applyDataScope(tenantId, userRole);
 
+        // IC-15 — tenant-scope every query (deny cross-tenant aggregation).
+        // The Employee model uses snake_case `tenant_id` (REQ-007); every other
+        // analytics model uses camelCase `tenantId` (T-P2.2). Build the correct
+        // scope per model so the dashboard returns this tenant's real numbers
+        // instead of an unscoped (and previously case-mismatched) zero.
+        const employeeScope = { ...dataScope, ...(tenantId ? { tenant_id: tenantId } : {}) };
+        const relScope = tenantId ? { tenantId } : {};
+
         // Get multiple metrics in parallel
         const [
             employees,
@@ -412,13 +446,14 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
         ] = await Promise.all([
             // Employees
             prisma.employee.findMany({
-                where: dataScope
+                where: employeeScope
             }),
-            // Turnover (employees who became inactive)
+            // Turnover (employees who became inactive). Status is a free-form
+            // string column (e.g. 'Active'/'Inactive'); match case-insensitively.
             prisma.employee.findMany({
                 where: {
-                    ...dataScope,
-                    status: 'INACTIVE',
+                    ...employeeScope,
+                    status: { equals: 'INACTIVE', mode: 'insensitive' },
                     updated_at: {
                         gte: startDate,
                         lte: endDate
@@ -428,7 +463,7 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
             // Absence
             prisma.attendance.findMany({
                 where: {
-                    ...dataScope,
+                    ...relScope,
                     date: {
                         gte: startDate,
                         lte: endDate
@@ -439,7 +474,7 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
             // Salary data
             prisma.employmentTerms.findMany({
                 where: {
-                    ...dataScope,
+                    ...relScope,
                     effectiveTo: null
                 },
                 include: {
@@ -449,7 +484,7 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
             // Performance data
             prisma.performanceReview.findMany({
                 where: {
-                    ...dataScope,
+                    ...relScope,
                     submittedAt: {
                         gte: startDate,
                         lte: endDate
@@ -460,7 +495,7 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
             // Recruitment data
             prisma.jobRequisition.findMany({
                 where: {
-                    ...dataScope,
+                    ...relScope,
                     createdAt: {
                         gte: startDate,
                         lte: endDate
@@ -469,8 +504,8 @@ export const getDashboardKPIs = async ({ tenantId, timeframe, userRole }) => {
             })
         ]);
 
-        // Calculate KPIs
-        const totalHeadcount = employees.filter(emp => emp.status === 'ACTIVE').length;
+        // Calculate KPIs (status is case-insensitive — DB stores 'Active').
+        const totalHeadcount = employees.filter(emp => String(emp.status || '').toUpperCase() === 'ACTIVE').length;
         const turnoverRate = utils.calculateTurnoverRate(turnoverData.length, totalHeadcount);
 
         const salaries = salaryData.map(s => s.baseSalary);
@@ -607,7 +642,14 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
             },
             include: {
                 position: true,
-                postings: true
+                postings: true,
+                // HR-KPI-04 — approval timestamp anchor (latest APPROVED decision).
+                approvals: true,
+                // HR-KPI-04 / HR-REC-09 — accepted-offer anchor + funnel counts.
+                offers: true,
+                applications: {
+                    include: { interviews: true }
+                }
             }
         });
 
@@ -626,13 +668,62 @@ export const getRecruitmentDashboard = async ({ tenantId, timeframe, userRole })
             closed: filledPositions
         };
 
+        // HR-KPI-04 — Time to Fill, computed from real timestamps:
+        //   approved-at  = latest RequisitionApproval.decidedAt for an APPROVED
+        //                  decision (fallback: requisition.updatedAt).
+        //   accepted-at  = Offer.respondedAt for the ACCEPTED offer.
+        // Category = position title so it is reported per job category.
+        const timeToFillRows = recruitmentData.map(req => {
+            const acceptedOffer = (req.offers || []).find(o => o.status === 'ACCEPTED');
+            if (!acceptedOffer || !acceptedOffer.respondedAt) return null;
+
+            const approvalDates = (req.approvals || [])
+                .filter(a => a.status === 'APPROVED' && a.decidedAt)
+                .map(a => new Date(a.decidedAt).getTime());
+            const approvedAt = approvalDates.length > 0
+                ? new Date(Math.max(...approvalDates))
+                : req.updatedAt; // fallback to requisition transition timestamp
+
+            return {
+                approvedAt,
+                acceptedAt: acceptedOffer.respondedAt,
+                category: req.position?.title || req.title || 'Uncategorized',
+            };
+        }).filter(Boolean);
+
+        const timeToFill = utils.computeTimeToFill(timeToFillRows);
+
+        // HR-REC-09 — recruitment funnel from real application stages + offers.
+        const allApplications = recruitmentData.flatMap(req => req.applications || []);
+        const allOffers = recruitmentData.flatMap(req => req.offers || []);
+        const funnelCounts = {
+            applied: allApplications.length,
+            screened: allApplications.filter(a => a.stage !== 'applied').length,
+            interviewed: allApplications.filter(a => (a.interviews || []).length > 0).length,
+            offered: allOffers.filter(o => ['SENT', 'ACCEPTED', 'DECLINED', 'EXPIRED', 'WITHDRAWN'].includes(o.status)).length,
+            accepted: allOffers.filter(o => o.status === 'ACCEPTED').length,
+            hired: allApplications.filter(a => a.stage === 'hired').length,
+        };
+        const recruitmentFunnel = utils.computeRecruitmentFunnel(funnelCounts);
+
+        // HR-REC-09 — data-driven bottlenecks from the computed conversion rates.
+        const bottlenecks = utils.identifyRecruitmentBottlenecks(recruitmentFunnel.conversions);
+
+        // HR-KPI-07 — flag KPIs that breach configured targets.
+        const kpiAlerts = utils.evaluateKpiTargets({
+            timeToFillDays: timeToFill.avgDays,
+            offerAcceptanceRate: recruitmentFunnel.offerAcceptanceRate,
+        });
+
         return {
             openPositions,
             filledPositions,
             totalRequisitions: recruitmentData.length,
             stageCounts,
-            timeToFill: 42, // This would be calculated from actual data
-            bottlenecks: ['Recruitment process needs enhancement'] // Placeholder
+            timeToFill, // { avgDays, medianDays, count, byCategory } — HR-KPI-04
+            recruitmentFunnel, // HR-REC-09 / HR-KPI-03
+            bottlenecks,
+            kpiAlerts, // HR-KPI-07
         };
 
     } catch (error) {
@@ -659,14 +750,60 @@ export const getPerformanceDashboard = async ({ tenantId, timeframe, userRole })
                     include: {
                         Position: true
                     }
-                }
+                },
+                // HR-KPI-05 — cycle end_date is the on-time deadline.
+                cycle: true
             }
         });
 
-        // Calculate performance metrics
-        const completionRate = performanceData.length > 0
-            ? (performanceData.filter(record => record.status === 'FINALIZED').length / performanceData.length) * 100
-            : 0;
+        // HR-KPI-05 — Appraisal completion % AND on-time completion %.
+        // On-time uses each review's own cycle end_date as the deadline; reviews
+        // with no cycle fall back to the dashboard window endDate so they are
+        // still scored rather than silently dropped. Computed per-cycle below so
+        // each cycle is measured against its own end_date.
+
+        // Per-cycle on-time aggregation (each cycle has its own end_date).
+        const byCycleMap = performanceData.reduce((acc, r) => {
+            const key = r.cycleId ?? 'no-cycle';
+            if (!acc[key]) {
+                acc[key] = {
+                    cycleId: r.cycleId ?? null,
+                    cycleName: r.cycle?.name ?? 'No Cycle',
+                    cycleEnd: r.cycle?.end_date ?? endDate,
+                    reviews: [],
+                };
+            }
+            acc[key].reviews.push(r);
+            return acc;
+        }, {});
+
+        const byCycle = Object.values(byCycleMap).map(c => {
+            const stats = utils.computeAppraisalCompletion(c.reviews, c.cycleEnd);
+            return {
+                cycleId: c.cycleId,
+                cycleName: c.cycleName,
+                total: stats.total,
+                finalized: stats.finalized,
+                completionRate: stats.completionRate,
+                onTimeRate: stats.onTimeRate,
+            };
+        });
+
+        // Overall completion + on-time using each row's own cycle deadline.
+        const overallStats = utils.computeAppraisalCompletion(
+            performanceData.map(r => ({ status: r.status, submittedAt: r.submittedAt })),
+            null
+        );
+        // Weighted overall on-time: sum of on-time reviews / total across cycles.
+        const overallOnTime = byCycle.reduce((sum, c) => {
+            const ot = (c.onTimeRate ?? 0) / 100 * c.total;
+            return sum + ot;
+        }, 0);
+        const totalReviewsCount = performanceData.length;
+        const completionRate = overallStats.completionRate;
+        const onTimeCompletionRate = totalReviewsCount > 0
+            ? parseFloat(((overallOnTime / totalReviewsCount) * 100).toFixed(2))
+            : null;
 
         const ratingsDistribution = {
             '1': 0, '2': 0, '3': 0, '4': 0, '5': 0
@@ -686,16 +823,78 @@ export const getPerformanceDashboard = async ({ tenantId, timeframe, userRole })
             ? utils.calculateAverage(performanceRatings)
             : 0;
 
+        // HR-KPI-07 — flag completion/on-time KPIs against targets.
+        const kpiAlerts = utils.evaluateKpiTargets({
+            appraisalCompletionRate: completionRate,
+            appraisalOnTimeRate: onTimeCompletionRate,
+        });
+
         return {
             completionRate: parseFloat(completionRate.toFixed(2)),
+            onTimeCompletionRate, // HR-KPI-05
+            byCycle, // HR-KPI-05 — per-cycle/department breakdown
             avgRating: parseFloat(avgRating.toFixed(1)),
             ratingsDistribution,
             totalReviews: performanceData.length,
-            overdueReviews: performanceData.filter(record => record.status === 'IN_PROGRESS').length
+            overdueReviews: performanceData.filter(record => record.status === 'IN_PROGRESS').length,
+            kpiAlerts, // HR-KPI-07
         };
 
     } catch (error) {
         logger.error({ err: error }, 'Performance Dashboard Service Error');
+        throw error;
+    }
+};
+
+/**
+ * HR-KPI-06 — Payroll Accuracy + On-Time Dashboard.
+ * Computes, over the selected window, the share of payroll runs that completed
+ * without failing (accuracy) and the share of finalized runs that were
+ * finalized within the grace window after their period end (on-time). All
+ * values are derived from PayrollRun.status and the run's own timestamps — no
+ * hardcoded numbers.
+ */
+export const getPayrollKpis = async ({ tenantId, timeframe, userRole, graceDays = 5 }) => {
+    try {
+        const { startDate, endDate } = utils.calculateDateRange(timeframe);
+        const dataScope = utils.applyDataScope(tenantId, userRole);
+
+        const runs = await prisma.payrollRun.findMany({
+            where: {
+                ...dataScope,
+                // Runs whose pay period falls inside the window.
+                periodEnd: {
+                    gte: startDate,
+                    lte: endDate
+                }
+            },
+            select: {
+                id: true,
+                status: true,
+                periodEnd: true,
+                processedAt: true,
+                approvedAt: true,
+                updated_at: true,
+                employeeCount: true
+            }
+        });
+
+        const kpis = utils.computePayrollKpis(runs, graceDays);
+
+        // HR-KPI-07 — flag accuracy/on-time KPIs against targets.
+        const kpiAlerts = utils.evaluateKpiTargets({
+            payrollAccuracyRate: kpis.accuracyRate,
+            payrollOnTimeRate: kpis.onTimeRate,
+        });
+
+        return {
+            ...kpis,
+            graceDays,
+            kpiAlerts,
+        };
+
+    } catch (error) {
+        logger.error({ err: error }, 'Payroll KPIs Service Error');
         throw error;
     }
 };

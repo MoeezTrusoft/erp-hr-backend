@@ -1,6 +1,7 @@
 // src/controllers/candidateController.js
 import * as candidateService from "../services/candidateService.js";
 import { uploadFileToDAM } from "../services/dam.media.service.js";
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 
 
 export const createCandidate = async (req, res) => {
@@ -18,6 +19,8 @@ export const createCandidate = async (req, res) => {
             source,
             notes,
             tags, // array of tag names
+            resumeMediaId, // DAM asset id of the resume
+            parseResume, // opt-in AI parse flag
         } = req.body;
 
         if (!firstName || !email) {
@@ -34,15 +37,34 @@ export const createCandidate = async (req, res) => {
             phone,
             source,
             notes,
+            resumeMediaId,
             tagNames: Array.isArray(tags) ? tags : [],
             tenantId,
             createdById,
         });
 
+        // Opt-in AI resume parsing: only when BOTH resumeMediaId + parseResume are
+        // set. Best-effort — a parse failure must NOT fail candidate creation. The
+        // resume service is dynamically imported so its lazy AI deps stay untouched
+        // unless a caller opts in.
+        let resumeParsing = null;
+        if (resumeMediaId && parseResume) {
+            try {
+                const { ingestCandidateResume } = await import("../services/resumeParsing.service.js");
+                resumeParsing = await ingestCandidateResume({
+                    candidateId: candidate.id,
+                    mediaId: resumeMediaId,
+                    tenantId: req.user?.tenantId ?? tenantId ?? null,
+                });
+            } catch (err) {
+                resumeParsing = { error: err?.message || "resume parse failed" };
+            }
+        }
+
         return res.status(201).json({
             success: true,
             message: "Candidate created successfully",
-            data: candidate,
+            data: resumeParsing ? { ...candidate, resumeParsing } : candidate,
         });
     } catch (error) {
         return res.status(400).json({
@@ -67,6 +89,7 @@ export const updateCandidate = async (req, res) => {
             notes,
             status,
             tags, // array of tag names
+            expectedVersion, // API-2 — optimistic-concurrency guard (optional)
         } = req.body;
 
         const candidate = await candidateService.updateCandidate({
@@ -82,6 +105,7 @@ export const updateCandidate = async (req, res) => {
             },
             tagNames: Array.isArray(tags) ? tags : undefined,
             updatedById,
+            expectedVersion,
         });
 
         if (!candidate) {
@@ -97,6 +121,8 @@ export const updateCandidate = async (req, res) => {
             data: candidate,
         });
     } catch (error) {
+        // API-2 — surface a stale-write as 412 (HR-4120) with currentVersion.
+        if (respondPreconditionAware(res, error)) return;
         return res.status(400).json({
             success: false,
             message: error.message,
@@ -158,7 +184,9 @@ export const listCandidates = async (req, res) => {
     try {
         const user = req.user || {};
         const tenantId = user.tenantId ?? null;
-        const { search, tags, page, limit } = req.query;
+        // API-4: `cursor` is an optional, additive keyset pagination param;
+        // absent → unchanged offset/page behavior.
+        const { search, tags, page, limit, cursor } = req.query;
 
         const tagIds = tags
             ? String(tags)
@@ -173,6 +201,7 @@ export const listCandidates = async (req, res) => {
             tagIds,
             page: page ? Number(page) : 1,
             limit: limit ? Number(limit) : 20,
+            cursor: cursor || undefined,
         });
 
         return res.status(200).json({
@@ -181,9 +210,6 @@ export const listCandidates = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };

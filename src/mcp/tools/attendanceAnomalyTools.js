@@ -1,0 +1,391 @@
+import { opsHealth } from '../../services/opsHealth.service.js';
+// src/mcp/tools/attendanceAnomalyTools.js
+//
+// Attendance regularization: raise a request, see the queue, decide it.
+// Gated on the existing hr:attendance resourceKey (these are employee and
+// approver actions; the CONFIG for them lives under hr:payroll in
+// attendanceSetupTools.js).
+//
+// Identity is taken from the verified service-JWT context, never from
+// arguments. An employeeId in the payload would let anyone file a request in
+// someone else's name, or approve as somebody else — and approval releases a
+// held day while rejection triggers a deduction.
+//
+// HR-ATT-POLICY-01.
+import { listLongAbsences } from '../../services/longAbsence.service.js';
+import { resolveActingEmployeeId } from '../../lib/actingEmployee.js';
+import prisma from '../../lib/prisma.js';
+import { markAnomalyDeduction, returnAnomalyRequest, resubmitAnomalyRequest, anomalyAttachmentUrl } from '../../services/anomalyManagement.service.js';
+import { anomalyAttachmentsSchema } from './anomalyAttachmentSchema.js';
+import { z } from "zod";
+import { mcpCtx as mcpRequestContext } from "../context.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
+import { withToolError } from "../utils/toolError.js";
+import {
+  getAnomalyFormDefaults,
+  createAnomalyRequest,
+} from "../../services/attendanceAnomalyRequest.service.js";
+import { setDayWorkMode, getDayWorkMode } from "../../services/dayWorkMode.service.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
+import { correctAttendanceDay, listCorrections } from "../../services/attendanceCorrection.service.js";
+import { markAbsences } from "../../services/absenceMarking.service.js";
+import {
+  listOvertimeForApprover, resolveOvertimeChain, detectOvertimeFromPunches,
+} from "../../services/overtimeApproval.service.js";
+import {
+  resolveApprovalChain,
+  decideAnomaly,
+  listPendingForApprover,
+} from "../../services/attendanceAnomalyRouting.service.js";
+
+function getCtx() {
+  const ctx = mcpRequestContext.getStore();
+  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  return ctx;
+}
+
+// SELF-RAISE GATE (HR-ANOM-DEADLINE-02) — hr_attendance_anomaly_create is
+// strictly self-scoped: the applicant is the verified session employee (never
+// an argument), category/times are re-derived server-side, and the service
+// enforces the 2-working-day deadline, the duplicate-PENDING guard, and
+// employment-period validation BEFORE any write. The generic POST gate
+// (hr:attendance CREATE) therefore barred exactly the person this form exists
+// for — a regular employee only carries VIEW — while adding no protection the
+// service doesn't already enforce. This tool alone accepts VIEW-or-CREATE;
+// every other attendance write (ops raise with arbitrary employeeId, manual
+// punches, imports, corrections, day-mode overrides) keeps its strict gate.
+function assertSelfRaisePermission(permissions) {
+  const allowed =
+    hasPermission(permissions, "hr:attendance", "VIEW") ||
+    hasPermission(permissions, "hr:attendance", "CREATE");
+  if (!allowed) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:attendance:VIEW (self-service raise)"),
+      { status: 403 },
+    );
+  }
+}
+
+/** The acting employee, from the verified claim only. */
+function actingEmployeeId(user) {
+  const id = Number(user?.employeeId);
+  if (!Number.isInteger(id) || id < 1) {
+    throw Object.assign(
+      new Error("No employee is linked to this login; cannot act on attendance requests"),
+      { status: 403 },
+    );
+  }
+  return id;
+}
+
+const hasAttendanceAdmin = (permissions, user) =>
+  user?.isAdmin === true || ['EDIT', 'EXPORT', 'CREATE', 'DELETE'].some((a) => hasPermission(permissions, 'hr:attendance', a));
+
+const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
+
+export function registerAttendanceAnomalyTools(server) {
+  // F-05 — employees on a long ABSENT streak. HR and Management (attendance write grant) see everyone; a line manager sees
+  // only their direct reports; anyone else is refused.
+  server.tool('hr_attendance_long_absence_list','List active employees with a long run of consecutive ABSENT days (weekly offs and holidays do not break the run), so HR can raise a leave or separation case before payroll prices the days. HR and Management see everyone, a line manager sees their own team.',{minDays:z.coerce.number().int().min(1).max(31).optional().describe('Shortest streak to list (default 5)'),asOf:z.string().optional().describe('YYYY-MM-DD, default today')},withToolError(async({minDays,asOf})=>{
+    const {user,permissions}=getCtx();
+    const asOfDate=asOf?{asOf:new Date(`${asOf}T00:00:00Z`)}:{};
+    if(hasAttendanceAdmin(permissions,user)) return ok(await listLongAbsences({tenantId:user.tenantId,minDays,...asOfDate}));
+    if(!hasPermission(permissions,'hr:approvals:manager','VIEW')) throw Object.assign(new Error('Insufficient permissions: only HR, Management and line managers can see long absences'),{status:403,statusCode:403,code:'HR-4030'});
+    const manager=await resolveActingEmployeeId({user,tenantId:user.tenantId});
+    const team=await prisma.employee.findMany({where:{tenant_id:user.tenantId,managerId:Number(manager)},select:{id:true}});
+    return ok(await listLongAbsences({tenantId:user.tenantId,minDays,employeeIds:team.map(t=>t.id),...asOfDate}));
+  }));
+  // Month close: one read of what blocks or warns before a month goes to payroll (HR and Management only).
+  server.tool('hr_month_close_overview','Month-close checklist for one month: submitted or not, each gate with a plain reason, whether it can be submitted or reopened, and the long-absence list.',{month:z.string().regex(/^\d{4}-\d{2}$/).describe('Month as YYYY-MM'),minDays:z.coerce.number().int().min(1).max(31).optional()},withToolError(async({month,minDays})=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
+    const {getMonthCloseOverview}=await import('../../services/monthClose.service.js'); // loaded on use: it pulls in the payroll submit services
+    return ok(await getMonthCloseOverview({tenantId:user.tenantId,month,minDays}));
+  }));
+  // O-05 — on-demand T&A and payroll health check (EDIT: it spans devices, cases and payroll runs).
+  server.tool('hr_ops_health_check','Health check for Time & Attendance and Payroll: stale capture devices, raised requests undecided for over 5 days, payroll runs not finalized 7 days after the period ended, held payslips',{},withToolError(async()=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,'PUT','hr:attendance',user.isAdmin);
+    return {content:[{type:'text',text:JSON.stringify(await opsHealth({tenantId:user.tenantId}))}]};
+  }));
+  const common={anomalyId:z.number().int().positive(),version:z.number().int().nonnegative()};
+  for (const [name,schema,handler,verb] of [
+    ['hr_attendance_anomaly_deduction', {...common,days:z.union([z.literal(0.5),z.literal(1),z.null()]),comment:z.string().trim().min(1).max(2000)},markAnomalyDeduction,'PUT'],
+    ['hr_attendance_anomaly_return', {...common,targetLevel:z.number().int().nonnegative(),comment:z.string().trim().min(1).max(2000)},returnAnomalyRequest,'PUT'],
+    ['hr_attendance_anomaly_resubmit', {...common,reason:z.string().trim().min(1).max(2000),attachments:anomalyAttachmentsSchema},resubmitAnomalyRequest,'PUT'],
+    ['hr_attendance_anomaly_attachment_url', {anomalyId:z.number().int().positive(),mediaId:z.coerce.number().int().positive()},anomalyAttachmentUrl,'GET'],
+  ]) server.tool(name,'Manage an attendance anomaly with participant authorization and an audit trail',schema,withToolError(async args=>{
+    const {user,permissions}=getCtx();
+    assertPermission(permissions,verb,'hr:attendance',user.isAdmin);
+    return ok(await handler({...args,tenantId:user.tenantId,actorEmployeeId:actingEmployeeId(user),actorUserId:String(user.id||user.userId||user.employeeId),isAdmin:user.isAdmin===true}));
+  },name));
+
+  server.tool(
+    "hr_attendance_anomaly_form_defaults",
+    "Pre-fill the regularization request form for one date; every field except reason is derived",
+    {
+      date: z.string().describe("The affected work date (YYYY-MM-DD)"),
+    },
+    withToolError(async ({ date }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(
+        await getAnomalyFormDefaults({
+          tenantId: user.tenantId,
+          employeeId: actingEmployeeId(user),
+          date,
+        }),
+      );
+    }, "hr_attendance_anomaly_form_defaults")
+  );
+
+  server.tool(
+    "hr_attendance_anomaly_create",
+    "Raise a regularization request. Category and times are derived server-side; only reason is accepted",
+    {
+      date: z.string().describe("The affected work date (YYYY-MM-DD)"),
+      type: z.enum(["LATE_CHECKIN","MISSING_CHECKIN","MISSING_CHECKOUT","EARLY_CHECKOUT","ABSENT","OTHER"]).optional(),
+      attachments: anomalyAttachmentsSchema,
+      reason: z.string().min(1).describe("Why the day should be regularized — the only employee-supplied field"),
+    },
+    withToolError(async ({ date, reason, type, attachments }) => {
+      const { user, permissions } = getCtx();
+      assertSelfRaisePermission(permissions); // HR-ANOM-DEADLINE-02 — self-scoped raise
+      return ok(
+        await createAnomalyRequest({
+          tenantId: user.tenantId,
+          employeeId: actingEmployeeId(user),
+          date,
+          reason, type, attachments,
+        }),
+      );
+    }, "hr_attendance_anomaly_create")
+  );
+
+  server.tool(
+    "hr_attendance_anomaly_chain_preview",
+    "Show who would approve this employee's request, level by level, with unresolved levels explained",
+    z.object({}),
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(
+        await resolveApprovalChain({
+          tenantId: user.tenantId,
+          employeeId: actingEmployeeId(user),
+        }),
+      );
+    }, "hr_attendance_anomaly_chain_preview")
+  );
+
+  server.tool(
+    "hr_attendance_anomaly_pending_list",
+    "Regularization requests currently waiting on the caller as approver",
+    z.object({}),
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(
+        await listPendingForApprover({
+          tenantId: user.tenantId,
+          approverId: actingEmployeeId(user),
+        }),
+      );
+    }, "hr_attendance_anomaly_pending_list")
+  );
+
+  server.tool(
+    "hr_attendance_day_work_mode_get",
+    "The work mode in force for an employee on one day, and whether it is a day override or their default",
+    {
+      employeeId: z.coerce.number().int().min(1).describe("Employee.id"),
+      date: z.string().describe("YYYY-MM-DD"),
+    },
+    withToolError(async ({ employeeId, date }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-RBAC-01 T1.5 — work mode is attendance data: VIEW-only callers are
+      // pinned to their own id.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      if (!scope.canViewOthers && employeeId !== scope.employeeId) {
+        throw Object.assign(new Error(
+          `Insufficient permissions: hr:attendance GET with employeeId ${employeeId} is restricted to your own records`,
+        ), { statusCode: 403, code: "HR-4030" });
+      }
+      return ok(await getDayWorkMode({ employeeId, date }));
+    }, "hr_attendance_day_work_mode_get")
+  );
+
+  server.tool(
+    "hr_attendance_day_work_mode_set",
+    "Set the work mode for one employee on one day — sudden WFH. Pass null to clear the override",
+    {
+      employeeId: z.coerce.number().int().min(1).describe("Employee.id"),
+      date: z.string().describe("YYYY-MM-DD"),
+      workMode: z.enum(["Remote", "Hybrid", "Onsite"]).nullable()
+        .describe("null clears the override so the day falls back to the employee's default"),
+      note: z.string().optional().describe("Optional remark stored on the attendance row"),
+    },
+    withToolError(async ({ employeeId, date, workMode, note }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await setDayWorkMode({ tenantId: user.tenantId, employeeId, date, workMode, note }));
+    }, "hr_attendance_day_work_mode_set")
+  );
+
+  // ── HR / ADMIN MANUAL CORRECTION ───────────────────────────────────────────
+  // PUT on hr:attendance, which RBAC grants to HR and admin roles only. The
+  // acting employee comes from the verified claim, never from arguments, so a
+  // correction can always be attributed to a real person.
+  server.tool(
+    "hr_attendance_correct_day",
+    "HR/admin: correct one employee's attendance for one day. Survives the next device sync and is recorded in the audit log",
+    {
+      employeeId: z.coerce.number().int().min(1).describe("Employee.id"),
+      date: z.string().describe("The work date being corrected (YYYY-MM-DD)"),
+      checkIn: z.string().nullable().optional()
+        .describe("HH:MM, or null to clear. Anchored to the work date"),
+      checkOut: z.string().nullable().optional()
+        .describe("HH:MM, or null. Rolls to the next day automatically when earlier than check-in, so night shifts need no special handling"),
+      status: z.enum(["PRESENT", "ABSENT", "LATE", "HALF_DAY", "EARLY_CHECKOUT", "MISSING_CHECKIN", "MISSING_CHECKOUT"]).optional()
+        .describe("IGNORED — status is derived from the supplied times (HR-ATT-CORRECTION-POLICY-01: only missing check-in/out days are correctable)"),
+      workMode: z.enum(["Remote", "Hybrid", "Onsite"]).optional()
+        .describe("Optionally set the day's work mode at the same time"),
+      reason: z.string().min(1)
+        .describe("Why the day was changed. Required — corrections feed payroll and must be explainable"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await correctAttendanceDay({
+        ...args,
+        tenantId: user.tenantId,
+        actorEmployeeId: (() => {
+          try { return actingEmployeeId(user); } catch { return null; }
+        })(),
+        // RBAC identity fallback for logins with no Employee row — the audit
+        // trail attributes the change by email instead of an employee FK.
+        actorNote: user.email ? `by ${user.email}` : null,
+      }));
+    }, "hr_attendance_correct_day")
+  );
+
+  server.tool(
+    "hr_attendance_corrections_list",
+    "Every manually corrected attendance day in a window, with who changed it and why",
+    {
+      from: z.string().optional().describe("YYYY-MM-DD"),
+      to: z.string().optional().describe("YYYY-MM-DD"),
+      employeeId: z.coerce.number().int().min(1).optional(),
+    },
+    withToolError(async ({ from, to, employeeId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-RBAC-01 T1.5 — the corrections audit trail is tenant-wide for HR;
+      // VIEW-only sessions see only corrections made on their own days.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const effectiveEmployeeId = scope.canViewOthers
+        ? employeeId
+        : scope.employeeId;
+      return ok(await listCorrections({ tenantId: user.tenantId, from, to, employeeId: effectiveEmployeeId }));
+    }, "hr_attendance_corrections_list")
+  );
+
+  server.tool(
+    "hr_attendance_mark_absences",
+    "Mark scheduled working days with no attendance as ABSENT. Defaults to a dry run — pass dryRun:false to write",
+    {
+      from: z.string().describe("YYYY-MM-DD"),
+      to: z.string().describe("YYYY-MM-DD"),
+      dryRun: z.boolean().optional()
+        .describe("Defaults to TRUE. This creates unpaid days, so writing must be asked for explicitly"),
+    },
+    withToolError(async ({ from, to, dryRun }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await markAbsences({ tenantId: user.tenantId, from, to, dryRun: dryRun !== false }));
+    }, "hr_attendance_mark_absences")
+  );
+
+  // ── OVERTIME ───────────────────────────────────────────────────────────────
+  // Creating and deciding overtime stay on their existing tool names in
+  // overtimeShiftTools.js — those now route through the payroll chain rather
+  // than a single approver. Only the genuinely new surface lives here.
+  server.tool(
+    "hr_overtime_pending_list",
+    "Overtime requests waiting on the caller as approver",
+    z.object({}),
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(await listOvertimeForApprover({ tenantId: user.tenantId, approverId: actingEmployeeId(user) }));
+    }, "hr_overtime_pending_list")
+  );
+
+  server.tool(
+    "hr_overtime_chain_preview",
+    "Show who would approve this employee's overtime, level by level",
+    z.object({}),
+    withToolError(async () => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      return ok(await resolveOvertimeChain({ tenantId: user.tenantId, employeeId: actingEmployeeId(user) }));
+    }, "hr_overtime_chain_preview")
+  );
+
+  server.tool(
+    "hr_overtime_decide",
+    "Approve or reject overtime at the caller's level. Only the FINAL approval writes hours to payroll",
+    {
+      requestId: z.coerce.number().int().min(1).describe("OvertimeRequest.id"),
+      decision: z.enum(["APPROVED", "REJECTED"]),
+      comments: z.string().optional(),
+    },
+    withToolError(async ({ requestId, decision, comments }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(await decideOvertimeRequest({
+        tenantId: user.tenantId, requestId, approverId: actingEmployeeId(user), decision, comments,
+      }));
+    }, "hr_overtime_decide")
+  );
+
+  server.tool(
+    "hr_overtime_detect_from_punches",
+    "Turn overtime punched on the device (ZKTeco codes 4/5) into requests. Defaults to a dry run",
+    {
+      from: z.string().describe("YYYY-MM-DD"),
+      to: z.string().describe("YYYY-MM-DD"),
+      dryRun: z.boolean().optional().describe("Defaults to TRUE — these become payable claims"),
+    },
+    withToolError(async ({ from, to, dryRun }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      return ok(await detectOvertimeFromPunches({ tenantId: user.tenantId, from, to, dryRun: dryRun !== false }));
+    }, "hr_overtime_detect_from_punches")
+  );
+
+  server.tool(
+    "hr_attendance_anomaly_decide",
+    "Approve or reject a regularization request at the caller's approval level",
+    {
+      anomalyId: z.coerce.number().int().min(1).describe("AttendanceAnomaly.id"),
+      decision: z.enum(["APPROVED", "REJECTED"])
+        .describe("REJECTED is terminal and is what a DISAPPROVED_LEAVE deduction keys off"),
+      comments: z.string().optional().describe("Optional note recorded with the decision"),
+    },
+    withToolError(async ({ anomalyId, decision, comments }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      return ok(
+        await decideAnomaly({
+          tenantId: user.tenantId,
+          anomalyId,
+          approverId: actingEmployeeId(user),
+          decision,
+          comments,
+        }),
+      );
+    }, "hr_attendance_anomaly_decide")
+  );
+}

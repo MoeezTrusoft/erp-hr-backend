@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# erp-hr-backend/scripts/gate-p1.sh — ARCH-EXEC-01 §7 Phase-1 gate.
-set -u
-: "${WORKSPACE_ROOT:=/Users/mac/Desktop/Abdullah/erp}"
-# shellcheck disable=SC1091
-source "$WORKSPACE_ROOT/scripts/gate-p1-common.sh"
-gate_init "erp-hr-backend"
-
-gate_step "unit"     "node --experimental-vm-modules node_modules/jest/bin/jest.js --passWithNoTests --silent --colors=false"
-# lint and boundary start narrow: ESLint flat-config + dep-cruiser are
-# wired only to the P1B foundation layer (src/lib/**, the health router,
-# and their tests). Subsequent A-HR lanes widen the file scope as the
-# rest of the service is brought up to the same bar — flipping to
-# stricter coverage here would surface unrelated cross-cutting debt.
-gate_step "lint"     "npx --no-install eslint --max-warnings 0"
-gate_step "boundary" "npx --no-install depcruise src/lib --config .dependency-cruiser.cjs"
-gate_step "security" "gate_default_secret_grep src"
-
-gate_emit
+# Self-contained CI gate: always run every check, preserving each exit status.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+failed=0
+run_check() {
+  local name="$1"
+  shift
+  printf '\n::group::%s\n' "$name"
+  if "$@"; then
+    printf '%s passed\n' "$name"
+  else
+    local status=$?
+    printf '::error::%s failed (exit %s)\n' "$name" "$status"
+    failed=1
+  fi
+  printf '::endgroup::\n'
+}
+# Recycle Jest workers between suites to bound ESM module-cache growth.
+run_check tests npm test -- --maxWorkers=2 --workerIdleMemoryLimit=512MB --silent --colors=false
+run_check lint npx --no-install eslint --max-warnings 0
+run_check boundaries npx --no-install depcruise src/lib --config .dependency-cruiser.cjs
+# The workflow separately runs Gitleaks on the checkout and its history.
+exit "$failed"

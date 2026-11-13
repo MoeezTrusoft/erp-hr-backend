@@ -24,6 +24,15 @@ jest.unstable_mockModule('axios', () => {
     };
 });
 
+const mockSignServiceJwtEdDSA = jest.fn().mockImplementation(() => {
+    if (!process.env.SERVICE_JWT_SECRET) return null;
+    return 'fake-eddsa-token.header.payload';
+});
+jest.unstable_mockModule('../../../src/lib/serviceJwt.js', () => ({
+    signServiceJwtEdDSA: mockSignServiceJwtEdDSA,
+    ambientTenantHeader: jest.fn().mockReturnValue({}),
+}));
+
 const FIXED_SECRET = 'test-service-secret-do-not-use-in-prod';
 const FIXED_INTERNAL = 'legacy-internal-secret-value';
 
@@ -123,8 +132,8 @@ describe('dam.rbac.department.js hrRequest dead-code status [HR-SELF-CALL-SERVIC
 
         const importers = collectJs(srcDir)
             .filter((f) => path.resolve(f) !== definitionFile)
-            .filter((f) => fs.readFileSync(f, 'utf8').includes('hrRequest'));
-
+            .filter((f) => fs.readFileSync(f, 'utf8').includes('hrRequest'))
+            .map((f) => path.relative(srcDir, f));
         expect(importers).toHaveLength(0);
     });
 

@@ -1,8 +1,7 @@
+import { listPendingRosterChanges } from "../../services/rosterChangeRequest.service.js";
 import { z } from "zod";
 import {
   mcpApproveTimesheet,
-  mcpCheckIn,
-  mcpCheckOut,
   mcpAttendanceDailySummary,
   mcpCreateOvertimeRule,
   mcpCreateTimeEntry,
@@ -24,8 +23,35 @@ import {
   mcpUpdateWorkSchedule,
 } from "../controllers/attendanceMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
+import { listDevicePunches } from "../../services/attendance.device-intake.service.js";
+import {
+  listEnrolments,
+  setPrimaryEnrolment,
+  clearPrimaryEnrolment,
+} from "../../services/deviceEnrolment.service.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
+import {
+  createCallIn,
+  listCallIns,
+  removeCallIn,
+} from "../../services/attendanceOnCall.service.js";
 import { assertPermission } from "../utils/assertPermission.js";
-import { withToolError } from "../utils/toolError.js";
+import { withToolError, withResourceError } from "../utils/toolError.js";
+import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
+import { resolveActingEmployeeId, canManage } from "../../lib/actingEmployee.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { requestManualPunch, listPendingCaptureChanges } from "../../services/captureChangeRequest.service.js";
+
+// Build the `user` handed to an owner-gated write (time-entry update/delete).
+// MCP context hard-forces isAdmin=false (SEC-5), so the service's owner gate
+// (`!isAdmin && entry.employeeId !== Number(userId)`) can never be bypassed by
+// the admin flag. Authority instead comes from the permission bitmask: holding
+// the resource action (EDIT/DELETE) lets an HR grant-holder act on ANY
+// employee's entry, while a self-service employee still owner-matches their own.
+async function actingUserFor(user, permissions, action) {
+  const employeeId = await resolveActingEmployeeId(user, { tenantId: user.tenantId });
+  return { ...user, isAdmin: canManage(permissions, "hr:attendance", action), employeeId };
+}
 
 function getCtx() {
   const ctx = mcpRequestContext.getStore();
@@ -42,8 +68,7 @@ export function registerAttendanceTools(server) {
     { description: "Get current user's attendance records" },
     async (uri) => {
       const { user } = getCtx();
-      const employeeId = user?.employeeId || user?.userId;
-      if (!employeeId) throw Object.assign(new Error("Employee ID not found in session"), { status: 400 });
+      const employeeId = await requireEmployeeActor(user);
       const data = await mcpGetAttendanceByEmployee(user, employeeId);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -52,12 +77,15 @@ export function registerAttendanceTools(server) {
   server.resource(
     "hr_timesheets_list",
     "hr://timesheets",
-    { description: "List all employee timesheets" },
-    async (uri) => {
+    { description: "List employee timesheets. Scoped to the caller's own employee record when they have one; an EMPLOYEE role is always pinned to their own." },
+    // REQ-HR-004: unwrapped, this handler leaked a raw Prisma validation error
+    // ("Argument `employeeId` is missing", query shape and all) straight into
+    // the FE's error banner.
+    withResourceError(async (uri) => {
       const { user } = getCtx();
       const data = await mcpListTimesheets(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    }, "hr://timesheets")
   );
 
   server.resource(
@@ -73,35 +101,37 @@ export function registerAttendanceTools(server) {
 
   // ── TOOLS ────────────────────────────────────────────────────────────────
 
-  server.tool(
-    "hr_attendance_checkin",
-    "Record employee check-in",
-    {
-      employeeId: z.string().min(1),
-      timestamp: z.string().optional().describe("ISO 8601 datetime; defaults to now"),
-      location: z.string().optional(),
-      notes: z.string().optional(),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/checkin", user.isAdmin);
-      const data = await mcpCheckIn(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
+  const manualPunch = (name, direction, description) =>
+    server.tool(
+      name,
+      description,
+      {
+        employeeId: z.string().min(1).describe("Employee id (numeric string); must resolve to an existing tenant-scoped Employee"),
+        timestamp: z.string().optional().describe("Company time, YYYY-MM-DD HH:mm:ss; defaults to now. A future time is refused"),
+        reason: z.string().trim().min(3).max(4000).describe("Why the punch is being added; shown to the approvers and kept with the punch"),
+      },
+      withToolError(async ({ employeeId, timestamp, reason }) => {
+        const { user, permissions } = getCtx();
+        assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        const data = await requestManualPunch({
+          tenantId: user.tenantId, requestedById: user.employeeId ?? (await requireEmployeeActor(user)),
+          employeeId, direction, reason,
+          timestamp,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      })
+    );
+  manualPunch("hr_attendance_checkin", "IN", "Request a manual check-in for an employee. It is sent for approval through the attendance approval route and recorded once approved");
+  manualPunch("hr_attendance_checkout", "OUT", "Request a manual check-out for an employee. It is sent for approval and recorded once approved");
 
   server.tool(
-    "hr_attendance_checkout",
-    "Record employee check-out",
-    {
-      employeeId: z.string().min(1),
-      timestamp: z.string().optional().describe("ISO 8601 datetime; defaults to now"),
-      notes: z.string().optional(),
-    },
-    withToolError(async (args) => {
+    "hr_attendance_capture_changes_pending",
+    "Manual punches waiting for approval",
+    {},
+    withToolError(async () => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/checkout", user.isAdmin);
-      const data = await mcpCheckOut(user, args);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await listPendingCaptureChanges({ tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -116,7 +146,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/device/connectivity", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpDeviceConnectivity(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -124,16 +154,21 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_attendance_device_sync",
-    "Sync biometric punches into attendance with auto late calculation",
+    "Capture biometric punches for evaluation against published configuration",
     {
+      sn: z.string().min(1).max(64),
+      requestKey: z.string().max(128).optional(),
       punches: z.array(z.object({
-        employeeId: z.union([z.number(), z.string()]).optional(),
-        employeeCode: z.string().optional(),
-        deviceUserId: z.string().optional(),
-        userId: z.string().optional(),
-        timestamp: z.string().describe("ISO 8601 datetime"),
-        type: z.string().optional().describe("IN / OUT"),
-      })).min(1),
+        employeeId: z.union([z.number(), z.string()]).optional().describe("Employee id (references Employee)"),
+        employeeCode: z.string().optional().describe("Employee code (device/HR code) — alternate identity"),
+        deviceUserId: z.string().optional().describe("Biometric device user id — alternate identity"),
+        userId: z.string().optional().describe("Device/login user id — alternate identity"),
+        timestamp: z.string().describe("ISO 8601 datetime of the punch"),
+        type: z.string().optional().describe("Punch direction: IN or OUT (optional; falls back to time-order)"),
+      }).refine(
+        (p) => p.employeeId != null || p.employeeCode != null || p.deviceUserId != null || p.userId != null,
+        { message: "Each punch must carry at least one of employeeId, employeeCode, deviceUserId, or userId" }
+      )).min(1),
       shiftStart: z.string().optional().describe("HH:mm, default 09:00"),
       lateGraceMinutes: z.number().int().min(0).optional().describe("Grace minutes after shift start"),
       dryRun: z.boolean().optional().describe("Preview actions only; no DB writes"),
@@ -143,7 +178,7 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/attendance/device/sync", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpDeviceSyncAttendance(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -159,47 +194,67 @@ export function registerAttendanceTools(server) {
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", "/hr/api/attendance/device/daily-summary", user.isAdmin);
-      const data = await mcpAttendanceDailySummary(user, args);
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await mcpAttendanceDailySummary(user, { ...args, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
-  server.tool(
-    "hr_timesheet_submit",
-    "Submit a timesheet for approval",
-    {
-      employeeId: z.string().min(1),
-      periodStart: z.string().describe("ISO 8601 date"),
-      periodEnd: z.string().describe("ISO 8601 date"),
-      entries: z.array(z.object({
-        date: z.string(),
-        hoursWorked: z.number().positive(),
-        projectId: z.string().optional(),
-        notes: z.string().optional(),
-      })).optional(),
-    },
-    withToolError(async (args) => {
-      const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/timesheets", user.isAdmin);
-      const data = await mcpCreateTimesheet(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
+  // TS-SUBMIT-01 — the old "hr_timesheet_submit" (employee self-service DRAFT
+  // create) is GONE: the name now belongs to the HR Submit-Timesheet
+  // GATEKEEPER (timesheetReportTools.js). Draft creation stays on
+  // hr_timesheet_create (timesheetTools.js) — this duplicate registered a
+  // second create path that no FE called with this arg shape.
 
   server.tool(
     "hr_timesheet_approve",
-    "Approve a submitted timesheet",
+    "Approve a submitted timesheet. The approver is the calling employee (session-derived); the timesheet must be in SUBMITTED status.",
     {
-      timesheetId: z.string().min(1),
-      comment: z.string().optional(),
+      timesheetId: z.string().min(1).describe("Timesheet id to approve (references Timesheet)"),
+      comments: z.string().optional().describe("Approval comment, stored on the TimeApproval record"),
     },
     withToolError(async ({ timesheetId, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", `/hr/api/time-attendance/timesheets/${timesheetId}/approve`, user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      if (!user.employeeId) throw Object.assign(new Error("No employeeId in session (approver required)"), { status: 400 });
       const data = await mcpApproveTimesheet(user, timesheetId, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
+  );
+
+  // IC-1: the HR FE binds the Attendance LIST screen to the `hr_attendance_list`
+  // TOOL (tools/call). A same-named RESOURCE already exists (resources/read) but
+  // callTool could not resolve it, so the screen fell back to mock data. This
+  // TOOL wraps the existing records list service, tenant-scoped via ctx, and
+  // returns the FE-expected paginated envelope. Gated on hr:attendance:VIEW.
+  server.tool(
+    "hr_attendance_list",
+    "List attendance records (paginated) for the HR attendance screen",
+    {
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      date: z.string().optional().describe("YYYY-MM-DD filter"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-RBAC-01 T1.5 — a VIEW-only session is pinned to its own rows: the
+      // record list otherwise returns the whole tenant's punches to any
+      // employee (audit: employee token pulled employee 487's rows).
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const query = toListQuery(args);
+      if (!scope.canViewOthers) {
+        if (scope.employeeId == null) {
+          throw Object.assign(new Error("Insufficient permissions: no employee is bound to this session"), {
+            status: 403,
+            code: "HR-4030",
+          });
+        }
+        query.employeeId = String(scope.employeeId);
+      }
+      const data = await mcpListAttendanceRecords(user, query);
+      return { content: [{ type: "text", text: JSON.stringify(toListEnvelope(data, args)) }] };
+    }, "hr_attendance_list")
   );
 
   server.tool(
@@ -208,10 +263,88 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", `/hr/api/attendance/get-attandance/${id}`, user.isAdmin);
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
       const data = await mcpGetAttendanceByEmployee(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
+  );
+
+  // HR-ATT-DEVICE-INTAKE-01: fetch raw biometric-device punches for ANY / ALL
+  // employees. Filter by employeeId or the device enrolment id, plus a date
+  // window. Reads the durable AttendanceDevicePunch store the ADMS/iclock push
+  // intake writes; RLS-scoped to the caller's tenant.
+  server.tool(
+    "hr_attendance_device_punches_list",
+    "List raw biometric device punches (all employees), filterable by employee id, device id, date range",
+    {
+      employeeId: z.coerce.number().int().positive().optional(),
+      deviceUserId: z.string().optional().describe("Device enrolment id (Employee.biometric_id)"),
+      sn: z.string().optional().describe("Device serial number"),
+      from: z.string().optional().describe("ISO datetime lower bound (inclusive)"),
+      to: z.string().optional().describe("ISO datetime upper bound (inclusive)"),
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await listDevicePunches({ ...args, tenantId: user.tenantId, ...(scope.canViewOthers ? {} : { employeeId: scope.employeeId ?? -1 }) });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_device_punches_list")
+  );
+
+  // ── DEVICE ENROLMENTS (HR-ATT-PRIMARY-DEVICE-01) ─────────────────────────
+
+  // List device enrolments, optionally filtered, with the primary flag.
+  server.tool(
+    "hr_attendance_enrolment_list",
+    "List device enrolments (device id, serial, primary flag, period), filterable by employee",
+    {
+      employeeId: z.coerce.number().int().positive().optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const scope = resolveAttendanceReadScope(user, permissions);
+      const data = await listEnrolments({ tenantId: user.tenantId, employeeId: scope.canViewOthers ? args.employeeId : scope.employeeId ?? -1 });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_enrolment_list")
+  );
+
+  // Flag one enrolment as the employee's PRIMARY biometric device. Punches on
+  // the primary are the normal case; punches on any other device are recorded
+  // explicitly on the day row (Attendance.primary_sn / secondary_punches).
+  server.tool(
+    "hr_attendance_enrolment_set_primary",
+    "Mark a device enrolment as the employee's PRIMARY biometric device (clears the flag on their other enrolments)",
+    {
+      enrolmentId: z.coerce.number().int().positive().describe("Enrolment id (employee_device_enrolments.id)"),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      reason: z.string().trim().min(1).max(2000).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await setPrimaryEnrolment({ ...args, tenantId: user.tenantId, actorId: user.id || user.userId || user.employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_enrolment_set_primary")
+  );
+
+  server.tool(
+    "hr_attendance_enrolment_clear_primary",
+    "Clear the primary device from a chosen date, preserving earlier history",
+    {
+      employeeId: z.coerce.number().int().positive(),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      reason: z.string().trim().min(1).max(2000).optional(),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const data = await clearPrimaryEnrolment({ ...args, tenantId: user.tenantId, actorId: user.id || user.userId || user.employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_attendance_enrolment_clear_primary")
   );
 
   // ── TIME ENTRIES ─────────────────────────────────────────────────────────
@@ -219,45 +352,56 @@ export function registerAttendanceTools(server) {
   server.resource(
     "hr_time_entries_list",
     "hr://time-entries",
-    { description: "List all time entries" },
-    async (uri) => {
+    { description: "List time entries. Scoped to the caller's own employee record when they have one; an EMPLOYEE role is always pinned to their own." },
+    withResourceError(async (uri) => {
       const { user } = getCtx();
       const data = await mcpListTimeEntries(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
-    }
+    }, "hr://time-entries")
   );
 
   server.tool(
     "hr_time_entry_create",
-    "Create a manual time entry",
+    "Create a manual time entry (entry_type MANUAL_ENTRY). Defaults to the calling employee; an explicit employeeId lets a manager/HR (holding hr:attendance CREATE) log on behalf of another employee in the same tenant. work_date is derived from start_time.",
     {
-      employeeId: z.string().min(1),
-      date: z.string().describe("ISO 8601 date"),
-      startTime: z.string().describe("ISO 8601 datetime"),
-      endTime: z.string().describe("ISO 8601 datetime"),
-      notes: z.string().optional(),
+      employeeId: z.string().optional().describe("Employee id (numeric string) to log the entry for. Optional — defaults to the calling employee's session id. Provide only when creating on behalf of another employee."),
+      start_time: z.string().describe("ISO 8601 datetime; also seeds work_date"),
+      end_time: z.string().optional().describe("ISO 8601 datetime; omit for an open-ended entry (no duration)"),
+      work_type: z.enum(["REGULAR", "OVERTIME", "HOLIDAY", "VACATION", "SICK"]).optional().describe("enum WorkType — one of REGULAR | OVERTIME | HOLIDAY | VACATION | SICK; defaults to REGULAR"),
+      note: z.string().optional().describe("Free-text note on the entry"),
+      sourceId: z.string().optional().describe("Time-source id (references Source)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/entries", user.isAdmin);
-      const data = await mcpCreateTimeEntry(user, args);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      // Explicit arg wins (on-behalf); else the session's bound employee (self).
+      const employeeId = args.employeeId ?? user.employeeId;
+      if (!employeeId) {
+        throw Object.assign(
+          new Error("employeeId is required (no employee bound to the session)"),
+          { status: 400 }
+        );
+      }
+      const data = await mcpCreateTimeEntry(user, { ...args, employeeId: String(employeeId) });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_time_entry_update",
-    "Update a time entry",
+    "Update a time entry (owner-only). Duration is recomputed when start_time/end_time change.",
     {
-      id: z.string().min(1),
-      startTime: z.string().optional(),
-      endTime: z.string().optional(),
-      notes: z.string().optional(),
+      id: z.string().min(1).describe("Time entry id (references TimeEntry)"),
+      start_time: z.string().optional().describe("ISO 8601 datetime"),
+      end_time: z.string().optional().describe("ISO 8601 datetime"),
+      work_type: z.enum(["REGULAR", "OVERTIME", "HOLIDAY", "VACATION", "SICK"]).optional().describe("enum WorkType — one of REGULAR | OVERTIME | HOLIDAY | VACATION | SICK"),
+      note: z.string().optional().describe("Free-text note on the entry"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/time-attendance/entries/${id}`, user.isAdmin);
-      const data = await mcpUpdateTimeEntry(user, id, rest);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
+      const actingUser = await actingUserFor(user, permissions, "EDIT");
+      const data = await mcpUpdateTimeEntry(actingUser, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
@@ -268,13 +412,57 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/time-attendance/entries/${id}`, user.isAdmin);
-      const data = await mcpDeleteTimeEntry(user, id);
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
+      const actingUser = await actingUserFor(user, permissions, "DELETE");
+      const data = await mcpDeleteTimeEntry(actingUser, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   // ── WORK SCHEDULES ────────────────────────────────────────────────────────
+
+  // T-FIX: schedule_pattern used to be declared as a { MON: '09:00-17:00' }
+  // string-map — a shape NO consumer reads. The day-derivation engine
+  // (workingDay.service), shift lookup (attendance.device.service) and session
+  // grouping (attendanceReplay) all read the canonical shape below; through the
+  // old schema HR could not even express a weekend (offDays) or a rotating
+  // roster. Mirrors lib/schedulePattern.js, which the service now enforces too.
+  const SHIFT_WINDOW = z
+    .object({
+      templateId: z.number().int().positive().optional(),
+      checkoutCutoffTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).nullable().optional(),
+      checkoutCutoffDayOffset: z.number().int().min(0).max(2).nullable().optional(),
+      from: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "shift window times must be HH:MM (24h)"),
+      to: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "shift window times must be HH:MM (24h)"),
+    })
+    .describe("Shift window with 24h HH:MM times, e.g. { from: '15:00', to: '00:00' }");
+  const SCHEDULE_PATTERN = z
+    .object({
+      type: z.string().optional().describe("Free-form type label, e.g. 'weekly' or 'rotating'"),
+      shift: SHIFT_WINDOW.optional().describe("Fixed daily shift window"),
+      shiftByDay: z.record(z.string(), SHIFT_WINDOW).optional().describe("Per-weekday overrides keyed by ISO weekday '1'..'7' (Mon=1)"),
+      offDays: z.array(z.number().int().min(1).max(7)).max(6).optional().describe("Rest days as ISO weekdays (Mon=1 .. Sun=7), e.g. [6,7] for Sat-Sun"),
+      rotatingShifts: z.array(SHIFT_WINDOW).min(1).optional().describe("Rotation windows; required for rotating rosters instead of shift"),
+      cycle: z.object({
+        sequence: z.array(z.number().int().min(0).nullable()).optional(),
+        days: z.number().int().positive(),
+        anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "cycle.anchor must be YYYY-MM-DD"),
+        offIndex: z.union([
+          z.number().int().min(0),
+          z.array(z.number().int().min(0)).min(1),
+        ]),
+      }).optional().describe("Rotation phase { days, anchor, offIndex }: offIndex is the 0-based rest-day position(s) within the cycle — a number, or an array for multi-day rests (e.g. 4-day 'day, night, off, off' -> [2,3])"),
+      crossesMidnight: z.boolean().optional().describe("True when the shift ends the next calendar day"),
+      breaks: z.array(SHIFT_WINDOW.extend({paid:z.boolean()})).optional(),
+      minRestHours: z.number().min(0).max(24).optional(),
+      maxConsecutiveDays: z.number().int().min(0).max(31).optional(),
+      maxHoursPerWeek: z.number().min(0).max(168).optional(),
+      shiftHours: z.number().positive().optional().describe("Contracted shift length in hours"),
+      source: z.string().optional().describe("Provenance label, e.g. 'Employees Workbook 2026-08'"),
+    })
+    .refine((p) => p.shift !== undefined || (Array.isArray(p.rotatingShifts) && p.rotatingShifts.length > 0), {
+      message: "schedule_pattern needs a shift or rotatingShifts — otherwise no day has a shift window",
+    });
 
   server.resource(
     "hr_work_schedules_list",
@@ -289,53 +477,130 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_work_schedule_create",
-    "Create a work schedule",
+    "Create a work schedule for an employee. Rejects periods that overlap an existing schedule for the same employee. On save, attendance is automatically re-queued for evaluation from the new effective date (payroll-locked periods are rejected first); the response carries the reevaluation horizon.",
     {
-      name: z.string().min(1),
-      timezone: z.string().optional(),
-      shifts: z.array(z.object({
-        day: z.string(),
-        startTime: z.string(),
-        endTime: z.string(),
-      })).optional(),
+      dryRun: z.boolean().optional(),
+      previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      employeeId: z.string().min(1).describe("Employee the schedule is for (references Employee); defaults to the caller when omitted"),
+      schedule_name: z.string().min(1).describe("Human-readable schedule name"),
+      effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
+      total_hours_per_week: z.number().positive().describe("Contracted hours per week"),
+      effective_end_date: z.string().nullable().optional().describe("ISO 8601 date YYYY-MM-DD; open-ended when omitted or null"),
+      schedule_pattern: SCHEDULE_PATTERN.describe("Roster: shift {from,to} HH:MM + offDays [1..7] (Mon=1); use rotatingShifts+cycle for rotating rosters"),
+      overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/work-schedules", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateWorkSchedule(user, args);
+      // A roster change is an approval request now; the changed event fires when it is finally approved.
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
     "hr_work_schedule_update",
-    "Update a work schedule",
+    "Update a work schedule (partial). Only the fields you send are changed. On save, attendance is automatically re-queued for evaluation across the previous and new coverage (payroll-locked periods are rejected first); the response carries the reevaluation horizon.",
     {
-      id: z.string().min(1),
-      name: z.string().optional(),
-      timezone: z.string().optional(),
+      dryRun: z.boolean().optional(),
+      previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      id: z.string().min(1).describe("Work schedule id (references WorkSchedule)"),
+      correctionReason: z.string().min(1).optional(),
+      schedule_name: z.string().optional().describe("Human-readable schedule name"),
+      effective_start_date: z.string().optional().describe("ISO 8601 date YYYY-MM-DD"),
+      effective_end_date: z.string().nullable().optional().describe("ISO date; send null to clear"),
+      total_hours_per_week: z.number().positive().optional().describe("Contracted hours per week"),
+      schedule_pattern: SCHEDULE_PATTERN.optional().describe("Roster (same shape as create): shift {from,to} HH:MM + offDays [1..7] (Mon=1); rotatingShifts+cycle for rotations"),
+      overtimeRuleId: z.string().optional().describe("Overtime rule id to attach (references OvertimeRule)"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/time-attendance/work-schedules/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateWorkSchedule(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   server.tool(
-    "hr_work_schedule_delete",
-    "Delete a work schedule",
-    { id: z.string().min(1) },
-    withToolError(async ({ id }) => {
+    "hr_work_schedule_pending_list",
+    "List roster changes still waiting for approval (optionally for one employee)",
+    { employeeId: z.string().optional() },
+    withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/time-attendance/work-schedules/${id}`, user.isAdmin);
-      const data = await mcpDeleteWorkSchedule(user, id);
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await listPendingRosterChanges({ tenantId: user.tenantId, employeeId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_work_schedule_delete",
+    "Request removal of a future work schedule version (goes to the attendance approval route)",
+    { id: z.string().min(1), reason: z.string().min(3).describe("Why; shown to the approvers") },
+    withToolError(async ({ id, reason }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
+      const data = await mcpDeleteWorkSchedule(user, id, reason);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
 
   // ── OVERTIME RULES ────────────────────────────────────────────────────────
+
+  // ── WEEKEND ON-CALL ───────────────────────────────────────────────────────
+  // HR-ATT-ONCALL-01 — HR rings an employee in for ONE date. That date becomes
+  // a working day (workingDay.service), punches score normally, and a no-show
+  // is an ordinary ABSENT day charged by the existing deduction path.
+
+  server.tool(
+    "hr_oncall_create",
+    "Record a weekend on-call: HR called this employee in on a rostered day off for the given date. The day becomes a working day for them — punches score normally and a no-show is marked ABSENT (charged). Creating again for the same day updates the reason.",
+    {
+      employeeId: z.coerce.number().int().positive().describe("Employee who was called in (references Employee)"),
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD").describe("The called-in calendar day"),
+      reason: z.string().max(500).optional().describe("Why they were called in (e.g. 'weekend site cover')"),
+      calledBy: z.string().max(200).optional().describe("Who called them in; defaults to the acting user"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+      const data = await createCallIn({
+        employeeId: args.employeeId,
+        date: args.date,
+        reason: args.reason,
+        calledBy: args.calledBy ?? user.name ?? user.email ?? null,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_oncall_list",
+    "List weekend on-call call-ins in a date window (optionally one employee).",
+    {
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD inclusive start"),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD inclusive end"),
+      employeeId: z.coerce.number().int().positive().optional().describe("Limit to one employee"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      const data = await listCallIns(args);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
+
+  server.tool(
+    "hr_oncall_delete",
+    "Cancel a weekend on-call call-in. The day falls back to the roster; an ABSENT row written for a no-show on it is reverted to WEEKLY_OFF.",
+    { id: z.coerce.number().int().positive().describe("Call-in id (references attendance_call_ins)") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
+      const data = await removeCallIn({ id });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    })
+  );
 
   server.resource(
     "hr_overtime_rules_list",
@@ -350,16 +615,21 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_overtime_rule_create",
-    "Create an overtime rule",
+    "Create an overtime rule. Only name is required; thresholds and rates fall back to Prisma defaults (8h/40h daily/weekly, 1.5x rates).",
     {
-      name: z.string().min(1),
-      thresholdHours: z.number().positive().describe("Daily/weekly hours before overtime kicks in"),
-      multiplier: z.number().positive().describe("Pay multiplier for overtime hours"),
-      type: z.enum(["DAILY", "WEEKLY"]).optional(),
+      name: z.string().min(1).describe("Overtime rule name"),
+      description: z.string().optional().describe("Optional description"),
+      daily_hours_threshold: z.number().positive().optional().describe("Daily hours before overtime applies (default 8)"),
+      weekly_hours_threshold: z.number().positive().optional().describe("Weekly hours before overtime applies (default 40)"),
+      daily_overtime_rate: z.number().positive().optional().describe("Daily overtime pay multiplier (default 1.5)"),
+      weekly_overtime_rate: z.number().positive().optional().describe("Weekly overtime pay multiplier (default 1.5)"),
+      max_hours_per_day: z.number().positive().optional().describe("Compliance cap on daily hours"),
+      max_hours_per_week: z.number().positive().optional().describe("Compliance cap on weekly hours"),
+      is_active: z.boolean().optional().describe("Whether the rule is active (default true)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/time-attendance/overtime-rules", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
       const data = await mcpCreateOvertimeRule(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -367,16 +637,22 @@ export function registerAttendanceTools(server) {
 
   server.tool(
     "hr_overtime_rule_update",
-    "Update an overtime rule",
+    "Update an overtime rule (partial). Only the fields you send are changed.",
     {
-      id: z.string().min(1),
-      name: z.string().optional(),
-      thresholdHours: z.number().optional(),
-      multiplier: z.number().optional(),
+      id: z.string().min(1).describe("Overtime rule id (references OvertimeRule)"),
+      name: z.string().optional().describe("Overtime rule name"),
+      description: z.string().optional().describe("Optional description"),
+      daily_hours_threshold: z.number().positive().optional().describe("Daily hours before overtime applies"),
+      weekly_hours_threshold: z.number().positive().optional().describe("Weekly hours before overtime applies"),
+      daily_overtime_rate: z.number().positive().optional().describe("Daily overtime pay multiplier"),
+      weekly_overtime_rate: z.number().positive().optional().describe("Weekly overtime pay multiplier"),
+      max_hours_per_day: z.number().positive().optional().describe("Compliance cap on daily hours"),
+      max_hours_per_week: z.number().positive().optional().describe("Compliance cap on weekly hours"),
+      is_active: z.boolean().optional().describe("Whether the rule is active"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/time-attendance/overtime-rules/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:attendance", user.isAdmin);
       const data = await mcpUpdateOvertimeRule(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -388,7 +664,7 @@ export function registerAttendanceTools(server) {
     { id: z.string().min(1) },
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/time-attendance/overtime-rules/${id}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
       const data = await mcpDeleteOvertimeRule(user, id);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

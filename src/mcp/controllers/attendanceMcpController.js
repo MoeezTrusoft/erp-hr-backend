@@ -32,7 +32,7 @@ export const mcpDeleteTimeEntry = (user, id) => runController(deleteTimeEntry, {
 export const mcpListWorkSchedules = (user) => runController(getWorkSchedules, { user });
 export const mcpCreateWorkSchedule = (user, data) => runController(createWorkSchedule, { user, body: data });
 export const mcpUpdateWorkSchedule = (user, id, data) => runController(updateWorkSchedule, { user, params: { id: String(id) }, body: data });
-export const mcpDeleteWorkSchedule = (user, id) => runController(deleteWorkSchedule, { user, params: { id: String(id) } });
+export const mcpDeleteWorkSchedule = (user, id, reason) => runController(deleteWorkSchedule, { user, params: { id: String(id) }, body: { reason } });
 
 export const mcpListOvertimeRules = (user) => runController(getOvertimeRules, { user });
 export const mcpCreateOvertimeRule = (user, data) => runController(createOvertimeRule, { user, body: data });

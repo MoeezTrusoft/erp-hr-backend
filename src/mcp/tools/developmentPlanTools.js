@@ -1,0 +1,243 @@
+// src/mcp/tools/developmentPlanTools.js — Development Plan + Payslip Question tools.
+//
+// DevPlan: LIST + GET + UPDATE + DELETE (CREATE exists). PayslipQuestion: LIST + GET + UPDATE + DELETE (CREATE exists).
+import { z } from "zod";
+import { mcpCtx as mcpRequestContext } from "../context.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
+import { withToolError } from "../utils/toolError.js";
+import { resolveActorScope } from "../utils/actorScope.js";
+import { scopedWhere } from "../../lib/tenancy.js";
+
+// HR-RBAC-01 T1.3c — same self-service entitlement as the my-payslip family:
+// hr:self read OR any hr:payroll grant; scope narrowing happens per call.
+function assertSelfOrPayrollRead(user, permissions) {
+  // The verified admin claim rides the service JWT (never a client header) and
+  // outranks the blob — same precedence as assertPermission's call sites.
+  const ok =
+    user?.isAdmin === true ||
+    hasPermission(permissions, "hr:self", "VIEW") ||
+    hasPermission(permissions, "hr:payroll", "VIEW");
+  if (!ok) {
+    throw Object.assign(
+      new Error("Insufficient permissions: hr:self:VIEW or hr:payroll grant required"),
+      { status: 403, code: "HR-4030" },
+    );
+  }
+}
+import { createPlan, listPlans, addPlanItem, listPlanItems, updatePlanItem } from "../../services/developmentPlan.service.js";
+import prisma from "../../lib/prisma.js";
+
+function getCtx() {
+  const ctx = mcpRequestContext.getStore();
+  if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
+  return ctx;
+}
+
+export function registerDevelopmentPlanTools(server) {
+  server.tool(
+    "hr_development_plan_create",
+    "Create a new development plan for an employee",
+    {
+      employeeId: z.union([z.number(), z.string()]).describe("Employee ID"),
+      title: z.string().min(1).describe("Plan title"),
+      description: z.string().optional().describe("Plan description"),
+      startDate: z.string().optional().describe("Start date (ISO 8601)"),
+      endDate: z.string().optional().describe("End date (ISO 8601)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
+      const result = await createPlan({ ...args, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_development_plan_create")
+  );
+
+  server.tool(
+    "hr_development_plan_list",
+    "List development plans, optionally filtered by employee",
+    {
+      employeeId: z.union([z.number(), z.string()]).optional().describe("Filter by employee ID"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
+      const data = await listPlans({ ...args, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_development_plan_list")
+  );
+
+  server.tool(
+    "hr_development_plan_get",
+    "Get a development plan by ID with its items",
+    { id: z.union([z.number(), z.string()]).describe("Plan ID") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
+      const data = await prisma.developmentPlan.findUnique({
+        where: { id: Number(id) },
+        include: { items: true },
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_development_plan_get")
+  );
+
+  server.tool(
+    "hr_development_plan_update",
+    "Update a development plan",
+    {
+      id: z.union([z.number(), z.string()]).describe("Plan ID"),
+      title: z.string().optional().describe("Plan title"),
+      description: z.string().optional().describe("Plan description"),
+      status: z.string().optional().describe("Plan status"),
+    },
+    withToolError(async ({ id, ...data }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
+      const result = await prisma.developmentPlan.update({ where: { id: Number(id) }, data });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_development_plan_update")
+  );
+
+  server.tool(
+    "hr_development_plan_delete",
+    "Delete a development plan",
+    { id: z.union([z.number(), z.string()]).describe("Plan ID") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:performance", user.isAdmin);
+      await prisma.developmentPlan.delete({ where: { id: Number(id) } });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
+    }, "hr_development_plan_delete")
+  );
+
+  server.tool(
+    "hr_development_plan_item_list",
+    "List items for a development plan",
+    { planId: z.union([z.number(), z.string()]).describe("Plan ID") },
+    withToolError(async ({ planId }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:performance", user.isAdmin);
+      const data = await listPlanItems(planId, user.tenantId);
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_development_plan_item_list")
+  );
+
+  server.tool(
+    "hr_development_plan_item_update",
+    "Update a development plan item",
+    {
+      id: z.union([z.number(), z.string()]).describe("Item ID"),
+      title: z.string().optional().describe("Item title"),
+      description: z.string().optional().describe("Item description"),
+      status: z.string().optional().describe("Item status"),
+      targetDate: z.string().optional().describe("Target date (ISO 8601)"),
+    },
+    withToolError(async ({ id, ...data }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:performance", user.isAdmin);
+      const result = await updatePlanItem(id, data, user.tenantId);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_development_plan_item_update")
+  );
+
+  server.tool(
+    "hr_development_plan_item_create",
+    "Add a new item to a development plan",
+    {
+      planId: z.union([z.number(), z.string()]).describe("Plan ID"),
+      title: z.string().min(1).describe("Item title"),
+      description: z.string().optional().describe("Item description"),
+      targetDate: z.string().optional().describe("Target date (ISO 8601)"),
+    },
+    withToolError(async (args) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "POST", "hr:performance", user.isAdmin);
+      const result = await addPlanItem({ ...args, tenantId: user.tenantId });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_development_plan_item_create")
+  );
+
+  // ── Payslip Question ──────────────────────────────────────────────────
+  server.tool(
+    "hr_payslip_question_list",
+    "List payslip questions, optionally filtered by payslip",
+    {
+      payslipId: z.union([z.number(), z.string()]).optional().describe("Filter by payslip ID"),
+    },
+    withToolError(async ({ payslipId } = {}) => {
+      const { user, permissions } = getCtx();
+      // HR-RBAC-01 T1.3c — self-service sessions read ONLY their own questions;
+      // hr:payroll readers see the tenant's. scopedWhere keeps RLS tenancy.
+      assertSelfOrPayrollRead(user, permissions);
+      const scope = resolveActorScope(user, permissions);
+      const where = scopedWhere(user.tenantId, payslipId ? { payslipId: Number(payslipId) } : {});
+      if (!scope.canViewOthers) where.employeeId = scope.actingEmployeeId ?? -1;
+      const data = await prisma.payslipQuestion.findMany({ where, orderBy: { createdAt: "desc" } });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_payslip_question_list")
+  );
+
+  server.tool(
+    "hr_payslip_question_get",
+    "Get a payslip question by ID",
+    { id: z.union([z.number(), z.string()]).describe("Question ID") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      // HR-RBAC-01 T1.3c — tenant-scoped, and self-service sessions may open
+      // only their own questions (fail-closed for unbound sessions).
+      assertSelfOrPayrollRead(user, permissions);
+      const scope = resolveActorScope(user, permissions);
+      const where = scopedWhere(user.tenantId, { id: Number(id) });
+      if (!scope.canViewOthers) where.employeeId = scope.actingEmployeeId ?? -1;
+      const data = await prisma.payslipQuestion.findFirst({ where });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_payslip_question_get")
+  );
+
+  server.tool(
+    "hr_payslip_question_update",
+    "Update a payslip question response",
+    {
+      id: z.union([z.number(), z.string()]).describe("Question ID"),
+      answer: z.string().optional().describe("Answer text (stored as the question's response)"),
+      status: z.enum(["OPEN", "ANSWERED"]).optional().describe("Question status (an answer marks it ANSWERED)"),
+    },
+    withToolError(async ({ id, answer, status }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "PUT", "hr:payroll", user.isAdmin);
+      const existing = await prisma.payslipQuestion.findFirst({
+        where: scopedWhere(user.tenantId, { id: Number(id) }),
+        select: { id: true },
+      });
+      if (!existing) throw Object.assign(new Error("Payslip question not found"), { status: 404 });
+      const data = {};
+      if (answer !== undefined) {
+        const responder = Number(user.employeeId);
+        Object.assign(data, {
+          response: answer,
+          respondedById: Number.isInteger(responder) && responder > 0 ? responder : null,
+          respondedAt: new Date(),
+          status: "ANSWERED",
+        });
+      }
+      if (status !== undefined) data.status = status;
+      const result = await prisma.payslipQuestion.update({ where: { id: existing.id }, data });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }, "hr_payslip_question_update")
+  );
+
+  server.tool(
+    "hr_payslip_question_delete",
+    "Delete a payslip question",
+    { id: z.union([z.number(), z.string()]).describe("Question ID") },
+    withToolError(async ({ id }) => {
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "DELETE", "hr:payroll", user.isAdmin);
+      const { count } = await prisma.payslipQuestion.deleteMany({
+        where: scopedWhere(user.tenantId, { id: Number(id) }),
+      });
+      if (!count) throw Object.assign(new Error("Payslip question not found"), { status: 404 });
+      return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
+    }, "hr_payslip_question_delete")
+  );
+}

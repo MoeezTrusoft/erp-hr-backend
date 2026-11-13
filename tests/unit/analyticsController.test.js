@@ -136,9 +136,15 @@ describe('Analytics Controller', () => {
                 .get('/api/analytics/reports/headcount')
                 .query({ startDate: '2024-01-01', endDate: '2024-01-31' });
 
+            // ERR-3: a 5xx must NOT leak the raw error.message. The controller
+            // now returns the canonical ErrorEnvelope with a generic message +
+            // stable HR-5000 code; the real 'Database error' lives only in the
+            // server logs.
             expect(response.status).toBe(500);
-            expect(response.body.success).toBe(false);
-            expect(response.body.error).toBe('Database error');
+            expect(response.body.error).toBeDefined();
+            expect(response.body.error.code).toBe('HR-5000');
+            expect(response.body.error.message).toBe('Internal server error');
+            expect(JSON.stringify(response.body)).not.toContain('Database error');
         });
     });
 

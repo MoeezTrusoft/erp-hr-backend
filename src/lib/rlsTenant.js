@@ -1,0 +1,223 @@
+// src/lib/rlsTenant.js — FORCE ROW LEVEL SECURITY tenant-context extension.
+//
+// The c2_rls_pilot migration puts FORCE RLS on Attendance / LeaveRequest /
+// PerformanceReview with the policy
+//     USING/CHECK (tenantId = public.hr_current_tenant())
+// where hr_current_tenant() = current_setting('app.tenant_id', true)::uuid.
+//
+// So every read/write of those tables must run with the right GUC set:
+//   • TENANT context  → app.tenant_id = the VERIFIED request tenant (RBAC Company
+//     uuid on user.tenantId, never a spoofable header).
+//   • SYSTEM context   → app.tenant_bypass = 'on', so trusted cross-tenant jobs
+//     (mcpCtx.run({ system: true }) — reminder sweep, dispatchers) can scan every
+//     tenant's rows. WITHOUT this, a SYSTEM job sets no GUC and FORCE-RLS hides
+//     EVERY row (the review-reminder job was silently blind). The policy carries
+//     the matching `OR app.tenant_bypass='on'` clause (hr_rls_bypass_guc migration).
+// We wrap each such operation in a transaction that sets the GUC transaction-
+// locally via set_config(..., true) and runs the operation in the SAME
+// transaction (a batch $transaction shares one connection). Non-RLS models and
+// no-context queries are passed straight through (the tenantScope extension
+// denies genuinely context-less callers before they reach here).
+import { mcpCtx } from './requestContext.js';
+
+// INTERACTIVE-TRANSACTION helper. The $allOperations extension below sets the
+// GUC in its OWN batch $transaction, which does NOT apply to the connection of
+// an interactive `prisma.$transaction(async (tx) => …)` — so writes to RLS
+// tables inside an interactive tx fail the WITH CHECK (hr_current_tenant() is
+// NULL there). Any interactive transaction that touches an RLS table must run
+// through this helper, which sets app.tenant_id (tenant ctx) / app.tenant_bypass
+// (SYSTEM ctx) as the FIRST statement inside the tx. Pass an explicit tenantId
+// when the caller has the verified tenant in hand (e.g. createEmployee); else it
+// falls back to the ambient mcpCtx tenant.
+const activeTenantTransactions = new WeakSet();
+export const isTenantTransaction = (client) => activeTenantTransactions.has(client);
+
+export function tenantTransaction(client, fn, opts = {}) {
+    return client.$transaction(async (tx) => {
+        activeTenantTransactions.add(tx);
+        try {
+            const store = mcpCtx.getStore();
+            if (opts.system || store?.system) {
+                await tx.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`;
+            } else {
+                const t = opts.tenantId ?? store?.user?.tenantId;
+                if (t) {
+                    await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t)}, true)`;
+                }
+            }
+            return await mcpCtx.run({...store, tenantTransactionActive:true},async()=>await fn(tx));
+        } finally {
+            activeTenantTransactions.delete(tx);
+        }
+    }, opts.txOptions);
+}
+
+// Pilot tables under FORCE ROW LEVEL SECURITY. Prisma MODEL names (the extension
+// keys on `model`), not physical table names. Extended beyond the original
+// 3-table pilot to the Tier-1 high-PII tables (bank details, comp/salary,
+// emergency contacts) — all reached only via the ORM (no raw SQL), all callers
+// already gated by tenantScope, none scanned by cross-tenant jobs. Each table's
+// DB policy carries the `OR app.tenant_bypass='on'` clause so SYSTEM jobs still
+// see across tenants. Physical tables: bank_details, employment_terms,
+// EmergencyContacts (see hr_rls_pilot_extend migration).
+const RLS_MODELS = new Set([
+    'PerfPeerRound', 'PerfPeerNomination', 'PerfPeerResponse',
+    'PerfLaunchRun', 'PerfLaunchBatch', 'PerfApprovalBinding', 'PerfConfiguration', 'PerfTemplateVersion', 'PerfCycle', 'PerfParticipant', 'PerfReview', 'PerfResponse', 'PerfReviewRevision', 'PerfSignoff', 'PerfEvidenceLink', 'PerfAppeal', 'PerfCommandReceipt', 'PerfAudit', 'PerfGoal', 'PerfMeasurement', 'PerfCheckin', 'PerfFeedback', 'PerfDecisionCase', 'PerfIntegrationHandoff', 'PerfReminderIntent', 'PerfInbox',
+    'PayrollFinanceSummary',
+    'AttendanceAcceptanceSite', 'AttendanceAcceptanceAudit', 'AttendanceAcceptanceEvidence',
+    'HrSetupReview', 'HrSetupAudit', 'HrSetupReceipt', 'HrSetupTask', 'HrSetupEvidence',
+    'HrApprovalRequest', 'HrApprovalAudit', 'HrApprovalReceipt', 'ApprovalMatrix',
+    'EmployeeCodeConfiguration', 'EmployeeCodeSequence', 'EmployeeCodeReservation', 'EmployeeCodeAlias', 'EmployeeCategoryConversion', 'SeparationPolicy', 'Separation', 'EmploymentCommandReceipt', 'EmploymentDelivery', 'SeparationTransition', 'NoticePeriodRecord', 'ReplacementPlan', 'ReplacementSession', 'KnowledgeTransferItem', 'AssetHandoverItem', 'AccessRevocationTask', 'ClearanceItem', 'ExitInterview', 'FinalSettlementSheet', 'SeparationDocument', 'SeparationSourceSnapshot',
+    'AssessmentIdentity', 'AssessmentCategory', 'AssessmentTaskVersion', 'AssessmentProfileVersion', 'AssessmentProfileTask', 'AssessmentGuideVersion', 'EmployeeAssessmentProfile', 'AssessmentQualification', 'AssessmentConfiguration', 'AssessmentTriggerPolicy', 'AssessmentAssignment', 'AssessmentRevision', 'AssessmentObservation', 'AssessmentDimension', 'AssessmentCase', 'AssessmentEvidence', 'AssessmentEvidenceLink', 'AssessmentTimingSample', 'AssessmentBenchmark', 'AssessmentSignOff', 'AssessmentRestriction', 'AssessmentCapability', 'AssessmentAudit', 'AssessmentAutomationRun', 'AssessmentException', 'AssessmentInboxEvent', 'AssessmentIntegration', 'AssessmentAppraisalInput', 'AssessmentCodeChange', 'AssessmentNotification',
+    'AttendanceExportJob', 'AttendanceSavedView', 'AttendanceCorrectionRequest', 'AttendanceGraceRule', 'AttendanceGraceMembership', 'AttendanceManualTime',
+    'AttendanceRuleAudit', 'AttendancePayrollAdjustment',
+    'AttendanceSession', 'AttendanceEvaluation', 'AttendanceEvaluationJob',
+    'AttendanceEvaluationCursor', 'AttendanceTimeCredit',
+    'AttendanceBiometricProfile', 'AttendanceBiometricChallenge',
+    'AttendanceCaptureDevice', 'AttendanceCaptureReceipt', 'AttendanceCaptureEvent', 'AttendanceCaptureAudit', 'AttendanceImportBatch',
+    'AttendanceSetupDraft', 'AttendanceSetupRelease',
+    'Attendance',
+    'LeaveRequest',
+    'PerformanceReview',
+    'BankDetail',
+    'EmploymentTerms',
+    // HR-PAYROLL-EMPLOYMENT-PERIOD-01 — tenant-owned and read by payroll, so it
+    // is scoped like EmploymentTerms beside it. The matching policy ships in the
+    // same migration; listing a model here without one sets a GUC nothing reads.
+    'EmploymentPeriod',
+    // HR-ATT-DEVICE-ENROLMENT-01 — tenant-owned. Resolution reads it under
+    // SYSTEM context (one device serves the fleet), which sets the bypass GUC;
+    // every other caller is tenant-scoped. Policy ships in the same migration.
+    'EmployeeDeviceEnrolment',
+    'EmergencyContacts',
+    // Payroll + Timesheet transactional tables (audit: ORM-only, no cross-tenant
+    // SYSTEM sweep — the only SYSTEM contexts, reminder-queue + outbox-dispatcher,
+    // never read these; all callers gated by tenantScope via REST/MCP tenant ctx).
+    'PayrollRun',
+    'PayrollPayslip',
+    'PayrollEarning',
+    'PayrollDeduction',
+    'PayrollAssignment',
+    'PayrollAuditLog',
+    'MonthlyPayrollAttendance',
+    'Timesheet',
+    'TimeEntry',
+    'TimeApproval',
+    // Payroll reference/lookup tables — data check confirmed 0 null-tenant
+    // (global) rows, so FORCE RLS hides nothing; per-tenant config only.
+    'PayrollEarningType',
+    'PayrollDeductionType',
+    // TEN-2 fleet extend (2026-07-23): the remaining 78 tenant-owned HR tables,
+    // all forced by 20260723020000_hr_rls_fleet_extend with a DEFAULT
+    // hr_current_tenant() create-stamp net. (Employee [tenant_id column] and
+    // OutboxEvent [NOT NULL infra] deferred to a dedicated follow-up.)
+    'DashboardLayout', 'EmployeeMedia', 'BusinessUnit', 'GradeLevel', 'Log', 'Leave',
+    'LeavePolicy', 'LeaveRequestApproval', 'LeaveBalance', 'ApprovalWorkflow',
+    'ApprovalWorkflowStep', 'Region', 'HolidayCalendar', 'Holiday', 'EmployeeHolidayCalendar',
+    'OvertimeRule', 'ShiftTemplate', 'ShiftAssignment', 'ShiftSwapRequest', 'OvertimeRequest',
+    'WorkSchedule', 'Source', 'ReviewFeedback', 'Position', 'JobRequisition',
+    'RequisitionApproval', 'JobPosting', 'TrainingCategory', 'TrainingCourse',
+    'TrainingEnrollment', 'PerformanceCycle', 'PerformanceTemplate', 'Goal', 'GoalProgress',
+    'GoalAlignment', 'ReviewReminder', 'CalibrationSession', 'RatingAdjustment', 'TaxRate',
+    'Tag', 'Candidate', 'CandidateSkill', 'CandidateTag', 'Application', 'PerformanceMetric',
+    'PerformanceReviewItem', 'OnboardingChecklist', 'OnboardingSession', 'OnboardingTask',
+    'OnboardingDocument', 'OnboardingBuddy', 'OnboardingSurvey', 'OnboardingFeedback', 'Interview',
+    'InterviewInterviewer', 'InterviewScorecard', 'Offer', 'TalentPool', 'RecruitmentCostConfig',
+    'LearningPath', 'LearningPathCourse', 'LearningPathEnrollment', 'TrainingSession',
+    'TrainingSessionAttendee', 'Certification', 'Recognition', 'Skill', 'EmployeeSkill',
+    // Course-catalog (LMS) tables — new in 20260724_hr_course_catalog. FORCE-RLS
+    // with a DEFAULT hr_current_tenant() create-stamp, same as the fleet.
+    'CourseSection', 'CourseLecture', 'CourseOutcome', 'CourseReview',
+    // Attendance anomaly/correction requests — new in 20260724_hr_attendance_anomaly.
+    'AttendanceAnomaly',
+    // Roster/holiday approval requests and applied holiday exemptions — 20261109150000_roster_holiday_approvals.
+    'RosterChangeRequest', 'HolidayChangeRequest', 'HolidayExemptionRequest', 'HolidayExemption', 'AttendanceRuleChangeRequest', 'LeaveBalanceLedger', 'LeaveChangeRequest', 'CaptureChangeRequest', 'AttendanceDeviceCommand', 'TaxSlabChangeRequest',
+    // Payroll Setup config tables — new in 20260724_hr_payroll_setup.
+    'SalaryComponent', 'PayrollCalendar', 'PayrollApprovalMatrix', 'PayrollRuleConfig',
+    'PayrollConfigMeta', 'PayrollConfigSnapshot',
+    // Payroll Setup Pay Rules (discrete rows) — new in 20260725120000_hr_payroll_rules.
+    'PayrollRule',
+    // Payroll runtime + claims tables — new in 20260724_hr_payroll_runtime.
+    'PayslipQuestion', 'ClaimItem', 'ClaimApproval', 'ClaimInformation',
+    'EmployeeLifecycleEvent', 'OffboardingChecklist', 'OffboardingTask', 'ComplianceChecklist',
+    'ComplianceItem', 'DocumentExpiryAlert', 'DevelopmentPlan', 'DevelopmentPlanItem',
+    'ReimbursementClaim', 'BenefitPlan', 'EmployeeBenefit',
+    // Deferred D1/D2 (2026-07-23): Employee (tenant_id col) + OutboxEvent.
+    'Employee', 'OutboxEvent',
+    // F-03 — tenant-owned durable RBAC provisioning projection.
+    'SystemAccountProvisioning',
+    // Loan management (20260727162833_loan_management) — added post-fleet.
+    'Loan', 'LoanRepayment',
+    // Biometric device raw punches (HR-ATT-DEVICE-INTAKE-01) — FORCE-RLS; the
+    // ADMS/iclock intake writes under an explicit tenant context, so the GUC
+    // must be set for this model's ORM writes/reads too.
+    'AttendanceDevicePunch',
+    // Attendance policy + deductions + anomaly approvals (HR-ATT-POLICY-01) —
+    // FORCE-RLS. Omitting a model here is SILENT and confusing: writes still
+    // succeed because tenantTransaction sets the tenant GUC explicitly, but
+    // ordinary reads run with no GUC, the tenant_isolation policy hides the row,
+    // and the service falls back to its defaults. The config appears to save and
+    // then never reads back.
+    'AttendancePolicyConfig',
+    'AttendanceDeductionRule',
+    'AttendanceApprovalLevel',
+    'AttendanceAnomalyApproval',
+    // Weekend on-call call-ins (HR-ATT-ONCALL-01) — tenant-owned; the policy
+    // ships in 20261005230000_hr_oncall_ins with the table.
+    'AttendanceCallIn',
+]);
+const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const rlsTenantExtension = (client) =>
+    client.$extends({
+        name: 'rls-tenant-guc',
+        query: {
+            $allModels: {
+                async $allOperations({ model, args, query, __internalParams }) {
+                    if (!RLS_MODELS.has(model)) return query(args);
+                    // The interactive transaction helper already set this connection's GUC.
+                    // Preserve its atomicity; never open a second connection for its queries.
+                    const store = mcpCtx.getStore();
+                    if (store?.tenantTransactionActive && __internalParams?.transaction?.kind === 'itx') return query(args);
+
+                    // HR-P2028-GUC-TXN (2026-09-14) — the GUC wrapper is itself a
+                    // batch $transaction, which inherits Prisma's 5s default
+                    // timeout. Parallel RLS reads (a dashboard Promise.all fires
+                    // 4 at once) exhaust the pool's maxWait and the wrapper dies
+                    // with P2028 "transaction expired" — the payroll dashboard
+                    // served zeroed KPIs because of it. Give the wrapper a
+                    // deliberate budget instead of the misleading default.
+                    const TXN_OPTS = { timeout: 20000, maxWait: 10000 };
+
+                    // SYSTEM context: set the bypass GUC so cross-tenant jobs can
+                    // read/write pilot tables under FORCE RLS.
+                    if (store?.system) {
+                        const [, result] = await client.$transaction(
+                            [
+                                client.$executeRaw`SELECT set_config('app.tenant_bypass', 'on', true)`,
+                                query(args),
+                            ],
+                            TXN_OPTS,
+                        );
+                        return result;
+                    }
+
+                    const tenantId = store?.user?.tenantId;
+                    if (!tenantId || !UUID_RE.test(String(tenantId))) {
+                        return query(args);
+                    }
+                    const [, result] = await client.$transaction(
+                        [
+                            client.$executeRaw`SELECT set_config('app.tenant_id', ${String(
+                                tenantId,
+                            )}, true)`,
+                            query(args),
+                        ],
+                        TXN_OPTS,
+                    );
+                    return result;
+                },
+            },
+        },
+    });

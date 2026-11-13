@@ -34,8 +34,12 @@
 // Nothing in this module logs the raw token or the legacy secret value.
 
 import logger from '../lib/logger.js';
+import { NIL as NIL_UUID, validate as isUuid } from 'uuid';
 import { extractServiceToken, verifyServiceRequest } from '../lib/serviceJwt.js';
-import { recordInternalBoundary } from '../lib/authMetrics.js';
+import {
+    recordInternalBoundary,
+    recordServiceJwtAccept,
+} from '../lib/authMetrics.js';
 
 const LEGACY_SECRET_HEADER = 'x-internal-secret';
 const SERVICE_JWT_HEADER = 'x-service-authorization';
@@ -50,7 +54,38 @@ export function internalServiceGuard(req, res, next) {
         const outcome = verifyServiceRequest(req);
         if (outcome.ok) {
             req.internalService = { ...outcome.context, source: 'service-jwt' };
+            // T-P2.1 / X-02: the request tenant comes ONLY from the verified
+            // service-JWT claim — never the spoofable x-tenant-id header. This
+            // overwrites the (now-null) header-derived value on req.user so all
+            // downstream consumers (which read req.user.tenantId) are scoped by
+            // the verified tenant.
+            // F-06 / ARCH-00 §2.1: interactive HTTP requires a non-empty UUID
+            // tenant. Tenantless execution is reserved for explicit SYSTEM jobs,
+            // never represented by a tenantless service JWT.
+            const rawTenant = req.internalService.tenantId;
+            const verifiedTenant = typeof rawTenant === 'string' ? rawTenant.trim() : '';
+            // MCP surface (/mcp): skip tenant check — tools/list is a cross-tenant
+            // discovery call and tools/call handles tenant context per-tool via
+            // buildContextFromHeaders. REST routes (/api) still require a tenant.
+            const isMcpSurface = req.path === '/mcp' || req.originalUrl?.startsWith('/mcp');
+            if (!isMcpSurface && (!isUuid(verifiedTenant) || verifiedTenant === NIL_UUID)) {
+                recordInternalBoundary({ source: 'rejected', outcome: 'reject' });
+                return res.status(403).json({
+                    success: false,
+                    message: 'Tenant context is required',
+                    errors: [{ code: 'HR-0601', message: 'A valid tenant UUID is required' }],
+                    requestId: req.requestId,
+                });
+            }
+            if (req.user) {
+                req.user.tenantId = verifiedTenant;
+            }
+            // Fleet-standard landing spot: req.tenantId mirrors the verified
+            // tenant so handlers/services can read one canonical field across
+            // services (alongside the existing req.user.tenantId).
+            req.tenantId = verifiedTenant;
             recordInternalBoundary({ source: 'service-jwt', outcome: 'accept' });
+            recordServiceJwtAccept('hr');
             return next();
         }
         if (outcome.reason === 'expired' || outcome.reason === 'invalid') {
@@ -65,36 +100,26 @@ export function internalServiceGuard(req, res, next) {
             });
         }
         // "no-secret-configured" / "no-secret-configured-nonprod" — JWT
-        // verification is not available on this process. Fall through
-        // to the legacy secret path so the existing HR contract is
-        // preserved when the gateway isn't yet minting JWTs.
+        // verification is not available on this process. The legacy
+        // X-Internal-Secret accept path has been REMOVED (cutover 2026-06-23,
+        // assured by scripts/assure-cutover.mjs), so this falls through to
+        // rejection rather than a secret-compare fallback.
     }
 
-    // 2) Legacy X-Internal-Secret fallback.
-    const configuredSecret = process.env.INTERNAL_SERVICE_SECRET;
-    const requestSecret = req.headers[LEGACY_SECRET_HEADER];
-
-    if (configuredSecret && requestSecret === configuredSecret) {
-        req.internalService = { source: 'legacy-secret' };
-        recordInternalBoundary({ source: 'legacy-secret', outcome: 'accept' });
-        return next();
-    }
-
-    // 3) No accepted credential. Distinguish three failure modes:
-    //    (a) neither secret is configured at all → 500 (preserve the
-    //        pre-existing HR behaviour and surface a misconfiguration
-    //        rather than a generic 403).
-    //    (b) a credential header was presented but rejected → 403
-    //        rejected.
-    //    (c) nothing was presented → 403 anonymous.
+    // 2) Cutover hardening: the legacy X-Internal-Secret ACCEPT path is removed.
+    //    service-JWT is the ONLY accepted internal credential. A missing
+    //    SERVICE_JWT_SECRET on this process fails CLOSED (misconfiguration).
     const jwtSecretConfigured = Boolean(process.env.SERVICE_JWT_SECRET);
-    if (!configuredSecret && !jwtSecretConfigured) {
+    if (!jwtSecretConfigured) {
         recordInternalBoundary({ source: 'rejected', outcome: 'reject' });
         return res.status(500).json({
             success: false,
-            message: 'Internal service secret is not configured',
+            message: 'Service JWT secret is not configured',
         });
     }
+
+    // 3) A credential may have been presented but rejected (403 rejected), or
+    //    nothing was presented (403 anonymous).
 
     const hadAnyCredential =
         typeof req.headers[SERVICE_JWT_HEADER] === 'string' ||

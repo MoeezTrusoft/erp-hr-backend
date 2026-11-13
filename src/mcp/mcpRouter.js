@@ -3,15 +3,34 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { getMcpServer } from "./mcpServer.js";
 import { mcpCtx, buildContextFromHeaders } from "./context.js";
 import logger from "../lib/logger.js";
+import { toJsonRpcError } from "./utils/mcpErrorMap.js";
+import { normalizeError } from "../middlewares/error.middleware.js";
 
 const router = express.Router();
 
 router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
+  logger.info({ method: req.body?.method, path: req.originalUrl }, "hr: /mcp request received");
+
   if (!req.headers["x-mcp-internal"]) {
-    return res.status(403).json({ error: "Direct MCP access not allowed" });
+    logger.warn(
+      { path: req.originalUrl, service: req.internalService?.service ?? null },
+      "hr: /mcp call without x-mcp-internal",
+    );
+    return res.status(403).json({
+      jsonrpc: "2.0",
+      id: req.body?.id ?? null,
+      error: {
+        code: -32003,
+        message: "Direct MCP access not allowed: set the x-mcp-internal header on peer-service calls to HR /mcp",
+        data: { code: "HR-0206" },
+      },
+    });
   }
 
   const body = req.body;
+  let transport;
+  let server;
+  let ctx;
 
   // Defensive normalization for MCP transport negotiation headers.
   const accept = String(req.headers.accept || "");
@@ -22,27 +41,73 @@ router.post("/", express.json({ limit: "10mb" }), async (req, res) => {
     req.headers["mcp-protocol-version"] = body?.params?.protocolVersion || "2024-11-05";
   }
 
-  const ctx = buildContextFromHeaders(req);
-
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const server = getMcpServer();
-
+  // HR-ERR-TRANSPORT (ARCH-05 §6–§7): the ENTIRE request path — context
+  // resolution (which throws 401 on a missing verified identity, DEFECT_AUTH),
+  // transport creation, and tool dispatch — is guarded by this single try so no
+  // thrown error escapes to Express's default handler (that would render a raw
+  // HTML stack trace — DEFECT_LEAK). The catch below renders a leak-safe JSON-RPC
+  // error carrying the normalized HTTP status.
   try {
+    ctx = buildContextFromHeaders(req);
+
+    logger.info({ method: body?.method }, "hr: creating transport and server");
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    server = getMcpServer();
+    logger.info({ method: body?.method, toolCount: Object.keys(server._registeredTools || {}).length }, "hr: server created with tools");
+
+  // Diagnostic: catch the _zod crash in tools/list and log which tool causes it
+  if (body?.method === "tools/list") {
+    logger.info("hr: running tools/list diagnostic pre-check");
+    const tools = server._registeredTools || {};
+    let failedTool = null;
+    for (const [name, tool] of Object.entries(tools)) {
+      if (tool?.inputSchema) {
+        try {
+          const { normalizeObjectSchema } = await import("@modelcontextprotocol/sdk/server/zod-compat.js");
+          normalizeObjectSchema(tool.inputSchema);
+        } catch (e) {
+          failedTool = name;
+          logger.error({ toolName: name, err: e?.message, stack: e?.stack?.substring(0, 500), inputSchemaType: typeof tool.inputSchema, keys: Object.keys(tool.inputSchema || {}).slice(0, 5) }, "HR tool schema serialization failed");
+        }
+      }
+    }
+    if (failedTool) {
+      logger.error({ failedTool }, "hr: tools/list diagnostic found failing tool");
+    } else {
+      logger.info("hr: tools/list diagnostic passed all tools");
+    }
+  }
+
+  // (the original inner try was merged into the guarded block above)
+    logger.info({ method: body?.method }, "hr: connecting transport");
     await mcpCtx.run(ctx, async () => {
       await server.connect(transport);
+      logger.info({ method: body?.method }, "hr: handling request via transport");
       await transport.handleRequest(req, res, body);
+      logger.info({ method: body?.method }, "hr: request handled successfully");
     });
   } catch (err) {
-    logger.error({ err, mcpRequestId: body?.id ?? null }, "MCP request failed");
+    const jsonrpc = toJsonRpcError(err);
+    // HR-ERR-TRANSPORT (ARCH-05 §6–§7): a transport-level failure must NOT
+    // hardcode HTTP 500. A malformed/validation failure at the transport layer
+    // is an operational 4xx — emit the normalized status so clients never see a
+    // 5xx on bad input (DEFECT_5XX guard). Raw detail stays out of the body
+    // (toJsonRpcError genericizes 5xx — ERR-3).
+    const httpStatus = normalizeError(err).httpStatus || 500;
+    logger.error(
+      { err: err?.message, stack: err?.stack?.substring(0, 1000), code: jsonrpc.data.code, jsonrpcCode: jsonrpc.code, httpStatus, mcpRequestId: body?.id ?? null },
+      "MCP request failed"
+    );
     if (!res.headersSent) {
-      res.status(500).json({
+      res.status(httpStatus).json({
         jsonrpc: "2.0",
-        error: { code: -32603, message: "Internal server error" },
+        error: jsonrpc,
         id: body?.id ?? null,
       });
     }
   } finally {
-    await transport.close().catch(() => {});
+    await transport?.close().catch(() => {});
+    logger.info({ method: body?.method }, "hr: transport closed");
   }
 });
 

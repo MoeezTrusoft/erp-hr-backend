@@ -1,0 +1,116 @@
+// tests/unit/hrContractCreateEmployee.test.js
+//
+// hr_employee_create defect (capstone-proven): the MCP tool advertises only
+// firstName + lastName as required, but the service Zod additionally forced
+// jobTitle / hireDate / employmentStatus / positionId, and positionId
+// FK-checks against a Position that is not seeded — so a minimal create 400/500s.
+//
+// These tests drive the SERVICE path (createEmployee) with a mocked Prisma to
+// prove:
+//   - a minimal { firstName, lastName } create persists,
+//   - the positionId FK lookup is skipped when positionId is absent,
+//   - the positionId FK lookup runs (and can fail cleanly) when supplied.
+import { jest, describe, it, expect, beforeEach } from "@jest/globals";
+
+const mockEmployeeCreate = jest.fn();
+const mockEmployeeFindUnique = jest.fn();
+const mockPositionFindUnique = jest.fn();
+const mockRegionFindUnique = jest.fn();
+const mockEmergencyCreateMany = jest.fn();
+const mockMediaCreateMany = jest.fn();
+const mockTransaction = jest.fn();
+const mockLogAction = jest.fn();
+
+const mockEmployeeUpdate = jest.fn();
+
+const prismaMock = {
+  employeeCodeConfiguration: {findUnique: jest.fn().mockResolvedValue(null)},
+  employeeCodeSequence: {upsert: jest.fn().mockResolvedValue({lastValue:0n}), update: jest.fn().mockResolvedValue({})},
+  employeeCodeReservation: {findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null)},
+  $executeRaw: jest.fn().mockResolvedValue([]),
+
+  employee: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null), create: mockEmployeeCreate, findUnique: mockEmployeeFindUnique, update: mockEmployeeUpdate },
+  position: { findUnique: mockPositionFindUnique },
+  region: { findUnique: mockRegionFindUnique },
+  emergencyContacts: { createMany: mockEmergencyCreateMany },
+  employeeMedia: { createMany: mockMediaCreateMany },
+  $transaction: mockTransaction,
+};
+
+jest.unstable_mockModule("../../src/lib/prisma.js", () => ({ default: prismaMock }));
+jest.unstable_mockModule("../../src/utils/logs.js", () => ({ logAction: mockLogAction }));
+
+const hrContractService = await import("../../src/services/hrContract.service.js");
+
+const CREATED = { id: 101, first_name: "Ada", last_name: "Lovelace" };
+
+describe("hrContract.createEmployee — minimal create", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // tx callback receives a tx client; reuse the same prisma mock surface
+    mockTransaction.mockImplementation(async (cb) => cb(prismaMock));
+    mockEmployeeCreate.mockResolvedValue({ id: 101 });
+    mockEmployeeFindUnique.mockResolvedValue(CREATED);
+  });
+
+  it("persists a minimal { firstName, lastName } employee and never touches the position FK", async () => {
+    const result = await hrContractService.createEmployee(
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace" },
+      42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"}
+    );
+
+    expect(mockEmployeeCreate).toHaveBeenCalledTimes(1);
+    const writtenData = mockEmployeeCreate.mock.calls[0][0].data;
+    expect(writtenData.employee_code).toBe("EMP-0001");
+    expect(writtenData.first_name).toBe("Ada");
+    expect(writtenData.last_name).toBe("Lovelace");
+    // nullable columns: no value supplied → not forced
+    expect(writtenData.job_title).toBeUndefined();
+    expect(writtenData.positionId).toBeUndefined();
+    expect(writtenData.hire_date).toBeUndefined();
+
+    // FK lookup must NOT run when positionId is not supplied (unseeded Position
+    // must not block a minimal create)
+    expect(mockPositionFindUnique).not.toHaveBeenCalled();
+
+    // the created record is loaded back and returned as a mapped profile DTO
+    expect(mockEmployeeFindUnique).toHaveBeenCalled();
+    expect(result).toBeTruthy();
+    expect(result.summary.id).toBe(101);
+    expect(result.personal.firstName).toBe("Ada");
+    expect(result.personal.lastName).toBe("Lovelace");
+  });
+
+  it("FK-validates positionId ONLY when supplied (active position succeeds)", async () => {
+    mockPositionFindUnique.mockResolvedValue({ id: 7, isActive: true, title: "Engineer" });
+
+    await hrContractService.createEmployee(
+      { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace", positionId: 7 },
+      42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"}
+    );
+
+    expect(mockPositionFindUnique).toHaveBeenCalledTimes(1);
+    expect(mockPositionFindUnique.mock.calls[0][0].where).toEqual({ id: 7 });
+    expect(mockEmployeeCreate.mock.calls[0][0].data.positionId).toBe(7);
+  });
+
+  it("fails cleanly when a supplied positionId does not exist (real FK violation still rejected)", async () => {
+    mockPositionFindUnique.mockResolvedValue(null);
+
+    await expect(
+      hrContractService.createEmployee(
+        { employeeCategory: "EMPLOYEE", firstName: "Ada", lastName: "Lovelace", positionId: 999 },
+        42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"}
+      )
+    ).rejects.toThrow(/Position ID 999 does not exist/);
+
+    expect(mockEmployeeCreate).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a create missing the DB-required firstName", async () => {
+    await expect(
+      hrContractService.createEmployee({ lastName: "Lovelace" }, 42, {tenantId:"14c350e8-d0bc-4ee9-90c7-dea2b7a7a007"})
+    ).rejects.toThrow();
+    expect(mockEmployeeCreate).not.toHaveBeenCalled();
+  });
+});

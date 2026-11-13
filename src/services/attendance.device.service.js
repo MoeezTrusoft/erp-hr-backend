@@ -38,82 +38,11 @@ function dayKey(date) {
   return `${y}-${m}-${d}`;
 }
 
-function parseTimestamp(raw) {
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  return date;
-}
-
-function parseType(rawType) {
-  const t = String(rawType || "").trim().toUpperCase();
-  if (!t) return "";
-  if (["IN", "CHECKIN", "CHECK_IN", "CLOCK_IN", "I", "0"].includes(t)) return "IN";
-  if (["OUT", "CHECKOUT", "CHECK_OUT", "CLOCK_OUT", "O", "1"].includes(t)) return "OUT";
-  return "";
-}
-
-function calculateTotalHours(checkIn, checkOut) {
-  if (!(checkIn instanceof Date) || !(checkOut instanceof Date)) return null;
-  const ms = checkOut.getTime() - checkIn.getTime();
-  if (ms <= 0) return null;
-  return Number((ms / (1000 * 60 * 60)).toFixed(2));
-}
-
 function buildLateCutoff(targetDate, shiftStart = "09:00", lateGraceMinutes = 15) {
   const { hours, minutes } = parseShiftStart(shiftStart);
   const cutoff = new Date(targetDate);
   cutoff.setHours(hours, minutes + Number(lateGraceMinutes || 0), 0, 0);
   return cutoff;
-}
-
-async function resolveEmployeeFromPunch(punch) {
-  const employeeIdRaw = punch.employeeId;
-  const employeeCodeRaw = punch.employeeCode ?? punch.deviceUserId ?? punch.userId;
-
-  if (employeeIdRaw !== undefined && employeeIdRaw !== null && employeeIdRaw !== "") {
-    const employeeId = Number(employeeIdRaw);
-    if (Number.isInteger(employeeId) && employeeId > 0) {
-      const employee = await prisma.employee.findUnique({
-        where: { id: employeeId },
-        select: { id: true, employee_code: true, employee_name: true },
-      });
-      if (employee) return employee;
-    }
-  }
-
-  if (employeeCodeRaw !== undefined && employeeCodeRaw !== null && String(employeeCodeRaw).trim() !== "") {
-    const code = String(employeeCodeRaw).trim();
-    const employee = await prisma.employee.findFirst({
-      where: { employee_code: code },
-      select: { id: true, employee_code: true, employee_name: true },
-    });
-    if (employee) return employee;
-  }
-
-  return null;
-}
-
-function normalizeGroupedPunches(groupPunches) {
-  const sorted = [...groupPunches].sort((a, b) => a.timestamp - b.timestamp);
-  const inPunches = sorted.filter((p) => p.type === "IN");
-  const outPunches = sorted.filter((p) => p.type === "OUT");
-
-  const checkIn = (inPunches[0] || sorted[0])?.timestamp || null;
-  let checkOut = null;
-
-  if (outPunches.length) {
-    checkOut = outPunches[outPunches.length - 1].timestamp;
-  } else if (sorted.length > 1) {
-    checkOut = sorted[sorted.length - 1].timestamp;
-  }
-
-  if (checkIn && checkOut && checkOut.getTime() <= checkIn.getTime()) {
-    checkOut = null;
-  }
-
-  return { checkIn, checkOut, punchesCount: sorted.length };
 }
 
 export async function probeAttendanceDevice({
@@ -166,172 +95,15 @@ export async function probeAttendanceDevice({
   });
 }
 
-export async function syncAttendanceFromPunches({
-  punches = [],
-  shiftStart = "09:00",
-  lateGraceMinutes = 15,
-  dryRun = false,
-  testConnectivity = false,
-  host = DEFAULT_DEVICE_HOST,
-  port = DEFAULT_DEVICE_PORT,
-} = {}) {
-  if (!Array.isArray(punches) || !punches.length) {
-    throw new Error("punches array is required");
-  }
-
-  const connectivity = testConnectivity ? await probeAttendanceDevice({ host, port }) : null;
-  if (testConnectivity && !connectivity?.reachable) {
-    throw new Error(`Device connectivity failed: ${connectivity?.error || "unreachable"}`);
-  }
-
-  const grouped = new Map();
-  const unresolved = [];
-  const invalidPunches = [];
-
-  for (const punch of punches) {
-    const timestamp = parseTimestamp(punch?.timestamp);
-    if (!timestamp) {
-      invalidPunches.push({ reason: "invalid_timestamp", punch });
-      continue;
-    }
-
-    const employee = await resolveEmployeeFromPunch(punch || {});
-    if (!employee) {
-      unresolved.push({
-        reason: "employee_not_found",
-        employeeId: punch?.employeeId ?? null,
-        employeeCode: punch?.employeeCode ?? punch?.deviceUserId ?? punch?.userId ?? null,
-        timestamp: punch?.timestamp ?? null,
-      });
-      continue;
-    }
-
-    const key = `${employee.id}|${dayKey(timestamp)}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, { employee, punchDay: dayKey(timestamp), punches: [] });
-    }
-    grouped.get(key).punches.push({
-      timestamp,
-      type: parseType(punch?.type),
-      raw: punch,
-    });
-  }
-
-  const summary = {
-    totalPunchesReceived: punches.length,
-    validPunches: punches.length - invalidPunches.length,
-    invalidPunches: invalidPunches.length,
-    unresolvedPunches: unresolved.length,
-    groupedRecords: grouped.size,
-    created: 0,
-    updated: 0,
-    skipped: 0,
-    details: [],
-    unresolved,
-    connectivity,
-    dryRun: !!dryRun,
-  };
-
-  for (const group of grouped.values()) {
-    const { employee, punchDay, punches: groupPunches } = group;
-    const { checkIn, checkOut, punchesCount } = normalizeGroupedPunches(groupPunches);
-
-    if (!checkIn) {
-      summary.skipped += 1;
-      summary.details.push({ employeeId: employee.id, date: punchDay, action: "skipped_no_checkin" });
-      continue;
-    }
-
-    const { start, end } = dayRange(parseDateInput(punchDay));
-    const lateCutoff = buildLateCutoff(checkIn, shiftStart, lateGraceMinutes);
-    const calculatedStatus = checkIn > lateCutoff ? "LATE" : "PRESENT";
-
-    const existing = await prisma.attendance.findFirst({
-      where: {
-        employeeId: employee.id,
-        date: {
-          gte: start,
-          lte: end,
-        },
-      },
-      orderBy: { id: "desc" },
-    });
-
-    const mergedCheckIn = existing?.check_in
-      ? new Date(Math.min(existing.check_in.getTime(), checkIn.getTime()))
-      : checkIn;
-    const mergedCheckOut = (() => {
-      if (existing?.check_out && checkOut) return new Date(Math.max(existing.check_out.getTime(), checkOut.getTime()));
-      return existing?.check_out || checkOut || null;
-    })();
-    const totalHours = calculateTotalHours(mergedCheckIn, mergedCheckOut);
-    const mergedStatus = mergedCheckIn > lateCutoff ? "LATE" : "PRESENT";
-
-    if (dryRun) {
-      summary.details.push({
-        employeeId: employee.id,
-        date: punchDay,
-        action: existing ? "would_update" : "would_create",
-        status: mergedStatus || calculatedStatus,
-        check_in: mergedCheckIn,
-        check_out: mergedCheckOut,
-        punchesCount,
-      });
-      continue;
-    }
-
-    if (existing) {
-      await prisma.attendance.update({
-        where: { id: existing.id },
-        data: {
-          check_in: mergedCheckIn,
-          check_out: mergedCheckOut,
-          total_hours: totalHours ?? undefined,
-          status: mergedStatus,
-          remarks: "Synced from biometric device",
-        },
-      });
-      summary.updated += 1;
-      summary.details.push({
-        employeeId: employee.id,
-        date: punchDay,
-        action: "updated",
-        attendanceId: existing.id,
-        status: mergedStatus,
-        check_in: mergedCheckIn,
-        check_out: mergedCheckOut,
-        punchesCount,
-      });
-    } else {
-      const created = await prisma.attendance.create({
-        data: {
-          employeeId: employee.id,
-          date: start,
-          check_in: mergedCheckIn,
-          check_out: mergedCheckOut,
-          total_hours: totalHours ?? undefined,
-          status: calculatedStatus,
-          remarks: "Created from biometric device",
-        },
-      });
-      summary.created += 1;
-      summary.details.push({
-        employeeId: employee.id,
-        date: punchDay,
-        action: "created",
-        attendanceId: created.id,
-        status: calculatedStatus,
-        check_in: mergedCheckIn,
-        check_out: mergedCheckOut,
-        punchesCount,
-      });
-    }
-  }
-
-  return summary;
+export async function syncAttendanceFromPunches({ sn, punches = [], dryRun = true, tenantId, requestKey, actorId } = {}) {
+  const { receiveCapture } = await import('./attendanceCapture.service.js');
+  if (!sn) throw Object.assign(new Error('Registered device serial is required'), { status: 400 });
+  const rows = punches.map(p => `${p.deviceUserId ?? p.employeeCode ?? p.userId ?? ''}\t${p.timestamp ?? ''}\t${['OUT','1','5'].includes(String(p.type).toUpperCase()) ? 1 : ['IN','0','4'].includes(String(p.type).toUpperCase()) ? 0 : 'INVALID'}\t0\t0`);
+  return receiveCapture({ sn, rows, source: 'DEVICE_SYNC', tenantId, requestKey, actorId, dryRun });
 }
 
 export async function getDailyAttendanceSummary({
+  tenantId,
   date = new Date(),
   shiftStart = "09:00",
   lateGraceMinutes = 15,
@@ -340,10 +112,26 @@ export async function getDailyAttendanceSummary({
   const { start, end } = dayRange(target);
   const lateCutoff = buildLateCutoff(start, shiftStart, lateGraceMinutes);
 
-  const [totalEmployees, records] = await Promise.all([
-    prisma.employee.count(),
+  // HR-ATT-DAILYSUM-TENANT-01 (2026-09-14) — this summary counted the WHOLE
+  // DATABASE: prisma.employee.count() with no tenant filter and no status
+  // filter, so every tenant's "absent" figure included the other four
+  // tenants' entire rosters and every separated employee. (A related tenant
+  // leak: it also counted people who left months ago.) Scope the headcount to
+  // the caller's tenant and to attendance/payroll-eligible employees; absent =
+  // eligible headcount minus whoever showed.
+  const [eligibleRows, records] = await Promise.all([
+    prisma.employee.findMany({
+      where: {
+        tenant_id: tenantId ?? undefined,
+        payroll_included: true,
+        attendanceInputMode: {not:"MANUAL_MONTHLY"},
+        OR: [{ status: { not: "Inactive" } }, { status: null }],
+      },
+      select: { id: true },
+    }),
     prisma.attendance.findMany({
       where: {
+        ...(tenantId ? { tenantId } : {}),
         date: {
           gte: start,
           lte: end,
@@ -357,10 +145,13 @@ export async function getDailyAttendanceSummary({
     }),
   ]);
 
+  const eligibleIds = new Set(eligibleRows.map((e) => e.id));
+  const totalEmployees = eligibleIds.size;
   const presentSet = new Set();
   const lateSet = new Set();
 
   for (const rec of records) {
+    if (!eligibleIds.has(rec.employeeId)) continue; // separated/excluded
     if (rec?.check_in && rec.check_in > lateCutoff) {
       lateSet.add(rec.employeeId);
       continue;

@@ -14,7 +14,7 @@ import {
   cancelEnrollment,
 } from "../../controllers/enrollmentController.js";
 import { createPath, listPaths } from "../../controllers/learningPath.controller.js";
-import { createCertification, listCertifications } from "../../controllers/certification.controller.js";
+import { createCertification, listCertifications, getCertification, updateCertification, deleteCertification } from "../../controllers/certification.controller.js";
 import { listSkills } from "../../controllers/employeeSkill.controller.js";
 import { listSessions } from "../../controllers/trainingSession.controller.js";
 
@@ -81,7 +81,7 @@ async function runController(controller, { user = {}, params = {}, query = {}, b
 export const mcpListTrainingCourses = (user) => runController(getCourses, { user });
 export const mcpListTrainingCategories = (user) => runController(getCategories, { user });
 export const mcpListLearningPaths = (user) => runController(listPaths, { user });
-export const mcpListCertifications = (user) => runController(listCertifications, { user });
+export const mcpListCertifications = (user, args = {}) => runController(listCertifications, { user, query: args });
 export const mcpListSkills = (user) => runController(listSkills, { user });
 export const mcpListTrainingSessions = (user) => runController(listSessions, { user });
 
@@ -101,4 +101,8 @@ export const mcpCancelTrainingEnrollment = (user, id) =>
   runController(cancelEnrollment, { user, params: { id: String(id) } });
 
 export const mcpCreateCertification = (user, data) => runController(createCertification, { user, body: data });
+export const mcpGetCertification = (user, id) => runController(getCertification, { user, params: { id: String(id) } });
+export const mcpUpdateCertification = (user, id, data) =>
+  runController(updateCertification, { user, params: { id: String(id) }, body: data });
+export const mcpDeleteCertification = (user, id) => runController(deleteCertification, { user, params: { id: String(id) } });
 export const mcpCreateLearningPath = (user, data) => runController(createPath, { user, body: data });

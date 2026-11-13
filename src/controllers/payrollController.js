@@ -1,4 +1,16 @@
 import * as payrollService from '../services/payrollService.js';
+import * as bankFileService from '../services/bankFileService.js';
+import { auditC4Read } from '../lib/c4Access.js';
+import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
+import { requireEmployeeActor } from '../lib/employeeActor.js';
+import { serializePayrollMoney } from '../lib/money.js';
+
+// HR-04 / T-P2.2 — every payroll request is scoped to the VERIFIED tenant on
+// req.user.tenantId (set by internalServiceGuard from the service-JWT claim —
+// T-P2.1). NEVER read tenant from req.headers / x-tenant-id. The helper below
+// centralizes that single source of truth.
+const tenantOf = (req) => req.user?.tenantId ?? null;
+const wire = (value) => serializePayrollMoney(value);
 
 export const getPayrollRuns = async (req, res) => {
     try {
@@ -6,32 +18,35 @@ export const getPayrollRuns = async (req, res) => {
         const result = await payrollService.getPayrollRuns({
             page: parseInt(page),
             limit: parseInt(limit),
-            status
+            status,
+            tenantId: tenantOf(req)
         });
-        res.json({ success: true, data: result });
+        res.json({ success: true, data: wire(result) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const getPayrollRunById = async (req, res) => {
     try {
         const { id } = req.params;
-        const payrollRun = await payrollService.getPayrollRunById(parseInt(id));
+        const payrollRun = await payrollService.getPayrollRunById(parseInt(id), tenantOf(req));
         if (!payrollRun) {
             return res.status(404).json({ success: false, error: 'Payroll run not found' });
         }
-        res.json({ success: true, data: payrollRun });
+        // HR-01 / T-P4.2 — run + its payslips carry C4 money; audit the read.
+        await auditC4Read(req.user, { action: 'PAYROLL_RUN_READ', target: id });
+        res.json({ success: true, data: wire(payrollRun) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const createPayrollRun = async (req, res) => {
     try {
-        const createdBy = req.headers['employee-id'];
-        const payrollRun = await payrollService.createPayrollRun(req.body, createdBy);
-        res.status(201).json({ success: true, data: payrollRun });
+        const createdBy = req.user?.employeeId;
+        const payrollRun = await payrollService.createPayrollRun(req.body, createdBy, tenantOf(req));
+        res.status(201).json({ success: true, data: wire(payrollRun) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -40,9 +55,39 @@ export const createPayrollRun = async (req, res) => {
 export const processPayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
-        const updatedBy = req.headers['employee-id'];
-        const result = await payrollService.processPayrollRun(parseInt(id),updatedBy);
-        res.json({ success: true, data: result });
+        const updatedBy = req.user?.employeeId;
+        const result = await payrollService.processPayrollRun(parseInt(id), updatedBy, tenantOf(req));
+        res.json({ success: true, data: wire(result) });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+// HR-02 / T-P4.1 — approval gate (separation of duties). The approver is the
+// verified actor on the employee-id header; the service rejects self-approval
+// (approver === processor).
+export const approvePayrollRun = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const approvedBy = req.user?.employeeId;
+        const result = await payrollService.approvePayrollRun(parseInt(id), approvedBy, tenantOf(req));
+        res.json({ success: true, data: wire(result) });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+export const rejectPayrollRun = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const rejectedBy = req.user?.employeeId;
+        const result = await payrollService.rejectPayrollRun(
+            parseInt(id),
+            rejectedBy,
+            req.body?.reason,
+            tenantOf(req),
+        );
+        res.json({ success: true, data: wire(result) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -51,40 +96,76 @@ export const processPayrollRun = async (req, res) => {
 export const finalizePayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
-        const finalizedBy = req.headers['employee-id'];
-        const result = await payrollService.finalizePayrollRun(parseInt(id),finalizedBy);
-        res.json({ success: true, data: result });
+        const finalizedBy = req.user?.employeeId;
+        const result = await payrollService.finalizePayrollRun(parseInt(id), finalizedBy, tenantOf(req), {
+            ifMatch: req.headers?.["if-match"] ?? null,
+        });
+        res.json({ success: true, data: wire(result) });
     } catch (error) {
+        // A stale If-Match keeps its 412 so the client reloads instead of retrying.
+        if (respondPreconditionAware(res, error)) return;
         res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+// HR-BANKFILE-03 / HR-PAY-04 — generate a bank/ACH disbursement file from a
+// FINALIZED run. The route already deny-by-default-gates this (requirePermission
+// 'hr:payroll'); the service tenant-scopes the run (wrong tenant → 404), rejects
+// non-FINALIZED runs, decrypts bank accounts IN-MEMORY only, and never logs them.
+// `format` query selects NACHA (default) or the bank CSV.
+export const exportBankDisbursementFile = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const format = (req.query.format || 'csv').toLowerCase();
+        const result = await bankFileService.generateBankDisbursementFile(parseInt(id), {
+            tenantId: tenantOf(req),
+            format,
+            actorId: req.user?.employeeId ?? req.user?.userId ?? null,
+        });
+
+        // This export materializes decrypted C4 (bank) data; record the auditable
+        // read (notes carry no account numbers — see auditC4Read + the service).
+        await auditC4Read(req.user, { action: 'BANK_DISBURSEMENT_EXPORT', target: id });
+
+        res.setHeader('Content-Type', result.contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+        res.setHeader('X-Disbursement-Count', String(result.summary.rowCount));
+        return res.status(200).send(result.content);
+    } catch (error) {
+        const status = error.status || error.statusCode || 500;
+        return res.status(status).json({ success: false, error: error.message, code: error.code });
     }
 };
 
 export const cancelPayrollRun = async (req, res) => {
     try {
         const { id } = req.params;
-        const cancelledBy = req.headers['employee-id'];
-        await payrollService.cancelPayrollRun(parseInt(id),cancelledBy);
+        const cancelledBy = req.user?.employeeId;
+        await payrollService.cancelPayrollRun(parseInt(id), cancelledBy, tenantOf(req), String(req.body?.reason ?? '').trim().slice(0, 500));
         res.json({ success: true, message: 'Payroll run cancelled successfully' });
     } catch (error) {
-        res.status(400).json({ success: false, error: error.message });
+        // ERR-3: Normalize error to avoid leaking raw Prisma/DB messages to clients
+        const { normalizeError } = await import('../middlewares/error.middleware.js');
+        const norm = normalizeError(error);
+        res.status(norm.httpStatus).json({ success: false, code: norm.code, message: norm.message });
     }
 };
 
 // Earning Types
 export const getEarningTypes = async (req, res) => {
     try {
-        const earningTypes = await payrollService.getEarningTypes();
-        res.json({ success: true, data: earningTypes });
+        const earningTypes = await payrollService.getEarningTypes(tenantOf(req));
+        res.json({ success: true, data: wire(earningTypes) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const createEarningType = async (req, res) => {
     try {
-        const createdBy = req.headers['employee-id'];
-        const earningType = await payrollService.createEarningType(req.body, createdBy);
-        res.status(201).json({ success: true, data: earningType });
+        const createdBy = req.user?.employeeId;
+        const earningType = await payrollService.createEarningType(req.body, createdBy, tenantOf(req));
+        res.status(201).json({ success: true, data: wire(earningType) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -93,9 +174,9 @@ export const createEarningType = async (req, res) => {
 export const updateEarningType = async (req, res) => {
     try {
         const { id } = req.params;
-        const updatedBy = req.headers['employee-id'];
-        const earningType = await payrollService.updateEarningType(parseInt(id), req.body, updatedBy);
-        res.json({ success: true, data: earningType });
+        const updatedBy = req.user?.employeeId;
+        const earningType = await payrollService.updateEarningType(parseInt(id), req.body, updatedBy, tenantOf(req));
+        res.json({ success: true, data: wire(earningType) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -104,18 +185,18 @@ export const updateEarningType = async (req, res) => {
 // Deduction Types
 export const getDeductionTypes = async (req, res) => {
     try {
-        const deductionTypes = await payrollService.getDeductionTypes();
-        res.json({ success: true, data: deductionTypes });
+        const deductionTypes = await payrollService.getDeductionTypes(tenantOf(req));
+        res.json({ success: true, data: wire(deductionTypes) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const createDeductionType = async (req, res) => {
     try {
-        const createdBy = req.headers['employee-id'];
-        const deductionType = await payrollService.createDeductionType(req.body,createdBy);
-        res.status(201).json({ success: true, data: deductionType });
+        const createdBy = req.user?.employeeId;
+        const deductionType = await payrollService.createDeductionType(req.body, createdBy, tenantOf(req));
+        res.status(201).json({ success: true, data: wire(deductionType) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -124,9 +205,9 @@ export const createDeductionType = async (req, res) => {
 export const updateDeductionType = async (req, res) => {
     try {
         const { id } = req.params;
-        const updatedBy = req.headers['employee-id'];
-        const deductionType = await payrollService.updateDeductionType(parseInt(id), req.body, updatedBy);
-        res.json({ success: true, data: deductionType });
+        const updatedBy = req.user?.employeeId;
+        const deductionType = await payrollService.updateDeductionType(parseInt(id), req.body, updatedBy, tenantOf(req));
+        res.json({ success: true, data: wire(deductionType) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -138,27 +219,31 @@ export const getEmployeePayrollData = async (req, res) => {
         const { employeeId } = req.params;
 
         // Check if user has permission to view this employee's data
-        if (req.user.role === 'EMPLOYEE' && req.user.id !== parseInt(employeeId)) {
+        if (req.user.role === 'EMPLOYEE' && await requireEmployeeActor(req.user) !== parseInt(employeeId)) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
-        const data = await payrollService.getEmployeePayrollData(parseInt(employeeId));
-        res.json({ success: true, data });
+        const data = await payrollService.getEmployeePayrollData(parseInt(employeeId), tenantOf(req));
+        // HR-01 / T-P4.2 — this read returns decrypted C4 (salary terms, bank
+        // details). The route already deny-by-default-gated it; record the read
+        // so every C4 access is auditable (roadmap L208).
+        await auditC4Read(req.user, { action: 'EMPLOYEE_PAYROLL_DATA_READ', target: employeeId });
+        res.json({ success: true, data: wire(data) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const createEmploymentTerms = async (req, res) => {
     try {
         const { employeeId } = req.params;
-        const createdBy = req.headers['employee-id'];
+        const createdBy = req.user?.employeeId;
         const employmentTerms = await payrollService.createEmploymentTerms({
             ...req.body,
             employeeId: parseInt(employeeId),
             createdBy
-        });
-        res.status(201).json({ success: true, data: employmentTerms });
+        }, createdBy, tenantOf(req));
+        res.status(201).json({ success: true, data: wire(employmentTerms) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -167,13 +252,13 @@ export const createEmploymentTerms = async (req, res) => {
 export const createPayrollAssignment = async (req, res) => {
     try {
         const { employeeId } = req.params;
-        const createdBy = req.headers['employee-id'];
+        const createdBy = req.user?.employeeId;
         const assignment = await payrollService.createPayrollAssignment({
             ...req.body,
             employeeId: parseInt(employeeId),
             createdBy
-        });
-        res.status(201).json({ success: true, data: assignment });
+        }, createdBy, tenantOf(req));
+        res.status(201).json({ success: true, data: wire(assignment) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -187,39 +272,42 @@ export const getPayslips = async (req, res) => {
             page: parseInt(page),
             limit: parseInt(limit),
             payrollRunId,
-            employeeId
+            employeeId,
+            tenantId: tenantOf(req)
         });
-        res.json({ success: true, data: result });
+        res.json({ success: true, data: wire(result) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const getPayslipById = async (req, res) => {
     try {
         const { id } = req.params;
-        const payslip = await payrollService.getPayslipById(parseInt(id));
+        const payslip = await payrollService.getPayslipById(parseInt(id), tenantOf(req));
         if (!payslip) {
             return res.status(404).json({ success: false, error: 'Payslip not found' });
         }
 
         // Check if user has permission to view this payslip
-        if (req.user.role === 'EMPLOYEE' && req.user.id !== payslip.employeeId) {
+        if (req.user.role === 'EMPLOYEE' && await requireEmployeeActor(req.user) !== payslip.employeeId) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
-        res.json({ success: true, data: payslip });
+        // HR-01 / T-P4.2 — payslip carries C4 money; record the auditable read.
+        await auditC4Read(req.user, { action: 'PAYSLIP_READ', target: id });
+        res.json({ success: true, data: wire(payslip) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const distributePayslip = async (req, res) => {
     try {
         const { id } = req.params;
-        const createdBy = req.headers['employee-id'];
-        const payslip = await payrollService.distributePayslip(parseInt(id),createdBy);
-        res.json({ success: true, data: payslip });
+        const createdBy = req.user?.employeeId;
+        const payslip = await payrollService.distributePayslip(parseInt(id), createdBy, tenantOf(req));
+        res.json({ success: true, data: wire(payslip) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -231,17 +319,18 @@ export const getEmployeePayslips = async (req, res) => {
         const { page = 1, limit = 10 } = req.query;
 
         // Check if user has permission to view this employee's payslips
-        if (req.user.role === 'EMPLOYEE' && req.user.id !== parseInt(employeeId)) {
+        if (req.user.role === 'EMPLOYEE' && await requireEmployeeActor(req.user) !== parseInt(employeeId)) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
         const result = await payrollService.getEmployeePayslips(parseInt(employeeId), {
             page: parseInt(page),
-            limit: parseInt(limit)
+            limit: parseInt(limit),
+            tenantId: tenantOf(req)
         });
-        res.json({ success: true, data: result });
+        res.json({ success: true, data: wire(result) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
@@ -249,18 +338,18 @@ export const getEmployeePayslips = async (req, res) => {
 export const getTaxRates = async (req, res) => {
     try {
         const { countryCode } = req.query;
-        const taxRates = await payrollService.getTaxRates(countryCode);
-        res.json({ success: true, data: taxRates });
+        const taxRates = await payrollService.getTaxRates(countryCode, tenantOf(req));
+        res.json({ success: true, data: wire(taxRates) });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };
 
 export const createTaxRate = async (req, res) => {
     try {
-        const createdBy = req.headers['employee-id'];
-        const taxRate = await payrollService.createTaxRate(req.body, createdBy);
-        res.status(201).json({ success: true, data: taxRate });
+        const createdBy = req.user?.employeeId;
+        const taxRate = await payrollService.createTaxRate(req.body, createdBy, tenantOf(req));
+        res.status(201).json({ success: true, data: wire(taxRate) });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
@@ -269,15 +358,18 @@ export const createTaxRate = async (req, res) => {
 // Audit Logs
 export const getAuditLogs = async (req, res) => {
     try {
-        const { page = 1, limit = 10, payrollRunId, payslipId } = req.query;
+        // The audit screen reads the latest 5,000 entries (it filters and pages them on screen); callers may ask for fewer.
+        const { page = 1, payrollRunId, payslipId } = req.query;
+        const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit) || 5000));
         const result = await payrollService.getAuditLogs({
             page: parseInt(page),
             limit: parseInt(limit),
             payrollRunId,
-            payslipId
+            payslipId,
+            tenantId: tenantOf(req)
         });
         res.json({ success: true, data: result });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        respondServerError(req, res, error);
     }
 };

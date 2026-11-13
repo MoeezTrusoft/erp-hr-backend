@@ -1,32 +1,53 @@
 import prisma from "../config/prisma.js";
+import { scopedWhere, scopedData } from "../lib/tenancy.js";
 
-export const logEvent = async ({ employeeId, type, effectiveDate, notes, performedById, metadata }) => {
+// C.2-completion — verified tenant (T-P2.1) threaded via `tenantId` (in the
+// payload, or a trailing read param); folded into lifecycle-event reads and
+// stamped on creates, fail-closed so tenant B never reads or writes tenant A's
+// employee lifecycle history.
+
+// Friendly aliases → LifecycleEventType enum, so callers can send PROMOTION etc.
+const LIFECYCLE_EVENT_ALIASES = {
+    PROMOTION: "PROMOTED",
+    TRANSFER: "TRANSFERRED",
+    TERMINATION: "TERMINATED",
+    RESIGNATION: "RESIGNED",
+    HIRE: "HIRED",
+};
+
+const normalizeLifecycleEventType = (value) => {
+    if (!value) return value;
+    const upper = String(value).trim().toUpperCase();
+    return LIFECYCLE_EVENT_ALIASES[upper] || upper;
+};
+
+export const logEvent = async ({ employeeId, type, effectiveDate, notes, performedById, metadata, tenantId }) => {
     return prisma.employeeLifecycleEvent.create({
-        data: {
+        data: scopedData(tenantId, {
             employeeId: Number(employeeId),
-            type,
+            eventType: normalizeLifecycleEventType(type),
             effectiveDate: effectiveDate ? new Date(effectiveDate) : new Date(),
-            notes,
-            performedById: performedById ? Number(performedById) : null,
-            metadata: metadata || {},
-        },
+            description: notes ?? null,
+            // Prisma column is createdById (there is no performedById/metadata column).
+            createdById: performedById ? Number(performedById) : null,
+        }),
     });
 };
 
-export const getEmployeeHistory = async (employeeId) => {
+export const getEmployeeHistory = async (employeeId, tenantId) => {
     return prisma.employeeLifecycleEvent.findMany({
-        where: { employeeId: Number(employeeId) },
+        where: scopedWhere(tenantId, { employeeId: Number(employeeId) }),
         orderBy: { effectiveDate: "desc" },
     });
 };
 
-export const listEvents = async ({ type, page = 1, limit = 20 }) => {
-    const where = type ? { type } : {};
+export const listEvents = async ({ type, page = 1, limit = 20, tenantId } = {}) => {
+    const where = scopedWhere(tenantId, type ? { type } : {});
     const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
         prisma.employeeLifecycleEvent.findMany({
             where, skip, take: limit, orderBy: { effectiveDate: "desc" },
-            include: { employee: { select: { id: true, firstName: true, lastName: true } } },
+            include: { employee: { select: { id: true, first_name: true, last_name: true } } },
         }),
         prisma.employeeLifecycleEvent.count({ where }),
     ]);

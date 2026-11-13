@@ -1,0 +1,327 @@
+// HR-ATT-PAYROLL-BRIDGE-01 — attendance violations → payslip deduction lines.
+//
+// Two pure halves, so no mocks and no database: the inputs ARE the fixtures.
+//   1. countViolationDays  — stored attendance/anomaly rows → countable occurrences
+//   2. computeAttendanceDeductions — occurrences + rules → deduction DAYS
+// and then the money half, asserted through the REAL payslip engine so the
+// day→money conversion cannot drift from the LWP one it shares.
+import { describe, it, expect } from '@jest/globals';
+import {
+    countViolationDays,
+    computeAttendanceDeductions,
+} from '../../src/lib/attendanceDeduction.js';
+import { buildPayslipFromInputs } from '../../src/services/payrollService.js';
+
+const day = (iso) => new Date(`${iso}T00:00:00.000Z`);
+
+const att = (iso, status, extra = {}) => ({
+    date: day(iso),
+    status,
+    manually_corrected: false,
+    ...extra,
+});
+
+const rule = (ruleKey, over = {}) => ({
+    ruleKey,
+    enabled: true,
+    triggerCount: 1,
+    deductionDays: 0.5,
+    periodScope: 'PAY_PERIOD',
+    maxDeductionDaysPerPeriod: null,
+    counterGroup: null,
+    ...over,
+});
+
+const keysOf = (violations) => violations.map((v) => `${v.ruleKey}@${v.day}`).sort();
+
+// ─── counting ────────────────────────────────────────────────────────────────
+
+describe('HR-ATT-PAYROLL-BRIDGE-01 countViolationDays', () => {
+    it('maps stored attendance status to the matching rule key', () => {
+        const v = countViolationDays({
+            attendance: [
+                att('2026-08-03', 'LATE'),
+                att('2026-08-04', 'MISSING_CHECKIN'),
+                att('2026-08-05', 'MISSING_CHECKOUT'),
+                att('2026-08-06', 'PRESENT'),
+                att('2026-08-07', 'HALF_DAY'),
+                att('2026-08-08', 'ABSENT'),
+            ],
+        });
+
+        expect(keysOf(v)).toEqual([
+            'LATE@2026-08-03',
+            'MISSING_CHECKIN@2026-08-04',
+            'MISSING_CHECKOUT@2026-08-05',
+        ]);
+    });
+
+    it('never counts a day HR corrected by hand', () => {
+        const v = countViolationDays({
+            attendance: [att('2026-08-03', 'LATE', { manually_corrected: true })],
+        });
+        expect(v).toEqual([]);
+    });
+
+    it('never counts a day excused by an APPROVED anomaly', () => {
+        const v = countViolationDays({
+            attendance: [att('2026-08-03', 'LATE'), att('2026-08-04', 'LATE')],
+            anomalies: [
+                { date: day('2026-08-03'), status: 'APPROVED', type: 'LATE_CHECKIN' },
+                { date: day('2026-08-04'), status: 'PENDING', type: 'LATE_CHECKIN' },
+            ],
+        });
+        expect(keysOf(v)).toEqual(['LATE@2026-08-04']);
+    });
+
+    it('counts a REJECTED ABSENCE as DISAPPROVED_LEAVE, once per day', () => {
+        const v = countViolationDays({
+            anomalies: [
+                { date: day('2026-08-10'), status: 'REJECTED', type: 'ABSENT' },
+                { date: day('2026-08-10'), status: 'REJECTED', type: 'ABSENT' },
+            ],
+        });
+        expect(keysOf(v)).toEqual(['DISAPPROVED_LEAVE@2026-08-10']);
+    });
+
+    it('does NOT charge a day of leave when a LATE appeal is refused', () => {
+        // The defect this replaces: any REJECTED anomaly became DISAPPROVED_LEAVE.
+        // A man who worked a full day, arrived at 20:45, appealed the lateness and
+        // lost, was charged a WHOLE DAY of pay — 16,129 on a 500k salary — on top
+        // of the lateness the LATE rule was already counting from his attendance
+        // status. Refusing the excuse means the lateness stands; it does not
+        // convert a worked day into unpaid leave.
+        const v = countViolationDays({
+            attendance: [att('2026-08-05', 'LATE')],
+            anomalies: [{ date: day('2026-08-05'), status: 'REJECTED', type: 'LATE_CHECKIN' }],
+        });
+
+        expect(keysOf(v)).toEqual(['LATE@2026-08-05']);
+    });
+
+    it('prices early checkout through day credit when the day is ABSENT or HALF_DAY', () => {
+        const v = countViolationDays({
+            attendance: [
+                att('2026-08-06', 'ABSENT', { day_credit: 0 }),
+                att('2026-08-07', 'HALF_DAY', { day_credit: 0.5 }),
+                att('2026-08-08', 'PRESENT', { day_credit: 1 }),
+            ],
+            anomalies: [
+                { date: day('2026-08-06'), status: 'PENDING', type: 'EARLY_CHECKOUT' },
+                { date: day('2026-08-07'), status: 'REJECTED', type: 'EARLY_CHECKOUT' },
+                { date: day('2026-08-08'), status: 'REJECTED', type: 'EARLY_CHECKOUT' },
+            ],
+        });
+
+        // The first two are already priced as 1 and 0.5 day credit loss. Only
+        // the full-credit day remains an EARLY_CHECKOUT rule occurrence.
+        expect(keysOf(v)).toEqual(['EARLY_CHECKOUT@2026-08-08']);
+    });
+
+    it('does not charge leave for a refused missing-punch or early-checkout appeal either', () => {
+        // Same reasoning: the underlying violation already has its own rule.
+        // D1 refinement (operator law 2026-09-11): EARLY_CHECKOUT exists ONLY as
+        // an anomaly — the refused appeal is the surviving evidence of the
+        // violation, so it counts under the EARLY_CHECKOUT rule (a 3:1 pooled
+        // occurrence, NOT a day of leave). MISSING_CHECKOUT needs no mapping: the
+        // day's own MISSING_CHECKOUT status feeds its rule. OTHER maps nowhere.
+        const v = countViolationDays({
+            anomalies: [
+                { date: day('2026-08-06'), status: 'REJECTED', type: 'MISSING_CHECKOUT' },
+                { date: day('2026-08-07'), status: 'REJECTED', type: 'EARLY_CHECKOUT' },
+                { date: day('2026-08-08'), status: 'REJECTED', type: 'OTHER' },
+            ],
+        });
+
+        expect(keysOf(v)).toEqual(['EARLY_CHECKOUT@2026-08-07']);
+    });
+
+    it('is deterministic in output order', () => {
+        const rows = [att('2026-08-05', 'LATE'), att('2026-08-01', 'MISSING_CHECKIN'), att('2026-08-03', 'LATE')];
+        const a = countViolationDays({ attendance: rows });
+        const b = countViolationDays({ attendance: [...rows].reverse() });
+        expect(a).toEqual(b);
+    });
+});
+
+// ─── scoring ─────────────────────────────────────────────────────────────────
+
+describe('HR-ATT-PAYROLL-BRIDGE-01 computeAttendanceDeductions', () => {
+    const lateDays = (n) =>
+        Array.from({ length: n }, (_, i) => ({ ruleKey: 'LATE', day: `2026-08-${String(i + 1).padStart(2, '0')}` }));
+
+    it('charges floor(occurrences / triggerCount) × deductionDays', () => {
+        const lines = computeAttendanceDeductions({
+            violations: lateDays(7),
+            rules: [rule('LATE', { triggerCount: 3, deductionDays: 1 })],
+        });
+        expect(lines).toEqual([
+            { ruleKey: 'LATE', counterGroup: null, occurrences: 7, rawDays: 2.33, days: 2 },
+        ]);
+    });
+
+    it('costs nothing below the threshold', () => {
+        // D1: the line still SURFACES with its raw fractional value (rawDays)
+        // so a pooled engine can add it to the grand total, but its own `days`
+        // is 0 — legacy pricing (and the payslip) charge nothing.
+        const lines = computeAttendanceDeductions({
+            violations: lateDays(2),
+            rules: [rule('LATE', { triggerCount: 3, deductionDays: 1 })],
+        });
+        expect(lines).toHaveLength(1);
+        expect(lines[0].days).toBe(0);
+        expect(lines[0].rawDays).toBeCloseTo(0.67, 2);
+    });
+
+    it('ignores a rule that is not enabled', () => {
+        expect(
+            computeAttendanceDeductions({
+                violations: lateDays(5),
+                rules: [rule('LATE', { enabled: false, triggerCount: 1, deductionDays: 1 })],
+            }),
+        ).toEqual([]);
+    });
+
+    it('pools a counterGroup into ONE counter', () => {
+        // 2 missed check-ins + 1 missed check-out = 3 missed punches = 1 day.
+        // Scored separately each would be sub-threshold and cost nothing.
+        const lines = computeAttendanceDeductions({
+            violations: [
+                { ruleKey: 'MISSING_CHECKIN', day: '2026-08-01' },
+                { ruleKey: 'MISSING_CHECKIN', day: '2026-08-02' },
+                { ruleKey: 'MISSING_CHECKOUT', day: '2026-08-03' },
+            ],
+            rules: [
+                rule('MISSING_CHECKIN', { counterGroup: 'MISSED_PUNCH', triggerCount: 3, deductionDays: 1 }),
+                rule('MISSING_CHECKOUT', { counterGroup: 'MISSED_PUNCH', triggerCount: 3, deductionDays: 1 }),
+            ],
+        });
+        expect(lines).toEqual([
+            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSED_PUNCH', occurrences: 3, rawDays: 1, days: 1 },
+        ]);
+    });
+
+    it('three missing check-in/out events cost one day through the shared punch rule', () => {
+        const lines = computeAttendanceDeductions({
+            violations: [
+                { ruleKey: 'MISSING_CHECKIN', day: '2026-08-01' },
+                { ruleKey: 'MISSING_CHECKOUT', day: '2026-08-02' },
+                { ruleKey: 'MISSING_CHECKIN', day: '2026-08-03' },
+            ],
+            rules: [
+                rule('MISSING_CHECKIN', { counterGroup: 'MISSING_PUNCH', triggerCount: 3, deductionDays: 1 }),
+                rule('MISSING_CHECKOUT', { counterGroup: 'MISSING_PUNCH', triggerCount: 3, deductionDays: 1 }),
+            ],
+        });
+        expect(lines).toEqual([
+            { ruleKey: 'MISSING_CHECKIN', counterGroup: 'MISSING_PUNCH', occurrences: 3, rawDays: 1, days: 1 },
+        ]);
+    });
+
+    it('a pooled group bills one calendar day once', () => {
+        const lines = computeAttendanceDeductions({
+            violations: [
+                { ruleKey: 'LATE', day: '2026-08-01' },
+                { ruleKey: 'EARLY_CHECKOUT', day: '2026-08-01' },
+                { ruleKey: 'LATE', day: '2026-08-02' },
+            ],
+            rules: [
+                rule('LATE', { counterGroup: 'TIMEKEEPING', triggerCount: 1, deductionDays: 1 }),
+                rule('EARLY_CHECKOUT', { counterGroup: 'TIMEKEEPING', triggerCount: 1, deductionDays: 1 }),
+            ],
+        });
+        expect(lines).toEqual([
+            { ruleKey: 'LATE', counterGroup: 'TIMEKEEPING', occurrences: 2, rawDays: 2, days: 2 },
+        ]);
+    });
+
+    it('respects maxDeductionDaysPerPeriod', () => {
+        const lines = computeAttendanceDeductions({
+            violations: lateDays(20),
+            rules: [rule('LATE', { triggerCount: 1, deductionDays: 1, maxDeductionDaysPerPeriod: 3 })],
+        });
+        expect(lines[0].days).toBe(3);
+    });
+
+    it('ignores violations with no configured rule', () => {
+        expect(
+            computeAttendanceDeductions({
+                violations: [{ ruleKey: 'EARLY_CHECKOUT', day: '2026-08-01' }],
+                rules: [rule('LATE', { triggerCount: 1, deductionDays: 1 })],
+            }),
+        ).toEqual([]);
+    });
+});
+
+// ─── money ───────────────────────────────────────────────────────────────────
+
+describe('HR-ATT-PAYROLL-BRIDGE-01 payslip bridge', () => {
+    const employmentTerm = { baseSalary: '260000', payFrequency: 'MONTHLY', currency: 'PKR' };
+    const payrollRun = {
+        periodStart: new Date('2026-08-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-08-31T00:00:00.000Z'),
+        currencyCode: 'PKR',
+        countryCode: 'PK',
+    };
+    const decided=type=>({id:1,employeeId:1,date:'2026-08-02',sessionKey:'s1',type,rulesVersion:2,status:'REJECTED',decisionRole:'Management',evidenceState:'ACTIVE'});
+    const build = (bridges) =>
+        buildPayslipFromInputs({
+            employee: { id: 1 },
+            employmentTerm,
+            assignments: [],
+            payrollRun,
+            taxRateRows: [],
+            bridges,
+        });
+
+    // HR-PAYROLL-DEDUCTION-BASIS-01 changed the daily rate: salary over the
+    // CALENDAR days of the period, not base over a fixed 26 working days. These
+    // expectations were updated deliberately with that spec change, not
+    // loosened to make a failure go away.
+    it('converts deduction DAYS to money with the LWP daily rate (calendar days)', () => {
+        const slip = build({
+            anomalyRows:[decided('ABSENT')],
+        });
+        const line = slip.deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
+        expect(line).toBeDefined();
+        // 260,000 over a 31-day August ⇒ 8387.09/day → WHOLE RUPEES (N-22,
+        // ruling 2026-09-17). Previously 260,000/26.
+        expect(line.amount).toBe('8387.0000');
+        expect(line.description).toBe('Attendance rule deductions: 1 day(s)');
+    });
+
+    it('handles fractional deduction days', () => {
+        const slip = build({
+            anomalyRows:[{...decided('LATE_CHECKIN'),measuredMinutes:45}],
+        });
+        const line = slip.deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
+        // half of 8387.09 → 4193.54 → 4194 whole rupees (N-22)
+        expect(line.amount).toBe('4194.0000');
+        expect(line.description).toBe('Attendance rule deductions: 0.5 day(s)');
+    });
+
+    it('uses the SAME daily rate as LWP — one day of LWP costs one day of attendance deduction', () => {
+        const lwp = build({ lwpDays: 1 }).deductions.find((d) => d.description.startsWith('LWP'));
+        const ded = build({
+            anomalyRows:[decided('ABSENT')],
+        }).deductions.find((d) => d.code==='ATTENDANCE_RULES_V2');
+        expect(ded.amount).toBe(lwp.amount);
+    });
+
+    it('does not crash on a fractional LWP day (BigInt(1.5) used to throw)', () => {
+        const line = build({ lwpDays: 0.5 }).deductions.find((d) => d.description.startsWith('LWP'));
+        expect(line.amount).toBe('4194.0000');
+    });
+
+    it('adds nothing when there are no deduction lines', () => {
+        const slip = build({});
+        expect(slip.deductions.some((d) => d.code==='ATTENDANCE_RULES_V2')).toBe(false);
+    });
+
+    it('skips zero-day lines rather than emitting a 0.00 deduction', () => {
+        const slip = build({
+            attendanceDeductionLines: [{ ruleKey: 'LATE', counterGroup: null, occurrences: 1, days: 0 }],
+        });
+        expect(slip.deductions.some((d) => d.code==='ATTENDANCE_RULES_V2')).toBe(false);
+    });
+});

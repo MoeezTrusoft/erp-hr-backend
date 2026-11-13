@@ -1,4 +1,5 @@
 import * as svc from "../services/certification.service.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const createCertification = async (req, res) => {
     try {
@@ -12,7 +13,14 @@ export const listCertifications = async (req, res) => {
         const { employeeId, page, limit } = req.query;
         const result = await svc.listCertifications({ employeeId, page: Number(page) || 1, limit: Number(limit) || 20 });
         res.status(200).json({ success: true, message: "Success", data: result });
-    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    } catch (e) { respondServerError(req, res, e); }
+};
+
+export const getCertification = async (req, res) => {
+    try {
+        const result = await svc.getCertification(req.params.id);
+        res.status(200).json({ success: true, message: "Success", data: result });
+    } catch (e) { res.status(404).json({ success: false, message: e.message }); }
 };
 
 export const updateCertification = async (req, res) => {

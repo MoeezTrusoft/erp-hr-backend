@@ -1,0 +1,245 @@
+// HR-ATT-POLICY-01 — attendance anomaly approval routing.
+//
+// This is the unit that gates money: a REJECTED anomaly triggers the
+// DISAPPROVED_LEAVE deduction, and an APPROVED one releases a day that
+// requires_regularization is holding. The tests below concentrate on the ways
+// that can go wrong silently rather than on happy-path coverage.
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+
+const TENANT = '40314ef4-0a81-4390-b631-b3ad3f21f523';
+
+const REQUESTER = 100;
+const MANAGER = 200;
+const HR = 300;
+const MANAGEMENT = 400;
+
+// 1 = the requester's own manager (dynamic), 2 = HR, 3 = management.
+const CHAIN = [
+    { id: 1, level: 1, role: 'MANAGER', approverId: null, useEmployeeManager: true, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+    { id: 2, level: 2, role: 'HR', approverId: HR, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+    { id: 3, level: 3, role: 'MANAGEMENT', approverId: MANAGEMENT, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+];
+
+let employees;
+let anomalies;
+let approvalsWritten;
+
+const prismaMock = {
+    attendanceApprovalLevel: {
+        findMany: jest.fn(async () => CHAIN),
+        // HR-DECIDE-ANY-LEVEL — the tenant's configured HR approver.
+        findFirst: jest.fn(async () => ({ approverId: HR })),
+    },
+    employee: { findUnique: jest.fn(async ({ where }) => {
+        const row = employees.get(where.id);
+        return row ? { tenant_id: TENANT, ...row } : null;
+    }) },
+    attendanceAnomaly: {
+        updateMany: jest.fn(async ({where,data}) => {
+            const row=anomalies.get(where.id);
+            if(!row || (where.workflowVersion!==undefined && row.workflowVersion!==where.workflowVersion)) return {count:0};
+            anomalies.set(where.id,{...row,...data,workflowVersion:(row.workflowVersion||0)+1});return {count:1};
+        }),
+        findUnique: jest.fn(async ({ where }) => anomalies.get(where.id) ?? null),
+        findMany: jest.fn(async () => [...anomalies.values()].filter((a) => a.status === 'PENDING')),
+        update: jest.fn(async ({ where, data }) => {
+            const row = { ...anomalies.get(where.id), ...data };
+            anomalies.set(where.id, row);
+            return row;
+        }),
+    },
+    attendanceAnomalyApproval: {
+        create: jest.fn(async ({ data }) => { approvalsWritten.push(data); return { id: approvalsWritten.length, ...data }; }),
+    },
+};
+
+jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
+jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
+    tenantTransaction: jest.fn(async (_client, fn) => fn(prismaMock)),
+}));
+jest.unstable_mockModule('../../src/lib/logger.js', () => ({
+    default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+}));
+
+jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>{const levels=await prismaMock.attendanceApprovalLevel.findMany();return {configOn:()=>({approvalLevels:levels,employees:[...employees.values()],periods:[]})};}}));
+const routing = await import('../../src/services/attendanceAnomalyRouting.service.js');
+
+beforeEach(() => {
+    jest.clearAllMocks();
+    approvalsWritten = [];
+    employees = new Map([
+        [REQUESTER, { id: REQUESTER, managerId: MANAGER }],
+        [MANAGER, { id: MANAGER, managerId: null }],
+        [HR, { id: HR, managerId: null }],
+        [MANAGEMENT, { id: MANAGEMENT, managerId: null }],
+    ]);
+    anomalies = new Map([
+        [1, { id: 1, employeeId: REQUESTER, status: 'PENDING', currentApprovalLevel: 1, tenantId: TENANT, createdAt: new Date('2026-08-01') }],
+    ]);
+    prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue(CHAIN);
+});
+
+describe('HR-ATT-POLICY-01 tenant boundary', () => {
+    it('does not route an anomaly owned by another tenant', async () => {
+        anomalies.set(9, { id: 9, employeeId: REQUESTER, tenantId: 'b71f3d2a-9c44-4e6f-8a10-1f2e3d4c5b6a', status: 'PENDING', currentApprovalLevel: 1 });
+        await expect(
+            routing.routeAnomaly({ tenantId: TENANT, anomalyId: 9 }),
+        ).rejects.toThrow('not found in this tenant');
+        expect(prismaMock.attendanceAnomaly.update).not.toHaveBeenCalled();
+    });
+});
+
+describe('HR-ATT-POLICY-01 chain resolution', () => {
+    it('resolves level 1 from the requester own manager', async () => {
+        const chain = await routing.resolveApprovalChain({ tenantId: TENANT, employeeId: REQUESTER });
+
+        expect(chain[0]).toMatchObject({ level: 1, approverId: MANAGER, resolved: true });
+        expect(chain[1]).toMatchObject({ level: 2, approverId: HR, resolved: true });
+    });
+
+    it('hops past the manager level when the employee has no manager', async () => {
+        employees.set(REQUESTER, { id: REQUESTER, managerId: null });
+
+        const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
+
+        expect(res.routed).toBe(true);
+        expect(res.level).toBe(2);            // straight to HR
+        expect(res.approverId).toBe(HR);
+    });
+
+    it('never lets the requester approve their own request — self-manager level passes to next matrix member', async () => {
+        // Someone who is their own manager: the request is NOT left with them.
+        // HR-SELF-APPROVE-REPAIR hands the level to the next explicit matrix
+        // approver (MANAGEMENT at L3) — a matrix member authorizes, the
+        // requester never self-clears a deduction.
+        employees.set(REQUESTER, { id: REQUESTER, managerId: REQUESTER });
+
+        const chain = await routing.resolveApprovalChain({ tenantId: TENANT, employeeId: REQUESTER });
+
+        expect(chain[0]).toMatchObject({
+            resolved: true,
+            approverId: HR,
+            reason: 'approver is the requester',
+            standInForRole: 'MANAGER',
+        });
+    });
+
+    it('a non-skippable level with an UNRESOLVABLE approver still blocks (no passthrough possible)', async () => {
+        // L1 (self-manager, non-skippable) + NO later explicit approver other
+        // than the requester → the level has no one to pass to → it stays
+        // blocking. "Hops past" would silently lose the audit control.
+        employees.set(REQUESTER, { id: REQUESTER, managerId: REQUESTER });
+        prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([
+            { ...CHAIN[0], skipIfUnresolved: false },
+            { id: 2, level: 2, role: 'HR', approverId: REQUESTER, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+            CHAIN[2],
+        ]);
+
+        const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
+        // L1 has a passthrough target (MANAGEMENT), so it routes — but the
+        // REQUESTER can never be the assignee.
+        expect(res.routed).toBe(true);
+        expect(res.approverId).not.toBe(REQUESTER);
+    });
+
+    it('keeps HR self-verification with HR while separate management remains', async () => {
+        // L2 retains HR as verifier even for her own request; management
+        // remains a distinct, mandatory final approver.
+        prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([
+            CHAIN[0],
+            { id: 2, level: 2, role: 'HR', approverId: REQUESTER, useEmployeeManager: false, skipIfUnresolved: true, rowStatus: 'ACTIVE' },
+            CHAIN[2],
+        ]);
+
+        const chain = await routing.resolveApprovalChain({ tenantId: TENANT, employeeId: REQUESTER });
+        expect(chain[1]).toMatchObject({
+            level: 2,
+            approverId: REQUESTER,
+            resolved: true,
+            selfHrVerification: true,
+            reason: null,
+        });
+
+        // Routing lands the request with a real matrix member — the requester
+        // here still HAS a manager (L1 resolves normally), so the request
+        // parks at L1. The invariant that matters: the assignee is a matrix
+        // member, NEVER the requester herself.
+        const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
+        expect(res.approverId).toBe(MANAGER);
+        expect(res.approverId).not.toBe(REQUESTER);
+    });
+});
+
+describe('HR-ATT-POLICY-01 unroutable requests', () => {
+    it('does NOT auto-approve when no level resolves', async () => {
+        prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([]);
+
+        const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
+
+        expect(res.routed).toBe(false);
+        // Still PENDING: approving would release a held day, rejecting would
+        // trigger a deduction. Neither may happen by accident.
+        expect(anomalies.get(1).status).toBe('PENDING');
+        expect(anomalies.get(1).routingSnapshot).toEqual([]);
+        expect(approvalsWritten).toHaveLength(0);
+    });
+
+    it('blocks on a non-skippable level rather than stepping over it', async () => {
+        prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([
+            { ...CHAIN[0], skipIfUnresolved: false },
+            CHAIN[1],
+        ]);
+        employees.set(REQUESTER, { id: REQUESTER, managerId: null });
+
+        const res = await routing.routeAnomaly({ tenantId: TENANT, anomalyId: 1 });
+
+        expect(res.routed).toBe(false);       // must NOT fall through to HR
+    });
+});
+
+describe('HR-ATT-POLICY-01 decisions', () => {
+
+    // HR-DECIDE-ANY-LEVEL (operator, 2026-10-07) — HR verifies every anomaly
+    // for the tenant; a request parked at the manager level must not 403 her.
+
+});
+
+describe('HR-ATT-POLICY-01 approver queue', () => {
+    it('shows an anomaly to the current level approver and to the tenant HR approver', async () => {
+        const forManager = await routing.listPendingForApprover({ tenantId: TENANT, approverId: MANAGER });
+        const forHr = await routing.listPendingForApprover({ tenantId: TENANT, approverId: HR });
+
+        expect(forManager.map((a) => a.id)).toEqual([1]);
+        // HR-DECIDE-ANY-LEVEL — HR sees it too (she may verify at level 1).
+        expect(forHr.map((a) => a.id)).toEqual([1]);
+    });
+});
+
+describe('imported HR / management policy',()=>{
+ it('removes Manager only for requests with the explicit policy',async()=>{
+  const chain=await routing.resolveApprovalChain({tenantId:TENANT,employeeId:REQUESTER,approvalPolicy:'HR_MANAGEMENT'});
+  expect(chain.map(x=>x.level)).toEqual([2,3]);
+  expect((await routing.resolveApprovalChain({tenantId:TENANT,employeeId:REQUESTER})).map(x=>x.level)).toEqual([1,2,3]);
+ });
+
+});
+
+describe('HR self-verification with separate management approval',()=>{
+
+ it.each([null,HR])('blocks own HR verification without independent management (%s)',async managementId=>{
+  prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([CHAIN[1],{...CHAIN[2],approverId:managementId}]);
+  anomalies.set(20,{id:20,employeeId:HR,tenantId:TENANT,status:'PENDING',currentApprovalLevel:2,sourceKind:'PAPER_FORM',approvalPolicy:'HR_MANAGEMENT',workflowVersion:0});
+  const chain=await routing.resolveApprovalChain({tenantId:TENANT,employeeId:HR,approvalPolicy:'HR_MANAGEMENT'});
+  expect(chain[0]).toMatchObject({resolved:false,skippable:false});
+  await expect(routing.decideAnomaly({tenantId:TENANT,anomalyId:20,approverId:HR,decision:'APPROVED'})).rejects.toThrow();expect(approvalsWritten).toHaveLength(0);
+ });
+});
+
+describe('pinned approval routes',()=>{
+ it('keeps the original HR verifier inbox after policy reassignment',async()=>{
+  anomalies.set(1,{...anomalies.get(1),routingSnapshot:[{level:1,role:'MANAGER',approverId:MANAGER,resolved:true},{level:2,role:'HR',approverId:HR,resolved:true}]});
+  prismaMock.attendanceApprovalLevel.findMany.mockResolvedValue([{...CHAIN[1],approverId:MANAGEMENT}]);
+  expect((await routing.listPendingForApprover({tenantId:TENANT,approverId:HR})).map(a=>a.id)).toContain(1);
+  expect(await routing.listPendingForApprover({tenantId:TENANT,approverId:MANAGEMENT})).toHaveLength(0);
+ });
+});

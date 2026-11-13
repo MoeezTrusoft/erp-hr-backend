@@ -1,0 +1,439 @@
+// src/services/myPayslip.service.js — My Payslip (employee self-service).
+//
+// Read/query surface for the employee-facing "My Payslip" screen: the employee
+// views their OWN payslip (self-scoped on employeeId), the earning/deduction
+// pie split, a 6-month net-pay trend, their past-slip list, and can raise a
+// question against a slip (which fans out an hr.payslip.question_raised.v1
+// domain event via the transactional outbox).
+//
+// TENANCY: every read is folded through scopedWhere(tenantId, where) — the
+// FORCE-RLS extension additionally sets app.tenant_id; F-06 rejects a missing
+// interactive tenant before this service executes. The employee self-scope
+// (employeeId) is applied on TOP so an authenticated employee can only ever
+// reach their own rows. questionPayslip runs inside a tenantTransaction so the
+// PayslipQuestion write + outbox enqueue share one RLS-bound connection.
+import { ruleDeductions } from "../lib/attendanceAnomalyRules.js";
+import { describeAttendanceCharges, payMonthOf } from "../lib/payslipCharges.js";
+import { toIdentity } from "../lib/personIdentity.js";
+import prisma from "../lib/prisma.js";
+import logger from "../lib/logger.js";
+import { scopedWhere } from "../lib/tenancy.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { enqueueHrDomainEvent } from "./hrDomainEvent.service.js";
+// T1.9 — HR-4040 via the central registry (the HR-4004 literal was registry
+// drift: unmapped in the JSON-RPC table, so ownership-404s surfaced as -32603
+// internal instead of -32004 not-found).
+import { HR_ERRORS } from "../constants/errorCodes.js";
+import { payslipQuestionRaisedEvent } from "./hrEvents.js";
+import { markLapsedCases } from "./attendanceLapse.service.js";
+import { rulesForRun } from "./deductionRules.service.js";
+
+
+
+// Statuses considered "official" for YTD aggregation. We prefer FINALIZED /
+// DISTRIBUTED slips, but fall back to ALL of the employee's slips when the year
+// has no finalized/distributed slip yet (e.g. mid-run previews).
+const YTD_OFFICIAL_STATUSES = ["FINALIZED", "DISTRIBUTED"];
+// Employee self-service sees a slip only once payroll is finalized: DRAFT and
+// HOLD slips are still under review and may change or never be paid.
+export const EMPLOYEE_VISIBLE_STATUSES = YTD_OFFICIAL_STATUSES;
+
+// T1.9 — HR-4040 via the central registry (the HR-4004 literal was registry
+// drift: unmapped in the JSON-RPC table, so ownership-404s surfaced as -32603
+// internal instead of -32004 not-found).
+function notFound(message) {
+  return Object.assign(new Error(message), { status: 404, code: HR_ERRORS.NOT_FOUND.code });
+}
+
+function round1(n) {
+  return Math.round((Number(n) || 0) * 10) / 10;
+}
+
+function yearBounds(date) {
+  const d = new Date(date);
+  const year = d.getUTCFullYear();
+  return {
+    year,
+    start: new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0)),
+    // exclusive upper bound = Jan 1 of the next year
+    end: new Date(Date.UTC(year + 1, 0, 1, 0, 0, 0, 0)),
+  };
+}
+
+const PAYSLIP_INCLUDE = {
+  employee: {select:{employee_code:true,employee_name:true,first_name:true,last_name:true,preferred_name:true,job_title:true,photo_url:true,Position:{select:{title:true}},businessUnit:{select:{name:true}}}},
+  payrollRun: { select: { id: true, periodStart: true, periodEnd: true, currencyCode: true, processedAt: true, status: true, calculationConfigVersion: true } },
+  earnings: {
+    include: { earningType: { select: { code: true, name: true, isTaxable: true } } },
+  },
+  deductions: {
+    include: { deductionType: { select: { code: true, name: true } } },
+  },
+};
+
+// Resolve the target payslip: explicit payslipId (self-scoped) else the LATEST
+// slip by payrollRun.periodEnd for the employee. Returns null if none.
+async function resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped = false }) {
+  // HR-PAYSLIP-ADMIN-VIEW-01 (2026-09-14) — an explicit payslipId identifies
+  // the row (and therefore its employee) on its own; employeeId is only needed
+  // to find "my latest". The FE route /hr/payroll/payslip/:id is opened by
+  // HR/admin sessions that have NO employee binding, and the old code 400'd
+  // ("employeeId is required (no employee bound to the session)") before ever
+  // looking at the row. Tenant isolation is unchanged: tenantId still comes
+  // from the verified session via scopedWhere, so a cross-tenant id 404s.
+  //
+  // HR-RBAC-01 (2026-09-21, T1.2) — the route is ALSO deep-linkable by a plain
+  // employee, and payslipId-keyed resolution ignored employeeId entirely, so
+  // any employee could open ANY tenant payslip by id (audit C1). When the
+  // caller is employee-scoped, an explicit payslipId resolves ONLY within the
+  // caller's own slips: the admin-style row lookup now includes employeeId in
+  // the where-clause, so a foreign slip 404s with the same generic text as a
+  // missing one (no enumeration oracle). Admin-surface sessions (flag passed
+  // by the tool layer) keep the unscoped row lookup.
+  const scope = scopedWhere(tenantId, {});
+  const where = payslipId != null
+    ? { ...scope, id: Number(payslipId) }
+    : { ...scope, employeeId: Number(employeeId) };
+  if (payslipId != null && employeeScoped) {
+    where.employeeId = Number(employeeId);
+  }
+  if (employeeScoped) where.status = { in: EMPLOYEE_VISIBLE_STATUSES };
+  // "My latest payslip" never lands on a cancelled or failed run; an explicit id still opens.
+  if (payslipId == null) where.payrollRun = { status: { notIn: HIDDEN_RUN_STATUSES } };
+  return prisma.payrollPayslip.findFirst({
+    where,
+    include: PAYSLIP_INCLUDE,
+    orderBy: [{ payrollRun: { periodStart: "desc" } }, { id: "desc" }],
+  });
+}
+
+function isTaxDeduction(d) {
+  const code = d?.deductionType?.code || "";
+  return String(code).toUpperCase().includes("TAX");
+}
+
+// Runs whose payslips an employee must not see in their own list.
+const HIDDEN_RUN_STATUSES = ["CANCELLED", "FAILED", "REJECTED"];
+
+// How this payslip is paid, from the payroll setup the run was calculated with. Never blocks the payslip.
+async function computePaymentMethod({ tenantId, run }) {
+  try {
+    const snapshot = await prisma.payrollConfigSnapshot.findFirst({
+      where: scopedWhere(tenantId, run?.calculationConfigVersion ? { version: run.calculationConfigVersion } : {}),
+      orderBy: { version: "desc" },
+    });
+    if (!snapshot) return null;
+    return snapshot.config?.payRules?.cashDisbursement === true ? "CASH" : "BANK";
+  } catch (err) {
+    logger.warn({ err: err?.message }, "payslip payment method unavailable");
+    return null;
+  }
+}
+
+// Dated attendance charges, priced exactly as the run priced them. Never blocks the payslip.
+async function computeAttendanceCharges({ tenantId, employeeId, run }) {
+  if (!run?.periodStart || !run?.periodEnd) return [];
+  try {
+    const cases = await markLapsedCases(
+      await prisma.attendanceAnomaly.findMany({
+        where: scopedWhere(tenantId, {
+          employeeId,
+          date: { gte: run.periodStart, lte: run.periodEnd },
+          rulesVersion: 2,
+        }),
+      }),
+      { tenantId, db: prisma, asOf: run.processedAt ?? new Date() },
+    );
+    const assessment = ruleDeductions(cases, {
+      from: run.periodStart,
+      to: run.periodEnd,
+      rules: await rulesForRun(prisma, { tenantId, runId: run.id }),
+    });
+    return describeAttendanceCharges(assessment.lines, cases);
+  } catch (err) {
+    logger.warn({ err: err?.message }, "payslip attendance charges unavailable");
+    return [];
+  }
+}
+
+async function computeYtd({ tenantId, employeeId, periodEnd }) {
+  const { start, end } = yearBounds(periodEnd);
+  const baseWhere = scopedWhere(tenantId, {
+    employeeId: Number(employeeId),
+    payrollRun: { periodEnd: { gte: start, lt: end, lte: new Date(periodEnd) } },
+  });
+
+  // YTD includes official slips through this payslip period only.
+  const officialWhere = { ...baseWhere, status: { in: YTD_OFFICIAL_STATUSES } };
+  const slips = await prisma.payrollPayslip.findMany({
+    where: officialWhere,
+    include: {
+      deductions: { include: { deductionType: { select: { code: true } } } },
+    },
+  });
+
+
+  let gross = 0;
+  let net = 0;
+  let tax = 0;
+  for (const s of slips) {
+    gross += Number(s.grossAmount) || 0;
+    net += Number(s.netAmount) || 0;
+    for (const d of s.deductions || []) {
+      if (isTaxDeduction(d)) tax += Number(d.amount) || 0;
+    }
+  }
+  return { gross, tax, net };
+}
+
+// Leave days taken by the employee that OVERLAP the payslip period (APPROVED).
+async function computeLeaveTaken({ tenantId, employeeId, periodStart, periodEnd }) {
+  const rows = await prisma.leaveRequest.findMany({
+    where: scopedWhere(tenantId, {
+      employeeId: Number(employeeId),
+      status: "APPROVED",
+      // overlap: startDate <= periodEnd AND endDate >= periodStart
+      startDate: { lte: periodEnd },
+      endDate: { gte: periodStart },
+    }),
+    select: { totalDays: true },
+  });
+  return rows.reduce((sum, r) => sum + (Number(r.totalDays) || 0), 0);
+}
+
+// Approved overtime hours with a date inside the payslip period.
+async function computeOvertimeHours({ tenantId, employeeId, periodStart, periodEnd }) {
+  const rows = await prisma.overtimeRequest.findMany({
+    where: scopedWhere(tenantId, {
+      employeeId: Number(employeeId),
+      status: "APPROVED",
+      date: { gte: periodStart, lte: periodEnd },
+    }),
+    select: { hours: true },
+  });
+  return rows.reduce((sum, r) => sum + (Number(r.hours) || 0), 0);
+}
+
+/**
+ * The employee's payslip (explicit payslipId, else the latest by period end),
+ * enriched with YTD figures + working-day / leave / overtime accounting.
+ */
+export async function getMyPayslip({ tenantId, employeeId, payslipId, employeeScoped = false }) {
+  const slip = await resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped });
+  if (!slip) throw notFound("No payslip found for this employee");
+
+  // The row's own employee drives every enrichment (correct for the admin
+  // view path where the session has no employee binding).
+  const empId = slip.employeeId;
+  const periodStart = slip.payrollRun?.periodStart ?? null;
+  const periodEnd = slip.payrollRun?.periodEnd ?? null;
+
+  const [ytd, leaveTaken, overtimeHours, attendanceCharges, paymentMethod] = await Promise.all([
+    computeYtd({ tenantId, employeeId: empId, periodEnd: periodEnd ?? slip.created_at }),
+    periodStart && periodEnd
+      ? computeLeaveTaken({ tenantId, employeeId: empId, periodStart, periodEnd })
+      : Promise.resolve(0),
+    periodStart && periodEnd
+      ? computeOvertimeHours({ tenantId, employeeId: empId, periodStart, periodEnd })
+      : Promise.resolve(0),
+    computeAttendanceCharges({ tenantId, employeeId: empId, run: slip.payrollRun }),
+    computePaymentMethod({ tenantId, run: slip.payrollRun }),
+  ]);
+
+  const totalWorkingDays = slip.attendancePeriodDays ?? (periodStart && periodEnd ? Math.round((new Date(periodEnd)-new Date(periodStart))/86400000)+1 : null);
+  const daysPaid = slip.payableDays ?? null;
+  const workingDays = daysPaid;
+
+  return {
+    payslipId: slip.id,
+    // HR-PAYSLIP-ADMIN-VIEW-01 — the subject employee on the payload, so an
+    // admin session (no employee binding) can chain employee-keyed follow-up
+    // calls (trend, payslip list) off this id instead of failing.
+    employeeId: slip.employeeId,
+    employeeCode: slip.employee?.employee_code || "Employee code required",
+    employee: slip.employee ? toIdentity(slip.employee) : null,
+    currencyCode: slip.payrollRun?.currencyCode,
+    period: { from: periodStart, to: periodEnd, month: payMonthOf(periodStart, periodEnd) },
+    status: slip.status,
+    netPay: Number(slip.netAmount) || 0,
+    receivedOn: slip.paidAt ?? null,
+    distributedAt: slip.distributedAt ?? null,
+    paymentReference: slip.paymentReference ?? null,
+    gross: Number(slip.grossAmount) || 0,
+    totalDeductions: Number(slip.totalDeductions) || 0,
+    ytd: { gross: ytd.gross, tax: ytd.tax, net: ytd.net },
+    workingDays,
+    totalWorkingDays,
+    daysPaid,
+    leaveTaken,
+    overtimeHours,
+    earnings: (slip.earnings || []).map((e) => ({
+      code: e.earningType?.code ?? null,
+      name: e.earningType?.name ?? null,
+      amount: Number(e.amount) || 0,
+      taxable: e.earningType?.isTaxable ?? null,
+    })),
+    deductions: (slip.deductions || []).map((d) => ({
+      code: d.deductionType?.code ?? null,
+      name: d.deductionType?.name ?? null,
+      amount: Number(d.amount) || 0,
+    })),
+    attendanceCharges,
+    paymentMethod,
+  };
+}
+
+/**
+ * Pie-chart split for the payslip: earnings as a pct of gross, deductions as a
+ * pct of total deductions (1dp).
+ */
+export async function getPayslipDistribution({ tenantId, employeeId, payslipId, employeeScoped = false }) {
+  const slip = await resolvePayslip({ tenantId, employeeId, payslipId, employeeScoped });
+  if (!slip) throw notFound("No payslip found for this employee");
+
+  const gross = Number(slip.grossAmount) || 0;
+  const totalDeductions = Number(slip.totalDeductions) || 0;
+
+  const earnings = (slip.earnings || []).map((e) => {
+    const amount = Number(e.amount) || 0;
+    return {
+      name: e.earningType?.name ?? null,
+      amount,
+      pct: gross > 0 ? round1((amount / gross) * 100) : 0,
+    };
+  });
+  const deductions = (slip.deductions || []).map((d) => {
+    const amount = Number(d.amount) || 0;
+    return {
+      name: d.deductionType?.name ?? null,
+      amount,
+      pct: totalDeductions > 0 ? round1((amount / totalDeductions) * 100) : 0,
+    };
+  });
+
+  return { earnings, deductions };
+}
+
+/**
+ * Net paid for the last 6 months keyed by payrollRun.periodEnd month, 0-filled
+ * for months with no payslip. Newest month LAST (chronological ascending).
+ */
+export async function getEarningTrend6mo({ tenantId, employeeId }) {
+  const now = new Date();
+  // First day (UTC) of the month 5 months ago → 6-month inclusive window.
+  const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1, 0, 0, 0, 0));
+
+  const slips = await prisma.payrollPayslip.findMany({
+    where: scopedWhere(tenantId, {
+      employeeId: Number(employeeId),
+      payrollRun: { periodStart: { gte: windowStart }, status: { notIn: HIDDEN_RUN_STATUSES } },
+      status:{in:YTD_OFFICIAL_STATUSES},
+    }),
+    include: { payrollRun: { select: { periodStart: true } } },
+  });
+
+  // Seed the 6 month buckets (YYYY-MM) with 0.
+  const buckets = new Map();
+  const order = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5 + i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    buckets.set(key, 0);
+    order.push(key);
+  }
+
+  for (const s of slips) {
+    const pe = s.payrollRun?.periodStart;
+    if (!pe) continue;
+    const d = new Date(pe);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    if (buckets.has(key)) buckets.set(key, buckets.get(key) + (Number(s.netAmount) || 0));
+  }
+
+  return { months: order.map((month) => ({ month, amount: buckets.get(month) })) };
+}
+
+/**
+ * Paginated list of the employee's past payslip references (newest first).
+ */
+export async function listMyPayslips({ tenantId, employeeId, page = 1, pageSize = 20, employeeScoped = false }) {
+  const take = Math.max(1, Number(pageSize) || 20);
+  const currentPage = Math.max(1, Number(page) || 1);
+  const skip = (currentPage - 1) * take;
+
+  const where = scopedWhere(tenantId, {
+    employeeId: Number(employeeId),
+    payrollRun: { status: { notIn: HIDDEN_RUN_STATUSES } },
+  });
+  if (employeeScoped) where.status = { in: EMPLOYEE_VISIBLE_STATUSES };
+
+  const [rows, total] = await Promise.all([
+    prisma.payrollPayslip.findMany({
+      where,
+      include: { payrollRun: { select: { periodStart: true, periodEnd: true } } },
+      orderBy: [{ payrollRun: { periodStart: "desc" } }, { id: "desc" }],
+      skip,
+      take,
+    }),
+    prisma.payrollPayslip.count({ where }),
+  ]);
+
+  const items = rows.map((s) => ({
+    id: s.id,
+    period: {
+      from: s.payrollRun?.periodStart ?? null,
+      to: s.payrollRun?.periodEnd ?? null,
+      month: payMonthOf(s.payrollRun?.periodStart, s.payrollRun?.periodEnd),
+    },
+    net: Number(s.netAmount) || 0,
+    status: s.status,
+    // Same meaning as getMyPayslip: receivedOn is the reconciled bank credit;
+    // payslip delivery is reported separately.
+    receivedOn: s.paidAt ?? null,
+    distributedAt: s.distributedAt ?? null,
+  }));
+
+  return { items, total, page: currentPage, pageSize: take };
+}
+
+/**
+ * Raise a question against the employee's OWN payslip. Verifies ownership
+ * (scoped findFirst; 404), creates a PayslipQuestion (OPEN), and enqueues the
+ * hr.payslip.question_raised.v1 outbox event — all inside one RLS-bound tx.
+ */
+export async function questionPayslip({ tenantId, employeeId, payslipId, question, employeeScoped = false, ctx = {} }) {
+  const slipId = Number(payslipId);
+
+  return tenantTransaction(prisma, async (tx) => {
+    // HR-PAYSLIP-ADMIN-VIEW-01 — resolve the subject employee from the slip
+    // when the session has no binding (HR/admin asking about someone's slip).
+    const slipWhere = scopedWhere(tenantId, { id: slipId });
+    if (employeeId != null && employeeId !== "") slipWhere.employeeId = Number(employeeId);
+    // Self-service may only ask about its own released slip (same rule as reads).
+    if (employeeScoped) {
+      slipWhere.employeeId = employeeId != null && employeeId !== "" ? Number(employeeId) : -1;
+      slipWhere.status = { in: EMPLOYEE_VISIBLE_STATUSES };
+    }
+    const slip = await tx.payrollPayslip.findFirst({
+      where: slipWhere,
+      select: { id: true, employeeId: true },
+    });
+    if (!slip) throw notFound("No payslip found for this employee");
+
+    const row = await tx.payslipQuestion.create({
+      data: {
+        payslipId: slipId,
+        employeeId: slip.employeeId,
+        question,
+        status: "OPEN",
+        tenantId: tenantId ?? null,
+      },
+    });
+
+    const event = payslipQuestionRaisedEvent(row, ctx);
+    if (event) await enqueueHrDomainEvent(tx, event);
+    else logger.warn({ payslipQuestionId: row.id }, "payslip question raised event skipped (no tenant)");
+
+    return row;
+  }, { tenantId });
+}

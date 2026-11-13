@@ -21,6 +21,7 @@ export const createTag = async ({ name, type = "skill", tenantId, createdById })
     module: "Condidates Tags",
     result: "SUCCESS",
     notes: `Condidate Tags"${create.id}" created successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return create;
@@ -119,6 +120,7 @@ export const deactivateTag = async ({ id, tenantId , deletedBy}) => {
     module: "Condidate Tags",
     result: "SUCCESS",
     notes: `Condidate Tags"${id}" Deactivate Successfully`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
   });
 
     return deactivateTag;

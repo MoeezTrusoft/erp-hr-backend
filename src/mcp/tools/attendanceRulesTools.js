@@ -1,0 +1,249 @@
+import { z } from "zod";
+import { getCtx } from "../context.js";
+import { assertPermission, hasPermission } from "../utils/assertPermission.js";
+import { withToolError } from "../utils/toolError.js";
+import * as service from "../../services/attendanceRules.service.js";
+import { requestGraceRule, requestGraceMembership, listPendingRuleChanges } from "../../services/attendanceRuleChangeRequest.service.js";
+import { requireEmployeeActor } from "../../lib/employeeActor.js";
+import { legacySubmit } from "../../services/approval/legacy.js";
+import { editAttendanceRequestReason } from "../../services/approval/service.js";
+import { saveCorrectionRequest, myCorrectionRequests } from '../../services/attendanceCorrectionRequest.service.js';
+import * as workspace from '../../services/attendanceWorkspace.service.js';
+import { attendanceExportInput, attendanceViewInput } from '../../lib/attendanceWorkspaceSchemas.js';
+export function registerAttendanceRulesTools(server) {
+  const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    id = z.number().int().positive();
+  const version = z.number().int().nonnegative(),
+    reason = z.string().trim().min(1).max(4000);
+  const common = { anomalyId: id, version };
+  const filters = { site:z.string().max(100).optional(),department:z.string().max(100).optional(),shift:z.string().max(100).optional() };
+  const defs = [
+    ['export_start',attendanceExportInput.shape,workspace.startAttendanceExport],
+    ['exports',{},workspace.listAttendanceExports],
+    ['export_status',{id:z.string().uuid()},workspace.readAttendanceExport],
+    ['export_download',{id:z.string().uuid(),page:z.number().int().positive().default(1)},workspace.downloadAttendanceExport],
+    ['views',{},workspace.listAttendanceViews],
+    ['view_save',attendanceViewInput.shape,workspace.saveAttendanceView],
+    ['view_delete',{id:z.string().uuid(),version},workspace.deleteAttendanceView],
+    ['my_day',{},service.myAttendanceDay],
+    ['export_records',{from:date,to:date,...filters,q:z.string().max(50).optional(),status:z.string().max(50).optional(),sortBy:z.enum(['date','employee','status','checkIn','checkOut']).optional(),sortDir:z.enum(['asc','desc']).optional()},service.exportAttendanceRecords],
+    ['filter_options',{from:date,to:date},service.attendanceFilterOptions],
+    ['employee_options', { q: z.string().trim().max(50).default(''), page: z.number().int().min(1).default(1), pageSize: z.number().int().min(1).max(100).default(50) }, service.employeeCodeOptions],
+    ['correction_mine', { date, employeeId: id.optional() }, myCorrectionRequests],
+    // HR or the line manager files a correction for an employee: save the draft with their employeeId, then submit it here.
+    ['correction_submit_on_behalf', { id: z.string().uuid(), reason: z.string().trim().min(3).max(4000) }, (a) => legacySubmit('ATTENDANCE_CORRECTION', a.id, a.reason, { onBehalf: true, managerMayFile: true })],
+    ["correction_save", {
+      id: z.string().uuid(), version, date, employeeId: id.optional(), sessionKey: z.string().min(1).max(160),
+      checkIn: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/).nullable(),
+      checkOut: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/).nullable(),
+      reason: z.string().trim().max(4000), evidence: z.string().trim().max(4000),
+      reasonCategory: z.enum(['MISSED_PUNCH','READER_FAILURE','DELAYED_CAPTURE','OTHER']).nullable().optional(),
+      evidenceDate: date.nullable().optional(),
+    }, saveCorrectionRequest],
+    [
+      "list",
+      {
+        ...filters,
+        from: date,
+        to: date,
+        status: z
+          .enum(["PENDING", "APPROVED", "REJECTED", "RESOLVED"])
+          .optional(),
+        employeeId: id.optional(),
+        q: z.string().trim().max(50).optional(),
+        category: z.enum(['absent','late','early','other']).optional(),
+        window: z.enum(['OPEN','HR_ONLY','CHARGED','RAISED','DECIDED']).optional(),
+        page: z.number().int().min(1).default(1),
+        pageSize: z.number().int().min(1).max(100).default(30),
+      },
+      service.listRuleCases,
+    ],
+    ["detail", { anomalyId: id }, service.ruleCaseDetail],
+    // TS-REQUEST-HYBRID-01 — raise the resolution request for a case the rules
+    // engine detected. `raise` is the employee's own act; `raise_on_behalf` is
+    // HR's, for an employee who has not answered their case. Both take a single
+    // reason — type, date, times and route are all derived.
+    // The case is addressed by id (the Timesheet row knows it) or by day plus
+    // type (the employee's own dialog is about a day).
+    [
+      "raise",
+      {
+        anomalyId: id.optional(),
+        date: date.optional(),
+        type: z.enum(["LATE_CHECKIN", "MISSING_CHECKIN", "MISSING_CHECKOUT", "EARLY_CHECKOUT", "ABSENT"]).optional(),
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.raiseRuleRequest,
+    ],
+    [
+      "raise_on_behalf",
+      {
+        anomalyId: id.optional(),
+        date: date.optional(),
+        type: z.enum(["LATE_CHECKIN", "MISSING_CHECKIN", "MISSING_CHECKOUT", "EARLY_CHECKOUT", "ABSENT"]).optional(),
+        employeeId: id.optional().describe("The employee the case belongs to — required when the case is addressed by date rather than id"),
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.raiseRuleRequestOnBehalf,
+    ],
+    // HR-ATT-APPEAL-01 (operator, 2026-11-06) — a case Management rejected keeps
+    // its decision and audit for good, so a second chance is a NEW linked case
+    // with the same day, type and evidence, raised through the normal route.
+    // `appeal` is the employee's own act (their rejected request is why they
+    // need it); `appeal_on_behalf` is HR's, for an employee who asked HR to put
+    // the day back. Payroll can price only one of the pair.
+    [
+      "appeal",
+      {
+        anomalyId: id,
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.appealRuleRequest,
+    ],
+    [
+      "appeal_on_behalf",
+      {
+        anomalyId: id,
+        reason,
+        requestKey: z.string().uuid().optional(),
+      },
+      service.appealRuleRequestOnBehalf,
+    ],
+    // Correct the message of a raised resolution request until the next approver
+    // decides: the employee on their own request, and the filer, the employee's
+    // line manager or the HR approver on a request raised on behalf. Management
+    // never edits; an edit follows a multi-company (mirrored) copy. The service
+    // holds the rules and the audit.
+    [
+      "edit_request",
+      {
+        approvalRef: z.string().uuid(),
+        expectedVersion: z.number().int().positive(),
+        reason,
+      },
+      editAttendanceRequestReason,
+    ],
+    [
+      "comment",
+      {
+        ...common,
+        kind: z.enum(["EMPLOYEE", "MANAGER", "HR"]),
+        comment: reason,
+        recommendation: z.enum(["APPROVE", "DISAPPROVE"]).optional(),
+      },
+      service.commentRuleCase,
+    ],
+    [
+      "decide",
+      {
+        ...common,
+        decision: z.enum(["APPROVED", "REJECTED"]),
+        comment: reason,
+      },
+      service.decideRuleCase,
+    ],
+    [
+      "enter_time",
+      {
+        employeeId: id,
+        date,
+        sessionKey: z.string().optional(),
+        version,
+        checkIn: z.string().optional(),
+        checkOut: z.string().optional(),
+        reason,
+      },
+      service.enterRuleTime,
+    ],
+    ["configuration", {}, service.rulesConfiguration],
+    [
+      "pricing_adopt",
+      { payslipId: id, basis: z.string().regex(/^\d+(\.\d{1,4})?$/), reason },
+      service.adoptHistoricalPricing,
+    ],
+    [
+      "grace_save",
+      {
+        scope: z.enum(["COMPANY", "DEPARTMENT", "TEAM", "EMPLOYEE", "SHIFT"]),
+        scopeKey: z.string().min(1).max(100),
+        effectiveFrom: date,
+        checkInMinutes: z.number().int().min(0).max(1440).nullable(),
+        checkOutMinutes: z.number().int().min(0).max(1440).nullable(),
+        version: z.number().int().min(-1),
+        reason,
+      },
+      async (a) => requestGraceRule({ ...a, tenantId: a.user.tenantId, requestedById: a.user.employeeId ?? (await requireEmployeeActor(a.user)) }),
+    ],
+    [
+      "membership_save",
+      {
+        employeeId: id,
+        effectiveFrom: date,
+        teamKey: z.string().max(100).nullable(),
+        departmentKey: z.string().max(100).nullable(),
+        version: z.number().int().min(-1),
+        reason,
+      },
+      async (a) => requestGraceMembership({ ...a, tenantId: a.user.tenantId, requestedById: a.user.employeeId ?? (await requireEmployeeActor(a.user)) }),
+    ],
+    ['rule_changes_pending', {}, (a) => listPendingRuleChanges({ tenantId: a.user.tenantId })],
+    ['mine', {}, service.myAttendanceRules],
+  ];
+  for (const [action, schema, fn] of defs)
+    server.tool(
+      "hr_attendance_rules_" + action,
+      "Attendance anomaly rules: " + action,
+      schema,
+      withToolError(async (args) => {
+        const { user, permissions } = getCtx();
+        // TS-REQUEST-HYBRID-01 — raising a resolution request is not part of
+        // the HR attendance READ surface:
+        //   • `raise` is the employee's own act. Its boundaries are ownership
+        //     of the case (asserted in the service) and the initiator grant the
+        //     HR Approval Centre requires to submit at all — deliberately NOT
+        //     hr:attendance, which an ordinary employee does not hold.
+        //   • `raise_on_behalf` is HR's act and keeps the attendance write
+        //     grant the legacy ops raise used; the centre re-asserts the
+        //     verification grant on submission.
+        // Every other action stays behind the GET hr:attendance gate.
+        //
+        //   • `edit_request` is the employee's own correction of a request until
+        //     an approver decides, or a filer/line-manager/HR correction of an
+        //     on-behalf request. The service is authoritative on who may edit
+        //     (an ordinary employee holds no hr:attendance write), so it is not
+        //     gated here — only by the approval access every self-service user
+        //     already has.
+        if (action === 'raise_on_behalf' || action === 'appeal_on_behalf') {
+          assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        } else if (action === 'employee_options') {
+          // Issue 395 — a line manager filing leave for a report needs the
+          // picker but holds no company-wide attendance read. The service
+          // already narrows a non-HR caller to self + direct reports
+          // (HR-ATT-SCOPE-02), so the approvals-manager grant is sufficient to
+          // search within their own team; HR keeps using the attendance grant.
+          if (
+            !hasPermission(permissions, "hr:approvals:manager", "VIEW") &&
+            !hasPermission(permissions, "hr:attendance", "GET")
+          )
+            assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+        } else if (action === 'grace_save' || action === 'membership_save') {
+          assertPermission(permissions, "POST", "hr:attendance", user.isAdmin);
+        } else if (action === 'mine') {
+          // every signed-in employee may read the limits that apply to them; the service scopes the answer
+        } else if (action === 'correction_submit_on_behalf') {
+          // the approval service decides who may file for whom (HR, or the employee's line manager)
+        } else if (action !== 'raise' && action !== 'appeal' && action !== 'edit_request') {
+          assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+        }
+        if (action === 'export_records') assertPermission(permissions,'EXPORT','hr:attendance',user.isAdmin);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(await fn({ ...args, user })) },
+          ],
+        };
+      }, "hr_attendance_rules_" + action),
+    );
+}

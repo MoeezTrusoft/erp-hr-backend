@@ -14,12 +14,16 @@ export const createApplication = async ({
 }) => {
     const create = await prisma.application.create({
         data: {
-            candidateId,
-            jobRequisitionId,
+            // candidateId / jobRequisitionId are NOT-NULL Int FKs — coerce (arrive as
+            // numeric strings from the MCP boundary) to align with sibling services.
+            candidateId: Number(candidateId),
+            jobRequisitionId: Number(jobRequisitionId),
             stage,
             status,
             tenantId: tenantId ?? null,
-            createdById: Number(createdById) ?? null,
+            // Guard against NaN: Number(undefined) ?? null === NaN. Only write a
+            // finite creator id, else null (createdById is nullable).
+            createdById: Number.isFinite(Number(createdById)) ? Number(createdById) : null,
         },
         include: {
             candidate: true,
@@ -32,7 +36,8 @@ export const createApplication = async ({
         module: "Application",
         result: "SUCCESS",
             notes: `Application "${create.id}" created successfully for candidate "${candidateId}" on job "${jobRequisitionId}".`,
-    });
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
 
 
     return create;
@@ -41,20 +46,28 @@ export const createApplication = async ({
 /**
  * Update stage of an application
  */
-export const updateApplicationStage = async ({ id, tenantId, stage,updatedById }) => {
-    const update = prisma.application.updateMany({
+export const updateApplicationStage = async ({ id, tenantId, stage, updatedById }) => {
+    // The Kanban board groups by the lowercase PIPELINE_STAGES enum and SKIPS
+    // unknown-cased stages, so normalize here — callers may send "SCREENING".
+    const normalizedStage = String(stage).toLowerCase();
+    const update = await prisma.application.updateMany({
         where: { id, tenantId: tenantId ?? null },
-        data: { stage },
+        data: { stage: normalizedStage },
     });
 
- await logAction({
-            employeeId: Number(updatedById) ?? null,
-            type: "UPDATE",
-            module: "Application",
-            result: "SUCCESS",
-            notes: `Application "${id}" stage updated to "${stage}".`,
-        });
-    return update
+    if (!update.count) {
+        throw new Error(`Application "${id}" not found`);
+    }
+
+    await logAction({
+        employeeId: Number(updatedById) || null,
+        type: "UPDATE",
+        module: "Application",
+        result: "SUCCESS",
+        notes: `Application "${id}" stage updated to "${normalizedStage}".`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
+    return { success: true, id, stage: normalizedStage, count: update.count };
 };
 
 /**
@@ -66,14 +79,19 @@ export const updateApplicationStatus = async ({ id, tenantId, status, updatedByI
         data: { status },
     });
 
- await logAction({
-            employeeId: Number(updatedById) ?? null,
-            type: "UPDATE",
-            module: "Application",
-            result: "SUCCESS",
-            notes: `Application "${id}" status updated to "${status}".`,
-        });
-    return updateStatus;
+    if (!updateStatus.count) {
+        throw new Error(`Application "${id}" not found`);
+    }
+
+    await logAction({
+        employeeId: Number(updatedById) || null,
+        type: "UPDATE",
+        module: "Application",
+        result: "SUCCESS",
+        notes: `Application "${id}" status updated to "${status}".`,
+    tenantId: typeof tenantId !== "undefined" ? tenantId : null,
+  });
+    return { success: true, id, status, count: updateStatus.count };
 };
 
 /**
@@ -111,6 +129,25 @@ export const listApplications = async ({
         }),
         prisma.application.count({ where }),
     ]);
+
+    // Resolve each application's requisition department (BusinessUnit) name so the
+    // Create Offer form can auto-fill Department from the chosen candidate. There
+    // is no JobRequisition→BusinessUnit relation, so batch-resolve by id.
+    const departmentIds = [
+        ...new Set(items.map((item) => item.jobRequisition?.departmentId).filter((id) => id != null)),
+    ];
+    if (departmentIds.length) {
+        const units = await prisma.businessUnit.findMany({
+            where: { id: { in: departmentIds } },
+            select: { id: true, name: true },
+        });
+        const nameById = new Map(units.map((unit) => [unit.id, unit.name]));
+        for (const item of items) {
+            if (item.jobRequisition?.departmentId != null) {
+                item.jobRequisition.departmentName = nameById.get(item.jobRequisition.departmentId) ?? null;
+            }
+        }
+    }
 
     return { items, total, page, limit };
 };

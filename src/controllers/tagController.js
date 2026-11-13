@@ -1,5 +1,6 @@
 // src/controllers/tagController.js
 import * as tagService from "../services/tagService.js";
+import { respondServerError } from '../utils/httpError.js';
 
 export const listTags = async (req, res) => {
     try {
@@ -19,10 +20,7 @@ export const listTags = async (req, res) => {
             data: result,
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-        });
+        return respondServerError(req, res, error);
     }
 };
 

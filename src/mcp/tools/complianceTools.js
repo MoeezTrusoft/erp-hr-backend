@@ -74,16 +74,20 @@ export function registerComplianceTools(server) {
     "hr_compliance_checklist_create",
     "Create a compliance checklist",
     {
-      name: z.string().min(1).optional(),
-      title: z.string().min(1).optional(),
+      name: z.string().min(1).optional().describe("Checklist name (persisted to ComplianceChecklist.name, NOT NULL). Provide `name` or `title` — at least one is required."),
+      title: z.string().min(1).optional().describe("Alias for `name`; used when `name` is omitted"),
       description: z.string().optional(),
-      applicableTo: z.string().optional().describe("e.g. ALL, MANAGERS, CONTRACTORS"),
-      departmentId: z.string().optional(),
-      positionId: z.string().optional(),
+      applicableTo: z.string().optional().describe("Free-text audience label, e.g. ALL, MANAGERS, CONTRACTORS"),
+      departmentId: z.string().optional().describe("Scope to a department (references Department.id)"),
+      positionId: z.string().optional().describe("Scope to a position (references Position.id)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/compliance/checklists", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:compliance", user.isAdmin);
+      // NOT NULL guard: ComplianceChecklist.name is required, so one of name/title must be present.
+      if (!args.name && !args.title) {
+        throw Object.assign(new Error("Either name or title is required"), { status: 400 });
+      }
       const payload = {
         ...args,
         name: args.name || args.title,
@@ -97,13 +101,13 @@ export function registerComplianceTools(server) {
     "hr_compliance_item_update",
     "Update a compliance checklist item (mark as complete)",
     {
-      id: z.string().min(1),
-      status: z.string().min(1).describe("e.g. PENDING, COMPLETED, NOT_APPLICABLE"),
-      evidence: z.string().optional(),
+      id: z.string().min(1).describe("Compliance item id (references ComplianceItem.id)"),
+      status: z.enum(["PENDING", "COMPLETED", "OVERDUE", "WAIVED"]).describe("Item status — one of PENDING | COMPLETED | OVERDUE | WAIVED"),
+      evidence: z.string().optional().describe("Free-text evidence reference/note"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/compliance/items/${id}`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:compliance", user.isAdmin);
       const data = await mcpUpdateComplianceItem(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -117,7 +121,7 @@ export function registerComplianceTools(server) {
     { employeeId: z.string().min(1) },
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "GET", `/hr/api/gdpr/export/${employeeId}`, user.isAdmin);
+      assertPermission(permissions, "GET", "hr:gdpr", user.isAdmin);
       const data = await mcpExportGdprEmployeeData(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -132,7 +136,7 @@ export function registerComplianceTools(server) {
     },
     withToolError(async ({ employeeId }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "DELETE", `/hr/api/gdpr/erase/${employeeId}`, user.isAdmin);
+      assertPermission(permissions, "DELETE", "hr:gdpr", user.isAdmin);
       const data = await mcpEraseGdprEmployeeData(user, employeeId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -144,16 +148,16 @@ export function registerComplianceTools(server) {
     "hr_reimbursement_create",
     "Submit a reimbursement claim",
     {
-      employeeId: z.string().min(1),
-      amount: z.number().positive(),
-      currency: z.string().default("USD"),
-      description: z.string().min(1),
-      receiptDate: z.string().describe("ISO 8601 date"),
-      category: z.string().optional().describe("e.g. TRAVEL, MEALS, EQUIPMENT"),
+      employeeId: z.string().min(1).describe("Employee submitting the claim (references Employee.id)"),
+      amount: z.number().positive().describe("Claim amount (ReimbursementClaim.amount, > 0)"),
+      currency: z.string().length(3).optional().describe("ISO 4217 currency code; defaults to the currency the employee is paid in"),
+      description: z.string().min(1).describe("Claim description (persisted to ReimbursementClaim.title, NOT NULL)"),
+      category: z.string().optional().describe("Free-text category, e.g. TRAVEL, MEALS, EQUIPMENT"),
+      notes: z.string().optional().describe("Optional notes (ReimbursementClaim.notes)"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "POST", "/hr/api/reimbursements", user.isAdmin);
+      assertPermission(permissions, "POST", "hr:reimbursement", user.isAdmin);
       const data = await mcpCreateReimbursement(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -163,12 +167,12 @@ export function registerComplianceTools(server) {
     "hr_reimbursement_update",
     "Approve a reimbursement claim",
     {
-      id: z.string().min(1),
-      approverId: z.string().optional(),
+      id: z.string().min(1).describe("Reimbursement claim id to approve (references ReimbursementClaim.id)"),
+      approverId: z.string().optional().describe("Approving employee id (references Employee.id); falls back to the caller's x-employee-id header when omitted"),
     },
     withToolError(async ({ id, ...rest }) => {
       const { user, permissions } = getCtx();
-      assertPermission(permissions, "PUT", `/hr/api/reimbursements/${id}/approve`, user.isAdmin);
+      assertPermission(permissions, "PUT", "hr:reimbursement", user.isAdmin);
       const data = await mcpApproveReimbursement(user, id, rest);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

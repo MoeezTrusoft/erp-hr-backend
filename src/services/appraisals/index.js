@@ -1,0 +1,40 @@
+import * as core from "./core.js";
+import * as continuous from "./continuous.js";
+import * as decisions from "./decisions.js";
+import * as queries from "./queries.js";
+import * as peers from "./peers.js";
+export const handlers = {
+  hr_appraisal_peer_round_create: peers.peerRoundCreate,
+  hr_appraisal_peer_nominate: peers.peerNominate,
+  hr_appraisal_peer_nomination_action: peers.peerNominationAction,
+  hr_appraisal_peer_submit: peers.peerSubmit,
+  hr_appraisal_peer_close: peers.peerClose,
+  hr_appraisal_peer_get: peers.peerGet,
+  hr_appraisal_peer_queue: peers.peerQueue,
+  hr_appraisal_workspace: queries.workspace,
+  hr_appraisal_analytics: queries.analytics,
+  hr_appraisal_analytics_export: queries.analyticsExport,
+  hr_appraisal_configure: core.configure,
+  hr_appraisal_template_create: core.templateCreate,
+  hr_appraisal_template_publish: core.templatePublish,
+  hr_appraisal_cycle_create: core.cycleCreate,
+  hr_appraisal_cycle_launch: core.cycleLaunch,
+  hr_appraisal_launch_control: core.launchControl,
+  hr_appraisal_cycle_transition: core.cycleTransition,
+  hr_appraisal_response_save: core.responseSave,
+  hr_appraisal_review_transition: core.transition,
+  hr_appraisal_assignment_change: core.assignmentChange,
+  hr_appraisal_deadline_change: core.deadlineChange,
+  hr_appraisal_evidence_link: continuous.evidenceLink,
+  hr_appraisal_appeal: core.appeal,
+  hr_appraisal_list: queries.list,
+  hr_appraisal_get: queries.get,
+  hr_appraisal_goal_create: continuous.goalCreate,
+  hr_appraisal_goal_action: continuous.goalAction,
+  hr_appraisal_measurement: continuous.measurement,
+  hr_appraisal_checkin_create: continuous.checkinCreate,
+  hr_appraisal_checkin_confirm: continuous.checkinConfirm,
+  hr_appraisal_feedback_create: continuous.feedbackCreate,
+  hr_appraisal_decision_create: decisions.decisionCreate,
+  hr_appraisal_decision_action: decisions.decisionAction,
+};
