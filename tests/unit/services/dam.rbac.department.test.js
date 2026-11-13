@@ -112,26 +112,28 @@ describe('dam.rbac.department.js hrRequest dead-code status [HR-SELF-CALL-SERVIC
 
         const srcDir = path.resolve(process.cwd(), 'src');
 
-        function walk(dir) {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
+        // Recursively collect all .js files under src/
+        function collectJs(dir) {
             let files = [];
-            for (const e of entries) {
-                const full = path.join(dir, e.name);
-                if (e.isDirectory()) files = files.concat(walk(full));
-                else if (e.name.endsWith('.js')) files.push(full);
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    files = files.concat(collectJs(full));
+                } else if (entry.isFile() && entry.name.endsWith('.js')) {
+                    files.push(full);
+                }
             }
             return files;
         }
 
-        const jsFiles = walk(srcDir);
-        const importers = [];
-        for (const file of jsFiles) {
-            if (file.includes('dam.rbac.department.js')) continue;
-            const content = fs.readFileSync(file, 'utf8');
-            if (content.includes('hrRequest')) {
-                importers.push(path.relative(srcDir, file));
-            }
-        }
+        const definitionFile = path.resolve(
+            srcDir, 'services', 'dam.rbac.department.js',
+        );
+
+        const importers = collectJs(srcDir)
+            .filter((f) => path.resolve(f) !== definitionFile)
+            .filter((f) => fs.readFileSync(f, 'utf8').includes('hrRequest'))
+            .map((f) => path.relative(srcDir, f));
         expect(importers).toHaveLength(0);
     });
 
