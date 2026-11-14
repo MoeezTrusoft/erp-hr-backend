@@ -81,6 +81,10 @@ function actingEmployeeId(user) {
 const hasAttendanceAdmin = (permissions, user) =>
   user?.isAdmin === true || ['EDIT', 'EXPORT', 'CREATE', 'DELETE'].some((a) => hasPermission(permissions, 'hr:attendance', a));
 
+// The signed scope carries this grant as the bare "hr.approvals.manager" (no verb), the same form the approval engine reads.
+const isLineManager = (permissions) =>
+  hasPermission(permissions, 'hr:approvals:manager', 'VIEW') || (Array.isArray(permissions) && permissions.includes('hr.approvals.manager'));
+
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 
 export function registerAttendanceAnomalyTools(server) {
@@ -90,7 +94,7 @@ export function registerAttendanceAnomalyTools(server) {
     const {user,permissions}=getCtx();
     const asOfDate=asOf?{asOf:new Date(`${asOf}T00:00:00Z`)}:{};
     if(hasAttendanceAdmin(permissions,user)) return ok(await listLongAbsences({tenantId:user.tenantId,minDays,...asOfDate}));
-    if(!hasPermission(permissions,'hr:approvals:manager','VIEW')) throw Object.assign(new Error('Insufficient permissions: only HR, Management and line managers can see long absences'),{status:403,statusCode:403,code:'HR-4030'});
+    if(!isLineManager(permissions)) throw Object.assign(new Error('Insufficient permissions: only HR, Management and line managers can see long absences'),{status:403,statusCode:403,code:'HR-4030'});
     const manager=await resolveActingEmployeeId({user,tenantId:user.tenantId});
     const team=await prisma.employee.findMany({where:{tenant_id:user.tenantId,managerId:Number(manager)},select:{id:true}});
     return ok(await listLongAbsences({tenantId:user.tenantId,minDays,employeeIds:team.map(t=>t.id),...asOfDate}));
