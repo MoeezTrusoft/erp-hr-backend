@@ -57,11 +57,23 @@ const safeActor = (ctx = {}) => {
   };
 };
 
+// Keeps the previous wire form: a Date becomes its ISO string, a string is passed through.
+const toDateString = (value) => (value instanceof Date ? value.toISOString() : value || null);
+
 export function buildSystemAccountProvisioningIntent(data, employee, ctx = {}) {
   if (data.createSystemAccount !== true) return null;
   const tenantId = ctx.tenantId ?? mcpCtx.getStore()?.user?.tenantId ?? null;
   if (!tenantId) throw new Error("HR-0301: verified tenant is required for system-account provisioning");
   if (!data.roleId) throw new Error("HR-0302: roleId is required for system-account provisioning");
+  // N39: rbac_employee_create requires phone, gender and hire_date. Without them
+  // the login was never created and the worker retried with a reason nobody saw.
+  // Phone must be unique in RBAC, so it cannot be defaulted. The request is still
+  // accepted as before (the employee is created), but the intent is recorded as
+  // failed with the reason, so the response says why no login exists and the
+  // worker does not retry a call that cannot succeed. The UI already requires
+  // mobilePhone, gender and hireDate (createEmployee.schema).
+  const phone = data.mobilePhone || data.workPhone || undefined;
+  const missingPhone = !phone;
 
   const overrides = Array.isArray(data.permissions)
     ? data.permissions
@@ -71,11 +83,14 @@ export function buildSystemAccountProvisioningIntent(data, employee, ctx = {}) {
   const payload = {
     first_name: data.firstName,
     last_name: data.lastName,
-    job_title: data.jobTitle,
+    // N39: the same defaults the Create Employee wizard's system-access helper
+    // sends (frontend hr/api/services/systemAccess.js): job title "Employee",
+    // gender "unspecified", hire date = the employee's hire/joining date or today.
+    job_title: data.jobTitle || "Employee",
     email: data.systemEmail || data.email || data.workEmail || data.personalEmail || null,
-    phone: data.mobilePhone,
-    gender: data.gender,
-    hire_date: data.hireDate instanceof Date ? data.hireDate.toISOString() : data.hireDate,
+    phone,
+    gender: data.gender || "unspecified",
+    hire_date: toDateString(data.hireDate ?? employee.hire_date ?? employee.joining_date) ?? new Date().toISOString().slice(0, 10),
     status: employee.status || employee.employement_status || data.employmentStatus || "Active",
     roles: [{ roleId: data.roleId, ...(overrides.length ? { permissions: overrides } : {}) }],
     hrEmployeeId: employee.id,
@@ -88,7 +103,7 @@ export function buildSystemAccountProvisioningIntent(data, employee, ctx = {}) {
   return {
     tenantId: String(tenantId),
     employeeId: employee.id,
-    status: "PENDING",
+    status: missingPhone ? "TERMINAL_FAILED" : "PENDING",
     idempotencyKey,
     payloadFingerprint,
     payload: cleanPayload,
@@ -96,6 +111,12 @@ export function buildSystemAccountProvisioningIntent(data, employee, ctx = {}) {
     correlationId: ctx.correlationId ?? mcpCtx.getStore()?.correlationId ?? null,
     attempts: 0,
     nextAttemptAt: new Date(),
+    ...(missingPhone
+      ? {
+        lastError: "A phone number (mobilePhone or workPhone) is required for the system account; RBAC needs a unique phone. Add it to the employee and provision the account again.",
+        lastErrorCode: "HR-0305",
+      }
+      : {}),
   };
 }
 

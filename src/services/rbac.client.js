@@ -193,9 +193,11 @@ export async function createRbacSystemAccount(payload, actorHeaders = {}, option
       try {
         parsed = text ? JSON.parse(text) : {};
       } catch {
-        parsed = {};
+        // N39: the MCP SDK reports input-validation failures as plain text
+        // (not the withToolError JSON envelope); keep that text as the reason.
+        parsed = text ? { error: String(text).slice(0, 500) } : {};
       }
-      const error = parsed.error || "RBAC system-account provisioning failed";
+      const error = parsed.error || parsed.message || "RBAC system-account provisioning failed";
       logger.warn(
         { status: parsed.status ?? null, error, hrEmployeeId: payload?.hrEmployeeId },
         "rbac.client: rbac_employee_create tool error — employee kept, login provisioning did not"

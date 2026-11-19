@@ -63,6 +63,9 @@ describe("F-03 system-account provisioning intent", () => {
       employeeCategory: "EMPLOYEE", firstName: "Ada",
       lastName: "Lovelace",
       workEmail: "ada@corp.example",
+      // N39: RBAC needs a phone for the login; without one the intent is
+      // recorded as failed (covered in N39.system-account-required-fields).
+      mobilePhone: "923000000101",
       createSystemAccount: true,
       password: "must-not-be-retained",
       roleId: 7,
