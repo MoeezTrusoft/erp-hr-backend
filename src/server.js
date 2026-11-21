@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import Redis from "ioredis";
 import logger from "./lib/logger.js";
+import prisma from "./lib/prisma.js";
+import { runC4StartupCheck } from "./lib/c4SelfCheck.js";
 import { createApp } from "./app.js";
 import { bootstrapAttendanceData } from "./services/attendance.bootstrap.service.js";
 import { startReminderJobs } from "./jobs/reminder.queue.js";
@@ -96,6 +98,15 @@ const accountProvisioningWorker = startSystemAccountProvisioningWorker();
 const attendanceEscalationWorker = startAttendanceEscalationWorker();
 const attendanceCaptureWorker = startAttendanceCaptureWorker();
 const attendanceExportWorker = startAttendanceExportWorker();
+
+// Handoff #10: refuse to start when stored C4 values do not decrypt with the
+// configured key (caught at deploy instead of on the first salary read).
+try {
+  await runC4StartupCheck(prisma, { logger });
+} catch (err) {
+  logger.fatal({ code: err.code, failed: err.failed }, err.message);
+  process.exit(1);
+}
 
 const PORT = process.env.PORT || 3003;
 const server = httpServer.listen(PORT, async () => {
