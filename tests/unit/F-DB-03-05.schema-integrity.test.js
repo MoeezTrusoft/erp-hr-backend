@@ -82,7 +82,8 @@ describe("F-DB-05 safe tenant backfill staging", () => {
     // 122 + EmployeeDeviceEnrolment (HR-ATT-DEVICE-ENROLMENT-01), likewise.
     // 123 + AttendanceCallIn (HR-ATT-ONCALL-01), likewise — nullable-tenant
     // call-in rows join the staged-backfill cohort, same as every model here.
-    expect(nullableModels).toHaveLength(124);
+    // 124 + LeaveRequestDay (HR-LEAVE-DAYS-01), likewise — nullable-tenant day rows join the staged-backfill cohort.
+    expect(nullableModels).toHaveLength(125);
 
     const sql = readFileSync(migrationPath, "utf8");
     expect(sql).toContain("NOT VALID");

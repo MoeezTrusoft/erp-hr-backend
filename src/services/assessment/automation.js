@@ -28,6 +28,9 @@ import { startAssessmentSourceBridge } from "./source-stream.js";
 import { equivalentCapabilities } from "./equivalence.js";
 import { offerHarvestedOpportunities } from "./opportunities.js";
 
+// Midnight UTC of the civil date of `now`: leave rows are keyed by civil date, so the last leave day still counts.
+const civilToday = (now) => new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`);
+
 export async function reconcileCompany(tx, env) {
   const cfg = await config(tx, env.tenantId),
     policy = cfg.policy;
@@ -188,12 +191,11 @@ export async function reconcileCompany(tx, env) {
       [a.raterCode, a.reviewerCode].includes(p.employeeCode),
     );
     // An actor on an approved leave day today (a rejected day inside an approved request does not count).
-    const today = new Date(`${env.now.toISOString().slice(0, 10)}T00:00:00.000Z`);
     const leave = await approvedLeaveDays(tx, {
       tenantId: env.tenantId,
       employeeIds: actorRows.map((p) => p.employeeRowId),
-      from: today,
-      to: today,
+      from: civilToday(env.now),
+      to: civilToday(env.now),
     });
     if (people.length !== 3 || leave.length) {
       try {
@@ -274,16 +276,14 @@ export async function reconcileCompany(tx, env) {
     for (const kind of milestones)
       for (const employeeCode of [a.raterCode, a.reviewerCode]) {
         const p = people.find((p) => p.employeeCode === employeeCode);
-        const leave = await tx.leaveRequest.findFirst({
-          where: {
-            tenantId: env.tenantId,
-            employeeId: p.employeeRowId,
-            status: "APPROVED",
-            startDate: { lte: env.now },
-            endDate: { gte: env.now },
-          },
+        // No milestone notice on an approved leave day (a day Management rejected inside an approved request is not one).
+        const leave = await approvedLeaveDays(tx, {
+          tenantId: env.tenantId,
+          employeeIds: [p.employeeRowId],
+          from: civilToday(env.now),
+          to: civilToday(env.now),
         });
-        if (leave) continue;
+        if (leave.length) continue;
         const key = `${a.id}:${employeeCode}:${kind}`;
         await tx.assessmentNotification.upsert({
           where: { tenantId_key: { tenantId: env.tenantId, key } },

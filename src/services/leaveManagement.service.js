@@ -40,7 +40,7 @@ import {
 // A request that spans two months counts only its share in each: totalDays is
 // the working-day total of the whole request, so scale it by the calendar-day
 // overlap with the window (the whole value when it sits inside the window).
-// An APPROVED request with per-day rows counts its APPROVED days inside the window (HR-LEAVE-PARTIAL-01).
+// An APPROVED request with per-day rows instead counts its APPROVED days in the window.
 export const daysInWindow = (request, from, to) => {
   const DAY = 86400000;
   const utcDay = (v) => {
@@ -433,11 +433,8 @@ export const getNext30Coverage = async (_args, tenantId) => {
       const day = new Date(rangeStart.getTime() + i * DAY_MS);
       const dayStart = startOfDay(day);
       let cnt = 0;
-      for (const r of approved) {
-        if ((deptOf.get(r.employeeId) || "Unassigned") !== dept) continue;
-        const s = startOfDay(r.startDate);
-        const e = startOfDay(r.endDate);
-        if (dayStart >= s && dayStart <= e) cnt++;
+      for (const employeeId of onLeaveByDate.get(dayStart.toISOString().slice(0, 10)) || []) {
+        if ((deptOf.get(employeeId) || "Unassigned") === dept) cnt++;
       }
       if (cnt > peak) peak = cnt;
     }

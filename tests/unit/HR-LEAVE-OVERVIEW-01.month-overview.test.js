@@ -24,7 +24,7 @@ jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
 }));
 
 const leaveManagement = await import('../../src/services/leaveManagement.service.js');
-const { getLeaveMonthOverview } = leaveManagement;
+const { getLeaveMonthOverview, getNext30Coverage } = leaveManagement;
 
 describe('HR-LEAVE-OVERVIEW-01 · getLeaveMonthOverview', () => {
   it('selects totalDays, so per-department and per-type day counts are real', async () => {
@@ -93,5 +93,39 @@ describe('daysInWindow', () => {
   });
   it('is zero outside the window', () => {
     expect(daysInWindow({ startDate: '2026-11-02', endDate: '2026-11-03', totalDays: 2 }, ...oct)).toBe(0);
+  });
+});
+
+describe('getNext30Coverage (HR-LEAVE-PARTIAL-01)', () => {
+  it('counts approved leave days per day and per department; a rejected day is not on leave', async () => {
+    // Same "today" the service uses (local midnight); dates are keyed by ISO date like its daily output.
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const at = (n) => new Date(today.getTime() + n * 86400000);
+    const key = (n) => at(n).toISOString().slice(0, 10);
+    employeeFindMany.mockResolvedValueOnce([
+      { id: 7, businessUnitId: 1, businessUnit: { id: 1, name: 'Ops' } },
+      { id: 8, businessUnitId: 1, businessUnit: { id: 1, name: 'Ops' } },
+      { id: 9, businessUnitId: 2, businessUnit: { id: 2, name: 'Sales' } },
+    ]);
+    // Employee 7: approved leave days +1..+3, Management rejected +2. Employee 9: legacy request +2..+2 (no day rows).
+    findMany.mockResolvedValueOnce([
+      {
+        id: 31, employeeId: 7, startDate: at(1), endDate: at(3), totalDays: 2, leavePolicy: { leaveTypeCode: 'ANNUAL' },
+        days: [1, 2, 3].map((n) => ({ date: at(n), decision: n === 2 ? 'REJECTED' : 'APPROVED' })),
+      },
+      { id: 32, employeeId: 9, startDate: at(2), endDate: at(2), totalDays: 1, leavePolicy: { leaveTypeCode: 'ANNUAL' }, days: [] },
+    ]);
+    const out = await getNext30Coverage({}, 'tenant-a');
+    const day = (n) => out.daily.find((d) => d.date === key(n));
+    expect(day(0).onLeave).toBe(0);
+    expect(day(1).onLeave).toBe(1);
+    expect(day(2).onLeave).toBe(1); // only employee 9: employee 7's rejected day is not leave
+    expect(day(3).onLeave).toBe(1);
+    expect(out.totalEmployees).toBe(3);
+    expect(out.departments).toEqual([
+      { department: 'Ops', totalEmployees: 2, presentEmployees: 1, onLeave: 1, presentPct: 50 },
+      { department: 'Sales', totalEmployees: 1, presentEmployees: 0, onLeave: 1, presentPct: 0 },
+    ]);
   });
 });
