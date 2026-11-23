@@ -21,12 +21,13 @@ const scopedWhere = (tenantId, where) =>
   tenantId === undefined ? where : withTenant(tenantId, where);
 
 // Helper Functions
-const calculateWorkingDays = async (employeeId, startDate, endDate, tenantId) => {
+// The employee's working dates in [startDate, endDate] as YYYY-MM-DD, derived with resolveWorkingDays
+// (roster, holidays; approved leave ignored). 409 when attendance setup does not cover a date.
+export const listWorkingDates = async (employeeId, startDate, endDate, tenantId) => {
   const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true});
   if([...days.values()].some(d=>d.working==null))throw Object.assign(new Error('Complete attendance setup before calculating leave'),{status:409});
-  return [...days.values()].reduce((count,d)=>count+(d.working?1:0),0);
+  return [...days].filter(([,d])=>d.working).map(([key])=>key);
 };
-
 
 // Leave types and balances are changed by approved requests (leaveChangeRequest.service.js) and the ledger
 // (leaveLedger.service.js); these older direct writers are closed so nothing can bypass the approval route.
@@ -577,7 +578,8 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
   }
 
   // Calculate duration (excluding weekends and holidays)
-  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end, tenantId);
+  const workingDates = await listWorkingDates(parseInt(employeeId), start, end, tenantId);
+  const durationDays = workingDates.length; // === the old calculateWorkingDays count
 
   if (durationDays <= 0) {
     throw new Error('No working days in the selected date range');
@@ -604,7 +606,9 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
       reason,
       notes,
       status: 'PENDING',
-      createdById: parseInt(createdById)
+      createdById: parseInt(createdById),
+      // HR-LEAVE-DAYS-01: one PENDING row per working date, written with the request in one statement.
+      days: { create: workingDates.map((date) => ({ date: new Date(`${date}T00:00:00.000Z`), decision: 'PENDING', ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
     }),
     include: {
       employee: {

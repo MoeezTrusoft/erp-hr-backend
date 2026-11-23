@@ -86,15 +86,16 @@ function currentMonthRange() {
  * midnight; a same-day request on a working day = 1, on a Sunday = 0. Guarded so
  * start must be <= end.
  */
-function workingDaysMonToSat(start, end) {
-  let count = 0;
+// The Mon–Sat dates themselves (YYYY-MM-DD) double as the per-day leave rows.
+function workingDatesMonToSat(start, end) {
+  const dates = [];
   const cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
   const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
   while (cur.getTime() <= last.getTime()) {
-    if (cur.getUTCDay() !== 0) count += 1; // 0 = Sunday
+    if (cur.getUTCDay() !== 0) dates.push(cur.toISOString().slice(0, 10)); // 0 = Sunday
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
-  return count;
+  return dates;
 }
 
 function sameDay(a, b) {
@@ -251,7 +252,8 @@ export async function requestLeave({
     throw Object.assign(new Error("startDate must be on or before endDate"), { status: 400 });
   }
 
-  const totalDays = workingDaysMonToSat(start, end);
+  const workingDates = workingDatesMonToSat(start, end);
+  const totalDays = workingDates.length;
   const author = toIntOrNull(createdById);
 
   const created = await prisma.leaveRequest.create({
@@ -264,6 +266,14 @@ export async function requestLeave({
       reason: reason ?? null,
       status: "PENDING",
       createdById: author ?? empId,
+      // HR-LEAVE-DAYS-01: one PENDING row per working date, in the same statement as the request.
+      days: {
+        create: workingDates.map((date) => ({
+          date: new Date(`${date}T00:00:00.000Z`),
+          decision: "PENDING",
+          ...(tenantId ? { tenantId } : {}),
+        })),
+      },
     },
     include: {
       employee: { select: EMPLOYEE_SELECT },
