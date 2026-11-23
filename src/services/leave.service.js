@@ -579,7 +579,7 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
 
   // Calculate duration (excluding weekends and holidays)
   const workingDates = await listWorkingDates(parseInt(employeeId), start, end, tenantId);
-  const durationDays = workingDates.length; // === the old calculateWorkingDays count
+  const durationDays = workingDates.length;
 
   if (durationDays <= 0) {
     throw new Error('No working days in the selected date range');

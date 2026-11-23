@@ -1,14 +1,13 @@
 // HR-LEAVE-DAYS-01 — the one place that answers "which dates is this employee on APPROVED leave?".
 // A request with per-day rows counts only its APPROVED days; a legacy request (no rows) counts every
-// working date in its range, exactly as before per-day decisions existed. Dates are civil YYYY-MM-DD (UTC).
-import { listWorkingDates } from '../services/leave.service.js';
-
+// calendar date in its range (what approvedLeaveCoverage expands), weighted totalDays/span so the sum over the
+// clipped dates equals payroll's lwpDays formula totalDays*overlap/span, exactly as before per-day decisions existed. Dates are civil YYYY-MM-DD (UTC).
 const key = (value) => new Date(value).toISOString().slice(0, 10);
 const UNPAID_CODES = new Set(['UNPAID', 'LWP']);
 
 /**
  * @param {object} db prisma client or transaction
- * @returns {Promise<Array<{employeeId:number,date:string,leaveRequestId:number,leaveTypeCode:string|null}>>}
+ * @returns {Promise<Array<{employeeId:number,date:string,leaveRequestId:number,leaveTypeCode:string|null,weight:number}>>}
  */
 export async function approvedLeaveDays(db, { tenantId, employeeIds, from, to }) {
   const requests = await db.leaveRequest.findMany({
@@ -24,6 +23,7 @@ export async function approvedLeaveDays(db, { tenantId, employeeIds, from, to })
       employeeId: true,
       startDate: true,
       endDate: true,
+      totalDays: true,
       leavePolicy: { select: { leaveTypeCode: true } },
       days: { select: { date: true, decision: true } },
     },
@@ -34,26 +34,29 @@ export async function approvedLeaveDays(db, { tenantId, employeeIds, from, to })
   const out = [];
   for (const r of requests) {
     const leaveTypeCode = r.leavePolicy?.leaveTypeCode ?? null;
-    let dates;
+    let rows;
     if (r.days?.length) {
-      dates = r.days.filter((d) => d.decision === 'APPROVED').map((d) => key(d.date)).sort();
+      rows = r.days.filter((d) => d.decision === 'APPROVED').map((d) => ({ date: key(d.date), weight: 1 })).sort((x, y) => (x.date < y.date ? -1 : 1));
     } else {
-      const start = key(r.startDate) < lo ? from : r.startDate;
-      const end = key(r.endDate) > hi ? to : r.endDate;
-      dates = await listWorkingDates(r.employeeId, start, end, tenantId);
+      const first = key(r.startDate);
+      const last = key(r.endDate);
+      const span = Math.round((Date.parse(last) - Date.parse(first)) / 86400000) + 1;
+      const weight = Number(r.totalDays) / span;
+      rows = [];
+      for (let t = Date.parse(first); t <= Date.parse(last); t += 86400000) rows.push({ date: new Date(t).toISOString().slice(0, 10), weight });
     }
-    for (const date of dates) {
-      if (date >= lo && date <= hi) out.push({ employeeId: r.employeeId, date, leaveRequestId: r.id, leaveTypeCode });
+    for (const { date, weight } of rows) {
+      if (date >= lo && date <= hi) out.push({ employeeId: r.employeeId, date, leaveRequestId: r.id, leaveTypeCode, weight });
     }
   }
   return out;
 }
 
-/** Unpaid (UNPAID or LWP) approved leave days per employee. */
+/** Unpaid (UNPAID or LWP) approved leave days per employee: the sum of row weights (may be fractional). */
 export function unpaidLeaveDaysByEmployee(rows) {
   const byEmployee = new Map();
   for (const r of rows) {
-    if (UNPAID_CODES.has(r.leaveTypeCode)) byEmployee.set(r.employeeId, (byEmployee.get(r.employeeId) ?? 0) + 1);
+    if (UNPAID_CODES.has(r.leaveTypeCode)) byEmployee.set(r.employeeId, (byEmployee.get(r.employeeId) ?? 0) + r.weight);
   }
   return byEmployee;
 }
