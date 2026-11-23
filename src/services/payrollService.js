@@ -1955,7 +1955,7 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId, reason = '') => 
   await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
   const run=await tx.payrollRun.findFirst({where:{id,tenantId}});
   if(!run) throw payrollError('Payroll run not found',404);
-  if(!['PENDING','FAILED','REJECTED','COMPLETED','APPROVED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError(`Only pending, failed, interrupted, calculated or approved (not finalized) payroll may be recalled (run is ${run.status})`);
+  if(!['PENDING','FAILED','REJECTED','COMPLETED','APPROVED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError('Only pending, failed, interrupted, calculated or approved (not finalized) payroll may be recalled');
   // Recalling a calculated or approved run re-opens attendance and leave for its period; it needs a stated reason.
   const recalled=['COMPLETED','APPROVED'].includes(run.status);
   const why=String(reason ?? '').trim();
@@ -1964,12 +1964,12 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId, reason = '') => 
   // lets it reach CANCELLED once that request is WITHDRAWN in this transaction.
   const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
   if(approval && !['INITIATOR','REJECTED','APPROVED'].includes(approval.stage)) throw Object.assign(new Error('Return the payroll to its initiator before cancelling'),{status:409});
-  if(recalled && (why.length<10 || why.length>500)) throw payrollError('A reason of 10 to 500 characters is required to cancel approved or calculated payroll',400);
+  if(recalled && (why.length<10 || why.length>500)) throw payrollError('A recall reason of 10 to 500 characters is required',400);
   if(approval){
     const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(deletedBy) ?? -1}});
     if(!actor?.employee_code) throw Object.assign(new Error('A verified employee code is required to cancel submitted payroll'),{status:403});
     const withdrawn=await tx.hrApprovalRequest.update({where:{id:approval.id},data:{stage:'WITHDRAWN',execution:'APPLIED',version:{increment:1}}});
-    await tx.hrApprovalAudit.create({data:{tenantId,approvalRef:approval.id,version:withdrawn.version,round:withdrawn.round,actorCode:actor.employee_code,fromStage:approval.stage,toStage:'WITHDRAWN',action:'WITHDRAW',reason:'Payroll run cancelled',sourceHash:withdrawn.sourceHash}});
+    await tx.hrApprovalAudit.create({data:{tenantId,approvalRef:approval.id,version:withdrawn.version,round:withdrawn.round,actorCode:actor.employee_code,fromStage:approval.stage,toStage:'WITHDRAWN',action:'WITHDRAW',reason:recalled?`Payroll run recalled: ${why}`:'Payroll run cancelled',sourceHash:withdrawn.sourceHash}});
     await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${'PAYROLL:'+id},true)`;
   }
   await tx.loanRepayment.deleteMany({where:{tenantId,payrollRunId:id,settledAt:null}});

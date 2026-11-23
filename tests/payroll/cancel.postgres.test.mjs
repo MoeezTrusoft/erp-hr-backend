@@ -102,6 +102,7 @@ test(
       tx.hrApprovalAudit.findMany({ where: { tenantId: company, approvalRef: after.id }, orderBy: { version: "asc" } }),
     );
     assert.deepEqual([history.at(-1).fromStage, history.at(-1).toStage], ["APPROVED", "WITHDRAWN"]);
+    assert.equal(history.at(-1).reason, "Payroll run recalled: Leave approved late for Oct");
     assert.equal(
       await db((tx) => tx.loanRepayment.count({ where: { tenantId: company, payrollRunId: run.id, settledAt: null } })),
       0,
@@ -119,6 +120,7 @@ test(
   async () => {
     const { run } = await nextRun();
     await as("EMPLOYEE", () => processPayrollRun(run.id, people.EMPLOYEE.id, company));
+    await assert.rejects(recall(run, " ".repeat(12)), (e) => /reason/i.test(e.message) && e.status === 400);
     await assert.rejects(recall(run, "late"), (e) => /reason/i.test(e.message) && e.status === 400);
     assert.equal((await runOf(run.id)).status, "COMPLETED");
     await recall(run, "Reason that is long enough"); // frees the period for the next test
@@ -184,7 +186,7 @@ test(
       as("EMPLOYEE", () =>
         cancelPayrollRun(run.id, people.EMPLOYEE.id, company),
       ),
-      /cancel/i,
+      /recalled/,
     );
   },
 );
