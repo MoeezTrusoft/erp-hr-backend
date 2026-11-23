@@ -1,12 +1,14 @@
 import {jest,describe,it,expect,beforeEach} from '@jest/globals';
-const db={employee:{findFirst:jest.fn(),findMany:jest.fn(),updateMany:jest.fn()},monthlyPayrollAttendance:{findFirst:jest.fn(),findMany:jest.fn(),create:jest.fn(),updateMany:jest.fn()},payrollRun:{findMany:jest.fn(),findFirst:jest.fn()},payrollAuditLog:{count:jest.fn(),create:jest.fn()}};
+const db={employee:{findFirst:jest.fn(),findMany:jest.fn(),updateMany:jest.fn()},monthlyPayrollAttendance:{findFirst:jest.fn(),findMany:jest.fn(),create:jest.fn(),updateMany:jest.fn()},payrollRun:{findMany:jest.fn(),findFirst:jest.fn()},payrollAuditLog:{count:jest.fn(),create:jest.fn()},leaveRequest:{findMany:jest.fn()}};
 jest.unstable_mockModule('../../src/lib/prisma.js',()=>({default:db}));
 jest.unstable_mockModule('../../src/lib/rlsTenant.js',()=>({tenantTransaction:async(_,fn)=>fn(db)}));
 const resolver=jest.fn();
 jest.unstable_mockModule('../../src/services/attendanceSetup.service.js',()=>({loadAttendanceRuntime:async()=>({resolve:resolver})}));
 const {saveMonthlyAttendance,assignPayrollOffice,assertMonthlyInputsComplete,listMonthlyAttendance}=await import('../../src/services/monthlyPayrollAttendance.service.js');
 const args={tenantId:'tenant-a',employeeId:7,month:'2026-09',payableDays:30,reason:'Signed register',version:0,actorId:11};
-beforeEach(()=>{jest.resetAllMocks();resolver.mockReturnValue({working:false,reason:'MANUAL_MONTHLY',profile:{mode:'MANUAL_MONTHLY'}});db.employee.findFirst.mockResolvedValue({id:7,attendanceInputMode:'MANUAL_MONTHLY',version:2});db.payrollRun.findMany.mockResolvedValue([]);db.payrollRun.findFirst.mockResolvedValue(null);db.payrollAuditLog.count.mockResolvedValue(0);db.monthlyPayrollAttendance.findFirst.mockResolvedValue(null);db.monthlyPayrollAttendance.create.mockResolvedValue({id:9,version:1});db.employee.updateMany.mockResolvedValue({count:1});});
+beforeEach(()=>{jest.resetAllMocks();resolver.mockReturnValue({working:false,reason:'MANUAL_MONTHLY',profile:{mode:'MANUAL_MONTHLY'}});db.employee.findFirst.mockResolvedValue({id:7,attendanceInputMode:'MANUAL_MONTHLY',version:2});db.payrollRun.findMany.mockResolvedValue([]);db.payrollRun.findFirst.mockResolvedValue(null);db.payrollAuditLog.count.mockResolvedValue(0);db.monthlyPayrollAttendance.findFirst.mockResolvedValue(null);db.monthlyPayrollAttendance.create.mockResolvedValue({id:9,version:1});db.employee.updateMany.mockResolvedValue({count:1});db.leaveRequest.findMany.mockResolvedValue([]);});
+const unpaidReq=(employeeId,dates)=>({id:1,employeeId,startDate:new Date(dates[0]),endDate:new Date(dates.at(-1)),totalDays:dates.length,leavePolicy:{leaveTypeCode:'UNPAID'},days:dates.map(d=>({date:new Date(d),decision:'APPROVED'}))});
+const oct4=['2026-10-05','2026-10-06','2026-10-07','2026-10-08'];
 describe('monthly attendance writes',()=>{
  it('honours a published manual profile over a draft device setting',async()=>{db.employee.findFirst.mockResolvedValue({id:7,attendanceInputMode:'DEVICE'});await saveMonthlyAttendance(args);expect(db.monthlyPayrollAttendance.create).toHaveBeenCalled();});
  it('blocks entry without published coverage',async()=>{resolver.mockReturnValue({working:null,reason:'SETUP_NOT_PUBLISHED'});await expect(saveMonthlyAttendance(args)).rejects.toMatchObject({status:409});});
@@ -43,6 +45,25 @@ describe('monthly attendance writes',()=>{
   const listed=await listMonthlyAttendance({tenantId:'tenant-a',month:'2026-09'});
   expect(listed.days).toBe(30);
   expect(listed.items[0]).toMatchObject({name:'Ayesha Khan',code:'EMP-0007',position:'Payroll Officer',department:'Finance',photoUrl:'https://files.test/a.jpg',mode:'MANUAL_MONTHLY'});
+ });
+ it('refuses payable days that overlap approved unpaid leave',async()=>{
+  db.leaveRequest.findMany.mockResolvedValue([unpaidReq(7,oct4)]);
+  await expect(saveMonthlyAttendance({...args,month:'2026-10',payableDays:31})).rejects.toMatchObject({status:409,message:'Payable days plus approved unpaid leave (4) exceed the 31 days in 2026-10'});
+  expect(db.monthlyPayrollAttendance.create).not.toHaveBeenCalled();
+  expect(db.leaveRequest.findMany.mock.calls[0][0].where).toMatchObject({tenantId:'tenant-a',employeeId:{in:[7]}});
+ });
+ it('accepts 27 payable days with 4 unpaid days in October',async()=>{
+  db.leaveRequest.findMany.mockResolvedValue([unpaidReq(7,oct4)]);
+  await saveMonthlyAttendance({...args,month:'2026-10',payableDays:27});
+  expect(db.monthlyPayrollAttendance.create).toHaveBeenCalled();
+ });
+ it('lists unpaidLeaveDays per employee',async()=>{
+  db.employee.findMany.mockResolvedValue([{id:7,employee_code:'EMP-0007',first_name:'A',last_name:'K',Position:{},businessUnit:{},attendanceInputMode:'MANUAL_MONTHLY',version:2},{id:8,employee_code:'EMP-0008',first_name:'B',last_name:'K',Position:{},businessUnit:{},attendanceInputMode:'MANUAL_MONTHLY',version:1}]);
+  db.monthlyPayrollAttendance.findMany.mockResolvedValue([]);
+  db.leaveRequest.findMany.mockResolvedValue([unpaidReq(7,oct4)]);
+  const listed=await listMonthlyAttendance({tenantId:'tenant-a',month:'2026-10'});
+  expect(listed.items.map(i=>i.unpaidLeaveDays)).toEqual([4,0]);
+  expect(db.leaveRequest.findMany).toHaveBeenCalledTimes(1);
  });
  it('audits office changes and increments employee version',async()=>{const r=await assignPayrollOffice({...args,version:2,office:'HVC-Headend-Staff',mode:'MANUAL_MONTHLY'});expect(r.version).toBe(3);expect(db.employee.updateMany.mock.calls[0][0].where).toEqual({id:7,tenant_id:'tenant-a',version:2});});
 });
