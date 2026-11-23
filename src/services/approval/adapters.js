@@ -621,6 +621,43 @@ export async function onReturn(tx, kind, source, target) {
       data: changes,
     });
 }
+// HR-LEAVE-PARTIAL-01 — Management's decision on each day of a leave request.
+// Runs BEFORE the approval request turns APPROVED: the line guard on
+// leave_request_days (HR-4204) freezes the days of an approved request.
+// Every day is APPROVED on approval except `rejectedDates`, and REJECTED on a
+// rejection. A request filed before day rows existed keeps none, unless days are
+// rejected: its working days are written first, since they must be known to
+// reject some (409 while attendance setup is incomplete). Returns the approved
+// and rejected dates, or null for a request without day rows.
+const civil = (value) => new Date(value).toISOString().slice(0, 10);
+export async function decideLeaveDays(tx, env, row, approved, rejectedDates = []) {
+  const where = { tenantId: env.tenantId, leaveRequestId: row.id };
+  let days = await tx.leaveRequestDay.findMany({ where, orderBy: { date: "asc" } });
+  if (!days.length && rejectedDates.length) {
+    const { listWorkingDates } = await import("../leave.service.js");
+    const dates = await listWorkingDates(row.employeeId, row.startDate, row.endDate, env.tenantId, tx);
+    await tx.leaveRequestDay.createMany({
+      data: dates.map((date) => ({ ...where, date: new Date(`${date}T00:00:00.000Z`), decision: "PENDING" })),
+    });
+    days = await tx.leaveRequestDay.findMany({ where, orderBy: { date: "asc" } });
+  }
+  // With rejected dates and still no days, the dates check below refuses every one of them.
+  if (!days.length && !rejectedDates.length) return null;
+  const pending = new Set(days.filter((d) => d.decision === "PENDING").map((d) => civil(d.date)));
+  for (const date of rejectedDates)
+    if (!pending.has(date)) fail(`Date ${date} is not part of this request`, 400);
+  const rejected = new Set(approved ? rejectedDates : days.map((d) => civil(d.date)));
+  const approvedDates = days.map((d) => civil(d.date)).filter((date) => !rejected.has(date));
+  if (approved && !approvedDates.length) fail("Reject the request instead", 400);
+  const decided = { decidedById: env.who.id, decidedAt: env.now };
+  const on = (dates) => ({ ...where, date: { in: dates.map((date) => new Date(`${date}T00:00:00.000Z`)) } });
+  if (approvedDates.length)
+    await tx.leaveRequestDay.updateMany({ where: on(approvedDates), data: { decision: "APPROVED", ...decided } });
+  if (rejected.size)
+    await tx.leaveRequestDay.updateMany({ where: on([...rejected]), data: { decision: "REJECTED", ...decided } });
+  return { approvedDates, rejectedDates: [...rejected].sort() };
+}
+
 export async function applyDecision(tx, env, request, s, approved, reason, options = {}) {
   const { kind } = request,
     row = s.row,
@@ -663,21 +700,33 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
       );
     }
   } else if (kind === "LEAVE") {
+    // HR-LEAVE-PARTIAL-01: the day decisions, already written by decideLeaveDays. When Management rejected some
+    // days, the request counts only the approved ones (allowed here: the finalizing context is set above).
+    const partial = approved && options.leaveDays?.rejectedDates.length > 0;
+    let leave = row,
+      comments = reason;
+    if (partial) {
+      leave = await tx.leaveRequest.update({
+        where: { id: row.id },
+        data: { totalDays: options.leaveDays.approvedDates.length },
+      });
+      comments = `${reason ?? ""} (rejected: ${options.leaveDays.rejectedDates.join(", ")})`.trimStart();
+    }
     if (approved) {
-      if (!row.leavePolicyId)
+      if (!leave.leavePolicyId)
         fail("HR must assign the leave policy before employee submission");
       await assertAttendancePeriodOpen(
         tx,
         env.tenantId,
-        row.startDate,
-        row.endDate,
+        leave.startDate,
+        leave.endDate,
       );
       const { deductApprovedLeave } = await import("../leaveChangeRequest.service.js");
-      await deductApprovedLeave(tx, env, row, reason);
+      await deductApprovedLeave(tx, env, leave, reason);
       const { createLeaveAttendanceRecords, upsertLegacyLeaveMirror } =
         await import("../leave.service.js");
-      await createLeaveAttendanceRecords(row, tx);
-      await upsertLegacyLeaveMirror(row, tx);
+      await createLeaveAttendanceRecords(leave, tx, partial ? options.leaveDays.approvedDates : undefined);
+      await upsertLegacyLeaveMirror(leave, tx);
     }
     await tx.leaveRequestApproval.create({
       data: {
@@ -687,7 +736,7 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
         createdById: env.who.id,
         approverRole: "MANAGEMENT",
         decision: status,
-        comments: reason,
+        comments,
       },
     });
     await tx.leaveRequest.update({ where: { id: row.id }, data: { status } });

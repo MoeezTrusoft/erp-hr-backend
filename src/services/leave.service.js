@@ -23,8 +23,8 @@ const scopedWhere = (tenantId, where) =>
 // Helper Functions
 // The employee's working dates in [startDate, endDate] as YYYY-MM-DD, derived with resolveWorkingDays
 // (roster, holidays; approved leave ignored). 409 when attendance setup does not cover a date.
-export const listWorkingDates = async (employeeId, startDate, endDate, tenantId) => {
-  const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true});
+export const listWorkingDates = async (employeeId, startDate, endDate, tenantId, db) => {
+  const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true,db});
   if([...days.values()].some(d=>d.working==null))throw Object.assign(new Error('Complete attendance setup before calculating leave'),{status:409});
   return [...days].filter(([,d])=>d.working).map(([key])=>key);
 };
@@ -1189,7 +1189,9 @@ export const createHoliday = async (data) => {
 // that already has an attendance row — punch integrity beats the leave mark
 // (HR-ATT-CORRECTION-01 precedence). Employees with no schedule in force keep
 // the old conservative reading: every non-holiday weekday is a working day.
-export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma) => {
+// HR-LEAVE-PARTIAL-01: `approvedDates` (YYYY-MM-DD) limits the marks to the days Management approved; without it the
+// whole working window is marked, as before.
+export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma, approvedDates) => {
   const { tenantId, employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -1199,7 +1201,8 @@ export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma) =>
 
   // Derive the leave window day-by-day on the employee's actual roster.
   let workingDays;
-  try {
+  if (approvedDates) workingDays = approvedDates.map((date) => ({ date }));
+  else try {
     const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end, ignoreLeaves: true, db });
     workingDays = [...derived.values()].filter((d) => d.working);
   } catch {
