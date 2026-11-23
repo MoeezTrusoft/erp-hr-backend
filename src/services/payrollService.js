@@ -5,7 +5,7 @@ import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/pa
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
 import { loadSource } from './approval/adapters.js';
 import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.js';
-import { reserveClaimsForPayslip, previewClaimsForPayslip, attachClaimsToPayslip, settlePayrollClaims, payslipHoldsClaims } from './payrollClaims.service.js';
+import { reserveClaimsForPayslip, previewClaimsForPayslip, attachClaimsToPayslip, settlePayrollClaims, payslipHoldsClaims, releaseRunClaims } from './payrollClaims.service.js';
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
 import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
@@ -1955,13 +1955,17 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId, reason = '') => 
   await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
   const run=await tx.payrollRun.findFirst({where:{id,tenantId}});
   if(!run) throw payrollError('Payroll run not found',404);
-  if(!['PENDING','FAILED','REJECTED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError('Only pending, failed, interrupted or Management-rejected payroll may be cancelled');
+  if(!['PENDING','FAILED','REJECTED','COMPLETED','APPROVED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError(`Only pending, failed, interrupted, calculated or approved (not finalized) payroll may be recalled (run is ${run.status})`);
+  // Recalling a calculated or approved run re-opens attendance and leave for its period; it needs a stated reason.
+  const recalled=['COMPLETED','APPROVED'].includes(run.status);
+  const why=String(reason ?? '').trim();
   if(await tx.loanRepayment.count({where:{tenantId,payrollRunId:id,settledAt:{not:null}}})) throw Object.assign(new Error('Reconcile posted loan repayments before cancelling this historical payroll'),{status:409});
   // A submitted run carries an approval request; the source guard trigger only
   // lets it reach CANCELLED once that request is WITHDRAWN in this transaction.
   const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
+  if(approval && !['INITIATOR','REJECTED','APPROVED'].includes(approval.stage)) throw Object.assign(new Error('Return the payroll to its initiator before cancelling'),{status:409});
+  if(recalled && (why.length<10 || why.length>500)) throw payrollError('A reason of 10 to 500 characters is required to cancel approved or calculated payroll',400);
   if(approval){
-    if(!['INITIATOR','REJECTED'].includes(approval.stage)) throw Object.assign(new Error('Return the payroll to its initiator before cancelling'),{status:409});
     const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(deletedBy) ?? -1}});
     if(!actor?.employee_code) throw Object.assign(new Error('A verified employee code is required to cancel submitted payroll'),{status:403});
     const withdrawn=await tx.hrApprovalRequest.update({where:{id:approval.id},data:{stage:'WITHDRAWN',execution:'APPLIED',version:{increment:1}}});
@@ -1969,8 +1973,9 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId, reason = '') => 
     await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${'PAYROLL:'+id},true)`;
   }
   await tx.loanRepayment.deleteMany({where:{tenantId,payrollRunId:id,settledAt:null}});
+  if(recalled) await releaseRunClaims(tx,{tenantId,runId:id});
   await tx.payrollRun.update({where:{id},data:{status:'CANCELLED'}});
-  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_CANCELLED',details:reason ? `Cancelled without deleting payroll history. Reason: ${reason}` : 'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
+  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:recalled?'PAYROLL_RECALLED':'PAYROLL_CANCELLED',details:recalled?`Recalled: ${why}`:reason ? `Cancelled without deleting payroll history. Reason: ${reason}` : 'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
   return {id,status:'CANCELLED'};
 },{tenantId});
 
