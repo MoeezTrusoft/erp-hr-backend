@@ -6,10 +6,14 @@ const key = (value) => new Date(value).toISOString().slice(0, 10);
 const UNPAID_CODES = new Set(['UNPAID', 'LWP']);
 
 /**
+ * includeLegacyLeave also reads the legacy Leave table (attendance excusal only): a Leave row with the same employee,
+ * start and end as an approved request is that request's mirror (upsertLegacyLeaveMirror) and is dropped, so a
+ * rejected day is not excused through it; any other Leave row (e.g. imported) yields every clipped date with
+ * leaveRequestId null and leaveTypeCode null, so it is never counted as LWP.
  * @param {object} db prisma client or transaction
- * @returns {Promise<Array<{employeeId:number,date:string,leaveRequestId:number,leaveTypeCode:string|null,weight:number}>>}
+ * @returns {Promise<Array<{employeeId:number,date:string,leaveRequestId:number|null,leaveTypeCode:string|null,weight:number}>>}
  */
-export async function approvedLeaveDays(db, { tenantId, employeeIds, from, to }) {
+export async function approvedLeaveDays(db, { tenantId, employeeIds, from, to, includeLegacyLeave = false }) {
   const requests = await db.leaveRequest.findMany({
     where: {
       tenantId,
@@ -47,6 +51,26 @@ export async function approvedLeaveDays(db, { tenantId, employeeIds, from, to })
     }
     for (const { date, weight } of rows) {
       if (date >= lo && date <= hi) out.push({ employeeId: r.employeeId, date, leaveRequestId: r.id, leaveTypeCode, weight });
+    }
+  }
+  if (includeLegacyLeave) {
+    const legacy = await db.leave.findMany({
+      where: {
+        tenantId,
+        status: 'APPROVED',
+        start_date: { lte: to },
+        end_date: { gte: from },
+        ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
+      },
+      select: { id: true, employeeId: true, start_date: true, end_date: true },
+    });
+    const mirrors = new Set(requests.map((r) => `${r.employeeId}|${key(r.startDate)}|${key(r.endDate)}`));
+    for (const l of legacy) {
+      const first = key(l.start_date);
+      const last = key(l.end_date);
+      if (mirrors.has(`${l.employeeId}|${first}|${last}`)) continue;
+      for (let t = Date.parse(first > lo ? first : lo); t <= Date.parse(last < hi ? last : hi); t += 86400000)
+        out.push({ employeeId: l.employeeId, date: new Date(t).toISOString().slice(0, 10), leaveRequestId: null, leaveTypeCode: null, weight: 1 });
     }
   }
   return out;

@@ -39,12 +39,13 @@ describe('Approved shift precedence',()=>{
 });
 
 import {approvedLeaveCoverage} from '../../src/lib/approvedLeaveCoverage.js';
+// approvedLeaveCoverage takes approvedLeaveDays() rows ({employeeId, date}); status filtering happens in that query.
 it('clips approved leave to payroll month and deduplicates current/legacy stores',()=>{
- const requests=[{employeeId:1,status:'APPROVED',startDate:'2026-08-30',endDate:'2026-09-02'},{employeeId:1,status:'APPROVED',start_date:'2026-09-01',end_date:'2026-09-02'},{employeeId:2,status:'REJECTED',startDate:'2026-09-01',endDate:'2026-09-30'}];
+ const requests=['2026-08-30','2026-08-31','2026-09-01','2026-09-02'].map(date=>({employeeId:1,date})).concat(['2026-09-01','2026-09-02'].map(date=>({employeeId:1,date})));
  const a=approvedLeaveCoverage(requests,'2026-09-01','2026-09-30');expect(a).toHaveLength(2);expect(a.every(x=>x.employeeId===1)).toBe(true);expect(days([row(1,49)],a)).toBe(0);
 });
 it('excludes future leave and does not mutate source records',()=>{
- const requests=[{employeeId:1,status:'APPROVED',startDate:'2026-10-01',endDate:'2026-10-02'}];const before=JSON.stringify(requests);expect(approvedLeaveCoverage(requests,'2026-09-01','2026-09-30')).toEqual([]);expect(JSON.stringify(requests)).toBe(before);
+ const requests=[{employeeId:1,date:'2026-10-01'},{employeeId:1,date:'2026-10-02'}];const before=JSON.stringify(requests);expect(approvedLeaveCoverage(requests,'2026-09-01','2026-09-30')).toEqual([]);expect(JSON.stringify(requests)).toBe(before);
 });
 
 it('does not turn present days into additional short late incidents',()=>{

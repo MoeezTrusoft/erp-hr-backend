@@ -44,6 +44,25 @@ describe('HR-LEAVE-OVERVIEW-01 · getLeaveMonthOverview', () => {
     );
   });
 
+  it('month overview heatmap omits rejected days', async () => {
+    const d = (n) => new Date(`2026-10-${n}T00:00:00.000Z`);
+    findMany.mockResolvedValueOnce([
+      {
+        id: 31, employeeId: 7, leavePolicyId: 2, startDate: d('20'), endDate: d('24'), status: 'APPROVED', totalDays: 4,
+        reason: null, employee: { id: 7, employee_code: 'E7' }, leavePolicy: { id: 2, name: 'Annual', leaveTypeCode: 'ANNUAL' },
+        days: ['20', '21', '22', '23', '24'].map((n) => ({ date: d(n), decision: n === '23' ? 'REJECTED' : 'APPROVED' })),
+      },
+    ]);
+    const out = await getLeaveMonthOverview({ month: '2026-10' });
+    expect(findMany.mock.calls.at(-1)[0].select).toHaveProperty('days');
+    const cell = (n) => out.days.find((c) => c.date === `2026-10-${n}`);
+    expect(cell('22')).toMatchObject({ approved: 1, disapproved: 0 });
+    expect(cell('23')).toMatchObject({ approved: 0, disapproved: 1 });
+    expect(cell('23').leaves).toEqual([expect.objectContaining({ id: 31, status: 'REJECTED' })]);
+    expect(cell('24')).toMatchObject({ approved: 1, disapproved: 0 });
+    expect(out.byType.annual).toBe(4);
+  });
+
   it('rejects a month that is not YYYY-MM', async () => {
     await expect(getLeaveMonthOverview({ month: 'October 2026' })).rejects.toThrow(
       /month must be YYYY-MM/,
@@ -65,6 +84,12 @@ describe('daysInWindow', () => {
     expect(Math.round((a + b) * 100) / 100).toBe(31);
     expect(a).toBeGreaterThan(14);
     expect(a).toBeLessThan(16);
+  });
+  it('counts only the APPROVED day rows of a partly approved request', () => {
+    const days = ['09-29', '09-30', '10-01', '10-02'].map((s) => ({ date: `2026-${s}`, decision: s === '10-01' ? 'REJECTED' : 'APPROVED' }));
+    const r = { status: 'APPROVED', startDate: '2026-09-29', endDate: '2026-10-02', totalDays: 3, days };
+    expect(daysInWindow(r, ...sep)).toBe(2);
+    expect(daysInWindow(r, ...oct)).toBe(1);
   });
   it('is zero outside the window', () => {
     expect(daysInWindow({ startDate: '2026-11-02', endDate: '2026-11-03', totalDays: 2 }, ...oct)).toBe(0);

@@ -4,6 +4,7 @@ import {
   matchDevelopmentOpportunities,
 } from "./development-matching.js";
 import prisma from "../../lib/prisma.js";
+import { approvedLeaveDays } from "../../lib/approvedLeaveDays.js";
 import { mcpCtx } from "../../lib/requestContext.js";
 import { tenantTransaction } from "../../lib/rlsTenant.js";
 import { startOutboxDispatchLoop } from "../../jobs/outbox.loop.js";
@@ -186,14 +187,13 @@ export async function reconcileCompany(tx, env) {
     const actorRows = people.filter((p) =>
       [a.raterCode, a.reviewerCode].includes(p.employeeCode),
     );
-    const leave = await tx.leaveRequest.findMany({
-      where: {
-        tenantId: env.tenantId,
-        employeeId: { in: actorRows.map((p) => p.employeeRowId) },
-        status: "APPROVED",
-        startDate: { lte: env.now },
-        endDate: { gte: env.now },
-      },
+    // An actor on an approved leave day today (a rejected day inside an approved request does not count).
+    const today = new Date(`${env.now.toISOString().slice(0, 10)}T00:00:00.000Z`);
+    const leave = await approvedLeaveDays(tx, {
+      tenantId: env.tenantId,
+      employeeIds: actorRows.map((p) => p.employeeRowId),
+      from: today,
+      to: today,
     });
     if (people.length !== 3 || leave.length) {
       try {

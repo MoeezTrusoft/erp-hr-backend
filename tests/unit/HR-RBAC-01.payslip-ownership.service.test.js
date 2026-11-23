@@ -161,3 +161,20 @@ describe("D-18 past payslips report credit and delivery separately", () => {
     expect(items[0]).toMatchObject({ receivedOn: paidAt, distributedAt });
   });
 });
+
+describe("HR-LEAVE-PARTIAL-01 payslip Leave taken", () => {
+  it("payslip Leave taken counts approved days only", async () => {
+    // A request across the August payslip edge: 28 Aug–3 Sep, Management rejected 29 Aug. totalDays (6) is the
+    // approved count for the WHOLE request; August holds only 28, 30 and 31 Aug.
+    const d = (s) => new Date(`2026-${s}T00:00:00.000Z`);
+    const leave = {
+      id: 51, employeeId: 489, status: "APPROVED", startDate: d("08-28"), endDate: d("09-03"), totalDays: 6,
+      leavePolicy: { leaveTypeCode: "ANNUAL" },
+      days: ["08-28", "08-29", "08-30", "08-31", "09-01", "09-02", "09-03"].map((s) => ({ date: d(s), decision: s === "08-29" ? "REJECTED" : "APPROVED" })),
+    };
+    // Only the leave-overlap read gets the request; every other findMany (YTD, overtime) sees none.
+    findMany.mockImplementation(async (args) => (args?.where?.startDate && args?.where?.endDate ? [leave] : []));
+    const slip = await svc.getMyPayslip({ tenantId: "t1", employeeId: 489, employeeScoped: true });
+    expect(slip.leaveTaken).toBe(3);
+  });
+});

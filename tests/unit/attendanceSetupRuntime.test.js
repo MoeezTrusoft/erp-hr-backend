@@ -156,6 +156,42 @@ describe('published runtime isolation', () => {
       expect(db[model].findMany.mock.calls[0][0].where.tenantId).toBe(tenantId);
   });
 });
+describe('approved leave is read per day (HR-LEAVE-PARTIAL-01)', () => {
+  it('a rejected day inside an approved request is not excused and not LWP', async () => {
+    const d = (n) => new Date(`2026-10-${n}T00:00:00.000Z`);
+    db.attendanceSetupRelease.findMany.mockResolvedValue([
+      { version: 1, effectiveFrom: new Date('2026-10-01'), coverageThrough: new Date('2026-10-31'), config: released(1) },
+    ]);
+    // UNPAID 20–24 Oct, Management rejected 23 Oct. The legacy Leave mirror still spans the whole range.
+    db.leaveRequest.findMany.mockResolvedValue([
+      {
+        id: 31, employeeId: 1, status: 'APPROVED', startDate: d('20'), endDate: d('24'), totalDays: 4,
+        leavePolicy: { leaveTypeCode: 'UNPAID' },
+        days: ['20', '21', '22', '23', '24'].map((n) => ({ date: d(n), decision: n === '23' ? 'REJECTED' : 'APPROVED' })),
+      },
+    ]);
+    db.leave.findMany.mockResolvedValue([
+      { id: 8, employeeId: 1, status: 'APPROVED', type: 'UNPAID', start_date: d('20'), end_date: d('24'), total_days: 4 },
+    ]);
+    const runtime = await loadAttendanceRuntime({ tenantId, from: '2026-10-01', to: '2026-10-31' });
+    for (const n of ['20', '21', '22', '24'])
+      expect(runtime.resolve(1, `2026-10-${n}`)).toMatchObject({ working: false, reason: 'APPROVED_LEAVE' });
+    // 23 Oct is an ordinary DEVICE working day again: no punch there is an absence.
+    expect(runtime.resolve(1, '2026-10-23')).toMatchObject({ working: true });
+    expect(runtime.resolve(1, '2026-10-23').reason).not.toBe('APPROVED_LEAVE');
+  });
+  it('keeps a standalone legacy Leave row (no matching request) as leave', async () => {
+    db.attendanceSetupRelease.findMany.mockResolvedValue([
+      { version: 1, effectiveFrom: new Date('2026-10-01'), coverageThrough: new Date('2026-10-31'), config: released(1) },
+    ]);
+    db.leave.findMany.mockResolvedValue([
+      { id: 9, employeeId: 1, status: 'APPROVED', type: 'ANNUAL', start_date: new Date('2026-10-05'), end_date: new Date('2026-10-06'), total_days: 2 },
+    ]);
+    const runtime = await loadAttendanceRuntime({ tenantId, from: '2026-10-01', to: '2026-10-31' });
+    expect(runtime.resolve(1, '2026-10-06').reason).toBe('APPROVED_LEAVE');
+    expect(runtime.resolve(1, '2026-10-07').reason).not.toBe('APPROVED_LEAVE');
+  });
+});
 describe('setup publication guards', () => {
   it('preserves closed rosters after a department transfer while binding the current shift',async()=>{
     const oldPattern={shift:{templateId:10,from:'09:00',to:'17:00',checkoutCutoffTime:'22:00',checkoutCutoffDayOffset:0}};

@@ -25,6 +25,7 @@ import { legacyDecision } from "./approval/legacy.js";
 //     decision(ApprovalDecision APPROVED|REJECTED), comments, decision_date,
 //     createdById.
 import prisma from "../lib/prisma.js";
+import { approvedLeaveDays } from "../lib/approvedLeaveDays.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 // HR-LEAVE-TYPELESS-01 — decisions dispatch through the CANONICAL approve /
@@ -39,12 +40,15 @@ import {
 // A request that spans two months counts only its share in each: totalDays is
 // the working-day total of the whole request, so scale it by the calendar-day
 // overlap with the window (the whole value when it sits inside the window).
+// An APPROVED request with per-day rows counts its APPROVED days inside the window (HR-LEAVE-PARTIAL-01).
 export const daysInWindow = (request, from, to) => {
   const DAY = 86400000;
   const utcDay = (v) => {
     const d = new Date(v);
     return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   };
+  if (request.status === "APPROVED" && request.days?.length)
+    return request.days.filter((d) => d.decision === "APPROVED" && utcDay(d.date) >= utcDay(from) && utcDay(d.date) <= utcDay(to)).length;
   const s = utcDay(request.startDate);
   const e = utcDay(request.endDate);
   const lo = Math.max(s, utcDay(from));
@@ -266,6 +270,8 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
       // the Leaves by Department bars rendered empty no matter how much
       // leave the month actually held.
       totalDays: true,
+      // Per-day decisions: a day Management rejected inside an approved request is shown as disapproved.
+      days: { select: { date: true, decision: true } },
       employee: {
         select: { id: true, employee_code: true, job_title: true, Position: true },
       },
@@ -313,19 +319,23 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
     // Per-day overlaps for the heatmap. "requested" = still PENDING.
     const s = startOfDay(new Date(r.startDate));
     const e = startOfDay(new Date(r.endDate));
+    const rejectedDays = new Set(
+      r.status === "APPROVED" ? (r.days || []).filter((x) => x.decision === "REJECTED").map((x) => new Date(x.date).toISOString().slice(0, 10)) : [],
+    );
     for (let d = 1; d <= daysInMonth; d++) {
       const day = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), d));
       if (day >= s && day <= e) {
         const cell = dayGrid[d - 1];
-        if (r.status === "APPROVED") cell.approved += 1;
-        else if (r.status === "REJECTED") cell.disapproved += 1;
-        else if (r.status === "PENDING") cell.requested += 1;
+        const status = rejectedDays.has(day.toISOString().slice(0, 10)) ? "REJECTED" : r.status;
+        if (status === "APPROVED") cell.approved += 1;
+        else if (status === "REJECTED") cell.disapproved += 1;
+        else if (status === "PENDING") cell.requested += 1;
         perDayEmployees[d - 1].push({
           id: r.id,
           employeeId: r.employeeId,
           name: employeeName(r.employee),
           type: r.leavePolicy?.name || "Unassigned",
-          status: r.status,
+          status,
           reason: r.reason || null,
         });
       }
@@ -376,15 +386,13 @@ export const getNext30Coverage = async (_args, tenantId) => {
     deptTotals.set(dept, (deptTotals.get(dept) || 0) + 1);
   }
 
-  // APPROVED requests overlapping the 30-day window. RLS-scoped.
-  const approved = await prisma.leaveRequest.findMany({
-    where: {
-      status: "APPROVED",
-      startDate: { lte: rangeEnd },
-      endDate: { gte: rangeStart },
-    },
-    select: { employeeId: true, startDate: true, endDate: true },
-  });
+  // Approved leave days in the 30-day window (a day Management rejected is not leave). RLS-scoped.
+  const approvedDays = await approvedLeaveDays(prisma, { tenantId, from: rangeStart, to: rangeEnd });
+  const onLeaveByDate = new Map();
+  for (const r of approvedDays) {
+    if (!onLeaveByDate.has(r.date)) onLeaveByDate.set(r.date, new Set());
+    onLeaveByDate.get(r.date).add(r.employeeId);
+  }
 
   // Build the daily series and per-department on-leave tallies.
   const totalEmployees = employees.length;
@@ -397,14 +405,10 @@ export const getNext30Coverage = async (_args, tenantId) => {
     let onLeaveCount = 0;
     const seenPerDept = new Map();
 
-    for (const r of approved) {
-      const s = startOfDay(r.startDate);
-      const e = startOfDay(r.endDate);
-      if (dayStart >= s && dayStart <= e) {
-        onLeaveCount++;
-        const dept = deptOf.get(r.employeeId) || "Unassigned";
-        seenPerDept.set(dept, (seenPerDept.get(dept) || 0) + 1);
-      }
+    for (const employeeId of onLeaveByDate.get(dayStart.toISOString().slice(0, 10)) || []) {
+      onLeaveCount++;
+      const dept = deptOf.get(employeeId) || "Unassigned";
+      seenPerDept.set(dept, (seenPerDept.get(dept) || 0) + 1);
     }
     for (const [dept, cnt] of seenPerDept) {
       deptOnLeaveDaySum.set(dept, (deptOnLeaveDaySum.get(dept) || 0) + cnt);

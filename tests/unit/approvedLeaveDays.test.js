@@ -62,3 +62,27 @@ describe('unpaidLeaveDaysByEmployee', () => {
     expect(unpaidLeaveDaysByEmployee([{ employeeId: 7, leaveTypeCode: 'LWP', weight: 0.5 }, { employeeId: 7, leaveTypeCode: 'UNPAID', weight: 0.25 }]).get(7)).toBeCloseTo(0.75);
   });
 });
+
+describe('approvedLeaveDays with includeLegacyLeave', () => {
+  const legacyDb = { leaveRequest: { findMany: jest.fn() }, leave: { findMany: jest.fn() } };
+  it('drops the Leave mirror of an approved request and keeps a standalone Leave row', async () => {
+    legacyDb.leaveRequest.findMany.mockResolvedValue([req({ days: [day('2026-10-20', 'APPROVED'), day('2026-10-21', 'REJECTED')], endDate: d('2026-10-21') })]);
+    legacyDb.leave.findMany.mockResolvedValue([
+      { id: 8, employeeId: 7, type: 'ANNUAL', start_date: d('2026-10-20'), end_date: d('2026-10-21') }, // mirror of request 1
+      { id: 9, employeeId: 7, type: 'UNPAID', start_date: d('2026-10-30'), end_date: d('2026-11-01') }, // imported, no request
+    ]);
+    const rows = await approvedLeaveDays(legacyDb, { ...period, includeLegacyLeave: true });
+    expect(rows.map((r) => [r.date, r.leaveRequestId])).toEqual([['2026-10-20', 1], ['2026-10-30', null], ['2026-10-31', null]]);
+    // A standalone Leave row excuses attendance but is never recovered as LWP (payroll never counted it).
+    expect(rows[1]).toEqual({ employeeId: 7, date: '2026-10-30', leaveRequestId: null, leaveTypeCode: null, weight: 1 });
+    expect(unpaidLeaveDaysByEmployee(rows).get(7)).toBeUndefined();
+    expect(legacyDb.leave.findMany.mock.calls[0][0].where).toEqual({
+      tenantId: 'tenant-a', status: 'APPROVED', start_date: { lte: period.to }, end_date: { gte: period.from },
+    });
+  });
+  it('does not read Leave unless asked', async () => {
+    legacyDb.leaveRequest.findMany.mockResolvedValue([]);
+    await approvedLeaveDays(legacyDb, period);
+    expect(legacyDb.leave.findMany).not.toHaveBeenCalled();
+  });
+});

@@ -106,6 +106,9 @@ const setup = ({
     attendanceRules = [],
     attendance = [],
     anomalies = [],
+    leaveRequests = null,
+    legacyLeaves = [],
+    period = ['2026-06-01', '2026-06-30'],
 } = {}) => {
     typeStore = new Map();
     for (const model of Object.values(prismaMock)) {
@@ -116,8 +119,8 @@ const setup = ({
         id: RUN_ID,
         tenantId: TENANT,
         status: 'PENDING',
-        periodStart: new Date('2026-06-01T00:00:00.000Z'),
-        periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+        periodStart: new Date(`${period[0]}T00:00:00.000Z`),
+        periodEnd: new Date(`${period[1]}T00:00:00.000Z`),
         countryCode,
         currencyCode,
     };
@@ -137,7 +140,7 @@ const setup = ({
     prismaMock.payrollRun.findMany.mockResolvedValue([]);
     prismaMock.payrollPayslip.findMany.mockResolvedValue([]);
     prismaMock.payrollAuditLog.findMany.mockResolvedValue([]);
-    prismaMock.leave.findMany.mockResolvedValue([]);
+    prismaMock.leave.findMany.mockResolvedValue(legacyLeaves);
     prismaMock.attendancePayrollAdjustment.findMany.mockResolvedValue([]);
     prismaMock.attendancePayrollAdjustment.updateMany.mockResolvedValue({count:0});
     prismaMock.payrollRun.updateMany.mockResolvedValue({ count: 1 });
@@ -173,7 +176,8 @@ const setup = ({
     });
 
     prismaMock.overtimeRequest.findMany.mockResolvedValue([]);
-    prismaMock.leaveRequest.findMany.mockResolvedValue(unpaidLeaves.map(l=>({...l,startDate:new Date('2026-06-01'),endDate:new Date('2026-06-30')})));
+    // Real rows carry their employee and status; a two-day unpaid leave at the start of June.
+    prismaMock.leaveRequest.findMany.mockResolvedValue(leaveRequests ?? unpaidLeaves.map((l,i)=>({id:500+i,employeeId:4242,status:'APPROVED',...l,startDate:new Date('2026-06-01'),endDate:new Date('2026-06-02')})));
     prismaMock.employeeBenefit.findMany.mockResolvedValue(benefits);
     prismaMock.loan.findMany.mockResolvedValue(loans.map(l=>({...l,repayments:[]})));
     prismaMock.loan.update.mockResolvedValue({});
@@ -337,4 +341,21 @@ it('persists management deductions under their own type with a dated calculation
  await payroll.processPayrollRun(RUN_ID,PROCESSOR,TENANT);
  const rows=persistedDeductions().filter(row=>codeOf(row)==='ATTENDANCE_RULES_V2');
  expect(rows).toHaveLength(1);expect(rows[0].description).toContain('0.5 day(s)');
+});
+
+// HR-LEAVE-PARTIAL-01 / Task 8 — payroll reads approved leave PER DAY. Management approved an UNPAID request for
+// 20–24 Oct but rejected 23 Oct: the rejected day is neither excused nor recovered as LWP, even though the legacy
+// Leave mirror row still spans 20–24.
+it('a rejected day inside an approved request is not excused and not LWP',async()=>{
+ const d=s=>new Date(`2026-10-${s}T00:00:00.000Z`);
+ setup({countryCode:'PK',currencyCode:'PKR',taxRateRows:[],period:['2026-10-01','2026-10-31'],
+  leaveRequests:[{id:31,employeeId:4242,status:'APPROVED',startDate:d('20'),endDate:d('24'),totalDays:4,leavePolicy:{leaveTypeCode:'UNPAID'},
+   days:['20','21','22','23','24'].map(n=>({date:d(n),decision:n==='23'?'REJECTED':'APPROVED'}))}],
+  legacyLeaves:[{id:8,employeeId:4242,status:'APPROVED',type:'UNPAID',start_date:d('20'),end_date:d('24'),total_days:4}],
+  attendance:['20','21','22','23','24'].map(n=>({date:d(n),status:'ABSENT',day_credit:0,manually_corrected:false}))});
+ await payroll.processPayrollRun(RUN_ID,PROCESSOR,TENANT);
+ const employee=(await prismaMock.employee.findMany.mock.results[0].value)[0];
+ const excused=employee.attendanceAnomalies.filter(a=>a.sourceKind==='PAYROLL_LEAVE_COVERAGE').map(a=>a.date.toISOString().slice(0,10));
+ expect(excused).toEqual(['2026-10-20','2026-10-21','2026-10-22','2026-10-24']);
+ expect(persistedDeductions().map(row=>row.description)).toContain('LWP Recovery (4 days)');
 });
