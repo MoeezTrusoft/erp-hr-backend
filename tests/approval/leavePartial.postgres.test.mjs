@@ -213,6 +213,9 @@ test("HR-LEAVE-PARTIAL-01 per-day leave decisions", { timeout: 300000 }, async (
       { date: "2026-10-23", decision: "REJECTED" },
       { date: "2026-10-24", decision: "APPROVED" },
     ]);
+    // Management cannot pick a policy but is told the name of the request's own one (not the whole list).
+    const policy = await db((tx) => tx.leavePolicy.findFirst({ where: { tenantId: company } }));
+    assert.deepEqual(read.record.leavePolicies, [{ ref: String(policy.id), label: policy.name }]);
     // A pending request shows its days as PENDING; the list carries them too.
     const s = await leave("2026-11-24", "2026-11-25");
     const pending = await atManagement(s);

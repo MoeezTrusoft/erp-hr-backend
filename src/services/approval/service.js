@@ -392,11 +392,19 @@ async function leaveDaysByRequest(tx, env, rows) {
 }
 async function view(tx, env, row, summary = false, people = null, leaveDays = null) {
   if (!(await canRead(tx, env, row))) fail("Request not found", 404);
+  // HR picks the policy from the active list; everyone else is told the name of the request's own policy.
+  const ownPolicyId = row.kind === "LEAVE" ? Number(unseal(row.snapshot)?.leavePolicyId) : NaN;
+  const canPick = permits(env, "verify");
   const leavePolicies =
-    !summary && row.kind === "LEAVE" && permits(env, "verify")
+    !summary && row.kind === "LEAVE" && (canPick || Number.isInteger(ownPolicyId))
       ? (
           await tx.leavePolicy.findMany({
-            where: { tenantId: env.tenantId, active: true },
+            where: {
+              tenantId: env.tenantId,
+              ...(canPick
+                ? { OR: [{ active: true }, ...(Number.isInteger(ownPolicyId) ? [{ id: ownPolicyId }] : [])] }
+                : { id: ownPolicyId }),
+            },
             select: { id: true, name: true },
             orderBy: { name: "asc" },
           })
