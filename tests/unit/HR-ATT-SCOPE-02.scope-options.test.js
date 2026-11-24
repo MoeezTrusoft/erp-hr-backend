@@ -100,6 +100,8 @@ describe('HR-ATT-SCOPE-02 scope options', () => {
                 first_name: 'Ayesha',
                 last_name: 'Khan',
                 status: 'ACTIVE',
+                photo_url: 'https://cdn.example/a.png',
+                Position: { title: 'Shift Lead' },
                 businessUnit: { name: 'Operations' },
             },
         ]);
@@ -117,6 +119,8 @@ describe('HR-ATT-SCOPE-02 scope options', () => {
                 code: 'EMP-005',
                 name: 'Ayesha Khan',
                 department: 'Operations',
+                position: 'Shift Lead',
+                photoUrl: 'https://cdn.example/a.png',
                 status: 'ACTIVE',
                 activeFrom: undefined,
             },

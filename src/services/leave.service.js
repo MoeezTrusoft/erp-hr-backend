@@ -543,11 +543,19 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     // raise only: a manager or HR filing for a day the employee has already
     // taken. Never settable from a self-service call (the tool decides it).
     allowPastDates = false,
+    dates,
   } = data;
 
+  // Selected dates (ranges and gaps, e.g. 1-3, 6, 12-14): the request spans the first to the last of them and only
+  // the picked dates count. Without `dates` the whole range is requested, as before.
+  if (Array.isArray(dates) && dates.some((d) => !/^\d{4}-\d{2}-\d{2}$/.test(String(d)) || Number.isNaN(Date.parse(d))))
+    throw Object.assign(new Error('Dates must be YYYY-MM-DD'), { status: 400 });
+  const picked = Array.isArray(dates) && dates.length ? [...new Set(dates)].sort() : null;
+  if (!picked && (!startDate || !endDate)) throw Object.assign(new Error('Choose a start and end date, or the dates to take off'), { status: 400 });
+
   // Validate dates
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+  const start = new Date(picked ? picked[0] : startDate);
+  const end = new Date(picked ? picked[picked.length - 1] : endDate);
   const today = new Date();
 
   if (start > end) {
@@ -559,30 +567,36 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     throw new Error('Cannot request leave for past dates');
   }
 
-  // Check for overlapping leave requests
-  const overlappingLeaves = await prisma.leaveRequest.count({
-    where: {
-      employeeId: parseInt(employeeId),
-      status: { in: ['PENDING', 'APPROVED'] },
-      OR: [
-        {
-          startDate: { lte: end },
-          endDate: { gte: start }
-        }
-      ]
-    }
-  });
-
-  if (overlappingLeaves > 0) {
-    throw new Error('You have an overlapping leave request during this period');
-  }
-
   // Calculate duration (excluding weekends and holidays)
-  const workingDates = await listWorkingDates(parseInt(employeeId), start, end, tenantId);
+  const rangeDates = await listWorkingDates(parseInt(employeeId), start, end, tenantId);
+  let workingDates = rangeDates;
+  // Picked weekends and holidays are skipped, as they are inside a plain range.
+  if (picked) workingDates = picked.filter((d) => rangeDates.includes(d));
   const durationDays = workingDates.length;
 
   if (durationDays <= 0) {
     throw new Error('No working days in the selected date range');
+  }
+
+  // Overlap is by date, not by range: a request for the 6th may sit between one for 1-3 and one for 12-14.
+  // A request with day rows holds its non-rejected dates; one without (filed before day rows) holds its whole range.
+  const candidates = await prisma.leaveRequest.findMany({
+    where: {
+      employeeId: parseInt(employeeId),
+      status: { in: ['PENDING', 'APPROVED'] },
+      startDate: { lte: end },
+      endDate: { gte: start },
+    },
+    select: { startDate: true, endDate: true, days: { select: { date: true, decision: true } } },
+  });
+  const wanted = new Set(workingDates);
+  const clash = candidates.some((c) =>
+    c.days.length
+      ? c.days.some((d) => d.decision !== 'REJECTED' && wanted.has(dateKey(d.date)))
+      : [...wanted].some((d) => d >= dateKey(c.startDate) && d <= dateKey(c.endDate)),
+  );
+  if (clash) {
+    throw new Error('You have an overlapping leave request during this period');
   }
 
   // HR-LEAVE-TYPELESS-01 (2026-09-22, operator ruling) — the EMPLOYEE does

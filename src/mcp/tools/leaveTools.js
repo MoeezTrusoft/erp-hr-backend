@@ -205,8 +205,9 @@ export function registerLeaveTools(server) {
         .min(1)
         .optional()
         .describe("HR-LEAVE-TYPELESS-01 — OPTIONAL: employees file WITHOUT a type (HR assigns one at approval). HR/manager may still create a pre-typed request by passing the policy code."),
-      startDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be today or later and ≤ endDate (a raise ON BEHALF may start in the past)"),
-      endDate: z.string().describe("ISO 8601 date YYYY-MM-DD; must be ≥ startDate"),
+      startDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; must be today or later and ≤ endDate (a raise ON BEHALF may start in the past). Omit when `dates` is given"),
+      endDate: z.string().optional().describe("ISO 8601 date YYYY-MM-DD; must be ≥ startDate. Omit when `dates` is given"),
+      dates: z.array(z.string()).max(366).optional().describe("Individual working dates YYYY-MM-DD to take off, ranges and gaps allowed (e.g. 1-3, 6, 12-14 as every date). The request spans the first to the last; only these dates count"),
       reason: z.string().optional().describe("Optional free-text reason shown on the request"),
     },
     withToolError(async (args) => {

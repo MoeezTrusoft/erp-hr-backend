@@ -2,7 +2,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 const prismaMock = {
-    leaveRequest: { count: jest.fn(), create: jest.fn() },
+    leaveRequest: { findMany: jest.fn(), create: jest.fn() },
 };
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({ tenantTransaction: async (p, fn) => fn(p) }));
@@ -38,7 +38,7 @@ describe('leave request day rows', () => {
     const tenant = '40314ef4-0a81-4390-b631-b3ad3f21f523';
     beforeEach(() => {
         jest.clearAllMocks();
-        prismaMock.leaveRequest.count.mockResolvedValue(0);
+        prismaMock.leaveRequest.findMany.mockResolvedValue([]);
         prismaMock.leaveRequest.create.mockImplementation(async ({ data }) => ({ id: 5, ...data }));
         workingDaysMap = new Map([wd('2099-03-02', true), wd('2099-03-03', true), wd('2099-03-04', false), wd('2099-03-05', true)]);
     });
@@ -58,5 +58,37 @@ describe('leave request day rows', () => {
             { date: new Date('2099-03-03T00:00:00.000Z'), decision: 'PENDING', tenantId: tenant },
             { date: new Date('2099-03-05T00:00:00.000Z'), decision: 'PENDING', tenantId: tenant },
         ]);
+    });
+
+    it('picked dates (a range and gaps) are the only day rows; the request spans first to last', async () => {
+        workingDaysMap = new Map([wd('2099-03-02', true), wd('2099-03-03', true), wd('2099-03-04', true), wd('2099-03-05', true), wd('2099-03-06', true)]);
+        await createLeaveRequest({ employeeId: 7, dates: ['2099-03-06', '2099-03-02', '2099-03-03', '2099-03-02'], reason: 'Family' }, 7, tenant);
+        const data = prismaMock.leaveRequest.create.mock.calls[0][0].data;
+        expect(data.startDate).toEqual(new Date('2099-03-02'));
+        expect(data.endDate).toEqual(new Date('2099-03-06'));
+        expect(data.totalDays).toBe(3);
+        expect(data.days.create.map((d) => d.date.toISOString().slice(0, 10))).toEqual(['2099-03-02', '2099-03-03', '2099-03-06']);
+    });
+
+    it('picked non-working days are skipped; a bad date or no working day is refused', async () => {
+        await createLeaveRequest({ employeeId: 7, dates: ['2099-03-02', '2099-03-04'] }, 7, tenant); // 04 is off
+        expect(prismaMock.leaveRequest.create.mock.calls[0][0].data.totalDays).toBe(1);
+        prismaMock.leaveRequest.create.mockClear();
+        await expect(createLeaveRequest({ employeeId: 7, dates: ['2099-03-04'] }, 7, tenant)).rejects.toThrow(/No working days/);
+        await expect(createLeaveRequest({ employeeId: 7, dates: ['2099-3-2'] }, 7, tenant)).rejects.toMatchObject({ status: 400 });
+        expect(prismaMock.leaveRequest.create).not.toHaveBeenCalled();
+    });
+
+    it('overlap is by date: a request for the gap between two others is allowed, a shared date is not', async () => {
+        workingDaysMap = new Map([wd('2099-03-02', true), wd('2099-03-03', true), wd('2099-03-04', true), wd('2099-03-05', true), wd('2099-03-06', true)]);
+        const existing = { startDate: new Date('2099-03-02'), endDate: new Date('2099-03-06'), days: [
+            { date: new Date('2099-03-02'), decision: 'PENDING' }, { date: new Date('2099-03-06'), decision: 'PENDING' }, { date: new Date('2099-03-03'), decision: 'REJECTED' }] };
+        prismaMock.leaveRequest.findMany.mockResolvedValue([existing]);
+        await expect(createLeaveRequest({ employeeId: 7, dates: ['2099-03-04'] }, 7, tenant)).resolves.toBeTruthy();
+        await expect(createLeaveRequest({ employeeId: 7, dates: ['2099-03-03'] }, 7, tenant)).resolves.toBeTruthy(); // rejected day is free
+        await expect(createLeaveRequest({ employeeId: 7, dates: ['2099-03-06'] }, 7, tenant)).rejects.toThrow(/overlapping/);
+        // a request filed before day rows holds its whole range
+        prismaMock.leaveRequest.findMany.mockResolvedValue([{ ...existing, days: [] }]);
+        await expect(createLeaveRequest({ employeeId: 7, dates: ['2099-03-04'] }, 7, tenant)).rejects.toThrow(/overlapping/);
     });
 });

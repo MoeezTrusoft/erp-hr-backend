@@ -725,7 +725,7 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
       await deductApprovedLeave(tx, env, leave, reason);
       const { createLeaveAttendanceRecords, upsertLegacyLeaveMirror } =
         await import("../leave.service.js");
-      await createLeaveAttendanceRecords(leave, tx, partial ? options.leaveDays.approvedDates : undefined);
+      await createLeaveAttendanceRecords(leave, tx, options.leaveDays ? options.leaveDays.approvedDates : undefined);
       await upsertLegacyLeaveMirror(leave, tx);
     }
     await tx.leaveRequestApproval.create({
