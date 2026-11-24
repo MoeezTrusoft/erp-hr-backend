@@ -16,6 +16,7 @@ import { ruleDeductions } from "../lib/attendanceAnomalyRules.js";
 import { describeAttendanceCharges, payMonthOf } from "../lib/payslipCharges.js";
 import { toIdentity } from "../lib/personIdentity.js";
 import prisma from "../lib/prisma.js";
+import { approvedLeaveDays } from "../lib/approvedLeaveDays.js";
 import logger from "../lib/logger.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
@@ -186,19 +187,11 @@ async function computeYtd({ tenantId, employeeId, periodEnd }) {
   return { gross, tax, net };
 }
 
-// Leave days taken by the employee that OVERLAP the payslip period (APPROVED).
+// Approved leave days the employee took INSIDE the payslip period: a day Management rejected is not counted, and a
+// request crossing the period edge counts only its days in the period (HR-LEAVE-PARTIAL-01).
 async function computeLeaveTaken({ tenantId, employeeId, periodStart, periodEnd }) {
-  const rows = await prisma.leaveRequest.findMany({
-    where: scopedWhere(tenantId, {
-      employeeId: Number(employeeId),
-      status: "APPROVED",
-      // overlap: startDate <= periodEnd AND endDate >= periodStart
-      startDate: { lte: periodEnd },
-      endDate: { gte: periodStart },
-    }),
-    select: { totalDays: true },
-  });
-  return rows.reduce((sum, r) => sum + (Number(r.totalDays) || 0), 0);
+  const rows = await approvedLeaveDays(prisma, { tenantId, employeeIds: [Number(employeeId)], from: periodStart, to: periodEnd });
+  return Math.round(rows.reduce((sum, r) => sum + r.weight, 0) * 100) / 100;
 }
 
 // Approved overtime hours with a date inside the payslip period.

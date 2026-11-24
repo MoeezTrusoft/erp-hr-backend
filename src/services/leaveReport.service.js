@@ -22,6 +22,7 @@ import prisma from "../lib/prisma.js";
 import { scopedWhere } from "../lib/tenancy.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { listWorkingDates } from "./leave.service.js";
 
 // The four canonical leave-type codes the screen recognises. Anything else
 // (incl. a null/pending type) buckets into "other".
@@ -78,23 +79,6 @@ function currentMonthRange() {
   const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
   return { from, to };
-}
-
-/**
- * WORKING-DAY RULE for totalDays: an inclusive count of Mon–Sat between start
- * and end (Sunday is the only non-working day). Both bounds are treated at UTC
- * midnight; a same-day request on a working day = 1, on a Sunday = 0. Guarded so
- * start must be <= end.
- */
-function workingDaysMonToSat(start, end) {
-  let count = 0;
-  const cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
-  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
-  while (cur.getTime() <= last.getTime()) {
-    if (cur.getUTCDay() !== 0) count += 1; // 0 = Sunday
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-  return count;
 }
 
 function sameDay(a, b) {
@@ -223,8 +207,7 @@ export async function listLeaveTable({
 
 /**
  * Submit a leave request. NO type is chosen here — leavePolicyId is null and the
- * request is PENDING; HR assigns the type at approval. totalDays is the inclusive
- * Mon–Sat working-day count between start and end. created_at auto-stamps.
+ * request is PENDING; HR assigns the type at approval. totalDays is the count of the employee's working dates between start and end (listWorkingDates). created_at auto-stamps.
  * @returns the created LeaveRequest row
  */
 export async function requestLeave({
@@ -251,7 +234,9 @@ export async function requestLeave({
     throw Object.assign(new Error("startDate must be on or before endDate"), { status: 400 });
   }
 
-  const totalDays = workingDaysMonToSat(start, end);
+  // Same working-date rule as createLeaveRequest (roster, holidays); 409 when attendance setup is incomplete.
+  const workingDates = await listWorkingDates(empId, start, end, tenantId);
+  const totalDays = workingDates.length;
   const author = toIntOrNull(createdById);
 
   const created = await prisma.leaveRequest.create({
@@ -264,6 +249,14 @@ export async function requestLeave({
       reason: reason ?? null,
       status: "PENDING",
       createdById: author ?? empId,
+      // HR-LEAVE-DAYS-01: one PENDING row per working date, in the same statement as the request.
+      days: {
+        create: workingDates.map((date) => ({
+          date: new Date(`${date}T00:00:00.000Z`),
+          decision: "PENDING",
+          ...(tenantId ? { tenantId } : {}),
+        })),
+      },
     },
     include: {
       employee: { select: EMPLOYEE_SELECT },

@@ -1,6 +1,7 @@
 import prisma from './prisma.js';
 import { badSetup, dateOnly, dateKey } from './attendanceDates.js';
 import { resolveEmployeeDay } from './attendanceSetup.js';
+import { approvedLeaveDays } from './approvedLeaveDays.js';
 
 // ROSTER-REEVAL-01 — schedule windows resolve from the live WorkSchedule
 // table, not only from the published release snapshot. The snapshot stays the
@@ -29,7 +30,7 @@ export async function loadAttendanceRuntime({
   if (!tenantId) throw badSetup('Tenant is required', 403);
   const first = dateOnly(from),
     last = dateOnly(to);
-  const [releases, assignments, leaves, requests, callIns, liveRosterRows, liveCalendars, liveHolidays, exemptions] = await Promise.all([
+  const [releases, assignments, leaveDays, callIns, liveRosterRows, liveCalendars, liveHolidays, exemptions] = await Promise.all([
     db.attendanceSetupRelease.findMany({
       where: { tenantId, effectiveFrom: { lte: last } },
       orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
@@ -38,22 +39,9 @@ export async function loadAttendanceRuntime({
       where: { tenantId, date: { gte: first, lte: last } },
       orderBy: { id: 'desc' },
     }),
-    db.leave.findMany({
-      where: {
-        tenantId,
-        status: 'APPROVED',
-        start_date: { lte: last },
-        end_date: { gte: first },
-      },
-    }),
-    db.leaveRequest.findMany({
-      where: {
-        tenantId,
-        status: 'APPROVED',
-        startDate: { lte: last },
-        endDate: { gte: first },
-      },
-    }),
+    // Approved leave per day (HR-LEAVE-PARTIAL-01): a day Management rejected inside an approved request is not
+    // leave, and the request's legacy Leave mirror (which still spans start..end) is not read as leave either.
+    approvedLeaveDays(db, { tenantId, from: first, to: last, includeLegacyLeave: true }),
     db.attendanceCallIn.findMany({
       where: { tenantId, date: { gte: first, lte: last } },
     }),
@@ -106,14 +94,11 @@ export async function loadAttendanceRuntime({
     if (!indexed.has(key)) indexed.set(key, []);
     indexed.get(key).push(row);
   }
-  const allLeaves = [
-    ...leaves,
-    ...requests.map((r) => ({
-      ...r,
-      start_date: r.startDate,
-      end_date: r.endDate,
-    })),
-  ];
+  const allLeaves = leaveDays.map((r) => ({
+    employeeId: r.employeeId,
+    start_date: r.date,
+    end_date: r.date,
+  }));
   const leavesByEmployee = new Map(),
     callsByEmployee = new Map();
   for (const row of allLeaves) {

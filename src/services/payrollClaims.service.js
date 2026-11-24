@@ -37,6 +37,15 @@ export async function reserveClaimsForPayslip(db, { tenantId, runId, payslipId, 
   return eligible.map((c) => ({ claimId: c.id, title: c.title, amount: String(c.amount) }));
 }
 
+/** A recalled run no longer holds its claims: unpaid (APPROVED) ones become available to the next run. Returns how many. */
+export async function releaseRunClaims(db, { tenantId, runId }) {
+  const released = await db.reimbursementClaim.updateMany({
+    where: { tenantId, payrollRunId: runId, status: 'APPROVED' },
+    data: { payrollRunId: null, payslipId: null },
+  });
+  return released.count;
+}
+
 /** The claims a payslip would pay, without reserving anything (a preview). */
 export async function previewClaimsForPayslip(db, { tenantId, runId, employeeId, currency }) {
   const live = (await holdingRunIds(db, tenantId)).filter((id) => id !== runId);

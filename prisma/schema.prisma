@@ -1294,6 +1294,7 @@ model LeaveRequest {
   employee    Employee               @relation(fields: [employeeId], references: [id])
   leavePolicy LeavePolicy?           @relation(fields: [leavePolicyId], references: [id])
   approvals   LeaveRequestApproval[]
+  days        LeaveRequestDay[]
 
   // Audit
   created_at  DateTime  @default(now())
@@ -1314,6 +1315,31 @@ model LeaveRequest {
   @@index([tenantId, employeeId, status, startDate, endDate, id], map: "leave_requests_tenant_employee_status_dates_id_idx")
   @@index([tenantId, status, created_at(sort: Desc), id(sort: Desc)], map: "leave_requests_tenant_status_created_id_idx")
   @@map("leave_requests")
+}
+
+enum LeaveDayDecision {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// HR-LEAVE-DAYS-01 — one row per working date of a leave request, so a request
+// can be approved in part. A request without rows (legacy) counts every working
+// date in its range; see src/lib/approvedLeaveDays.js.
+model LeaveRequestDay {
+  id             Int              @id @default(autoincrement())
+  tenantId       String?          @db.Uuid
+  leaveRequestId Int
+  date           DateTime         @db.Date
+  decision       LeaveDayDecision @default(PENDING)
+  decidedById    Int?
+  decidedAt      DateTime?
+
+  leaveRequest LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([leaveRequestId, date])
+  @@index([tenantId])
+  @@map("leave_request_days")
 }
 
 model LeaveRequestApproval {

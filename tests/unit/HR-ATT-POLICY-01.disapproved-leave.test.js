@@ -146,4 +146,18 @@ describe('HR-ATT-POLICY-01 countable days', () => {
 
         expect(days).toHaveLength(3);
     });
+
+    it('a request with day rows marks only its rejected dates (a rejected day of an approved request, not the gaps)', async () => {
+        leaveRequests = [{
+            id: 11, employeeId: EMP, startDate: d('2026-12-01'), endDate: d('2026-12-08'),
+            days: [
+                { date: d('2026-12-01'), decision: 'APPROVED' },
+                { date: d('2026-12-03'), decision: 'REJECTED' },
+                { date: d('2026-12-08'), decision: 'APPROVED' },
+            ],
+        }];
+        const s = await svc.generateDisapprovedLeaveAnomalies({ tenantId: TENANT });
+        expect(s).toMatchObject({ days: 1, created: 1 });
+        expect(createdRows.map((r) => r.sourceRef)).toEqual(['leaveRequest:11:2026-12-03']);
+    });
 });

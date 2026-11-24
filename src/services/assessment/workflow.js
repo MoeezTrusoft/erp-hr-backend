@@ -31,6 +31,7 @@ import {
 import { brief, restrict } from "./evidence.js";
 import { publishDownstream } from "./downstream.js";
 import { loadAttendanceRuntime } from "../../lib/attendanceRuntime.js";
+import { approvedLeaveDays } from "../../lib/approvedLeaveDays.js";
 import { dateRange } from "../../lib/attendanceDates.js";
 
 export async function qualifiedCandidates(
@@ -72,24 +73,9 @@ export async function qualifiedCandidates(
     },
     select: { raterCode: true, reviewerCode: true, taskCodes: true },
   });
-  const leave = await tx.leaveRequest.findMany({
-    where: {
-      tenantId: env.tenantId,
-      status: "APPROVED",
-      startDate: { lte: env.now },
-      endDate: { gte: env.now },
-    },
-    select: { employeeId: true },
-  });
-  const legacyLeave = await tx.leave.findMany({
-    where: {
-      tenantId: env.tenantId,
-      status: "APPROVED",
-      start_date: { lte: env.now },
-      end_date: { gte: env.now },
-    },
-    select: { employeeId: true },
-  });
+  // Approved leave days today, from both stores (a day Management rejected inside an approved request is not leave).
+  const today = new Date(`${env.now.toISOString().slice(0, 10)}T00:00:00.000Z`);
+  const onLeaveToday = await approvedLeaveDays(tx, { tenantId: env.tenantId, from: today, to: today, includeLegacyLeave: true });
   let calendar;
   const from = env.now.toISOString().slice(0, 10),
     to = capacity
@@ -145,9 +131,7 @@ export async function qualifiedCandidates(
       capacityMinutes,
       onLeave:
         (capacity && capacityMinutes < capacity.minutes) ||
-        [...leave, ...legacyLeave].some(
-          (l) => l.employeeId === p.employeeRowId,
-        ),
+        onLeaveToday.some((l) => l.employeeId === p.employeeRowId),
       openCount: active.filter(
         (a) =>
           a.raterCode === p.employeeCode || a.reviewerCode === p.employeeCode,

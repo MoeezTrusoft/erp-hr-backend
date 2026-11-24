@@ -234,6 +234,10 @@ test("HR-LEAVE-ONBEHALF-01 on-behalf leave", { timeout: 180000 }, async (t) => {
     );
     assert.equal(created.employeeId, people.EMPLOYEE.id);
     assert.equal(created.createdById, people.MANAGER.id, "the filer is on record");
+    // HR-LEAVE-DAYS-01: the day rows are written with the request, through the line-guard trigger.
+    const days = await db((tx) => tx.leaveRequestDay.findMany({ where: { tenantId: company, leaveRequestId: created.id } }));
+    assert.equal(days.length, created.totalDays, "one day row per working date");
+    assert.ok(days.every((d) => d.decision === "PENDING"), "every day starts PENDING");
   });
 
   await prisma.$disconnect();

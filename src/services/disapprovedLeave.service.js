@@ -52,7 +52,8 @@ const dayKey = (d) => d.toISOString().slice(0, 10);
  * elsewhere. sourceKind/sourceRef carry a unique index, so a re-run is a no-op.
  */
 export async function generateDisapprovedLeaveAnomalies({ tenantId, from, to } = {}) {
-  const where = { tenantId, status: "REJECTED" };
+  // A rejected request, or an approved one in which Management rejected some days.
+  const where = { tenantId, OR: [{ status: "REJECTED" }, { days: { some: { decision: "REJECTED" } } }] };
   if (from || to) {
     where.startDate = {};
     if (from) where.startDate.gte = new Date(from);
@@ -61,14 +62,19 @@ export async function generateDisapprovedLeaveAnomalies({ tenantId, from, to } =
 
   const rejected = await prisma.leaveRequest.findMany({
     where,
-    select: { id: true, employeeId: true, startDate: true, endDate: true },
+    select: { id: true, employeeId: true, startDate: true, endDate: true, days: { select: { date: true, decision: true } } },
     orderBy: { id: "asc" },
   });
 
   const summary = { leaveRequests: rejected.length, created: 0, skippedExisting: 0, days: 0 };
 
   for (const req of rejected) {
-    for (const day of eachDay(req.startDate, req.endDate)) {
+    // With day rows only the rejected dates count (a gap between picked dates was never asked for);
+    // a request filed before day rows covers its whole range.
+    const covered = req.days?.length
+      ? req.days.filter((d) => d.decision === "REJECTED").map((d) => new Date(d.date))
+      : eachDay(req.startDate, req.endDate);
+    for (const day of covered) {
       summary.days += 1;
       const sourceRef = `leaveRequest:${req.id}:${dayKey(day)}`;
 

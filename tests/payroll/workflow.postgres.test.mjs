@@ -209,7 +209,7 @@ test(
     review = await act("MANAGEMENT", review, "APPROVE");
     await assert.rejects(
       as("HR", () => cancelPayrollRun(run.id, people.HR.id, company)),
-      /cannot|cancel/i,
+      /cannot|cancel|recall/i,
     );
     // A request raised after processing blocks the lock of the payslips too.
     const raisedAfterApproval = await openCase("late-finalize");
