@@ -85,7 +85,8 @@
   "overrides": {
     "body-parser": "^2.4.0",
     "@prisma/config": {
-      "deepmerge-ts": "^8.0.0"
+      "deepmerge-ts": "^8.0.0",
+      "effect": "^3.22.5"
     },
     "prisma": {
       "mysql2": "^3.23.1"

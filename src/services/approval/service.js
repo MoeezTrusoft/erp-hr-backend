@@ -41,6 +41,7 @@ import {
   onSubmit,
   onReturn,
   applyDecision,
+  decideLeaveDays,
 } from "./adapters.js";
 import { Prisma } from "@prisma/client";
 import { identitiesByCode } from "../../lib/personIdentity.js";
@@ -374,13 +375,36 @@ function safeSnapshot(row) {
     return null;
   }
 }
-async function view(tx, env, row, summary = false, people = null) {
+// HR-LEAVE-PARTIAL-01 — each LEAVE request's days and decisions by date, keyed by leave request id. A request filed
+// before day rows existed maps to [] (the screen then shows the date range).
+async function leaveDaysByRequest(tx, env, rows) {
+  const ids = rows.filter((r) => r.kind === "LEAVE").map((r) => Number(r.sourceRef)).filter(Number.isInteger);
+  const byRequest = new Map(ids.map((id) => [id, []]));
+  if (!ids.length) return byRequest;
+  const days = await tx.leaveRequestDay.findMany({
+    where: { tenantId: env.tenantId, leaveRequestId: { in: ids } },
+    orderBy: [{ leaveRequestId: "asc" }, { date: "asc" }],
+    select: { leaveRequestId: true, date: true, decision: true },
+  });
+  for (const d of days)
+    byRequest.get(d.leaveRequestId).push({ date: d.date.toISOString().slice(0, 10), decision: d.decision });
+  return byRequest;
+}
+async function view(tx, env, row, summary = false, people = null, leaveDays = null) {
   if (!(await canRead(tx, env, row))) fail("Request not found", 404);
+  // HR picks the policy from the active list; everyone else is told the name of the request's own policy.
+  const ownPolicyId = row.kind === "LEAVE" ? Number(unseal(row.snapshot)?.leavePolicyId) : NaN;
+  const canPick = permits(env, "verify");
   const leavePolicies =
-    !summary && row.kind === "LEAVE" && permits(env, "verify")
+    !summary && row.kind === "LEAVE" && (canPick || Number.isInteger(ownPolicyId))
       ? (
           await tx.leavePolicy.findMany({
-            where: { tenantId: env.tenantId, active: true },
+            where: {
+              tenantId: env.tenantId,
+              ...(canPick
+                ? { OR: [{ active: true }, ...(Number.isInteger(ownPolicyId) ? [{ id: ownPolicyId }] : [])] }
+                : { id: ownPolicyId }),
+            },
             select: { id: true, name: true },
             orderBy: { name: "asc" },
           })
@@ -419,6 +443,9 @@ async function view(tx, env, row, summary = false, people = null) {
     source: summary ? {} : isAppraisalApproval(row)
       ? await appraisalApprovalSource(tx, env, row) : unseal(row.snapshot),
     leavePolicies,
+    ...(row.kind === "LEAVE"
+      ? { leaveDays: (leaveDays ?? (await leaveDaysByRequest(tx, env, [row]))).get(Number(row.sourceRef)) ?? [] }
+      : {}),
     actions: summary ? [] : [...(await actionsFor(tx, env, row)), ...(await editActionsFor(tx, env, row))],
     history: history.map(
       ({
@@ -564,17 +591,22 @@ async function submitWithin(
     if (noUsableManager && !sentToHr)
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
+    // HR raising a leave request on behalf has chosen its type on the request, so the filing is also the HR verification:
+    // it skips the manager and HR stages and goes to Management (below). A request filed without a type keeps the full route,
+    // because verification is where HR assigns the type.
+    const hrFiledTyped =
+      onBehalf && permits(env, "verify") && input.kind === "LEAVE" && Boolean(source.row.leavePolicyId);
     const route = matrix ? await sealRoute(tx, env, input.kind, matrix, source) : null;
     const selfApproved = route?.selfApproved === true;
     const data = {
       // The canonical owner code of the source, not the caller's: identical for
       // a self submission, the employee's for an on-behalf one.
       employeeCode: source.who.employee_code,
-      stage: selfApproved ? "APPROVED" : route ? "LEVEL" : sentToHr ? "HR" : stageAfterSubmission(input.kind),
+      stage: selfApproved ? "APPROVED" : route ? "LEVEL" : sentToHr || hrFiledTyped ? "HR" : stageAfterSubmission(input.kind),
       route: route ?? Prisma.DbNull,
       level: route && !selfApproved ? route.levels.findIndex((l) => l.engaged) : null,
       pendingCodes: route && !selfApproved ? route.levels.find((l) => l.engaged).approverCodes : [],
-      managerCode: sentToHr ? null : (manager?.employee_code ?? null),
+      managerCode: sentToHr || hrFiledTyped ? null : (manager?.employee_code ?? null),
       managerActorCode: null,
       hrActorCode: null,
       recommendation: null,
@@ -637,7 +669,8 @@ async function submitWithin(
     else if (
       next.stage === "HR" &&
       isVerifiedOnBehalf(input.kind) &&
-      (onBehalf ||
+      (hrFiledTyped ||
+        (onBehalf && input.kind !== "LEAVE") ||
         (["CLAIM", "LOAN"].includes(input.kind) &&
           permits(env, "verify") &&
           source.who.employee_code === env.who.employee_code))
@@ -736,6 +769,11 @@ export async function actApproval(raw) {
     }
     if (!(await canRead(tx, env, row))) fail("Request not found", 404);
     assertVersion(row, input.expectedVersion);
+    // HR-LEAVE-PARTIAL-01: individual days are rejected only by Management's decision on a leave request (the
+    // contract already limits the field to APPROVE). An empty list is no list.
+    const rejectedDates = input.rejectedDates ?? [];
+    if (rejectedDates.length && !(row.kind === "LEAVE" && atManagementDecisionLevel(row)))
+      fail("Only Management may reject individual days of a leave request", 400);
         if (!(await actionsFor(tx, env, row)).includes(input.action))
       fail("You cannot perform this action at the current stage", 403);
 
@@ -857,6 +895,11 @@ export async function actApproval(raw) {
         data.stage = input.action === "APPROVE" ? "APPROVED" : "REJECTED";
       }
     }
+    // Day decisions are written while the request is still open: once it is APPROVED the line guard freezes them.
+    const leaveDays =
+      row.kind === "LEAVE" && ["APPROVE", "REJECT"].includes(input.action)
+        ? await decideLeaveDays(tx, env, source.row, input.action === "APPROVE", rejectedDates)
+        : null;
     let next = await tx.hrApprovalRequest.update({
       where: { id: row.id },
       data,
@@ -876,7 +919,7 @@ export async function actApproval(raw) {
         source,
         input.action === "APPROVE",
         input.reason,
-        { deductionDays: input.deductionDays },
+        { deductionDays: input.deductionDays, leaveDays },
       );
       next = await tx.hrApprovalRequest.update({
         where: { id: row.id },
@@ -1325,8 +1368,9 @@ export function listApprovals(raw) {
       closedCases.has(Number(String(row.sourceRef).split("@")[0]));
     const items = [];
     const people = await identitiesByCode(tx, env.tenantId, page.map((r) => r.employeeCode));
+    const leaveDays = await leaveDaysByRequest(tx, env, page);
     for (const row of page)
-      if (!stale(row)) items.push(await view(tx, env, row, true, people));
+      if (!stale(row)) items.push(await view(tx, env, row, true, people, leaveDays));
     const staleCount = page.filter(stale).length;
     if (staleCount && counts.byKind.ATTENDANCE)
       counts.byKind.ATTENDANCE = Math.max(0, counts.byKind.ATTENDANCE - staleCount);

@@ -21,12 +21,13 @@ const scopedWhere = (tenantId, where) =>
   tenantId === undefined ? where : withTenant(tenantId, where);
 
 // Helper Functions
-const calculateWorkingDays = async (employeeId, startDate, endDate, tenantId) => {
-  const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true});
+// The employee's working dates in [startDate, endDate] as YYYY-MM-DD, derived with resolveWorkingDays
+// (roster, holidays; approved leave ignored). 409 when attendance setup does not cover a date.
+export const listWorkingDates = async (employeeId, startDate, endDate, tenantId, db) => {
+  const days = await resolveWorkingDays({employeeId,from:startDate,to:endDate,tenantId,ignoreLeaves:true,db});
   if([...days.values()].some(d=>d.working==null))throw Object.assign(new Error('Complete attendance setup before calculating leave'),{status:409});
-  return [...days.values()].reduce((count,d)=>count+(d.working?1:0),0);
+  return [...days].filter(([,d])=>d.working).map(([key])=>key);
 };
-
 
 // Leave types and balances are changed by approved requests (leaveChangeRequest.service.js) and the ledger
 // (leaveLedger.service.js); these older direct writers are closed so nothing can bypass the approval route.
@@ -542,11 +543,19 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     // raise only: a manager or HR filing for a day the employee has already
     // taken. Never settable from a self-service call (the tool decides it).
     allowPastDates = false,
+    dates,
   } = data;
 
+  // Selected dates (ranges and gaps, e.g. 1-3, 6, 12-14): the request spans the first to the last of them and only
+  // the picked dates count. Without `dates` the whole range is requested, as before.
+  if (Array.isArray(dates) && dates.some((d) => !/^\d{4}-\d{2}-\d{2}$/.test(String(d)) || Number.isNaN(Date.parse(d))))
+    throw Object.assign(new Error('Dates must be YYYY-MM-DD'), { status: 400 });
+  const picked = Array.isArray(dates) && dates.length ? [...new Set(dates)].sort() : null;
+  if (!picked && (!startDate || !endDate)) throw Object.assign(new Error('Choose a start and end date, or the dates to take off'), { status: 400 });
+
   // Validate dates
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+  const start = new Date(picked ? picked[0] : startDate);
+  const end = new Date(picked ? picked[picked.length - 1] : endDate);
   const today = new Date();
 
   if (start > end) {
@@ -558,29 +567,36 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
     throw new Error('Cannot request leave for past dates');
   }
 
-  // Check for overlapping leave requests
-  const overlappingLeaves = await prisma.leaveRequest.count({
-    where: {
-      employeeId: parseInt(employeeId),
-      status: { in: ['PENDING', 'APPROVED'] },
-      OR: [
-        {
-          startDate: { lte: end },
-          endDate: { gte: start }
-        }
-      ]
-    }
-  });
-
-  if (overlappingLeaves > 0) {
-    throw new Error('You have an overlapping leave request during this period');
-  }
-
   // Calculate duration (excluding weekends and holidays)
-  const durationDays = await calculateWorkingDays(parseInt(employeeId), start, end, tenantId);
+  const rangeDates = await listWorkingDates(parseInt(employeeId), start, end, tenantId);
+  let workingDates = rangeDates;
+  // Picked weekends and holidays are skipped, as they are inside a plain range.
+  if (picked) workingDates = picked.filter((d) => rangeDates.includes(d));
+  const durationDays = workingDates.length;
 
   if (durationDays <= 0) {
     throw new Error('No working days in the selected date range');
+  }
+
+  // Overlap is by date, not by range: a request for the 6th may sit between one for 1-3 and one for 12-14.
+  // A request with day rows holds its non-rejected dates; one without (filed before day rows) holds its whole range.
+  const candidates = await prisma.leaveRequest.findMany({
+    where: {
+      employeeId: parseInt(employeeId),
+      status: { in: ['PENDING', 'APPROVED'] },
+      startDate: { lte: end },
+      endDate: { gte: start },
+    },
+    select: { startDate: true, endDate: true, days: { select: { date: true, decision: true } } },
+  });
+  const wanted = new Set(workingDates);
+  const clash = candidates.some((c) =>
+    c.days.length
+      ? c.days.some((d) => d.decision !== 'REJECTED' && wanted.has(dateKey(d.date)))
+      : [...wanted].some((d) => d >= dateKey(c.startDate) && d <= dateKey(c.endDate)),
+  );
+  if (clash) {
+    throw new Error('You have an overlapping leave request during this period');
   }
 
   // HR-LEAVE-TYPELESS-01 (2026-09-22, operator ruling) — the EMPLOYEE does
@@ -604,7 +620,9 @@ export const createLeaveRequest = async (data,createdById, tenantId) => {
       reason,
       notes,
       status: 'PENDING',
-      createdById: parseInt(createdById)
+      createdById: parseInt(createdById),
+      // HR-LEAVE-DAYS-01: one PENDING row per working date, written with the request in one statement.
+      days: { create: workingDates.map((date) => ({ date: new Date(`${date}T00:00:00.000Z`), decision: 'PENDING', ...(tenantId === undefined ? {} : { tenantId: tenantId ?? null }) })) }
     }),
     include: {
       employee: {
@@ -1185,7 +1203,9 @@ export const createHoliday = async (data) => {
 // that already has an attendance row — punch integrity beats the leave mark
 // (HR-ATT-CORRECTION-01 precedence). Employees with no schedule in force keep
 // the old conservative reading: every non-holiday weekday is a working day.
-export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma) => {
+// HR-LEAVE-PARTIAL-01: `approvedDates` (YYYY-MM-DD) limits the marks to the days Management approved; without it the
+// whole working window is marked, as before.
+export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma, approvedDates) => {
   const { tenantId, employeeId, startDate, endDate, leavePolicyId } = leaveRequest;
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -1195,7 +1215,8 @@ export const createLeaveAttendanceRecords = async (leaveRequest, db = prisma) =>
 
   // Derive the leave window day-by-day on the employee's actual roster.
   let workingDays;
-  try {
+  if (approvedDates) workingDays = approvedDates.map((date) => ({ date }));
+  else try {
     const derived = await resolveWorkingDays({ tenantId, employeeId, from: start, to: end, ignoreLeaves: true, db });
     workingDays = [...derived.values()].filter((d) => d.working);
   } catch {

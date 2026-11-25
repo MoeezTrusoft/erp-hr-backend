@@ -6,6 +6,7 @@
 // (tenantId, camel) and Employee (tenant_id, snake) are NOT RLS-backed, so they
 // are scoped explicitly via scopedWhere / scopedEmployeeWhere.
 import prisma from "../lib/prisma.js";
+import { approvedLeaveDays } from "../lib/approvedLeaveDays.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
 import { parseListQuery, buildListPayload } from "../utils/apiContract.js";
 import { exportRows } from "../lib/export.util.js";
@@ -77,17 +78,10 @@ const loadScheduleMap = async (employeeIds, tenantId) => {
   return map;
 };
 
-// Count employeeIds that are on an APPROVED leave overlapping the given day.
-// LeaveRequest is FORCE-RLS → no explicit tenant predicate.
-const approvedLeaveEmployeeIds = async (date) => {
-  const rows = await prisma.leaveRequest.findMany({
-    where: {
-      status: "APPROVED",
-      startDate: { lte: dayEnd(date) },
-      endDate: { gte: dayStart(date) },
-    },
-    select: { employeeId: true },
-  });
+// Employees on an APPROVED leave day on the given date (a day Management rejected inside an approved request is
+// not leave). LeaveRequest is FORCE-RLS; the tenant is passed through when known.
+const approvedLeaveEmployeeIds = async (date, tenantId) => {
+  const rows = await approvedLeaveDays(prisma, { tenantId, from: dayStart(date), to: dayEnd(date) });
   return new Set(rows.map((r) => r.employeeId));
 };
 
@@ -118,7 +112,7 @@ export const getAttendanceDashboard = async ({ date, from, to } = {}, tenantId) 
   const marked = attendance.length; // employees with a record on the day
   const workforce = await prisma.employee.count({ where: activeEmployeeWhere(tenantId) });
 
-  const leaveIds = await approvedLeaveEmployeeIds(anchor);
+  const leaveIds = await approvedLeaveEmployeeIds(anchor, tenantId);
   const leave = leaveIds.size;
   // Unplanned = absent WITHOUT an approved leave for that day.
   const unplanned = absent.filter((a) => !leaveIds.has(a.employeeId)).length;

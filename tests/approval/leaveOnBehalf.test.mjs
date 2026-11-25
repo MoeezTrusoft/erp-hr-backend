@@ -57,8 +57,9 @@ const as = (role, fn) =>
 let day = 0;
 const nextStart = () => new Date(Date.UTC(2027, 2, 1 + day++));
 
-async function leaveRow({ employeeId, createdById }) {
+async function leaveRow({ employeeId, createdById, typed = false }) {
   const start = nextStart();
+  const policy = typed ? await db((tx) => tx.leavePolicy.findFirst({ where: { tenantId: company } })) : null;
   return db((tx) =>
     tx.leaveRequest.create({
       data: {
@@ -68,6 +69,7 @@ async function leaveRow({ employeeId, createdById }) {
         endDate: start,
         totalDays: 1,
         reason: "Fictional on-behalf leave",
+        ...(policy ? { leavePolicyId: policy.id } : {}),
         status: "PENDING",
         createdById,
       },
@@ -115,6 +117,23 @@ test("HR-LEAVE-ONBEHALF-01 on-behalf leave", { timeout: 180000 }, async (t) => {
     assert.equal(approval.employeeCode, people.EMPLOYEE.employee_code);
     assert.equal(approval.stage, "LINE_MANAGER");
     assert.equal(approval.managerCode, people.MANAGER.employee_code);
+  });
+
+  await t.test("HR files a typed leave for an employee: the filing is the HR verification and it goes to Management", async () => {
+    const row = await leaveRow({ employeeId: people.EMPLOYEE.id, createdById: people.HR.id, typed: true });
+    await as("HR", () => legacySubmit("LEAVE", row.id, "Filed by HR", { onBehalf: true, managerMayFile: true }));
+    const approval = await approvalRow(row.id);
+    assert.equal(approval.stage, "MANAGEMENT");
+    assert.equal(approval.hrActorCode, people.HR.employee_code);
+    assert.equal(approval.managerCode, null, "the manager stage is skipped");
+    const trail = await db((tx) => tx.hrApprovalAudit.findMany({ where: { approvalRef: approval.id }, orderBy: { createdAt: "asc" } }));
+    assert.deepEqual(trail.map((a) => a.action).slice(0, 2), ["SUBMIT", "VERIFY"]);
+  });
+
+  await t.test("a line manager's typed filing is not auto-verified", async () => {
+    const row = await leaveRow({ employeeId: people.EMPLOYEE.id, createdById: people.MANAGER.id, typed: true });
+    await as("MANAGER", () => legacySubmit("LEAVE", row.id, "Filed by the manager", { onBehalf: true, managerMayFile: true }));
+    assert.equal((await approvalRow(row.id)).stage, "HR", "HR still verifies");
   });
 
   await t.test("someone who is neither HR nor the line manager is refused", async () => {
@@ -234,6 +253,10 @@ test("HR-LEAVE-ONBEHALF-01 on-behalf leave", { timeout: 180000 }, async (t) => {
     );
     assert.equal(created.employeeId, people.EMPLOYEE.id);
     assert.equal(created.createdById, people.MANAGER.id, "the filer is on record");
+    // HR-LEAVE-DAYS-01: the day rows are written with the request, through the line-guard trigger.
+    const days = await db((tx) => tx.leaveRequestDay.findMany({ where: { tenantId: company, leaveRequestId: created.id } }));
+    assert.equal(days.length, created.totalDays, "one day row per working date");
+    assert.ok(days.every((d) => d.decision === "PENDING"), "every day starts PENDING");
   });
 
   await prisma.$disconnect();

@@ -28,6 +28,7 @@ const db = {
   overtimeRequest: { findMany: async () => [] },
   payrollConfigSnapshot: { findFirst: async () => ({ config: { taxSlabs: [], payRules: { cashDisbursement: true } } }) },
   monthlyPayrollAttendance: { findMany: async () => [] },
+  leaveRequest: { findMany: async () => [] },
 };
 const withEntries = (rows) => ({ ...db, monthlyPayrollAttendance: { findMany: async () => rows } });
 const run = { countryCode: "PK", periodStart: new Date("2026-09-01T00:00:00Z"), periodEnd: new Date("2026-09-30T23:59:59Z") };

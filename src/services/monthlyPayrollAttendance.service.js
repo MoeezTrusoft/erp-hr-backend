@@ -2,6 +2,7 @@ import prisma from '../lib/prisma.js';
 import { tenantTransaction } from '../lib/rlsTenant.js';
 import { displayName, toIdentity } from '../lib/personIdentity.js';
 import { loadAttendanceRuntime } from './attendanceSetup.service.js';
+import { approvedLeaveDays, unpaidLeaveDaysByEmployee } from '../lib/approvedLeaveDays.js';
 import { dateRange } from '../lib/attendanceDates.js';
 import {
   payrollMonth,
@@ -11,6 +12,20 @@ import {
 const fail = (status, message) => {
   throw Object.assign(new Error(message), { status });
 };
+// HR-PAY-LEAVE-RECON-01 — unpaid leave days (rounded to the 2 decimals payableDays is stored in) per
+// employee for one month, from a single query. `db` may be a transaction.
+export async function unpaidLeaveForMonth(db, tenantId, employeeIds, month) {
+  if (!employeeIds.length) return new Map();
+  const { start, end } = payrollMonth(month);
+  const rows = await approvedLeaveDays(db, { tenantId, employeeIds, from: start, to: end });
+  return new Map(
+    [...unpaidLeaveDaysByEmployee(rows)].map(([id, n]) => [id, Math.round(n * 100) / 100]),
+  );
+}
+// payable + unpaid may not exceed the month (1e-9 keeps float noise from refusing a valid entry).
+export const exceedsMonth = (payable, unpaid, days) =>
+  Math.round(payable * 100) / 100 + unpaid > days + 1e-9;
+export const fmtDays = (n) => String(Math.round(n * 100) / 100);
 export function monthlyMode(runtime, employeeId, month) {
   const { start, end } = payrollMonth(month),
     modes = new Set();
@@ -88,6 +103,7 @@ export async function listMonthlyAttendance({ tenantId, month }) {
     loadAttendanceRuntime({ tenantId, from: start, to: end }),
   ]);
   const byId = new Map(entries.map((r) => [r.employeeId, r]));
+  const unpaid = await unpaidLeaveForMonth(prisma, tenantId, employees.map((e) => e.id), month);
   return {
     month,
     days: payrollMonth(month).days,
@@ -114,6 +130,7 @@ export async function listMonthlyAttendance({ tenantId, month }) {
         draftMode: e.attendanceInputMode,
         setupIssue,
         employeeVersion: e.version,
+        unpaidLeaveDays: unpaid.get(e.id) ?? 0,
         entry: byId.get(e.id) || null,
       };
     }),
@@ -156,6 +173,12 @@ export async function saveMonthlyAttendance({
           'Publish manual monthly attendance for this employee before entering payable days',
         );
       await assertMonthlyEditable(tx, tenantId, month);
+      const unpaid = (await unpaidLeaveForMonth(tx, tenantId, [employeeId], month)).get(employeeId) ?? 0;
+      if (exceedsMonth(days, unpaid, payrollMonth(month).days))
+        fail(
+          409,
+          `Payable days plus approved unpaid leave (${fmtDays(unpaid)}) exceed the ${payrollMonth(month).days} days in ${month}`,
+        );
       const previous = await tx.monthlyPayrollAttendance.findFirst({
         where: { tenantId, employeeId, month },
       });

@@ -5,7 +5,7 @@ import { payrollAssignments, employeeCode, assertPayrollPeriod } from '../lib/pa
 import { payrollReadiness, assertReady } from './payrollReadiness.service.js';
 import { loadSource } from './approval/adapters.js';
 import { settlePayrollLoans, reservePayrollLoans } from './payrollLoans.service.js';
-import { reserveClaimsForPayslip, previewClaimsForPayslip, attachClaimsToPayslip, settlePayrollClaims, payslipHoldsClaims } from './payrollClaims.service.js';
+import { reserveClaimsForPayslip, previewClaimsForPayslip, attachClaimsToPayslip, settlePayrollClaims, payslipHoldsClaims, releaseRunClaims } from './payrollClaims.service.js';
 import { legacyDecision } from "./approval/legacy.js";
 import { ruleDeductions } from '../lib/attendanceAnomalyRules.js';
 import { loadDeductionRules, snapshotDeductionRules } from './deductionRules.service.js';
@@ -17,6 +17,7 @@ import { markLapsedCases } from './attendanceLapse.service.js';
 import { runUpdateAfterFailure } from '../lib/payrollRunFailure.js';
 import { dateRange, employedOn, badSetup } from '../lib/attendanceDates.js';
 import { approvedLeaveCoverage } from "../lib/approvedLeaveCoverage.js";
+import { approvedLeaveDays, unpaidLeaveDaysByEmployee } from "../lib/approvedLeaveDays.js";
 import { calculatePayrollPaidDays } from '../lib/payrollPaidDays.js';
 import { manualAttendanceFactor, isHeadendEmployee } from '../lib/monthlyPayrollAttendance.js';
 import { createHash } from "node:crypto";
@@ -1321,13 +1322,12 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             }
         });
 
-        // Read both current and legacy leave stores. An approved leave must
-        // excuse attendance even if device roll-up has not marked ON_LEAVE yet.
-        const [approvedRequests, approvedLegacyLeaves] = await Promise.all([
-            prisma.leaveRequest.findMany({where:withTenant(tenantId,{status:'APPROVED',startDate:{lte:payrollRun.periodEnd},endDate:{gte:payrollRun.periodStart}}),select:{employeeId:true,status:true,startDate:true,endDate:true}}),
-            prisma.leave.findMany({where:withTenant(tenantId,{status:'APPROVED',start_date:{lte:payrollRun.periodEnd},end_date:{gte:payrollRun.periodStart}}),select:{employeeId:true,status:true,start_date:true,end_date:true}}),
-        ]);
-        const leaveCoverage=approvedLeaveCoverage([...approvedRequests,...approvedLegacyLeaves],payrollRun.periodStart,payrollRun.periodEnd);
+        // Approved leave per day, from both stores (HR-LEAVE-PARTIAL-01). An approved leave day must excuse
+        // attendance even if device roll-up has not marked ON_LEAVE yet; a day Management rejected inside an
+        // approved request is neither excused nor recovered as LWP.
+        const leaveDays=await approvedLeaveDays(prisma,{tenantId:tenantId??null,from:payrollRun.periodStart,to:payrollRun.periodEnd,includeLegacyLeave:true});
+        const leaveCoverage=approvedLeaveCoverage(leaveDays,payrollRun.periodStart,payrollRun.periodEnd);
+        const lwpByEmployee=unpaidLeaveDaysByEmployee(leaveDays);
         for(const employee of employees) employee.attendanceAnomalies.push(...leaveCoverage.filter(a=>a.employeeId===employee.id));
         // Cases nobody raised within their two working days are charged (attendanceLapse.service.js).
         {
@@ -1473,7 +1473,7 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
             const currency = payrollRun.currencyCode || employmentTerm?.currency || 'USD';
 
             // ── BRIDGE DATA: Fetch overtime, leave, benefits, loans for this employee ──
-            const [overtimeRequests, unpaidLeaves, employeeBenefits, activeLoans] = await Promise.all([
+            const [overtimeRequests, employeeBenefits, activeLoans] = await Promise.all([
                 // Approved overtime requests within the payroll period
                 prisma.overtimeRequest.findMany({
                     where: withTenant(tenantId, {
@@ -1482,16 +1482,6 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                         date: { gte: payrollRun.periodStart, lte: payrollRun.periodEnd },
                     }),
                     select: { date: true, hours: true, rate: true },
-                }),
-                // Unpaid leave (LWP) days within the period
-                prisma.leaveRequest.findMany({
-                    where: withTenant(tenantId, {
-                        employeeId: employee.id,
-                        status: "APPROVED",
-                        startDate: { lte: payrollRun.periodEnd },
-                        endDate: { gte: payrollRun.periodStart },
-                    }),
-                    select: { totalDays: true, startDate:true,endDate:true, leavePolicy: { select: { leaveTypeCode: true } } },
                 }),
                 // Active benefit enrollments with plan details
                 prisma.employeeBenefit.findMany({
@@ -1529,9 +1519,9 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                     hours: ot.hours,
                     rate: ot.rate,
                 })),
-                lwpDays: unpaidLeaves
-                    .filter(l => l.leavePolicy?.leaveTypeCode === 'UNPAID' || l.leavePolicy?.leaveTypeCode === 'LWP')
-                    .reduce((sum, l) => { const span=Math.round((new Date(l.endDate)-new Date(l.startDate))/86400000)+1; const overlap=Math.max(0,Math.round((Math.min(+l.endDate,+payrollRun.periodEnd)-Math.max(+l.startDate,+payrollRun.periodStart))/86400000)+1); return sum+(l.totalDays||0)*overlap/span; }, 0),
+                // Unpaid (UNPAID/LWP) approved leave days in the period; a legacy request without day rows keeps
+                // its old share totalDays*overlap/span (approvedLeaveDays weights).
+                lwpDays: lwpByEmployee.get(employee.id) ?? 0,
                 benefitLines: employeeBenefits.map(eb => ({
                     planName: eb.benefitPlan?.name,
                     employerContributionMinor: eb.benefitPlan?.employerContributionMinor || 0,
@@ -1955,22 +1945,27 @@ export const cancelPayrollRun = async (id, deletedBy, tenantId, reason = '') => 
   await tx.$queryRaw`SELECT id FROM payroll_runs WHERE id=${id} AND "tenantId"=${tenantId}::uuid FOR UPDATE`;
   const run=await tx.payrollRun.findFirst({where:{id,tenantId}});
   if(!run) throw payrollError('Payroll run not found',404);
-  if(!['PENDING','FAILED','REJECTED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError('Only pending, failed, interrupted or Management-rejected payroll may be cancelled');
+  if(!['PENDING','FAILED','REJECTED','COMPLETED','APPROVED'].includes(run.status) && !isStaleProcessing(run)) throw payrollError('Only pending, failed, interrupted, calculated or approved (not finalized) payroll may be recalled');
+  // Recalling a calculated or approved run re-opens attendance and leave for its period; it needs a stated reason.
+  const recalled=['COMPLETED','APPROVED'].includes(run.status);
+  const why=String(reason ?? '').trim();
   if(await tx.loanRepayment.count({where:{tenantId,payrollRunId:id,settledAt:{not:null}}})) throw Object.assign(new Error('Reconcile posted loan repayments before cancelling this historical payroll'),{status:409});
   // A submitted run carries an approval request; the source guard trigger only
   // lets it reach CANCELLED once that request is WITHDRAWN in this transaction.
   const approval=await tx.hrApprovalRequest.findUnique({where:{tenantId_kind_sourceRef:{tenantId,kind:'PAYROLL',sourceRef:String(id)}}});
+  if(approval && !['INITIATOR','REJECTED','APPROVED'].includes(approval.stage)) throw Object.assign(new Error('Return the payroll to its initiator before cancelling'),{status:409});
+  if(recalled && (why.length<10 || why.length>500)) throw payrollError('A recall reason of 10 to 500 characters is required',400);
   if(approval){
-    if(!['INITIATOR','REJECTED'].includes(approval.stage)) throw Object.assign(new Error('Return the payroll to its initiator before cancelling'),{status:409});
     const actor=await tx.employee.findFirst({where:{tenant_id:tenantId,id:toInt(deletedBy) ?? -1}});
     if(!actor?.employee_code) throw Object.assign(new Error('A verified employee code is required to cancel submitted payroll'),{status:403});
     const withdrawn=await tx.hrApprovalRequest.update({where:{id:approval.id},data:{stage:'WITHDRAWN',execution:'APPLIED',version:{increment:1}}});
-    await tx.hrApprovalAudit.create({data:{tenantId,approvalRef:approval.id,version:withdrawn.version,round:withdrawn.round,actorCode:actor.employee_code,fromStage:approval.stage,toStage:'WITHDRAWN',action:'WITHDRAW',reason:'Payroll run cancelled',sourceHash:withdrawn.sourceHash}});
+    await tx.hrApprovalAudit.create({data:{tenantId,approvalRef:approval.id,version:withdrawn.version,round:withdrawn.round,actorCode:actor.employee_code,fromStage:approval.stage,toStage:'WITHDRAWN',action:'WITHDRAW',reason:recalled?`Payroll run recalled: ${why}`:'Payroll run cancelled',sourceHash:withdrawn.sourceHash}});
     await tx.$executeRaw`SELECT set_config('app.hr_approval_finalizing',${'PAYROLL:'+id},true)`;
   }
   await tx.loanRepayment.deleteMany({where:{tenantId,payrollRunId:id,settledAt:null}});
+  if(recalled) await releaseRunClaims(tx,{tenantId,runId:id});
   await tx.payrollRun.update({where:{id},data:{status:'CANCELLED'}});
-  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:'PAYROLL_CANCELLED',details:reason ? `Cancelled without deleting payroll history. Reason: ${reason}` : 'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
+  await tx.payrollAuditLog.create({data:{tenantId,payrollRunId:id,action:recalled?'PAYROLL_RECALLED':'PAYROLL_CANCELLED',details:recalled?`Recalled: ${why}`:reason ? `Cancelled without deleting payroll history. Reason: ${reason}` : 'Cancelled without deleting payroll history',employeeId:toInt(deletedBy)}});
   return {id,status:'CANCELLED'};
 },{tenantId});
 

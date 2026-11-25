@@ -77,7 +77,7 @@ const RLS_MODELS = new Set([
     'AttendanceCaptureDevice', 'AttendanceCaptureReceipt', 'AttendanceCaptureEvent', 'AttendanceCaptureAudit', 'AttendanceImportBatch',
     'AttendanceSetupDraft', 'AttendanceSetupRelease',
     'Attendance',
-    'LeaveRequest',
+    'LeaveRequest', 'LeaveRequestDay',
     'PerformanceReview',
     'BankDetail',
     'EmploymentTerms',

@@ -214,7 +214,10 @@ const apply = {
     if (taken)
       await postLedger(tx, { tenantId: env.tenantId, employeeId: leave.employeeId, leavePolicyId: leave.leavePolicyId, kind: 'LEAVE_RESTORED', days: -taken.days, key: `LEAVE_RESTORE:${leave.id}`, sourceRef: String(leave.id), reason: `Leave cancelled: ${row.reason}`, actorId: row.requestedById });
     // The leave's own attendance marks go; a day with a real punch was never marked, so it stays.
-    await tx.attendance.deleteMany({ where: { tenantId: env.tenantId, employeeId: leave.employeeId, date: { gte: dateOnly(leave.startDate), lte: dateOnly(leave.endDate) }, status: 'ON_LEAVE', check_in: null, check_out: null } });
+    // A request picked on separate dates holds only those: the gaps may belong to another approved request.
+    const own = await tx.leaveRequestDay.findMany({ where: { tenantId: env.tenantId, leaveRequestId: leave.id, decision: 'APPROVED' }, select: { date: true } });
+    const ownDates = own.length ? { in: own.map((d) => d.date) } : { gte: dateOnly(leave.startDate), lte: dateOnly(leave.endDate) };
+    await tx.attendance.deleteMany({ where: { tenantId: env.tenantId, employeeId: leave.employeeId, date: ownDates, status: 'ON_LEAVE', check_in: null, check_out: null } });
     await tx.leave.deleteMany({ where: { tenantId: env.tenantId, employeeId: leave.employeeId, start_date: leave.startDate, end_date: leave.endDate } });
     // Loaded here so the approval path for ordinary leave does not pull in the attendance writer.
     const { enqueueEvaluationRange } = await import('./attendanceFinalization.service.js');

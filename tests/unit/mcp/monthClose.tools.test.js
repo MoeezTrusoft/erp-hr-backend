@@ -34,6 +34,8 @@ const call = (name, args, permissions) => mcpCtx.run({ user: USER, permissions }
 const parse = (res) => JSON.parse(res.content[0].text);
 const HR = { 'hr:attendance': ['VIEW', 'EDIT', 'CREATE', 'DELETE', 'EXPORT'] };
 const MANAGER = { 'hr:attendance': ['VIEW'], 'hr:approvals:manager': ['VIEW'] };
+// What a real request carries: dotted scope strings, with the line-manager grant as a bare code.
+const MANAGER_SCOPE = ['hr.attendance.read', 'hr.approvals.manager'];
 const EMPLOYEE = { 'hr:attendance': ['VIEW'] };
 
 describe('month close tools', () => {
@@ -47,6 +49,11 @@ describe('month close tools', () => {
   it('a line manager sees only their own team', async () => {
     await call('hr_attendance_long_absence_list', { minDays: 3 }, MANAGER);
     expect(longAbsence.listLongAbsences).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-A', minDays: 3, employeeIds: [11, 12] }));
+  });
+
+  it('a line manager is recognised from the real signed scope', async () => {
+    await call('hr_attendance_long_absence_list', {}, MANAGER_SCOPE);
+    expect(longAbsence.listLongAbsences).toHaveBeenCalledWith(expect.objectContaining({ employeeIds: [11, 12] }));
   });
 
   it('an ordinary employee is refused, and nothing is read', async () => {

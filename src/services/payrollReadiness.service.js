@@ -1,7 +1,8 @@
 import prisma from "../lib/prisma.js";
 import { employeeCode } from "../lib/payrollConfiguration.js";
+import { payrollMonth } from "../lib/monthlyPayrollAttendance.js";
 import { dateRange } from "../lib/attendanceDates.js";
-import { monthlyMode } from "./monthlyPayrollAttendance.service.js";
+import { monthlyMode, unpaidLeaveForMonth, exceedsMonth, fmtDays } from "./monthlyPayrollAttendance.service.js";
 
 const monthLabel = (date) =>
   date.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
@@ -99,13 +100,13 @@ export async function payrollReadiness({
   };
   const manual = employees.filter((e) => modeOf(e) === "MANUAL_MONTHLY");
   if (manual.length) {
-    const entered = new Set(
+    const entered = new Map(
       (
         await db.monthlyPayrollAttendance.findMany({
           where: { tenantId, month, employeeId: { in: manual.map((e) => e.id) } },
-          select: { employeeId: true },
+          select: { employeeId: true, payableDays: true },
         })
-      ).map((r) => r.employeeId),
+      ).map((r) => [r.employeeId, r]),
     );
     for (const e of manual)
       if (!entered.has(e.id))
@@ -114,6 +115,19 @@ export async function payrollReadiness({
           `Enter payable days for ${monthLabel(run.periodStart)} in Payroll Setup > Offices & monthly attendance`,
           e,
         );
+    // HR-PAY-LEAVE-RECON-01 — leave approved after the days were typed must not be paid.
+    const unpaid = await unpaidLeaveForMonth(db, tenantId, manual.map((e) => e.id), month);
+    const monthDays = payrollMonth(month).days;
+    for (const e of manual) {
+      const row = entered.get(e.id);
+      const u = unpaid.get(e.id) ?? 0;
+      if (row && exceedsMonth(Number(row.payableDays), u, monthDays))
+        add(
+          "LEAVE_NOT_RECONCILED",
+          `payable days ${fmtDays(Number(row.payableDays))} + approved unpaid leave ${fmtDays(u)} exceed ${monthDays} days in ${monthLabel(run.periodStart)}; update Offices & monthly attendance`,
+          e,
+        );
+    }
   }
   const rates = snapshot?.config?.taxSlabs || [];
   const cashDisbursement = snapshot?.config?.payRules?.cashDisbursement === true;

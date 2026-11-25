@@ -629,7 +629,7 @@ export async function listCaptureEvents(
 }
 
 export async function captureHeartbeat(
-  { device, deviceTime, now = new Date() },
+  { device, deviceTime, now = new Date(), withCommands = true },
   db = prisma,
 ) {
   const clock = deviceTime
@@ -656,7 +656,8 @@ export async function captureHeartbeat(
   // A machine that now reports the right time closes any waiting correction; one that does not gets it again.
   const { closeFixedCommands, commandsForHeartbeat } = await import("./attendanceDeviceCommand.service.js");
   await closeFixedCommands(device.id, updated.clockOffsetSeconds, now, db);
-  return { ...updated, commands: await commandsForHeartbeat(device, now, db) };
+  // A heartbeat from a channel that cannot carry commands must not mark them SENT.
+  return { ...updated, commands: withCommands ? await commandsForHeartbeat(device, now, db) : [] };
 }
 
 export async function monitorCaptureDevices(

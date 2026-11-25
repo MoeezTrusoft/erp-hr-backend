@@ -315,12 +315,20 @@ export async function employeeCodeOptions({ user, q = '', page = 1, pageSize = 5
     ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] }
     : {};
   const term = String(q || '').trim();
-  const match = term
-    ? { OR: ['employee_code', 'first_name', 'middle_name', 'last_name', 'preferred_name'].map((field) => ({ [field]: { contains: term, mode: 'insensitive' } })) }
-    : {};
+  // Code, any part of the name, position and department. Each word of the search must match something, so "sara
+  // engineer" finds Sara Worker, an engineer, and "Sara Worker" matches the first and last name together.
+  const anyField = (word) => ({
+    OR: [
+      ...['employee_code', 'first_name', 'middle_name', 'last_name', 'preferred_name'].map((field) => ({ [field]: { contains: word, mode: 'insensitive' } })),
+      { Position: { is: { title: { contains: word, mode: 'insensitive' } } } },
+      { businessUnit: { is: { name: { contains: word, mode: 'insensitive' } } } },
+    ],
+  });
+  const words = term.split(/\s+/).filter(Boolean);
+  const match = words.length > 1 ? { AND: words.map(anyField) } : words.length ? anyField(words[0]) : {};
   const clauses = [scope, match].filter((clause) => Object.keys(clause).length);
   const where = { tenant_id: user.tenantId, ...(clauses.length ? { AND: clauses } : {}) };
-  const select = { id: true, employee_code: true, first_name:true, middle_name:true, last_name:true, preferred_name:true, status:true, hire_date:true, businessUnit:{select:{name:true}} };
+  const select = { id: true, employee_code: true, first_name:true, middle_name:true, last_name:true, preferred_name:true, status:true, hire_date:true, photo_url:true, Position:{select:{title:true}}, businessUnit:{select:{name:true}} };
   const exact = term ? await db.employee.findFirst({ where: {...where, employee_code:{equals:term,mode:'insensitive'}}, select }) : null;
   const [remaining, total] = await Promise.all([
     db.employee.findMany({ where: {...where,...(exact?{id:{not:exact.id}}:{})}, select, orderBy: { employee_code: 'asc' }, skip: Math.max(0,(page - 1) * pageSize - (exact ? 1 : 0)), take: pageSize - (exact && page === 1 ? 1 : 0) }),
@@ -328,7 +336,7 @@ export async function employeeCodeOptions({ user, q = '', page = 1, pageSize = 5
   ]);
   const rows = exact && page === 1 ? [exact,...remaining] : remaining;
   const nameOf = (e) => [e.first_name, e.last_name].filter(Boolean).join(' ') || e.preferred_name || e.middle_name || null;
-  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code, name:nameOf(e), department:e.businessUnit?.name,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
+  return { items: rows.filter(e => e.employee_code).map(e => ({ id: e.id, code: e.employee_code, name:nameOf(e), department:e.businessUnit?.name,position:e.Position?.title,photoUrl:e.photo_url,status:e.status,activeFrom:e.hire_date })), total, page, pageSize };
 }
 export async function ruleCaseDetail({ user, anomalyId }, db = prisma) {
   const row = await db.attendanceAnomaly.findFirst({
