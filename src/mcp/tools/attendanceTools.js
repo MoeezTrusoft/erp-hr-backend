@@ -482,6 +482,7 @@ export function registerAttendanceTools(server) {
       dryRun: z.boolean().optional(),
       previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       employeeId: z.string().min(1).describe("Employee the schedule is for (references Employee); defaults to the caller when omitted"),
+      changeReason: z.string().min(1).optional().describe("Why the roster changes, shown to the approvers (at least 3 characters; required to save, not to preview)"),
       schedule_name: z.string().min(1).describe("Human-readable schedule name"),
       effective_start_date: z.string().describe("ISO 8601 date YYYY-MM-DD; inclusive start of the schedule"),
       total_hours_per_week: z.number().positive().describe("Contracted hours per week"),

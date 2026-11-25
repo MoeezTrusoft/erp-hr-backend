@@ -37,11 +37,26 @@ const { registerAttendanceTools } = await import('../../../src/mcp/tools/attenda
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
+const schemas = new Map();
 const recording = {
-  tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
+  tool: (name, ...rest) => {
+    handlers.set(name, rest[rest.length - 1]);
+    schemas.set(name, rest[rest.length - 2]);
+  },
   resource: () => {},
 };
 registerAttendanceTools(recording);
+
+describe('hr_work_schedule_create input schema', () => {
+  it('keeps the roster change reason: the server needs it to save', async () => {
+    const { z } = await import('zod');
+    const parsed = z.object(schemas.get('hr_work_schedule_create')).parse({
+      employeeId: '7', schedule_name: 'Day', effective_start_date: '2026-11-16', total_hours_per_week: 40,
+      schedule_pattern: { shift: { from: '10:00', to: '18:00' }, offDays: [6, 7] }, changeReason: 'Moved to a later shift',
+    });
+    expect(parsed.changeReason).toBe('Moved to a later shift');
+  });
+});
 
 const USER = {
   userId: '7', email: 'hr@acme.test', roles: ['HR_ADMIN'],
