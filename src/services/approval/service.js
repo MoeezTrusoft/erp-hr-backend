@@ -591,17 +591,22 @@ async function submitWithin(
     if (noUsableManager && !sentToHr)
       fail("Configure an active independent line manager before submission");
     await onSubmit(tx, env, input.kind, source);
+    // HR raising a leave request on behalf has chosen its type on the request, so the filing is also the HR verification:
+    // it skips the manager and HR stages and goes to Management (below). A request filed without a type keeps the full route,
+    // because verification is where HR assigns the type.
+    const hrFiledTyped =
+      onBehalf && permits(env, "verify") && input.kind === "LEAVE" && Boolean(source.row.leavePolicyId);
     const route = matrix ? await sealRoute(tx, env, input.kind, matrix, source) : null;
     const selfApproved = route?.selfApproved === true;
     const data = {
       // The canonical owner code of the source, not the caller's: identical for
       // a self submission, the employee's for an on-behalf one.
       employeeCode: source.who.employee_code,
-      stage: selfApproved ? "APPROVED" : route ? "LEVEL" : sentToHr ? "HR" : stageAfterSubmission(input.kind),
+      stage: selfApproved ? "APPROVED" : route ? "LEVEL" : sentToHr || hrFiledTyped ? "HR" : stageAfterSubmission(input.kind),
       route: route ?? Prisma.DbNull,
       level: route && !selfApproved ? route.levels.findIndex((l) => l.engaged) : null,
       pendingCodes: route && !selfApproved ? route.levels.find((l) => l.engaged).approverCodes : [],
-      managerCode: sentToHr ? null : (manager?.employee_code ?? null),
+      managerCode: sentToHr || hrFiledTyped ? null : (manager?.employee_code ?? null),
       managerActorCode: null,
       hrActorCode: null,
       recommendation: null,
@@ -664,7 +669,8 @@ async function submitWithin(
     else if (
       next.stage === "HR" &&
       isVerifiedOnBehalf(input.kind) &&
-      (onBehalf ||
+      (hrFiledTyped ||
+        (onBehalf && input.kind !== "LEAVE") ||
         (["CLAIM", "LOAN"].includes(input.kind) &&
           permits(env, "verify") &&
           source.who.employee_code === env.who.employee_code))
