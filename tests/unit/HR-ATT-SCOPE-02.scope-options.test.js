@@ -79,6 +79,21 @@ describe('HR-ATT-SCOPE-02 scope options', () => {
         );
     });
 
+    it('also matches position and department, and every word of the search', async () => {
+        await service.employeeCodeOptions({ user: hr, q: 'sara engineer', page: 1, pageSize: 25 }, prismaMock);
+
+        const match = employeeFindMany.mock.calls[0][0].where.AND[0];
+        expect(match.AND).toHaveLength(2);
+        const clauses = match.AND[1].OR;
+        expect(clauses).toEqual(
+            expect.arrayContaining([
+                { Position: { is: { title: { contains: 'engineer', mode: 'insensitive' } } } },
+                { businessUnit: { is: { name: { contains: 'engineer', mode: 'insensitive' } } } },
+                { employee_code: { contains: 'engineer', mode: 'insensitive' } },
+            ]),
+        );
+    });
+
     it('keeps the manager scope ANDed with the name search', async () => {
         await service.employeeCodeOptions({ user: manager, q: 'Bilal', page: 1, pageSize: 25 }, prismaMock);
 

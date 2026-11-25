@@ -315,9 +315,17 @@ export async function employeeCodeOptions({ user, q = '', page = 1, pageSize = 5
     ? { OR: [{ id: Number(user.employeeId) || -1 }, { managerId: Number(user.employeeId) || -1 }] }
     : {};
   const term = String(q || '').trim();
-  const match = term
-    ? { OR: ['employee_code', 'first_name', 'middle_name', 'last_name', 'preferred_name'].map((field) => ({ [field]: { contains: term, mode: 'insensitive' } })) }
-    : {};
+  // Code, any part of the name, position and department. Each word of the search must match something, so "sara
+  // engineer" finds Sara Worker, an engineer, and "Sara Worker" matches the first and last name together.
+  const anyField = (word) => ({
+    OR: [
+      ...['employee_code', 'first_name', 'middle_name', 'last_name', 'preferred_name'].map((field) => ({ [field]: { contains: word, mode: 'insensitive' } })),
+      { Position: { is: { title: { contains: word, mode: 'insensitive' } } } },
+      { businessUnit: { is: { name: { contains: word, mode: 'insensitive' } } } },
+    ],
+  });
+  const words = term.split(/\s+/).filter(Boolean);
+  const match = words.length > 1 ? { AND: words.map(anyField) } : words.length ? anyField(words[0]) : {};
   const clauses = [scope, match].filter((clause) => Object.keys(clause).length);
   const where = { tenant_id: user.tenantId, ...(clauses.length ? { AND: clauses } : {}) };
   const select = { id: true, employee_code: true, first_name:true, middle_name:true, last_name:true, preferred_name:true, status:true, hire_date:true, photo_url:true, Position:{select:{title:true}}, businessUnit:{select:{name:true}} };
