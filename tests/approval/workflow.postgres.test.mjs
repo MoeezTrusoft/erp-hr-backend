@@ -406,19 +406,28 @@ test(
         let row = await submit(s);
         row = await act("MANAGER", row, "RECOMMEND_APPROVAL");
         row = await act("HR", row, "VERIFY");
-        await db((tx) =>
-          tx.shiftAssignment.deleteMany({
-            where: {
+        // HR-OT-APPROVE-01: a missing per-date shift row no longer fails overtime
+        // (payroll pays the request itself), so the failing final effect is now a
+        // payroll run that covers the overtime day.
+        const run = await db((tx) =>
+          tx.payrollRun.create({
+            data: {
               tenantId: company,
-              employeeId: people.EMPLOYEE.id,
-              date: s.row.date,
+              processedBy: people.HR.id,
+              periodStart: s.row.date,
+              periodEnd: new Date(+s.row.date + 86399999),
+              countryCode: "PK",
+              currencyCode: "PKR",
+              status: "COMPLETED",
+              totalGross: 100,
+              totalNet: 100,
             },
           }),
         );
         const requestKey = randomUUID();
         await assert.rejects(
           act("MANAGEMENT", row, "APPROVE", { requestKey }),
-          /Configure the roster/,
+          /PERIOD_PROTECTED/,
         );
         const fresh = await as("MANAGEMENT", () =>
           readApproval({ approvalRef: row.approvalRef }),
@@ -441,6 +450,19 @@ test(
             )
           ).status,
           "PENDING",
+        );
+        // With the period open again, the same request approves without any
+        // per-date shift row (none exists for most rostered days).
+        await db((tx) => tx.payrollRun.update({ where: { id: run.id }, data: { status: "CANCELLED" } }));
+        await db((tx) =>
+          tx.shiftAssignment.deleteMany({
+            where: { tenantId: company, employeeId: people.EMPLOYEE.id, date: s.row.date },
+          }),
+        );
+        await act("MANAGEMENT", fresh.record, "APPROVE");
+        assert.equal(
+          (await db((tx) => tx.overtimeRequest.findUnique({ where: { id: s.row.id } }))).status,
+          "APPROVED",
         );
       },
     );
