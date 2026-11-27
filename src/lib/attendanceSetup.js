@@ -327,7 +327,7 @@ export function resolveEmployeeDay(
     };
   const assignment = overrides[0],
     original = rosters[0].schedule_pattern;
-  const pattern =
+  let pattern =
     assignment?.fromTime && assignment?.toTime
       ? {
           ...original,
@@ -342,7 +342,25 @@ export function resolveEmployeeDay(
       : original;
   if (!validateSchedulePattern(pattern).valid)
     return { ...base, reason: 'INVALID_ROSTER' };
-  const shift = shiftFor(pattern, dateOnly(day), anchor);
+  const calledIn = callIns.some((c) => dateKey(c.date) === key);
+  let shift = shiftFor(pattern, dateOnly(day), anchor);
+  // HR-ATT-ONCALL-02 — a rotation rest day has no window of its own, so a call-in
+  // there left no deadline: a no-show stayed PENDING_ATTENDANCE for ever and a
+  // turn-up had nothing to be measured against. Use the roster's default shift,
+  // else the nearest rotation window to the arrival (the first one without any).
+  // The day's pattern carries the same window, because punches are matched to
+  // shifts from the pattern (sessioniseByRoster), not from `shift`.
+  if (calledIn && !shift.start) {
+    pattern = {
+      ...pattern,
+      ...(pattern.shift ? { rotatingShifts: undefined } : { rotatingShifts: list(pattern.rotatingShifts) }),
+      cycle: undefined,
+      shifts: undefined,
+      shiftByDay: undefined,
+      offDays: [],
+    };
+    shift = shiftFor(pattern, dateOnly(day), anchor);
+  }
   const bindings = list(config.calendarAssignments).filter(
     (a) => a.employeeId === employee.id && covers(a, key),
   );
@@ -364,7 +382,6 @@ export function resolveEmployeeDay(
   );
   const holiday = holidays.find((h) => h.fullDay !== false);
   const onLeave = leaves.some((l) => covers(l, key, 'start_date', 'end_date'));
-  const calledIn = callIns.some((c) => dateKey(c.date) === key);
   const cycle = original.cycle;
   const index = cycle
     ? ((Math.round((dateOnly(key) - dateOnly(cycle.anchor)) / DAY_MS) %
