@@ -13,7 +13,7 @@ export async function legacyWithdraw(
   const ctx = getCtx();
   if (!ctx.actorVerified || !ctx.permissions?.includes("hr.approvals.self"))
     fail("Verified employee approval access required", 403);
-  if (!["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP"].includes(kind))
+  if (!["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP", "LOAN"].includes(kind))
     fail("This request cannot be withdrawn");
   const tenantId = ctx.user.tenantId;
   const pending = await tenantTransaction(
