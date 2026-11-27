@@ -763,11 +763,15 @@ export async function applyDecision(tx, env, request, s, approved, reason, optio
         },
         orderBy: { id: "desc" },
       });
-      if (!shift) fail("Configure the roster before approving overtime");
-      await tx.shiftAssignment.update({
-        where: { id: shift.id },
-        data: { overtimeHours: row.hours },
-      });
+      // HR-OT-APPROVE-01 — payroll pays the APPROVED overtime request itself; the
+      // per-date shift row only mirrors the hours for the roster views. Rosters are
+      // work-schedule patterns, so most days have no such row (none in Nov 2026 in
+      // production) and requiring one refused every approval.
+      if (shift)
+        await tx.shiftAssignment.update({
+          where: { id: shift.id },
+          data: { overtimeHours: row.hours },
+        });
     }
     await tx.overtimeRequest.update({
       where: { id: row.id },

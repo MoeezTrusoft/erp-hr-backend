@@ -10,6 +10,7 @@ import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
 import {
   getOvertimeShiftOverview,
   getShiftScheduleWeek,
@@ -21,6 +22,19 @@ function getCtx() {
   const ctx = mcpRequestContext.getStore();
   if (!ctx?.user) throw Object.assign(new Error("Unauthenticated"), { status: 401 });
   return ctx;
+}
+
+// HR-OT-SCOPE-01 — every employee holds hr:attendance VIEW. It shows them their
+// own overtime and shift, never a colleague's: a non-HR session is pinned to its
+// own employee and a foreign id is refused.
+export function ownEmployeeArg(user, permissions, explicit) {
+  const scope = resolveAttendanceReadScope(user, permissions);
+  if (scope.canViewOthers) return explicit;
+  if (scope.employeeId == null)
+    throw Object.assign(new Error("Sign in with an employee account to see overtime"), { status: 403, code: "HR-4030" });
+  if (explicit != null && explicit !== "" && Number(explicit) !== scope.employeeId)
+    throw Object.assign(new Error("Insufficient permissions: you can only see your own overtime"), { status: 403, code: "HR-4030" });
+  return scope.employeeId;
 }
 
 export function registerOvertimeShiftTools(server) {
@@ -36,7 +50,7 @@ export function registerOvertimeShiftTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getOvertimeShiftOverview(args, user.tenantId);
+      const data = await getOvertimeShiftOverview({ ...args, employeeId: ownEmployeeArg(user, permissions, args.employeeId) }, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_shift_overview")
   );
@@ -53,7 +67,7 @@ export function registerOvertimeShiftTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getShiftScheduleWeek(args, user.tenantId);
+      const data = await getShiftScheduleWeek({ ...args, employeeId: ownEmployeeArg(user, permissions, args.employeeId) }, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_shift_schedule_week")
   );
@@ -73,7 +87,7 @@ export function registerOvertimeShiftTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await listOvertimeHistory(args, user.tenantId);
+      const data = await listOvertimeHistory({ ...args, employeeId: ownEmployeeArg(user, permissions, args.employeeId) }, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_history_list")
   );
@@ -101,9 +115,39 @@ export function registerOvertimeShiftTools(server) {
         employeeId: Number(args.employeeId),
         reason: args.reason || "Overtime request",
         source: "MANUAL",
+        // HR files it for the employee and it goes for approval at once.
+        submit: "onBehalf",
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_request_create")
+  );
+
+  // HR-OT-SELF-01 — an employee asks for their own overtime. No attendance write
+  // grant is needed: the request is pinned to the signed-in employee and goes
+  // straight into the approval route (manager / HR / Management).
+  server.tool(
+    "hr_overtime_request_mine",
+    "Ask for overtime you worked (or will work) on a day; it is sent for approval at once",
+    {
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD").describe("The day of the overtime, YYYY-MM-DD"),
+      hours: z.coerce.number().positive().describe("Overtime hours, more than 0 and at most 16"),
+      reason: z.string().trim().min(3).max(1000).describe("What the overtime was for"),
+      project: z.string().max(200).optional().describe("Optional project/cost-center label"),
+    },
+    withToolError(async (args) => {
+      const { user } = getCtx();
+      const own = Number(user.employeeId);
+      if (!Number.isInteger(own) || own < 1)
+        throw Object.assign(new Error("Sign in with an employee account to ask for overtime"), { status: 403, code: "HR-4030" });
+      const data = await createOvertimeRequest({
+        ...args,
+        tenantId: user.tenantId,
+        employeeId: own,
+        source: "MANUAL",
+        submit: "self",
+      });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    }, "hr_overtime_request_mine")
   );
 
   server.tool(

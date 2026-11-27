@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertSeesTeamOvertime, resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   getOvertimeManagerOverview,
@@ -33,6 +34,8 @@ export function registerOvertimeManagerTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await getOvertimeManagerOverview(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_ot_manager_overview")
@@ -48,7 +51,14 @@ export function registerOvertimeManagerTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getShiftRosterWeek(args, user.tenantId);
+      // An employee sees their own row of the roster week (Shift schedule card).
+      const scope = resolveAttendanceReadScope(user, permissions);
+      if (!scope.canViewOthers && scope.employeeId == null)
+        throw Object.assign(new Error("Sign in with an employee account to see your shifts"), { status: 403, code: "HR-4030" });
+      const data = await getShiftRosterWeek(
+        scope.canViewOthers ? args : { weekStart: args.weekStart, employeeId: scope.employeeId },
+        user.tenantId,
+      );
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_shift_roster_week")
   );
@@ -60,6 +70,8 @@ export function registerOvertimeManagerTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await getOvertimeTrend(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_ot_trend")
@@ -72,6 +84,8 @@ export function registerOvertimeManagerTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await getOvertimeAtRisk(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_ot_at_risk")
@@ -88,6 +102,8 @@ export function registerOvertimeManagerTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await listPendingOvertimeApprovals(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_ot_pending_approvals_list")

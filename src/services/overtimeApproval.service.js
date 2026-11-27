@@ -20,12 +20,56 @@ import { legacyDecision } from "./approval/legacy.js";
 import prisma from "../lib/prisma.js";
 import { tenantTransaction } from "../lib/rlsTenant.js";
 import logger from "../lib/logger.js";
+import { legacySubmit } from "./approval/legacy.js";
 
 const badRequest = (m) => Object.assign(new Error(m), { status: 400 });
 const notFound = (m) => Object.assign(new Error(m), { status: 404 });
 const forbidden = (m) => Object.assign(new Error(m), { status: 403 });
 
-const startOfDay = (v) => { const d = new Date(v); d.setHours(0, 0, 0, 0); return d; };
+// The civil date the overtime belongs to. Dates are stored as UTC midnight; the
+// server clock's zone must not move a day (it used setHours, i.e. server-local).
+const startOfDay = (v) => { const d = new Date(v); d.setUTCHours(0, 0, 0, 0); return d; };
+const DEFAULT_OVERTIME_RATE = 1.5;
+
+/**
+ * HR-OT-RULE-01 — the overtime rule of the roster in force on the day, if any.
+ * Rules could be attached to rosters but nothing read them: every request was
+ * paid at 1.5x and no limit was checked.
+ */
+export async function rosterRuleFor(db, { tenantId, employeeId, day }) {
+  const roster = await db.workSchedule.findFirst({
+    where: {
+      tenantId,
+      employeeId,
+      effective_start_date: { lte: day },
+      OR: [{ effective_end_date: null }, { effective_end_date: { gte: day } }],
+    },
+    include: { overtimeRule: true },
+    orderBy: { effective_start_date: "desc" },
+  });
+  return roster?.overtimeRule?.is_active ? roster.overtimeRule : null;
+}
+
+/** The rule's daily and weekly caps (Monday to Sunday), counting live requests. */
+async function assertWithinLimits(db, { tenantId, employeeId, day, hours, rule }) {
+  if (!rule) return;
+  if (rule.max_hours_per_day != null && hours > rule.max_hours_per_day)
+    throw badRequest(`The overtime rule "${rule.name}" allows at most ${rule.max_hours_per_day} hours a day`);
+  if (rule.max_hours_per_week == null) return;
+  const monday = new Date(day);
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  const nextMonday = new Date(monday);
+  nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
+  const week = await db.overtimeRequest.aggregate({
+    _sum: { hours: true },
+    where: { tenantId, employeeId, date: { gte: monday, lt: nextMonday }, status: { in: ["PENDING", "APPROVED"] } },
+  });
+  const already = week._sum.hours ?? 0;
+  if (already + hours > rule.max_hours_per_week)
+    throw badRequest(
+      `The overtime rule "${rule.name}" allows at most ${rule.max_hours_per_week} hours a week; ${already} are already requested for that week`,
+    );
+}
 
 /**
  * The payroll approval chain as it applies to ONE requester.
@@ -55,7 +99,7 @@ export async function resolveOvertimeChain({ tenantId, employeeId }) {
 
 /** Raise overtime for a day. `source` records whether the device saw it. */
 export async function createOvertimeRequest({
-  tenantId, employeeId, date, hours, reason, fromTime, toTime, source = "MANUAL", project,
+  tenantId, employeeId, date, hours, reason, fromTime, toTime, source = "MANUAL", project, submit = null,
 }) {
   const h = Number(hours);
   if (!Number.isFinite(h) || h <= 0) throw badRequest("hours must be greater than 0");
@@ -65,6 +109,11 @@ export async function createOvertimeRequest({
   if (!text) throw badRequest("reason is required");
 
   const day = startOfDay(date);
+  if (Number.isNaN(day.getTime())) throw badRequest("date must be YYYY-MM-DD");
+  const person = await prisma.employee.findFirst({ where: { id: Number(employeeId), tenant_id: tenantId }, select: { id: true } });
+  if (!person) throw notFound("Employee not found");
+  const rule = await rosterRuleFor(prisma, { tenantId, employeeId, day });
+  await assertWithinLimits(prisma, { tenantId, employeeId, day, hours: h, rule });
 
   const existing = await prisma.overtimeRequest.findFirst({
     where: { tenantId, employeeId, date: day, status: { in: ["PENDING", "APPROVED"] } },
@@ -81,6 +130,9 @@ export async function createOvertimeRequest({
     tx.overtimeRequest.create({
       data: {
         tenantId, employeeId, date: day, hours: h, reason: text,
+        // The roster's rule sets the pay multiplier, sealed on the request so the
+        // approvers see the rate that will be paid (HR-OT-RULE-01).
+        rate: rule?.daily_overtime_rate ?? DEFAULT_OVERTIME_RATE,
         fromTime: fromTime ?? null, toTime: toTime ?? null,
         project: project ?? null, source,
         status: "PENDING",
@@ -90,6 +142,20 @@ export async function createOvertimeRequest({
     }),
   );
 
+  // HR-OT-SUBMIT-01 — a request someone files is sent for approval in the same
+  // step: by the employee for themselves, or by HR on their behalf. (It used to
+  // stop at INITIATOR until the employee found and submitted it.) Device-detected
+  // candidates (submit null) still wait for the employee. If the approval cannot
+  // be opened the request is removed, so no orphan stays pending.
+  if (submit) {
+    try {
+      await legacySubmit("OVERTIME", request.id, text, submit === "onBehalf" ? { onBehalf: true } : {});
+    } catch (error) {
+      await prisma.overtimeRequest.deleteMany({ where: { tenantId, id: request.id, status: "PENDING" } });
+      throw error;
+    }
+    return { request, submitted: true, stage: "SUBMITTED", workflowUrl: "/hr/approvals" };
+  }
   return {request,routed:false,level:null,chain:[],stage:'INITIATOR',workflowUrl:'/hr/approvals'};
 }
 
