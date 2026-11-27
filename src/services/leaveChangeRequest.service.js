@@ -51,6 +51,27 @@ async function assertNoPayrollRun(tx, tenantId, from, to) {
   if (run) throw badSetup('Recall or cancel the payroll run that covers these dates before cancelling this leave', 409);
 }
 
+/**
+ * HR-LEAVE-DAYS-02 — the payroll check for cancelling one leave request. A request
+ * picked on separate dates (1-3, 12-14) holds only its approved days, so a run that
+ * covers nothing but the gap between them does not block it. A request without day
+ * rows (filed before they existed) holds its whole range, as before.
+ */
+export async function assertNoPayrollRunOnLeave(tx, tenantId, leave) {
+  const own = await tx.leaveRequestDay.findMany({
+    where: { tenantId, leaveRequestId: leave.id, decision: 'APPROVED' },
+    select: { date: true },
+  });
+  if (!own.length) return assertNoPayrollRun(tx, tenantId, leave.startDate, leave.endDate);
+  const runs = await tx.payrollRun.findMany({
+    where: { tenantId, periodEnd: { gte: dateOnly(leave.startDate) }, periodStart: { lte: dateOnly(leave.endDate) }, status: { notIn: ['CANCELLED', 'FAILED'] } },
+    select: { periodStart: true, periodEnd: true },
+  });
+  const held = own.map((d) => day(d.date));
+  if (runs.some((r) => held.some((d) => d >= day(r.periodStart) && d <= day(r.periodEnd))))
+    throw badSetup('Recall or cancel the payroll run that covers these dates before cancelling this leave', 409);
+}
+
 async function file({ tenantId, requestedById, action, payload, reason, before, same }) {
   if (!tenantId) throw badSetup('Tenant is required', 403);
   if (!ACTIONS.includes(action)) throw badSetup('Unknown leave change');
@@ -156,7 +177,7 @@ export const requestCancelLeave = ({ tenantId, requestedById, reason, leaveReque
       const leave = await tx.leaveRequest.findFirst({ where: { id: Number(leaveRequestId), tenantId }, include: { employee: { select: { employee_name: true, employee_code: true } }, leavePolicy: { select: { name: true } } } });
       if (!leave) throw badSetup('Leave request not found', 404);
       if (leave.status !== 'APPROVED') throw badSetup('Only approved leave can be cancelled here; pending leave is withdrawn by the employee', 409);
-      await assertNoPayrollRun(tx, tenantId, leave.startDate, leave.endDate);
+      await assertNoPayrollRunOnLeave(tx, tenantId, leave);
       const who = leave.employee.employee_name ?? leave.employee.employee_code;
       return { employeeName: who, policyName: leave.leavePolicy?.name ?? null, from: day(leave.startDate), to: day(leave.endDate), days: leave.totalDays, changes: [`Cancel ${leave.leavePolicy?.name ?? 'leave'} for ${who}, ${day(leave.startDate)} to ${day(leave.endDate)} (${leave.totalDays} days); the days go back to the balance and attendance is re-checked`] };
     },
@@ -205,7 +226,7 @@ const apply = {
   async CANCEL_LEAVE(tx, env, row) {
     const leave = await tx.leaveRequest.findFirst({ where: { id: row.payload.leaveRequestId, tenantId: env.tenantId } });
     if (!leave || leave.status !== 'APPROVED') throw badSetup('This leave is no longer approved, so it cannot be cancelled. Reject this request.', 409);
-    await assertNoPayrollRun(tx, env.tenantId, leave.startDate, leave.endDate);
+    await assertNoPayrollRunOnLeave(tx, env.tenantId, leave);
     // The database lets approved leave be cancelled only inside an approved LEAVE_CHANGE for that leave.
     await tx.$executeRaw`SELECT set_config('app.hr_leave_cancel', ${`LEAVE_CANCEL:${leave.id}`}, true)`;
     await tx.leaveRequest.update({ where: { id: leave.id }, data: { status: 'CANCELLED', updatedById: row.requestedById } });
@@ -221,7 +242,10 @@ const apply = {
     await tx.leave.deleteMany({ where: { tenantId: env.tenantId, employeeId: leave.employeeId, start_date: leave.startDate, end_date: leave.endDate } });
     // Loaded here so the approval path for ordinary leave does not pull in the attendance writer.
     const { enqueueEvaluationRange } = await import('./attendanceFinalization.service.js');
-    await enqueueEvaluationRange({ tenantId: env.tenantId, from: leave.startDate, to: leave.endDate, employeeIds: [leave.employeeId] }, tx);
+    // Re-check only the days this leave held: a gap may sit inside a payroll run and must not be touched.
+    if (own.length)
+      for (const d of own) await enqueueEvaluationRange({ tenantId: env.tenantId, from: d.date, to: d.date, employeeIds: [leave.employeeId] }, tx);
+    else await enqueueEvaluationRange({ tenantId: env.tenantId, from: leave.startDate, to: leave.endDate, employeeIds: [leave.employeeId] }, tx);
   },
 };
 

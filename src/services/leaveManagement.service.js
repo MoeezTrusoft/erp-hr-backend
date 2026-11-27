@@ -74,6 +74,16 @@ const bucketForPolicy = (policy) => {
 
 const emptyBucket = () => ({ total: 0, remaining: 0, used: 0 });
 
+// HR-LEAVE-KPI-02 — the company's own leave types. The four fixed buckets above
+// stay for existing readers, but they hid every other type (unpaid leave fell
+// into an "other" bucket no card showed), so the cards now read this list.
+const activePolicies = (tenantId) =>
+  prisma.leavePolicy.findMany({
+    where: scopedWhere(tenantId, { active: true }),
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+
 const employeeName = (e) => e?.employee_code || "Employee code required";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -138,10 +148,19 @@ export const getLeaveBalancesSummary = async ({ employeeId } = {}, tenantId) => 
     summary[k].used = round2(summary[k].used);
   }
 
+  // One entry per active leave type, including types with no balance row (unpaid leave).
+  const byPolicy = (await activePolicies(tenantId)).map((p) => {
+    let used = 0, remaining = 0, carry = 0, hasBalance = false;
+    for (const r of usedRows) if (r.leavePolicyId === p.id) used += r._sum.totalDays || 0;
+    for (const b of balances) if (b.leavePolicyId === p.id) { hasBalance = true; remaining += b.balance || 0; carry += b.carryOverBalance || 0; }
+    return { id: p.id, name: p.name, used: round2(used), remaining: round2(remaining), total: round2(remaining + used + carry), hasBalance };
+  });
+
   return {
     scope: empId != null ? "employee" : "tenant",
     employeeId: empId,
     balances: summary,
+    byPolicy,
   };
 };
 
@@ -300,6 +319,7 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
   const deptOf = new Map(employees.map((e) => [e.id, e.businessUnit?.name || "Unassigned"]));
 
   const byType = { annual: 0, sick: 0, casual: 0, maternity: 0, other: 0 };
+  const policyDays = new Map();
   const byDepartment = new Map();
   const dayGrid = Array.from({ length: daysInMonth }, () => ({ approved: 0, disapproved: 0, requested: 0 }));
   const perDayEmployees = Array.from({ length: daysInMonth }, () => []);
@@ -308,7 +328,10 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
     if (r.status === "CANCELLED") continue;
     const bucket = bucketOf(r);
     const shareDays = daysInWindow(r, from, to);
-    if (r.status === "APPROVED") byType[bucket] += shareDays;
+    if (r.status === "APPROVED") {
+      byType[bucket] += shareDays;
+      if (r.leavePolicy?.id != null) policyDays.set(r.leavePolicy.id, (policyDays.get(r.leavePolicy.id) || 0) + shareDays);
+    }
     const dept = deptOf.get(r.employeeId) || "Unassigned";
     if (!byDepartment.has(dept)) byDepartment.set(dept, { department: dept, employees: new Set(), requests: 0, days: 0 });
     const bucketDept = byDepartment.get(dept);
@@ -347,6 +370,15 @@ export const getLeaveMonthOverview = async ({ month, employeeId } = {}, tenantId
     from: from.toISOString().slice(0, 10),
     to: to.toISOString().slice(0, 10),
     byType: Object.fromEntries(Object.entries(byType).map(([k, v]) => [k, Math.round(v * 100) / 100])),
+    // Approved days this month per active leave type (HR-LEAVE-KPI-02).
+    byPolicy: await (async () => {
+      const list = (await activePolicies(tenantId)).map((p) => ({ id: p.id, name: p.name, days: round2(policyDays.get(p.id) || 0) }));
+      // A type retired since still shows when leave of it was taken this month.
+      for (const [id, days] of policyDays)
+        if (!list.some((p) => p.id === id))
+          list.push({ id, name: requests.find((r) => r.leavePolicy?.id === id)?.leavePolicy?.name || "Leave", days: round2(days) });
+      return list;
+    })(),
     byDepartment: [...byDepartment.values()]
       .map((d) => ({ department: d.department, employees: d.employees.size, requests: d.requests, days: Math.round(d.days * 100) / 100 }))
       .sort((a, b) => a.department.localeCompare(b.department)),
