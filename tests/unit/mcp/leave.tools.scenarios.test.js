@@ -47,9 +47,10 @@ const { registerLeaveTools } = await import('../../../src/mcp/tools/leaveTools.j
 const { mcpCtx } = await import('../../../src/mcp/context.js');
 
 const handlers = new Map();
+const resources = new Map();
 const recording = {
   tool: (name, ...rest) => handlers.set(name, rest[rest.length - 1]),
-  resource: () => {},
+  resource: (name, uri, ...rest) => resources.set(uri, rest[rest.length - 1]),
 };
 registerLeaveTools(recording);
 
@@ -121,13 +122,24 @@ describe('hr_leave_balances_get — own balances for anyone, others only for HR'
     await call('hr_leave_balances_get', {}, { permissions: {} });
     expect(leaveSvc.getEmployeeLeaveBalances).toHaveBeenCalledWith(7);
   });
-  it('reading someone else needs the leave read grant', async () => {
-    const res = await call('hr_leave_balances_get', { employeeId: 8 }, { permissions: {} });
-    expect(res.isError).toBe(true);
-    expect(parse(res).status).toBe(403);
+  it('reading someone else is refused without any grant, and with the read grant every employee holds', async () => {
+    for (const permissions of [{}, { 'hr:leave': ['VIEW'] }]) {
+      const res = await call('hr_leave_balances_get', { employeeId: 8 }, { permissions });
+      expect(res.isError).toBe(true);
+      expect(parse(res).status).toBe(403);
+    }
     expect(leaveSvc.getEmployeeLeaveBalances).not.toHaveBeenCalled();
-    await call('hr_leave_balances_get', { employeeId: 8 }, { permissions: { 'hr:leave': ['VIEW'] } });
+  });
+  it('HR (a leave write grant or the HR admin surface) reads someone else', async () => {
+    await call('hr_leave_balances_get', { employeeId: 8 }, { permissions: { 'hr:leave': ['VIEW', 'EDIT'] } });
     expect(leaveSvc.getEmployeeLeaveBalances).toHaveBeenCalledWith(8);
+    await call('hr_leave_balances_get', { employeeId: 9 }, { permissions: { 'hr:employee': ['EDIT'] } });
+    expect(leaveSvc.getEmployeeLeaveBalances).toHaveBeenCalledWith(9);
+  });
+  it('balance history of someone else follows the same rule', async () => {
+    const res = await call('hr_leave_balance_history', { employeeId: 8 }, { permissions: { 'hr:leave': ['VIEW'] } });
+    expect(parse(res).status).toBe(403);
+    expect(ledger.balanceHistory).not.toHaveBeenCalled();
   });
 });
 
@@ -152,5 +164,21 @@ describe('hr_leave_requests_list — HR sees the company, an employee sees their
     expect(res.isError).toBe(true);
     expect(parse(res).status).toBe(403);
     expect(leaveCtl.mcpListLeaveRequests).not.toHaveBeenCalled();
+  });
+});
+
+describe('leave resources are deny-by-default (HR-LEAVE-SCOPE-02)', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const read = (uri, permissions) =>
+    mcpCtx.run({ user: USER, permissions }, () => resources.get(uri)(new URL(uri)));
+  it.each([
+    ['hr://leaves/requests', () => leaveCtl.mcpListLeaveRequests],
+    ['hr://leaves/balances', () => leaveCtl.mcpListLeaveBalances],
+    ['hr://leaves/approvals/pending', () => leaveCtl.mcpListPendingLeaveApprovals],
+  ])('%s refuses a session without hr:leave VIEW and serves one with it', async (uri, ctrlOf) => {
+    await expect(read(uri, {})).rejects.toMatchObject({ status: 403 });
+    expect(ctrlOf()).not.toHaveBeenCalled();
+    await read(uri, { 'hr:leave': ['VIEW'] });
+    expect(ctrlOf()).toHaveBeenCalled();
   });
 });

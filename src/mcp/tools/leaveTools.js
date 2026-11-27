@@ -14,7 +14,7 @@ import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import { toListEnvelope, toListQuery } from "../utils/listEnvelope.js";
-import { assertEmployeeScope, resolveActorScope } from "../utils/actorScope.js";
+import { assertEmployeeScope, canViewOthersLeave, resolveActorScope } from "../utils/actorScope.js";
 import prisma from "../../lib/prisma.js";
 import { requireEmployeeActor } from "../../lib/employeeActor.js";
 import { requestPolicyCreate, requestPolicyUpdate, requestPolicyDelete, requestBalanceSet, requestCancelLeave, listPendingLeaveChanges } from "../../services/leaveChangeRequest.service.js";
@@ -59,6 +59,17 @@ async function directReportIds(tenantId, managerId) {
   return rows.map((row) => Number(row.id)).filter((id) => Number.isInteger(id));
 }
 
+// HR-LEAVE-SCOPE-02 — reading SOMEONE ELSE's balances needs HR's leave or admin
+// surface. hr:leave VIEW is held by every employee, so it cannot be the gate.
+function assertSeesOthersLeave(user, permissions) {
+  if (!canViewOthersLeave(user, permissions)) {
+    throw Object.assign(new Error("Insufficient permissions: you can only see your own leave balances"), {
+      status: 403,
+      code: "HR-4030",
+    });
+  }
+}
+
 const isLineManager = (permissions) =>
   hasPermission(permissions, "hr:approvals:manager", "VIEW");
 
@@ -70,7 +81,10 @@ export function registerLeaveTools(server) {
     "hr://leaves/requests",
     { description: "List all leave requests" },
     async (uri) => {
-      const { user } = getCtx();
+      // HR-LEAVE-SCOPE-02: deny-by-default like the tool twins; the controller
+      // then narrows a non-HR caller to their own rows.
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
       const data = await mcpListLeaveRequests(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -108,7 +122,10 @@ export function registerLeaveTools(server) {
     "hr://leaves/balances",
     { description: "List leave balances for all employees" },
     async (uri) => {
-      const { user } = getCtx();
+      // HR-LEAVE-SCOPE-02: deny-by-default like the tool twins; the controller
+      // then narrows a non-HR caller to their own rows.
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
       const data = await mcpListLeaveBalances(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -119,7 +136,10 @@ export function registerLeaveTools(server) {
     "hr://leaves/approvals/pending",
     { description: "Get leave requests pending approval" },
     async (uri) => {
-      const { user } = getCtx();
+      // HR-LEAVE-SCOPE-02: deny-by-default like the tool twins; the controller
+      // then narrows a non-HR caller to their own rows.
+      const { user, permissions } = getCtx();
+      assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
       const data = await mcpListPendingLeaveApprovals(user);
       return { contents: [{ uri: uri.href, text: JSON.stringify(data), mimeType: "application/json" }] };
     }
@@ -503,7 +523,7 @@ export function registerLeaveTools(server) {
       const own = Number(user.employeeId) || null;
       const target = employeeId ?? own;
       if (!target) throw Object.assign(new Error("Choose an employee"), { status: 400 });
-      if (target !== own) assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      if (target !== own) assertSeesOthersLeave(user, permissions);
       const data = await getEmployeeLeaveBalances(target);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -518,7 +538,7 @@ export function registerLeaveTools(server) {
       const own = Number(user.employeeId) || null;
       const target = employeeId ?? own;
       if (!target) throw Object.assign(new Error("Choose an employee"), { status: 400 });
-      if (target !== own) assertPermission(permissions, "GET", "hr:leave", user.isAdmin);
+      if (target !== own) assertSeesOthersLeave(user, permissions);
       const data = await balanceHistory({ tenantId: user.tenantId, employeeId: target, leavePolicyId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

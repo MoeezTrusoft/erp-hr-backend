@@ -696,25 +696,14 @@ export const updateLeaveRequest = async (id, data) => {
 };
 
 // Leave Approval Services
-export const getPendingApprovals = async (userId, userRole) => {
+// onlyEmployeeId: the caller's scope, decided by the controller (null = whole
+// company for HR). The old MANAGER branch selected every employee, so it never
+// narrowed anything; line-manager queues live in the HR Approval Centre.
+export const getPendingApprovals = async ({ onlyEmployeeId = null } = {}) => {
   const where = {
     status: 'PENDING'
   };
-
-  // If user is a manager, show their team's requests
-  if (userRole === 'MANAGER') {
-    // Get manager's team members
-    const teamMembers = await prisma.employee.findMany({
-      where: {
-        // This would depend on your organization structure
-        // For now, return all employees for managers
-      },
-      select: { id: true }
-    });
-
-    const teamMemberIds = teamMembers.map(member => member.id);
-    where.employeeId = { in: teamMemberIds };
-  }
+  if (onlyEmployeeId != null) where.employeeId = Number(onlyEmployeeId);
 
   return await prisma.leaveRequest.findMany({
     where,
