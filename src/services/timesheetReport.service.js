@@ -1453,8 +1453,23 @@ export async function listCheckInOuts({
   const pageEmployeeIds = [...new Set(pageRows.map((r) => r._employeeId).filter(Number.isFinite))];
   const callInByKey = new Map();
   const correctionByKey = new Map();
+  const rostersByEmployee = new Map();
   if (pageEmployeeIds.length) {
     const dates = pageRows.map((r) => startOfDay(r.date).getTime());
+    // HR-ATT-ONCALL-03 — the roster names the weekdays a person is on call, so
+    // the table can show "on-call day" before anyone is rung in.
+    const rosters = await prisma.workSchedule.findMany({
+      where: scopedWhere(tenantId, {
+        employeeId: { in: pageEmployeeIds },
+        effective_start_date: { lte: new Date(Math.max(...dates)) },
+        OR: [{ effective_end_date: null }, { effective_end_date: { gte: new Date(Math.min(...dates)) } }],
+      }),
+      select: { employeeId: true, effective_start_date: true, effective_end_date: true, schedule_pattern: true },
+    });
+    for (const r of rosters) {
+      if (!rostersByEmployee.has(r.employeeId)) rostersByEmployee.set(r.employeeId, []);
+      rostersByEmployee.get(r.employeeId).push(r);
+    }
     const callIns = await prisma.attendanceCallIn.findMany({
       where: scopedWhere(tenantId, {
         employeeId: { in: pageEmployeeIds },
@@ -1482,8 +1497,15 @@ export async function listCheckInOuts({
   const items = pageRows.map(({ _checkIn, _checkOut, _employeeId, ...rest }) => {
     const key = Number.isFinite(_employeeId) ? `${_employeeId}:${dayKey(rest.date)}` : null;
     const callIn = key ? callInByKey.get(key) : null;
+    const day = dayKey(rest.date);
+    const roster = (rostersByEmployee.get(_employeeId) || []).find(
+      (r) => dayKey(r.effective_start_date) <= day && (!r.effective_end_date || dayKey(r.effective_end_date) >= day),
+    );
+    const weekday = startOfDay(rest.date).getUTCDay() || 7;
+    const onCallDays = Array.isArray(roster?.schedule_pattern?.onCallDays) ? roster.schedule_pattern.onCallDays : [];
     return {
       ...rest,
+      onCallDay: onCallDays.includes(weekday),
       punches: punchesByRow.get(key) ?? [],
       correctionRequests:correctionByKey.get(key) || [],
       onCall: callIn

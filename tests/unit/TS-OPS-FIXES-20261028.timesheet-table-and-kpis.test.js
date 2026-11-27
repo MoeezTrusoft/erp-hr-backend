@@ -41,11 +41,13 @@ const row = (id, employeeId, date, status) => ({
 });
 
 let attendanceRows = [];
+let rosters = [];
 const prismaStub = {
   attendanceSetupRelease: { findFirst: jest.fn(async () => null) },
   attendance: { findMany: jest.fn(async () => attendanceRows) },
   attendanceDevicePunch: { findMany: jest.fn(async () => []) },
   attendanceCallIn: { findMany: jest.fn(async () => []) },
+  workSchedule: { findMany: jest.fn(async () => rosters) },
   attendanceCorrectionRequest: { findMany: jest.fn(async () => []) },
   attendanceAnomaly: { findMany: jest.fn(async () => []), count: jest.fn(async () => 0) },
   attendanceAnomalyApproval: { findMany: jest.fn(async () => []) },
@@ -172,5 +174,20 @@ describe('Worked hours on a day with punches but no stored total', () => {
     ];
     const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
     expect(items.map((r) => r.totalHours)).toEqual([null, null, null]);
+  });
+});
+
+describe('HR-ATT-ONCALL-03 — on-call days named on the roster', () => {
+  it('flags the rows that fall on a rostered on-call weekday', async () => {
+    rosters = [
+      { employeeId: 1, effective_start_date: day('2026-10-01'), effective_end_date: null,
+        schedule_pattern: { shift: { from: '09:00', to: '17:00' }, offDays: [1, 7], onCallDays: [1] } },
+    ];
+    // 2026-10-05 is a Monday.
+    const { items } = await listCheckInOuts({ tenantId: TENANT, ...WINDOW });
+    const zara = (date) => items.find((r) => r.employee.id === 1 && new Date(r.date).toISOString().slice(0, 10) === date);
+    expect(zara('2026-10-05').onCallDay).toBe(true);
+    expect(items.filter((r) => r.employee.id !== 1).every((r) => r.onCallDay === false)).toBe(true);
+    rosters = [];
   });
 });
